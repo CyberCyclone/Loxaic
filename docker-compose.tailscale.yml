@@ -1,0 +1,32 @@
+# Optional Tailscale sidecar — exposes the server on your tailnet over HTTPS
+# with no open ports. Entirely optional: if you run the server directly on the
+# host, `tailscale serve` on the host is simpler (see docs/REMOTE_ACCESS.md).
+#
+# Usage:
+#   1. Create an auth key: https://login.tailscale.com/admin/settings/keys
+#      (reusable, tagged keys recommended for servers)
+#   2. Put it in .env as TS_AUTHKEY=tskey-auth-...
+#   3. docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+#
+# The sidecar joins your tailnet as machine "shannon" and serves
+# https://shannon.<tailnet>.ts.net → the server container on port 4000.
+# Enable MagicDNS + HTTPS certificates in the Tailscale admin console first.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: shannon
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    volumes:
+      - ts-state:/var/lib/tailscale
+      - ./infra/tailscale:/config:ro
+    restart: unless-stopped
+    depends_on:
+      - server
+
+volumes:
+  ts-state:

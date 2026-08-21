@@ -1,0 +1,29 @@
+{
+  "name": "@shannon/mobile",
+  "version": "0.0.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shannon/api-client": "workspace:*",
+    "@shannon/ui": "workspace:*",
+    "expo": "~52.0.0",
+    "expo-router": "~4.0.0",
+    "nativewind": "4.2.6",
+    "react": "^19.0.0",
+    "react-native": "^0.76.0",
+    "react-native-safe-area-context": "^5.0.0",
+    "react-native-screens": "~4.0.0",
+    "tailwindcss": "3"
+  },
+  "devDependencies": {
+    "@shannon/config-ts": "workspace:*",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  }
+}

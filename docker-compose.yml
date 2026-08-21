@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shannon
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: infra/docker/server.Dockerfile
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/shannon
+      INFERENCE_BASE_URL: http://inference:8080
+      BETTER_AUTH_SECRET: dev-secret-change-me
+    ports:
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+      inference:
+        condition: service_started
+
+  inference:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >
+      --host 0.0.0.0 --port 8080
+      -m /models/model.gguf
+      --ctx-size 8192
+      --jinja
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "4002:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+    ports:
+      - "4001:80"
+    depends_on:
+      - server
+
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    command: serve
+    environment:
+      NTFY_BASE_URL: "http://localhost:4003"
+    ports:
+      - "4003:80"
+
+volumes:
+  pgdata:

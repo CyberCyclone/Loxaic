@@ -1,0 +1,20 @@
+{
+  "name": "@shannon/api-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shannon/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@shannon/config-ts": "workspace:*",
+    "@types/node": "^26.2.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,17 @@
+# Proxmox + AMD V620 (gfx1030) override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+
+services:
+  inference:
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm
+    command: >
+      --host 0.0.0.0 --port 8080
+      -m /models/model.gguf
+      --ctx-size 32768
+      --jinja
+      -ngl 999
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    environment:
+      HSA_OVERRIDE_GFX_VERSION: "10.3.0"

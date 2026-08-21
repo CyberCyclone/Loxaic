@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "open-shannon",
+    "slug": "open-shannon",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "scheme": "openshannon",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.shannon.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#18181b"
+      },
+      "package": "com.shannon.app"
+    },
+    "plugins": ["expo-router"]
+  }
+}

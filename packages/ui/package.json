@@ -1,0 +1,35 @@
+{
+  "name": "@shannon/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./provider": "./src/provider.tsx",
+    "./theme": "./src/theme/index.tsx",
+    "./layout": "./src/layout/index.ts",
+    "./layout/icons": "./src/layout/icons.tsx",
+    "./fork-chip": "./src/layout/ForkChip.tsx",
+    "./components": "./src/components/index.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "nativewind": "4.2.6",
+    "react": "^19.0.0",
+    "react-native": "^0.76.0",
+    "react-native-web": "^0.19.13"
+  },
+  "devDependencies": {
+    "@shannon/config-style": "workspace:*",
+    "@shannon/config-ts": "workspace:*",
+    "@types/react": "^19.0.0",
+    "@types/react-native-web": "^0.19.2",
+    "typescript": "^5.7.0"
+  },
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "react-native-web": "*"
+  }
+}

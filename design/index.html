@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open-Shannon — Design Prototype</title>
+<link rel="stylesheet" href="shannon.css">
+<script src="assets/theme-init.js"></script>
+<style>
+.launcher { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 40px 20px; text-align: center; }
+.launcher-logo { width: 56px; height: 56px; border-radius: var(--r-md); background: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: var(--on-accent); margin-bottom: 24px; }
+.launcher h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 8px; }
+.launcher p { font-size: 16px; color: var(--fg-3); max-width: 480px; margin-bottom: 40px; line-height: 1.5; }
+.surface-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; max-width: 800px; width: 100%; }
+.surface-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 24px; text-align: left; cursor: pointer; transition: border .15s, background .15s; text-decoration: none; color: inherit; display: block; }
+.surface-card:hover { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 5%, var(--surface)); }
+.surface-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+.surface-card p { font-size: 13px; color: var(--fg-3); margin: 0; }
+.surface-card svg { width: 28px; height: 28px; margin-bottom: 12px; color: var(--accent); }
+.launcher-footer { margin-top: 40px; font-size: 12px; color: var(--fg-3); }
+@media (max-width: 768px) { .surface-grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="launcher" data-od-id="launcher">
+  <div class="launcher-logo">OS</div>
+  <h1>Open-Shannon</h1>
+  <p>Self-hosted AI assistant with agent harness. High-fidelity design prototype with five surfaces.</p>
+  <div class="surface-grid">
+    <a class="surface-card" href="shannon-chat.html" data-od-id="launch-chat">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M4 5a2 2 0 012-2h12a2 2 0 012 2v8a2 2 0 01-2 2H9l-5 4v-4H6a2 2 0 01-2-2V5z" stroke="currentColor" stroke-width="1.5"/></svg>
+      <h3>Chat</h3><p>General chat with model selection, file attachments, forks, context panel, token usage tracking.</p>
+    </a>
+    <a class="surface-card" href="shannon-agent.html" data-od-id="launch-agent">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M8 10V7a4 4 0 018 0v3M5 10h14v8a2 2 0 01-2 2H7a2 2 0 01-2-2v-8zM9 14v1M15 14v1" stroke="currentColor" stroke-width="1.5"/></svg>
+      <h3>Agent Console</h3><p>Agent harness — tool calls, planning/manual/auto modes, permission bar, todo list, changed files.</p>
+    </a>
+    <a class="surface-card" href="shannon-routines.html" data-od-id="launch-routines">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <h3>Routines</h3><p>Scheduled recurring agent runs with cron builder, run history, and ntfy notifications.</p>
+    </a>
+    <a class="surface-card" href="shannon-stats.html" data-od-id="launch-stats">
+      <svg viewBox="0 0 24 24" fill="none"><path d="M3 20h18M6 20V10M10 20V5M14 20v-8M18 20V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <h3>Stats</h3><p>Usage analytics — tokens, cache hit rate, TTFT, inference speeds. Analytics dashboard layout.</p>
+    </a>
+    <a class="surface-card" href="shannon-chat.html?settings=open" data-od-id="launch-settings">
+      <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <h3>Settings</h3><p>Models, workspaces, devices, server config, smart routing. Opens as a modal on the chat screen.</p>
+    </a>
+  </div>
+  <div class="launcher-footer">Theme: zinc neutrals + aqua accent · Public Sans · Responsive 1440px / 768px / 390px</div>
+</div>
+</body>
+</html>

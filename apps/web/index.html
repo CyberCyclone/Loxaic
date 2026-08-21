@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Open-Shannon</title>
+    <script>
+      (function() {
+        var p = localStorage.getItem('shannon-theme') || 'system';
+        var t = p === 'light' ? 'light' : p === 'dark' ? 'dark' : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+        document.documentElement.setAttribute('data-theme', t);
+        document.documentElement.style.colorScheme = t;
+        document.body && (document.body.style.background = t === 'light' ? '#ffffff' : '#18181b');
+      })();
+    </script>
+    <style>
+      body { margin: 0; background: #18181b; }
+      #root { height: 100vh; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

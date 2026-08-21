@@ -1,0 +1,16 @@
+{
+  "name": "@shannon/types",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@shannon/config-ts": "workspace:*",
+    "typescript": "^5.7.0"
+  }
+}

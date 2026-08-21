@@ -1,0 +1,37 @@
+{
+  "name": "@shannon/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --clean",
+    "start": "node dist/index.js",
+    "lint": "eslint src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "1.6.26",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/express": "^4.0.7",
+    "@fastify/websocket": "^11.0.0",
+    "@shannon/agent": "workspace:*",
+    "@shannon/db": "workspace:*",
+    "@shannon/sync": "workspace:*",
+    "@shannon/types": "workspace:*",
+    "better-auth": "1.6.26",
+    "dockerode": "^5.0.1",
+    "fastify": "^5.0.0",
+    "node-cron": "^4.6.0",
+    "uuid": "^14.0.1"
+  },
+  "devDependencies": {
+    "@shannon/config-ts": "workspace:*",
+    "@types/dockerode": "^4.0.1",
+    "@types/node-cron": "^3.0.11",
+    "@types/uuid": "^11.0.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

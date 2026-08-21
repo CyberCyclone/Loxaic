@@ -1,0 +1,1010 @@
+
+<script type="application/json" id="conv-data">
+[
+  {
+    "id": "c1",
+    "title": "Rust vs Go for CLI tools",
+    "kind": "chat",
+    "time": "5h ago",
+    "model": "m1",
+    "msgs": [
+      {
+        "role": "user",
+        "text": "I need to build a CLI tool that parses large CSV files and outputs JSON. Should I use Rust or Go? Performance matters but so does development speed."
+      },
+      {
+        "role": "assistant",
+        "model": "m1",
+        "thinking": "The user is asking about a classic Rust vs Go tradeoff for a CLI tool. Key factors:\n\n1. **Performance**: Rust will be faster for raw parsing, especially with large files.\n2. **CSV parsing**: Both have excellent libraries (csv crate in Rust, encoding/csv in Go).\n3. **Development speed**: Go is generally faster to write and iterate on.\n4. **Memory**: Rust gives more control over memory, useful for very large files.\n5. **Distribution**: Both compile to single binaries.\n\nI should give a balanced answer with code examples in both languages.",
+        "text": "Good question — both are excellent for CLI tools, but the right choice depends on your priorities.\n\n**Quick comparison for your CSV→JSON use case:**\n\n| | Rust | Go |\n|---|---|---|\n| Parsing speed | Faster (zero-copy) | Fast enough for most cases |\n| Memory control | Fine-grained | GC-managed |\n| Dev speed | Slower, more boilerplate | Faster, simpler |\n| Error handling | `Result<T,E>` — explicit | `if err != nil` — repetitive |\n| Binary size | Smaller | Slightly larger |\n\n**If files are truly massive (>1GB):** Rust. You can memory-map the file and parse without loading it all.\n\n**If development speed matters more:** Go. You'll ship in half the time and the performance will be fine.\n\nHere's a minimal example in each:\n\n```rust\n// Rust — using csv and serde_json\nuse csv::Reader;\nuse serde_json::json;\nuse std::io;\n\nfn csv_to_json<R: io::Read>(reader: R) -> io::Result<String> {\n    let mut rdr = Reader::from_reader(reader);\n    let headers = rdr.headers()?.clone();\n    let mut records = Vec::new();\n    for result in rdr.records() {\n        let record = result?;\n        let mut row = serde_json::Map::new();\n        for (i, val) in record.iter().enumerate() {\n            row.insert(headers[i].to_string(), json!(val));\n        }\n        records.push(json!(row));\n    }\n    Ok(serde_json::to_string_pretty(&records)?)\n}\n```\n\n```go\n// Go — using encoding/csv and encoding/json\nfunc csvToJSON(r io.Reader) (string, error) {\n    rdr := csv.NewReader(r)\n    headers, err := rdr.Read()\n    if err != nil { return \"\", err }\n    var results []map[string]string\n    for {\n        row, err := rdr.Read()\n        if err == io.EOF { break }\n        if err != nil { return \"\", err }\n        m := make(map[string]string, len(headers))\n        for i, h := range headers { m[h] = row[i] }\n        results = append(results, m)\n    }\n    b, _ := json.MarshalIndent(results, \"\", \"  \")\n    return string(b), nil\n}\n```\n\nFor a 1GB CSV with 10M rows, the Rust version will use ~60% less memory and finish ~2x faster. But the Go version took me 3 minutes to write vs 15 for Rust.\n\n**My recommendation:** Start with Go if this is a one-off or internal tool. Choose Rust if this is a performance-critical tool you'll maintain long-term.",
+        "usage": {
+          "in": 4200,
+          "out": 890,
+          "tps": 42,
+          "cache": 71
+        },
+        "forks": [
+          "main",
+          "fork A — serde-zero-copy",
+          "fork B — polars route"
+        ]
+      },
+      {
+        "role": "user",
+        "text": "Let's go with Rust. Can you show me how to stream the JSON output instead of building it all in memory?"
+      },
+      {
+        "role": "assistant",
+        "model": "m1",
+        "thinking": "Streaming JSON output is a great optimization. I should show them how to use a streaming serializer instead of building a Vec and serializing at the end. This keeps memory usage flat regardless of file size.",
+        "text": "Absolutely — streaming keeps memory flat regardless of file size. The key is to write each JSON object as you parse it, rather than collecting into a Vec first.\n\n```rust\nuse csv::Reader;\nuse serde_json::{json, Serializer};\nuse std::io::{self, Write};\n\nfn csv_to_json_stream<R: io::Read, W: io::Write>(reader: R, mut writer: W) -> io::Result<()> {\n    let mut rdr = Reader::from_reader(reader);\n    let headers = rdr.headers()?.clone();\n    writer.write_all(b\"[\")?;\n    let mut first = true;\n    for result in rdr.records() {\n        let record = result?;\n        if !first { writer.write_all(b\",\")?; }\n        first = false;\n        let mut obj = serde_json::Map::new();\n        for (i, val) in record.iter().enumerate() {\n            obj.insert(headers[i].to_string(), json!(val));\n        }\n        let mut ser = Serializer::new(&mut writer);\n        serde_json::Value::Object(obj).serialize(&mut ser)?;\n    }\n    writer.write_all(b\"]\")?;\n    Ok(())\n}\n```\n\n**Memory profile:** This uses ~O(1) — just the current CSV record in memory, regardless of file size.\n\nYou can also add a progress indicator:\n\n```rust\nuse std::time::Instant;\n\nfn main() {\n    let start = Instant::now();\n    let mut count = 0;\n    count += 1;\n    if count % 100_000 == 0 {\n        eprintln!(\"Processed {} rows in {:.1}s\", count, start.elapsed().as_secs_f32());\n    }\n}\n```\n\nRun it with: `./csv2json < data.csv > output.json 2>progress.log`",
+        "usage": {
+          "in": 3800,
+          "out": 620,
+          "tps": 41,
+          "cache": 78
+        }
+      }
+    ]
+  },
+  {
+    "id": "c2",
+    "title": "Refactor auth middleware",
+    "kind": "agent",
+    "time": "2h ago",
+    "model": "m1",
+    "msgs": [
+      {
+        "role": "user",
+        "text": "Can you look at the auth middleware in this workspace and suggest improvements? I think the error handling is inconsistent."
+      },
+      {
+        "role": "assistant",
+        "model": "m1",
+        "thinking": "The user wants me to review their auth middleware. I should first read the file to see what they have, then analyze the error handling patterns.",
+        "tools": [
+          {
+            "tool": "fs_read",
+            "summary": "src/auth/middleware.ts",
+            "result": "export function authMiddleware(req, res, next) {\n  const token = req.headers.authorization?.replace(\"Bearer \", \"\");\n  if (!token) return res.status(401).json({ error: \"No token\" });\n  try {\n    const decoded = jwt.verify(token, SECRET);\n    req.user = decoded;\n    next();\n  } catch (e) {\n    return res.status(401).json({ error: e.message });\n  }\n}"
+          },
+          {
+            "tool": "grep",
+            "summary": "\"res.status\" in src/auth/",
+            "result": "src/auth/middleware.ts:5:  if (!token) return res.status(401).json({ error: \"No token\" });\nsrc/auth/middleware.ts:9:    return res.status(401).json({ error: e.message });\nsrc/auth/index.ts:12:  return res.status(403).json({ error: \"Forbidden\" });\nsrc/auth/refresh.ts:8:  return res.status(400).json({ error: \"Missing refresh token\" });"
+          }
+        ],
+        "text": "I've reviewed your middleware. Here are the issues I found:\n\n**1. Inconsistent error shapes**\n- Line 5: `{ error: \"No token\" }` — string\n- Line 9: `{ error: e.message }` — dynamic string from jwt library\n- `refresh.ts`: `{ error: \"Missing refresh token\" }` — another raw string\n\nThese should use a consistent typed error format.\n\n**2. JWT secret is hardcoded**\n`SECRET` is referenced directly. This should be injected via config or environment.\n\n**3. No distinction between expired and invalid tokens**\nBoth cases return a generic 401. The client can't tell if the user needs to re-authenticate or if the token is malformed.\n\n**Suggested fix:**\n\n```typescript\n// src/auth/errors.ts\nexport class AuthError extends Error {\n  constructor(message: string, public code: string, public statusCode: number = 401) {\n    super(message);\n    this.name = \"AuthError\";\n  }\n}\n\nexport class TokenExpiredError extends AuthError {\n  constructor() { super(\"Token expired\", \"TOKEN_EXPIRED\", 401); }\n}\n\nexport class InvalidTokenError extends AuthError {\n  constructor(reason: string) { super(`Invalid token: ${reason}`, \"INVALID_TOKEN\", 401); }\n}\n```\n\n```typescript\n// src/auth/middleware.ts (refactored)\nimport { verifyToken } from \"./utils\";\nimport { TokenExpiredError, InvalidTokenError, AuthError } from \"./errors\";\n\nexport function authMiddleware(req, res, next) {\n  try {\n    const token = req.headers.authorization?.replace(\"Bearer \", \"\");\n    if (!token) throw new AuthError(\"No token provided\", \"NO_TOKEN\");\n    req.user = verifyToken(token);\n    next();\n  } catch (e) {\n    if (e instanceof jwt.TokenExpiredError) throw new TokenExpiredError();\n    if (e instanceof jwt.JsonWebTokenError) throw new InvalidTokenError(e.message);\n    throw e;\n  }\n}\n```\n\nWant me to apply these changes to the workspace?",
+        "usage": {
+          "in": 8400,
+          "out": 1240,
+          "tps": 38,
+          "cache": 62
+        },
+        "forks": [
+          "main",
+          "fork A — use Result<T,E> pattern",
+          "fork B — fastify hooks instead"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "c3",
+    "title": "Explain CRDTs",
+    "kind": "chat",
+    "time": "1d ago",
+    "model": "m2",
+    "msgs": [
+      {
+        "role": "user",
+        "text": "Can you explain Conflict-free Replicated Data Types? I keep hearing about them in the context of local-first software."
+      },
+      {
+        "role": "assistant",
+        "model": "m2",
+        "thinking": "CRDTs are a deep topic. I should explain them from first principles: the problem (concurrent edits), the insight (commutative operations), two families (state-based and op-based), practical examples, and real-world implementations.",
+        "text": "CRDTs (Conflict-free Replicated Data Types) are data structures that can be replicated across multiple nodes, updated independently, and merged without conflicts — ever.\n\n**The problem they solve:** In a distributed system, two nodes might update the same data simultaneously. Traditional approaches (locking, consensus) are slow. CRDTs guarantee that **any merge order produces the same final state**, so nodes never need to coordinate.\n\n**The mathematical guarantee:** CRDT operations must be:\n- **Commutative**: A ∪ B = B ∪ A\n- **Associative**: (A ∪ B) ∪ C = A ∪ (B ∪ C)\n- **Idempotent**: A ∪ A = A\n\n**Two families:**\n\n1. **State-based (CvRDT):** Each node sends its entire state. Merge is a `join()` function that must be monotonic. Example: G-Counter.\n\n```rust\nstruct GCounter {\n    counts: HashMap<NodeId, u64>,\n}\n\nimpl GCounter {\n    fn increment(&mut self, node: NodeId) {\n        *self.counts.entry(node).or_default() += 1;\n    }\n    fn value(&self) -> u64 { self.counts.values().sum() }\n    fn merge(&mut self, other: &GCounter) {\n        for (node, &count) in &other.counts {\n            let my = self.counts.entry(*node).or_default();\n            *my = (*my).max(count);\n        }\n    }\n}\n```\n\n2. **Operation-based (CmRDT):** Nodes send operations. Each op must be commutative. More efficient but requires reliable delivery.\n\n**For text editing (the hard part):**\nThe most practical CRDT for collaborative text is the **RGA (Replicated Growable Array)**. These represent text as a list of characters, each with a unique position identifier that allows insertion at any point without conflicts.\n\n**Real-world implementations:**\n- **Yjs** — used by Notion, Evernote; very fast\n- **Automerge** — used by Ink & Switch; JSON-like document model\n- **Riak** — uses CRDTs for counters, sets, and maps\n\n**Why it matters for local-first:** CRDTs let you work offline, then sync when you reconnect — and the merge is guaranteed to work. No \"resolve conflict\" dialogs, no data loss.",
+        "usage": {
+          "in": 6200,
+          "out": 980,
+          "tps": 28,
+          "cache": 55
+        },
+        "forks": [
+          "main"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "c4",
+    "title": "Daily standup summary",
+    "kind": "routine",
+    "time": "6h ago",
+    "model": "m3",
+    "msgs": [
+      {
+        "role": "user",
+        "text": "[Routine: Daily standup summary — auto-generated prompt]"
+      },
+      {
+        "role": "assistant",
+        "model": "m3",
+        "origin": "device",
+        "thinking": "This is a routine run. I need to read yesterday's git commits, summarize what changed, flag anything risky, and format as a standup report.",
+        "tools": [
+          {
+            "tool": "bash",
+            "summary": "git log --since=yesterday --oneline",
+            "result": "a3f2c1d feat: add WebSocket reconnection logic\nb8e4f0a fix: handle expired JWT tokens gracefully\nc1d2e3f refactor: extract auth utils into separate module\nd4e5f6a chore: update dependencies (express 4.18→4.19)\ne5f6a7b test: add integration tests for auth flow"
+          }
+        ],
+        "text": "## Daily Standup — August 10\n\n**Yesterday's activity:** 5 commits across `src/auth/` and `src/ws/`\n\n### What changed\n- **WebSocket reconnection** added — new `ReconnectingWebSocket` class with exponential backoff\n- **JWT expiry handling** fixed — now returns `TOKEN_EXPIRED` code instead of generic 401\n- **Auth utilities extracted** — `verifyToken`, `signToken` moved to `src/auth/utils.ts`\n- **Dependencies updated** — Express 4.18→4.19 (patch)\n- **Integration tests** added — 12 new test cases covering auth flow\n\n### ⚠️ Flags\n- **Express patch update.** Review the changelog for breaking changes. Express 4.19 removed some deprecated middleware signatures.\n- **WebSocket reconnection.** The backoff logic is new and untested under network partitions. Consider adding a circuit breaker.\n\n### Today\n- Review the WebSocket reconnection PR\n- Merge auth refactor after CI passes\n- Consider adding a JWT refresh endpoint (mentioned in issue #142)",
+        "usage": {
+          "in": 1800,
+          "out": 420,
+          "tps": 55,
+          "cache": 82
+        }
+      }
+    ]
+  },
+  {
+    "id": "c5",
+    "title": "Debug WebSocket reconnect",
+    "kind": "agent",
+    "time": "1d ago",
+    "model": "m1",
+    "msgs": [
+      {
+        "role": "user",
+        "text": "My WebSocket client keeps reconnecting every 30 seconds even when the connection is stable. Here's my code:\n\n```javascript\nconst ws = new WebSocket(\"wss://api.example.com\");\nws.onclose = () => {\n  setTimeout(() => new WebSocket(\"wss://api.example.com\"), 1000);\n};\n```\n\nWhy does it keep reconnecting?"
+      },
+      {
+        "role": "assistant",
+        "model": "m1",
+        "thinking": "The issue is likely a server-side idle timeout. The client isn't sending keepalive pings, so after 30 seconds of inactivity the server closes the connection, triggering reconnection in a loop.",
+        "tools": [
+          {
+            "tool": "grep",
+            "summary": "\"ping\" or \"pong\" in src/",
+            "result": "(no matches found)"
+          },
+          {
+            "tool": "bash",
+            "summary": "curl -s -I wss://api.example.com 2>&1 | head -5",
+            "result": "HTTP/1.1 426 Upgrade Required\nConnection: close\nKeep-Alive: timeout=30"
+          }
+        ],
+        "text": "Found it. The server has a **30-second idle timeout** (`Keep-Alive: timeout=30`), and your client isn't sending keepalive pings. When the connection is idle for 30s, the server closes it, triggering your `onclose` handler → reconnect → 30s idle → close again. Infinite loop.\n\n**Fix:** Add a periodic ping:\n\n```javascript\nconst ws = new WebSocket(\"wss://api.example.com\");\nlet pingInterval;\n\nws.onopen = () => {\n  pingInterval = setInterval(() => {\n    if (ws.readyState === WebSocket.OPEN) {\n      ws.send(JSON.stringify({ type: \"ping\" }));\n    }\n  }, 25000);\n};\n\nws.onclose = (event) => {\n  clearInterval(pingInterval);\n  if (event.code !== 1000) {\n    setTimeout(() => connect(), 1000);\n  }\n};\n\nws.onerror = (error) => {\n  console.error(\"WebSocket error:\", error);\n};\n```\n\n**Three improvements:**\n1. **Ping interval** — sends a heartbeat every 25s, keeping the connection alive\n2. **Normal close check** — `code 1000` means intentional close, don't reconnect\n3. **Error handler** — log errors so you can debug future issues\n\nAlso, your original code created a new `WebSocket` without re-attaching `onclose`, so the second connection would never reconnect if it dropped. The fixed version uses a `connect()` function that re-attaches all handlers.",
+        "usage": {
+          "in": 5200,
+          "out": 480,
+          "tps": 40,
+          "cache": 68
+        },
+        "forks": [
+          "main",
+          "fork A — use reconnecting-websocket library"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "c6",
+    "title": "K8s manifest generator",
+    "kind": "chat",
+    "time": "2d ago",
+    "model": "m2",
+    "msgs": [
+      {
+        "role": "user",
+        "text": "Can you write a script that generates Kubernetes manifests from a simple YAML config? I want to define my services in one file and generate Deployment + Service + Ingress automatically."
+      },
+      {
+        "role": "assistant",
+        "model": "m2",
+        "thinking": "This is a practical tool request. I should define a simple input format, use Python with PyYAML for the generator, and output standard K8s manifests.",
+        "text": "Here's a Python script that takes a simple service definition and generates K8s manifests:\n\n```python\n#!/usr/bin/env python3\nimport yaml, sys, argparse\nfrom pathlib import Path\n\ndef generate_deployment(svc):\n    return {\n        \"apiVersion\": \"apps/v1\",\n        \"kind\": \"Deployment\",\n        \"metadata\": {\"name\": svc[\"name\"], \"labels\": {\"app\": svc[\"name\"]}},\n        \"spec\": {\n            \"replicas\": svc.get(\"replicas\", 1),\n            \"selector\": {\"matchLabels\": {\"app\": svc[\"name\"]}},\n            \"template\": {\n                \"metadata\": {\"labels\": {\"app\": svc[\"name\"]}},\n                \"spec\": {\"containers\": [{\n                    \"name\": svc[\"name\"],\n                    \"image\": svc[\"image\"],\n                    \"ports\": [{\"containerPort\": p} for p in svc[\"ports\"]],\n                }]}\n            }\n        }\n    }\n\n# Usage: ./gen-k8s.py services.yaml\n```\n\n**Input format** (`services.yaml`):\n```yaml\nservices:\n  - name: api\n    image: ghcr.io/myorg/api:latest\n    ports: [8080]\n    replicas: 3\n    domain: api.example.com\n    env:\n      DATABASE_URL: postgres://db:5432/myapp\n  - name: worker\n    image: ghcr.io/myorg/worker:latest\n    ports: [9090]\n    replicas: 2\n```\n\nRun `./gen-k8s.py services.yaml -o manifests/` and it generates `api-deployment.yaml`, `api-service.yaml`, `api-ingress.yaml`, etc.",
+        "usage": {
+          "in": 4800,
+          "out": 720,
+          "tps": 27,
+          "cache": 60
+        },
+        "forks": [
+          "main"
+        ]
+      }
+    ]
+  }
+]
+</script><!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open-Shannon — Chat</title>
+<link rel="stylesheet" href="shannon.css">
+<script src="assets/theme-init.js"></script>
+<script src="shannon-shared.js"></script>
+<style>
+.chat-area { flex: 1; overflow-y: auto; padding: 24px 0; max-width: 820px; margin: 0 auto; width: 100%; }
+.msg { padding: 8px 24px; margin-bottom: 8px; }
+.msg.user { background: color-mix(in oklch, var(--muted) 20%, transparent); }
+.msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; color: var(--fg-3); }
+.msg-avatar { width: 24px; height: 24px; border-radius: var(--r-full); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+.msg-avatar.assistant { background: var(--accent); color: var(--on-accent); }
+.msg-avatar.user { background: var(--muted); color: var(--fg); }
+.msg-body { font-size: 14px; line-height: 1.6; color: var(--fg); padding-left: 32px; }
+.msg-body p { margin-bottom: 8px; }
+.msg-body code { font-family: ui-monospace, "SF Mono", monospace; font-size: 13px; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
+.code-block { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--r-sm); margin: 8px 0; overflow: hidden; }
+.code-header { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg-3); }
+.code-block pre { padding: 12px; font-family: ui-monospace, "SF Mono", monospace; font-size: 13px; overflow-x: auto; line-height: 1.5; color: var(--fg); }
+.copy-btn { font-size: 11px; color: var(--fg-3); cursor: pointer; padding: 2px 6px; border-radius: var(--r-sm); transition: background .12s; }
+.copy-btn:hover { background: var(--muted); color: var(--fg); }
+.thinking-block { border: 1px solid var(--border); border-radius: var(--r-sm); margin: 8px 0; overflow: hidden; }
+.thinking-header { padding: 8px 12px; font-size: 12px; color: var(--fg-3); cursor: pointer; display: flex; align-items: center; gap: 6px; background: color-mix(in oklch, var(--muted) 15%, transparent); }
+.thinking-body { padding: 12px; font-size: 13px; color: var(--fg-2); display: none; border-top: 1px solid var(--border); }
+.thinking-block.open .thinking-body { display: block; }
+.msg-usage { font-size: 12px; color: var(--fg-3); padding-left: 32px; margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; }
+.origin-badge { font-size: 11px; padding: 1px 6px; border-radius: var(--r-sm); background: color-mix(in oklch, var(--fg-3) 15%, transparent); color: var(--fg-2); }
+.fork-chips { padding-left: 32px; margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.fork-chip { font-size: 11px; padding: 3px 8px; border-radius: var(--r-sm); background: var(--muted); color: var(--fg-2); cursor: pointer; border: 1px solid var(--border); transition: background .12s; }
+.fork-chip:hover { background: var(--bg); color: var(--fg); }
+.fork-chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.tool-card { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 10px 12px; margin: 8px 0; font-size: 13px; }
+.tool-card-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-3); margin-bottom: 4px; }
+
+.composer { padding: 12px 24px; border-top: 1px solid var(--border); max-width: 820px; margin: 0 auto; width: 100%; }
+.composer-inner { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 8px; }
+.composer-input { width: 100%; background: none; border: none; color: var(--fg); font-size: 14px; resize: none; outline: none; min-height: 24px; max-height: 200px; line-height: 1.5; }
+.composer-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.att-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--r-sm); background: var(--muted); font-size: 12px; }
+.att-chip .remove { cursor: pointer; color: var(--fg-3); }
+.att-chip .remove:hover { color: var(--danger); }
+.ws-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--r-sm); background: color-mix(in oklch, var(--accent) 15%, transparent); color: var(--accent); font-size: 12px; }
+.composer-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.composer-bar .btn { padding: 4px 8px; min-height: 28px; }
+.composer-bar .btn svg { width: 16px; height: 16px; }
+.send-btn { width: 32px; height: 32px; border-radius: var(--r-sm); background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.send-btn:hover { background: var(--accent-2); }
+.send-btn:disabled { opacity: .4; cursor: not-allowed; }
+.send-btn.stop { background: var(--danger); }
+.composer.drag-over .composer-inner { border-color: var(--accent); background: color-mix(in oklch, var(--accent) 5%, var(--surface)); }
+
+.model-selector { position: relative; }
+.model-menu { position: absolute; top: 100%; left: 0; margin-top: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); width: 280px; max-height: 360px; overflow-y: auto; z-index: 50; box-shadow: 0 8px 24px rgba(0,0,0,.3); display: none; }
+.model-menu.open { display: block; }
+.model-group { font-size: 11px; color: var(--fg-3); text-transform: uppercase; padding: 8px 12px 4px; font-weight: 500; }
+.model-option { padding: 8px 12px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.model-option:hover { background: var(--muted); }
+.model-option.selected { background: color-mix(in oklch, var(--accent) 10%, transparent); }
+.model-option .check { margin-left: auto; color: var(--accent); }
+.model-option-name { font-size: 13px; font-weight: 500; }
+.model-option-meta { font-size: 11px; color: var(--fg-3); }
+
+.context-panel { width: 280px; flex-shrink: 0; border-left: 1px solid var(--border); background: var(--surface); display: none; flex-direction: column; }
+.context-panel.open { display: flex; }
+.context-header { height: var(--header-h); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; border-bottom: 1px solid var(--border); }
+.context-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.context-meter { height: 6px; border-radius: var(--r-full); background: var(--bg); overflow: hidden; margin-top: 6px; }
+.context-meter-fill { height: 100%; border-radius: var(--r-full); background: var(--accent); transition: width .3s; }
+.context-item { display: flex; align-items: center; justify-content: space-between; padding: 6px 0; font-size: 13px; }
+.context-item .tok { font-size: 12px; color: var(--fg-3); }
+
+.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; padding: 24px; }
+.empty-state h2 { font-size: 24px; margin-bottom: 8px; font-weight: 600; }
+.empty-state p { font-size: 14px; color: var(--fg-3); margin-bottom: 24px; max-width: 400px; }
+.prompt-suggestions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 500px; }
+.prompt-card { padding: 16px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); cursor: pointer; transition: border .15s; text-align: left; }
+.prompt-card:hover { border-color: var(--accent); }
+.prompt-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.prompt-card p { font-size: 13px; color: var(--fg-3); margin: 0; }
+
+/* Context menu */
+.ctx-menu { position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 4px; min-width: 200px; z-index: 300; box-shadow: 0 8px 24px rgba(0,0,0,.4); display: none; }
+.ctx-menu.open { display: block; }
+.ctx-menu-item { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--r-sm); font-size: 13px; color: var(--fg); cursor: pointer; transition: background .12s; }
+.ctx-menu-item:hover { background: var(--muted); }
+.ctx-menu-item.danger { color: var(--danger); }
+.ctx-menu-item.danger:hover { background: color-mix(in oklch, var(--danger) 12%, transparent); }
+.ctx-menu-item svg { width: 14px; height: 14px; opacity: .7; flex-shrink: 0; }
+.ctx-menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* Thread row hover actions */
+.thread-row { position: relative; }
+.thread-row-actions { position: absolute; top: 6px; right: 6px; display: none; gap: 2px; }
+.thread-row:hover .thread-row-actions { display: flex; }
+.thread-row-actions button { padding: 2px 4px; border-radius: var(--r-sm); color: var(--fg-3); font-size: 12px; }
+.thread-row-actions button:hover { background: var(--bg); color: var(--fg); }
+
+/* Message hover actions */
+.msg-actions { display: none; gap: 2px; padding-left: 32px; margin-top: 4px; }
+.msg:hover .msg-actions { display: flex; }
+.msg-action { padding: 2px 8px; border-radius: var(--r-sm); font-size: 12px; color: var(--fg-3); cursor: pointer; transition: background .12s; }
+.msg-action:hover { background: var(--muted); color: var(--fg); }
+
+/* Tool card in chat */
+.tool-card { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--r-sm); margin: 8px 0; overflow: hidden; }
+.tool-card-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; cursor: pointer; font-size: 12px; color: var(--fg-3); transition: background .12s; }
+.tool-card-head:hover { background: var(--muted); }
+.tool-card-head .tool-icon { width: 18px; height: 18px; border-radius: var(--r-sm); display: flex; align-items: center; justify-content: center; font-size: 10px; flex-shrink: 0; }
+.tool-card-detail { padding: 12px; border-top: 1px solid var(--border); font-size: 13px; display: none; }
+.tool-card.open .tool-card-detail { display: block; }
+.tool-card.open .tool-card-head .arrow { transform: rotate(90deg); }
+.arrow { transition: transform .2s; font-size: 10px; }
+
+/* Thinking in chat (shared with agent) */
+.thinking-header .arrow { transition: transform .2s; }
+.thinking-block.open .thinking-header .arrow { transform: rotate(90deg); }
+
+@media (max-width: 768px) {
+  .context-panel { position: fixed; bottom: 0; left: 0; right: 0; width: 100%; height: 60vh; border-left: none; border-top: 1px solid var(--border); border-radius: var(--r-lg) var(--r-lg) 0 0; z-index: 120; }
+  .prompt-suggestions { grid-template-columns: 1fr; }
+  .chat-area { padding: 16px 0; }
+  .msg, .composer { padding-left: 16px; padding-right: 16px; }
+  .thread-row-actions { display: none !important; }
+}
+</style>
+</head>
+<body>
+<div class="shell" data-od-id="chat-shell">
+  <aside class="sidebar" data-od-id="sidebar">
+    <div class="sidebar-brand"><div class="logo">OS</div><div class="name">Open-Shannon</div></div>
+    <nav class="sidebar-nav">
+      <div class="nav-label">Workspace</div>
+      <a class="nav-item active" href="shannon-chat.html" data-od-id="nav-chat">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h10a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 3v-3H3a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.4"/></svg>Chat
+      </a>
+      <a class="nav-item" href="shannon-agent.html" data-od-id="nav-agent">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M5 7V5a3 3 0 016 0v2M3 7h10v6a1 1 0 01-1 1H4a1 1 0 01-1-1V7zM6 10v1M10 10v1" stroke="currentColor" stroke-width="1.4"/></svg>Agent
+      </a>
+      <a class="nav-item" href="shannon-routines.html" data-od-id="nav-routines">
+        <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4v4l3 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Routines
+      </a>
+      <a class="nav-item" href="shannon-stats.html" data-od-id="nav-stats">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M2 13h12M4 13V7M7 13V4M10 13V8M13 13V6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Stats
+      </a>
+      <a class="nav-item" data-od-id="nav-settings" onclick="openSettings()">
+        <svg viewBox="0 0 16 16" fill="none"><path d="M8 5a3 3 0 100 6 3 3 0 000-6zM8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Settings
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-line"><span class="status-dot"></span> Server connected · llama.cpp</div>
+      <div class="account-row"><div class="account-avatar">CG</div><div class="account-info">        <div class="account-name">Casey Gibson</div><div class="account-plan">shannon.tailscale.com</div></div></div>
+    </div>
+  </aside>
+
+  <div class="threadlist" data-od-id="threadlist">
+    <div class="threadlist-header">
+      <div class="threadlist-header-new">
+        <div class="threadlist-title">Chats</div>
+        <button class="btn btn-primary btn-sm" id="new-chat" data-od-id="cta-new-chat">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          New
+        </button>
+      </div>
+    </div>
+    <div class="threadlist-search"><input type="text" placeholder="Search chats..." id="chat-search"></div>
+    <div class="threadlist-items" id="threadlist-items"></div>
+  </div>
+
+  <main class="main" data-od-id="chat-main">
+    <div class="mobile-bar">
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('.sidebar').classList.toggle('open')"><svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.5"/></svg></button>
+      <span style="font-size:14px;font-weight:600;flex:1" id="mobile-title">Chat</span>
+      <button class="btn btn-ghost btn-sm" id="mobile-context-toggle"><svg width="18" height="18" viewBox="0 0 16 16" fill="none"><path d="M2 8a6 6 0 1012 0A6 6 0 002 8z" stroke="currentColor" stroke-width="1.4"/><path d="M8 5v3l2 2" stroke="currentColor" stroke-width="1.4"/></svg></button>
+    </div>
+    <div class="main-header">
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost btn-sm" id="context-toggle" title="Context panel">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.4"/><path d="M6 3v10M10 6h2M10 9h2" stroke="currentColor" stroke-width="1.4"/></svg>
+      </button>
+    </div>
+
+    <div style="display:flex; flex:1; overflow:hidden;">
+      <div style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div class="chat-area" id="chat-area">
+          <!-- Empty state -->
+          <div class="empty-state" id="empty-state">
+            <h2>How can I help?</h2>
+            <p>Ask anything. Attach files, pin a workspace, or switch models. Conversations fork and sync across your devices.</p>
+            <div class="prompt-suggestions">
+              <button class="prompt-card" data-prompt="Explain the difference between Raft and Paxos consensus algorithms."><h3>Compare Raft vs Paxos</h3><p>Consensus algorithms explained simply</p></button>
+              <button class="prompt-card" data-prompt="Write a Rust function that parses a CSV file into a typed struct."><h3>Rust CSV parser</h3><p>Typed struct with serde</p></button>
+              <button class="prompt-card" data-prompt="Debug: my WebSocket keeps reconnecting every 30 seconds. Here's the code:"><h3>Debug WebSocket reconnect</h3><p>Paste code for analysis</p></button>
+              <button class="prompt-card" data-prompt="Summarize the latest commits in this repo and flag anything that looks risky."><h3>Repo health check</h3><p>Commit analysis + risk flags</p></button>
+            </div>
+          </div>
+        </div>
+        <div class="composer" id="composer">
+          <div class="composer-inner">
+            <div class="composer-chips" id="att-chips"></div>
+            <textarea class="composer-input" id="composer-input" placeholder="Reply to Open-Shannon..." rows="1"></textarea>
+            <div class="composer-bar">
+              <button class="btn btn-ghost btn-sm" id="attach-btn" title="Attach file">
+                <svg viewBox="0 0 16 16" fill="none"><path d="M11 5L6 10a2 2 0 102.8 2.8L12.5 9a3 3 0 00-4.2-4.2L4.5 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              </button>
+              <button class="btn btn-ghost btn-sm" id="ws-btn" title="Attach workspace">
+                <svg viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h3l1 1h6a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.4"/></svg>
+                <span id="ws-label">Workspace</span>
+              </button>
+              <input type="file" id="file-input" multiple style="display:none">
+              <button class="btn btn-secondary btn-sm" id="model-btn" data-od-id="composer-model-selector">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>
+                <span id="current-model">Llama 3.1 8B</span>
+                <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5"/></svg>
+              </button>
+              <button class="btn btn-ghost btn-sm" id="thinking-btn" data-od-id="composer-thinking" title="Thinking level">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M8 2a4 4 0 00-4 4c0 2 1 3 1 5h6c0-2 1-3 1-5a4 4 0 00-4-4zM6 13h4M7 15h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                <span id="thinking-label" style="font-size:12px">Medium</span>
+              </button>
+              <div style="flex:1"></div>
+              <div class="ctx-indicator" id="ctx-indicator" data-od-id="context-indicator">
+                <div class="ctx-indicator-ring"><div class="ctx-indicator-ring-fill" id="ctx-ring-fill" style="clip-path:inset(0 0 100% 0)"></div></div>
+                <span id="ctx-pct">0%</span>
+                <div class="ctx-stats-popup" id="ctx-stats-popup">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:6px">Context</div>
+                  <div class="stat-row"><span>Tokens</span><span class="val" id="ci-tokens">0</span></div>
+                  <div class="stat-row"><span>Context window</span><span class="val" id="ci-window">32,768</span></div>
+                  <div class="stat-row"><span>Files</span><span class="val" id="ci-files">0</span></div>
+                  <div class="stat-row"><span>Cache %</span><span class="val" id="ci-cache">—</span></div>
+                  <div class="stat-row"><span>tok/s</span><span class="val" id="ci-tps">—</span></div>
+                </div>
+              </div>
+              <button class="send-btn" id="send-btn" disabled>
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" stroke="currentColor" stroke-width="1.4" fill="currentColor"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Context panel -->
+      <div class="context-panel" id="context-panel">
+        <div class="context-header">
+          <span style="font-size:14px;font-weight:600">Context</span>
+          <button class="btn btn-ghost btn-sm" id="context-close">✕</button>
+        </div>
+        <div style="flex:1;overflow-y:auto">
+          <div class="context-section">
+            <div class="label">Context Window</div>
+            <div style="font-size:13px"><span id="ctx-used">0</span> / <span id="ctx-max">32,768</span> tokens</div>
+            <div class="context-meter"><div class="context-meter-fill" id="ctx-fill" style="width:0%"></div></div>
+          </div>
+          <div class="context-section">
+            <div class="label">Attached Files</div>
+            <div id="ctx-files"><div class="hint">No files attached</div></div>
+          </div>
+          <div class="context-section">
+            <div class="label">Workspace</div>
+            <div id="ctx-ws"><div class="hint">No workspace pinned</div></div>
+          </div>
+          <div class="context-section">
+            <div class="label">Conversation Usage</div>
+            <div class="context-item"><span>Tokens</span><span class="tok" id="ctx-tokens">0</span></div>
+            <div class="context-item"><span>Cache hit</span><span class="tok" id="ctx-cache">0%</span></div>
+            <div class="context-item"><span>Est. cost</span><span class="tok" id="ctx-cost">$0.00</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Context menu -->
+<div class="ctx-menu" id="ctx-menu" data-od-id="thread-ctx-menu">
+  <div class="ctx-menu-item" data-action="open"><svg viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>Open</div>
+  <div class="ctx-menu-item" data-action="fork"><svg viewBox="0 0 16 16" fill="none"><path d="M5 3v5a2 2 0 002 2h4M5 3a1 1 0 100-2 1 1 0 000 2zM13 11a1 1 0 100-2 1 1 0 000 2z" stroke="currentColor" stroke-width="1.4"/></svg>Fork conversation</div>
+  <div class="ctx-menu-item" data-action="rewind"><svg viewBox="0 0 16 16" fill="none"><path d="M8 3a5 5 0 100 10 5 5 0 000-10zM8 6v3l2-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Rewind to...</div>
+  <div class="ctx-menu-sep"></div>
+  <div class="ctx-menu-item" data-action="rename"><svg viewBox="0 0 16 16" fill="none"><path d="M11 2l3 3-8 8H3v-3l8-8z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>Rename</div>
+  <div class="ctx-menu-item" data-action="pin"><svg viewBox="0 0 16 16" fill="none"><path d="M9 2L4 7l3 3 5-5-3-3zM7 10l-3 4M9 6l1 1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Pin</div>
+  <div class="ctx-menu-item" data-action="export"><svg viewBox="0 0 16 16" fill="none"><path d="M8 2v8M5 7l3 3 3-3M2 12v2h12v-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Export as Markdown</div>
+  <div class="ctx-menu-sep"></div>
+  <div class="ctx-menu-item danger" data-action="delete"><svg viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V2h4v2M5 4v9a1 1 0 001 1h4a1 1 0 001-1V4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Delete</div>
+</div>
+
+<script>
+// ===== Fixtures (use shared models from shannon-shared.js) =====
+const models = SHANNON_MODELS;
+const conversations = JSON.parse(document.getElementById('conv-data').textContent);
+conversations.forEach((c, i) => { c.location = c.location || (i === 2 ? 'device' : 'server'); });
+let activeConvId = null;
+let currentModel = models[0];
+let currentThinking = getThinkingLevel('new');
+let attachments = [];
+let workspace = null;
+let ctxTokens = 0;
+
+// ===== Thread list =====
+const tlItems = document.getElementById('threadlist-items');
+
+function renderThreadList(filter = '') {
+  tlItems.innerHTML = '';
+  conversations.filter(c => c.title.toLowerCase().includes(filter.toLowerCase())).forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'thread-row' + (c.id === activeConvId ? ' active' : '');
+    row.dataset.convId = c.id;
+    row.innerHTML = `<div class="thread-row-title">${c.title}</div>
+      <div class="thread-row-meta">${locationBadge(c.location)} ${c.time}</div>
+      <div class="thread-row-actions">
+        <button title="Rename" data-quick="rename">✎</button>
+        <button title="Delete" data-quick="delete">✕</button>
+      </div>`;
+    row.onclick = () => loadConversation(c.id);
+    row.oncontextmenu = e => { e.preventDefault(); openCtxMenu(e, c.id); };
+    row.querySelectorAll('[data-quick]').forEach(btn => {
+      btn.onclick = e => { e.stopPropagation(); openCtxMenu({ clientX: e.clientX, clientY: e.clientY }, c.id, btn.dataset.quick); };
+    });
+    tlItems.appendChild(row);
+  });
+}
+renderThreadList();
+document.getElementById('chat-search').addEventListener('input', e => renderThreadList(e.target.value));
+
+// ===== Load conversation =====
+const chatArea = document.getElementById('chat-area');
+const emptyState = document.getElementById('empty-state');
+
+function loadConversation(convId) {
+  const conv = conversations.find(c => c.id === convId);
+  if (!conv) return;
+  activeConvId = convId;
+  // Update active state in thread list
+  document.querySelectorAll('.thread-row').forEach(r => r.classList.toggle('active', r.dataset.convId === convId));
+  // Update model selector
+  const convModel = models.find(m => m.id === conv.model);
+  if (convModel) { currentModel = convModel; document.getElementById('current-model').textContent = convModel.display_name; document.getElementById('ctx-max').textContent = convModel.context_tokens.toLocaleString(); }
+  currentThinking = getThinkingLevel(convId);
+  document.getElementById('thinking-label').textContent = currentThinking;
+  // Update mobile title
+  document.getElementById('mobile-title').textContent = conv.title;
+  // Clear chat area and render messages
+  chatArea.innerHTML = '';
+  ctxTokens = 0;
+  conv.msgs.forEach(m => renderHistoryMessage(m));
+  // Update context panel
+  updateContext();
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+function renderHistoryMessage(m) {
+  const msg = document.createElement('div');
+  msg.className = 'msg ' + m.role;
+  msg.dataset.odId = 'msg-' + m.role;
+  const avatar = m.role === 'user' ? 'CG' : 'OS';
+  const modelName = m.model ? models.find(x => x.id === m.model)?.display_name || currentModel.display_name : currentModel.display_name;
+  let html = `<div class="msg-head">
+    <div class="msg-avatar ${m.role}">${avatar}</div>
+    <span>${m.role === 'user' ? 'You' : modelName}</span>
+    ${m.origin === 'device' ? locationBadge('device') : locationBadge('server')}
+  </div>`;
+
+  // Thinking block (expandable)
+  if (m.thinking) {
+    html += `<div class="thinking-block" data-od-id="thinking-block">
+      <div class="thinking-header"><span class="arrow">▶</span> 💭 Thinking… <span style="margin-left:auto;color:var(--fg-3);font-size:11px">click to expand</span></div>
+      <div class="thinking-body">${formatMarkdown(m.thinking)}</div>
+    </div>`;
+  }
+
+  // Message body
+  html += `<div class="msg-body">${formatMarkdown(m.text)}</div>`;
+
+  // Tool cards
+  if (m.tools && m.tools.length) {
+    m.tools.forEach((t, i) => {
+      const icons = { fs_read: '📖', fs_write: '✏️', fs_edit: '🔧', bash: '⚡', grep: '🔍', glob: '🌐', web_fetch: '🌐', todo_write: '📋' };
+      const iconColors = { fs_read: 'var(--accent)', bash: 'var(--success)', grep: 'var(--fg-2)', fs_edit: 'var(--warning)', fs_write: 'var(--danger)' };
+      html += `<div class="tool-card" data-od-id="tool-${t.tool}">
+        <div class="tool-card-head">
+          <div class="tool-icon" style="background:color-mix(in oklch, ${iconColors[t.tool] || 'var(--fg-3)'} 15%, transparent);color:${iconColors[t.tool] || 'var(--fg-2)'}">${icons[t.tool] || '?'}</div>
+          <span style="font-weight:500;color:var(--fg-2)">${t.tool}</span>
+          <span style="color:var(--fg-3)">·</span>
+          <span style="color:var(--fg-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${t.summary}</span>
+          <span class="arrow">▶</span>
+        </div>
+        <div class="tool-card-detail">
+          <div style="font-size:12px;color:var(--fg-3);margin-bottom:6px">Result</div>
+          <div style="font-family:ui-monospace,'SF Mono',monospace;font-size:12px;white-space:pre-wrap;color:var(--fg-2);background:var(--code-bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:8px;overflow-x:auto;max-height:200px">${(t.result || '').replace(/</g, '&lt;')}</div>
+        </div>
+      </div>`;
+    });
+  }
+
+  // Usage line
+  if (m.usage) {
+    ctxTokens += m.usage.in + m.usage.out;
+    const cost = conv_model_price(m.model);
+    html += `<div class="msg-usage">
+      <span>${m.usage.tps} tok/s</span>
+      <span>cached ${m.usage.cache}%</span>
+      <span>${m.usage.in.toLocaleString()} in / ${m.usage.out.toLocaleString()} out</span>
+      ${cost ? `<span>$${((m.usage.in + m.usage.out) / 1000000 * cost).toFixed(4)}</span>` : ''}
+    </div>`;
+  }
+
+  // Fork chips
+  if (m.forks && m.forks.length) {
+    html += `<div class="fork-chips">`;
+    m.forks.forEach((f, i) => {
+      html += `<span class="fork-chip${i === 0 ? ' active' : ''}" data-od-id="fork-chip">${i === 0 ? 'main' : '↗ ' + f.replace('main — ', '')}</span>`;
+    });
+    html += `</div>`;
+  }
+
+  // Hover actions
+  html += `<div class="msg-actions">
+    <span class="msg-action" data-msg-action="copy">Copy</span>
+    <span class="msg-action" data-msg-action="fork">Fork here</span>
+    <span class="msg-action" data-msg-action="rewind">Rewind here</span>
+    <span class="msg-action" data-msg-action="regenerate">Regenerate</span>
+  </div>`;
+
+  msg.innerHTML = html;
+  chatArea.appendChild(msg);
+
+  // Wire thinking toggle
+  const tb = msg.querySelector('.thinking-block');
+  if (tb) tb.querySelector('.thinking-header').onclick = () => tb.classList.toggle('open');
+
+  // Wire tool card toggle
+  msg.querySelectorAll('.tool-card').forEach(tc => {
+    tc.querySelector('.tool-card-head').onclick = () => tc.classList.toggle('open');
+  });
+
+  // Wire fork chips
+  msg.querySelectorAll('.fork-chip').forEach(c => {
+    c.onclick = () => {
+      msg.querySelectorAll('.fork-chip').forEach(f => f.classList.remove('active'));
+      c.classList.add('active');
+    };
+  });
+
+  // Wire hover actions
+  msg.querySelectorAll('[data-msg-action]').forEach(a => {
+    a.onclick = () => {
+      const action = a.dataset.msgAction;
+      if (action === 'copy') {
+        navigator.clipboard?.writeText(m.text);
+        a.textContent = 'Copied'; setTimeout(() => a.textContent = 'Copy', 1500);
+      } else {
+        showToast(action.charAt(0).toUpperCase() + action.slice(1) + ' — this would ' +
+          (action === 'fork' ? 'create a new branch from this message' :
+           action === 'rewind' ? 'truncate the conversation here' :
+           action === 'regenerate' ? 're-run the model from this point' : 'perform ' + action));
+      }
+    };
+  });
+}
+
+function conv_model_price(modelId) {
+  const m = models.find(x => x.id === modelId);
+  return m ? m.price : 0;
+}
+
+// ===== Context menu =====
+const ctxMenu = document.getElementById('ctx-menu');
+let ctxConvId = null;
+
+function openCtxMenu(e, convId, quickAction) {
+  ctxConvId = convId;
+  ctxMenu.classList.add('open');
+  ctxMenu.style.left = Math.min(e.clientX, window.innerWidth - 220) + 'px';
+  ctxMenu.style.top = Math.min(e.clientY, window.innerHeight - 320) + 'px';
+  if (quickAction) {
+    setTimeout(() => handleCtxAction(quickAction), 50);
+    ctxMenu.classList.remove('open');
+  }
+}
+
+ctxMenu.querySelectorAll('.ctx-menu-item').forEach(item => {
+  item.onclick = () => {
+    handleCtxAction(item.dataset.action);
+    ctxMenu.classList.remove('open');
+  };
+});
+
+function handleCtxAction(action) {
+  const conv = conversations.find(c => c.id === ctxConvId);
+  if (!conv) return;
+  switch (action) {
+    case 'open': loadConversation(ctxConvId); break;
+    case 'fork':
+      const forked = { ...conv, id: 'c' + Date.now(), title: conv.title + ' (fork)', time: 'just now', msgs: conv.msgs.slice(0, Math.ceil(conv.msgs.length / 2)) };
+      conversations.unshift(forked);
+      activeConvId = forked.id;
+      renderThreadList();
+      loadConversation(forked.id);
+      showToast('Forked conversation from midpoint');
+      break;
+    case 'rewind':
+      if (conv.msgs.length > 1) {
+        conv.msgs = conv.msgs.slice(0, Math.max(1, conv.msgs.length - 2));
+        renderThreadList();
+        if (activeConvId === ctxConvId) loadConversation(ctxConvId);
+        showToast('Rewound 2 messages');
+      } else showToast('Nothing to rewind');
+      break;
+    case 'rename':
+      const newName = prompt('Rename conversation', conv.title);
+      if (newName && newName.trim()) { conv.title = newName.trim(); renderThreadList(); if (activeConvId === ctxConvId) document.getElementById('mobile-title').textContent = newName; }
+      break;
+    case 'pin':
+      showToast('Pinned: ' + conv.title);
+      break;
+    case 'export':
+      const md = conv.msgs.map(m => `## ${m.role === 'user' ? 'You' : 'Assistant'}\n\n${m.text}`).join('\n\n---\n\n');
+      navigator.clipboard?.writeText(`# ${conv.title}\n\n${md}`);
+      showToast('Exported as Markdown to clipboard');
+      break;
+    case 'delete':
+      const idx = conversations.indexOf(conv);
+      conversations.splice(idx, 1);
+      if (activeConvId === ctxConvId) {
+        activeConvId = null;
+        chatArea.innerHTML = '';
+        chatArea.appendChild(emptyState);
+        emptyState.style.display = '';
+        ctxTokens = 0; updateContext();
+      }
+      renderThreadList();
+      showToast('Deleted: ' + conv.title);
+      break;
+  }
+}
+
+document.addEventListener('click', e => { if (!ctxMenu.contains(e.target)) ctxMenu.classList.remove('open'); });
+
+// Toast
+function showToast(msg) {
+  let toast = document.getElementById('chat-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'chat-toast';
+    toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 18px;font-size:13px;z-index:400;box-shadow:0 8px 24px rgba(0,0,0,.3);display:none';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.style.display = 'block';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.style.display = 'none', 2500);
+}
+
+// ===== Model selector (uses shared model modal v2) =====
+document.getElementById('model-btn').onclick = () => {
+  openModelModal(currentModel.id, activeConvId || 'new', (m) => {
+    currentModel = m;
+    document.getElementById('current-model').textContent = m.display_name;
+    document.getElementById('ctx-max').textContent = m.context_tokens.toLocaleString();
+    updateContext();
+  });
+  // Update thinking level chip
+  document.getElementById('thinking-label').textContent = getThinkingLevel(activeConvId || 'new');
+};
+document.getElementById('thinking-btn').onclick = () => {
+  openModelModal(currentModel.id, activeConvId || 'new', (m) => {
+    currentModel = m;
+    document.getElementById('current-model').textContent = m.display_name;
+    document.getElementById('ctx-max').textContent = m.context_tokens.toLocaleString();
+    updateContext();
+  });
+};
+
+// ===== Context panel =====
+const ctxPanel = document.getElementById('context-panel');
+document.getElementById('context-toggle').onclick = () => ctxPanel.classList.toggle('open');
+document.getElementById('mobile-context-toggle').onclick = () => ctxPanel.classList.toggle('open');
+document.getElementById('context-close').onclick = () => ctxPanel.classList.remove('open');
+
+function updateContext() {
+  let fileTokens = attachments.reduce((s, a) => s + a.tokens, 0);
+  let wsTokens = workspace ? 4500 : 0;
+  let used = fileTokens + wsTokens + ctxTokens;
+  document.getElementById('ctx-used').textContent = used.toLocaleString();
+  document.getElementById('ctx-max').textContent = currentModel.context_tokens.toLocaleString();
+  document.getElementById('ctx-fill').style.width = Math.min(100, (used / currentModel.context_tokens) * 100) + '%';
+  const filesEl = document.getElementById('ctx-files');
+  if (attachments.length) { filesEl.innerHTML = attachments.map(a => `<div class="context-item"><span>${a.name}</span><span class="tok">${a.tokens.toLocaleString()} tok</span></div>`).join(''); }
+  else filesEl.innerHTML = '<div class="hint">No files attached</div>';
+  const wsEl = document.getElementById('ctx-ws');
+  if (workspace) wsEl.innerHTML = `<div class="context-item"><span>📁 ${workspace}</span><span class="tok">4,500 tok</span></div>`;
+  else wsEl.innerHTML = '<div class="hint">No workspace pinned</div>';
+  document.getElementById('ctx-cost').textContent = currentModel.price ? '$' + ((ctxTokens / 1000000) * currentModel.price).toFixed(4) : '$0.00';
+  updateContextIndicator();
+}
+
+// ===== Context indicator (compact ring + stats popup) =====
+function updateContextIndicator() {
+  const used = attachments.reduce((s, a) => s + a.tokens, 0) + (workspace ? 4500 : 0) + ctxTokens;
+  const pct = Math.min(100, (used / currentModel.context_tokens) * 100);
+  document.getElementById('ctx-pct').textContent = Math.round(pct) + '%';
+  document.getElementById('ctx-ring-fill').style.clipPath = `inset(0 0 ${100 - pct}% 0)`;
+  document.getElementById('ci-tokens').textContent = used.toLocaleString();
+  document.getElementById('ci-window').textContent = currentModel.context_tokens.toLocaleString();
+  document.getElementById('ci-files').textContent = attachments.length;
+  document.getElementById('ci-cache').textContent = ctxTokens ? '64%' : '—';
+  document.getElementById('ci-tps').textContent = ctxTokens ? '38' : '—';
+}
+
+// Context indicator popup
+document.getElementById('ctx-indicator').onclick = e => {
+  e.stopPropagation();
+  document.getElementById('ctx-stats-popup').classList.toggle('open');
+};
+document.addEventListener('click', e => {
+  const popup = document.getElementById('ctx-stats-popup');
+  if (popup && !e.target.closest('#ctx-indicator')) popup.classList.remove('open');
+});
+
+// ===== Attachments =====
+const fileInput = document.getElementById('file-input');
+document.getElementById('attach-btn').onclick = () => fileInput.click();
+fileInput.onchange = e => {
+  Array.from(e.target.files).forEach(f => {
+    attachments.push({ name: f.name, size: f.size, tokens: Math.ceil(f.size / 4) });
+  });
+  renderAttChips(); updateContext();
+};
+function renderAttChips() {
+  const el = document.getElementById('att-chips');
+  el.innerHTML = attachments.map((a, i) => `<div class="att-chip">📎 ${a.name} <span class="remove" data-i="${i}">✕</span></div>`).join('');
+  el.querySelectorAll('.remove').forEach(r => r.onclick = () => { attachments.splice(+r.dataset.i, 1); renderAttChips(); updateContext(); });
+}
+// Workspace attach
+document.getElementById('ws-btn').onclick = () => {
+  workspace = workspace ? null : 'Open-Shannon/design';
+  document.getElementById('ws-label').textContent = workspace || 'Workspace';
+  document.getElementById('ws-btn').style.color = workspace ? 'var(--accent)' : '';
+  updateContext();
+};
+// Drag-drop
+const composer = document.getElementById('composer');
+['dragenter','dragover'].forEach(ev => composer.addEventListener(ev, e => { e.preventDefault(); composer.classList.add('drag-over'); }));
+['dragleave','drop'].forEach(ev => composer.addEventListener(ev, e => { e.preventDefault(); composer.classList.remove('drag-over'); }));
+composer.addEventListener('drop', e => {
+  Array.from(e.dataTransfer.files).forEach(f => attachments.push({ name: f.name, size: f.size, tokens: Math.ceil(f.size / 4) }));
+  renderAttChips(); updateContext();
+});
+
+// ===== Composer =====
+const input = document.getElementById('composer-input');
+const sendBtn = document.getElementById('send-btn');
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+  sendBtn.disabled = !input.value.trim();
+  updateContextIndicator();
+});
+
+// ===== Messages =====
+let isStreaming = false;
+
+function sendMessage() {
+  if (isStreaming) return;
+  const text = input.value.trim();
+  if (!text) return;
+  if (emptyState) emptyState.style.display = 'none';
+  addMessage('user', text);
+  input.value = ''; input.style.height = 'auto'; sendBtn.disabled = true;
+  simulateResponse(text);
+}
+
+function addMessage(role, text, opts = {}) {
+  const msg = document.createElement('div');
+  msg.className = 'msg ' + role;
+  msg.dataset.odId = 'msg-' + role;
+  const avatar = role === 'user' ? 'CG' : 'OS';
+  msg.innerHTML = `
+    <div class="msg-head">
+      <div class="msg-avatar ${role}">${avatar}</div>
+      <span>${role === 'user' ? 'You' : currentModel.display_name}</span>
+      ${opts.origin === 'device' ? locationBadge('device') : locationBadge('server')}
+    </div>
+    <div class="msg-body">${formatMarkdown(text)}</div>`;
+  chatArea.appendChild(msg);
+  chatArea.scrollTop = chatArea.scrollHeight;
+  return msg;
+}
+
+function formatMarkdown(text) {
+  return text
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => `<div class="code-block"><div class="code-header"><span>${lang || 'code'}</span><span class="copy-btn" onclick="copyCode(this)">Copy</span></div><pre>${code.replace(/</g,'&lt;')}</pre></div>`)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\n/g, '<br>');
+}
+
+window.copyCode = el => {
+  const code = el.closest('.code-block').querySelector('pre').textContent;
+  navigator.clipboard?.writeText(code);
+  el.textContent = 'Copied'; setTimeout(() => el.textContent = 'Copy', 1500);
+};
+
+function simulateResponse(prompt) {
+  isStreaming = true;
+  sendBtn.classList.add('stop');
+  sendBtn.disabled = false;
+  sendBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="2" y="2" width="10" height="10" rx="2"/></svg>';
+  sendBtn.onclick = () => { isStreaming = false; finishResponse(); };
+
+  const msg = document.createElement('div');
+  msg.className = 'msg assistant';
+  msg.innerHTML = `
+    <div class="msg-head"><div class="msg-avatar assistant">OS</div><span>${currentModel.display_name}</span></div>
+    <div class="msg-body" id="streaming-body"></div>`;
+  chatArea.appendChild(msg);
+  const body = msg.querySelector('#streaming-body');
+  chatArea.scrollTop = chatArea.scrollHeight;
+
+  const responses = [
+    "Great question! Let me break this down for you.\n\n**Key points:**\n\n1. The architecture follows a tree-based message model where each message has a `parent_id`, enabling conversation forks.\n2. Content blocks can be text, thinking, tool calls, or attachments — all stored in the same message tree.\n3. Usage is tracked per completion with input, cached, and output token counts.\n\n```rust\nstruct Message {\n    id: Uuid,\n    parent_id: Option<Uuid>,\n    role: Role,\n    content: Vec<ContentBlock>,\n}\n```\n\nThis means you can branch off any point in the conversation and explore alternatives without losing the original thread.",
+    "Here's what I found:\n\nThe key insight is that `cached_tokens` represents KV cache hits — when the prompt prefix matches a previous completion, llama.cpp can skip recomputation. This is why your cache hit rate of 64% matters: it directly reduces TTFT.\n\nWould you like me to dive deeper into the cache mechanics?",
+    "Let me think about this...\n\nThe answer depends on your use case. For CLI tools, Rust gives you zero-cost abstractions and excellent error handling. Go is simpler and has faster compile times.\n\n**Rust pros:**\n- Memory safety without GC\n- Zero-cost abstractions\n- Excellent package manager\n\n**Go pros:**\n- Simpler to learn\n- Faster compilation\n- Built-in concurrency\n\n```bash\ncargo new my-cli --bin\ncd my-cli && cargo build --release\n```",
+  ];
+  const fullText = responses[Math.floor(Math.random() * responses.length)];
+  let idx = 0;
+  const interval = setInterval(() => {
+    if (!isStreaming || idx >= fullText.length) { clearInterval(interval); finishResponse(msg, fullText); return; }
+    idx += 3;
+    body.innerHTML = formatMarkdown(fullText.slice(0, idx));
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }, 20);
+}
+
+function finishResponse(msg, fullText) {
+  isStreaming = false;
+  sendBtn.classList.remove('stop');
+  sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 8l12-5-5 12-2-5-5-2z" stroke="currentColor" stroke-width="1.4" fill="currentColor"/></svg>';
+  sendBtn.disabled = true;
+  sendBtn.onclick = null;
+
+  if (msg && fullText) {
+    const body = msg.querySelector('#streaming-body');
+    body.id = '';
+    body.innerHTML = formatMarkdown(fullText);
+    // Usage line
+    const inTok = 1240, outTok = 386, tps = 38, cache = 64;
+    ctxTokens += inTok + outTok;
+    const usage = document.createElement('div');
+    usage.className = 'msg-usage';
+    usage.innerHTML = `<span>${tps} tok/s</span><span>cached ${cache}%</span><span>${inTok.toLocaleString()} in / ${outTok.toLocaleString()} out</span>${currentModel.price ? `<span>$${((inTok+outTok)/1000000*currentModel.price).toFixed(4)}</span>` : ''}`;
+    msg.appendChild(usage);
+    // Fork chips
+    const forks = document.createElement('div');
+    forks.className = 'fork-chips';
+    forks.innerHTML = `<span class="fork-chip active">main</span><span class="fork-chip">↗ fork A</span><span class="fork-chip">↗ fork B</span>`;
+    msg.appendChild(forks);
+    forks.querySelectorAll('.fork-chip').forEach(c => c.onclick = () => { forks.querySelectorAll('.fork-chip').forEach(f => f.classList.remove('active')); c.classList.add('active'); });
+    updateContext();
+  }
+  chatArea.scrollTop = chatArea.scrollHeight;
+}
+
+// Prompt suggestions
+document.querySelectorAll('.prompt-card').forEach(card => {
+  card.onclick = () => { input.value = card.dataset.prompt; input.dispatchEvent(new Event('input')); input.focus(); };
+});
+
+// New chat
+document.getElementById('new-chat').onclick = () => {
+  activeConvId = null;
+  chatArea.innerHTML = '';
+  chatArea.appendChild(emptyState);
+  emptyState.style.display = '';
+  ctxTokens = 0; updateContext();
+  document.getElementById('mobile-title').textContent = 'Chat';
+  renderThreadList();
+};
+
+// Auto-open settings if launched with ?settings=open
+if (new URLSearchParams(location.search).get('settings') === 'open') {
+  openSettings();
+}
+</script>
+</body>
+</html>
