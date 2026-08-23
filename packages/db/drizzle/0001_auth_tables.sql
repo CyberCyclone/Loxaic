@@ -1,4 +1,10 @@
-CREATE TABLE "user" (
+-- Creates better-auth's tables. Written idempotently: this migration was
+-- generated but never registered in meta/_journal.json (a stale gap from
+-- early manual DB setup), so on any database that already has these tables
+-- (every environment that's been running since Stage 0) it must be a safe
+-- no-op rather than fail on "relation already exists" the moment it's
+-- registered and actually applied for the first time.
+CREATE TABLE IF NOT EXISTS "user" (
 	"id" text PRIMARY KEY NOT NULL,
 	"name" text NOT NULL,
 	"email" text NOT NULL,
@@ -8,9 +14,11 @@ CREATE TABLE "user" (
 	"updated_at" timestamp NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "user" ADD CONSTRAINT "user_email_unique" UNIQUE("email");
+DO $$ BEGIN
+	ALTER TABLE "user" ADD CONSTRAINT "user_email_unique" UNIQUE("email");
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
 --> statement-breakpoint
-CREATE TABLE "session" (
+CREATE TABLE IF NOT EXISTS "session" (
 	"id" text PRIMARY KEY NOT NULL,
 	"expires_at" timestamp NOT NULL,
 	"token" text NOT NULL,
@@ -21,11 +29,15 @@ CREATE TABLE "session" (
 	"user_id" text NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "session" ADD CONSTRAINT "session_token_unique" UNIQUE("token");
+DO $$ BEGIN
+	ALTER TABLE "session" ADD CONSTRAINT "session_token_unique" UNIQUE("token");
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
 --> statement-breakpoint
-ALTER TABLE "session" ADD CONSTRAINT "session_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE no action ON UPDATE no action;
+DO $$ BEGIN
+	ALTER TABLE "session" ADD CONSTRAINT "session_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
 --> statement-breakpoint
-CREATE TABLE "account" (
+CREATE TABLE IF NOT EXISTS "account" (
 	"id" text PRIMARY KEY NOT NULL,
 	"account_id" text NOT NULL,
 	"provider_id" text NOT NULL,
@@ -41,9 +53,11 @@ CREATE TABLE "account" (
 	"updated_at" timestamp NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "account" ADD CONSTRAINT "account_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE no action ON UPDATE no action;
+DO $$ BEGIN
+	ALTER TABLE "account" ADD CONSTRAINT "account_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "user"("id") ON DELETE no action ON UPDATE no action;
+EXCEPTION WHEN duplicate_object OR duplicate_table THEN NULL; END $$;
 --> statement-breakpoint
-CREATE TABLE "verification" (
+CREATE TABLE IF NOT EXISTS "verification" (
 	"id" text PRIMARY KEY NOT NULL,
 	"identifier" text NOT NULL,
 	"value" text NOT NULL,

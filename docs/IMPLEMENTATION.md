@@ -1,5 +1,10 @@
 # Open-Shannon — Implementation Document
 
+> **Superseded — kept for history only.** This describes an earlier planning iteration
+> (different stage numbering, a model-routing scheme that was never the one actually
+> used) and references `apps/web`/`packages/ui`, both retired. **Read
+> [`HANDOVER.md`](../HANDOVER.md) instead** — it reflects the codebase as it exists now.
+
 > **This is the source of truth for the project.** It exists so any session or model can pick
 > up the build cold. If you are resuming: read §1–§3, then go straight to **§12 — Where We Are**
 > for the current stage, next action, and which model should be active.

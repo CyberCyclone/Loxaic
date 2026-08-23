@@ -1,0 +1,4 @@
+{
+  "prefer_split_fsevents_watcher": true,
+  "ignore_dirs": [".git", ".turbo", "apps/web/dist", "apps/mobile/dist", "apps/mobile/.expo"]
+}

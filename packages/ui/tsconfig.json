@@ -1,9 +1,0 @@
-{
-  "extends": "@shannon/config-ts/react.json",
-  "compilerOptions": {
-    "outDir": "dist",
-    "rootDir": "src",
-    "skipLibCheck": true
-  },
-  "include": ["src"]
-}

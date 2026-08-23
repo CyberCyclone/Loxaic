@@ -12,7 +12,7 @@ export async function authenticate(
   }
   const token = header.slice(7);
   const session = await auth.api.getSession({
-    headers: new Headers({ cookie: `better-auth.session_token=${token}` }),
+    headers: new Headers({ authorization: `Bearer ${token}` }),
   });
   if (!session) {
     reply.code(401).send({ error: "Invalid session" });

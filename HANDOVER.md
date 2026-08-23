@@ -1,148 +1,178 @@
-# Handover — Shannon Design Integration
+# Handover — Open-Shannon
 
-## What happened
+Self-hosted, multi-user AI platform: a Claude + Claude Code replacement running on your
+own hardware. All 9 build stages are complete. This document is the entry point for
+picking the project back up — architecture, run matrix, deploy story, and what to know
+before touching anything.
 
-The web UI was rebuilt to use OpenDesign React components from `design/react/src/` instead of hand-written react-native-web components. The design folder is the **source of truth** for all UI — every component, every string, every CSS class.
+## What it is
 
-### Old architecture (removed)
-- `apps/web/src/screens/Chat.tsx`, `Agent.tsx`, `Stats.tsx`, `Routines.tsx`, `SettingsModal.tsx` — **deleted**
-- `packages/ui/src/layout/*` — still exists (used only by Mobile/Expo, not web)
-- Hand-written RNW components with inline styles — replaced by design components
+- **Chat**: streaming conversation with a self-hosted llama.cpp model, conversation
+  history, forks.
+- **Agent**: a real tool-calling loop — the model reads/writes files, runs shell
+  commands, greps/globs, fetches URLs, all inside a disposable per-conversation sandbox
+  container, with planning/manual/auto permission modes and a live approval flow.
+- **Routines**: cron-scheduled prompts that run into a conversation unattended.
+- **Stats**: token usage, cache hit rate, per-model TTFT percentiles, broken down by
+  time range.
+- One account system (better-auth), reachable from a phone (Expo Go), a browser, or a
+  packaged Electron app — over your LAN or, via Tailscale, from anywhere.
 
-### New architecture
-- `apps/web/src/design-components/` — 35+ files copied from `design/react/src/`
-- `apps/web/src/shannon.css` — 32KB CSS (full shell + all surface styles)
-- `apps/web/src/App.tsx` — 27-line auth gate + surface router
-- `apps/web/src/screens/Login.tsx` — only hand-written screen remaining
-- Plain React with HTML elements + CSS classes (`className="sidebar"` etc.)
-- Theme via `data-theme` attribute on `<html>` + CSS variables in `shannon.css`
-- No-FOUC bootstrap in `apps/web/index.html` (reads `shannon-theme` localStorage)
+## Architecture at a glance
 
-## What's working
+**One frontend, four targets.** `apps/mobile` is an Expo + expo-router + gluestack-ui v5
+app. It compiles to iOS, Android, and — via `expo export --platform web` — a static web
+bundle. That same web bundle is what both the browser and the Electron shell load; there
+is no separate web codebase and no separate UI component library.
 
-| Surface | State | Notes |
-|---|---|---|
-| **Login** | ✅ | Hand-written, works with API auth |
-| **Chat** | ✅ Live API | WS streaming + conversation loading wired |
-| **Agent** | Fixtures only | Needs WS `createAgentSocket` integration |
-| **Routines** | Fixtures only | Needs `/v1/routines` API wiring |
-| **Stats** | Fixtures only | Needs `/v1/stats/usage` API wiring |
-| **Settings modal** | ✅ | UI working, localStorage backed |
-| **Model modal** | ✅ | UI working, fixture model data |
-| **Theme switching** | ✅ | Light/Dark/System via `shannon.css` CSS vars |
+**Same-origin web hosting, no CORS.** `apps/server` (Fastify) serves the API and, if a
+web build is present at `WEB_DIST_DIR` (default `apps/mobile/dist`), the static bundle
+too — same origin, same port (4000). A browser just points at the server's URL for
+everything.
 
-### Chat API wiring (reference for other surfaces)
+**Electron is the odd one out.** Its renderer loads either Metro's dev server
+(`localhost:8081`) or a packaged bundle through the `app://` scheme — neither has a real
+server at that origin, so unlike every other build Electron can't assume same-origin.
+Its main process resolves the real API URL (optionally through an embedded Tailscale
+sidecar) and injects it into the renderer via a `contextBridge` preload script. See
+[docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md#electron-desktop-app).
 
-In `design-components/surfaces/ChatSurface.tsx`:
-- Accepts `token` prop from App.tsx
-- `useEffect` on mount: calls `getConversations()` from `@shannon/api-client`, maps to design `Conversation` type, loads messages for latest via `/v1/conversations/:id/messages`
-- `useEffect` for WS: `createChatSocket(token, callback)`, handles `chat.delta`, `chat.message_complete`, `chat.conversation`, `chat.error`
-- `handleSend`: appends user message locally, sends via `sendChatMessage(ws, text, model, convId)`
-- Merge logic: API conversations are merged with fixture conversations (fixtures serve as demo data for new users)
+**The agent tool loop is real, not scripted.** `packages/agent` defines the tool
+schemas and the `AgentEvent` protocol shared by server and client. The server
+(`apps/server/src/ws/agent.ts`) runs an iteration loop against llama.cpp's native
+OpenAI-style tool calling (`--jinja`), executing each tool call
+(`apps/server/src/agent/executor.ts`) inside a lazily-created, per-conversation sandbox
+container that survives socket disconnects. `web_fetch` is the one tool that runs on the
+server itself, since sandboxes have no network — it carries a real SSRF guard.
 
-### File map
+**Offline-first sync groundwork** exists (`packages/sync` detects conversation forks;
+messages carry `origin: "server" | "device"` and a Lamport clock) but device-side local
+inference and full bidirectional sync were never built — see **Known gaps** below.
 
-```
-apps/web/src/
-├── App.tsx                          (auth gate + surface routing, 27 lines)
-├── main.tsx                         (imports shannon.css + global.css + ReactDOM render)
-├── shannon.css                      (32KB — all shell/surface CSS)
-├── global.css                       (@font-face only)
-├── screens/Login.tsx                (hand-written)
-├── design-components/
-│   ├── layout/                      (AppShell, Sidebar, ThreadList, MainHeader)
-│   ├── surfaces/                    (ChatSurface, AgentSurface, RoutinesSurface, StatsSurface)
-│   ├── chat/                        (MessageList, Message, CodeBlock, ThinkingBlock, ToolCallCard, ContextMenu, PromptSuggestions)
-│   ├── composer/                    (Composer — full toolbar with model selector, thinking, context indicator, attachments, workspaces, agent mode/smart routing)
-│   ├── agent/                       (AgentStream, Inspector, PermissionBar, PlanningBanner)
-│   ├── routines/                    (RoutineTable, RoutineModal)
-│   ├── stats/                       (KpiCard, Sparkline, AreaChart, LineChart, BarChart, PercentileBars)
-│   ├── settings/                    (SettingsModal — 6 tabs, ModelModal — search/groups/thinking)
-│   ├── primitives/                  (Badge, Button, Card, Input, Modal, Segmented, Switch, Table)
-│   ├── hooks/                       (useTheme, useSettings, useThemeInSettings, useToast, useLocalStorage)
-│   ├── fixtures/                    (conversations, agent-runs, routines, stats, models)
-│   └── types.ts                     (SurfaceId, Conversation, Message, AgentRun, Routine, etc.)
-```
-
-## What needs to be done
-
-### 1. Wire Agent surface to live API
-
-**File:** `design-components/surfaces/AgentSurface.tsx`
-
-The AgentSurface currently uses `AGENT_RUNS` fixtures from `fixtures/agent-runs.ts`. Replace with:
-- Accept `token` prop (like ChatSurface)
-- Create a WebSocket via `createAgentSocket(token, callback)` from `@shannon/api-client`
-- Agent WS event types: `agent.delta`, `agent.done`, `agent.error`, `agent.conversation`, `agent.mode_changed`, `agent.approval_request`
-- `handleSend`: create locally + call `sendAgentMessage(ws, text, mode, convId)` from `@shannon/api-client`
-- `handleModeChange`: call `setAgentMode(ws, mode)`
-- The `Composer` component needs `showModeDropdown`, `mode`, `onModeChange`, `smartRouting`, `onSmartRoutingChange` props — they're already supported
-- The `AgentStream` renders `run.messages` with tool-call cards, thinking blocks, permission bar — works as-is, just needs live data fed in
-
-### 2. Wire Routines surface to live API
-
-**File:** `design-components/surfaces/RoutinesSurface.tsx`
-
-Currently uses `ROUTINES` and `ROUTINE_RUNS` fixtures from `fixtures/routines.ts`. Replace with:
-- `useEffect` to `fetch('/v1/routines', { headers: { Authorization: Bearer ${token} } })`
-- POST to `/v1/routines` for create, PATCH for toggle, DELETE for remove
-- Run history: GET `/v1/routines/:id/runs`
-- The `RoutineTable` component renders rows with toggles, the `RoutineModal` handles create/edit
-
-### 3. Wire Stats surface to live API
-
-**File:** `design-components/surfaces/StatsSurface.tsx`
-
-Currently uses `KPIS`, `TOKENS_OVER_TIME` fixtures from `fixtures/stats.ts`. Replace with:
-- `useEffect` to `fetch('/v1/stats/usage', { headers })`
-- Response maps to `KpiCard` props: `{ label, value, delta, deltaDir, spark }`
-- Charts need data formatted as `{ label, values: Record<string, number> }[]` for `AreaChart`
-- The existing `/v1/stats/usage` endpoint returns: `{ inputTokens, cachedTokens, outputTokens, totalTokens, cacheHitRate, requestCount, avgTtftMs, avgPromptTps, avgPredictedTps, avgTotalMs }`
-- Build KPI cards from those fields (requestCount = Requests, totalTokens = Total Tokens, etc.)
-
-### 4. All surfaces need `token` passed from App.tsx
-
-Update `App.tsx` to pass `token` to Agent, Routines, and Stats surfaces (Chat already done):
-
-```tsx
-if (screen === "chat") return <ChatSurface onNavigate={handleNavigate} token={token} />;
-if (screen === "agent") return <AgentSurface onNavigate={handleNavigate} token={token} />;
-if (screen === "routines") return <RoutinesSurface onNavigate={handleNavigate} token={token} />;
-if (screen === "stats") return <StatsSurface onNavigate={handleNavigate} token={token} />;
-```
-
-Each surface's interface needs `token: string` added to its props.
-
-### 5. Login screen needs design pass
-
-**File:** `apps/web/src/screens/Login.tsx`
-
-The login screen doesn't use `shannon.css` — it uses its own inline styles. The design prototype has a login via sign-in/sign-up. This is low priority since the auth flow works.
-
-## Key gotchas
-
-- **Never edit `design-components/` files as the source of truth** — changes to these files should flow from `design/react/src/` to keep the design in sync. If you need to modify a component for API integration, add new props rather than changing render output. Major UI changes should go to the design folder first.
-- **CSS import chain**: `main.tsx` imports `global.css` (fonts) + `shannon.css` (all component styles). The CSS uses `var(--bg)`, `var(--surface)`, etc. from the `:root`/`html[data-theme="light"]` blocks. No inline styles needed.
-- **Theme**: controlled by `shannon-theme` key in localStorage. Values: `light`, `dark`, `system`. The blocking script in `index.html` sets `data-theme` on `<html>` before React mounts (no FOUC). The `useTheme()` hook in `hooks/useTheme.ts` reads this. There's a SECOND theme system in `packages/ui/src/theme/` — that's for Mobile/Expo only, don't touch it for web.
-- **Type mapping**: The API types (from `@shannon/api-client`) differ from the design types (`design-components/types.ts`). ChatSurface shows how to map: API `Conversation` → design `Conversation`, API `Message` → design `Message`. Message content is `content` in API, `text` in design.
-- **WebSocket**: `createChatSocket` and `createAgentSocket` from `@shannon/api-client` create WWebSocket connections. The agent WS events are typed as `AgentEvent` in the API client.
-- **Build/typecheck**: `pnpm typecheck` + `pnpm --filter @shannon/web build`. Both must pass. Currently 375KB JS + 32KB CSS gzipped ~116KB + ~6KB.
-- **design/ folder**: Has two copies — `design/react/src/` (React components) and `design/shannon-*.html` (static HTML prototypes). The React components sometimes differ slightly from the HTML. The React components are the source for the web app.
-- **No react-native-web needed for web anymore**: The web app uses plain `<div>`, `<span>`, `<button>`, `<svg>` — standard HTML. Only Mobile/Expo uses RNW.
-
-## Commands
+## Run matrix
 
 ```bash
-pnpm dev                    # turbo: server (4000) + web (5173)
-pnpm --filter @shannon/web build  # production build
-pnpm typecheck               # full turbo typecheck (10 packages)
-npx http-server -p 8765 design/  # serve design prototype for comparison
+pnpm install
+ulimit -n 130000                          # macOS: Metro's watcher needs more than the 256 default
+
+# Server (Postgres must be reachable — docker compose up db, or your own)
+MOCK_INFERENCE=true pnpm --filter @shannon/server dev   # no llama.cpp needed
+pnpm --filter @shannon/server dev                        # real inference at INFERENCE_BASE_URL
+
+# Mobile / Web (same codebase, three ways to run it)
+pnpm --filter @shannon/mobile web          # Expo web dev server → localhost:8081
+pnpm --filter @shannon/mobile ios          # iOS Simulator
+pnpm --filter @shannon/mobile android       # Android emulator
+npx expo start --tunnel                     # scan with Expo Go on a real phone
+
+# Electron
+pnpm --filter @shannon/mobile web           # dev: needs Metro running (above)
+pnpm --filter @shannon/desktop dev          # loads localhost:8081
+pnpm --filter @shannon/desktop package       # prod: export:web + tsnet sidecar + electron-builder → dist/*.dmg
 ```
 
-## Current build output
+Full details, including Android emulator adb reverse-tunnel setup and EAS Update
+(over-the-air phone updates with no dev machine): [docs/DEPLOY.md](docs/DEPLOY.md).
+
+## Deploy
+
+- **Server + web, same origin**: `docker compose up --build` (Postgres + server, which
+  builds and serves the web export itself — see `infra/docker/server.Dockerfile`) or
+  bare-metal via `pnpm --filter @shannon/mobile export:web && pnpm --filter
+  @shannon/server dev`.
+- **Remote access**: [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — Tailscale Serve
+  (recommended, free, no open ports) or bring your own reverse proxy.
+- **Inference**: [docs/RUNTIME.md](docs/RUNTIME.md) — native llama.cpp with Metal on
+  Mac, CUDA on Windows/NVIDIA, the provided ROCm compose override on Linux/AMD.
+- **Phone**: Expo Go for dev iteration, or EAS Update for a no-dev-machine phone install
+  ([docs/DEPLOY.md](docs/DEPLOY.md)).
+- **Desktop**: `pnpm --filter @shannon/desktop package` → an unsigned DMG (macOS) /
+  NSIS installer (Windows) / AppImage (Linux) — code-signing isn't set up, so users on
+  macOS will need to right-click → Open past Gatekeeper the first time.
+
+## Layout
 
 ```
-dist/index.html                   0.99 kB
-dist/assets/index-*.css          31.99 kB (gzip: 5.70 kB)
-dist/assets/index-*.js          375.11 kB (gzip: 115.93 kB)
+apps/
+  server/    Fastify API + WS (chat + agent tool loop) + routines scheduler + sandbox orchestrator
+  mobile/    the one frontend — Expo + expo-router + gluestack-ui v5
+  desktop/   Electron shell (loads apps/mobile's web export) + embedded Tailscale sidecar spawn
+packages/
+  agent/     tool definitions, AgentEvent protocol, permission-mode logic — shared by server + client
+  api-client/  typed REST + WS client, re-exports @shannon/agent's types for the UI
+  db/        Drizzle schema + query operator re-exports
+  sync/      fork/conflict detection for the offline sync protocol
+  types/     shared primitives (ContentBlock, Result, etc.)
+  config-ts/ shared tsconfig bases
+infra/
+  docker/    Dockerfiles (server — also builds+serves the web export; sandbox image)
+  tsnet-proxy/  Go module: Electron's embedded-Tailscale sidecar (see below)
+  tailscale/ Tailscale Serve config
+design/      the original static HTML/CSS prototype — historical reference, nothing imports it
+docs/        DEPLOY.md, REMOTE_ACCESS.md, RUNTIME.md
 ```
+
+### `apps/mobile` in more detail
+
+```
+app/(app)/          screens: chat, agent, routines, stats — each a thin screen over a hook
+hooks/               useChatSession, useAgentSession, useRoutines, useStats — WS + REST wiring
+components/
+  chat/              MessageList, Message, ToolCallCard, ThinkingBlock, ThreadList
+  agent/             AgentStream, RunHeader, Inspector, PermissionBar, PlanningBanner, ModeSelector
+  routines/, stats/, composer/, settings/, shell/
+lib/
+  endpoint.ts        API base URL resolution (LAN/tailnet probing, Electron bridge, Settings override)
+  session.tsx, storage.ts, diff.ts, types.ts
+```
+
+`useAgentSession` is the one worth reading before extending the agent surface — it
+reconstructs full message history (including tool_call/tool_result joins by `call_id`)
+from the REST API, and separately handles live WS events, including the case where a
+tool call arrives with no preceding text (common with real models — there's no
+`message_id` on `agent.tool_call` events, so it tracks a per-iteration placeholder that
+gets promoted to the real id once one's known).
+
+## Known gaps
+
+Recorded here rather than left to be rediscovered:
+
+- **Device-side inference and full offline sync were never built.** `packages/sync`
+  exists and messages carry the fields a real sync protocol would need
+  (`origin`/Lamport clock), but there's no on-device model runtime and no bidirectional
+  merge — everything today is server-authoritative, online-only.
+- **iOS only got a partial check, in Stage 8, not the full pass every other stage got
+  on web + Android.** `expo start --ios` does successfully install and launch real Expo
+  Go on a simulator with no App Store/Xcode project needed — confirmed working — and the
+  login screen renders correctly there, matching web/Android exactly. Couldn't get past
+  that first screen in this environment: touch injection needs either the simulator
+  panel (gated behind a one-time permission grant only a human present at the machine
+  can approve) or macOS's own Automation/`osascript` access to System Events (also not
+  granted here — it's also what makes Expo CLI's own `--ios` auto-open step fail,
+  worked around by starting Metro alone and opening Expo Go via `xcrun simctl openurl`
+  instead). Nothing in the codebase is iOS-unsafe (no custom native modules anywhere,
+  Expo Go compatibility maintained throughout), but a real sign-in-and-use-every-surface
+  pass, the kind every other platform got, still hasn't happened.
+- **Chat's client-side fork button doesn't create a real server-side conversation** —
+  it clones local state with a new client-generated id, so sending into a forked thread
+  fails (agent surface: a clean "Conversation not found" error, since
+  `ws/agent.ts` checks ownership; chat surface: silently inserts an orphaned message row,
+  since `ws/chat.ts` has no such check and `messages.conversationId` has no FK
+  constraint). A real "duplicate conversation" server endpoint would fix both.
+  `useAgentSession`'s fork has the identical limitation, inherited deliberately for
+  parity rather than fixed ad hoc in one surface only.
+- **Electron code-signing isn't set up** — `mac.identity: null` in
+  `apps/desktop/package.json` produces a working but unsigned/unnotarized build.
+- **The embedded Tailscale sidecar's full login round-trip was verified up to the
+  point of a real `login.tailscale.com/a/...` auth URL being emitted** (confirmed via a
+  live `tsnet` connection to Tailscale's control plane) but not past that, since
+  completing it needs an interactive browser session with a real Tailscale account.
+- **No code-review-style audit was done of `design/`'s original static prototype vs.
+  the live app** beyond the per-stage spot checks recorded in each stage's own history —
+  if pixel-level parity with the original mockups matters, that's a dedicated pass, not
+  something already done.
+
+## Conventions and gotchas
+
+See [AGENTS.md](AGENTS.md) — TypeScript/import quirks, Drizzle rules, the agent tool
+loop's shape, Electron's origin-resolution requirement, and the theme system.

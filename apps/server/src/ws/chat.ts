@@ -9,29 +9,35 @@ import { v4 as uuid } from "uuid";
 import { usageRecords } from "@shannon/db/schema";
 
 export function chatWsHandler(app: FastifyInstance) {
-  app.get("/ws/chat", { websocket: true }, async (connection, request) => {
+  app.get("/ws/chat", { websocket: true }, async (socket, request) => {
+    // Pause the socket immediately: auth below is async, and a client that
+    // sends its first message right after `open` can otherwise have that
+    // frame parsed and emitted (to zero listeners) before we've attached
+    // ours further down — silently dropping it. Resumed once we're ready.
+    socket.pause();
+
     const url = new URL(request.url, `http://${request.headers.host}`);
     const token = url.searchParams.get("token");
     if (!token) {
-      connection.socket.close(4001, "Missing token");
+      socket.close(4001, "Missing token");
       return;
     }
 
     const session = await auth.api.getSession({
-      headers: new Headers({ cookie: `better-auth.session_token=${token}` }),
+      headers: new Headers({ authorization: `Bearer ${token}` }),
     });
     if (!session) {
-      connection.socket.close(4001, "Invalid session");
+      socket.close(4001, "Invalid session");
       return;
     }
     const userId = session.user.id;
 
-    connection.socket.on("message", async (raw: Buffer) => {
+    socket.on("message", async (raw: Buffer) => {
       let msg: { type: string; [key: string]: unknown };
       try {
         msg = JSON.parse(raw.toString());
       } catch {
-        connection.socket.send(JSON.stringify({ type: "chat.error", error: "Invalid JSON" }));
+        socket.send(JSON.stringify({ type: "chat.error", error: "Invalid JSON" }));
         return;
       }
 
@@ -42,7 +48,7 @@ export function chatWsHandler(app: FastifyInstance) {
         const model = ((msg as { model?: string }).model) || "default";
 
         if (typeof content !== "string" || !content.trim()) {
-          connection.socket.send(JSON.stringify({ type: "chat.error", error: "Content required" }));
+          socket.send(JSON.stringify({ type: "chat.error", error: "Content required" }));
           return;
         }
 
@@ -74,17 +80,20 @@ export function chatWsHandler(app: FastifyInstance) {
         });
 
         // Notify client of new conversation
-        connection.socket.send(
+        socket.send(
           JSON.stringify({ type: "chat.conversation", conversation_id: convId, message_id: userMsgId })
         );
 
-        // Build message context (last 20 messages, flattened from tree)
+        // Build message context. Ordered *descending* so `limit` keeps the
+        // most recent 50 (ascending + limit would send the oldest 50 and
+        // silently drop everything the user just said in a long thread).
         const history = await db.query.messages.findMany({
           where: eq(messages.conversationId, convId),
-          orderBy: (msgs, { asc }) => [asc(msgs.createdAt)],
+          orderBy: (msgs, { desc }) => [desc(msgs.createdAt)],
           columns: { authorType: true, content: true },
           limit: 50,
         });
+        history.reverse();
 
         const chatMessages = history
           .filter((h) => h.authorType === "user" || h.authorType === "assistant")
@@ -120,7 +129,7 @@ export function chatWsHandler(app: FastifyInstance) {
           for await (const event of streamCompletion(model, chatMessages)) {
             if (event.type === "delta") {
               fullText += event.content;
-              connection.socket.send(
+              socket.send(
                 JSON.stringify({
                   type: "chat.delta",
                   message_id: assistantMsgId,
@@ -159,7 +168,7 @@ export function chatWsHandler(app: FastifyInstance) {
                 });
               }
 
-              connection.socket.send(
+              socket.send(
                 JSON.stringify({
                   type: "chat.message_complete",
                   message_id: assistantMsgId,
@@ -174,12 +183,14 @@ export function chatWsHandler(app: FastifyInstance) {
             .update(messages)
             .set({ status: "error" })
             .where(eq(messages.id, assistantMsgId));
-          connection.socket.send(
+          socket.send(
             JSON.stringify({ type: "chat.error", error: (err as Error).message })
           );
         }
       }
     });
+
+    socket.resume();
   });
 }
 

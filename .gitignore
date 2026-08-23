@@ -7,3 +7,5 @@ dist/
 models/
 .expo/
 *.tgz
+apps/desktop/resources/
+apps/desktop/dist/

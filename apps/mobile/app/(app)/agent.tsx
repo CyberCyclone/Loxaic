@@ -1,0 +1,212 @@
+import { useState } from 'react';
+import { KeyboardAvoidingView, Platform } from 'react-native';
+import { MessagesSquare, PanelRight } from 'lucide-react-native';
+import { Box } from '@/components/ui/box';
+import { HStack } from '@/components/ui/hstack';
+import { VStack } from '@/components/ui/vstack';
+import { Pressable } from '@/components/ui/pressable';
+import { Icon } from '@/components/ui/icon';
+import { Badge, BadgeText } from '@/components/ui/badge';
+import { MainHeader } from '@/components/shell/MainHeader';
+import { useShell } from '@/components/shell/AppShell';
+import { ThreadList } from '@/components/chat/ThreadList';
+import { AgentStream } from '@/components/agent/AgentStream';
+import { Inspector } from '@/components/agent/Inspector';
+import { ModeSelector } from '@/components/agent/ModeSelector';
+import { Composer } from '@/components/composer/Composer';
+import { SettingsModal } from '@/components/settings/SettingsModal';
+import { ModelModal } from '@/components/settings/ModelModal';
+import { useAgentSession } from '@/hooks/useAgentSession';
+import { useSession } from '@/lib/session';
+import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
+import { useBreakpoint } from '@/hooks/useBreakpoint';
+import { getModelContext } from '@/lib/fixtures/models';
+
+export default function AgentScreen() {
+  const shell = useShell();
+  const { token } = useSession();
+  const breakpoint = useBreakpoint();
+  const {
+    runs,
+    activeId,
+    activeRun,
+    selectRun,
+    mode,
+    runState,
+    pendingApproval,
+    iteration,
+    todos,
+    changedFiles,
+    handleSend,
+    handleStop,
+    handleNewRun,
+    handleModeChange,
+    handleApprove,
+    handleDeny,
+    handleFork,
+    handleDelete,
+    handleRename,
+  } = useAgentSession(token);
+
+  const [settings] = useSettings();
+  const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
+  const [selectedModel, setSelectedModel] = useState('m1');
+  const [modelModalOpen, setModelModalOpen] = useState(false);
+  const [threadListOpen, setThreadListOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
+
+  const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
+  const wide = breakpoint === 'wide';
+
+  const contextPercent = activeRun
+    ? Math.min(
+        95,
+        Math.round(
+          (activeRun.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) / getModelContext(selectedModel)) * 100,
+        ),
+      )
+    : 0;
+  const contextStats = activeRun
+    ? [
+        { label: 'Tokens in', value: activeRun.msgs.reduce((a, m) => a + (m.usage?.in ?? 0), 0).toLocaleString() },
+        { label: 'Tokens out', value: activeRun.msgs.reduce((a, m) => a + (m.usage?.out ?? 0), 0).toLocaleString() },
+        { label: 'Context', value: `${contextPercent}% of ${getModelContext(selectedModel).toLocaleString()}` },
+      ]
+    : [];
+
+  const threadList = (
+    <ThreadList
+      title="Agent Runs"
+      conversations={runs}
+      activeId={activeId}
+      onSelect={(id) => {
+        selectRun(id);
+        setThreadListOpen(false);
+      }}
+      onNewChat={() => {
+        handleNewRun();
+        setThreadListOpen(false);
+      }}
+      onFork={handleFork}
+      onRename={handleRename}
+      onDelete={handleDelete}
+    />
+  );
+
+  return (
+    <HStack className="h-full flex-1">
+      {wide && threadList}
+
+      <VStack className="h-full flex-1">
+        <MainHeader
+          title={activeRun?.title ?? 'Agent'}
+          onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
+          right={
+            <HStack space="sm" className="items-center">
+              {activeRun && (
+                <Pressable
+                  onPress={() => setInspectorOpen((o) => !o)}
+                  className="flex-row items-center gap-1 rounded-sm p-1.5 web:hover:bg-muted/50"
+                >
+                  <Icon as={PanelRight} size="sm" className="text-foreground" />
+                  {changedFiles.length > 0 && (
+                    <Badge variant="destructive">
+                      <BadgeText className="text-2xs normal-case">{changedFiles.length}</BadgeText>
+                    </Badge>
+                  )}
+                </Pressable>
+              )}
+              {!wide && (
+                <Pressable
+                  onPress={() => setThreadListOpen(true)}
+                  className="rounded-sm p-1.5 web:hover:bg-muted/50"
+                >
+                  <Icon as={MessagesSquare} size="sm" className="text-foreground" />
+                </Pressable>
+              )}
+            </HStack>
+          }
+        />
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+        >
+          <HStack className="flex-1 overflow-hidden">
+            <VStack className="flex-1">
+              <AgentStream
+                run={activeRun}
+                state={runState}
+                mode={mode}
+                iteration={iteration}
+                pendingApproval={pendingApproval}
+                onAllow={() => pendingApproval && handleApprove(pendingApproval.callId)}
+                onDeny={() => pendingApproval && handleDeny(pendingApproval.callId)}
+              />
+              <ModeSelector mode={mode} onChange={handleModeChange} />
+              <Composer
+                onSend={(text) => handleSend(text, selectedModel)}
+                onStop={handleStop}
+                streaming={runState === 'running' || runState === 'awaiting_approval'}
+                selectedModel={selectedModel}
+                onSelectModel={setSelectedModel}
+                thinkingLevel={thinkingLevel}
+                onThinkingLevel={(level) => {
+                  if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));
+                }}
+                contextPercent={contextPercent}
+                contextStats={contextStats}
+                onOpenModelModal={() => setModelModalOpen(true)}
+              />
+            </VStack>
+
+            {wide && (
+              <Inspector
+                open={inspectorOpen}
+                onClose={() => setInspectorOpen(false)}
+                wide
+                todos={todos}
+                changedFiles={changedFiles}
+                contextPercent={contextPercent}
+              />
+            )}
+          </HStack>
+        </KeyboardAvoidingView>
+      </VStack>
+
+      {!wide && threadListOpen && (
+        <>
+          <Pressable onPress={() => setThreadListOpen(false)} className="absolute inset-0 bg-black/40" />
+          <Box className="absolute bottom-0 right-0 top-0 shadow-lg">{threadList}</Box>
+        </>
+      )}
+
+      {!wide && (
+        <Inspector
+          open={inspectorOpen}
+          onClose={() => setInspectorOpen(false)}
+          wide={false}
+          todos={todos}
+          changedFiles={changedFiles}
+          contextPercent={contextPercent}
+        />
+      )}
+
+      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
+      <ModelModal
+        open={modelModalOpen}
+        onClose={() => setModelModalOpen(false)}
+        selectedModel={selectedModel}
+        onSelect={setSelectedModel}
+        thinkingLevel={thinkingLevel}
+        onThinkingLevel={(level) => {
+          if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));
+        }}
+        onOpenSettings={() => {
+          setModelModalOpen(false);
+          shell.openSettings();
+        }}
+      />
+    </HStack>
+  );
+}

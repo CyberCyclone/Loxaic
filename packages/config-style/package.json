@@ -1,6 +1,0 @@
-{
-  "name": "@shannon/config-style",
-  "version": "0.0.0",
-  "private": true,
-  "files": ["tailwind-preset.js", "design-tokens.js"]
-}

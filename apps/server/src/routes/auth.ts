@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { auth } from "../auth";
 
 export async function authRoutes(app: FastifyInstance) {
@@ -13,13 +13,12 @@ export async function authRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Email and password required" };
     }
-    const result = await auth.api.signUpEmail({
+    const res = await auth.api.signUpEmail({
       body: { email, password, name: name || email.split("@")[0] },
-      headers: request.headers as Record<string, string>,
+      headers: new Headers(request.headers as HeadersInit),
+      asResponse: true,
     });
-    const sessionToken = (result as { token?: string })?.token;
-    if (sessionToken) setSessionCookie(sessionToken, reply);
-    return result;
+    return forwardAuthResponse(res, reply);
   });
 
   // Sign in
@@ -32,27 +31,27 @@ export async function authRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Email and password required" };
     }
-    const result = await auth.api.signInEmail({
+    const res = await auth.api.signInEmail({
       body: { email, password },
-      headers: request.headers as Record<string, string>,
+      headers: new Headers(request.headers as HeadersInit),
+      asResponse: true,
     });
-    const sessionToken = (result as { token?: string })?.token;
-    if (sessionToken) setSessionCookie(sessionToken, reply);
-    return result;
+    return forwardAuthResponse(res, reply);
   });
 
   // Sign out
   app.post("/api/auth/sign-out", async (request, reply) => {
-    const result = await auth.api.signOut({
-      headers: request.headers as Record<string, string>,
+    const res = await auth.api.signOut({
+      headers: new Headers(request.headers as HeadersInit),
+      asResponse: true,
     });
-    return result;
+    return forwardAuthResponse(res, reply);
   });
 
   // Session
   app.get("/api/auth/session", async (request, reply) => {
     const result = await auth.api.getSession({
-      headers: request.headers as Record<string, string>,
+      headers: new Headers(request.headers as HeadersInit),
     });
     if (!result) {
       reply.code(401);
@@ -61,45 +60,34 @@ export async function authRoutes(app: FastifyInstance) {
     return result;
   });
 
-  // Token (for WS auth)
+  // Token (for WebSocket / native Bearer auth)
   app.get("/api/auth/token", async (request, reply) => {
-    const session = await auth.api.getSession({
-      headers: request.headers as Record<string, string>,
+    const result = await auth.api.getSession({
+      headers: new Headers(request.headers as HeadersInit),
     });
-    if (!session) {
+    if (!result) {
       reply.code(401);
       return { error: "No session" };
     }
-    // Return session token for WebSocket auth
-    const cookieHeader = request.headers.cookie || "";
-    const match = cookieHeader.match(/better-auth\.session_token=([^;]+)/);
-    return { token: match ? match[1] : null };
+    // The raw session token doubles as a Bearer token — see the `bearer`
+    // plugin in ../auth/index.ts, which accepts it via `Authorization: Bearer <token>`.
+    return { token: result.session.token };
   });
 }
 
-function setAuthCookies(result: object, reply: { header: (name: string, value: string) => void }) {
-  const headers = (result as Record<string, unknown>)?.headers as
-    | Headers
-    | Record<string, string | string[]>
-    | undefined;
-  if (headers instanceof Headers) {
-    const cookies = headers.getSetCookie();
-    for (const cookie of cookies) {
-      reply.header("set-cookie", cookie);
-    }
-  } else if (headers) {
-    const cookieVal = headers["set-cookie"] || headers["Set-Cookie"];
-    if (cookieVal) {
-      if (Array.isArray(cookieVal)) {
-        for (const c of cookieVal) reply.header("set-cookie", c);
-      } else {
-        reply.header("set-cookie", cookieVal as string);
-      }
-    }
+// better-auth signs its own session cookie (HMAC over the raw token); we must
+// forward its real Set-Cookie header(s) rather than reconstruct one, or the
+// cookie fails signature verification on every subsequent request.
+async function forwardAuthResponse(res: Response, reply: FastifyReply) {
+  for (const cookie of res.headers.getSetCookie()) {
+    reply.header("set-cookie", cookie);
   }
-}
-
-function setSessionCookie(token: string, reply: { header: (name: string, value: string) => void }) {
-  const maxAge = 60 * 60 * 24 * 30; // 30 days
-  reply.header("set-cookie", `better-auth.session_token=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+  reply.code(res.status);
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }

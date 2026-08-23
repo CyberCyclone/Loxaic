@@ -5,7 +5,7 @@
     "version": "0.0.1",
     "orientation": "portrait",
     "scheme": "openshannon",
-    "userInterfaceStyle": "dark",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
@@ -17,6 +17,27 @@
       },
       "package": "com.shannon.app"
     },
-    "plugins": ["expo-router"]
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-font"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "78ef6ddc-9619-4afe-91e6-9370e4c3fc70"
+      }
+    },
+    "owner": "caseygibson",
+    "runtimeVersion": {
+      "policy": "sdkVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/78ef6ddc-9619-4afe-91e6-9370e4c3fc70"
+    }
   }
 }

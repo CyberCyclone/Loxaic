@@ -51,7 +51,7 @@ export const verification = pgTable("verification", {
 // ── Devices ──
 export const devices = pgTable("devices", {
   id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id").notNull(),
+  userId: text("user_id").notNull().references(() => user.id),
   name: text("name").notNull(),
   platform: text("platform").notNull(),
   lastSeenAt: timestamp("last_seen_at").defaultNow(),
@@ -61,7 +61,7 @@ export const devices = pgTable("devices", {
 // ── Conversations ──
 export const conversations = pgTable("conversations", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerId: uuid("owner_id").notNull(),
+  ownerId: text("owner_id").notNull().references(() => user.id),
   title: text("title").notNull().default("New conversation"),
   kind: text("kind", { enum: ["chat", "agent", "routine"] }).notNull().default("chat"),
   activeLeafId: uuid("active_leaf_id"),
@@ -77,7 +77,7 @@ export const messages = pgTable("messages", {
   conversationId: uuid("conversation_id").notNull(),
   parentId: uuid("parent_id"),
   authorType: text("author_type", { enum: ["user", "assistant", "system", "tool", "summary"] }).notNull(),
-  authorUserId: uuid("author_user_id"),
+  authorUserId: text("author_user_id").references(() => user.id),
   origin: text("origin", { enum: ["server", "device"] }).notNull().default("server"),
   deviceId: uuid("device_id"),
   model: text("model"),
@@ -91,7 +91,7 @@ export const messages = pgTable("messages", {
 // ── Sync Ops ──
 export const syncOps = pgTable("sync_ops", {
   seq: serial("seq").primaryKey(),
-  userId: uuid("user_id").notNull(),
+  userId: text("user_id").notNull().references(() => user.id),
   deviceId: uuid("device_id"),
   opType: text("op_type").notNull(),
   entityId: uuid("entity_id").notNull(),
@@ -103,7 +103,7 @@ export const syncOps = pgTable("sync_ops", {
 // ── Usage Records ──
 export const usageRecords = pgTable("usage_records", {
   id: uuid("id").primaryKey(),
-  userId: uuid("user_id").notNull(),
+  userId: text("user_id").notNull().references(() => user.id),
   deviceId: uuid("device_id"),
   conversationId: uuid("conversation_id"),
   messageId: uuid("message_id"),
@@ -125,7 +125,7 @@ export const usageRecords = pgTable("usage_records", {
 // ── Workspaces ──
 export const workspaces = pgTable("workspaces", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerId: uuid("owner_id").notNull(),
+  ownerId: text("owner_id").notNull().references(() => user.id),
   name: text("name").notNull(),
   hostPath: text("host_path").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -134,7 +134,7 @@ export const workspaces = pgTable("workspaces", {
 // ── Sandboxes ──
 export const sandboxes = pgTable("sandboxes", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerId: uuid("owner_id").notNull(),
+  ownerId: text("owner_id").notNull().references(() => user.id),
   conversationId: uuid("conversation_id"),
   containerId: text("container_id").notNull(),
   image: text("image").notNull(),
@@ -149,7 +149,7 @@ export const sandboxes = pgTable("sandboxes", {
 // ── Routines ──
 export const routines = pgTable("routines", {
   id: uuid("id").primaryKey().defaultRandom(),
-  ownerId: uuid("owner_id").notNull(),
+  ownerId: text("owner_id").notNull().references(() => user.id),
   name: text("name").notNull(),
   cron: text("cron").notNull(),
   prompt: text("prompt").notNull(),

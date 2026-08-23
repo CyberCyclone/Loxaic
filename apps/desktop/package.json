@@ -6,9 +6,13 @@
   "main": "src/main.js",
   "scripts": {
     "dev": "electron .",
-    "build:web": "pnpm --filter @shannon/web build",
-    "package": "pnpm build:web && electron-builder",
+    "build:web": "pnpm --filter @shannon/mobile export:web",
+    "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
+    "package": "pnpm build:web && pnpm build:tsnet-proxy && electron-builder",
     "typecheck": "echo ok"
+  },
+  "dependencies": {
+    "electron-serve": "^3.0.1"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -17,15 +21,18 @@
   "build": {
     "appId": "com.shannon.desktop",
     "productName": "Open-Shannon",
+    "npmRebuild": false,
     "files": [
       "src/**/*"
     ],
     "extraResources": [
-      { "from": "../web/dist", "to": "web" }
+      { "from": "../mobile/dist", "to": "web" },
+      { "from": "resources/tsnet-proxy", "to": "tsnet-proxy" }
     ],
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "identity": null
     },
     "win": { "target": "nsis" },
     "linux": { "target": "AppImage", "category": "Development" }

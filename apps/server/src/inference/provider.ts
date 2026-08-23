@@ -1,9 +1,23 @@
 const BASE_URL = process.env.INFERENCE_BASE_URL || "http://localhost:4002";
 const MOCK_MODE = process.env.MOCK_INFERENCE === "true";
 
-export type ChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
+/** An OpenAI-shaped tool call. `arguments` is a JSON *string*, per the spec. */
+export type ToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+export type ChatMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
+  | { role: "tool"; content: string; tool_call_id: string; name?: string };
+
+/** JSON-Schema tool definition sent to the model. */
+export type OpenAiTool = {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, unknown> };
 };
 
 export type LlamaTimings = {
@@ -22,87 +36,165 @@ export type LlamaTimings = {
 export type CompletionResult = {
   text: string;
   content: string;
+  toolCalls: ToolCall[];
+  finishReason: string | null;
+  /** Time to first token (ms), measured server-side. Null if nothing streamed. */
+  ttftMs: number | null;
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   timings: LlamaTimings | null;
+};
+
+export type StreamEvent =
+  | { type: "delta"; content: string }
+  | { type: "thinking"; content: string }
+  | { type: "done"; result: CompletionResult };
+
+export type StreamOptions = {
+  tools?: OpenAiTool[];
+  signal?: AbortSignal;
 };
 
 export async function* streamCompletion(
   model: string,
   messages: ChatMessage[],
-): AsyncGenerator<
-  { type: "delta"; content: string }
-  | { type: "done"; result: CompletionResult },
-  void,
-  unknown
-> {
+  options: StreamOptions = {},
+): AsyncGenerator<StreamEvent, void, unknown> {
   if (MOCK_MODE) {
-    yield* mockStream(messages);
+    yield* mockStream(messages, options);
     return;
   }
-  yield* liveStream(model, messages);
+  yield* liveStream(model, messages, options);
 }
+
+// ── Mock ──────────────────────────────────────────────────
+// Mock mode has to be able to drive a *loop*, not just echo: when tools are
+// offered and the prompt mentions one, it emits a real tool call; once a
+// tool result comes back it wraps up with text. Otherwise the agent loop
+// would be untestable without a GGUF.
+
+const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
+  { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
+  { match: /\btodo|\bplan\b/i, name: "todo_write", args: { todos: [
+    { id: "1", text: "Investigate the request", status: "completed" },
+    { id: "2", text: "Apply the change", status: "in_progress" },
+    { id: "3", text: "Verify", status: "pending" },
+  ] } },
+  { match: /\bfetch\b|\bhttps?:\/\//i, name: "web_fetch", args: { url: "https://example.com" } },
+  { match: /\bwrite\b|\bcreate a file\b/i, name: "fs_write", args: { path: "notes.txt", content: "written by the mock agent\n" } },
+  { match: /\bedit\b|\breplace\b/i, name: "fs_edit", args: { path: "notes.txt", oldText: "mock", newText: "MOCK" } },
+  { match: /\bgrep\b|\bsearch\b/i, name: "grep", args: { pattern: "TODO" } },
+  { match: /\blist files\b|\bglob\b|\bfiles\b/i, name: "glob", args: { pattern: "**/*" } },
+  { match: /\bread\b|\bcat\b/i, name: "fs_read", args: { path: "notes.txt" } },
+];
 
 async function* mockStream(
   messages: ChatMessage[],
-): AsyncGenerator<
-  { type: "delta"; content: string }
-  | { type: "done"; result: CompletionResult },
-  void,
-  unknown
-> {
-  const last = messages[messages.length - 1];
-  const response = `[Mock] Echo: ${last?.content || "Hello"}`;
-  const words = response.split(" ");
+  options: StreamOptions,
+): AsyncGenerator<StreamEvent, void, unknown> {
+  const startTime = Date.now();
+  const toolNames = new Set((options.tools ?? []).map((t) => t.function.name));
+  // Only the *current* turn counts: earlier turns in the conversation have
+  // their own tool messages, and treating those as "already ran" would make
+  // the mock refuse to call a tool ever again in a long-lived conversation.
+  const lastUserIndex = messages.map((m) => m.role).lastIndexOf("user");
+  const currentTurn = messages.slice(lastUserIndex + 1);
+  const alreadyRanTools = currentTurn.some((m) => m.role === "tool");
+  const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
+  const prompt = typeof lastUser?.content === "string" ? lastUser.content : "";
 
-  for (let i = 0; i < words.length; i++) {
-    yield { type: "delta", content: (i === 0 ? "" : " ") + words[i] };
-    await new Promise((r) => setTimeout(r, 50));
+  const trigger = alreadyRanTools
+    ? undefined
+    : MOCK_TOOL_TRIGGERS.find((t) => toolNames.has(t.name) && t.match.test(prompt));
+
+  let ttftMs: number | null = null;
+  const emit = async function* (text: string): AsyncGenerator<StreamEvent> {
+    const words = text.split(" ");
+    for (let i = 0; i < words.length; i++) {
+      if (ttftMs === null) ttftMs = Date.now() - startTime;
+      yield { type: "delta" as const, content: (i === 0 ? "" : " ") + words[i] };
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  };
+
+  let fullText = "";
+  const toolCalls: ToolCall[] = [];
+
+  if (trigger) {
+    const preamble = `[Mock] I'll use the ${trigger.name} tool.`;
+    fullText = preamble;
+    yield* emit(preamble);
+    if (ttftMs === null) ttftMs = Date.now() - startTime;
+    toolCalls.push({
+      id: `mock_call_${Date.now().toString(36)}`,
+      type: "function",
+      function: { name: trigger.name, arguments: JSON.stringify(trigger.args) },
+    });
+  } else {
+    const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
+    fullText = lastTool
+      ? `[Mock] Done. The tool returned: ${String(lastTool.content).slice(0, 200)}`
+      : `[Mock] Echo: ${prompt || "Hello"}`;
+    yield* emit(fullText);
   }
 
+  const completionTokens = fullText.split(" ").length;
   yield {
     type: "done",
     result: {
-      text: response,
-      content: response,
-      usage: { prompt_tokens: 10, completion_tokens: words.length, total_tokens: 10 + words.length },
+      text: fullText,
+      content: fullText,
+      toolCalls,
+      finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
+      ttftMs,
+      usage: { prompt_tokens: 10, completion_tokens: completionTokens, total_tokens: 10 + completionTokens },
       timings: {
         prompt_n: 10,
         prompt_ms: 50,
         prompt_per_token_ms: 5,
         prompt_per_second: 200,
-        predicted_n: words.length,
+        predicted_n: completionTokens,
         predicted_ms: 150,
         predicted_per_token_ms: 15,
         predicted_per_second: 66,
         cache_n: 3,
-        total_ms: 200,
+        total_ms: Date.now() - startTime,
       },
     },
   };
 }
 
+// ── Live (llama.cpp / any OpenAI-compatible server) ───────
+
+/** Accumulator for streamed tool-call fragments, keyed by choice index. */
+type ToolCallFragment = { id: string; name: string; args: string };
+
 async function* liveStream(
   model: string,
   messages: ChatMessage[],
-): AsyncGenerator<
-  { type: "delta"; content: string }
-  | { type: "done"; result: CompletionResult },
-  void,
-  unknown
-> {
+  options: StreamOptions,
+): AsyncGenerator<StreamEvent, void, unknown> {
   const startTime = Date.now();
-  let ttftRecorded = false;
+  let ttftMs: number | null = null;
   let fullText = "";
+
+  const body: Record<string, unknown> = {
+    model,
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  // llama.cpp only exposes native tool calling when started with --jinja;
+  // without tools we send no tool fields at all so plain chat is unaffected.
+  if (options.tools?.length) {
+    body.tools = options.tools;
+    body.tool_choice = "auto";
+  }
 
   const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: true,
-      stream_options: { include_usage: true },
-    }),
+    body: JSON.stringify(body),
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -117,6 +209,8 @@ async function* liveStream(
   let buffer = "";
   let lastUsage: CompletionResult["usage"] | null = null;
   let lastTimings: LlamaTimings | null = null;
+  let finishReason: string | null = null;
+  const fragments = new Map<number, ToolCallFragment>();
 
   try {
     while (true) {
@@ -133,21 +227,63 @@ async function* liveStream(
         const jsonStr = trimmed.slice(6);
         if (jsonStr === "[DONE]") continue;
 
+        let parsed: any;
         try {
-          const parsed = JSON.parse(jsonStr);
-          const choice = parsed.choices?.[0];
-          if (choice?.delta?.content) {
-            if (!ttftRecorded) {
-              ttftRecorded = true;
-            }
-            fullText += choice.delta.content;
-            yield { type: "delta", content: choice.delta.content };
-          }
-          if (parsed.usage) lastUsage = parsed.usage;
-          if (parsed.timings) lastTimings = parsed.timings as LlamaTimings;
+          parsed = JSON.parse(jsonStr);
         } catch {
-          // ignore parse errors
+          continue; // partial or non-JSON keepalive
         }
+
+        const choice = parsed.choices?.[0];
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+
+        // Reasoning models (and llama.cpp with a reasoning template) stream
+        // chain-of-thought separately from the answer.
+        const reasoning = choice?.delta?.reasoning_content;
+        if (typeof reasoning === "string" && reasoning.length > 0) {
+          if (ttftMs === null) ttftMs = Date.now() - startTime;
+          yield { type: "thinking", content: reasoning };
+        }
+
+        if (choice?.delta?.content) {
+          if (ttftMs === null) ttftMs = Date.now() - startTime;
+          fullText += choice.delta.content;
+          yield { type: "delta", content: choice.delta.content };
+        }
+
+        // Tool calls arrive as fragments: the id and name land on the first
+        // chunk for an index, the JSON arguments dribble in across many.
+        if (Array.isArray(choice?.delta?.tool_calls)) {
+          if (ttftMs === null) ttftMs = Date.now() - startTime;
+          for (const tc of choice.delta.tool_calls) {
+            const idx = typeof tc.index === "number" ? tc.index : 0;
+            const cur = fragments.get(idx) ?? { id: "", name: "", args: "" };
+            if (tc.id) cur.id = tc.id;
+            if (tc.function?.name) cur.name += tc.function.name;
+            if (typeof tc.function?.arguments === "string") cur.args += tc.function.arguments;
+            fragments.set(idx, cur);
+          }
+        }
+
+        // Some builds send a complete, non-streamed message instead.
+        if (Array.isArray(choice?.message?.tool_calls)) {
+          choice.message.tool_calls.forEach((tc: any, i: number) => {
+            fragments.set(i, {
+              id: tc.id ?? "",
+              name: tc.function?.name ?? "",
+              args: typeof tc.function?.arguments === "string"
+                ? tc.function.arguments
+                : JSON.stringify(tc.function?.arguments ?? {}),
+            });
+          });
+        }
+        if (typeof choice?.message?.content === "string" && choice.message.content && !fullText) {
+          fullText = choice.message.content;
+          yield { type: "delta", content: choice.message.content };
+        }
+
+        if (parsed.usage) lastUsage = parsed.usage;
+        if (parsed.timings) lastTimings = parsed.timings as LlamaTimings;
       }
     }
   } finally {
@@ -156,11 +292,23 @@ async function* liveStream(
 
   if (lastTimings) lastTimings.total_ms = Date.now() - startTime;
 
+  const toolCalls: ToolCall[] = [...fragments.entries()]
+    .sort(([a], [b]) => a - b)
+    .filter(([, f]) => f.name)
+    .map(([idx, f]) => ({
+      id: f.id || `call_${idx}_${Date.now().toString(36)}`,
+      type: "function" as const,
+      function: { name: f.name, arguments: f.args || "{}" },
+    }));
+
   yield {
     type: "done",
     result: {
       text: fullText,
       content: fullText,
+      toolCalls,
+      finishReason: finishReason ?? (toolCalls.length ? "tool_calls" : null),
+      ttftMs,
       usage: lastUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
       timings: lastTimings,
     },

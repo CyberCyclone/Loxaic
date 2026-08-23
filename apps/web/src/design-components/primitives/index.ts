@@ -1,8 +1,0 @@
-export { Badge, LocationBadge } from './Badge'
-export { Button } from './Button'
-export { Card } from './Card'
-export { Input, Select, Label, Hint } from './Input'
-export { Modal } from './Modal'
-export { Segmented } from './Segmented'
-export { Switch } from './Switch'
-export { Table } from './Table'

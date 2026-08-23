@@ -1,0 +1,150 @@
+import { X, Check, Circle, Loader } from 'lucide-react-native';
+import { Box } from '@/components/ui/box';
+import { HStack } from '@/components/ui/hstack';
+import { VStack } from '@/components/ui/vstack';
+import { Text } from '@/components/ui/text';
+import { Pressable } from '@/components/ui/pressable';
+import { Icon } from '@/components/ui/icon';
+import {
+  Actionsheet,
+  ActionsheetBackdrop,
+  ActionsheetContent,
+  ActionsheetDragIndicator,
+  ActionsheetDragIndicatorWrapper,
+} from '@/components/ui/actionsheet';
+import type { ChangedFile } from '@/lib/types';
+import type { Todo } from '@shannon/api-client';
+
+const TODO_ICON: Record<Todo['status'], typeof Check> = {
+  completed: Check,
+  in_progress: Loader,
+  pending: Circle,
+};
+
+const TODO_TINT: Record<Todo['status'], string> = {
+  completed: 'text-success',
+  in_progress: 'text-primary',
+  pending: 'text-muted-foreground',
+};
+
+interface InspectorBodyProps {
+  todos: Todo[];
+  changedFiles: ChangedFile[];
+  contextPercent: number;
+}
+
+function InspectorBody({ todos, changedFiles, contextPercent }: InspectorBodyProps) {
+  return (
+    <VStack space="lg">
+      <VStack space="xs">
+        <Text size="sm" className="font-semibold text-foreground">
+          Todo List
+        </Text>
+        {todos.length === 0 ? (
+          <Text size="xs" className="text-muted-foreground">
+            No todos yet
+          </Text>
+        ) : (
+          todos.map((todo, i) => (
+            <HStack key={todo.id ?? i} space="xs" className="items-center">
+              <Icon as={TODO_ICON[todo.status]} size="xs" className={TODO_TINT[todo.status]} />
+              <Text
+                size="sm"
+                className={todo.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'}
+              >
+                {todo.text}
+              </Text>
+            </HStack>
+          ))
+        )}
+      </VStack>
+
+      <VStack space="xs">
+        <Text size="sm" className="font-semibold text-foreground">
+          Changed Files ({changedFiles.length})
+        </Text>
+        {changedFiles.length === 0 ? (
+          <Text size="xs" className="text-muted-foreground">
+            No files changed yet
+          </Text>
+        ) : (
+          changedFiles.map((file) => (
+            <HStack key={file.path} space="xs" className="items-center">
+              <Text size="xs" className="flex-1 text-foreground" numberOfLines={1}>
+                {file.path}
+              </Text>
+              <Text size="xs" className="text-success">
+                +{file.adds}
+              </Text>
+              <Text size="xs" className="text-destructive">
+                -{file.dels}
+              </Text>
+            </HStack>
+          ))
+        )}
+      </VStack>
+
+      <VStack space="xs">
+        <Text size="sm" className="font-semibold text-foreground">
+          Context
+        </Text>
+        <HStack className="items-center justify-between">
+          <Text size="xs" className="text-muted-foreground">
+            Context window
+          </Text>
+          <Text size="xs" className="text-foreground">
+            {contextPercent}%
+          </Text>
+        </HStack>
+        <Box className="h-1.5 overflow-hidden rounded-full bg-muted">
+          <Box className="h-full rounded-full bg-primary" style={{ width: `${contextPercent}%` }} />
+        </Box>
+      </VStack>
+    </VStack>
+  );
+}
+
+interface InspectorProps {
+  open: boolean;
+  onClose: () => void;
+  wide: boolean;
+  todos: Todo[];
+  changedFiles: ChangedFile[];
+  contextPercent: number;
+}
+
+export function Inspector({ open, onClose, wide, todos, changedFiles, contextPercent }: InspectorProps) {
+  if (!open) return null;
+
+  if (wide) {
+    return (
+      <Box className="h-full w-[280px] border-l border-border bg-background">
+        <HStack className="items-center justify-between border-b border-border px-3 py-3">
+          <Text size="sm" className="font-semibold text-foreground">
+            Inspector
+          </Text>
+          <Pressable onPress={onClose} className="rounded-sm p-1 web:hover:bg-muted/50">
+            <Icon as={X} size="sm" className="text-muted-foreground" />
+          </Pressable>
+        </HStack>
+        <Box className="p-3">
+          <InspectorBody todos={todos} changedFiles={changedFiles} contextPercent={contextPercent} />
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Actionsheet isOpen={open} onClose={onClose}>
+      <ActionsheetBackdrop />
+      <ActionsheetContent className="max-h-[75%]">
+        <ActionsheetDragIndicatorWrapper>
+          <ActionsheetDragIndicator />
+        </ActionsheetDragIndicatorWrapper>
+        <Box className="w-full p-3">
+          <InspectorBody todos={todos} changedFiles={changedFiles} contextPercent={contextPercent} />
+        </Box>
+      </ActionsheetContent>
+    </Actionsheet>
+  );
+}

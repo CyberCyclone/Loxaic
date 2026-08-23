@@ -50,15 +50,6 @@ services:
       retries: 10
       start_period: 30s
 
-  web:
-    build:
-      context: .
-      dockerfile: infra/docker/web.Dockerfile
-    ports:
-      - "4001:80"
-    depends_on:
-      - server
-
   ntfy:
     image: binwiederhier/ntfy:latest
     command: serve

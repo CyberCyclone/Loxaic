@@ -1,0 +1,53 @@
+import { HStack } from '@/components/ui/hstack';
+import { VStack } from '@/components/ui/vstack';
+import { Text } from '@/components/ui/text';
+import { formatTokens } from './KpiCard';
+import type { ConversationStats } from '@shannon/api-client';
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+export function ConversationStatsTable({ conversations }: { conversations: ConversationStats[] }) {
+  if (conversations.length === 0) {
+    return (
+      <Text size="xs" className="text-muted-foreground">
+        No conversations in this range
+      </Text>
+    );
+  }
+
+  return (
+    <VStack space="xs">
+      {conversations.map((c) => (
+        <HStack
+          key={c.conversationId}
+          className="items-center justify-between rounded-md border border-border bg-card p-2.5"
+        >
+          <VStack className="flex-1 pr-2">
+            <Text size="sm" className="text-foreground" numberOfLines={1}>
+              {c.title}
+            </Text>
+            <Text size="2xs" className="text-muted-foreground">
+              {c.model} · {formatTimestamp(c.lastUsedAt)}
+            </Text>
+          </VStack>
+          <VStack className="items-end">
+            <Text size="sm" className="text-foreground">
+              {formatTokens(c.tokens)}
+            </Text>
+            <Text size="2xs" className="text-muted-foreground">
+              {c.cachePct}% cache
+            </Text>
+          </VStack>
+        </HStack>
+      ))}
+    </VStack>
+  );
+}

@@ -27,11 +27,11 @@ export function unscheduleRoutine(routineId: string) {
   if (job) { job.stop(); jobs.delete(routineId); }
 }
 
-async function executeRoutine(routineId: string) {
+export async function executeRoutine(routineId: string) {
   const routine = await db.query.routines.findFirst({
     where: eq(routines.id, routineId),
   });
-  if (!routine || !routine.enabled) return;
+  if (!routine) return;
 
   const runId = uuid();
   const convId = uuid();
@@ -83,6 +83,8 @@ async function executeRoutine(routineId: string) {
     lastRunAt: now,
     nextRunAt: now, // cron handles the actual next trigger
   }).where(eq(routines.id, routineId));
+
+  return runId;
 }
 
 async function sendNtfyNotification(userId: string, title: string, message: string) {

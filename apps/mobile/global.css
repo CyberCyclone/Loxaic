@@ -1,3 +1,106 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import 'uniwind';
+
+/* ─── UniWind theme variants ─────────────────────────────────────
+   Shannon design tokens, ported from apps/web/src/shannon.css
+   (zinc neutrals + #0096ff accent, Public Sans; dark is the design default).
+   Switched at runtime via Uniwind.setTheme('light' | 'dark' | 'system')
+   through GluestackUIProvider. Values are RGB triples so alpha
+   utilities work (bg-primary/15 etc).                                   */
+@layer theme {
+  :root {
+    @variant light {
+      --background: 255 255 255;
+      --foreground: 24 24 27;
+      --card: 244 244 245;
+      --card-foreground: 24 24 27;
+      --popover: 244 244 245;
+      --popover-foreground: 24 24 27;
+      --secondary: 244 244 245;
+      --secondary-foreground: 56 56 62;
+      --muted: 228 228 231;
+      --muted-foreground: 113 113 122;
+      --accent: 228 228 231;
+      --accent-foreground: 24 24 27;
+      --border: 214 214 218;
+      --input: 214 214 218;
+      --primary: 0 150 255;
+      --primary-foreground: 255 255 255;
+      --primary-hover: 29 161 242;
+      --link: 10 99 166;
+      --ring: 0 150 255;
+      --destructive: 220 38 38;
+      --success: 22 163 74;
+      --warning: 180 106 10;
+      --code: 244 244 245;
+    }
+
+    @variant dark {
+      --background: 24 24 27;
+      --foreground: 244 244 245;
+      --card: 39 39 42;
+      --card-foreground: 244 244 245;
+      --popover: 39 39 42;
+      --popover-foreground: 244 244 245;
+      --secondary: 39 39 42;
+      --secondary-foreground: 161 161 170;
+      --muted: 63 63 70;
+      --muted-foreground: 113 113 122;
+      --accent: 63 63 70;
+      --accent-foreground: 244 244 245;
+      --border: 63 63 70;
+      --input: 63 63 70;
+      --primary: 0 150 255;
+      --primary-foreground: 255 255 255;
+      --primary-hover: 29 161 242;
+      --link: 0 150 255;
+      --ring: 0 150 255;
+      --destructive: 220 38 38;
+      --success: 22 163 74;
+      --warning: 232 155 60;
+      --code: 24 24 27;
+    }
+  }
+}
+
+/* ─── Tailwind v4 color mappings ─────────────────────────────────
+   Maps the theme CSS variables above to Tailwind color utilities.
+   bg-primary → rgb(var(--primary)), text-foreground → rgb(var(--foreground)), etc. */
+@theme inline {
+  --color-background: rgb(var(--background));
+  --color-foreground: rgb(var(--foreground));
+  --color-card: rgb(var(--card));
+  --color-card-foreground: rgb(var(--card-foreground));
+  --color-popover: rgb(var(--popover));
+  --color-popover-foreground: rgb(var(--popover-foreground));
+  --color-secondary: rgb(var(--secondary));
+  --color-secondary-foreground: rgb(var(--secondary-foreground));
+  --color-muted: rgb(var(--muted));
+  --color-muted-foreground: rgb(var(--muted-foreground));
+  --color-accent: rgb(var(--accent));
+  --color-accent-foreground: rgb(var(--accent-foreground));
+  --color-border: rgb(var(--border));
+  --color-input: rgb(var(--input));
+  --color-primary: rgb(var(--primary));
+  --color-primary-foreground: rgb(var(--primary-foreground));
+  --color-primary-hover: rgb(var(--primary-hover));
+  --color-link: rgb(var(--link));
+  --color-ring: rgb(var(--ring));
+  --color-destructive: rgb(var(--destructive));
+  --color-success: rgb(var(--success));
+  --color-warning: rgb(var(--warning));
+  --color-code: rgb(var(--code));
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  /* React Native has no font-stack fallback: fontFamily must be ONE family,
+     and expo-font registers each weight under its own name. Weight utilities
+     (font-medium/semibold/bold) therefore synthesize on native rather than
+     swapping family — see the font-* families below if exact weights matter. */
+  --font-sans: PublicSans_400Regular;
+  --font-medium: PublicSans_500Medium;
+  --font-semibold: PublicSans_600SemiBold;
+  --font-bold: PublicSans_700Bold;
+}
