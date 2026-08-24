@@ -9,6 +9,7 @@ import {
 } from '@shannon/api-client';
 import type { Conversation, Message } from '@/lib/types';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
+import { tickLiveTps } from '@/lib/liveTps';
 import { useToastHelper } from './useToastHelper';
 
 function extractText(blocks: Array<{ kind: string; text?: string }>): string {
@@ -45,6 +46,8 @@ export function useChatSession(token: string | null) {
   // cleared by the chat.conversation handler once the real id arrives.
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
+  // Per in-flight message: { start, count } for the live tok/s estimate.
+  const liveTokenStatsRef = useRef<Map<string, { start: number; count: number }>>(new Map());
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -128,6 +131,7 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.thinking') {
         setStreaming(true);
         setLoadingModel(false);
+        const liveTps = tickLiveTps(liveTokenStatsRef.current, event.message_id);
         const targetId = activeIdRef.current ?? event.conversation_id;
         setConversations((prev) =>
           prev.map((c) => {
@@ -135,9 +139,9 @@ export function useChatSession(token: string | null) {
             const msgs = [...c.msgs];
             const last = msgs[msgs.length - 1];
             if (last && last.role === 'assistant' && last.id === event.message_id) {
-              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta };
+              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta, liveTps };
             } else {
-              msgs.push({ id: event.message_id, role: 'assistant', text: '', thinking: event.delta });
+              msgs.push({ id: event.message_id, role: 'assistant', text: '', thinking: event.delta, liveTps });
             }
             return { ...c, msgs };
           }),
@@ -145,6 +149,7 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.delta') {
         setStreaming(true);
         setLoadingModel(false);
+        const liveTps = tickLiveTps(liveTokenStatsRef.current, event.message_id);
         const targetId = activeIdRef.current ?? event.conversation_id;
         setConversations((prev) =>
           prev.map((c) => {
@@ -152,9 +157,9 @@ export function useChatSession(token: string | null) {
             const msgs = [...c.msgs];
             const last = msgs[msgs.length - 1];
             if (last && last.role === 'assistant' && last.id === event.message_id) {
-              msgs[msgs.length - 1] = { ...last, text: last.text + event.delta };
+              msgs[msgs.length - 1] = { ...last, text: last.text + event.delta, liveTps };
             } else {
-              msgs.push({ id: event.message_id, role: 'assistant', text: event.delta });
+              msgs.push({ id: event.message_id, role: 'assistant', text: event.delta, liveTps });
             }
             return { ...c, msgs };
           }),
@@ -162,6 +167,7 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.message_complete') {
         setStreaming(false);
         setLoadingModel(false);
+        liveTokenStatsRef.current.delete(event.message_id);
         setConversations((prev) =>
           prev.map((c) => ({
             ...c,
@@ -169,6 +175,7 @@ export function useChatSession(token: string | null) {
               m.id === event.message_id
                 ? {
                     ...m,
+                    liveTps: undefined,
                     usage: {
                       in: event.usage.prompt_tokens,
                       out: event.usage.completion_tokens,
@@ -189,13 +196,14 @@ export function useChatSession(token: string | null) {
         // conversation/message to attach to — those still toast.
         if (targetId && event.message_id) {
           const messageId = event.message_id;
+          liveTokenStatsRef.current.delete(messageId);
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== targetId) return c;
               const msgs = [...c.msgs];
               const idx = msgs.findIndex((m) => m.id === messageId);
               if (idx >= 0) {
-                msgs[idx] = { ...msgs[idx], text: event.error, error: true };
+                msgs[idx] = { ...msgs[idx], text: event.error, error: true, liveTps: undefined };
               } else {
                 msgs.push({ id: messageId, role: 'assistant', text: event.error, error: true });
               }

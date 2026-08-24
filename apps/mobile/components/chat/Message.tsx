@@ -85,6 +85,15 @@ export function Message({ msg, onFork, liveThinking }: MessageProps) {
             <Fragment>{renderText(msg.text)}</Fragment>
           )}
 
+          {!isUser && !msg.usage && !!msg.liveTps && (
+            <HStack space="xs" className="items-center pt-1">
+              <Box className="h-1.5 w-1.5 rounded-full bg-primary" />
+              <Text size="xs" className="text-muted-foreground">
+                {Math.round(msg.liveTps)} tok/s
+              </Text>
+            </HStack>
+          )}
+
           {!isUser && msg.usage && (
             <HStack space="md" className="flex-wrap pt-1">
               {!!msg.usage.promptTps && (

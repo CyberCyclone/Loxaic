@@ -58,6 +58,8 @@ export interface Message {
   thinking?: string
   tools?: ToolCall[]
   usage?: MessageUsage
+  /** Running tokens/sec estimate while still streaming — superseded by usage.tps once complete. */
+  liveTps?: number
   forks?: string[]
   origin?: MessageLocation
   error?: boolean

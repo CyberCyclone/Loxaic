@@ -17,6 +17,7 @@ import {
 import type { ContentBlock } from '@shannon/types';
 import type { Conversation, Message, ToolCall, ChangedFile } from '@/lib/types';
 import { computeLineDiff } from '@/lib/diff';
+import { tickLiveTps } from '@/lib/liveTps';
 import { useToastHelper } from './useToastHelper';
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
@@ -173,6 +174,8 @@ export function useAgentSession(token: string | null) {
   const pendingModelRef = useRef<string | null>(null);
   /** Id of the assistant message currently being streamed into, for this iteration. Reset on agent.iteration. */
   const buildingMsgIdRef = useRef<string | null>(null);
+  // Per in-flight message: { start, count } for the live tok/s estimate.
+  const liveTokenStatsRef = useRef<Map<string, { start: number; count: number }>>(new Map());
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -306,16 +309,18 @@ export function useAgentSession(token: string | null) {
         case 'agent.delta': {
           setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
+          const liveTps = tickLiveTps(liveTokenStatsRef.current, id);
           updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => (m.id === id ? { ...m, text: (m.text ?? '') + event.text } : m)),
+            msgs.map((m) => (m.id === id ? { ...m, text: (m.text ?? '') + event.text, liveTps } : m)),
           );
           break;
         }
         case 'agent.thinking': {
           setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
+          const liveTps = tickLiveTps(liveTokenStatsRef.current, id);
           updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => (m.id === id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m)),
+            msgs.map((m) => (m.id === id ? { ...m, thinking: (m.thinking ?? '') + event.text, liveTps } : m)),
           );
           break;
         }
@@ -364,6 +369,7 @@ export function useAgentSession(token: string | null) {
         case 'agent.done': {
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
           buildingMsgIdRef.current = null;
+          liveTokenStatsRef.current.delete(id);
           setRunState('done');
           setIteration(null);
           setLoadingModel(false);
@@ -373,6 +379,7 @@ export function useAgentSession(token: string | null) {
                 m.id === id
                   ? {
                       ...m,
+                      liveTps: undefined,
                       usage: {
                         in: event.usage!.prompt_tokens,
                         out: event.usage!.completion_tokens,
@@ -388,6 +395,7 @@ export function useAgentSession(token: string | null) {
           break;
         }
         case 'agent.error': {
+          if (buildingMsgIdRef.current) liveTokenStatsRef.current.delete(buildingMsgIdRef.current);
           buildingMsgIdRef.current = null;
           setRunState('error');
           setIteration(null);

@@ -14,11 +14,7 @@ interface ThinkingBlockProps {
 }
 
 export function ThinkingBlock({ text, live }: ThinkingBlockProps) {
-  // Auto-expand for reasoning that's happening right now, so the streamed
-  // text itself is the proof it's genuinely thinking rather than stalled —
-  // the `live` value at mount time only, so it doesn't snap shut on the
-  // user once the model moves on to the answer.
-  const [open, setOpen] = useState(live ?? false);
+  const [open, setOpen] = useState(false);
   return (
     <Box className="my-1.5 rounded-md border border-border bg-card">
       <Pressable onPress={() => setOpen((o) => !o)}>
