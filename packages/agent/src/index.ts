@@ -179,5 +179,5 @@ export type AgentEvent =
   | { type: "agent.tool_result"; conversation_id: string; call_id: string; tool: ToolName; output: string; ok: boolean; diff?: FileDiff[] }
   | { type: "agent.todos"; conversation_id: string; todos: Todo[] }
   | { type: "agent.mode_changed"; mode: PermissionMode }
-  | { type: "agent.done"; conversation_id: string; message_id: string; text: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tps: number | null; gen_tps: number | null } }
+  | { type: "agent.done"; conversation_id: string; message_id: string; text: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tps: number | null; gen_tps: number | null; total_ms: number } }
   | { type: "agent.error"; conversation_id?: string; error: string };

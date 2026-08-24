@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui/icon';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCallCard } from './ToolCallCard';
 import { CodeBlock } from './CodeBlock';
+import { LiveElapsed } from './LiveElapsed';
 import type { Message as MessageType } from '@/lib/types';
 
 const FENCE_RE = /```(\w+)?\n([\s\S]*?)```/g;
@@ -48,9 +49,11 @@ interface MessageProps {
   onFork?: () => void;
   /** True while this message's reasoning is still actively streaming in. */
   liveThinking?: boolean;
+  /** Epoch ms the response started at — set only while this message is the one still in flight. */
+  elapsedSince?: number | null;
 }
 
-export function Message({ msg, onFork, liveThinking }: MessageProps) {
+export function Message({ msg, onFork, liveThinking, elapsedSince }: MessageProps) {
   const isUser = msg.role === 'user';
 
   return (
@@ -85,17 +88,20 @@ export function Message({ msg, onFork, liveThinking }: MessageProps) {
             <Fragment>{renderText(msg.text)}</Fragment>
           )}
 
-          {!isUser && !msg.usage && !!msg.liveTps && (
+          {!isUser && !msg.usage && !!elapsedSince && (
             <HStack space="xs" className="items-center pt-1">
               <Box className="h-1.5 w-1.5 rounded-full bg-primary" />
-              <Text size="xs" className="text-muted-foreground">
-                {Math.round(msg.liveTps)} tok/s
-              </Text>
+              <LiveElapsed since={elapsedSince} />
             </HStack>
           )}
 
           {!isUser && msg.usage && (
             <HStack space="md" className="flex-wrap pt-1">
+              {!!msg.usage.totalMs && (
+                <Text size="xs" className="text-muted-foreground">
+                  {(msg.usage.totalMs / 1000).toFixed(1)}s
+                </Text>
+              )}
               {!!msg.usage.promptTps && (
                 <Text size="xs" className="text-muted-foreground">
                   {Math.round(msg.usage.promptTps)} tok/s prompt

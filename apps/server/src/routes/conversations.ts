@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq, and, isNull, desc } from "@shannon/db";
 import { db } from "@shannon/db";
-import { conversations, messages } from "@shannon/db/schema";
+import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@shannon/sync";
 
@@ -87,8 +87,38 @@ export async function conversationRoutes(app: FastifyInstance) {
       .where(and(eq(messages.conversationId, request.params.id), isNull(messages.deletedAt)))
       .orderBy(messages.createdAt)
       .limit(200);
+
+    // No relation is declared between messages and usageRecords (messageId
+    // carries no FK constraint), so join them by hand: one query for the
+    // whole thread's usage rows, keyed by messageId for an O(1) attach below.
+    const usageRows = await db
+      .select()
+      .from(usageRecords)
+      .where(eq(usageRecords.conversationId, request.params.id));
+    const usageByMessageId = new Map(usageRows.filter((u) => u.messageId).map((u) => [u.messageId, u]));
+
+    const rowsWithUsage = rows.map((m) => {
+      const u = usageByMessageId.get(m.id);
+      return {
+        ...m,
+        usage: u
+          ? {
+              inputTokens: u.inputTokens,
+              cachedTokens: u.cachedTokens,
+              outputTokens: u.outputTokens,
+              ttftMs: u.ttftMs,
+              promptMs: u.promptMs,
+              predictMs: u.predictMs,
+              totalMs: u.totalMs,
+              promptTps: u.promptTps,
+              predictedTps: u.predictedTps,
+            }
+          : null,
+      };
+    });
+
     const msgs = rows.map((m) => ({ id: m.id, parent_id: m.parentId, deleted_at: m.deletedAt?.toISOString() ?? null }));
     const forks = detectForks(msgs);
-    return { messages: rows, forks };
+    return { messages: rowsWithUsage, forks };
   });
 }

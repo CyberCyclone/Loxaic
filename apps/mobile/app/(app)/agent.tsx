@@ -34,6 +34,7 @@ export default function AgentScreen() {
     mode,
     runState,
     loadingModel,
+    responseStartedAt,
     pendingApproval,
     iteration,
     todos,
@@ -151,6 +152,7 @@ export default function AgentScreen() {
                 mode={mode}
                 iteration={iteration}
                 loadingModel={loadingModel}
+                responseStartedAt={responseStartedAt}
                 pendingApproval={pendingApproval}
                 onAllow={() => pendingApproval && handleApprove(pendingApproval.callId)}
                 onDeny={() => pendingApproval && handleDeny(pendingApproval.callId)}

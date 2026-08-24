@@ -127,6 +127,18 @@ export async function updateConversation(
   ).json();
 }
 
+export type ApiMessageUsage = {
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  ttftMs: number | null;
+  promptMs: number | null;
+  predictMs: number | null;
+  totalMs: number | null;
+  promptTps: number | null;
+  predictedTps: number | null;
+};
+
 export type ApiMessage = {
   id: string;
   conversationId: string;
@@ -141,6 +153,8 @@ export type ApiMessage = {
   status: "streaming" | "complete" | "error" | "cancelled";
   createdAt: string;
   deletedAt: string | null;
+  /** Persisted usage/timing for this message — null for user messages or if never recorded. */
+  usage: ApiMessageUsage | null;
 };
 
 export async function getMessages(
@@ -300,6 +314,7 @@ export type ChatUsage = {
   total_tokens: number;
   prompt_tps: number | null;
   gen_tps: number | null;
+  total_ms: number;
 };
 
 export type ChatClientEvent =

@@ -32,6 +32,8 @@ export interface MessageUsage {
   tps: number
   /** Prompt-processing speed (tokens/sec) — null when the backend didn't report timings. */
   promptTps?: number | null
+  /** Total wall-clock duration (ms) of the response: model load (if any), prompt eval, and generation. */
+  totalMs?: number | null
   cache: number
 }
 
@@ -58,8 +60,6 @@ export interface Message {
   thinking?: string
   tools?: ToolCall[]
   usage?: MessageUsage
-  /** Running tokens/sec estimate while still streaming — superseded by usage.tps once complete. */
-  liveTps?: number
   forks?: string[]
   origin?: MessageLocation
   error?: boolean

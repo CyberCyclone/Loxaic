@@ -13,12 +13,25 @@ import {
   type PermissionMode,
   type Todo,
   type FileDiff,
+  type ApiMessageUsage,
 } from '@shannon/api-client';
 import type { ContentBlock } from '@shannon/types';
-import type { Conversation, Message, ToolCall, ChangedFile } from '@/lib/types';
+import type { Conversation, Message, MessageUsage, ToolCall, ChangedFile } from '@/lib/types';
 import { computeLineDiff } from '@/lib/diff';
-import { tickLiveTps } from '@/lib/liveTps';
 import { useToastHelper } from './useToastHelper';
+
+/** Persisted usage row (if any) → the shape Message/MessageList render — real, backend-measured, never guessed. */
+function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    in: usage.inputTokens,
+    out: usage.outputTokens,
+    tps: usage.predictedTps ?? 0,
+    promptTps: usage.promptTps,
+    totalMs: usage.totalMs,
+    cache: 0,
+  };
+}
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
 
@@ -109,6 +122,7 @@ function reconstructMessages(rows: ApiMessage[]): Message[] {
         text: extractField(blocks, 'text'),
         thinking: thinking || undefined,
         tools: tools.length > 0 ? tools : undefined,
+        usage: toMessageUsage(row.usage),
       };
       out.push(msg);
       byId.set(row.id, msg);
@@ -165,6 +179,10 @@ export function useAgentSession(token: string | null) {
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
   const [loadingModel, setLoadingModel] = useState(false);
+  // Epoch ms the current response started at (send time) — real wall-clock,
+  // not an estimate. Drives the live elapsed-time readout across the whole
+  // response lifecycle (every iteration of a tool loop), until agent.done.
+  const [responseStartedAt, setResponseStartedAt] = useState<number | null>(null);
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -174,8 +192,6 @@ export function useAgentSession(token: string | null) {
   const pendingModelRef = useRef<string | null>(null);
   /** Id of the assistant message currently being streamed into, for this iteration. Reset on agent.iteration. */
   const buildingMsgIdRef = useRef<string | null>(null);
-  // Per in-flight message: { start, count } for the live tok/s estimate.
-  const liveTokenStatsRef = useRef<Map<string, { start: number; count: number }>>(new Map());
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -215,6 +231,7 @@ export function useAgentSession(token: string | null) {
       setIteration(null);
       setLiveTodos([]);
       setLoadingModel(false);
+      setResponseStartedAt(null);
       buildingMsgIdRef.current = null;
     },
     [setActiveId],
@@ -227,6 +244,7 @@ export function useAgentSession(token: string | null) {
     setIteration(null);
     setLiveTodos([]);
     setLoadingModel(false);
+    setResponseStartedAt(null);
     buildingMsgIdRef.current = null;
   }, [setActiveId]);
 
@@ -330,18 +348,16 @@ export function useAgentSession(token: string | null) {
         case 'agent.delta': {
           setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
-          const liveTps = tickLiveTps(liveTokenStatsRef.current, id);
           updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => (m.id === id ? { ...m, text: (m.text ?? '') + event.text, liveTps } : m)),
+            msgs.map((m) => (m.id === id ? { ...m, text: (m.text ?? '') + event.text } : m)),
           );
           break;
         }
         case 'agent.thinking': {
           setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
-          const liveTps = tickLiveTps(liveTokenStatsRef.current, id);
           updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => (m.id === id ? { ...m, thinking: (m.thinking ?? '') + event.text, liveTps } : m)),
+            msgs.map((m) => (m.id === id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m)),
           );
           break;
         }
@@ -390,22 +406,22 @@ export function useAgentSession(token: string | null) {
         case 'agent.done': {
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
           buildingMsgIdRef.current = null;
-          liveTokenStatsRef.current.delete(id);
           setRunState('done');
           setIteration(null);
           setLoadingModel(false);
+          setResponseStartedAt(null);
           if (event.usage) {
             updateRunMsgs(event.conversation_id, (msgs) =>
               msgs.map((m) =>
                 m.id === id
                   ? {
                       ...m,
-                      liveTps: undefined,
                       usage: {
                         in: event.usage!.prompt_tokens,
                         out: event.usage!.completion_tokens,
                         tps: event.usage!.gen_tps ?? 0,
                         promptTps: event.usage!.prompt_tps,
+                        totalMs: event.usage!.total_ms,
                         cache: 0,
                       },
                     }
@@ -416,11 +432,11 @@ export function useAgentSession(token: string | null) {
           break;
         }
         case 'agent.error': {
-          if (buildingMsgIdRef.current) liveTokenStatsRef.current.delete(buildingMsgIdRef.current);
           buildingMsgIdRef.current = null;
           setRunState('error');
           setIteration(null);
           setLoadingModel(false);
+          setResponseStartedAt(null);
           showToast(`Agent error: ${event.error}`, 6000);
           break;
         }
@@ -443,6 +459,7 @@ export function useAgentSession(token: string | null) {
         setPendingApproval(null);
         setIteration(null);
         setLoadingModel(false);
+        setResponseStartedAt(null);
         buildingMsgIdRef.current = null;
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
@@ -466,6 +483,7 @@ export function useAgentSession(token: string | null) {
       setRunState('running');
       setPendingApproval(null);
       setLoadingModel(false);
+      setResponseStartedAt(Date.now());
 
       const convId = activeIdRef.current;
       if (!convId) {
@@ -503,6 +521,7 @@ export function useAgentSession(token: string | null) {
     setPendingApproval(null);
     setIteration(null);
     setLoadingModel(false);
+    setResponseStartedAt(null);
     buildingMsgIdRef.current = null;
     wsRef.current?.close();
   }, []);
@@ -573,6 +592,7 @@ export function useAgentSession(token: string | null) {
     runState,
     busy,
     loadingModel,
+    responseStartedAt,
     pendingApproval,
     iteration,
     todos: liveTodos,

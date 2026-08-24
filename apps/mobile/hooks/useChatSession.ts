@@ -6,10 +6,10 @@ import {
   getMessages,
   updateConversation,
   type ChatClientEvent,
+  type ApiMessageUsage,
 } from '@shannon/api-client';
-import type { Conversation, Message } from '@/lib/types';
+import type { Conversation, Message, MessageUsage } from '@/lib/types';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
-import { tickLiveTps } from '@/lib/liveTps';
 import { useToastHelper } from './useToastHelper';
 
 function extractText(blocks: Array<{ kind: string; text?: string }>): string {
@@ -27,11 +27,28 @@ function extractThinking(blocks: Array<{ kind: string; text?: string }>): string
   return thinking || undefined;
 }
 
+/** Persisted usage row (if any) → the shape Message/MessageList render — real, backend-measured, never guessed. */
+function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    in: usage.inputTokens,
+    out: usage.outputTokens,
+    tps: usage.predictedTps ?? 0,
+    promptTps: usage.promptTps,
+    totalMs: usage.totalMs,
+    cache: 0,
+  };
+}
+
 export function useChatSession(token: string | null) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [loadingModel, setLoadingModel] = useState(false);
+  // Epoch ms the current response started at (send time) — real wall-clock,
+  // not an estimate. Drives the live elapsed-time readout across the whole
+  // response lifecycle; null means nothing's in flight.
+  const [responseStartedAt, setResponseStartedAt] = useState<number | null>(null);
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -46,8 +63,6 @@ export function useChatSession(token: string | null) {
   // cleared by the chat.conversation handler once the real id arrives.
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
-  // Per in-flight message: { start, count } for the live tok/s estimate.
-  const liveTokenStatsRef = useRef<Map<string, { start: number; count: number }>>(new Map());
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -89,6 +104,7 @@ export function useChatSession(token: string | null) {
               text: extractText(m.content as Array<{ kind: string; text?: string }>),
               thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
               error: m.status === 'error',
+              usage: toMessageUsage(m.usage),
             }));
           if (msgs.length > 0) {
             setConversations((prev) =>
@@ -132,6 +148,7 @@ export function useChatSession(token: string | null) {
               text: extractText(m.content as Array<{ kind: string; text?: string }>),
               thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
               error: m.status === 'error',
+              usage: toMessageUsage(m.usage),
             }));
           setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, msgs } : c)));
         })
@@ -161,7 +178,6 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.thinking') {
         setStreaming(true);
         setLoadingModel(false);
-        const liveTps = tickLiveTps(liveTokenStatsRef.current, event.message_id);
         const targetId = activeIdRef.current ?? event.conversation_id;
         setConversations((prev) =>
           prev.map((c) => {
@@ -169,9 +185,9 @@ export function useChatSession(token: string | null) {
             const msgs = [...c.msgs];
             const last = msgs[msgs.length - 1];
             if (last && last.role === 'assistant' && last.id === event.message_id) {
-              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta, liveTps };
+              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta };
             } else {
-              msgs.push({ id: event.message_id, role: 'assistant', text: '', thinking: event.delta, liveTps });
+              msgs.push({ id: event.message_id, role: 'assistant', text: '', thinking: event.delta });
             }
             return { ...c, msgs };
           }),
@@ -179,7 +195,6 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.delta') {
         setStreaming(true);
         setLoadingModel(false);
-        const liveTps = tickLiveTps(liveTokenStatsRef.current, event.message_id);
         const targetId = activeIdRef.current ?? event.conversation_id;
         setConversations((prev) =>
           prev.map((c) => {
@@ -187,9 +202,9 @@ export function useChatSession(token: string | null) {
             const msgs = [...c.msgs];
             const last = msgs[msgs.length - 1];
             if (last && last.role === 'assistant' && last.id === event.message_id) {
-              msgs[msgs.length - 1] = { ...last, text: last.text + event.delta, liveTps };
+              msgs[msgs.length - 1] = { ...last, text: last.text + event.delta };
             } else {
-              msgs.push({ id: event.message_id, role: 'assistant', text: event.delta, liveTps });
+              msgs.push({ id: event.message_id, role: 'assistant', text: event.delta });
             }
             return { ...c, msgs };
           }),
@@ -197,7 +212,7 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.message_complete') {
         setStreaming(false);
         setLoadingModel(false);
-        liveTokenStatsRef.current.delete(event.message_id);
+        setResponseStartedAt(null);
         setConversations((prev) =>
           prev.map((c) => ({
             ...c,
@@ -205,12 +220,12 @@ export function useChatSession(token: string | null) {
               m.id === event.message_id
                 ? {
                     ...m,
-                    liveTps: undefined,
                     usage: {
                       in: event.usage.prompt_tokens,
                       out: event.usage.completion_tokens,
                       tps: event.usage.gen_tps ?? 0,
                       promptTps: event.usage.prompt_tps,
+                      totalMs: event.usage.total_ms,
                       cache: 0,
                     },
                   }
@@ -221,19 +236,19 @@ export function useChatSession(token: string | null) {
       } else if (event.type === 'chat.error') {
         setStreaming(false);
         setLoadingModel(false);
+        setResponseStartedAt(null);
         const targetId = event.conversation_id ?? activeIdRef.current;
         // Protocol-level errors (bad JSON, missing content) have no
         // conversation/message to attach to — those still toast.
         if (targetId && event.message_id) {
           const messageId = event.message_id;
-          liveTokenStatsRef.current.delete(messageId);
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== targetId) return c;
               const msgs = [...c.msgs];
               const idx = msgs.findIndex((m) => m.id === messageId);
               if (idx >= 0) {
-                msgs[idx] = { ...msgs[idx], text: event.error, error: true, liveTps: undefined };
+                msgs[idx] = { ...msgs[idx], text: event.error, error: true };
               } else {
                 msgs.push({ id: messageId, role: 'assistant', text: event.error, error: true });
               }
@@ -260,6 +275,7 @@ export function useChatSession(token: string | null) {
         // the server's actual state once reconnected (onopen, above).
         setStreaming(false);
         setLoadingModel(false);
+        setResponseStartedAt(null);
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
@@ -280,6 +296,7 @@ export function useChatSession(token: string | null) {
       if (!wsRef.current) return;
       setStreaming(true);
       setLoadingModel(false);
+      setResponseStartedAt(Date.now());
       if (!activeIdRef.current) {
         const localId = `c${Date.now()}`;
         pendingLocalIdRef.current = localId;
@@ -310,6 +327,7 @@ export function useChatSession(token: string | null) {
   const handleStop = useCallback(() => {
     setStreaming(false);
     setLoadingModel(false);
+    setResponseStartedAt(null);
     wsRef.current?.close();
   }, []);
 
@@ -365,6 +383,7 @@ export function useChatSession(token: string | null) {
     setActiveId,
     streaming,
     loadingModel,
+    responseStartedAt,
     handleSend,
     handleStop,
     handleNewChat,

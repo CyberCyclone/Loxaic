@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
+import { LiveElapsed } from './LiveElapsed';
 
 interface TypingIndicatorProps {
   /** True when the backend reported the target model isn't loaded yet (LM Studio JIT load). */
   loadingModel?: boolean;
+  /** Epoch ms the response started at (send time) — the same clock the eventual live Message elapsed readout continues from. */
+  since: number;
 }
 
 // Shown only before *any* token (reasoning or answer) has streamed — once
@@ -20,15 +22,7 @@ interface TypingIndicatorProps {
 // back *is* the first generated token, which is also what ends this phase.
 // So there's nothing to count until it's already over. An elapsed-time
 // counter is the honest version of "live feedback" for this window.
-export function TypingIndicator({ loadingModel }: TypingIndicatorProps) {
-  const [elapsedMs, setElapsedMs] = useState(0);
-
-  useEffect(() => {
-    const start = Date.now();
-    const id = setInterval(() => setElapsedMs(Date.now() - start), 100);
-    return () => clearInterval(id);
-  }, []);
-
+export function TypingIndicator({ loadingModel, since }: TypingIndicatorProps) {
   return (
     <Box className="px-4 py-2">
       <HStack space="sm" className="items-center">
@@ -38,8 +32,9 @@ export function TypingIndicator({ loadingModel }: TypingIndicatorProps) {
         <HStack space="xs" className="items-center">
           <Spinner size="small" className="text-muted-foreground" />
           <Text size="xs" className="text-muted-foreground">
-            {loadingModel ? 'Loading model…' : 'Processing prompt…'} {(elapsedMs / 1000).toFixed(1)}s
+            {loadingModel ? 'Loading model…' : 'Processing prompt…'}
           </Text>
+          <LiveElapsed since={since} />
         </HStack>
       </HStack>
     </Box>

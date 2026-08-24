@@ -291,6 +291,7 @@ async function runTurn(ctx: TurnContext): Promise<void> {
               ...doneResult.usage,
               prompt_tps: doneResult.promptTps,
               gen_tps: doneResult.genTps,
+              total_ms: doneResult.totalMs,
             }
           : undefined,
       });
@@ -441,6 +442,7 @@ async function recordUsage(input: {
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
     timings: { cache_n?: number; prompt_ms: number; predicted_ms: number; total_ms?: number; prompt_per_second: number; predicted_per_second: number } | null;
     ttftMs: number | null;
+    totalMs: number;
     promptTps: number | null;
     genTps: number | null;
   };
@@ -462,7 +464,7 @@ async function recordUsage(input: {
     ttftMs: result.ttftMs,
     promptMs: result.timings?.prompt_ms ?? null,
     predictMs: result.timings?.predicted_ms ?? null,
-    totalMs: result.timings?.total_ms ?? null,
+    totalMs: result.totalMs,
     promptTps: result.promptTps,
     predictedTps: result.genTps,
   });

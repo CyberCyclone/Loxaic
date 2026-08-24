@@ -191,10 +191,10 @@ export function chatWsHandler(app: FastifyInstance) {
                   inputTokens: event.result.usage.prompt_tokens,
                   cachedTokens: event.result.timings?.cache_n || 0,
                   outputTokens: event.result.usage.completion_tokens,
-                  ttftMs: 0, // We'll track this with a proper TTFT measurement later
+                  ttftMs: event.result.ttftMs,
                   promptMs: event.result.timings?.prompt_ms || null,
                   predictMs: event.result.timings?.predicted_ms || null,
-                  totalMs: event.result.timings?.total_ms || null,
+                  totalMs: event.result.totalMs,
                   promptTps: event.result.promptTps,
                   predictedTps: event.result.genTps,
                 });
@@ -209,6 +209,7 @@ export function chatWsHandler(app: FastifyInstance) {
                     ...event.result.usage,
                     prompt_tps: event.result.promptTps,
                     gen_tps: event.result.genTps,
+                    total_ms: event.result.totalMs,
                   },
                 })
               );

@@ -40,6 +40,8 @@ export type CompletionResult = {
   finishReason: string | null;
   /** Time to first token (ms), measured server-side. Null if nothing streamed. */
   ttftMs: number | null;
+  /** Total wall-clock duration (ms) of the inference call — model load (if any), prompt eval, and generation. */
+  totalMs: number;
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   timings: LlamaTimings | null;
   /**
@@ -154,6 +156,7 @@ async function* mockStream(
       toolCalls,
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ttftMs,
+      totalMs: Date.now() - startTime,
       usage: { prompt_tokens: 10, completion_tokens: completionTokens, total_tokens: 10 + completionTokens },
       timings: {
         prompt_n: 10,
@@ -342,6 +345,7 @@ async function* liveStream(
       toolCalls,
       finishReason: finishReason ?? (toolCalls.length ? "tool_calls" : null),
       ttftMs,
+      totalMs,
       usage,
       timings: lastTimings,
       promptTps,
