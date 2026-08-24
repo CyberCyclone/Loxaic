@@ -11,14 +11,6 @@ import {
   type ConversationStats,
 } from '@shannon/api-client';
 
-const RANGE_MS: Record<StatsRange, number> = {
-  session: 60 * 60 * 1000,
-  today: 24 * 60 * 60 * 1000,
-  week: 7 * 24 * 60 * 60 * 1000,
-  month: 30 * 24 * 60 * 60 * 1000,
-  year: 365 * 24 * 60 * 60 * 1000,
-};
-
 export function useStats(token: string | null, range: StatsRange) {
   const [usage, setUsage] = useState<UsageStats | null>(null);
   const [series, setSeries] = useState<StatsSeries | null>(null);
@@ -30,9 +22,10 @@ export function useStats(token: string | null, range: StatsRange) {
     if (!token) return;
     setLoading(true);
     try {
-      const since = new Date(Date.now() - RANGE_MS[range]).toISOString();
+      // Passing `range` (not a precomputed `from`) lets the server derive
+      // the previous equivalent window for KPI deltas/sparklines itself.
       const [u, s, m, c] = await Promise.all([
-        getUsageStats({ from: since }),
+        getUsageStats({ range }),
         getStatsSeries(range),
         getModelStats(range),
         getConversationStats(range, 10),

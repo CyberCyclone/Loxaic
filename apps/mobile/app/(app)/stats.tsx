@@ -8,7 +8,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Spinner } from '@/components/ui/spinner';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { KpiCard, formatTokens } from '@/components/stats/KpiCard';
+import { KpiCard, formatTokens, type KpiDelta } from '@/components/stats/KpiCard';
 import { TokensChart } from '@/components/stats/TokensChart';
 import { ModelStatsTable } from '@/components/stats/ModelStatsTable';
 import { ConversationStatsTable } from '@/components/stats/ConversationStatsTable';
@@ -17,6 +17,29 @@ import { useSession } from '@/lib/session';
 import type { StatsRange } from '@shannon/api-client';
 
 const RANGES: StatsRange[] = ['session', 'today', 'week', 'month', 'year'];
+
+type DeltaKind = 'pct-relative' | 'pct-point' | 'ms' | 'raw';
+
+/** cur vs. prev → a KpiCard delta badge. Direction is purely magnitude (up=increase), same as the design source — the accompanying hint text (e.g. "lower is better") carries the metric-specific meaning, not the color. */
+function computeDelta(cur: number | null | undefined, prev: number | null | undefined, kind: DeltaKind): KpiDelta | null {
+  if (cur == null || prev == null) return null;
+  const diff = cur - prev;
+  if (diff === 0) return null;
+  const dir: KpiDelta['dir'] = diff > 0 ? 'up' : 'down';
+  const arrow = dir === 'up' ? '↑' : '↓';
+  switch (kind) {
+    case 'pct-relative': {
+      if (prev === 0) return null;
+      return { text: `${arrow} ${Math.abs((diff / prev) * 100).toFixed(1)}%`, dir };
+    }
+    case 'pct-point':
+      return { text: `${arrow} ${Math.abs(diff).toFixed(1)}%`, dir };
+    case 'ms':
+      return { text: `${arrow} ${Math.abs(Math.round(diff))}ms`, dir };
+    case 'raw':
+      return { text: `${arrow} ${Math.abs(diff).toFixed(1)}`, dir };
+  }
+}
 
 export default function StatsScreen() {
   const shell = useShell();
@@ -50,12 +73,33 @@ export default function StatsScreen() {
         ) : (
           <>
             <HStack space="sm" className="flex-wrap">
-              <KpiCard label="Total Tokens" value={usage ? formatTokens(usage.totalTokens) : '—'} />
-              <KpiCard label="Cache Hit %" value={usage ? `${usage.cacheHitRate}%` : '—'} />
-              <KpiCard label="Avg TTFT" value={usage?.avgTtftMs != null ? `${Math.round(usage.avgTtftMs)}ms` : '—'} />
+              <KpiCard
+                label="Total Tokens"
+                value={usage ? formatTokens(usage.totalTokens) : '—'}
+                delta={computeDelta(usage?.totalTokens, usage?.previous?.totalTokens, 'pct-relative')}
+                hint={usage?.previous ? 'vs previous period' : undefined}
+                spark={usage?.spark?.totalTokens}
+              />
+              <KpiCard
+                label="Cache Hit %"
+                value={usage ? `${usage.cacheHitRate}%` : '—'}
+                delta={computeDelta(usage?.cacheHitRate, usage?.previous?.cacheHitRate, 'pct-point')}
+                hint={usage?.previous ? 'vs previous period' : undefined}
+                spark={usage?.spark?.cacheHitRate}
+              />
+              <KpiCard
+                label="Avg TTFT"
+                value={usage?.avgTtftMs != null ? `${Math.round(usage.avgTtftMs)}ms` : '—'}
+                delta={computeDelta(usage?.avgTtftMs, usage?.previous?.avgTtftMs, 'ms')}
+                hint="lower is better"
+                spark={usage?.spark?.avgTtftMs}
+              />
               <KpiCard
                 label="Avg Gen tok/s"
                 value={usage?.avgPredictedTps != null ? usage.avgPredictedTps.toFixed(1) : '—'}
+                delta={computeDelta(usage?.avgPredictedTps, usage?.previous?.avgPredictedTps, 'raw')}
+                hint={usage?.previous ? 'vs previous period' : undefined}
+                spark={usage?.spark?.avgPredictedTps}
               />
             </HStack>
 

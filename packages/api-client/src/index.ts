@@ -242,7 +242,7 @@ export async function getRoutineRuns(id: string): Promise<RoutineRun[]> {
 // ── Stats ─────────────────────────────────────────────────
 export type StatsRange = "session" | "today" | "week" | "month" | "year";
 
-export type UsageStats = {
+export type UsageStatsSnapshot = {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
@@ -255,11 +255,26 @@ export type UsageStats = {
   avgTotalMs: number | null;
 };
 
+export type UsageStatsSpark = {
+  totalTokens: number[];
+  cacheHitRate: number[];
+  avgTtftMs: (number | null)[];
+  avgPredictedTps: (number | null)[];
+};
+
+export type UsageStats = UsageStatsSnapshot & {
+  /** The equivalent-length window immediately before this one — null for a custom from/to range, which has no natural "previous period". */
+  previous: UsageStatsSnapshot | null;
+  /** Compact per-metric time buckets across the current window, for KPI-card sparklines — null alongside `previous`. */
+  spark: UsageStatsSpark | null;
+};
+
 export async function getUsageStats(params?: {
   conversation_id?: string;
   model?: string;
   from?: string;
   to?: string;
+  range?: StatsRange;
 }): Promise<UsageStats> {
   const qs = new URLSearchParams(params as Record<string, string>).toString();
   return (await authedFetch(`/v1/stats/usage${qs ? `?${qs}` : ""}`)).json();
@@ -293,9 +308,11 @@ export async function getModelStats(range?: StatsRange): Promise<ModelStats[]> {
 export type ConversationStats = {
   conversationId: string;
   title: string;
+  kind: "chat" | "agent" | "routine";
   model: string;
   tokens: number;
   cachePct: number;
+  avgTtftMs: number | null;
   lastUsedAt: string;
 };
 

@@ -1,3 +1,4 @@
+import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
@@ -31,11 +32,19 @@ export function ConversationStatsTable({ conversations }: { conversations: Conve
           className="items-center justify-between rounded-md border border-border bg-card p-2.5"
         >
           <VStack className="flex-1 pr-2">
-            <Text size="sm" className="text-foreground" numberOfLines={1}>
-              {c.title}
-            </Text>
+            <HStack space="xs" className="items-center">
+              <Text size="sm" className="flex-1 text-foreground" numberOfLines={1}>
+                {c.title}
+              </Text>
+              <Box className="rounded-sm border border-border px-1 py-0.5">
+                <Text size="2xs" className="text-muted-foreground">
+                  {c.kind}
+                </Text>
+              </Box>
+            </HStack>
             <Text size="2xs" className="text-muted-foreground">
               {c.model} · {formatTimestamp(c.lastUsedAt)}
+              {c.avgTtftMs != null ? ` · ${Math.round(c.avgTtftMs)}ms ttft` : ''}
             </Text>
           </VStack>
           <VStack className="items-end">
