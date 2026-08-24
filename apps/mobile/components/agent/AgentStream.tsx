@@ -33,7 +33,7 @@ export function AgentStream({ run, state, mode, iteration, pendingApproval, onAl
     <VStack className="flex-1">
       <RunHeader title={run.title} state={state} mode={mode} iteration={iteration} />
       <Box className="flex-1">
-        <MessageList conversation={run} />
+        <MessageList conversation={run} pending={state === 'running'} />
       </Box>
       {mode === 'planning' && <PlanningBanner />}
       {pendingApproval && (

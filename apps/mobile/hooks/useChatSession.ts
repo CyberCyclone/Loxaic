@@ -181,6 +181,7 @@ export function useChatSession(token: string | null) {
   const handleSend = useCallback(
     (text: string, model: string) => {
       if (!wsRef.current) return;
+      setStreaming(true);
       if (!activeIdRef.current) {
         const localId = `c${Date.now()}`;
         pendingLocalIdRef.current = localId;
