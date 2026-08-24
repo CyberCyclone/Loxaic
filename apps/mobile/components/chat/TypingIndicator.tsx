@@ -8,6 +8,11 @@ interface TypingIndicatorProps {
   loadingModel?: boolean;
 }
 
+// Shown only before *any* token (reasoning or answer) has streamed — once
+// the model actually starts reasoning, that's real chain-of-thought and
+// gets its own live ThinkingBlock instead of this generic label. So this
+// window is genuinely prompt evaluation (prefill), not "thinking" — label
+// it that way instead of overclaiming.
 export function TypingIndicator({ loadingModel }: TypingIndicatorProps) {
   return (
     <Box className="px-4 py-2">
@@ -18,7 +23,7 @@ export function TypingIndicator({ loadingModel }: TypingIndicatorProps) {
         <HStack space="xs" className="items-center">
           <Spinner size="small" className="text-muted-foreground" />
           <Text size="xs" className="text-muted-foreground">
-            {loadingModel ? 'Loading model…' : 'Thinking…'}
+            {loadingModel ? 'Loading model…' : 'Processing prompt…'}
           </Text>
         </HStack>
       </HStack>

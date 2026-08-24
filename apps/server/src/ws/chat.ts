@@ -142,6 +142,7 @@ export function chatWsHandler(app: FastifyInstance) {
         // Stream from inference
         try {
           let fullText = "";
+          let fullThinking = "";
           for await (const event of streamCompletion(model, chatMessages)) {
             if (event.type === "delta") {
               fullText += event.content;
@@ -153,12 +154,27 @@ export function chatWsHandler(app: FastifyInstance) {
                   delta: event.content,
                 })
               );
+            } else if (event.type === "thinking") {
+              fullThinking += event.content;
+              socket.send(
+                JSON.stringify({
+                  type: "chat.thinking",
+                  message_id: assistantMsgId,
+                  conversation_id: convId,
+                  delta: event.content,
+                })
+              );
             } else if (event.type === "done") {
-              // Update message with full content
+              // Update message with full content — reasoning (if any) as its
+              // own block so it renders in the same collapsible thinking UI
+              // as the agent flow, not lost or flattened into the answer.
+              const blocks: ContentBlock[] = [];
+              if (fullThinking) blocks.push({ kind: "thinking", text: fullThinking });
+              blocks.push({ kind: "text", text: fullText });
               await db
                 .update(messages)
                 .set({
-                  content: [{ kind: "text", text: fullText }],
+                  content: blocks,
                   status: "complete",
                 })
                 .where(eq(messages.id, assistantMsgId));
@@ -179,8 +195,8 @@ export function chatWsHandler(app: FastifyInstance) {
                   promptMs: event.result.timings?.prompt_ms || null,
                   predictMs: event.result.timings?.predicted_ms || null,
                   totalMs: event.result.timings?.total_ms || null,
-                  promptTps: event.result.timings?.prompt_per_second || null,
-                  predictedTps: event.result.timings?.predicted_per_second || null,
+                  promptTps: event.result.promptTps,
+                  predictedTps: event.result.genTps,
                 });
               }
 
@@ -189,7 +205,11 @@ export function chatWsHandler(app: FastifyInstance) {
                   type: "chat.message_complete",
                   message_id: assistantMsgId,
                   conversation_id: convId,
-                  usage: event.result.usage,
+                  usage: {
+                    ...event.result.usage,
+                    prompt_tps: event.result.promptTps,
+                    gen_tps: event.result.genTps,
+                  },
                 })
               );
             }

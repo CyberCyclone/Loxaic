@@ -28,14 +28,19 @@ export function MessageList({ conversation, pending, loadingModel }: MessageList
   // thinking/tool-call) event arrives, which can lag well behind send —
   // e.g. LM Studio JIT-loading a model. Until then, the last message is
   // still the user's — show a typing indicator so send isn't silent.
-  const lastMsg = conversation.msgs[conversation.msgs.length - 1];
+  const lastIndex = conversation.msgs.length - 1;
+  const lastMsg = conversation.msgs[lastIndex];
   const showTyping = pending && (!lastMsg || lastMsg.role === 'user');
+  // Reasoning is "live" only for the last message, while it's still
+  // streaming and hasn't moved on to the answer yet — once `text` starts,
+  // the model has finished thinking even if this message object lingers.
+  const liveThinkingIndex = pending && lastMsg?.role === 'assistant' && lastMsg.thinking && !lastMsg.text ? lastIndex : -1;
 
   return (
     <ScrollView ref={scrollRef} className="flex-1" contentContainerStyle={{ paddingVertical: 16 }}>
       <Box className="mx-auto w-full max-w-[820px]">
         {conversation.msgs.map((msg, i) => (
-          <Message key={msg.id ?? i} msg={msg} />
+          <Message key={msg.id ?? i} msg={msg} liveThinking={i === liveThinkingIndex} />
         ))}
         {showTyping && <TypingIndicator loadingModel={loadingModel} />}
       </Box>

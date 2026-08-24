@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { db, desc, eq } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import { auth } from "../auth";
-import { streamCompletion, type ChatMessage, type ToolCall } from "../inference/provider";
+import { streamCompletion, type ChatMessage, type ToolCall, type CompletionResult } from "../inference/provider";
 import { listBackendModels } from "../inference/models";
 import {
   isToolName,
@@ -224,6 +224,7 @@ async function runTurn(ctx: TurnContext): Promise<void> {
     let text = "";
     let thinking = "";
     let toolCalls: ToolCall[] = [];
+    let doneResult: CompletionResult | null = null;
 
     try {
       const backendModels = await listBackendModels();
@@ -245,6 +246,7 @@ async function runTurn(ctx: TurnContext): Promise<void> {
           send({ type: "agent.thinking", conversation_id: convId, message_id: assistantMsgId, text: event.content });
         } else if (event.type === "done") {
           toolCalls = event.result.toolCalls;
+          doneResult = event.result;
           await recordUsage({
             runId, userId, convId, messageId: assistantMsgId, model, result: event.result,
           });
@@ -279,7 +281,19 @@ async function runTurn(ctx: TurnContext): Promise<void> {
         .update(conversations)
         .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
         .where(eq(conversations.id, convId));
-      send({ type: "agent.done", conversation_id: convId, message_id: assistantMsgId, text });
+      send({
+        type: "agent.done",
+        conversation_id: convId,
+        message_id: assistantMsgId,
+        text,
+        usage: doneResult
+          ? {
+              ...doneResult.usage,
+              prompt_tps: doneResult.promptTps,
+              gen_tps: doneResult.genTps,
+            }
+          : undefined,
+      });
       break;
     }
 
@@ -427,6 +441,8 @@ async function recordUsage(input: {
     usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
     timings: { cache_n?: number; prompt_ms: number; predicted_ms: number; total_ms?: number; prompt_per_second: number; predicted_per_second: number } | null;
     ttftMs: number | null;
+    promptTps: number | null;
+    genTps: number | null;
   };
 }): Promise<void> {
   const { result } = input;
@@ -447,8 +463,8 @@ async function recordUsage(input: {
     promptMs: result.timings?.prompt_ms ?? null,
     predictMs: result.timings?.predicted_ms ?? null,
     totalMs: result.timings?.total_ms ?? null,
-    promptTps: result.timings?.prompt_per_second ?? null,
-    predictedTps: result.timings?.predicted_per_second ?? null,
+    promptTps: result.promptTps,
+    predictedTps: result.genTps,
   });
 }
 

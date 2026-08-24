@@ -46,9 +46,11 @@ function renderText(text: string) {
 interface MessageProps {
   msg: MessageType;
   onFork?: () => void;
+  /** True while this message's reasoning is still actively streaming in. */
+  liveThinking?: boolean;
 }
 
-export function Message({ msg, onFork }: MessageProps) {
+export function Message({ msg, onFork, liveThinking }: MessageProps) {
   const isUser = msg.role === 'user';
 
   return (
@@ -72,7 +74,7 @@ export function Message({ msg, onFork }: MessageProps) {
             )}
           </HStack>
 
-          {msg.thinking && <ThinkingBlock text={msg.thinking} />}
+          {msg.thinking && <ThinkingBlock text={msg.thinking} live={liveThinking} />}
           {msg.tools?.map((tool, i) => <ToolCallCard key={i} tool={tool} />)}
           {msg.error ? (
             <HStack space="xs" className="items-start">
@@ -84,7 +86,17 @@ export function Message({ msg, onFork }: MessageProps) {
           )}
 
           {!isUser && msg.usage && (
-            <HStack space="md" className="pt-1">
+            <HStack space="md" className="flex-wrap pt-1">
+              {!!msg.usage.promptTps && (
+                <Text size="xs" className="text-muted-foreground">
+                  {Math.round(msg.usage.promptTps)} tok/s prompt
+                </Text>
+              )}
+              {msg.usage.tps > 0 && (
+                <Text size="xs" className="text-muted-foreground">
+                  {Math.round(msg.usage.tps)} tok/s gen
+                </Text>
+              )}
               <Text size="xs" className="text-muted-foreground">
                 {msg.usage.in.toLocaleString()} in
               </Text>

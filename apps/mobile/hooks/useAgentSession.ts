@@ -371,7 +371,16 @@ export function useAgentSession(token: string | null) {
             updateRunMsgs(event.conversation_id, (msgs) =>
               msgs.map((m) =>
                 m.id === id
-                  ? { ...m, usage: { in: event.usage!.prompt_tokens, out: event.usage!.completion_tokens, tps: 0, cache: 0 } }
+                  ? {
+                      ...m,
+                      usage: {
+                        in: event.usage!.prompt_tokens,
+                        out: event.usage!.completion_tokens,
+                        tps: event.usage!.gen_tps ?? 0,
+                        promptTps: event.usage!.prompt_tps,
+                        cache: 0,
+                      },
+                    }
                   : m,
               ),
             );

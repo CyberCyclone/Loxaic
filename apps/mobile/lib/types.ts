@@ -28,7 +28,10 @@ export interface Workspace {
 export interface MessageUsage {
   in: number
   out: number
+  /** Generation speed (tokens/sec). */
   tps: number
+  /** Prompt-processing speed (tokens/sec) — null when the backend didn't report timings. */
+  promptTps?: number | null
   cache: number
 }
 

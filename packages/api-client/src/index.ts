@@ -294,10 +294,17 @@ export async function getConversationStats(range?: StatsRange, limit?: number): 
 }
 
 // ── WebSocket Chat ────────────────────────────────────────
-export type ChatUsage = { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+export type ChatUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tps: number | null;
+  gen_tps: number | null;
+};
 
 export type ChatClientEvent =
   | { type: "chat.delta"; message_id: string; conversation_id: string; delta: string }
+  | { type: "chat.thinking"; message_id: string; conversation_id: string; delta: string }
   | { type: "chat.message_complete"; message_id: string; conversation_id: string; usage: ChatUsage }
   | { type: "chat.conversation"; conversation_id: string; message_id: string }
   | { type: "chat.model_loading"; conversation_id: string; message_id: string }

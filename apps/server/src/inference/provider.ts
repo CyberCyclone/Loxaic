@@ -42,6 +42,14 @@ export type CompletionResult = {
   ttftMs: number | null;
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   timings: LlamaTimings | null;
+  /**
+   * Tokens/sec for prompt eval and generation. Uses `timings` when the
+   * backend reports it natively (llama.cpp); otherwise LM Studio gives us no
+   * such field over its streaming API at all, so this is derived from
+   * wall-clock TTFT and total duration against the token counts instead.
+   */
+  promptTps: number | null;
+  genTps: number | null;
 };
 
 export type StreamEvent =
@@ -159,6 +167,8 @@ async function* mockStream(
         cache_n: 3,
         total_ms: Date.now() - startTime,
       },
+      promptTps: 200,
+      genTps: 66,
     },
   };
 }
@@ -300,7 +310,8 @@ async function* liveStream(
     reader.releaseLock();
   }
 
-  if (lastTimings) lastTimings.total_ms = Date.now() - startTime;
+  const totalMs = Date.now() - startTime;
+  if (lastTimings) lastTimings.total_ms = totalMs;
 
   const toolCalls: ToolCall[] = [...fragments.entries()]
     .sort(([a], [b]) => a - b)
@@ -311,6 +322,18 @@ async function* liveStream(
       function: { name: f.name, arguments: f.args || "{}" },
     }));
 
+  const usage = lastUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  // Prompt eval finishes right when the first token (reasoning or content)
+  // comes back, so ttftMs is a reasonable stand-in for prompt-eval duration;
+  // whatever's left of the total is generation.
+  const genMs = ttftMs !== null ? totalMs - ttftMs : null;
+  const promptTps =
+    lastTimings?.prompt_per_second ??
+    (ttftMs && ttftMs > 0 && usage.prompt_tokens > 0 ? (usage.prompt_tokens / ttftMs) * 1000 : null);
+  const genTps =
+    lastTimings?.predicted_per_second ??
+    (genMs && genMs > 0 && usage.completion_tokens > 0 ? (usage.completion_tokens / genMs) * 1000 : null);
+
   yield {
     type: "done",
     result: {
@@ -319,8 +342,10 @@ async function* liveStream(
       toolCalls,
       finishReason: finishReason ?? (toolCalls.length ? "tool_calls" : null),
       ttftMs,
-      usage: lastUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      usage,
       timings: lastTimings,
+      promptTps,
+      genTps,
     },
   };
 }

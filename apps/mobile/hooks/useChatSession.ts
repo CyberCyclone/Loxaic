@@ -18,6 +18,14 @@ function extractText(blocks: Array<{ kind: string; text?: string }>): string {
     .join('\n');
 }
 
+function extractThinking(blocks: Array<{ kind: string; text?: string }>): string | undefined {
+  const thinking = blocks
+    .filter((b) => b.kind === 'thinking')
+    .map((b) => b.text ?? '')
+    .join('\n');
+  return thinking || undefined;
+}
+
 export function useChatSession(token: string | null) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
@@ -76,6 +84,7 @@ export function useChatSession(token: string | null) {
               role: m.authorType === 'user' ? 'user' : 'assistant',
               model: m.model ?? undefined,
               text: extractText(m.content as Array<{ kind: string; text?: string }>),
+              thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
               error: m.status === 'error',
             }));
           if (msgs.length > 0) {
@@ -116,6 +125,23 @@ export function useChatSession(token: string | null) {
         }
       } else if (event.type === 'chat.model_loading') {
         setLoadingModel(true);
+      } else if (event.type === 'chat.thinking') {
+        setStreaming(true);
+        setLoadingModel(false);
+        const targetId = activeIdRef.current ?? event.conversation_id;
+        setConversations((prev) =>
+          prev.map((c) => {
+            if (c.id !== targetId) return c;
+            const msgs = [...c.msgs];
+            const last = msgs[msgs.length - 1];
+            if (last && last.role === 'assistant' && last.id === event.message_id) {
+              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta };
+            } else {
+              msgs.push({ id: event.message_id, role: 'assistant', text: '', thinking: event.delta });
+            }
+            return { ...c, msgs };
+          }),
+        );
       } else if (event.type === 'chat.delta') {
         setStreaming(true);
         setLoadingModel(false);
@@ -146,7 +172,8 @@ export function useChatSession(token: string | null) {
                     usage: {
                       in: event.usage.prompt_tokens,
                       out: event.usage.completion_tokens,
-                      tps: 0,
+                      tps: event.usage.gen_tps ?? 0,
+                      promptTps: event.usage.prompt_tps,
                       cache: 0,
                     },
                   }
