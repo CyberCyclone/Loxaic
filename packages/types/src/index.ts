@@ -31,6 +31,8 @@ export type ModelInfo = {
   id: string;
   display_name: string;
   quant: string;
+  /** Weight format, e.g. "gguf" or "mlx" — "—" when the backend doesn't expose it. */
+  format: string;
   context_tokens: number;
   location: "server" | "device" | "remote";
   price: number;

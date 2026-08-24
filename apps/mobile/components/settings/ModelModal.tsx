@@ -130,9 +130,18 @@ export function ModelModal({
                   }`}
                 >
                   <VStack>
-                    <Text size="sm" className="font-medium text-foreground">
-                      {item.model.display_name}
-                    </Text>
+                    <HStack space="xs" className="items-center">
+                      <Text size="sm" className="font-medium text-foreground">
+                        {item.model.display_name}
+                      </Text>
+                      {item.model.format !== '—' && (
+                        <Box className="rounded-sm border border-border bg-muted px-1 py-0.5">
+                          <Text size="2xs" className="font-medium uppercase text-muted-foreground">
+                            {item.model.format}
+                          </Text>
+                        </Box>
+                      )}
+                    </HStack>
                     <Text size="2xs" className="text-muted-foreground">
                       {item.model.quant} · {(item.model.context_tokens / 1024).toFixed(0)}K ctx
                       {item.model.price > 0 ? ` · $${item.model.price.toFixed(2)}/1M` : ' · local'}

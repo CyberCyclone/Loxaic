@@ -10,6 +10,7 @@ const MOCK_MODELS: ModelInfo[] = [
     id: "llama-3.1-8b-instruct",
     display_name: "llama-3.1-8b-instruct",
     quant: "Q4_K_M",
+    format: "gguf",
     context_tokens: 32768,
     location: "server",
     price: 0,
@@ -19,6 +20,7 @@ const MOCK_MODELS: ModelInfo[] = [
     id: "qwen2.5-14b-instruct",
     display_name: "qwen2.5-14b-instruct",
     quant: "Q5_K_M",
+    format: "mlx",
     context_tokens: 32768,
     location: "server",
     price: 0,
@@ -49,6 +51,7 @@ async function listViaLmStudioNative(): Promise<ModelInfo[]> {
       id: m.id,
       display_name: m.id,
       quant: m.quantization || "—",
+      format: typeof m.compatibility_type === "string" ? m.compatibility_type : "—",
       context_tokens: m.loaded_context_length ?? m.max_context_length ?? 8192,
       location: "server",
       price: 0,
@@ -63,6 +66,10 @@ async function listViaOpenAiCompat(): Promise<ModelInfo[]> {
     id: m.id,
     display_name: m.id,
     quant: "—",
+    // This path only runs for llama.cpp (or compatible servers), which only
+    // ever serves GGUF — unlike LM Studio's native API, there's no field for
+    // it, but the runtime itself tells us.
+    format: "gguf",
     context_tokens: m.meta?.n_ctx_train ?? 8192,
     location: "server",
     price: 0,
