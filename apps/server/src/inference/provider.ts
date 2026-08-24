@@ -199,7 +199,17 @@ async function* liveStream(
 
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
-    throw new Error(`Inference error ${response.status}: ${errText}`);
+    // OpenAI-compatible backends (LM Studio, llama.cpp) wrap the real reason in
+    // {"error":{"message":"..."}} — surface just that instead of the raw body,
+    // so the client can show it directly rather than a JSON dump.
+    let message = errText;
+    try {
+      const parsed = JSON.parse(errText);
+      message = parsed?.error?.message || errText;
+    } catch {
+      // Not JSON — use the raw text as-is.
+    }
+    throw new Error(message || `Inference error ${response.status}`);
   }
 
   if (!response.body) throw new Error("Inference response has no body");

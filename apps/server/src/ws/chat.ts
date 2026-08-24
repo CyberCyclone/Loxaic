@@ -179,12 +179,21 @@ export function chatWsHandler(app: FastifyInstance) {
             }
           }
         } catch (err) {
+          const errorMessage = (err as Error).message;
+          // Written into the message itself (not just sent as an event) so the
+          // error shows up inline in the thread like any other reply, and
+          // survives a reload instead of vanishing with a toast.
           await db
             .update(messages)
-            .set({ status: "error" })
+            .set({ content: [{ kind: "text", text: errorMessage }], status: "error" })
             .where(eq(messages.id, assistantMsgId));
           socket.send(
-            JSON.stringify({ type: "chat.error", error: (err as Error).message })
+            JSON.stringify({
+              type: "chat.error",
+              conversation_id: convId,
+              message_id: assistantMsgId,
+              error: errorMessage,
+            })
           );
         }
       }

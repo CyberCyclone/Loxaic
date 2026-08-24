@@ -69,11 +69,6 @@ app.get("/health", async () => {
   };
 });
 
-// ── Models ────────────────────────────────────────────────
-app.get("/v1/models", async () => [
-  { id: "default", name: "Default (llama.cpp)", context_window: 8192 },
-]);
-
 // ── Routes ────────────────────────────────────────────────
 await authRoutes(app);
 await conversationRoutes(app);

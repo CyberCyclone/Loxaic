@@ -42,6 +42,25 @@ export async function conversationRoutes(app: FastifyInstance) {
     return row;
   });
 
+  // Update conversation (currently: per-conversation model preference)
+  app.patch<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const { model_pref } = request.body as { model_pref?: { model?: string } };
+    const [row] = await db
+      .update(conversations)
+      .set({
+        ...(model_pref !== undefined ? { modelPref: model_pref } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)))
+      .returning();
+    if (!row) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return row;
+  });
+
   // Delete conversation (soft)
   app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);

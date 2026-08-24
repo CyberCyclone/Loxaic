@@ -16,14 +16,9 @@ export type ThemePref = 'light' | 'dark' | 'system'
 
 export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
-export interface ModelInfo {
-  id: string
-  display_name: string
-  quant: string
-  context_tokens: number
-  location: ModelLocation
-  price: number
-}
+export type { ModelInfo } from '@shannon/api-client'
+
+export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
 
 export interface Workspace {
   name: string
@@ -62,6 +57,7 @@ export interface Message {
   usage?: MessageUsage
   forks?: string[]
   origin?: MessageLocation
+  error?: boolean
 }
 
 export interface Conversation {

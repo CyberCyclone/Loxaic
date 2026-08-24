@@ -15,10 +15,10 @@ import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
+import { useModels } from '@/hooks/useModels';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
-import { getModelContext } from '@/lib/fixtures/models';
 
 export default function ChatScreen() {
   const shell = useShell();
@@ -36,23 +36,31 @@ export default function ChatScreen() {
     handleFork,
     handleDelete,
     handleRename,
+    setConversationModel,
   } = useChatSession(token);
+  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getContext, isKnown } =
+    useModels(token);
 
   const [settings] = useSettings();
   const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
-  const [selectedModel, setSelectedModel] = useState('m1');
+  const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
 
   const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
 
+  const prefModel = activeConv?.model;
+  const selectedModel =
+    (prefModel && (models.length === 0 || isKnown(prefModel)) ? prefModel : null) ??
+    pendingModel ??
+    defaultModel?.id ??
+    '';
+
   const contextPercent = activeConv
     ? Math.min(
         95,
         Math.round(
-          (activeConv.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) /
-            getModelContext(activeConv.model)) *
-            100,
+          (activeConv.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) / getContext(selectedModel)) * 100,
         ),
       )
     : 0;
@@ -60,7 +68,7 @@ export default function ChatScreen() {
     ? [
         { label: 'Tokens in', value: activeConv.msgs.reduce((a, m) => a + (m.usage?.in ?? 0), 0).toLocaleString() },
         { label: 'Tokens out', value: activeConv.msgs.reduce((a, m) => a + (m.usage?.out ?? 0), 0).toLocaleString() },
-        { label: 'Context', value: `${contextPercent}% of ${getModelContext(activeConv.model).toLocaleString()}` },
+        { label: 'Context', value: `${contextPercent}% of ${getContext(selectedModel).toLocaleString()}` },
       ]
     : [];
 
@@ -113,12 +121,7 @@ export default function ChatScreen() {
           onSend={(text) => handleSend(text, selectedModel)}
           onStop={handleStop}
           streaming={streaming}
-          selectedModel={selectedModel}
-          onSelectModel={setSelectedModel}
-          thinkingLevel={thinkingLevel}
-          onThinkingLevel={(level) => {
-            if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));
-          }}
+          modelName={selectedModel ? getName(selectedModel) : 'Select model'}
           contextPercent={contextPercent}
           contextStats={contextStats}
           onOpenModelModal={() => setModelModalOpen(true)}
@@ -137,8 +140,12 @@ export default function ChatScreen() {
       <ModelModal
         open={modelModalOpen}
         onClose={() => setModelModalOpen(false)}
+        models={models}
+        loading={modelsLoading}
+        error={modelsError}
+        onRefresh={refreshModels}
         selectedModel={selectedModel}
-        onSelect={setSelectedModel}
+        onSelect={(id) => (activeId ? setConversationModel(activeId, id) : setPendingModel(id))}
         thinkingLevel={thinkingLevel}
         onThinkingLevel={(level) => {
           if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));

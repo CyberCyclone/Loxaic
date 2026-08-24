@@ -1,5 +1,5 @@
 import { Fragment } from 'react';
-import { Copy, GitFork } from 'lucide-react-native';
+import { AlertCircle, Copy, GitFork } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -10,7 +10,6 @@ import { Icon } from '@/components/ui/icon';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCallCard } from './ToolCallCard';
 import { CodeBlock } from './CodeBlock';
-import { getModelName } from '@/lib/fixtures/models';
 import type { Message as MessageType } from '@/lib/types';
 
 const FENCE_RE = /```(\w+)?\n([\s\S]*?)```/g;
@@ -68,14 +67,21 @@ export function Message({ msg, onFork }: MessageProps) {
           <HStack space="xs" className="items-center">
             {!isUser && msg.model && (
               <Text size="xs" className="text-muted-foreground">
-                {getModelName(msg.model)}
+                {msg.model}
               </Text>
             )}
           </HStack>
 
           {msg.thinking && <ThinkingBlock text={msg.thinking} />}
           {msg.tools?.map((tool, i) => <ToolCallCard key={i} tool={tool} />)}
-          <Fragment>{renderText(msg.text)}</Fragment>
+          {msg.error ? (
+            <HStack space="xs" className="items-start">
+              <Icon as={AlertCircle} size="xs" className="mt-0.5 text-destructive" />
+              <Text className="flex-1 text-destructive">{msg.text}</Text>
+            </HStack>
+          ) : (
+            <Fragment>{renderText(msg.text)}</Fragment>
+          )}
 
           {!isUser && msg.usage && (
             <HStack space="md" className="pt-1">

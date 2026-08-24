@@ -7,6 +7,7 @@ import {
   denyTool,
   getConversations,
   getMessages,
+  updateConversation,
   type AgentEvent,
   type ApiMessage,
   type PermissionMode,
@@ -168,6 +169,7 @@ export function useAgentSession(token: string | null) {
   const loadingRef = useRef(false);
   const activeIdRef = useRef<string | null>(null);
   const pendingLocalIdRef = useRef<string | null>(null);
+  const pendingModelRef = useRef<string | null>(null);
   /** Id of the assistant message currently being streamed into, for this iteration. Reset on agent.iteration. */
   const buildingMsgIdRef = useRef<string | null>(null);
 
@@ -235,7 +237,7 @@ export function useAgentSession(token: string | null) {
           title: c.title,
           kind: 'agent',
           time: 'recent',
-          model: 'm1',
+          model: c.modelPref?.model ?? '',
           location: 'server' as const,
           msgs: [],
         }));
@@ -271,15 +273,20 @@ export function useAgentSession(token: string | null) {
         case 'agent.conversation': {
           const realId = event.conversation_id;
           const localId = pendingLocalIdRef.current;
+          const modelForPatch = pendingModelRef.current;
           pendingLocalIdRef.current = null;
+          pendingModelRef.current = null;
           setRuns((prev) => {
             if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
               return prev.map((r) => (r.id === localId ? { ...r, id: realId } : r));
             }
             if (prev.some((r) => r.id === realId)) return prev;
-            return [{ id: realId, title: 'New run', kind: 'agent', time: 'now', model: 'm1', location: 'server', msgs: [] }, ...prev];
+            return [{ id: realId, title: 'New run', kind: 'agent', time: 'now', model: modelForPatch ?? 'default', location: 'server', msgs: [] }, ...prev];
           });
           setActiveId(realId);
+          if (modelForPatch) {
+            updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
+          }
           break;
         }
         case 'agent.iteration': {
@@ -363,7 +370,7 @@ export function useAgentSession(token: string | null) {
           buildingMsgIdRef.current = null;
           setRunState('error');
           setIteration(null);
-          showToast(`Agent error: ${event.error}`);
+          showToast(`Agent error: ${event.error}`, 6000);
           break;
         }
       }
@@ -383,6 +390,7 @@ export function useAgentSession(token: string | null) {
       if (!convId) {
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
         pendingLocalIdRef.current = localId;
+        pendingModelRef.current = model;
         const newRun: Conversation = {
           id: localId,
           title: text.slice(0, 40),
@@ -466,6 +474,11 @@ export function useAgentSession(token: string | null) {
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, title: name } : r)));
   }, []);
 
+  const setRunModel = useCallback((id: string, modelId: string) => {
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, model: modelId } : r)));
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+  }, []);
+
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
   const busy = runState === 'running' || runState === 'awaiting_approval';
@@ -491,5 +504,6 @@ export function useAgentSession(token: string | null) {
     handleFork,
     handleDelete,
     handleRename,
+    setRunModel,
   };
 }

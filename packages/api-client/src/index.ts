@@ -34,16 +34,10 @@ export async function getHealth(): Promise<HealthResponse> {
   return res.json();
 }
 
-export type ModelInfo = {
-  id: string;
-  name: string;
-  context_window: number;
-};
+export type { ModelInfo, ModelPref } from "@shannon/types";
 
-export async function getModels(): Promise<ModelInfo[]> {
-  const res = await fetch(`${BASE_URL}/v1/models`);
-  if (!res.ok) throw new Error(`GET /v1/models ${res.status}`);
-  return res.json();
+export async function getModels(): Promise<import("@shannon/types").ModelInfo[]> {
+  return (await authedFetch("/v1/models")).json();
 }
 
 // ── Auth ──────────────────────────────────────────────────
@@ -106,6 +100,7 @@ export type Conversation = {
   title: string;
   kind: string;
   activeLeafId: string | null;
+  modelPref: import("@shannon/types").ModelPref | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -117,6 +112,19 @@ export async function getConversations(): Promise<Conversation[]> {
   });
   if (!res.ok) throw new Error(`Conversations failed: ${res.status}`);
   return res.json();
+}
+
+export async function updateConversation(
+  id: string,
+  patch: { model_pref?: import("@shannon/types").ModelPref },
+): Promise<Conversation> {
+  return (
+    await authedFetch(`/v1/conversations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  ).json();
 }
 
 export type ApiMessage = {
@@ -292,7 +300,7 @@ export type ChatClientEvent =
   | { type: "chat.delta"; message_id: string; conversation_id: string; delta: string }
   | { type: "chat.message_complete"; message_id: string; conversation_id: string; usage: ChatUsage }
   | { type: "chat.conversation"; conversation_id: string; message_id: string }
-  | { type: "chat.error"; error: string };
+  | { type: "chat.error"; error: string; conversation_id?: string; message_id?: string };
 
 export function createChatSocket(
   token: string,

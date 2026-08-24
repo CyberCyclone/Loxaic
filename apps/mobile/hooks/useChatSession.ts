@@ -4,6 +4,7 @@ import {
   sendChatMessage,
   getConversations,
   getMessages,
+  updateConversation,
   type ChatClientEvent,
 } from '@shannon/api-client';
 import type { Conversation, Message } from '@/lib/types';
@@ -30,6 +31,11 @@ export function useChatSession(token: string | null) {
   // the moment the user switches threads mid-stream. Route deltas by this
   // instead (falls back to the event's own conversation_id when unset).
   const activeIdRef = useRef<string | null>(null);
+  // Set together in handleSend when a brand-new conversation is created
+  // locally (before the server has assigned a real id); consumed and
+  // cleared by the chat.conversation handler once the real id arrives.
+  const pendingLocalIdRef = useRef<string | null>(null);
+  const pendingModelRef = useRef<string | null>(null);
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -48,7 +54,7 @@ export function useChatSession(token: string | null) {
           title: c.title,
           kind: (c.kind || 'chat') as Conversation['kind'],
           time: 'recent',
-          model: 'm1',
+          model: c.modelPref?.model ?? '',
           location: 'server' as const,
           msgs: [],
         }));
@@ -69,6 +75,7 @@ export function useChatSession(token: string | null) {
               role: m.authorType === 'user' ? 'user' : 'assistant',
               model: m.model ?? undefined,
               text: extractText(m.content as Array<{ kind: string; text?: string }>),
+              error: m.status === 'error',
             }));
           if (msgs.length > 0) {
             setConversations((prev) =>
@@ -90,7 +97,22 @@ export function useChatSession(token: string | null) {
     if (!token) return;
     const ws = createChatSocket(token, (event: ChatClientEvent) => {
       if (event.type === 'chat.conversation') {
-        setActiveId(event.conversation_id);
+        const realId = event.conversation_id;
+        const localId = pendingLocalIdRef.current;
+        const modelForPatch = pendingModelRef.current;
+        pendingLocalIdRef.current = null;
+        pendingModelRef.current = null;
+        if (localId && localId !== realId) {
+          setConversations((prev) =>
+            prev.some((c) => c.id === localId)
+              ? prev.map((c) => (c.id === localId ? { ...c, id: realId } : c))
+              : prev,
+          );
+        }
+        setActiveId(realId);
+        if (modelForPatch) {
+          updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
+        }
       } else if (event.type === 'chat.delta') {
         setStreaming(true);
         const targetId = activeIdRef.current ?? event.conversation_id;
@@ -129,7 +151,27 @@ export function useChatSession(token: string | null) {
         );
       } else if (event.type === 'chat.error') {
         setStreaming(false);
-        showToast('Chat error — see server logs');
+        const targetId = event.conversation_id ?? activeIdRef.current;
+        // Protocol-level errors (bad JSON, missing content) have no
+        // conversation/message to attach to — those still toast.
+        if (targetId && event.message_id) {
+          const messageId = event.message_id;
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id !== targetId) return c;
+              const msgs = [...c.msgs];
+              const idx = msgs.findIndex((m) => m.id === messageId);
+              if (idx >= 0) {
+                msgs[idx] = { ...msgs[idx], text: event.error, error: true };
+              } else {
+                msgs.push({ id: messageId, role: 'assistant', text: event.error, error: true });
+              }
+              return { ...c, msgs };
+            }),
+          );
+        } else {
+          showToast(event.error || 'Chat error', 6000);
+        }
       }
     });
     wsRef.current = ws;
@@ -140,8 +182,11 @@ export function useChatSession(token: string | null) {
     (text: string, model: string) => {
       if (!wsRef.current) return;
       if (!activeIdRef.current) {
+        const localId = `c${Date.now()}`;
+        pendingLocalIdRef.current = localId;
+        pendingModelRef.current = model;
         const newConv: Conversation = {
-          id: `c${Date.now()}`,
+          id: localId,
           title: text.slice(0, 40),
           kind: 'chat',
           time: 'now',
@@ -206,6 +251,11 @@ export function useChatSession(token: string | null) {
     [],
   );
 
+  const setConversationModel = useCallback((id: string, modelId: string) => {
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, model: modelId } : c)));
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+  }, []);
+
   const activeConv = conversations.find((c) => c.id === activeId) ?? null;
 
   return {
@@ -220,5 +270,6 @@ export function useChatSession(token: string | null) {
     handleFork,
     handleDelete,
     handleRename,
+    setConversationModel,
   };
 }

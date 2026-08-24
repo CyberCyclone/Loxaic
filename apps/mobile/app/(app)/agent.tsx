@@ -17,10 +17,10 @@ import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
+import { useModels } from '@/hooks/useModels';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
-import { getModelContext } from '@/lib/fixtures/models';
 
 export default function AgentScreen() {
   const shell = useShell();
@@ -46,11 +46,14 @@ export default function AgentScreen() {
     handleFork,
     handleDelete,
     handleRename,
+    setRunModel,
   } = useAgentSession(token);
+  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getContext, isKnown } =
+    useModels(token);
 
   const [settings] = useSettings();
   const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
-  const [selectedModel, setSelectedModel] = useState('m1');
+  const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -58,11 +61,18 @@ export default function AgentScreen() {
   const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
   const wide = breakpoint === 'wide';
 
+  const prefModel = activeRun?.model;
+  const selectedModel =
+    (prefModel && (models.length === 0 || isKnown(prefModel)) ? prefModel : null) ??
+    pendingModel ??
+    defaultModel?.id ??
+    '';
+
   const contextPercent = activeRun
     ? Math.min(
         95,
         Math.round(
-          (activeRun.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) / getModelContext(selectedModel)) * 100,
+          (activeRun.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) / getContext(selectedModel)) * 100,
         ),
       )
     : 0;
@@ -70,7 +80,7 @@ export default function AgentScreen() {
     ? [
         { label: 'Tokens in', value: activeRun.msgs.reduce((a, m) => a + (m.usage?.in ?? 0), 0).toLocaleString() },
         { label: 'Tokens out', value: activeRun.msgs.reduce((a, m) => a + (m.usage?.out ?? 0), 0).toLocaleString() },
-        { label: 'Context', value: `${contextPercent}% of ${getModelContext(selectedModel).toLocaleString()}` },
+        { label: 'Context', value: `${contextPercent}% of ${getContext(selectedModel).toLocaleString()}` },
       ]
     : [];
 
@@ -148,12 +158,7 @@ export default function AgentScreen() {
                 onSend={(text) => handleSend(text, selectedModel)}
                 onStop={handleStop}
                 streaming={runState === 'running' || runState === 'awaiting_approval'}
-                selectedModel={selectedModel}
-                onSelectModel={setSelectedModel}
-                thinkingLevel={thinkingLevel}
-                onThinkingLevel={(level) => {
-                  if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));
-                }}
+                modelName={selectedModel ? getName(selectedModel) : 'Select model'}
                 contextPercent={contextPercent}
                 contextStats={contextStats}
                 onOpenModelModal={() => setModelModalOpen(true)}
@@ -196,8 +201,12 @@ export default function AgentScreen() {
       <ModelModal
         open={modelModalOpen}
         onClose={() => setModelModalOpen(false)}
+        models={models}
+        loading={modelsLoading}
+        error={modelsError}
+        onRefresh={refreshModels}
         selectedModel={selectedModel}
-        onSelect={setSelectedModel}
+        onSelect={(id) => (activeId ? setRunModel(activeId, id) : setPendingModel(id))}
         thinkingLevel={thinkingLevel}
         onThinkingLevel={(level) => {
           if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));

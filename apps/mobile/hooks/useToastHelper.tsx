@@ -10,10 +10,10 @@ export function useToastHelper() {
   const toast = useGluestackToast();
 
   const showToast = useCallback(
-    (message: string) => {
+    (message: string, duration = 2500) => {
       toast.show({
         placement: 'bottom',
-        duration: 2500,
+        duration,
         render: ({ id }) => (
           <Toast nativeID={`toast-${id}`} action="muted" variant="solid">
             <ToastDescription>{message}</ToastDescription>

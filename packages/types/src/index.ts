@@ -27,6 +27,18 @@ export type ContentBlock =
   | { kind: "tool_result"; call_id: string; output: string; diff?: FileDiff[] }
   | { kind: "attachment"; ref: string; mime: string };
 
+export type ModelInfo = {
+  id: string;
+  display_name: string;
+  quant: string;
+  context_tokens: number;
+  location: "server" | "device" | "remote";
+  price: number;
+  loaded: boolean;
+};
+
+export type ModelPref = { model?: string };
+
 export type UsageRecord = {
   id: string;
   userId: string;

@@ -1,8 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "@shannon/db";
 import { modelRegistry } from "@shannon/db/schema";
+import { listBackendModels } from "../inference/models";
 
 export async function modelRoutes(app: FastifyInstance) {
+  app.get("/v1/models", async () => listBackendModels());
+
   app.get("/v1/model-registry", async () => {
     return db.select().from(modelRegistry);
   });

@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import {
   Platform,
-  ScrollView,
   type NativeSyntheticEvent,
   type TextInputKeyPressEventData,
 } from 'react-native';
-import { ArrowUp, Square, ChevronDown, Check } from 'lucide-react-native';
+import { ArrowUp, Square, ChevronDown, CircleDot } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -14,39 +13,24 @@ import { Textarea, TextareaInput } from '@/components/ui/textarea';
 import { Button, ButtonIcon } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
-import { Menu, MenuItem, MenuItemLabel, MenuSeparator } from '@/components/ui/menu';
 import { Popover, PopoverBackdrop, PopoverContent, PopoverBody } from '@/components/ui/popover';
 import { ContextRing } from './ContextRing';
-import { SHANNON_MODELS, THINKING_LEVELS, getModelName } from '@/lib/fixtures/models';
-import type { ThinkingLevel } from '@/lib/types';
 
 interface ComposerProps {
   onSend: (text: string) => void;
   onStop?: () => void;
   streaming?: boolean;
-  selectedModel: string;
-  onSelectModel: (modelId: string) => void;
-  thinkingLevel: ThinkingLevel;
-  onThinkingLevel: (level: ThinkingLevel) => void;
+  modelName: string;
   contextPercent?: number;
   contextStats?: { label: string; value: string }[];
-  onOpenModelModal?: () => void;
+  onOpenModelModal: () => void;
 }
-
-const MODEL_GROUPS: { label: string; location: 'server' | 'device' | 'remote' }[] = [
-  { label: 'Server Models', location: 'server' },
-  { label: 'On-Device Models', location: 'device' },
-  { label: 'Remote Models', location: 'remote' },
-];
 
 export function Composer({
   onSend,
   onStop,
   streaming,
-  selectedModel,
-  onSelectModel,
-  thinkingLevel,
-  onThinkingLevel,
+  modelName,
   contextPercent = 0,
   contextStats = [],
   onOpenModelModal,
@@ -89,71 +73,29 @@ export function Composer({
         </Textarea>
 
         <HStack space="sm" className="items-center">
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ alignItems: 'center', gap: 8, flexGrow: 1 }}
-          style={{ flex: 1 }}
-        >
-          {/* Model selector */}
-          <Menu
-            placement="top left"
-            trigger={(triggerProps) => (
-              <Pressable
-                {...triggerProps}
-                className="flex-row items-center gap-1 rounded-sm border border-border px-2 py-1.5"
-              >
-                <Text size="xs" className="text-foreground">
-                  {getModelName(selectedModel)}
-                </Text>
-                <Icon as={ChevronDown} size="xs" className="text-muted-foreground" />
-              </Pressable>
-            )}
+          {/* Model selector — opens the model modal (search, live list, thinking chips).
+              Long backend model ids (e.g. "google/gemma-4-26b-a4b-qat") must not push
+              the context ring or send button off screen, so this is the only element
+              allowed to shrink, and its name ellipsizes instead. */}
+          <Pressable
+            onPress={onOpenModelModal}
+            className="shrink flex-row items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1.5"
+            style={{ maxWidth: '65%' }}
           >
-            {MODEL_GROUPS.flatMap((group) => {
-              const models = SHANNON_MODELS.filter((m) => m.location === group.location);
-              if (models.length === 0) return [];
-              return models.map((m) => (
-                <MenuItem key={m.id} textValue={m.display_name} onPress={() => onSelectModel(m.id)}>
-                  <HStack className="flex-1 items-center justify-between">
-                    <VStack>
-                      <MenuItemLabel className="text-sm">{m.display_name}</MenuItemLabel>
-                      <Text size="2xs" className="text-muted-foreground">
-                        {m.quant} · {(m.context_tokens / 1000).toFixed(0)}K
-                        {m.location === 'remote' && m.price > 0 ? ` · $${m.price.toFixed(2)}/1M` : ''}
-                      </Text>
-                    </VStack>
-                    {m.id === selectedModel && <Icon as={Check} size="xs" className="text-primary" />}
-                  </HStack>
-                </MenuItem>
-              ));
-            })}
-            {onOpenModelModal && (
-              <>
-                <MenuSeparator />
-                <MenuItem textValue="Search models" onPress={onOpenModelModal}>
-                  <MenuItemLabel className="text-sm">Search models...</MenuItemLabel>
-                </MenuItem>
-              </>
-            )}
-          </Menu>
+            <Icon as={CircleDot} size="2xs" className="text-foreground" />
+            <Text
+              size="xs"
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              isTruncated
+              className="shrink font-medium text-foreground"
+            >
+              {modelName}
+            </Text>
+            <Icon as={ChevronDown} size="2xs" className="shrink-0 text-muted-foreground" />
+          </Pressable>
 
-          {/* Thinking level chips */}
-          <HStack space="xs">
-            {THINKING_LEVELS.map((level) => (
-              <Pressable
-                key={level}
-                onPress={() => onThinkingLevel(level)}
-                className={`rounded-full px-2 py-1 ${
-                  thinkingLevel === level ? 'bg-primary/15' : 'bg-muted'
-                }`}
-              >
-                <Text size="2xs" className={thinkingLevel === level ? 'text-primary' : 'text-muted-foreground'}>
-                  {level}
-                </Text>
-              </Pressable>
-            ))}
-          </HStack>
+          <Box className="flex-1" />
 
           {/* Context indicator */}
           {contextStats.length > 0 && (
@@ -187,7 +129,6 @@ export function Composer({
               </PopoverContent>
             </Popover>
           )}
-        </ScrollView>
 
           {streaming ? (
             <Button size="sm" className="rounded-full bg-destructive px-3" onPress={onStop}>

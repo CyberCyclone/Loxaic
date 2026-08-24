@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { FlatList } from 'react-native';
+import { useEffect, useState } from 'react';
 import { Check, Settings as SettingsIcon } from 'lucide-react-native';
 import {
   Modal,
@@ -19,12 +18,16 @@ import { Input, InputField } from '@/components/ui/input';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { CloseIcon } from '@/components/ui/icon';
-import { SHANNON_MODELS, THINKING_LEVELS } from '@/lib/fixtures/models';
-import type { ThinkingLevel } from '@/lib/types';
+import { Spinner } from '@/components/ui/spinner';
+import { THINKING_LEVELS, type ModelInfo, type ThinkingLevel } from '@/lib/types';
 
 interface ModelModalProps {
   open: boolean;
   onClose: () => void;
+  models: ModelInfo[];
+  loading: boolean;
+  error: boolean;
+  onRefresh: () => void;
   selectedModel: string;
   onSelect: (modelId: string) => void;
   thinkingLevel: ThinkingLevel;
@@ -35,14 +38,18 @@ interface ModelModalProps {
 const GROUPS: { label: string; location: 'server' | 'device' | 'remote' }[] = [
   { label: 'Server Models', location: 'server' },
   { label: 'On-Device Models', location: 'device' },
-  { label: 'Remote Models', location: 'remote' },
+  { label: 'Remote Models (Cloud)', location: 'remote' },
 ];
 
-type Row = { type: 'header'; label: string } | { type: 'model'; model: (typeof SHANNON_MODELS)[number] };
+type Row = { type: 'header'; label: string } | { type: 'model'; model: ModelInfo };
 
 export function ModelModal({
   open,
   onClose,
+  models,
+  loading,
+  error,
+  onRefresh,
   selectedModel,
   onSelect,
   thinkingLevel,
@@ -50,22 +57,35 @@ export function ModelModal({
   onOpenSettings,
 }: ModelModalProps) {
   const [search, setSearch] = useState('');
-  const filtered = SHANNON_MODELS.filter((m) =>
-    m.display_name.toLowerCase().includes(search.toLowerCase()),
+
+  useEffect(() => {
+    if (open) {
+      setSearch('');
+      onRefresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const filtered = models.filter(
+    (m) =>
+      m.display_name.toLowerCase().includes(search.toLowerCase()) ||
+      m.id.toLowerCase().includes(search.toLowerCase()),
   );
 
   const rows: Row[] = GROUPS.flatMap((g) => {
-    const models = filtered.filter((m) => m.location === g.location);
-    if (models.length === 0) return [];
-    return [{ type: 'header' as const, label: g.label }, ...models.map((m) => ({ type: 'model' as const, model: m }))];
+    const groupModels = filtered.filter((m) => m.location === g.location);
+    if (groupModels.length === 0) return [];
+    return [{ type: 'header' as const, label: g.label }, ...groupModels.map((m) => ({ type: 'model' as const, model: m }))];
   });
+
+  const isEmpty = rows.length === 0;
 
   return (
     <Modal isOpen={open} onClose={onClose} size="sm">
       <ModalBackdrop />
       <ModalContent className="max-h-[80%]">
         <ModalHeader>
-          <Heading size="sm">Select model</Heading>
+          <Heading size="sm">Select Model</Heading>
           <ModalCloseButton>
             <Icon as={CloseIcon} />
           </ModalCloseButton>
@@ -75,49 +95,70 @@ export function ModelModal({
             <InputField placeholder="Search models..." value={search} onChangeText={setSearch} />
           </Input>
         </Box>
-        <ModalBody className="p-0" contentContainerStyle={{ flex: 1 }}>
-          <FlatList
-            data={rows}
-            keyExtractor={(r, i) => (r.type === 'header' ? `h${i}` : r.model.id)}
-            renderItem={({ item }) =>
+        <ModalBody className="p-0">
+          {isEmpty ? (
+            <VStack space="sm" className="items-center justify-center py-10">
+              {loading ? (
+                <Spinner />
+              ) : (
+                <Text size="sm" className="text-muted-foreground">
+                  {error ? 'Inference backend unreachable' : 'No models available'}
+                </Text>
+              )}
+            </VStack>
+          ) : (
+            // ModalBody is a ScrollView (see components/ui/modal) — a virtualized
+            // FlatList can't nest inside one, so this list is a plain map.
+            rows.map((item, i) =>
               item.type === 'header' ? (
-                <Text size="2xs" className="px-4 pt-3 pb-1 uppercase tracking-wider text-muted-foreground">
+                <Text
+                  key={`h${i}`}
+                  size="2xs"
+                  className="px-4 pt-3 pb-1 uppercase tracking-wider text-muted-foreground"
+                >
                   {item.label}
                 </Text>
               ) : (
                 <Pressable
+                  key={item.model.id}
                   onPress={() => {
                     onSelect(item.model.id);
                     onClose();
                   }}
-                  className="flex-row items-center justify-between px-4 py-2.5 web:hover:bg-muted/30"
+                  className={`flex-row items-center justify-between px-4 py-2.5 web:hover:bg-muted/30 ${
+                    item.model.id === selectedModel ? 'bg-primary/10' : ''
+                  }`}
                 >
                   <VStack>
-                    <Text size="sm" className="text-foreground">
+                    <Text size="sm" className="font-medium text-foreground">
                       {item.model.display_name}
                     </Text>
                     <Text size="2xs" className="text-muted-foreground">
-                      {item.model.quant} · {(item.model.context_tokens / 1000).toFixed(0)}K
-                      {item.model.location === 'remote' && item.model.price > 0
-                        ? ` · $${item.model.price.toFixed(2)}/1M`
-                        : ''}
+                      {item.model.quant} · {(item.model.context_tokens / 1024).toFixed(0)}K ctx
+                      {item.model.price > 0 ? ` · $${item.model.price.toFixed(2)}/1M` : ' · local'}
+                      {item.model.loaded ? ' · loaded' : ''}
                     </Text>
                   </VStack>
                   {item.model.id === selectedModel && <Icon as={Check} size="sm" className="text-primary" />}
                 </Pressable>
-              )
-            }
-          />
+              ),
+            )
+          )}
         </ModalBody>
         <ModalFooter className="justify-between border-t border-border">
-          <HStack space="xs">
+          <HStack space="xs" className="items-center">
+            <Text size="2xs" className="text-muted-foreground">
+              Thinking
+            </Text>
             {THINKING_LEVELS.map((level) => (
               <Pressable
                 key={level}
                 onPress={() => onThinkingLevel(level)}
-                className={`rounded-full px-2 py-1 ${thinkingLevel === level ? 'bg-primary/15' : 'bg-muted'}`}
+                className={`rounded-md border px-2.5 py-1 ${
+                  thinkingLevel === level ? 'border-primary bg-primary' : 'border-border bg-background'
+                }`}
               >
-                <Text size="2xs" className={thinkingLevel === level ? 'text-primary' : 'text-muted-foreground'}>
+                <Text size="2xs" className={thinkingLevel === level ? 'text-primary-foreground' : 'text-muted-foreground'}>
                   {level}
                 </Text>
               </Pressable>
