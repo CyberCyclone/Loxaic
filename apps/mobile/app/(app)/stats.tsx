@@ -10,6 +10,8 @@ import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
 import { KpiCard, formatTokens, type KpiDelta } from '@/components/stats/KpiCard';
 import { TokensChart } from '@/components/stats/TokensChart';
+import { CacheRateChart } from '@/components/stats/CacheRateChart';
+import { ModelSpeedChart } from '@/components/stats/ModelSpeedChart';
 import { ModelStatsTable } from '@/components/stats/ModelStatsTable';
 import { ConversationStatsTable } from '@/components/stats/ConversationStatsTable';
 import { useStats } from '@/hooks/useStats';
@@ -108,6 +110,20 @@ export default function StatsScreen() {
                 Tokens Over Time
               </Text>
               <TokensChart points={series?.points ?? []} />
+            </VStack>
+
+            <VStack space="xs">
+              <Text size="sm" className="font-medium text-foreground">
+                Cache Hit Rate
+              </Text>
+              <CacheRateChart points={series?.cachePoints ?? []} />
+            </VStack>
+
+            <VStack space="xs">
+              <Text size="sm" className="font-medium text-foreground">
+                Inference Speed by Model
+              </Text>
+              <ModelSpeedChart models={models} />
             </VStack>
 
             <VStack space="xs">

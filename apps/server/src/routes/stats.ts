@@ -152,6 +152,8 @@ export async function statsRoutes(app: FastifyInstance) {
   });
 
   // Token usage bucketed over time, split by model — powers the usage chart.
+  // Also returns a second, model-agnostic bucketing of cache hit rate for
+  // the Cache Hit Rate chart — same bucket boundaries, different aggregate.
   app.get("/v1/stats/series", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const { range } = request.query as { range?: string };
@@ -163,17 +165,29 @@ export async function statsRoutes(app: FastifyInstance) {
     // expressions and rejects the GROUP BY.
     const bucketExpr = sql`date_trunc(${sql.raw(`'${unit}'`)}, ${usageRecords.createdAt})`;
 
-    const rows = await db
-      .select({
-        bucket: sql<string>`${bucketExpr}`,
-        model: usageRecords.model,
-        inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
-        outputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
-      })
-      .from(usageRecords)
-      .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
-      .groupBy(bucketExpr, usageRecords.model)
-      .orderBy(bucketExpr);
+    const [rows, cacheRows] = await Promise.all([
+      db
+        .select({
+          bucket: sql<string>`${bucketExpr}`,
+          model: usageRecords.model,
+          inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
+          outputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
+        })
+        .from(usageRecords)
+        .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
+        .groupBy(bucketExpr, usageRecords.model)
+        .orderBy(bucketExpr),
+      db
+        .select({
+          bucket: sql<string>`${bucketExpr}`,
+          inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
+          cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.cachedTokens}), 0)::float8`,
+        })
+        .from(usageRecords)
+        .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
+        .groupBy(bucketExpr)
+        .orderBy(bucketExpr),
+    ]);
 
     const buckets = new Map<string, Record<string, number>>();
     for (const row of rows) {
@@ -185,6 +199,10 @@ export async function statsRoutes(app: FastifyInstance) {
     return {
       range: range ?? "week",
       points: Array.from(buckets.entries()).map(([bucket, values]) => ({ bucket, values })),
+      cachePoints: cacheRows.map((r) => ({
+        bucket: r.bucket,
+        cacheHitRate: r.inputTokens > 0 ? Math.round((r.cachedTokens / r.inputTokens) * 10000) / 100 : 0,
+      })),
     };
   });
 

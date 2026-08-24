@@ -281,7 +281,8 @@ export async function getUsageStats(params?: {
 }
 
 export type StatsSeriesPoint = { bucket: string; values: Record<string, number> };
-export type StatsSeries = { range: StatsRange; points: StatsSeriesPoint[] };
+export type CacheRatePoint = { bucket: string; cacheHitRate: number };
+export type StatsSeries = { range: StatsRange; points: StatsSeriesPoint[]; cachePoints: CacheRatePoint[] };
 
 export async function getStatsSeries(range?: StatsRange): Promise<StatsSeries> {
   const qs = range ? `?range=${range}` : "";
