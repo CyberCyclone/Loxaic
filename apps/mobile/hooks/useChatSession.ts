@@ -105,10 +105,40 @@ export function useChatSession(token: string | null) {
       });
   }, [token, setActiveId]);
 
-  // Live streaming socket.
+  // Live streaming socket. Mobile networks drop long-lived WS connections
+  // often (backgrounding, wifi/cellular handoff) — without reconnect, a
+  // dropped socket left `streaming` stuck true forever even though the
+  // server had already finished and persisted the response, making the
+  // chat look permanently hung. This reconnects with backoff and, on every
+  // (re)connect, refreshes the active thread from the server so whatever
+  // completed while disconnected actually shows up.
   useEffect(() => {
     if (!token) return;
-    const ws = createChatSocket(token, (event: ChatClientEvent) => {
+    let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+
+    const refreshActiveConversation = () => {
+      const convId = activeIdRef.current;
+      if (!convId) return;
+      getMessages(convId)
+        .then(({ messages: rows }) => {
+          const msgs: Message[] = rows
+            .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
+            .map((m) => ({
+              id: m.id,
+              role: m.authorType === 'user' ? 'user' : 'assistant',
+              model: m.model ?? undefined,
+              text: extractText(m.content as Array<{ kind: string; text?: string }>),
+              thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
+              error: m.status === 'error',
+            }));
+          setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, msgs } : c)));
+        })
+        .catch(() => {});
+    };
+
+    const onEvent = (event: ChatClientEvent) => {
       if (event.type === 'chat.conversation') {
         const realId = event.conversation_id;
         const localId = pendingLocalIdRef.current;
@@ -214,9 +244,35 @@ export function useChatSession(token: string | null) {
           showToast(event.error || 'Chat error', 6000);
         }
       }
-    });
-    wsRef.current = ws;
-    return () => ws.close();
+    };
+
+    const connect = () => {
+      const ws = createChatSocket(token, onEvent);
+      ws.onopen = () => {
+        attempt = 0;
+        refreshActiveConversation();
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        // Whatever was in flight is now unknown client-side — the server may
+        // well have finished it already (it doesn't stop on a dropped
+        // socket). Stop showing "streaming" as if frozen and reconcile with
+        // the server's actual state once reconnected (onopen, above).
+        setStreaming(false);
+        setLoadingModel(false);
+        attempt += 1;
+        const delay = Math.min(1000 * attempt, 5000);
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      wsRef.current = ws;
+    };
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+    };
   }, [token, setActiveId, showToast]);
 
   const handleSend = useCallback(

@@ -271,10 +271,31 @@ export function useAgentSession(token: string | null) {
       });
   }, [token, setActiveId]);
 
-  // Live agent socket.
+  // Live agent socket. Mobile networks drop long-lived WS connections often
+  // (backgrounding, wifi/cellular handoff) — without reconnect, a dropped
+  // socket left `runState` stuck "running" forever even though the server
+  // had already finished and persisted the response, making the run look
+  // permanently hung. This reconnects with backoff and, on every (re)connect,
+  // refreshes the active run from the server so whatever completed while
+  // disconnected actually shows up.
   useEffect(() => {
     if (!token) return;
-    const ws = createAgentSocket(token, (event: AgentEvent) => {
+    let cancelled = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let attempt = 0;
+
+    const refreshActiveRun = () => {
+      const convId = activeIdRef.current;
+      if (!convId) return;
+      getMessages(convId)
+        .then(({ messages: rows }) => {
+          const msgs = reconstructMessages(rows);
+          setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs } : r)));
+        })
+        .catch(() => {});
+    };
+
+    const onEvent = (event: AgentEvent) => {
       switch (event.type) {
         case 'agent.conversation': {
           const realId = event.conversation_id;
@@ -404,9 +425,38 @@ export function useAgentSession(token: string | null) {
           break;
         }
       }
-    });
-    wsRef.current = ws;
-    return () => ws.close();
+    };
+
+    const connect = () => {
+      const ws = createAgentSocket(token, onEvent);
+      ws.onopen = () => {
+        attempt = 0;
+        refreshActiveRun();
+      };
+      ws.onclose = () => {
+        if (cancelled) return;
+        // Whatever was in flight is now unknown client-side — the server may
+        // well have finished it already (it doesn't stop on a dropped
+        // socket). Stop showing "running" as if frozen and reconcile with
+        // the server's actual state once reconnected (onopen, above).
+        setRunState('done');
+        setPendingApproval(null);
+        setIteration(null);
+        setLoadingModel(false);
+        buildingMsgIdRef.current = null;
+        attempt += 1;
+        const delay = Math.min(1000 * attempt, 5000);
+        reconnectTimer = setTimeout(connect, delay);
+      };
+      wsRef.current = ws;
+    };
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
+    };
   }, [token, ensureIterationMessage, updateRunMsgs, setActiveId, showToast]);
 
   const handleSend = useCallback(
@@ -443,8 +493,11 @@ export function useAgentSession(token: string | null) {
   );
 
   // Closing the socket resolves every pending approval as denied server-side
-  // (see ws/agent.ts), which is exactly what a mid-run "stop" should do. A
-  // fresh connection replaces it so the next send still works.
+  // (see ws/agent.ts), which is exactly what a mid-run "stop" should do. The
+  // live-socket effect's own onclose handler reconnects with the real event
+  // handler wired up, so the next send still works — it must not be
+  // replaced here with a one-off socket, or every event after a stop would
+  // silently vanish into a dead handler for the rest of the session.
   const handleStop = useCallback(() => {
     setRunState('done');
     setPendingApproval(null);
@@ -452,11 +505,7 @@ export function useAgentSession(token: string | null) {
     setLoadingModel(false);
     buildingMsgIdRef.current = null;
     wsRef.current?.close();
-    if (token) {
-      const ws = createAgentSocket(token, () => {});
-      wsRef.current = ws;
-    }
-  }, [token]);
+  }, []);
 
   const handleModeChange = useCallback((next: PermissionMode) => {
     setModeState(next);
