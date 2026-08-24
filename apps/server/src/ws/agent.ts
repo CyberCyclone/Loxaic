@@ -4,6 +4,7 @@ import { db, desc, eq } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import { auth } from "../auth";
 import { streamCompletion, type ChatMessage, type ToolCall } from "../inference/provider";
+import { listBackendModels } from "../inference/models";
 import {
   isToolName,
   toOpenAiTools,
@@ -223,6 +224,16 @@ async function runTurn(ctx: TurnContext): Promise<void> {
     let text = "";
     let thinking = "";
     let toolCalls: ToolCall[] = [];
+
+    try {
+      const backendModels = await listBackendModels();
+      const targetModel = backendModels.find((m) => m.id === model);
+      if (targetModel && !targetModel.loaded) {
+        send({ type: "agent.model_loading", conversation_id: convId, message_id: assistantMsgId });
+      }
+    } catch {
+      // Best-effort — fall back to the generic "thinking" indicator.
+    }
 
     try {
       for await (const event of streamCompletion(model, chatMessages, { tools })) {

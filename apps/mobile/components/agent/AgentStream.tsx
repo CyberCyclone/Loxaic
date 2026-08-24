@@ -13,12 +13,13 @@ interface AgentStreamProps {
   state: RunState;
   mode: AgentMode;
   iteration: { n: number; max: number } | null;
+  loadingModel?: boolean;
   pendingApproval: PendingApproval | null;
   onAllow: () => void;
   onDeny: () => void;
 }
 
-export function AgentStream({ run, state, mode, iteration, pendingApproval, onAllow, onDeny }: AgentStreamProps) {
+export function AgentStream({ run, state, mode, iteration, loadingModel, pendingApproval, onAllow, onDeny }: AgentStreamProps) {
   if (!run) {
     return (
       <VStack className="flex-1 items-center justify-center px-8">
@@ -33,7 +34,7 @@ export function AgentStream({ run, state, mode, iteration, pendingApproval, onAl
     <VStack className="flex-1">
       <RunHeader title={run.title} state={state} mode={mode} iteration={iteration} />
       <Box className="flex-1">
-        <MessageList conversation={run} pending={state === 'running'} />
+        <MessageList conversation={run} pending={state === 'running'} loadingModel={loadingModel} />
       </Box>
       {mode === 'planning' && <PlanningBanner />}
       {pendingApproval && (

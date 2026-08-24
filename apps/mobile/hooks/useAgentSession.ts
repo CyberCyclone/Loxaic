@@ -163,6 +163,7 @@ export function useAgentSession(token: string | null) {
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
+  const [loadingModel, setLoadingModel] = useState(false);
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -210,6 +211,7 @@ export function useAgentSession(token: string | null) {
       setPendingApproval(null);
       setIteration(null);
       setLiveTodos([]);
+      setLoadingModel(false);
       buildingMsgIdRef.current = null;
     },
     [setActiveId],
@@ -221,6 +223,7 @@ export function useAgentSession(token: string | null) {
     setPendingApproval(null);
     setIteration(null);
     setLiveTodos([]);
+    setLoadingModel(false);
     buildingMsgIdRef.current = null;
   }, [setActiveId]);
 
@@ -293,9 +296,15 @@ export function useAgentSession(token: string | null) {
           buildingMsgIdRef.current = null;
           setRunState('running');
           setIteration({ n: event.iteration, max: event.max });
+          setLoadingModel(false);
+          break;
+        }
+        case 'agent.model_loading': {
+          setLoadingModel(true);
           break;
         }
         case 'agent.delta': {
+          setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
           updateRunMsgs(event.conversation_id, (msgs) =>
             msgs.map((m) => (m.id === id ? { ...m, text: (m.text ?? '') + event.text } : m)),
@@ -303,6 +312,7 @@ export function useAgentSession(token: string | null) {
           break;
         }
         case 'agent.thinking': {
+          setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id, event.message_id);
           updateRunMsgs(event.conversation_id, (msgs) =>
             msgs.map((m) => (m.id === id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m)),
@@ -310,6 +320,7 @@ export function useAgentSession(token: string | null) {
           break;
         }
         case 'agent.tool_call': {
+          setLoadingModel(false);
           const id = ensureIterationMessage(event.conversation_id);
           const summary = toolSummary(event.tool, event.args);
           updateRunMsgs(event.conversation_id, (msgs) =>
@@ -355,6 +366,7 @@ export function useAgentSession(token: string | null) {
           buildingMsgIdRef.current = null;
           setRunState('done');
           setIteration(null);
+          setLoadingModel(false);
           if (event.usage) {
             updateRunMsgs(event.conversation_id, (msgs) =>
               msgs.map((m) =>
@@ -370,6 +382,7 @@ export function useAgentSession(token: string | null) {
           buildingMsgIdRef.current = null;
           setRunState('error');
           setIteration(null);
+          setLoadingModel(false);
           showToast(`Agent error: ${event.error}`, 6000);
           break;
         }
@@ -385,6 +398,7 @@ export function useAgentSession(token: string | null) {
       buildingMsgIdRef.current = null;
       setRunState('running');
       setPendingApproval(null);
+      setLoadingModel(false);
 
       const convId = activeIdRef.current;
       if (!convId) {
@@ -418,6 +432,7 @@ export function useAgentSession(token: string | null) {
     setRunState('done');
     setPendingApproval(null);
     setIteration(null);
+    setLoadingModel(false);
     buildingMsgIdRef.current = null;
     wsRef.current?.close();
     if (token) {
@@ -491,6 +506,7 @@ export function useAgentSession(token: string | null) {
     mode,
     runState,
     busy,
+    loadingModel,
     pendingApproval,
     iteration,
     todos: liveTodos,

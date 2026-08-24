@@ -170,6 +170,7 @@ export type FileDiff = { path: string; oldContent: string | null; newContent: st
  */
 export type AgentEvent =
   | { type: "agent.conversation"; conversation_id: string; message_id: string }
+  | { type: "agent.model_loading"; conversation_id: string; message_id: string }
   | { type: "agent.delta"; conversation_id: string; message_id: string; text: string }
   | { type: "agent.thinking"; conversation_id: string; message_id: string; text: string }
   | { type: "agent.iteration"; conversation_id: string; iteration: number; max: number }

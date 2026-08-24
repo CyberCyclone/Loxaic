@@ -9,9 +9,11 @@ interface MessageListProps {
   conversation: Conversation | null;
   /** True while waiting on a response (send-time through first token/tool call). */
   pending?: boolean;
+  /** True when the backend reported the target model isn't loaded yet. */
+  loadingModel?: boolean;
 }
 
-export function MessageList({ conversation, pending }: MessageListProps) {
+export function MessageList({ conversation, pending, loadingModel }: MessageListProps) {
   const scrollRef = useRef<ScrollView>(null);
 
   // Design parity: only snap to bottom when the thread identity changes
@@ -35,7 +37,7 @@ export function MessageList({ conversation, pending }: MessageListProps) {
         {conversation.msgs.map((msg, i) => (
           <Message key={msg.id ?? i} msg={msg} />
         ))}
-        {showTyping && <TypingIndicator />}
+        {showTyping && <TypingIndicator loadingModel={loadingModel} />}
       </Box>
     </ScrollView>
   );

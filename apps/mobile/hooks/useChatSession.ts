@@ -22,6 +22,7 @@ export function useChatSession(token: string | null) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [loadingModel, setLoadingModel] = useState(false);
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -113,8 +114,11 @@ export function useChatSession(token: string | null) {
         if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
         }
+      } else if (event.type === 'chat.model_loading') {
+        setLoadingModel(true);
       } else if (event.type === 'chat.delta') {
         setStreaming(true);
+        setLoadingModel(false);
         const targetId = activeIdRef.current ?? event.conversation_id;
         setConversations((prev) =>
           prev.map((c) => {
@@ -131,6 +135,7 @@ export function useChatSession(token: string | null) {
         );
       } else if (event.type === 'chat.message_complete') {
         setStreaming(false);
+        setLoadingModel(false);
         setConversations((prev) =>
           prev.map((c) => ({
             ...c,
@@ -151,6 +156,7 @@ export function useChatSession(token: string | null) {
         );
       } else if (event.type === 'chat.error') {
         setStreaming(false);
+        setLoadingModel(false);
         const targetId = event.conversation_id ?? activeIdRef.current;
         // Protocol-level errors (bad JSON, missing content) have no
         // conversation/message to attach to — those still toast.
@@ -182,6 +188,7 @@ export function useChatSession(token: string | null) {
     (text: string, model: string) => {
       if (!wsRef.current) return;
       setStreaming(true);
+      setLoadingModel(false);
       if (!activeIdRef.current) {
         const localId = `c${Date.now()}`;
         pendingLocalIdRef.current = localId;
@@ -211,6 +218,7 @@ export function useChatSession(token: string | null) {
 
   const handleStop = useCallback(() => {
     setStreaming(false);
+    setLoadingModel(false);
     wsRef.current?.close();
   }, []);
 
@@ -265,6 +273,7 @@ export function useChatSession(token: string | null) {
     activeConv,
     setActiveId,
     streaming,
+    loadingModel,
     handleSend,
     handleStop,
     handleNewChat,

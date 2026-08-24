@@ -4,6 +4,7 @@ import { auth } from "../auth";
 import { db } from "@shannon/db";
 import { conversations, messages } from "@shannon/db/schema";
 import { streamCompletion } from "../inference/provider";
+import { listBackendModels } from "../inference/models";
 import type { ContentBlock } from "@shannon/types";
 import { v4 as uuid } from "uuid";
 import { usageRecords } from "@shannon/db/schema";
@@ -122,6 +123,21 @@ export function chatWsHandler(app: FastifyInstance) {
           .update(conversations)
           .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
+
+        // Let the client distinguish "waiting on a JIT model load" from
+        // ordinary generation latency — LM Studio can take many seconds to
+        // load a model on first use of a completion request.
+        try {
+          const backendModels = await listBackendModels();
+          const targetModel = backendModels.find((m) => m.id === model);
+          if (targetModel && !targetModel.loaded) {
+            socket.send(
+              JSON.stringify({ type: "chat.model_loading", conversation_id: convId, message_id: assistantMsgId })
+            );
+          }
+        } catch {
+          // Best-effort — fall back to the generic "thinking" indicator.
+        }
 
         // Stream from inference
         try {

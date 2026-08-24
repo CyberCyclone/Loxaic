@@ -3,7 +3,12 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
 
-export function TypingIndicator() {
+interface TypingIndicatorProps {
+  /** True when the backend reported the target model isn't loaded yet (LM Studio JIT load). */
+  loadingModel?: boolean;
+}
+
+export function TypingIndicator({ loadingModel }: TypingIndicatorProps) {
   return (
     <Box className="px-4 py-2">
       <HStack space="sm" className="items-center">
@@ -12,7 +17,9 @@ export function TypingIndicator() {
         </Box>
         <HStack space="xs" className="items-center">
           <Spinner size="small" className="text-muted-foreground" />
-          <Text size="xs" className="text-muted-foreground">Thinking…</Text>
+          <Text size="xs" className="text-muted-foreground">
+            {loadingModel ? 'Loading model…' : 'Thinking…'}
+          </Text>
         </HStack>
       </HStack>
     </Box>
