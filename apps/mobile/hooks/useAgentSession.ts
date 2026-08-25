@@ -486,16 +486,27 @@ export function useAgentSession(token: string | null) {
     // otherwise-healthy run's future tokens for no reason. Just re-fetch
     // the active run, same as a normal reconnect would.
     //
-    // NOTE: unlike chat's reconcile pass, this is a plain overwrite (no
-    // merge-safety) — reconstructMessages() rebuilds the whole run from the
-    // DB rows, which can clobber locally-accumulated content that hasn't
-    // been persisted yet if the run is still genuinely, healthily
-    // streaming. That's a pre-existing risk on every reconnect already
-    // (not introduced by this listener); tracked in the broader per-run
-    // state-scoping follow-up (GitHub issue #1).
+    // Verified on a real iOS Simulator (see useChatSession): a background
+    // spell can leave the socket a "zombie" — no close event fires on
+    // either end, yet it never delivers another byte. Re-fetching alone
+    // only recovers whatever the DB already has at that instant; it can't
+    // restore live delivery for the rest of an in-progress run. Closing the
+    // socket forces a fresh connection so the run keeps streaming live
+    // afterward, not just once at resume.
+    //
+    // NOTE: unlike chat's reconcile pass, the refetch here is a plain
+    // overwrite (no merge-safety) — reconstructMessages() rebuilds the
+    // whole run from the DB rows, which can clobber locally-accumulated
+    // content that hasn't been persisted yet if the run is still
+    // genuinely, healthily streaming. That's a pre-existing risk on every
+    // reconnect already (not introduced by this listener); tracked in the
+    // broader per-run state-scoping follow-up (GitHub issue #1).
     let appState: AppStateStatus = AppState.currentState;
     const appStateSub = AppState.addEventListener('change', (next) => {
-      if (/inactive|background/.test(appState) && next === 'active') refreshActiveRun();
+      if (/inactive|background/.test(appState) && next === 'active') {
+        refreshActiveRun();
+        wsRef.current?.close();
+      }
       appState = next;
     });
 

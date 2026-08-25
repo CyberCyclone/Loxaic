@@ -93,7 +93,10 @@ function mergeRows(existing: Message[], rows: ApiMessage[]): Message[] {
 // the client never gets a chat.message_complete/chat.error to act on. This
 // is the only thing that later fetches the true DB state instead of leaving
 // the message permanently stuck exactly as it looked at the moment of drop.
-const RECONCILE_ATTEMPTS = 5;
+// Verified on a real iOS Simulator: a reasoning model's detailed answer can
+// legitimately run 30-60+s, comfortably outlasting a short retry budget —
+// giving up too early abandons a response that was actually about to land.
+const RECONCILE_ATTEMPTS = 40;
 const RECONCILE_DELAY_MS = 3000;
 
 /** Per-conversation in-flight state — keyed by conversation id so switching
@@ -431,13 +434,19 @@ export function useChatSession(token: string | null) {
     // suspending network activity — but it does freeze the JS thread, so a
     // chat.thinking/chat.delta/chat.message_complete that arrives while
     // backgrounded can be lost to the native WebSocket bridge losing sync
-    // across the JS-context pause, even though the socket itself is still
-    // fine. onclose-driven reconciliation above never fires in that case
-    // because nothing actually closed. Do a merge-safe reconcile pass on
-    // every foreground resume instead — deliberately *not* closing the
-    // socket, since that would sever an otherwise-healthy live stream's
-    // future tokens for no reason; mergeRows means this is safe to run
-    // even while a response is still genuinely, successfully in flight.
+    // across the JS-context pause. Verified on a real iOS Simulator: this
+    // can leave the connection a "zombie" — it delivers whatever was
+    // already buffered when the app resumes (so a stalled reply can look
+    // like it partially picked back up), then never receives another byte,
+    // with no close event on either end to trigger recovery. A first
+    // attempt only ran a merge-safe reconcile pass without touching the
+    // socket, reasoning that closing a *healthy* stream mid-response would
+    // needlessly cut off its future tokens — but a zombie socket has no
+    // future tokens to protect, and there's no reliable way to tell the two
+    // apart from here. So: do both. Reconcile immediately for a fast catch
+    // up, and close the socket to force a fresh connection — safe now that
+    // mergeRows means a reconcile can never clobber live-accumulated text,
+    // healthy stream or not.
     let appState: AppStateStatus = AppState.currentState;
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (/inactive|background/.test(appState) && next === 'active') {
@@ -447,6 +456,7 @@ export function useChatSession(token: string | null) {
           pendingReconcile.add(convId);
           reconcileConversation(convId, RECONCILE_ATTEMPTS);
         }
+        wsRef.current?.close();
       }
       appState = next;
     });
