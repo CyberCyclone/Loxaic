@@ -14,6 +14,8 @@ import { Button, ButtonIcon } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Popover, PopoverBackdrop, PopoverContent, PopoverBody } from '@/components/ui/popover';
+import { ContextBreakdown } from '@/components/context/ContextBreakdown';
+import type { ContextView } from '@/hooks/useContextUsage';
 import { ContextRing } from './ContextRing';
 
 interface ComposerProps {
@@ -21,8 +23,8 @@ interface ComposerProps {
   onStop?: () => void;
   streaming?: boolean;
   modelName: string;
-  contextPercent?: number;
-  contextStats?: { label: string; value: string }[];
+  /** Null until a conversation exists — the indicator hides entirely. */
+  context?: ContextView | null;
   onOpenModelModal: () => void;
   /** Incognito: this turn's conversation is never written to Postgres. */
   incognito?: boolean;
@@ -36,8 +38,7 @@ export function Composer({
   onStop,
   streaming,
   modelName,
-  contextPercent = 0,
-  contextStats = [],
+  context,
   onOpenModelModal,
   incognito = false,
   onToggleIncognito,
@@ -125,33 +126,35 @@ export function Composer({
           <Box className="flex-1" />
 
           {/* Context indicator */}
-          {contextStats.length > 0 && (
+          {context && (
             <Popover
               placement="top left"
               trigger={(triggerProps) => (
-                <Pressable {...triggerProps} className="flex-row items-center gap-1 px-1">
-                  <ContextRing percent={contextPercent} />
-                  <Text size="2xs" className="text-muted-foreground">
-                    {contextPercent}%
+                <Pressable
+                  {...triggerProps}
+                  // The ring and its label are only ~16pt tall — far below a
+                  // comfortable touch target, and easy to miss entirely.
+                  hitSlop={{ top: 14, bottom: 14, left: 10, right: 10 }}
+                  className="flex-row items-center gap-1 px-1 py-1"
+                >
+                  <ContextRing percent={context.percent} />
+                  <Text
+                    size="2xs"
+                    className={
+                      context.window != null && context.used > context.window
+                        ? 'font-medium text-destructive'
+                        : 'text-muted-foreground'
+                    }
+                  >
+                    {context.window != null ? `${context.percent}%` : '—'}
                   </Text>
                 </Pressable>
               )}
             >
               <PopoverBackdrop />
-              <PopoverContent className="w-60">
+              <PopoverContent className="w-72">
                 <PopoverBody>
-                  <VStack space="xs">
-                    {contextStats.map((s) => (
-                      <HStack key={s.label} className="justify-between">
-                        <Text size="xs" className="text-muted-foreground">
-                          {s.label}
-                        </Text>
-                        <Text size="xs" className="text-foreground">
-                          {s.value}
-                        </Text>
-                      </HStack>
-                    ))}
-                  </VStack>
+                  <ContextBreakdown context={context} />
                 </PopoverBody>
               </PopoverContent>
             </Popover>

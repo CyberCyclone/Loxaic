@@ -12,6 +12,8 @@ import {
   ActionsheetDragIndicator,
   ActionsheetDragIndicatorWrapper,
 } from '@/components/ui/actionsheet';
+import { ContextBreakdown } from '@/components/context/ContextBreakdown';
+import type { ContextView } from '@/hooks/useContextUsage';
 import type { ChangedFile } from '@/lib/types';
 import type { Todo } from '@shannon/api-client';
 
@@ -30,10 +32,10 @@ const TODO_TINT: Record<Todo['status'], string> = {
 interface InspectorBodyProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
-  contextPercent: number;
+  context: ContextView | null;
 }
 
-function InspectorBody({ todos, changedFiles, contextPercent }: InspectorBodyProps) {
+function InspectorBody({ todos, changedFiles, context }: InspectorBodyProps) {
   return (
     <VStack space="lg">
       <VStack space="xs">
@@ -84,22 +86,14 @@ function InspectorBody({ todos, changedFiles, contextPercent }: InspectorBodyPro
         )}
       </VStack>
 
-      <VStack space="xs">
-        <Text size="sm" className="font-semibold text-foreground">
-          Context
-        </Text>
-        <HStack className="items-center justify-between">
-          <Text size="xs" className="text-muted-foreground">
-            Context window
+      {context && (
+        <VStack space="xs">
+          <Text size="sm" className="font-semibold text-foreground">
+            Context
           </Text>
-          <Text size="xs" className="text-foreground">
-            {contextPercent}%
-          </Text>
-        </HStack>
-        <Box className="h-1.5 overflow-hidden rounded-full bg-muted">
-          <Box className="h-full rounded-full bg-primary" style={{ width: `${contextPercent}%` }} />
-        </Box>
-      </VStack>
+          <ContextBreakdown context={context} />
+        </VStack>
+      )}
     </VStack>
   );
 }
@@ -110,10 +104,10 @@ interface InspectorProps {
   wide: boolean;
   todos: Todo[];
   changedFiles: ChangedFile[];
-  contextPercent: number;
+  context: ContextView | null;
 }
 
-export function Inspector({ open, onClose, wide, todos, changedFiles, contextPercent }: InspectorProps) {
+export function Inspector({ open, onClose, wide, todos, changedFiles, context }: InspectorProps) {
   if (!open) return null;
 
   if (wide) {
@@ -128,7 +122,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, contextPer
           </Pressable>
         </HStack>
         <Box className="p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} contextPercent={contextPercent} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} />
         </Box>
       </Box>
     );
@@ -142,7 +136,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, contextPer
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
         <Box className="w-full p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} contextPercent={contextPercent} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} />
         </Box>
       </ActionsheetContent>
     </Actionsheet>

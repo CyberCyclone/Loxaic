@@ -17,6 +17,8 @@ export type ThemePref = 'light' | 'dark' | 'system'
 export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
 export type { ModelInfo } from '@shannon/api-client'
+export type { ContextBreakdown, ContextCategory, ContextPart } from '@shannon/api-client'
+import type { ContextBreakdown } from '@shannon/api-client'
 
 export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
 
@@ -35,6 +37,10 @@ export interface MessageUsage {
   /** Total wall-clock duration (ms) of the response: model load (if any), prompt eval, and generation. */
   totalMs?: number | null
   cache: number
+  /** What this turn's prompt was made of. Computed server-side — the agent's
+   * tool schemas never appear in the message list, so this can't be derived
+   * here. Absent on turns predating the feature, and when usage wasn't reported. */
+  context?: ContextBreakdown
 }
 
 export interface ToolCall {

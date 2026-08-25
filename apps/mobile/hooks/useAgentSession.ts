@@ -19,30 +19,12 @@ import {
   type ApiMessage,
   type PermissionMode,
   type Todo,
-  type ApiMessageUsage,
 } from '@shannon/api-client';
 import type { ContentBlock, FileDiff } from '@shannon/types';
-import type { Conversation, Message, MessageUsage, ToolCall, ChangedFile } from '@/lib/types';
+import type { Conversation, Message, ToolCall, ChangedFile } from '@/lib/types';
+import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 import { useToastHelper } from './useToastHelper';
-
-/** Persisted usage row (if any) → the shape Message/MessageList render — real, backend-measured, never guessed. */
-function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined {
-  if (!usage) return undefined;
-  return {
-    in: usage.inputTokens,
-    out: usage.outputTokens,
-    tps: usage.predictedTps ?? 0,
-    promptTps: usage.promptTps,
-    totalMs: usage.totalMs,
-    cache: 0,
-  };
-}
-
-/** Same shape, from a live stream's TurnUsage instead of a persisted DB row. */
-function usageFromTurn(u: TurnUsage): MessageUsage {
-  return { in: u.prompt_tokens, out: u.completion_tokens, tps: u.gen_tps ?? 0, promptTps: u.prompt_tps, totalMs: u.total_ms, cache: 0 };
-}
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
 
@@ -256,7 +238,7 @@ type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt:
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
 
-export function useAgentSession(token: string | null) {
+export function useAgentSession(token: string | null, onStreamEnd?: () => void) {
   const [runs, setRuns] = useState<Conversation[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [mode, setModeState] = useState<PermissionMode>('manual');
@@ -269,6 +251,11 @@ export function useAgentSession(token: string | null) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const loadingRef = useRef(false);
+  // See useChatSession: a ref, not a dependency — the WS effect only re-runs
+  // on [token], and an unstable callback in its deps would rebuild the socket
+  // on every parent render.
+  const onStreamEndRef = useRef(onStreamEnd);
+  onStreamEndRef.current = onStreamEnd;
   const activeIdRef = useRef<string | null>(null);
   const streamingByConvRef = useRef<Record<string, StreamState>>({});
   const pendingLocalIdRef = useRef<string | null>(null);
@@ -545,6 +532,8 @@ export function useAgentSession(token: string | null) {
           setIteration(null);
           setPendingApproval(null);
         }
+        // A run may have JIT-loaded the model, changing the context window.
+        onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
         setModeState(event.mode);
       } else if (event.type === 'error') {

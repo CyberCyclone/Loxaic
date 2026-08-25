@@ -16,6 +16,7 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
+import { useContextUsage } from '@/hooks/useContextUsage';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -39,8 +40,8 @@ export default function ChatScreen() {
     handleDelete,
     handleRename,
     setConversationModel,
-  } = useChatSession(token);
-  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getContext, isKnown } =
+  } = useChatSession(token, () => refreshModels());
+  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
 
   const [settings] = useSettings();
@@ -64,21 +65,7 @@ export default function ChatScreen() {
     defaultModel?.id ??
     '';
 
-  const contextPercent = activeConv
-    ? Math.min(
-        95,
-        Math.round(
-          (activeConv.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) / getContext(selectedModel)) * 100,
-        ),
-      )
-    : 0;
-  const contextStats = activeConv
-    ? [
-        { label: 'Tokens in', value: activeConv.msgs.reduce((a, m) => a + (m.usage?.in ?? 0), 0).toLocaleString() },
-        { label: 'Tokens out', value: activeConv.msgs.reduce((a, m) => a + (m.usage?.out ?? 0), 0).toLocaleString() },
-        { label: 'Context', value: `${contextPercent}% of ${getContext(selectedModel).toLocaleString()}` },
-      ]
-    : [];
+  const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
 
   const threadList = (
     <ThreadList
@@ -138,8 +125,7 @@ export default function ChatScreen() {
           onStop={handleStop}
           streaming={streaming}
           modelName={selectedModel ? getName(selectedModel) : 'Select model'}
-          contextPercent={contextPercent}
-          contextStats={contextStats}
+          context={context}
           onOpenModelModal={() => setModelModalOpen(true)}
           incognito={incognito}
           onToggleIncognito={() => setPendingIncognito((v) => !v)}

@@ -13,9 +13,9 @@ import {
   type StreamSnapshot,
   type TurnUsage,
   type ApiMessage,
-  type ApiMessageUsage,
 } from '@shannon/api-client';
-import type { Conversation, Message, MessageUsage } from '@/lib/types';
+import type { Conversation, Message } from '@/lib/types';
+import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
 import { useToastHelper } from './useToastHelper';
 
@@ -32,24 +32,6 @@ function extractThinking(blocks: Array<{ kind: string; text?: string }>): string
     .map((b) => b.text ?? '')
     .join('\n');
   return thinking || undefined;
-}
-
-/** Persisted usage row (if any) → the shape Message/MessageList render — real, backend-measured, never guessed. */
-function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined {
-  if (!usage) return undefined;
-  return {
-    in: usage.inputTokens,
-    out: usage.outputTokens,
-    tps: usage.predictedTps ?? 0,
-    promptTps: usage.promptTps,
-    totalMs: usage.totalMs,
-    cache: 0,
-  };
-}
-
-/** Same shape, from a live stream's TurnUsage instead of a persisted DB row. */
-function usageFromTurn(u: TurnUsage): MessageUsage {
-  return { in: u.prompt_tokens, out: u.completion_tokens, tps: u.gen_tps ?? 0, promptTps: u.prompt_tps, totalMs: u.total_ms, cache: 0 };
 }
 
 /** Cold history load only (REST) — live state is driven entirely by the
@@ -142,7 +124,7 @@ type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt:
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
 
-export function useChatSession(token: string | null) {
+export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
@@ -150,6 +132,11 @@ export function useChatSession(token: string | null) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const loadingRef = useRef(false);
+  // Held in a ref rather than read from the WS effect's closure: the effect
+  // only re-runs on [token], and adding an inline callback to its deps would
+  // tear down and rebuild the socket on every render of the parent screen.
+  const onStreamEndRef = useRef(onStreamEnd);
+  onStreamEndRef.current = onStreamEnd;
   // A ref alongside the state: the WS effect's closure is only re-created on
   // [token], so reading `activeId` state directly inside it would be stale
   // the moment the user switches threads mid-stream. Route deltas by this
@@ -385,6 +372,9 @@ export function useChatSession(token: string | null) {
         // stream.end after the producer's last flush completes. This just
         // clears the "something is streaming" UI state.
         clearStream(event.conversation_id);
+        // A run may have JIT-loaded the model, which changes the context
+        // window out from under a model list fetched at mount.
+        onStreamEndRef.current?.();
       } else if (event.type === 'error') {
         showToast(event.error || 'Chat error', 6000);
       }

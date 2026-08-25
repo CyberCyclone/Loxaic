@@ -144,6 +144,11 @@ export function ModelModal({
                     </HStack>
                     <Text size="2xs" className="text-muted-foreground">
                       {item.model.quant} · {(item.model.context_tokens / 1024).toFixed(0)}K ctx
+                      {/* A model loaded far below its ceiling is the usual reason
+                          the context meter looks wrong, so show both figures. */}
+                      {item.model.max_context_tokens > item.model.context_tokens
+                        ? ` of ${(item.model.max_context_tokens / 1024).toFixed(0)}K`
+                        : ''}
                       {item.model.price > 0 ? ` · $${item.model.price.toFixed(2)}/1M` : ' · local'}
                       {item.model.loaded ? ' · loaded' : ''}
                     </Text>

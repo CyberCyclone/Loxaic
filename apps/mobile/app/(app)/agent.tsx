@@ -18,6 +18,7 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
+import { useContextUsage } from '@/hooks/useContextUsage';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -49,8 +50,8 @@ export default function AgentScreen() {
     handleDelete,
     handleRename,
     setRunModel,
-  } = useAgentSession(token);
-  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getContext, isKnown } =
+  } = useAgentSession(token, () => refreshModels());
+  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
 
   const [settings] = useSettings();
@@ -70,21 +71,7 @@ export default function AgentScreen() {
     defaultModel?.id ??
     '';
 
-  const contextPercent = activeRun
-    ? Math.min(
-        95,
-        Math.round(
-          (activeRun.msgs.reduce((acc, m) => acc + (m.usage?.in ?? 0), 0) / getContext(selectedModel)) * 100,
-        ),
-      )
-    : 0;
-  const contextStats = activeRun
-    ? [
-        { label: 'Tokens in', value: activeRun.msgs.reduce((a, m) => a + (m.usage?.in ?? 0), 0).toLocaleString() },
-        { label: 'Tokens out', value: activeRun.msgs.reduce((a, m) => a + (m.usage?.out ?? 0), 0).toLocaleString() },
-        { label: 'Context', value: `${contextPercent}% of ${getContext(selectedModel).toLocaleString()}` },
-      ]
-    : [];
+  const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
 
   const threadList = (
     <ThreadList
@@ -163,8 +150,7 @@ export default function AgentScreen() {
                 onStop={handleStop}
                 streaming={runState === 'running' || runState === 'awaiting_approval'}
                 modelName={selectedModel ? getName(selectedModel) : 'Select model'}
-                contextPercent={contextPercent}
-                contextStats={contextStats}
+                context={context}
                 onOpenModelModal={() => setModelModalOpen(true)}
               />
             </VStack>
@@ -176,7 +162,7 @@ export default function AgentScreen() {
                 wide
                 todos={todos}
                 changedFiles={changedFiles}
-                contextPercent={contextPercent}
+                context={context}
               />
             )}
           </HStack>
@@ -197,7 +183,7 @@ export default function AgentScreen() {
           wide={false}
           todos={todos}
           changedFiles={changedFiles}
-          contextPercent={contextPercent}
+          context={context}
         />
       )}
 
