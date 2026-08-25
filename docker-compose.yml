@@ -15,6 +15,17 @@ services:
       timeout: 3s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   server:
     build:
       context: .
@@ -24,6 +35,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/shannon
       INFERENCE_BASE_URL: http://inference:8080
       BETTER_AUTH_SECRET: dev-secret-change-me
+      STREAM_BACKEND: redis
+      REDIS_URL: redis://redis:6379
     ports:
       - "4000:4000"
     depends_on:
@@ -31,6 +44,8 @@ services:
         condition: service_healthy
       inference:
         condition: service_started
+      redis:
+        condition: service_healthy
 
   inference:
     image: ghcr.io/ggml-org/llama.cpp:server
@@ -60,3 +75,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

@@ -37,13 +37,27 @@ Its main process resolves the real API URL (optionally through an embedded Tails
 sidecar) and injects it into the renderer via a `contextBridge` preload script. See
 [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md#electron-desktop-app).
 
-**The agent tool loop is real, not scripted.** `packages/agent` defines the tool
-schemas and the `AgentEvent` protocol shared by server and client. The server
-(`apps/server/src/ws/agent.ts`) runs an iteration loop against llama.cpp's native
-OpenAI-style tool calling (`--jinja`), executing each tool call
-(`apps/server/src/agent/executor.ts`) inside a lazily-created, per-conversation sandbox
-container that survives socket disconnects. `web_fetch` is the one tool that runs on the
-server itself, since sandboxes have no network — it carries a real SSRF guard.
+**The agent tool loop is real, not scripted.** `packages/agent` defines the tool schemas
+and permission-mode logic. The server (`apps/server/src/streams/runs/agentRun.ts`) runs
+an iteration loop against llama.cpp's native OpenAI-style tool calling (`--jinja`),
+executing each tool call (`apps/server/src/agent/executor.ts`) inside a lazily-created,
+per-conversation sandbox container that survives socket disconnects. `web_fetch` is the
+one tool that runs on the server itself, since sandboxes have no network — it carries a
+real SSRF guard.
+
+**Streaming is durable and resumable, not a bare WS pipe.** Both chat and agent runs
+write to a sequenced `StreamLog` (`apps/server/src/streams/` — in-memory driver for dev,
+Redis Streams driver for prod) instead of pushing deltas straight to a socket. A client
+reconnects with `stream.subscribe {conversation_id, cursors}` and gets one folded
+`stream.sync` snapshot (everything so far) followed by live `stream.event`s — no lost
+messages on a dropped connection, no reconcile-polling. `packages/types/src/
+stream-protocol.ts` is the shared wire protocol for both surfaces. Real `stream.stop`
+(the model actually stops generating, not just the socket closing). Signed-in users can
+start an **incognito** conversation (`chat.send {incognito:true}`) that is never written
+to Postgres — it lives only in the stream backend with a 24h idle TTL and is lost if the
+server restarts in memory mode. Every WS command is authorized through one chokepoint
+(`streams/authz.ts`) so a user can never touch another user's conversation, including an
+incognito one, even by id.
 
 **Offline-first sync groundwork** exists (`packages/sync` detects conversation forks;
 messages carry `origin: "server" | "device"` and a Lamport clock) but device-side local
@@ -98,11 +112,11 @@ apps/
   mobile/    the one frontend — Expo + expo-router + gluestack-ui v5
   desktop/   Electron shell (loads apps/mobile's web export) + embedded Tailscale sidecar spawn
 packages/
-  agent/     tool definitions, AgentEvent protocol, permission-mode logic — shared by server + client
-  api-client/  typed REST + WS client, re-exports @shannon/agent's types for the UI
+  agent/     tool definitions, permission-mode logic — shared by server + client
+  api-client/  typed REST + WS client, re-exports @shannon/types' stream protocol for the UI
   db/        Drizzle schema + query operator re-exports
   sync/      fork/conflict detection for the offline sync protocol
-  types/     shared primitives (ContentBlock, Result, etc.)
+  types/     shared primitives (ContentBlock, Result, etc.) + the stream-protocol wire types
   config-ts/ shared tsconfig bases
 infra/
   docker/    Dockerfiles (server — also builds+serves the web export; sandbox image)
@@ -155,10 +169,11 @@ Recorded here rather than left to be rediscovered:
   pass, the kind every other platform got, still hasn't happened.
 - **Chat's client-side fork button doesn't create a real server-side conversation** —
   it clones local state with a new client-generated id, so sending into a forked thread
-  fails (agent surface: a clean "Conversation not found" error, since
-  `ws/agent.ts` checks ownership; chat surface: silently inserts an orphaned message row,
-  since `ws/chat.ts` has no such check and `messages.conversationId` has no FK
-  constraint). A real "duplicate conversation" server endpoint would fix both.
+  fails on both surfaces with a clean "not found" error (as of the 2026-08-25 streaming
+  rework, every `chat.send`/`agent.send` with a `conversation_id` is checked against
+  `streams/authz.ts` before anything is written — this closed chat's old silent-orphan-row
+  gap as a side effect, but the underlying fork feature is still not implemented). A real
+  "duplicate conversation" server endpoint is the actual fix, still not built.
   `useAgentSession`'s fork has the identical limitation, inherited deliberately for
   parity rather than fixed ad hoc in one surface only.
 - **Electron code-signing isn't set up** — `mac.identity: null` in

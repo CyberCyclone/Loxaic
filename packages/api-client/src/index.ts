@@ -325,41 +325,50 @@ export async function getConversationStats(range?: StatsRange, limit?: number): 
   return (await authedFetch(`/v1/stats/conversations${qs ? `?${qs}` : ""}`)).json();
 }
 
-// ── WebSocket Chat ────────────────────────────────────────
-export type ChatUsage = {
-  prompt_tokens: number;
-  completion_tokens: number;
-  total_tokens: number;
-  prompt_tps: number | null;
-  gen_tps: number | null;
-  total_ms: number;
-};
+// ── Streaming protocol (shared by chat + agent WebSockets) ─
+// The envelope is owned by @shannon/types (the server emits it from the
+// same definitions) and re-exported here so UI code has a single import.
+export type {
+  ServerMessage,
+  ClientMessage,
+  StreamEventKind,
+  StreamSnapshot,
+  StreamSnapshotMessage,
+  StreamStatus,
+  TurnUsage,
+  PermissionMode,
+  Todo,
+} from "@shannon/types";
+import type { ServerMessage } from "@shannon/types";
 
-export type ChatClientEvent =
-  | { type: "chat.delta"; message_id: string; conversation_id: string; delta: string }
-  | { type: "chat.thinking"; message_id: string; conversation_id: string; delta: string }
-  | { type: "chat.message_complete"; message_id: string; conversation_id: string; usage: ChatUsage }
-  | { type: "chat.conversation"; conversation_id: string; message_id: string }
-  | { type: "chat.model_loading"; conversation_id: string; message_id: string }
-  | { type: "chat.error"; error: string; conversation_id?: string; message_id?: string };
+/** True if the send was actually written to the socket — false (never
+ * throws) if the connection isn't open, so callers can decide whether to
+ * queue, drop, or surface that to the user. */
+function trySend(ws: WebSocket, payload: unknown): boolean {
+  if (ws.readyState !== ws.OPEN) return false;
+  ws.send(JSON.stringify(payload));
+  return true;
+}
 
-export function createChatSocket(
-  token: string,
-  onEvent: (event: ChatClientEvent) => void,
-): WebSocket {
+function createStreamSocket(path: string, token: string, onEvent: (event: ServerMessage) => void): WebSocket {
   const wsBase = BASE_URL.replace("http", "ws");
-  const ws = new WebSocket(`${wsBase}/ws/chat?token=${token}`);
-
+  const ws = new WebSocket(`${wsBase}${path}?token=${token}`);
   ws.onmessage = (msg) => {
     try {
-      const event = JSON.parse(msg.data) as ChatClientEvent;
-      onEvent(event);
+      onEvent(JSON.parse(msg.data) as ServerMessage);
     } catch {
       // ignore
     }
   };
-
   return ws;
+}
+
+export function createChatSocket(token: string, onEvent: (event: ServerMessage) => void): WebSocket {
+  return createStreamSocket("/ws/chat", token, onEvent);
+}
+
+export function createAgentSocket(token: string, onEvent: (event: ServerMessage) => void): WebSocket {
+  return createStreamSocket("/ws/agent", token, onEvent);
 }
 
 export function sendChatMessage(
@@ -368,60 +377,55 @@ export function sendChatMessage(
   model?: string,
   conversationId?: string,
   parentId?: string,
-) {
-  ws.send(JSON.stringify({
+  incognito?: boolean,
+): boolean {
+  return trySend(ws, {
     type: "chat.send",
     content,
     model: model || "default",
     conversation_id: conversationId,
     parent_id: parentId,
-  }));
-}
-
-// ── Agent WebSocket ───────────────────────────────────────
-// The event union is owned by @shannon/agent (the server emits it from the
-// same definition) and re-exported here so UI code has a single import.
-export type { AgentEvent, PermissionMode, Todo, ToolName, FileDiff } from "@shannon/agent";
-import type { AgentEvent, PermissionMode } from "@shannon/agent";
-
-export function createAgentSocket(
-  token: string,
-  onEvent: (event: AgentEvent) => void,
-): WebSocket {
-  const wsBase = BASE_URL.replace("http", "ws");
-  const ws = new WebSocket(`${wsBase}/ws/agent?token=${token}`);
-  ws.onmessage = (msg) => {
-    try { const event = JSON.parse(msg.data) as AgentEvent; onEvent(event); } catch { /* ignore */ }
-  };
-  return ws;
+    incognito,
+  });
 }
 
 export function sendAgentMessage(
   ws: WebSocket,
   content: string,
-  mode: PermissionMode,
+  mode: import("@shannon/types").PermissionMode,
   convId?: string,
   parentId?: string,
   model?: string,
-) {
-  ws.send(JSON.stringify({
+  incognito?: boolean,
+): boolean {
+  return trySend(ws, {
     type: "agent.send",
     content,
     mode,
     conversation_id: convId,
     parent_id: parentId,
     model: model || "default",
-  }));
+    incognito,
+  });
 }
 
-export function setAgentMode(ws: WebSocket, mode: PermissionMode) {
-  ws.send(JSON.stringify({ type: "agent.mode", mode }));
+/** cursors = last seq the client has already applied, keyed by stream_id. */
+export function subscribeStreams(ws: WebSocket, conversationId: string, cursors?: Record<string, number>): boolean {
+  return trySend(ws, { type: "stream.subscribe", conversation_id: conversationId, cursors });
 }
 
-export function approveTool(ws: WebSocket, callId: string) {
-  ws.send(JSON.stringify({ type: "agent.approve", call_id: callId }));
+export function stopStream(ws: WebSocket, streamId: string): boolean {
+  return trySend(ws, { type: "stream.stop", stream_id: streamId });
 }
 
-export function denyTool(ws: WebSocket, callId: string) {
-  ws.send(JSON.stringify({ type: "agent.deny", call_id: callId }));
+export function setAgentMode(ws: WebSocket, mode: import("@shannon/types").PermissionMode): boolean {
+  return trySend(ws, { type: "agent.mode", mode });
+}
+
+export function approveTool(ws: WebSocket, callId: string): boolean {
+  return trySend(ws, { type: "agent.approve", call_id: callId });
+}
+
+export function denyTool(ws: WebSocket, callId: string): boolean {
+  return trySend(ws, { type: "agent.deny", call_id: callId });
 }

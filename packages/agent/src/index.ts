@@ -163,21 +163,3 @@ export function isToolName(value: unknown): value is ToolName {
 export type Todo = { id?: string; text: string; status: "pending" | "in_progress" | "completed" };
 
 export type FileDiff = { path: string; oldContent: string | null; newContent: string | null };
-
-/**
- * Every event the agent WebSocket can emit. `conversation_id` is on all of
- * them so a client multiplexing several runs never has to infer it.
- */
-export type AgentEvent =
-  | { type: "agent.conversation"; conversation_id: string; message_id: string }
-  | { type: "agent.model_loading"; conversation_id: string; message_id: string }
-  | { type: "agent.delta"; conversation_id: string; message_id: string; text: string }
-  | { type: "agent.thinking"; conversation_id: string; message_id: string; text: string }
-  | { type: "agent.iteration"; conversation_id: string; iteration: number; max: number }
-  | { type: "agent.tool_call"; conversation_id: string; call_id: string; tool: ToolName; args: Record<string, unknown> }
-  | { type: "agent.approval_request"; conversation_id: string; call_id: string; tool: ToolName; args: Record<string, unknown> }
-  | { type: "agent.tool_result"; conversation_id: string; call_id: string; tool: ToolName; output: string; ok: boolean; diff?: FileDiff[] }
-  | { type: "agent.todos"; conversation_id: string; todos: Todo[] }
-  | { type: "agent.mode_changed"; mode: PermissionMode }
-  | { type: "agent.done"; conversation_id: string; message_id: string; text: string; usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number; prompt_tps: number | null; gen_tps: number | null; total_ms: number } }
-  | { type: "agent.error"; conversation_id?: string; error: string };

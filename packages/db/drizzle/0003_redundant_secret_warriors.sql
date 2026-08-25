@@ -1,0 +1,2 @@
+CREATE INDEX "messages_conversation_created_idx" ON "messages" USING btree ("conversation_id","created_at");--> statement-breakpoint
+CREATE INDEX "messages_conversation_lamport_idx" ON "messages" USING btree ("conversation_id","lamport");

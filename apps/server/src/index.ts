@@ -6,6 +6,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "./db/migrate";
+import { initStreamBroker } from "./streams/index";
+import { recoverOrphanedStreams } from "./streams/recovery";
 import { authRoutes } from "./routes/auth";
 import { conversationRoutes } from "./routes/conversations";
 import { statsRoutes } from "./routes/stats";
@@ -28,6 +30,15 @@ try {
 } catch (err) {
   app.log.warn(`Migration skipped: ${(err as Error).message}`);
 }
+
+// ── Stream log ────────────────────────────────────────────
+// Deliberately NOT wrapped in try/catch: STREAM_BACKEND=redis with an
+// unreachable Redis must fail the boot loudly, not silently fall back to
+// the memory driver (which would silently drop the durability guarantee
+// incognito conversations depend on).
+await initStreamBroker();
+app.log.info(`Stream backend: ${process.env.STREAM_BACKEND || "memory"}`);
+await recoverOrphanedStreams();
 
 await app.register(cors, { origin: true, credentials: true });
 await app.register(websocket);

@@ -41,6 +41,8 @@ export type ModelInfo = {
 
 export type ModelPref = { model?: string };
 
+export * from "./stream-protocol";
+
 export type UsageRecord = {
   id: string;
   userId: string;

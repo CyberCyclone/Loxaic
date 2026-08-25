@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial, index } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
 // ── Better-Auth (auto-managed, needed for adapter schema) ──
@@ -72,21 +72,31 @@ export const conversations = pgTable("conversations", {
 });
 
 // ── Messages (tree via parent_id) ──
-export const messages = pgTable("messages", {
-  id: uuid("id").primaryKey(),
-  conversationId: uuid("conversation_id").notNull(),
-  parentId: uuid("parent_id"),
-  authorType: text("author_type", { enum: ["user", "assistant", "system", "tool", "summary"] }).notNull(),
-  authorUserId: text("author_user_id").references(() => user.id),
-  origin: text("origin", { enum: ["server", "device"] }).notNull().default("server"),
-  deviceId: uuid("device_id"),
-  model: text("model"),
-  lamport: bigint("lamport", { mode: "number" }).notNull(),
-  content: jsonb("content").notNull(),
-  status: text("status", { enum: ["streaming", "complete", "error", "cancelled"] }).notNull().default("streaming"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  deletedAt: timestamp("deleted_at"),
-});
+export const messages = pgTable(
+  "messages",
+  {
+    id: uuid("id").primaryKey(),
+    conversationId: uuid("conversation_id").notNull(),
+    parentId: uuid("parent_id"),
+    authorType: text("author_type", { enum: ["user", "assistant", "system", "tool", "summary"] }).notNull(),
+    authorUserId: text("author_user_id").references(() => user.id),
+    origin: text("origin", { enum: ["server", "device"] }).notNull().default("server"),
+    deviceId: uuid("device_id"),
+    model: text("model"),
+    lamport: bigint("lamport", { mode: "number" }).notNull(),
+    content: jsonb("content").notNull(),
+    status: text("status", { enum: ["streaming", "complete", "error", "cancelled"] }).notNull().default("streaming"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    deletedAt: timestamp("deleted_at"),
+  },
+  (t) => [
+    // Every history load and the boot-time orphan sweep filter by
+    // conversation; previously an unindexed seq scan on every request.
+    index("messages_conversation_created_idx").on(t.conversationId, t.createdAt),
+    // Serves the agent tool loop's history ordering ([desc(lamport), desc(createdAt)]).
+    index("messages_conversation_lamport_idx").on(t.conversationId, t.lamport),
+  ],
+);
 
 // ── Sync Ops ──
 export const syncOps = pgTable("sync_ops", {
