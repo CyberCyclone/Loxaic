@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import {
   createChatSocket,
   sendChatMessage,
@@ -53,6 +54,35 @@ function mapRows(rows: ApiMessage[]): Message[] {
       error: m.status === 'error',
       usage: toMessageUsage(m.usage),
     }));
+}
+
+/** Like mapRows, but never lets a reconciliation fetch clobber live-streamed
+ * content: the DB row for a message that's still `status: "streaming"` is
+ * only ever the initial empty placeholder — real content is written once,
+ * at the very end. Reconciliation can run while a response is still
+ * perfectly healthy (e.g. a foreground-resume catch-up check), so if the
+ * client already has live-accumulated text/thinking for that message id,
+ * keep it instead of overwriting it with the stale empty snapshot. */
+function mergeRows(existing: Message[], rows: ApiMessage[]): Message[] {
+  const existingById = new Map<string, Message>();
+  for (const m of existing) if (m.id) existingById.set(m.id, m);
+  return rows
+    .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
+    .map((m): Message => {
+      if (m.status === 'streaming') {
+        const local = existingById.get(m.id);
+        if (local && (local.text || local.thinking)) return local;
+      }
+      return {
+        id: m.id,
+        role: m.authorType === 'user' ? 'user' : 'assistant',
+        model: m.model ?? undefined,
+        text: extractText(m.content as Array<{ kind: string; text?: string }>),
+        thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
+        error: m.status === 'error',
+        usage: toMessageUsage(m.usage),
+      };
+    });
 }
 
 // How long to keep re-polling a conversation whose socket died mid-response,
@@ -211,8 +241,9 @@ export function useChatSession(token: string | null) {
       getMessages(convId)
         .then(({ messages: rows }) => {
           if (cancelled) return;
-          const msgs = mapRows(rows);
-          setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, msgs } : c)));
+          setConversations((prev) =>
+            prev.map((c) => (c.id === convId ? { ...c, msgs: mergeRows(c.msgs, rows) } : c)),
+          );
           const lastRow = rows[rows.length - 1];
           const stillUnresolved = lastRow?.authorType === 'assistant' && lastRow.status === 'streaming';
           if (stillUnresolved && retriesLeft > 0) {
@@ -395,10 +426,36 @@ export function useChatSession(token: string | null) {
     };
     connect();
 
+    // A short background spell (switching apps for a few seconds) rarely
+    // closes the socket outright — mobile OSes give a grace period before
+    // suspending network activity — but it does freeze the JS thread, so a
+    // chat.thinking/chat.delta/chat.message_complete that arrives while
+    // backgrounded can be lost to the native WebSocket bridge losing sync
+    // across the JS-context pause, even though the socket itself is still
+    // fine. onclose-driven reconciliation above never fires in that case
+    // because nothing actually closed. Do a merge-safe reconcile pass on
+    // every foreground resume instead — deliberately *not* closing the
+    // socket, since that would sever an otherwise-healthy live stream's
+    // future tokens for no reason; mergeRows means this is safe to run
+    // even while a response is still genuinely, successfully in flight.
+    let appState: AppStateStatus = AppState.currentState;
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (/inactive|background/.test(appState) && next === 'active') {
+        const targets = new Set(pendingReconcile);
+        if (activeIdRef.current) targets.add(activeIdRef.current);
+        for (const convId of targets) {
+          pendingReconcile.add(convId);
+          reconcileConversation(convId, RECONCILE_ATTEMPTS);
+        }
+      }
+      appState = next;
+    });
+
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       for (const timer of reconcileTimers.values()) clearTimeout(timer);
+      appStateSub.remove();
       wsRef.current?.close();
     };
   }, [token, setActiveId, showToast, patchStream, clearStream, setStreamingByConv]);

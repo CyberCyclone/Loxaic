@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import {
   createAgentSocket,
   sendAgentMessage,
@@ -476,9 +477,32 @@ export function useAgentSession(token: string | null) {
     };
     connect();
 
+    // See the identical listener in useChatSession — a short background
+    // spell rarely closes the socket outright (mobile OSes grant a grace
+    // period), but freezes the JS thread, so agent.* events that arrive
+    // while backgrounded can be lost to the native WebSocket bridge losing
+    // sync across the pause, even though the socket itself is still fine.
+    // Deliberately *not* closing the socket here — that would sever an
+    // otherwise-healthy run's future tokens for no reason. Just re-fetch
+    // the active run, same as a normal reconnect would.
+    //
+    // NOTE: unlike chat's reconcile pass, this is a plain overwrite (no
+    // merge-safety) — reconstructMessages() rebuilds the whole run from the
+    // DB rows, which can clobber locally-accumulated content that hasn't
+    // been persisted yet if the run is still genuinely, healthily
+    // streaming. That's a pre-existing risk on every reconnect already
+    // (not introduced by this listener); tracked in the broader per-run
+    // state-scoping follow-up (GitHub issue #1).
+    let appState: AppStateStatus = AppState.currentState;
+    const appStateSub = AppState.addEventListener('change', (next) => {
+      if (/inactive|background/.test(appState) && next === 'active') refreshActiveRun();
+      appState = next;
+    });
+
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      appStateSub.remove();
       wsRef.current?.close();
     };
   }, [token, ensureIterationMessage, updateRunMsgs, setActiveId, showToast]);
