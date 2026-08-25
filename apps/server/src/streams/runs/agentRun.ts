@@ -1,9 +1,10 @@
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
-import type { ContentBlock, TurnUsage } from "@shannon/types";
+import type { ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
 import { streamCompletion, type ChatMessage, type ToolCall, type CompletionResult } from "../../inference/provider.ts";
-import { listBackendModels } from "../../inference/models.ts";
+import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
+import { apportion, tallyChatMessages } from "../../inference/context.ts";
 import { isToolName, toOpenAiTools, toolRequiresApproval, WRITE_TOOLS, type PermissionMode } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
@@ -134,11 +135,15 @@ async function runAgentTurn(ctx: {
   try {
     const systemPrompt = mode === "planning" ? PLANNING_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT;
     const tools = toOpenAiTools(mode === "planning" ? WRITE_TOOLS : []);
-    const chatMessages: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...(await loadHistory(convId))];
+    const history = await loadHistory(convId);
+    const chatMessages: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...history.messages];
 
     let parentId = ctx.userMsgId;
     let lastAssistantId: string | null = null;
     let finished = false;
+    // Set when any iteration triggered a JIT load, so the cached model list —
+    // and with it the context window — can be dropped before the client refreshes.
+    let jitLoaded = false;
 
     for (let iteration = 1; iteration <= MAX_ITERATIONS && !finished; iteration++) {
       if (abort.signal.aborted) break;
@@ -171,15 +176,30 @@ async function runAgentTurn(ctx: {
       let toolCalls: ToolCall[] = [];
       let doneResult: CompletionResult | null = null;
 
+      let windowTokens: number | null = null;
       try {
         const backendModels = await listBackendModels();
         const targetModel = backendModels.find((m) => m.id === model);
+        windowTokens = targetModel?.loaded_context_tokens ?? targetModel?.context_tokens ?? null;
         if (targetModel && !targetModel.loaded) {
+          jitLoaded = true;
           producer.emit({ kind: "model.loading", message_id: assistantMsgId });
         }
       } catch {
         // Best-effort — fall back to the generic "thinking" indicator.
       }
+
+      // Snapshot what this iteration is actually sending. `chatMessages` grows
+      // as tool calls and results are appended, so it has to be measured here
+      // rather than once per run — and `tools` is measured with it, since the
+      // schemas ride in `body.tools` and appear nowhere in the message list.
+      const tally = tallyChatMessages(chatMessages, tools);
+      const breakdownMeta = {
+        historyMessages: history.messages.length,
+        historyLimit: HISTORY_LIMIT,
+        historyTruncated: history.truncated,
+        windowTokens,
+      };
 
       try {
         for await (const event of streamCompletion(model, chatMessages, { tools, signal: abort.signal })) {
@@ -192,7 +212,20 @@ async function runAgentTurn(ctx: {
           } else if (event.type === "done") {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
-            await recordUsage({ runId: streamId, userId, convId, messageId: assistantMsgId, model, result: event.result });
+            await recordUsage({
+              runId: streamId,
+              userId,
+              convId,
+              messageId: assistantMsgId,
+              model,
+              result: event.result,
+              context: apportion(
+                tally,
+                event.result.usage.prompt_tokens,
+                event.result.usage.completion_tokens,
+                breakdownMeta,
+              ),
+            });
           }
         }
       } catch (err) {
@@ -239,6 +272,12 @@ async function runAgentTurn(ctx: {
           .update(conversations)
           .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
+        // Same as chat: a window read before a JIT load is the model's max,
+        // not what the backend allocated. Re-read it now that loading is done.
+        if (jitLoaded) {
+          invalidateBackendModels();
+          breakdownMeta.windowTokens = (await resolveWindow(model)) ?? breakdownMeta.windowTokens;
+        }
         const usage: TurnUsage | undefined = doneResult
           ? {
               prompt_tokens: doneResult.usage.prompt_tokens,
@@ -247,6 +286,14 @@ async function runAgentTurn(ctx: {
               prompt_tps: doneResult.promptTps,
               gen_tps: doneResult.genTps,
               total_ms: doneResult.totalMs,
+              // This is the terminating iteration, so `tally` and `doneResult`
+              // describe the same call — the breakdown lines up exactly.
+              context: apportion(
+                tally,
+                doneResult.usage.prompt_tokens,
+                doneResult.usage.completion_tokens,
+                breakdownMeta,
+              ),
             }
           : undefined;
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
@@ -434,6 +481,7 @@ async function recordUsage(input: {
   messageId: string;
   model: string;
   result: CompletionResult;
+  context?: ContextBreakdown;
 }): Promise<void> {
   const { result } = input;
   // Guard against writing an all-zero row when a provider reports nothing.
@@ -455,6 +503,7 @@ async function recordUsage(input: {
     totalMs: result.totalMs,
     promptTps: result.promptTps,
     predictedTps: result.genTps,
+    contextBreakdown: input.context ?? null,
   });
 }
 
@@ -464,14 +513,17 @@ async function recordUsage(input: {
  * matching tool_result are stripped — an interrupted run would otherwise
  * leave a dangling call that most servers reject.
  */
-async function loadHistory(conversationId: string): Promise<ChatMessage[]> {
+async function loadHistory(conversationId: string): Promise<{ messages: ChatMessage[]; truncated: boolean }> {
+  // One over the limit, so we can tell the client whether older turns were
+  // already dropped. Cheaper than a second COUNT(*).
   const rows = await db.query.messages.findMany({
     where: eq(messages.conversationId, conversationId),
     orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
     columns: { authorType: true, content: true, status: true, lamport: true },
-    limit: HISTORY_LIMIT,
+    limit: HISTORY_LIMIT + 1,
   });
-  const ordered = rows.reverse();
+  const truncated = rows.length > HISTORY_LIMIT;
+  const ordered = rows.slice(0, HISTORY_LIMIT).reverse();
 
   const resolvedCallIds = new Set<string>();
   for (const row of ordered) {
@@ -514,7 +566,7 @@ async function loadHistory(conversationId: string): Promise<ChatMessage[]> {
       }
     }
   }
-  return out;
+  return { messages: out, truncated };
 }
 
 function textOf(blocks: ContentBlock[]): string {

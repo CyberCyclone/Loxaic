@@ -7,6 +7,39 @@ export type PermissionMode = "planning" | "manual" | "auto";
 
 export type Todo = { id?: string; text: string; status: "pending" | "in_progress" | "completed" };
 
+/**
+ * What a turn's prompt was made of. Attribution has to happen server-side:
+ * the agent ships its tool schemas in `body.tools`, which never appears in
+ * `messages` at all, so no client-side estimate can ever account for it —
+ * and on a small window that's the single largest slice.
+ */
+export type ContextCategory =
+  | "system" /** System prompt. Agent only — chat sends none. */
+  | "tools" /** JSON tool schemas, sent out-of-band in `body.tools`. */
+  | "history" /** Prior user + assistant turns replayed into the prompt. */
+  | "reasoning" /** Prior thinking blocks re-fed. Chat-only, and now always 0. */
+  | "tool_io" /** tool_call args + tool_result output. Unbounded; the runaway one. */
+  | "current" /** The user message that triggered this turn. */
+  | "response"; /** The reply just generated — measured, never apportioned. */
+
+export type ContextPart = { category: ContextCategory; tokens: number };
+
+export type ContextBreakdown = {
+  /** `parts` sum to exactly this. Includes the response: it's in the window
+   * now and will be in the next prompt, so the bar and the ring agree. */
+  used_tokens: number;
+  parts: ContextPart[];
+  /** How many prior messages were actually replayed, and the cap that applied. */
+  history_messages: number;
+  history_limit: number;
+  /** True when older turns had already been dropped by the cap. */
+  history_truncated: boolean;
+  /** The window the prompt was actually assembled against. Belt-and-braces on
+   * top of the client's model-list refresh: it closes the races refresh can't
+   * (refresh in flight, model changed mid-conversation, MOCK_INFERENCE). */
+  window_tokens?: number | null;
+};
+
 export type TurnUsage = {
   prompt_tokens: number;
   completion_tokens: number;
@@ -14,6 +47,7 @@ export type TurnUsage = {
   prompt_tps: number | null;
   gen_tps: number | null;
   total_ms: number;
+  context?: ContextBreakdown;
 };
 
 export type StreamStatus = "active" | "complete" | "error" | "cancelled";

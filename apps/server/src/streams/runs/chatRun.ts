@@ -3,7 +3,8 @@ import { db, eq } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import type { ContentBlock, TurnUsage } from "@shannon/types";
 import { streamCompletion, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
-import { listBackendModels } from "../../inference/models.ts";
+import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
+import { addChars, apportion, type ContextTally } from "../../inference/context.ts";
 import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -152,18 +153,27 @@ async function runChatGeneration(ctx: {
   let fullText = "";
   let fullThinking = "";
 
+  // Hoisted out of the try below: the same lookup that tells us whether to
+  // show a load indicator also tells us the window the prompt is being
+  // assembled against, which the breakdown needs.
+  let windowTokens: number | null = null;
+  let jitLoaded = false;
+
   try {
     try {
       const backendModels = await listBackendModels();
       const targetModel = backendModels.find((m) => m.id === model);
+      windowTokens = targetModel?.loaded_context_tokens ?? targetModel?.context_tokens ?? null;
       if (targetModel && !targetModel.loaded) {
+        jitLoaded = true;
         producer.emit({ kind: "model.loading", message_id: assistantMsgId });
       }
     } catch {
       // Best-effort — fall back to the generic "thinking" indicator.
     }
 
-    const chatMessages = await loadChatHistory(convId, incognito);
+    const history = await loadChatHistory(convId, incognito);
+    const chatMessages = history.messages;
     let doneResult: CompletionResult | null = null;
 
     for await (const event of streamCompletion(model, chatMessages, { signal: abort.signal })) {
@@ -182,6 +192,14 @@ async function runChatGeneration(ctx: {
     if (fullThinking) blocks.push({ kind: "thinking", text: fullThinking });
     blocks.push({ kind: "text", text: fullText });
 
+    // The JIT load has finished by now. The window read before generating was
+    // necessarily the model's max — nothing was loaded yet — so re-read it to
+    // get what the backend actually allocated.
+    if (jitLoaded) {
+      invalidateBackendModels();
+      windowTokens = (await resolveWindow(model)) ?? windowTokens;
+    }
+
     const usage: TurnUsage | undefined = doneResult
       ? {
           prompt_tokens: doneResult.usage.prompt_tokens,
@@ -190,6 +208,12 @@ async function runChatGeneration(ctx: {
           prompt_tps: doneResult.promptTps,
           gen_tps: doneResult.genTps,
           total_ms: doneResult.totalMs,
+          context: apportion(history.tally, doneResult.usage.prompt_tokens, doneResult.usage.completion_tokens, {
+            historyMessages: history.historyMessages,
+            historyLimit: HISTORY_LIMIT,
+            historyTruncated: history.historyTruncated,
+            windowTokens,
+          }),
         }
       : undefined;
 
@@ -212,6 +236,7 @@ async function runChatGeneration(ctx: {
           totalMs: doneResult.totalMs,
           promptTps: doneResult.promptTps,
           predictedTps: doneResult.genTps,
+          contextBreakdown: usage?.context ?? null,
         });
       }
     }
@@ -241,36 +266,69 @@ async function runChatGeneration(ctx: {
   }
 }
 
-function extractText(blocks: ContentBlock[]): string {
-  return blocks
-    .filter((b) => b.kind === "text" || b.kind === "thinking")
-    .map((b) => (b as { text: string }).text)
-    .join("\n");
+const HISTORY_LIMIT = 50;
+
+type LoadedHistory = {
+  messages: ChatMessage[];
+  tally: ContextTally;
+  historyMessages: number;
+  historyTruncated: boolean;
+};
+
+/**
+ * Prior reasoning is deliberately dropped. This used to fold `thinking` blocks
+ * back into the content string alongside `text`, which meant every past turn's
+ * chain-of-thought was replayed into every subsequent prompt — often the
+ * single largest slice of a small window, and not how reasoning models are
+ * meant to be prompted. (The agent's own `textOf` never did this.)
+ *
+ * It is also, deliberately, not tallied: `apportion` splits the backend's real
+ * prompt_tokens across whatever categories it's given, so including a category
+ * that contributes nothing to the actual prompt would silently understate
+ * every other row.
+ */
+function splitBlocks(blocks: ContentBlock[]): { text: string } {
+  const text: string[] = [];
+  for (const b of blocks) {
+    if (b.kind === "text") text.push(b.text);
+  }
+  return { text: text.join("\n") };
 }
 
 /** Non-incognito: the usual Postgres history query. Incognito: rebuilt from
  * the stream log's folded snapshots — there's no Postgres row to query
- * instead, since none was ever written. */
-async function loadChatHistory(conversationId: string, incognito: boolean): Promise<ChatMessage[]> {
+ * instead, since none was ever written.
+ *
+ * Tallies as it goes rather than walking the returned ChatMessages: by then
+ * the blocks are flattened to strings and `reasoning` can no longer be told
+ * apart from `history`. */
+async function loadChatHistory(conversationId: string, incognito: boolean): Promise<LoadedHistory> {
+  const tally: ContextTally = {};
+  const out: ChatMessage[] = [];
+
   if (!incognito) {
-    const history = await db.query.messages.findMany({
+    // One over the limit: if the extra row comes back, older turns are being
+    // dropped and the UI should say so. Cheaper than a second COUNT(*).
+    const rows = await db.query.messages.findMany({
       where: eq(messages.conversationId, conversationId),
       orderBy: (msgs, { desc }) => [desc(msgs.createdAt)],
       columns: { authorType: true, content: true },
-      limit: 50,
+      limit: HISTORY_LIMIT + 1,
     });
-    history.reverse();
-    return history
-      .filter((h) => h.authorType === "user" || h.authorType === "assistant")
-      .map((h) => ({
-        role: (h.authorType === "user" ? "user" : "assistant") as "user" | "assistant",
-        content: extractText(h.content as ContentBlock[]),
-      }));
+    const truncated = rows.length > HISTORY_LIMIT;
+    const history = rows.slice(0, HISTORY_LIMIT).reverse();
+
+    for (const h of history) {
+      if (h.authorType !== "user" && h.authorType !== "assistant") continue;
+      const { text } = splitBlocks(h.content as ContentBlock[]);
+      out.push({ role: h.authorType, content: text });
+    }
+    tallyHistoryRoles(tally, out);
+    return { messages: out, tally, historyMessages: out.length, historyTruncated: truncated };
   }
 
   const broker = getStreamBroker();
-  const runIds = (await broker.driver.listConvStreams(conversationId)).slice(-50);
-  const out: ChatMessage[] = [];
+  const runIds = (await broker.driver.listConvStreams(conversationId)).slice(-HISTORY_LIMIT);
   for (const runId of runIds) {
     const records = await broker.readFrom(runId, 0);
     const snapshot = broker.foldSnapshot(records);
@@ -280,5 +338,18 @@ async function loadChatHistory(conversationId: string, incognito: boolean): Prom
       out.push({ role: m.author_type, content: m.text });
     }
   }
-  return out.slice(-50);
+  const truncated = out.length > HISTORY_LIMIT;
+  const capped = out.slice(-HISTORY_LIMIT);
+  tallyHistoryRoles(tally, capped);
+  return { messages: capped, tally, historyMessages: capped.length, historyTruncated: truncated };
+}
+
+/** The trailing user message is this turn's prompt; everything before it is
+ * history. Chat sends no system prompt and no tools, so those categories
+ * simply never appear on this surface. */
+function tallyHistoryRoles(tally: ContextTally, msgs: ChatMessage[]): void {
+  const lastUserIdx = msgs.map((m) => m.role).lastIndexOf("user");
+  msgs.forEach((m, i) => {
+    addChars(tally, m.role === "user" && i === lastUserIdx ? "current" : "history", m.content);
+  });
 }

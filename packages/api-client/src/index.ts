@@ -137,6 +137,9 @@ export type ApiMessageUsage = {
   totalMs: number | null;
   promptTps: number | null;
   predictedTps: number | null;
+  /** null for rows written before this column existed, and for any backend
+   * that reported no usage — the UI must degrade rather than assume. */
+  contextBreakdown: import("@shannon/types").ContextBreakdown | null;
 };
 
 export type ApiMessage = {
@@ -336,6 +339,9 @@ export type {
   StreamSnapshotMessage,
   StreamStatus,
   TurnUsage,
+  ContextBreakdown,
+  ContextCategory,
+  ContextPart,
   PermissionMode,
   Todo,
 } from "@shannon/types";

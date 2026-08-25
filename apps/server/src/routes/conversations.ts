@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq, and, isNull, desc } from "@shannon/db";
 import { db } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
+import type { ContextBreakdown } from "@shannon/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@shannon/sync";
 
@@ -112,6 +113,7 @@ export async function conversationRoutes(app: FastifyInstance) {
               totalMs: u.totalMs,
               promptTps: u.promptTps,
               predictedTps: u.predictedTps,
+              contextBreakdown: (u.contextBreakdown as ContextBreakdown | null) ?? null,
             }
           : null,
       };
