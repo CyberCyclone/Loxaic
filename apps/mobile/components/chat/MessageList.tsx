@@ -11,9 +11,11 @@ interface MessageListProps {
   responseStartedAt?: number | null;
   /** True when the backend reported the target model isn't loaded yet. */
   loadingModel?: boolean;
+  /** Model the in-flight send targeted — shown on the typing indicator before any assistant message exists yet. */
+  model?: string;
 }
 
-export function MessageList({ conversation, responseStartedAt, loadingModel }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, model }: MessageListProps) {
   const scrollRef = useRef<ScrollView>(null);
   const pending = !!responseStartedAt;
 
@@ -51,7 +53,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel }: M
             elapsedSince={i === liveElapsedIndex ? responseStartedAt : null}
           />
         ))}
-        {showTyping && <TypingIndicator loadingModel={loadingModel} since={responseStartedAt!} />}
+        {showTyping && <TypingIndicator loadingModel={loadingModel} since={responseStartedAt!} model={model} />}
       </Box>
     </ScrollView>
   );

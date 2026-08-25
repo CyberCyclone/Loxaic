@@ -115,7 +115,12 @@ export default function ChatScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
         >
         {activeConv ? (
-          <MessageList conversation={activeConv} responseStartedAt={responseStartedAt} loadingModel={loadingModel} />
+          <MessageList
+            conversation={activeConv}
+            responseStartedAt={responseStartedAt}
+            loadingModel={loadingModel}
+            model={selectedModel ? getName(selectedModel) : undefined}
+          />
         ) : (
           <PromptSuggestions onPick={(text) => handleSend(text, selectedModel)} />
         )}

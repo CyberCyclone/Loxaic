@@ -192,6 +192,10 @@ export function useAgentSession(token: string | null) {
   const pendingModelRef = useRef<string | null>(null);
   /** Id of the assistant message currently being streamed into, for this iteration. Reset on agent.iteration. */
   const buildingMsgIdRef = useRef<string | null>(null);
+  // The model of the in-flight send — agent.delta/agent.thinking events carry
+  // no model field of their own, so the freshly-created assistant message
+  // placeholder needs this to attribute itself, same as chat.
+  const sentModelRef = useRef<string | null>(null);
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -214,7 +218,10 @@ export function useAgentSession(token: string | null) {
       }
       const id = preferredId ?? `local-${convId}-${Math.random().toString(36).slice(2)}`;
       buildingMsgIdRef.current = id;
-      updateRunMsgs(convId, (msgs) => [...msgs, { id, role: 'assistant', text: '' }]);
+      updateRunMsgs(convId, (msgs) => [
+        ...msgs,
+        { id, role: 'assistant', text: '', model: sentModelRef.current ?? undefined },
+      ]);
       return id;
     },
     [updateRunMsgs],
@@ -484,6 +491,7 @@ export function useAgentSession(token: string | null) {
       setPendingApproval(null);
       setLoadingModel(false);
       setResponseStartedAt(Date.now());
+      sentModelRef.current = model;
 
       const convId = activeIdRef.current;
       if (!convId) {

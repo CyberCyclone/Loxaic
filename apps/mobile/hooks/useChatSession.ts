@@ -40,15 +40,17 @@ function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined
   };
 }
 
+/** Per-conversation in-flight state — keyed by conversation id so switching
+ * threads mid-response can never show one conversation's stop button,
+ * elapsed timer, or model label on another. Only the conversation(s) that
+ * actually have a request in flight get an entry; everything else reads as
+ * "not streaming" regardless of which thread is currently being viewed. */
+type StreamState = { loadingModel: boolean; responseStartedAt: number; model: string };
+
 export function useChatSession(token: string | null) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
-  const [streaming, setStreaming] = useState(false);
-  const [loadingModel, setLoadingModel] = useState(false);
-  // Epoch ms the current response started at (send time) — real wall-clock,
-  // not an estimate. Drives the live elapsed-time readout across the whole
-  // response lifecycle; null means nothing's in flight.
-  const [responseStartedAt, setResponseStartedAt] = useState<number | null>(null);
+  const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -58,11 +60,46 @@ export function useChatSession(token: string | null) {
   // the moment the user switches threads mid-stream. Route deltas by this
   // instead (falls back to the event's own conversation_id when unset).
   const activeIdRef = useRef<string | null>(null);
+  // Same staleness problem applies to streamingByConv — the WS effect reads
+  // it synchronously to attribute a live message to its in-flight model, so
+  // it needs a ref mirror alongside the state, kept in sync by every setter
+  // below rather than read from the (potentially stale) closed-over state.
+  const streamingByConvRef = useRef<Record<string, StreamState>>({});
   // Set together in handleSend when a brand-new conversation is created
   // locally (before the server has assigned a real id); consumed and
   // cleared by the chat.conversation handler once the real id arrives.
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
+
+  const setStreamingByConv = useCallback(
+    (updater: (prev: Record<string, StreamState>) => Record<string, StreamState>) => {
+      setStreamingByConvState((prev) => {
+        const next = updater(prev);
+        streamingByConvRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const patchStream = useCallback(
+    (id: string, patch: Partial<StreamState>) => {
+      setStreamingByConv((prev) => (id in prev ? { ...prev, [id]: { ...prev[id], ...patch } } : prev));
+    },
+    [setStreamingByConv],
+  );
+
+  const clearStream = useCallback(
+    (id: string) => {
+      setStreamingByConv((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    },
+    [setStreamingByConv],
+  );
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -168,17 +205,31 @@ export function useChatSession(token: string | null) {
               ? prev.map((c) => (c.id === localId ? { ...c, id: realId } : c))
               : prev,
           );
+          setStreamingByConv((prev) => {
+            if (!(localId in prev)) return prev;
+            const next = { ...prev };
+            next[realId] = next[localId];
+            delete next[localId];
+            return next;
+          });
         }
         setActiveId(realId);
         if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
         }
       } else if (event.type === 'chat.model_loading') {
-        setLoadingModel(true);
+        const targetId = event.conversation_id ?? activeIdRef.current;
+        if (targetId) patchStream(targetId, { loadingModel: true });
       } else if (event.type === 'chat.thinking') {
-        setStreaming(true);
-        setLoadingModel(false);
-        const targetId = activeIdRef.current ?? event.conversation_id;
+        // The event's own conversation_id is authoritative — it names the
+        // conversation this token actually belongs to. Falling back to
+        // activeIdRef (only relevant for the brand-new-conversation window
+        // before chat.conversation remaps it) must never override that,
+        // or switching threads mid-stream misroutes the old thread's
+        // still-arriving tokens into whatever the user is now viewing.
+        const targetId = event.conversation_id ?? activeIdRef.current;
+        if (targetId) patchStream(targetId, { loadingModel: false });
+        const streamModel = targetId ? streamingByConvRef.current[targetId]?.model : undefined;
         setConversations((prev) =>
           prev.map((c) => {
             if (c.id !== targetId) return c;
@@ -187,15 +238,22 @@ export function useChatSession(token: string | null) {
             if (last && last.role === 'assistant' && last.id === event.message_id) {
               msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta };
             } else {
-              msgs.push({ id: event.message_id, role: 'assistant', text: '', thinking: event.delta });
+              msgs.push({
+                id: event.message_id,
+                role: 'assistant',
+                text: '',
+                thinking: event.delta,
+                model: streamModel,
+              });
             }
             return { ...c, msgs };
           }),
         );
       } else if (event.type === 'chat.delta') {
-        setStreaming(true);
-        setLoadingModel(false);
-        const targetId = activeIdRef.current ?? event.conversation_id;
+        // See chat.thinking above: event.conversation_id must win.
+        const targetId = event.conversation_id ?? activeIdRef.current;
+        if (targetId) patchStream(targetId, { loadingModel: false });
+        const streamModel = targetId ? streamingByConvRef.current[targetId]?.model : undefined;
         setConversations((prev) =>
           prev.map((c) => {
             if (c.id !== targetId) return c;
@@ -204,15 +262,18 @@ export function useChatSession(token: string | null) {
             if (last && last.role === 'assistant' && last.id === event.message_id) {
               msgs[msgs.length - 1] = { ...last, text: last.text + event.delta };
             } else {
-              msgs.push({ id: event.message_id, role: 'assistant', text: event.delta });
+              msgs.push({
+                id: event.message_id,
+                role: 'assistant',
+                text: event.delta,
+                model: streamModel,
+              });
             }
             return { ...c, msgs };
           }),
         );
       } else if (event.type === 'chat.message_complete') {
-        setStreaming(false);
-        setLoadingModel(false);
-        setResponseStartedAt(null);
+        if (event.conversation_id) clearStream(event.conversation_id);
         setConversations((prev) =>
           prev.map((c) => ({
             ...c,
@@ -234,14 +295,13 @@ export function useChatSession(token: string | null) {
           })),
         );
       } else if (event.type === 'chat.error') {
-        setStreaming(false);
-        setLoadingModel(false);
-        setResponseStartedAt(null);
         const targetId = event.conversation_id ?? activeIdRef.current;
+        if (targetId) clearStream(targetId);
         // Protocol-level errors (bad JSON, missing content) have no
         // conversation/message to attach to — those still toast.
         if (targetId && event.message_id) {
           const messageId = event.message_id;
+          const streamModel = streamingByConvRef.current[targetId]?.model;
           setConversations((prev) =>
             prev.map((c) => {
               if (c.id !== targetId) return c;
@@ -250,7 +310,13 @@ export function useChatSession(token: string | null) {
               if (idx >= 0) {
                 msgs[idx] = { ...msgs[idx], text: event.error, error: true };
               } else {
-                msgs.push({ id: messageId, role: 'assistant', text: event.error, error: true });
+                msgs.push({
+                  id: messageId,
+                  role: 'assistant',
+                  text: event.error,
+                  error: true,
+                  model: streamModel,
+                });
               }
               return { ...c, msgs };
             }),
@@ -272,10 +338,10 @@ export function useChatSession(token: string | null) {
         // Whatever was in flight is now unknown client-side — the server may
         // well have finished it already (it doesn't stop on a dropped
         // socket). Stop showing "streaming" as if frozen and reconcile with
-        // the server's actual state once reconnected (onopen, above).
-        setStreaming(false);
-        setLoadingModel(false);
-        setResponseStartedAt(null);
+        // the server's actual state once reconnected (onopen, above). The
+        // whole socket died, so every in-flight conversation is affected —
+        // not just the active one.
+        setStreamingByConv(() => ({}));
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
@@ -289,14 +355,11 @@ export function useChatSession(token: string | null) {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [token, setActiveId, showToast]);
+  }, [token, setActiveId, showToast, patchStream, clearStream, setStreamingByConv]);
 
   const handleSend = useCallback(
     (text: string, model: string) => {
       if (!wsRef.current) return;
-      setStreaming(true);
-      setLoadingModel(false);
-      setResponseStartedAt(Date.now());
       if (!activeIdRef.current) {
         const localId = `c${Date.now()}`;
         pendingLocalIdRef.current = localId;
@@ -312,24 +375,32 @@ export function useChatSession(token: string | null) {
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
+        setStreamingByConv((prev) => ({
+          ...prev,
+          [localId]: { loadingModel: false, responseStartedAt: Date.now(), model },
+        }));
         sendChatMessage(wsRef.current, text, model, undefined, undefined);
       } else {
         const id = activeIdRef.current;
         setConversations((prev) =>
           prev.map((c) => (c.id === id ? { ...c, msgs: [...c.msgs, { role: 'user', text }] } : c)),
         );
+        setStreamingByConv((prev) => ({
+          ...prev,
+          [id]: { loadingModel: false, responseStartedAt: Date.now(), model },
+        }));
         sendChatMessage(wsRef.current, text, model, id, undefined);
       }
     },
-    [setActiveId],
+    [setActiveId, setStreamingByConv],
   );
 
   const handleStop = useCallback(() => {
-    setStreaming(false);
-    setLoadingModel(false);
-    setResponseStartedAt(null);
+    // Closing the socket kills every in-flight response on it, not just the
+    // one for the active conversation.
+    setStreamingByConv(() => ({}));
     wsRef.current?.close();
-  }, []);
+  }, [setStreamingByConv]);
 
   const handleNewChat = useCallback(() => setActiveId(null), [setActiveId]);
 
@@ -375,15 +446,19 @@ export function useChatSession(token: string | null) {
   }, []);
 
   const activeConv = conversations.find((c) => c.id === activeId) ?? null;
+  // Scoped to the active conversation on purpose — a background thread that's
+  // still streaming must never light up the stop button, elapsed timer, or
+  // typing indicator for whichever conversation the user has switched to.
+  const activeStream = activeId ? streamingByConv[activeId] : undefined;
 
   return {
     conversations,
     activeId,
     activeConv,
     setActiveId,
-    streaming,
-    loadingModel,
-    responseStartedAt,
+    streaming: !!activeStream,
+    loadingModel: activeStream?.loadingModel ?? false,
+    responseStartedAt: activeStream?.responseStartedAt ?? null,
     handleSend,
     handleStop,
     handleNewChat,
