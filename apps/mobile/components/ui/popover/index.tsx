@@ -128,10 +128,20 @@ const Popover = React.forwardRef<
     <UIPopover
       ref={ref}
       placement={placement}
+      // Render through React Native's own Modal rather than gluestack's portal
+      // overlay. On iOS the portal path mounts but never becomes visible — the
+      // popover simply never appeared, with no error — while RN's Modal (what
+      // our Modal/Actionsheet already use) works. Declared before the spread so
+      // a caller can still opt out with useRNModal={false}.
+      useRNModal
       {...props}
-      entering={FadeIn.duration(200).withInitialValues({
-        opacity: 0,
-      })}
+      // No `.withInitialValues({opacity: 0})` here: it was redundant (FadeIn
+      // already starts at 0) and it crashed the web build — reanimated's web
+      // layout-animation builder assumes the initial values carry a
+      // `transform` array and calls `transform.map` on it, so passing opacity
+      // alone threw "Cannot read properties of undefined (reading 'map')" and
+      // the popover never rendered at all.
+      entering={FadeIn.duration(200)}
       exiting={FadeOut.duration(150)}
       className={popoverStyle({ class: className })}
       context={{ placement }}
