@@ -3,10 +3,15 @@ import { AppState, type AppStateStatus } from 'react-native';
 import {
   createChatSocket,
   sendChatMessage,
+  subscribeStreams,
+  stopStream,
   getConversations,
   getMessages,
   updateConversation,
-  type ChatClientEvent,
+  type ServerMessage,
+  type StreamEventKind,
+  type StreamSnapshot,
+  type TurnUsage,
   type ApiMessage,
   type ApiMessageUsage,
 } from '@shannon/api-client';
@@ -42,6 +47,13 @@ function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined
   };
 }
 
+/** Same shape, from a live stream's TurnUsage instead of a persisted DB row. */
+function usageFromTurn(u: TurnUsage): MessageUsage {
+  return { in: u.prompt_tokens, out: u.completion_tokens, tps: u.gen_tps ?? 0, promptTps: u.prompt_tps, totalMs: u.total_ms, cache: 0 };
+}
+
+/** Cold history load only (REST) — live state is driven entirely by the
+ * stream protocol below, never by re-fetching and clobbering in place. */
 function mapRows(rows: ApiMessage[]): Message[] {
   return rows
     .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
@@ -56,55 +68,79 @@ function mapRows(rows: ApiMessage[]): Message[] {
     }));
 }
 
-/** Like mapRows, but never lets a reconciliation fetch clobber live-streamed
- * content: the DB row for a message that's still `status: "streaming"` is
- * only ever the initial empty placeholder — real content is written once,
- * at the very end. Reconciliation can run while a response is still
- * perfectly healthy (e.g. a foreground-resume catch-up check), so if the
- * client already has live-accumulated text/thinking for that message id,
- * keep it instead of overwriting it with the stale empty snapshot. */
-function mergeRows(existing: Message[], rows: ApiMessage[]): Message[] {
-  const existingById = new Map<string, Message>();
-  for (const m of existing) if (m.id) existingById.set(m.id, m);
-  return rows
-    .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
-    .map((m): Message => {
-      if (m.status === 'streaming') {
-        const local = existingById.get(m.id);
-        if (local && (local.text || local.thinking)) return local;
-      }
-      return {
-        id: m.id,
-        role: m.authorType === 'user' ? 'user' : 'assistant',
-        model: m.model ?? undefined,
-        text: extractText(m.content as Array<{ kind: string; text?: string }>),
-        thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
-        error: m.status === 'error',
-        usage: toMessageUsage(m.usage),
-      };
-    });
+/** A `stream.sync` snapshot is authoritative — unlike the old reconcile
+ * poll, there's no risk of clobbering live content with a stale empty DB
+ * row, because the snapshot itself *is* the live state, folded server-side
+ * from the same durable log the deltas come from. */
+function applySnapshotToMsgs(msgs: Message[], snapshot: StreamSnapshot): Message[] {
+  const result = [...msgs];
+  for (const sm of snapshot.messages) {
+    const converted: Message = {
+      id: sm.message_id,
+      role: sm.author_type === 'user' ? 'user' : 'assistant',
+      model: sm.model,
+      text: sm.text,
+      thinking: sm.thinking || undefined,
+      usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
+      error: sm.status === 'error',
+      stopped: sm.status === 'cancelled',
+    };
+    const idx = result.findIndex((m) => m.id === sm.message_id);
+    if (idx >= 0) result[idx] = converted;
+    else result.push(converted);
+  }
+  return result;
 }
 
-// How long to keep re-polling a conversation whose socket died mid-response,
-// waiting for the DB row to resolve to "complete"/"error". A dropped mobile
-// connection often looks alive to the server (no clean close, so
-// socket.send() on the dead connection never throws) — the response finishes
-// generating and gets persisted, but the send-outs silently go nowhere, and
-// the client never gets a chat.message_complete/chat.error to act on. This
-// is the only thing that later fetches the true DB state instead of leaving
-// the message permanently stuck exactly as it looked at the moment of drop.
-// Verified on a real iOS Simulator: a reasoning model's detailed answer can
-// legitimately run 30-60+s, comfortably outlasting a short retry budget —
-// giving up too early abandons a response that was actually about to land.
-const RECONCILE_ATTEMPTS = 40;
-const RECONCILE_DELAY_MS = 3000;
+function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
+  switch (event.kind) {
+    case 'message.start': {
+      if (msgs.some((m) => m.id === event.message_id)) return msgs;
+      return [
+        ...msgs,
+        {
+          id: event.message_id,
+          role: event.author_type === 'user' ? 'user' : 'assistant',
+          model: event.model,
+          text: event.text ?? '',
+        },
+      ];
+    }
+    case 'text.delta':
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
+    case 'thinking.delta':
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
+    case 'message.end':
+      return msgs.map((m) =>
+        m.id === event.message_id
+          ? {
+              ...m,
+              usage: event.usage ? usageFromTurn(event.usage) : m.usage,
+              error: event.status === 'error',
+              stopped: event.status === 'cancelled',
+            }
+          : m,
+      );
+    default:
+      // model.loading/iteration/tool.*/approval.request/todos — chat never
+      // emits these; only the agent surface does.
+      return msgs;
+  }
+}
 
-/** Per-conversation in-flight state — keyed by conversation id so switching
- * threads mid-response can never show one conversation's stop button,
- * elapsed timer, or model label on another. Only the conversation(s) that
- * actually have a request in flight get an entry; everything else reads as
- * "not streaming" regardless of which thread is currently being viewed. */
-type StreamState = { loadingModel: boolean; responseStartedAt: number; model: string };
+/** Per-conversation in-flight stream state — keyed by conversation id so
+ * switching threads mid-response can never show one conversation's stop
+ * button, elapsed timer, or model label on another. Preserved across a
+ * socket reconnect (not cleared on close): the seq cursor (tracked in a ref,
+ * not here) is what makes resuming
+ * exact, and clearing on every drop would also reset the elapsed timer for
+ * no reason. It's only ever cleared by an authoritative terminal status —
+ * `stream.sync.status !== "active"` (already finished by the time we
+ * caught up) or a live `stream.end`. */
+type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string };
+
+/** Minimum spacing between resync requests for the same stream. */
+const RESYNC_COOLDOWN_MS = 500;
 
 export function useChatSession(token: string | null) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
@@ -119,16 +155,26 @@ export function useChatSession(token: string | null) {
   // the moment the user switches threads mid-stream. Route deltas by this
   // instead (falls back to the event's own conversation_id when unset).
   const activeIdRef = useRef<string | null>(null);
-  // Same staleness problem applies to streamingByConv — the WS effect reads
-  // it synchronously to attribute a live message to its in-flight model, so
-  // it needs a ref mirror alongside the state, kept in sync by every setter
-  // below rather than read from the (potentially stale) closed-over state.
   const streamingByConvRef = useRef<Record<string, StreamState>>({});
-  // Set together in handleSend when a brand-new conversation is created
-  // locally (before the server has assigned a real id); consumed and
-  // cleared by the chat.conversation handler once the real id arrives.
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
+  // The optimistic user bubble pushed by handleSend has no server id yet;
+  // the server's own `message.start` for that same message arrives moments
+  // later with a real one. Without renaming the optimistic entry in place,
+  // `message.start`'s id-based dedup never matches it and appends a second,
+  // duplicate bubble for every single send.
+  const pendingUserMsgIdRef = useRef<string | null>(null);
+  /** Last time we asked the server to resync a given stream — see the gap
+   * handler below for why this needs a floor. */
+  const lastResyncAtRef = useRef<Record<string, number>>({});
+  /**
+   * Last applied seq per stream, tracked here rather than in React state.
+   * This has to update the instant an event is handled: several deltas
+   * routinely arrive within a single tick, and a cursor that only advances
+   * when React flushes would still read as stale for the rest of that batch,
+   * making every event after the first look like a gap and get dropped.
+   */
+  const cursorsRef = useRef<Record<string, number>>({});
 
   const setStreamingByConv = useCallback(
     (updater: (prev: Record<string, StreamState>) => Record<string, StreamState>) => {
@@ -139,13 +185,6 @@ export function useChatSession(token: string | null) {
       });
     },
     [],
-  );
-
-  const patchStream = useCallback(
-    (id: string, patch: Partial<StreamState>) => {
-      setStreamingByConv((prev) => (id in prev ? { ...prev, [id]: { ...prev[id], ...patch } } : prev));
-    },
-    [setStreamingByConv],
   );
 
   const clearStream = useCallback(
@@ -163,6 +202,20 @@ export function useChatSession(token: string | null) {
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
+  }, []);
+
+  /** Renames the pending optimistic user bubble (if any) to its real
+   * server-assigned id, in place — call this before any id-based upsert of
+   * that same message, so it updates rather than duplicates. */
+  const promotePendingUserMsg = useCallback((convId: string, realId: string) => {
+    const pending = pendingUserMsgIdRef.current;
+    if (!pending) return;
+    pendingUserMsgIdRef.current = null;
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.id === convId ? { ...c, msgs: c.msgs.map((m) => (m.id === pending ? { ...m, id: realId } : m)) } : c,
+      ),
+    );
   }, []);
 
   // Load real conversations + latest thread's history on mount / token change.
@@ -207,72 +260,33 @@ export function useChatSession(token: string | null) {
       });
   }, [token, setActiveId]);
 
-  // Live streaming socket. Mobile networks drop long-lived WS connections
-  // often (backgrounding, wifi/cellular handoff) — without reconnect, a
-  // dropped socket left `streaming` stuck true forever even though the
-  // server had already finished and persisted the response, making the
-  // chat look permanently hung. This reconnects with backoff and, on every
-  // (re)connect, reconciles the server's actual state for the active
-  // conversation *and* every conversation that had a response in flight
-  // when the drop happened (which may not be the one currently being
-  // viewed — the user could easily have switched threads first). A dropped
-  // mobile socket often isn't a clean close on either end, so the server's
-  // in-progress response finishes and gets persisted, but the events
-  // announcing that never arrive on a connection that's already gone —
-  // reconciliation is what actually catches that up instead of leaving the
-  // message frozen exactly as it looked at the moment of the drop.
+  // Live streaming socket. A dropped connection no longer needs a reconcile
+  // poll: every event carries a monotonic per-stream `seq`, so reconnecting
+  // is just re-sending `stream.subscribe` with the last-applied seq per
+  // conversation — the server folds its durable log into one `stream.sync`
+  // snapshot (covering both "still generating, catch me up" and "finished
+  // while I was gone" in the same reply) and resumes live deltas from there.
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
-    // Conversation ids whose in-flight response we lost the live connection
-    // to and haven't yet confirmed a terminal (complete/error) status for.
-    const pendingReconcile = new Set<string>();
-    const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    const clearReconcileTimer = (convId: string) => {
-      const timer = reconcileTimers.get(convId);
-      if (timer) {
-        clearTimeout(timer);
-        reconcileTimers.delete(convId);
+    const resubscribeKnown = () => {
+      const targets = new Set(Object.keys(streamingByConvRef.current));
+      if (activeIdRef.current) targets.add(activeIdRef.current);
+      for (const convId of targets) {
+        const tracked = streamingByConvRef.current[convId];
+        subscribeStreams(
+          wsRef.current!,
+          convId,
+          tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined,
+        );
       }
     };
 
-    const reconcileConversation = (convId: string, retriesLeft: number) => {
-      if (cancelled) return;
-      getMessages(convId)
-        .then(({ messages: rows }) => {
-          if (cancelled) return;
-          setConversations((prev) =>
-            prev.map((c) => (c.id === convId ? { ...c, msgs: mergeRows(c.msgs, rows) } : c)),
-          );
-          const lastRow = rows[rows.length - 1];
-          const stillUnresolved = lastRow?.authorType === 'assistant' && lastRow.status === 'streaming';
-          if (stillUnresolved && retriesLeft > 0) {
-            clearReconcileTimer(convId);
-            reconcileTimers.set(
-              convId,
-              setTimeout(() => reconcileConversation(convId, retriesLeft - 1), RECONCILE_DELAY_MS),
-            );
-          } else {
-            pendingReconcile.delete(convId);
-            clearReconcileTimer(convId);
-          }
-        })
-        .catch(() => {
-          // Left in pendingReconcile — the next reconnect's onopen will retry.
-        });
-    };
-
-    const refreshActiveConversation = () => {
-      const targets = new Set(pendingReconcile);
-      if (activeIdRef.current) targets.add(activeIdRef.current);
-      for (const convId of targets) reconcileConversation(convId, RECONCILE_ATTEMPTS);
-    };
-
-    const onEvent = (event: ChatClientEvent) => {
-      if (event.type === 'chat.conversation') {
+    const onEvent = (event: ServerMessage) => {
+      if (event.type === 'turn.started') {
         const realId = event.conversation_id;
         const localId = pendingLocalIdRef.current;
         const modelForPatch = pendingModelRef.current;
@@ -281,128 +295,98 @@ export function useChatSession(token: string | null) {
         if (localId && localId !== realId) {
           setConversations((prev) =>
             prev.some((c) => c.id === localId)
-              ? prev.map((c) => (c.id === localId ? { ...c, id: realId } : c))
+              ? prev.map((c) => (c.id === localId ? { ...c, id: realId, incognito: event.incognito } : c))
               : prev,
           );
-          setStreamingByConv((prev) => {
-            if (!(localId in prev)) return prev;
-            const next = { ...prev };
-            next[realId] = next[localId];
-            delete next[localId];
-            return next;
-          });
+        } else if (event.incognito) {
+          setConversations((prev) => prev.map((c) => (c.id === realId ? { ...c, incognito: true } : c)));
         }
         setActiveId(realId);
-        if (modelForPatch) {
+        if (modelForPatch && !event.incognito) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
         }
-      } else if (event.type === 'chat.model_loading') {
-        const targetId = event.conversation_id ?? activeIdRef.current;
-        if (targetId) patchStream(targetId, { loadingModel: true });
-      } else if (event.type === 'chat.thinking') {
-        // The event's own conversation_id is authoritative — it names the
-        // conversation this token actually belongs to. Falling back to
-        // activeIdRef (only relevant for the brand-new-conversation window
-        // before chat.conversation remaps it) must never override that,
-        // or switching threads mid-stream misroutes the old thread's
-        // still-arriving tokens into whatever the user is now viewing.
-        const targetId = event.conversation_id ?? activeIdRef.current;
-        if (targetId) patchStream(targetId, { loadingModel: false });
-        const streamModel = targetId ? streamingByConvRef.current[targetId]?.model : undefined;
+      } else if (event.type === 'stream.sync') {
+        const convId = event.conversation_id;
+        const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
+        if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         setConversations((prev) =>
-          prev.map((c) => {
-            if (c.id !== targetId) return c;
-            const msgs = [...c.msgs];
-            const last = msgs[msgs.length - 1];
-            if (last && last.role === 'assistant' && last.id === event.message_id) {
-              msgs[msgs.length - 1] = { ...last, thinking: (last.thinking ?? '') + event.delta };
-            } else {
-              msgs.push({
-                id: event.message_id,
-                role: 'assistant',
-                text: '',
-                thinking: event.delta,
-                model: streamModel,
-              });
-            }
-            return { ...c, msgs };
-          }),
+          prev.map((c) => (c.id === convId ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot) } : c)),
         );
-      } else if (event.type === 'chat.delta') {
-        // See chat.thinking above: event.conversation_id must win.
-        const targetId = event.conversation_id ?? activeIdRef.current;
-        if (targetId) patchStream(targetId, { loadingModel: false });
-        const streamModel = targetId ? streamingByConvRef.current[targetId]?.model : undefined;
-        setConversations((prev) =>
-          prev.map((c) => {
-            if (c.id !== targetId) return c;
-            const msgs = [...c.msgs];
-            const last = msgs[msgs.length - 1];
-            if (last && last.role === 'assistant' && last.id === event.message_id) {
-              msgs[msgs.length - 1] = { ...last, text: last.text + event.delta };
-            } else {
-              msgs.push({
-                id: event.message_id,
-                role: 'assistant',
-                text: event.delta,
-                model: streamModel,
-              });
-            }
-            return { ...c, msgs };
-          }),
-        );
-      } else if (event.type === 'chat.message_complete') {
-        if (event.conversation_id) clearStream(event.conversation_id);
-        setConversations((prev) =>
-          prev.map((c) => ({
-            ...c,
-            msgs: c.msgs.map((m) =>
-              m.id === event.message_id
-                ? {
-                    ...m,
-                    usage: {
-                      in: event.usage.prompt_tokens,
-                      out: event.usage.completion_tokens,
-                      tps: event.usage.gen_tps ?? 0,
-                      promptTps: event.usage.prompt_tps,
-                      totalMs: event.usage.total_ms,
-                      cache: 0,
-                    },
-                  }
-                : m,
-            ),
-          })),
-        );
-      } else if (event.type === 'chat.error') {
-        const targetId = event.conversation_id ?? activeIdRef.current;
-        if (targetId) clearStream(targetId);
-        // Protocol-level errors (bad JSON, missing content) have no
-        // conversation/message to attach to — those still toast.
-        if (targetId && event.message_id) {
-          const messageId = event.message_id;
-          const streamModel = streamingByConvRef.current[targetId]?.model;
-          setConversations((prev) =>
-            prev.map((c) => {
-              if (c.id !== targetId) return c;
-              const msgs = [...c.msgs];
-              const idx = msgs.findIndex((m) => m.id === messageId);
-              if (idx >= 0) {
-                msgs[idx] = { ...msgs[idx], text: event.error, error: true };
-              } else {
-                msgs.push({
-                  id: messageId,
-                  role: 'assistant',
-                  text: event.error,
-                  error: true,
-                  model: streamModel,
-                });
-              }
-              return { ...c, msgs };
-            }),
-          );
+        if (event.status !== 'active') {
+          // A reconnect's catch-up re-syncs the conversation's last few
+          // runs, not just the current one — an older, already-finished
+          // run's sync arriving here must not wipe tracking for a
+          // genuinely still-active *different* run in the same
+          // conversation. Only clear if this sync is for the stream we're
+          // actually tracking (or nothing is tracked, so there's nothing to
+          // protect).
+          const tracked = streamingByConvRef.current[convId];
+          if (!tracked || tracked.streamId === event.stream_id) clearStream(convId);
         } else {
-          showToast(event.error || 'Chat error', 6000);
+          // Either updates a stream we already knew was in flight, or
+          // discovers one we didn't (app restart mid-stream, another
+          // device's send) — in the latter case there's no local record of
+          // when it truly started or which model, so approximate from here
+          // and the snapshot's own assistant message.
+          // Synchronously, before any further event can be handled.
+          cursorsRef.current[event.stream_id] = event.seq;
+          const assistantMsg = event.snapshot.messages.find((m) => m.author_type === 'assistant');
+          setStreamingByConv((prev) => ({
+            ...prev,
+            [convId]:
+              prev[convId]?.streamId === event.stream_id
+                ? prev[convId]
+                : {
+                    streamId: event.stream_id,
+                    loadingModel: false,
+                    responseStartedAt: Date.now(),
+                    model: assistantMsg?.model ?? '',
+                  },
+          }));
         }
+      } else if (event.type === 'stream.event') {
+        const convId = event.conversation_id;
+        const lastSeq = cursorsRef.current[event.stream_id];
+        if (lastSeq !== undefined && event.seq !== lastSeq + 1) {
+          // Gap — a delta was missed (backpressure drop, brief hiccup).
+          // Re-subscribe from our last-known cursor to resync exactly rather
+          // than silently rendering out-of-order/incomplete text.
+          //
+          // Rate-limited: a resync is not instantaneous, so without this every
+          // event arriving in the meantime asks for another one. At streaming
+          // rates that is hundreds of requests a second, and since each reply
+          // carries a full snapshot it saturates the socket badly enough to
+          // cause the very drops it is trying to repair.
+          const now = Date.now();
+          const lastAsk = lastResyncAtRef.current[event.stream_id] ?? 0;
+          if (now - lastAsk > RESYNC_COOLDOWN_MS) {
+            lastResyncAtRef.current[event.stream_id] = now;
+            subscribeStreams(wsRef.current!, convId, { [event.stream_id]: lastSeq });
+          }
+          return;
+        }
+        // Synchronously, before the next event in this same tick is handled.
+        cursorsRef.current[event.stream_id] = event.seq;
+        setStreamingByConv((prev) =>
+          prev[convId]?.streamId === event.stream_id
+            ? { ...prev, [convId]: { ...prev[convId], loadingModel: event.event.kind === 'model.loading' } }
+            : prev,
+        );
+        if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
+          promotePendingUserMsg(convId, event.event.message_id);
+        }
+        setConversations((prev) =>
+          prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event) } : c)),
+        );
+      } else if (event.type === 'stream.end') {
+        // The message's own final state (text/usage/status) already landed
+        // via its `message.end` stream.event, which is guaranteed to have
+        // arrived first — WS delivery is ordered, and the server only sends
+        // stream.end after the producer's last flush completes. This just
+        // clears the "something is streaming" UI state.
+        clearStream(event.conversation_id);
+      } else if (event.type === 'error') {
+        showToast(event.error || 'Chat error', 6000);
       }
     };
 
@@ -410,17 +394,12 @@ export function useChatSession(token: string | null) {
       const ws = createChatSocket(token, onEvent);
       ws.onopen = () => {
         attempt = 0;
-        refreshActiveConversation();
+        resubscribeKnown();
       };
       ws.onclose = () => {
         if (cancelled) return;
-        // Whatever was in flight is now unknown client-side — the server may
-        // well have finished it already (it doesn't stop on a dropped
-        // socket). Stop showing "streaming" as if frozen; every conversation
-        // that had an entry gets queued for reconciliation once reconnected
-        // (onopen, above) instead of being silently forgotten.
-        for (const convId of Object.keys(streamingByConvRef.current)) pendingReconcile.add(convId);
-        setStreamingByConv(() => ({}));
+        // The stream state itself is preserved (see StreamState comment) —
+        // only the connection needs re-establishing.
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
@@ -432,30 +411,17 @@ export function useChatSession(token: string | null) {
     // A short background spell (switching apps for a few seconds) rarely
     // closes the socket outright — mobile OSes give a grace period before
     // suspending network activity — but it does freeze the JS thread, so a
-    // chat.thinking/chat.delta/chat.message_complete that arrives while
-    // backgrounded can be lost to the native WebSocket bridge losing sync
-    // across the JS-context pause. Verified on a real iOS Simulator: this
-    // can leave the connection a "zombie" — it delivers whatever was
-    // already buffered when the app resumes (so a stalled reply can look
-    // like it partially picked back up), then never receives another byte,
-    // with no close event on either end to trigger recovery. A first
-    // attempt only ran a merge-safe reconcile pass without touching the
-    // socket, reasoning that closing a *healthy* stream mid-response would
-    // needlessly cut off its future tokens — but a zombie socket has no
-    // future tokens to protect, and there's no reliable way to tell the two
-    // apart from here. So: do both. Reconcile immediately for a fast catch
-    // up, and close the socket to force a fresh connection — safe now that
-    // mergeRows means a reconcile can never clobber live-accumulated text,
-    // healthy stream or not.
+    // stream.event that arrives while backgrounded can be lost to the
+    // native WebSocket bridge losing sync across the pause. Verified on a
+    // real iOS Simulator: this can leave the connection a "zombie" — it
+    // delivers whatever was already buffered when the app resumes, then
+    // never receives another byte, with no close event on either end.
+    // Force-closing on every foreground resume guarantees a fresh
+    // connection; resubscribing with real cursors on the new connection is
+    // exact regardless of how the old one died.
     let appState: AppStateStatus = AppState.currentState;
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (/inactive|background/.test(appState) && next === 'active') {
-        const targets = new Set(pendingReconcile);
-        if (activeIdRef.current) targets.add(activeIdRef.current);
-        for (const convId of targets) {
-          pendingReconcile.add(convId);
-          reconcileConversation(convId, RECONCILE_ATTEMPTS);
-        }
         wsRef.current?.close();
       }
       appState = next;
@@ -464,15 +430,16 @@ export function useChatSession(token: string | null) {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      for (const timer of reconcileTimers.values()) clearTimeout(timer);
       appStateSub.remove();
       wsRef.current?.close();
     };
-  }, [token, setActiveId, showToast, patchStream, clearStream, setStreamingByConv]);
+  }, [token, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
-    (text: string, model: string) => {
+    (text: string, model: string, incognito?: boolean) => {
       if (!wsRef.current) return;
+      const localMsgId = `lm${Date.now()}`;
+      pendingUserMsgIdRef.current = localMsgId;
       if (!activeIdRef.current) {
         const localId = `c${Date.now()}`;
         pendingLocalIdRef.current = localId;
@@ -484,36 +451,27 @@ export function useChatSession(token: string | null) {
           time: 'now',
           model,
           location: 'server',
-          msgs: [{ role: 'user', text }],
+          msgs: [{ id: localMsgId, role: 'user', text }],
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        setStreamingByConv((prev) => ({
-          ...prev,
-          [localId]: { loadingModel: false, responseStartedAt: Date.now(), model },
-        }));
-        sendChatMessage(wsRef.current, text, model, undefined, undefined);
+        sendChatMessage(wsRef.current, text, model, undefined, undefined, incognito);
       } else {
         const id = activeIdRef.current;
         setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, msgs: [...c.msgs, { role: 'user', text }] } : c)),
+          prev.map((c) => (c.id === id ? { ...c, msgs: [...c.msgs, { id: localMsgId, role: 'user', text }] } : c)),
         );
-        setStreamingByConv((prev) => ({
-          ...prev,
-          [id]: { loadingModel: false, responseStartedAt: Date.now(), model },
-        }));
-        sendChatMessage(wsRef.current, text, model, id, undefined);
+        sendChatMessage(wsRef.current, text, model, id, undefined, incognito);
       }
     },
-    [setActiveId, setStreamingByConv],
+    [setActiveId],
   );
 
   const handleStop = useCallback(() => {
-    // Closing the socket kills every in-flight response on it, not just the
-    // one for the active conversation.
-    setStreamingByConv(() => ({}));
-    wsRef.current?.close();
-  }, [setStreamingByConv]);
+    const id = activeIdRef.current;
+    const stream = id ? streamingByConvRef.current[id] : undefined;
+    if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
+  }, []);
 
   const handleNewChat = useCallback(() => setActiveId(null), [setActiveId]);
 
@@ -554,8 +512,11 @@ export function useChatSession(token: string | null) {
   );
 
   const setConversationModel = useCallback((id: string, modelId: string) => {
-    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, model: modelId } : c)));
-    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+    setConversations((prev) => {
+      const conv = prev.find((c) => c.id === id);
+      if (!conv?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+      return prev.map((c) => (c.id === id ? { ...c, model: modelId } : c));
+    });
   }, []);
 
   const activeConv = conversations.find((c) => c.id === activeId) ?? null;

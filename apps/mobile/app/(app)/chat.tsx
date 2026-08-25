@@ -48,6 +48,12 @@ export default function ChatScreen() {
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
+  const [pendingIncognito, setPendingIncognito] = useState(false);
+
+  // Incognito is fixed once a conversation exists server-side; the toggle only
+  // applies to a not-yet-started chat.
+  const incognito = activeConv ? !!activeConv.incognito : pendingIncognito;
+  const incognitoLocked = !!activeConv;
 
   const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
 
@@ -81,10 +87,12 @@ export default function ChatScreen() {
       activeId={activeId}
       onSelect={(id) => {
         setActiveId(id);
+        setPendingIncognito(false);
         setThreadListOpen(false);
       }}
       onNewChat={() => {
         handleNewChat();
+        setPendingIncognito(false);
         setThreadListOpen(false);
       }}
       onFork={handleFork}
@@ -100,6 +108,7 @@ export default function ChatScreen() {
       <VStack className="h-full flex-1">
         <MainHeader
           title={activeConv?.title ?? 'Chat'}
+          subtitle={activeConv?.incognito ? 'Incognito · not saved' : undefined}
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
             breakpoint !== 'wide' ? (
@@ -122,16 +131,19 @@ export default function ChatScreen() {
             model={selectedModel ? getName(selectedModel) : undefined}
           />
         ) : (
-          <PromptSuggestions onPick={(text) => handleSend(text, selectedModel)} />
+          <PromptSuggestions onPick={(text) => handleSend(text, selectedModel, incognito)} />
         )}
         <Composer
-          onSend={(text) => handleSend(text, selectedModel)}
+          onSend={(text) => handleSend(text, selectedModel, incognito)}
           onStop={handleStop}
           streaming={streaming}
           modelName={selectedModel ? getName(selectedModel) : 'Select model'}
           contextPercent={contextPercent}
           contextStats={contextStats}
           onOpenModelModal={() => setModelModalOpen(true)}
+          incognito={incognito}
+          onToggleIncognito={() => setPendingIncognito((v) => !v)}
+          incognitoLocked={incognitoLocked}
         />
         </KeyboardAvoidingView>
       </VStack>

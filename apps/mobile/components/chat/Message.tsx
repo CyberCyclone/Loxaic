@@ -1,5 +1,5 @@
-import { Fragment } from 'react';
-import { AlertCircle, Copy, GitFork } from 'lucide-react-native';
+import { Fragment, memo } from 'react';
+import { AlertCircle, Copy, GitFork, Square } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -53,7 +53,7 @@ interface MessageProps {
   elapsedSince?: number | null;
 }
 
-export function Message({ msg, onFork, liveThinking, elapsedSince }: MessageProps) {
+function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps) {
   const isUser = msg.role === 'user';
 
   return (
@@ -77,7 +77,7 @@ export function Message({ msg, onFork, liveThinking, elapsedSince }: MessageProp
             )}
           </HStack>
 
-          {msg.thinking && <ThinkingBlock text={msg.thinking} live={liveThinking} />}
+          {msg.thinking && <ThinkingBlock text={msg.thinking} live={liveThinking} since={elapsedSince} />}
           {msg.tools?.map((tool, i) => <ToolCallCard key={i} tool={tool} />)}
           {msg.error ? (
             <HStack space="xs" className="items-start">
@@ -88,7 +88,20 @@ export function Message({ msg, onFork, liveThinking, elapsedSince }: MessageProp
             <Fragment>{renderText(msg.text)}</Fragment>
           )}
 
-          {!isUser && !msg.usage && !!elapsedSince && (
+          {!isUser && msg.stopped && (
+            <HStack space="xs" className="items-center pt-1">
+              <Icon as={Square} size="xs" className="text-muted-foreground" />
+              <Text size="xs" className="text-muted-foreground">
+                Stopped
+              </Text>
+            </HStack>
+          )}
+
+          {/* While reasoning is live, ThinkingBlock already shows this same
+              elapsed readout next to its spinner — this row is for the
+              phase after that (generating the answer text, before usage
+              lands), where nothing else on screen is showing it. */}
+          {!isUser && !msg.usage && !!elapsedSince && !liveThinking && (
             <HStack space="xs" className="items-center pt-1">
               <Box className="h-1.5 w-1.5 rounded-full bg-primary" />
               <LiveElapsed since={elapsedSince} />
@@ -149,3 +162,19 @@ export function Message({ msg, onFork, liveThinking, elapsedSince }: MessageProp
     </Box>
   );
 }
+
+/**
+ * Memoised deliberately. A long thread holds tens of thousands of pixels of
+ * content, and during streaming only the final message actually changes —
+ * without this, every token re-renders and re-lays-out the entire history,
+ * which is what starves the ScrollView's own content measurement and leaves
+ * the newest content unreachable behind the composer.
+ */
+export const Message = memo(
+  MessageInner,
+  (prev, next) =>
+    prev.msg === next.msg &&
+    prev.liveThinking === next.liveThinking &&
+    prev.elapsedSince === next.elapsedSince &&
+    prev.onFork === next.onFork,
+);

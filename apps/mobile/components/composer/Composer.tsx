@@ -4,7 +4,7 @@ import {
   type NativeSyntheticEvent,
   type TextInputKeyPressEventData,
 } from 'react-native';
-import { ArrowUp, Square, ChevronDown, CircleDot } from 'lucide-react-native';
+import { ArrowUp, Square, ChevronDown, CircleDot, EyeOff } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -24,6 +24,11 @@ interface ComposerProps {
   contextPercent?: number;
   contextStats?: { label: string; value: string }[];
   onOpenModelModal: () => void;
+  /** Incognito: this turn's conversation is never written to Postgres. */
+  incognito?: boolean;
+  onToggleIncognito?: () => void;
+  /** Once a conversation has sent its first message, incognito is fixed server-side. */
+  incognitoLocked?: boolean;
 }
 
 export function Composer({
@@ -34,6 +39,9 @@ export function Composer({
   contextPercent = 0,
   contextStats = [],
   onOpenModelModal,
+  incognito = false,
+  onToggleIncognito,
+  incognitoLocked = false,
 }: ComposerProps) {
   const [text, setText] = useState('');
   const [inputHeight, setInputHeight] = useState(20);
@@ -94,6 +102,25 @@ export function Composer({
             </Text>
             <Icon as={ChevronDown} size="2xs" className="shrink-0 text-muted-foreground" />
           </Pressable>
+
+          {onToggleIncognito && (
+            <Pressable
+              onPress={incognitoLocked ? undefined : onToggleIncognito}
+              className={`flex-row items-center gap-1 rounded-md border px-2 py-1.5 ${
+                incognito ? 'border-primary bg-primary/10' : 'border-border bg-muted'
+              }`}
+              style={incognitoLocked ? { opacity: 0.7 } : undefined}
+            >
+              <Icon
+                as={EyeOff}
+                size="2xs"
+                className={incognito ? 'text-primary' : 'text-muted-foreground'}
+              />
+              <Text size="xs" className={incognito ? 'font-medium text-primary' : 'text-muted-foreground'}>
+                Incognito
+              </Text>
+            </Pressable>
+          )}
 
           <Box className="flex-1" />
 

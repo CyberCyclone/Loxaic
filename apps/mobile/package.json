@@ -4,12 +4,12 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "start": "dotenv -e ../../.env -- expo start",
+    "android": "dotenv -e ../../.env -- expo start --android",
+    "ios": "dotenv -e ../../.env -- expo start --ios",
     "typecheck": "tsc --noEmit",
-    "export:web": "expo export --platform web",
-    "web": "expo start --web"
+    "export:web": "dotenv -e ../../.env -- expo export --platform web",
+    "web": "dotenv -e ../../.env -- expo start --web"
   },
   "dependencies": {
     "@expo-google-fonts/public-sans": "^0.4.2",
@@ -50,6 +50,7 @@
     "@shannon/config-ts": "workspace:*",
     "@types/react": "^19.1.17",
     "babel-plugin-module-resolver": "^5.0.0",
+    "dotenv-cli": "^7.4.4",
     "tailwindcss": "^4.3.2",
     "typescript": "^5.7.0"
   }

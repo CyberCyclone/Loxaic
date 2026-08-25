@@ -3,20 +3,25 @@ import { AppState, type AppStateStatus } from 'react-native';
 import {
   createAgentSocket,
   sendAgentMessage,
+  subscribeStreams,
+  stopStream,
   setAgentMode,
   approveTool,
   denyTool,
   getConversations,
   getMessages,
   updateConversation,
-  type AgentEvent,
+  type ServerMessage,
+  type StreamEventKind,
+  type StreamSnapshot,
+  type StreamSnapshotMessage,
+  type TurnUsage,
   type ApiMessage,
   type PermissionMode,
   type Todo,
-  type FileDiff,
   type ApiMessageUsage,
 } from '@shannon/api-client';
-import type { ContentBlock } from '@shannon/types';
+import type { ContentBlock, FileDiff } from '@shannon/types';
 import type { Conversation, Message, MessageUsage, ToolCall, ChangedFile } from '@/lib/types';
 import { computeLineDiff } from '@/lib/diff';
 import { useToastHelper } from './useToastHelper';
@@ -32,6 +37,11 @@ function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined
     totalMs: usage.totalMs,
     cache: 0,
   };
+}
+
+/** Same shape, from a live stream's TurnUsage instead of a persisted DB row. */
+function usageFromTurn(u: TurnUsage): MessageUsage {
+  return { in: u.prompt_tokens, out: u.completion_tokens, tps: u.gen_tps ?? 0, promptTps: u.prompt_tps, totalMs: u.total_ms, cache: 0 };
 }
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
@@ -85,7 +95,9 @@ function diffLinesFor(diff: FileDiff[] | undefined): ToolCall['diff'] {
   return out;
 }
 
-/** Rebuilds Message[] from stored blocks, joining tool_result rows back to their tool_call by call_id. */
+/** Cold history load only (REST) — live state is driven entirely by the
+ * stream protocol below. Rebuilds Message[] from stored blocks, joining
+ * tool_result rows back to their tool_call by call_id. */
 function reconstructMessages(rows: ApiMessage[]): Message[] {
   const out: Message[] = [];
   const byId = new Map<string, Message>();
@@ -146,30 +158,103 @@ function reconstructMessages(rows: ApiMessage[]): Message[] {
   return out;
 }
 
-/** Aggregates every file diff seen in the run into a per-path add/del summary. */
-function computeChangedFiles(msgs: Message[]): ChangedFile[] {
-  const byPath = new Map<string, { adds: number; dels: number }>();
-  for (const msg of msgs) {
-    for (const tool of msg.tools ?? []) {
-      if (!tool.diff) continue;
-      // diffLinesFor prefixes each file with a meta line carrying its path.
-      let path: string | null = null;
-      for (const line of tool.diff) {
-        if (line.type === 'meta') {
-          const match = line.text.match(/^(?:\+\+\+|---(?: \/ \+\+\+)?) (.+?)(?: \(new file\))?$/);
-          path = match ? match[1] : null;
-          if (path && !byPath.has(path)) byPath.set(path, { adds: 0, dels: 0 });
-          continue;
-        }
-        if (!path) continue;
-        const entry = byPath.get(path)!;
-        if (line.type === 'add') entry.adds++;
-        else if (line.type === 'del') entry.dels++;
-      }
-    }
-  }
-  return [...byPath.entries()].map(([path, counts]) => ({ path, ...counts }));
+/** A `stream.sync` snapshot is authoritative — folds tool_calls (which now
+ * always carry their owning message_id directly) straight onto the
+ * assistant message, same shape reconstructMessages produces from cold
+ * storage. */
+function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
+  return {
+    id: sm.message_id,
+    role: sm.author_type === 'user' ? 'user' : 'assistant',
+    model: sm.model,
+    text: sm.text,
+    thinking: sm.thinking || undefined,
+    tools:
+      sm.tool_calls.length > 0
+        ? sm.tool_calls.map((tc) => ({
+            tool: tc.tool,
+            summary: toolSummary(tc.tool, tc.args),
+            result: tc.output ?? '',
+            diff: diffLinesFor(tc.diff),
+            callId: tc.call_id,
+          }))
+        : undefined,
+    usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
+    error: sm.status === 'error',
+    stopped: sm.status === 'cancelled',
+  };
 }
+
+function applySnapshotToMsgs(msgs: Message[], snapshot: StreamSnapshot): Message[] {
+  const result = [...msgs];
+  for (const sm of snapshot.messages) {
+    const converted = snapshotMessageToMessage(sm);
+    const idx = result.findIndex((m) => m.id === sm.message_id);
+    if (idx >= 0) result[idx] = converted;
+    else result.push(converted);
+  }
+  return result;
+}
+
+function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
+  switch (event.kind) {
+    case 'message.start': {
+      if (msgs.some((m) => m.id === event.message_id)) return msgs;
+      return [
+        ...msgs,
+        { id: event.message_id, role: event.author_type === 'user' ? 'user' : 'assistant', model: event.model, text: event.text ?? '' },
+      ];
+    }
+    case 'text.delta':
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
+    case 'thinking.delta':
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
+    case 'message.end':
+      return msgs.map((m) =>
+        m.id === event.message_id
+          ? {
+              ...m,
+              usage: event.usage ? usageFromTurn(event.usage) : m.usage,
+              error: event.status === 'error',
+              stopped: event.status === 'cancelled',
+            }
+          : m,
+      );
+    case 'tool.call':
+      return msgs.map((m) =>
+        m.id === event.message_id
+          ? {
+              ...m,
+              tools: [
+                ...(m.tools ?? []),
+                { tool: event.tool, summary: toolSummary(event.tool, event.args), result: '', callId: event.call_id },
+              ],
+            }
+          : m,
+      );
+    case 'tool.result':
+      return msgs.map((m) => {
+        if (!m.tools?.some((t) => t.callId === event.call_id)) return m;
+        return {
+          ...m,
+          tools: m.tools.map((t) =>
+            t.callId === event.call_id ? { ...t, result: event.output, diff: diffLinesFor(event.diff) } : t,
+          ),
+        };
+      });
+    default:
+      // model.loading/iteration/approval.request/todos — hook-level state,
+      // not per-message; handled by the caller.
+      return msgs;
+  }
+}
+
+/** Per-conversation in-flight stream state — see useChatSession for why this
+ * is preserved across a reconnect rather than cleared on close. */
+type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string };
+
+/** Minimum spacing between resync requests for the same stream. */
+const RESYNC_COOLDOWN_MS = 500;
 
 export function useAgentSession(token: string | null) {
   const [runs, setRuns] = useState<Conversation[]>([]);
@@ -179,24 +264,51 @@ export function useAgentSession(token: string | null) {
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
-  const [loadingModel, setLoadingModel] = useState(false);
-  // Epoch ms the current response started at (send time) — real wall-clock,
-  // not an estimate. Drives the live elapsed-time readout across the whole
-  // response lifecycle (every iteration of a tool loop), until agent.done.
-  const [responseStartedAt, setResponseStartedAt] = useState<number | null>(null);
+  const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
   const loadingRef = useRef(false);
   const activeIdRef = useRef<string | null>(null);
+  const streamingByConvRef = useRef<Record<string, StreamState>>({});
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
-  /** Id of the assistant message currently being streamed into, for this iteration. Reset on agent.iteration. */
-  const buildingMsgIdRef = useRef<string | null>(null);
-  // The model of the in-flight send — agent.delta/agent.thinking events carry
-  // no model field of their own, so the freshly-created assistant message
-  // placeholder needs this to attribute itself, same as chat.
-  const sentModelRef = useRef<string | null>(null);
+  // See useChatSession: the optimistic user bubble has no server id yet, so
+  // it must be renamed in place once the real `message.start` arrives, or
+  // the id-based dedup below never matches it and duplicates the bubble.
+  const pendingUserMsgIdRef = useRef<string | null>(null);
+  /** Last time we asked the server to resync a given stream. */
+  const lastResyncAtRef = useRef<Record<string, number>>({});
+  /**
+   * Last applied seq per stream, tracked here rather than in React state so
+   * it advances the instant an event is handled — see useChatSession: a
+   * cursor that only advances on React flush reads as stale for the rest of
+   * the tick, so every batched event after the first looks like a gap.
+   */
+  const cursorsRef = useRef<Record<string, number>>({});
+
+  const setStreamingByConv = useCallback(
+    (updater: (prev: Record<string, StreamState>) => Record<string, StreamState>) => {
+      setStreamingByConvState((prev) => {
+        const next = updater(prev);
+        streamingByConvRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const clearStream = useCallback(
+    (id: string) => {
+      setStreamingByConv((prev) => {
+        if (!(id in prev)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+    },
+    [setStreamingByConv],
+  );
 
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
@@ -207,30 +319,21 @@ export function useAgentSession(token: string | null) {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
   }, []);
 
-  const ensureIterationMessage = useCallback(
-    (convId: string, preferredId?: string): string => {
-      if (buildingMsgIdRef.current) {
-        if (preferredId && buildingMsgIdRef.current !== preferredId) {
-          const oldId = buildingMsgIdRef.current;
-          updateRunMsgs(convId, (msgs) => msgs.map((m) => (m.id === oldId ? { ...m, id: preferredId } : m)));
-          buildingMsgIdRef.current = preferredId;
-        }
-        return buildingMsgIdRef.current;
-      }
-      const id = preferredId ?? `local-${convId}-${Math.random().toString(36).slice(2)}`;
-      buildingMsgIdRef.current = id;
-      updateRunMsgs(convId, (msgs) => [
-        ...msgs,
-        { id, role: 'assistant', text: '', model: sentModelRef.current ?? undefined },
-      ]);
-      return id;
+  const promotePendingUserMsg = useCallback(
+    (convId: string, realId: string) => {
+      const pending = pendingUserMsgIdRef.current;
+      if (!pending) return;
+      pendingUserMsgIdRef.current = null;
+      updateRunMsgs(convId, (msgs) => msgs.map((m) => (m.id === pending ? { ...m, id: realId } : m)));
     },
     [updateRunMsgs],
   );
 
-  // Reset thread-local UI state on a manual thread switch (not on the
-  // internal id promotion that happens when a fresh run gets its real
-  // server-assigned conversation id — see agent.conversation handling).
+  // Reset thread-local UI state on a manual thread switch. Iteration/todos/
+  // pendingApproval are still flat hook state, not scoped per conversation
+  // (GitHub issue #1) — switching threads clears the display; a resync (on
+  // reconnect, not on a plain manual switch) is what would restore them for
+  // whichever conversation actually has an active run.
   const selectRun = useCallback(
     (id: string) => {
       setActiveId(id);
@@ -238,9 +341,6 @@ export function useAgentSession(token: string | null) {
       setPendingApproval(null);
       setIteration(null);
       setLiveTodos([]);
-      setLoadingModel(false);
-      setResponseStartedAt(null);
-      buildingMsgIdRef.current = null;
     },
     [setActiveId],
   );
@@ -251,9 +351,6 @@ export function useAgentSession(token: string | null) {
     setPendingApproval(null);
     setIteration(null);
     setLiveTodos([]);
-    setLoadingModel(false);
-    setResponseStartedAt(null);
-    buildingMsgIdRef.current = null;
   }, [setActiveId]);
 
   // Load real runs + latest run's history on mount / token change.
@@ -297,157 +394,161 @@ export function useAgentSession(token: string | null) {
       });
   }, [token, setActiveId]);
 
-  // Live agent socket. Mobile networks drop long-lived WS connections often
-  // (backgrounding, wifi/cellular handoff) — without reconnect, a dropped
-  // socket left `runState` stuck "running" forever even though the server
-  // had already finished and persisted the response, making the run look
-  // permanently hung. This reconnects with backoff and, on every (re)connect,
-  // refreshes the active run from the server so whatever completed while
-  // disconnected actually shows up.
+  // Live agent socket — see useChatSession for the full rationale (shared
+  // between both hooks): resumable via per-stream seq + stream.subscribe
+  // instead of a reconcile poll, stream state preserved across reconnect,
+  // socket force-closed on foreground resume to dodge the "zombie socket"
+  // failure mode.
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
 
-    const refreshActiveRun = () => {
-      const convId = activeIdRef.current;
-      if (!convId) return;
-      getMessages(convId)
-        .then(({ messages: rows }) => {
-          const msgs = reconstructMessages(rows);
-          setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs } : r)));
-        })
-        .catch(() => {});
+    const resubscribeKnown = () => {
+      const targets = new Set(Object.keys(streamingByConvRef.current));
+      if (activeIdRef.current) targets.add(activeIdRef.current);
+      for (const convId of targets) {
+        const tracked = streamingByConvRef.current[convId];
+        subscribeStreams(
+          wsRef.current!,
+          convId,
+          tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined,
+        );
+      }
     };
 
-    const onEvent = (event: AgentEvent) => {
-      switch (event.type) {
-        case 'agent.conversation': {
-          const realId = event.conversation_id;
-          const localId = pendingLocalIdRef.current;
-          const modelForPatch = pendingModelRef.current;
-          pendingLocalIdRef.current = null;
-          pendingModelRef.current = null;
-          setRuns((prev) => {
-            if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
-              return prev.map((r) => (r.id === localId ? { ...r, id: realId } : r));
-            }
-            if (prev.some((r) => r.id === realId)) return prev;
-            return [{ id: realId, title: 'New run', kind: 'agent', time: 'now', model: modelForPatch ?? 'default', location: 'server', msgs: [] }, ...prev];
-          });
-          setActiveId(realId);
-          if (modelForPatch) {
-            updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
+    const applyRunLevelState = (
+      convId: string,
+      streamId: string,
+      snapshot: StreamSnapshot,
+      status: 'active' | 'complete' | 'error' | 'cancelled',
+    ) => {
+      if (convId !== activeIdRef.current) return;
+      // A reconnect's catch-up re-syncs the conversation's last few runs,
+      // not just the current one — an older, already-finished run's sync
+      // must not overwrite run-level state (iteration/todos/approval/
+      // runState) for a genuinely still-active *different* run. Only apply
+      // if this sync is for the stream we're actually tracking, or nothing
+      // is tracked yet.
+      const tracked = streamingByConvRef.current[convId];
+      if (tracked && tracked.streamId !== streamId) return;
+      setIteration(snapshot.iteration ?? null);
+      setLiveTodos(snapshot.todos ?? []);
+      setPendingApproval(
+        snapshot.pending_approval
+          ? { callId: snapshot.pending_approval.call_id, tool: snapshot.pending_approval.tool, args: snapshot.pending_approval.args }
+          : null,
+      );
+      if (status === 'active') setRunState(snapshot.pending_approval ? 'awaiting_approval' : 'running');
+      else setRunState(status === 'error' ? 'error' : 'done');
+    };
+
+    const onEvent = (event: ServerMessage) => {
+      if (event.type === 'turn.started') {
+        const realId = event.conversation_id;
+        const localId = pendingLocalIdRef.current;
+        const modelForPatch = pendingModelRef.current;
+        pendingLocalIdRef.current = null;
+        pendingModelRef.current = null;
+        setRuns((prev) => {
+          if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
+            return prev.map((r) => (r.id === localId ? { ...r, id: realId, incognito: event.incognito } : r));
           }
-          break;
+          if (prev.some((r) => r.id === realId)) return prev;
+          return [
+            { id: realId, title: 'New run', kind: 'agent', time: 'now', model: modelForPatch ?? 'default', location: 'server', msgs: [] },
+            ...prev,
+          ];
+        });
+        setActiveId(realId);
+        if (modelForPatch && !event.incognito) {
+          updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
         }
-        case 'agent.iteration': {
-          buildingMsgIdRef.current = null;
-          setRunState('running');
-          setIteration({ n: event.iteration, max: event.max });
-          setLoadingModel(false);
-          break;
+      } else if (event.type === 'stream.sync') {
+        const convId = event.conversation_id;
+        const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
+        if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
+        updateRunMsgs(convId, (msgs) => applySnapshotToMsgs(msgs, event.snapshot));
+        applyRunLevelState(convId, event.stream_id, event.snapshot, event.status);
+        if (event.status !== 'active') {
+          const tracked = streamingByConvRef.current[convId];
+          if (!tracked || tracked.streamId === event.stream_id) clearStream(convId);
+        } else {
+          // Synchronously, before any further event can be handled.
+          cursorsRef.current[event.stream_id] = event.seq;
+          const assistantMsg = event.snapshot.messages.find((m) => m.author_type === 'assistant');
+          setStreamingByConv((prev) => ({
+            ...prev,
+            [convId]:
+              prev[convId]?.streamId === event.stream_id
+                ? prev[convId]
+                : {
+                    streamId: event.stream_id,
+                    loadingModel: false,
+                    responseStartedAt: Date.now(),
+                    model: assistantMsg?.model ?? '',
+                  },
+          }));
         }
-        case 'agent.model_loading': {
-          setLoadingModel(true);
-          break;
-        }
-        case 'agent.delta': {
-          setLoadingModel(false);
-          const id = ensureIterationMessage(event.conversation_id, event.message_id);
-          updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => (m.id === id ? { ...m, text: (m.text ?? '') + event.text } : m)),
-          );
-          break;
-        }
-        case 'agent.thinking': {
-          setLoadingModel(false);
-          const id = ensureIterationMessage(event.conversation_id, event.message_id);
-          updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => (m.id === id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m)),
-          );
-          break;
-        }
-        case 'agent.tool_call': {
-          setLoadingModel(false);
-          const id = ensureIterationMessage(event.conversation_id);
-          const summary = toolSummary(event.tool, event.args);
-          updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) =>
-              m.id === id
-                ? { ...m, tools: [...(m.tools ?? []), { tool: event.tool, summary, result: '', callId: event.call_id }] }
-                : m,
-            ),
-          );
-          break;
-        }
-        case 'agent.approval_request': {
-          setRunState('awaiting_approval');
-          setPendingApproval({ callId: event.call_id, tool: event.tool, args: event.args });
-          break;
-        }
-        case 'agent.tool_result': {
-          setPendingApproval((prev) => (prev?.callId === event.call_id ? null : prev));
-          setRunState('running');
-          updateRunMsgs(event.conversation_id, (msgs) =>
-            msgs.map((m) => {
-              if (!m.tools?.some((t) => t.callId === event.call_id)) return m;
-              return {
-                ...m,
-                tools: m.tools.map((t) =>
-                  t.callId === event.call_id ? { ...t, result: event.output, diff: diffLinesFor(event.diff) } : t,
-                ),
-              };
-            }),
-          );
-          break;
-        }
-        case 'agent.todos': {
-          setLiveTodos(event.todos);
-          break;
-        }
-        case 'agent.mode_changed': {
-          setModeState(event.mode);
-          break;
-        }
-        case 'agent.done': {
-          const id = ensureIterationMessage(event.conversation_id, event.message_id);
-          buildingMsgIdRef.current = null;
-          setRunState('done');
-          setIteration(null);
-          setLoadingModel(false);
-          setResponseStartedAt(null);
-          if (event.usage) {
-            updateRunMsgs(event.conversation_id, (msgs) =>
-              msgs.map((m) =>
-                m.id === id
-                  ? {
-                      ...m,
-                      usage: {
-                        in: event.usage!.prompt_tokens,
-                        out: event.usage!.completion_tokens,
-                        tps: event.usage!.gen_tps ?? 0,
-                        promptTps: event.usage!.prompt_tps,
-                        totalMs: event.usage!.total_ms,
-                        cache: 0,
-                      },
-                    }
-                  : m,
-              ),
-            );
+      } else if (event.type === 'stream.event') {
+        const convId = event.conversation_id;
+        const lastSeq = cursorsRef.current[event.stream_id];
+        if (lastSeq !== undefined && event.seq !== lastSeq + 1) {
+          // Gap — resync, but rate-limited: see useChatSession for why an
+          // unthrottled request-per-event turns one dropped delta into a
+          // socket-saturating storm.
+          const now = Date.now();
+          const lastAsk = lastResyncAtRef.current[event.stream_id] ?? 0;
+          if (now - lastAsk > RESYNC_COOLDOWN_MS) {
+            lastResyncAtRef.current[event.stream_id] = now;
+            subscribeStreams(wsRef.current!, convId, { [event.stream_id]: lastSeq });
           }
-          break;
+          return;
         }
-        case 'agent.error': {
-          buildingMsgIdRef.current = null;
-          setRunState('error');
+        // Synchronously, before the next event in this same tick is handled.
+        cursorsRef.current[event.stream_id] = event.seq;
+        if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
+          promotePendingUserMsg(convId, event.event.message_id);
+        }
+        updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event));
+
+        const isActive = convId === activeIdRef.current;
+        const inner = event.event;
+        if (inner.kind === 'iteration') {
+          if (isActive) {
+            setRunState('running');
+            setIteration({ n: inner.n, max: inner.max });
+          }
+          setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
+        } else if (inner.kind === 'model.loading') {
+          setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: true } } : prev));
+        } else if (inner.kind === 'text.delta' || inner.kind === 'thinking.delta') {
+          setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
+        } else if (inner.kind === 'approval.request') {
+          if (isActive) {
+            setRunState('awaiting_approval');
+            setPendingApproval({ callId: inner.call_id, tool: inner.tool, args: inner.args });
+          }
+        } else if (inner.kind === 'tool.result') {
+          if (isActive) {
+            setPendingApproval((prev) => (prev?.callId === inner.call_id ? null : prev));
+            setRunState('running');
+          }
+        } else if (inner.kind === 'todos') {
+          if (isActive) setLiveTodos(inner.todos);
+        }
+      } else if (event.type === 'stream.end') {
+        clearStream(event.conversation_id);
+        if (event.conversation_id === activeIdRef.current) {
+          setRunState(event.status === 'error' ? 'error' : 'done');
           setIteration(null);
-          setLoadingModel(false);
-          setResponseStartedAt(null);
-          showToast(`Agent error: ${event.error}`, 6000);
-          break;
+          setPendingApproval(null);
         }
+      } else if (event.type === 'agent.mode_changed') {
+        setModeState(event.mode);
+      } else if (event.type === 'error') {
+        showToast(`Agent error: ${event.error}`, 6000);
       }
     };
 
@@ -455,20 +556,10 @@ export function useAgentSession(token: string | null) {
       const ws = createAgentSocket(token, onEvent);
       ws.onopen = () => {
         attempt = 0;
-        refreshActiveRun();
+        resubscribeKnown();
       };
       ws.onclose = () => {
         if (cancelled) return;
-        // Whatever was in flight is now unknown client-side — the server may
-        // well have finished it already (it doesn't stop on a dropped
-        // socket). Stop showing "running" as if frozen and reconcile with
-        // the server's actual state once reconnected (onopen, above).
-        setRunState('done');
-        setPendingApproval(null);
-        setIteration(null);
-        setLoadingModel(false);
-        setResponseStartedAt(null);
-        buildingMsgIdRef.current = null;
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
@@ -477,34 +568,9 @@ export function useAgentSession(token: string | null) {
     };
     connect();
 
-    // See the identical listener in useChatSession — a short background
-    // spell rarely closes the socket outright (mobile OSes grant a grace
-    // period), but freezes the JS thread, so agent.* events that arrive
-    // while backgrounded can be lost to the native WebSocket bridge losing
-    // sync across the pause, even though the socket itself is still fine.
-    // Deliberately *not* closing the socket here — that would sever an
-    // otherwise-healthy run's future tokens for no reason. Just re-fetch
-    // the active run, same as a normal reconnect would.
-    //
-    // Verified on a real iOS Simulator (see useChatSession): a background
-    // spell can leave the socket a "zombie" — no close event fires on
-    // either end, yet it never delivers another byte. Re-fetching alone
-    // only recovers whatever the DB already has at that instant; it can't
-    // restore live delivery for the rest of an in-progress run. Closing the
-    // socket forces a fresh connection so the run keeps streaming live
-    // afterward, not just once at resume.
-    //
-    // NOTE: unlike chat's reconcile pass, the refetch here is a plain
-    // overwrite (no merge-safety) — reconstructMessages() rebuilds the
-    // whole run from the DB rows, which can clobber locally-accumulated
-    // content that hasn't been persisted yet if the run is still
-    // genuinely, healthily streaming. That's a pre-existing risk on every
-    // reconnect already (not introduced by this listener); tracked in the
-    // broader per-run state-scoping follow-up (GitHub issue #1).
     let appState: AppStateStatus = AppState.currentState;
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (/inactive|background/.test(appState) && next === 'active') {
-        refreshActiveRun();
         wsRef.current?.close();
       }
       appState = next;
@@ -516,19 +582,15 @@ export function useAgentSession(token: string | null) {
       appStateSub.remove();
       wsRef.current?.close();
     };
-  }, [token, ensureIterationMessage, updateRunMsgs, setActiveId, showToast]);
+  }, [token, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
-    (text: string, model: string) => {
+    (text: string, model: string, incognito?: boolean) => {
       if (!wsRef.current) return;
-      buildingMsgIdRef.current = null;
-      setRunState('running');
-      setPendingApproval(null);
-      setLoadingModel(false);
-      setResponseStartedAt(Date.now());
-      sentModelRef.current = model;
 
       const convId = activeIdRef.current;
+      const localMsgId = `lm${Date.now()}`;
+      pendingUserMsgIdRef.current = localMsgId;
       if (!convId) {
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
         pendingLocalIdRef.current = localId;
@@ -540,33 +602,23 @@ export function useAgentSession(token: string | null) {
           time: 'now',
           model,
           location: 'server',
-          msgs: [{ role: 'user', text }],
+          msgs: [{ id: localMsgId, role: 'user', text }],
         };
         setRuns((prev) => [newRun, ...prev]);
         setActiveId(localId);
-        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model);
+        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, incognito);
       } else {
-        setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: [...r.msgs, { role: 'user', text }] } : r)));
-        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model);
+        setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: [...r.msgs, { id: localMsgId, role: 'user', text }] } : r)));
+        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, incognito);
       }
     },
     [mode, setActiveId],
   );
 
-  // Closing the socket resolves every pending approval as denied server-side
-  // (see ws/agent.ts), which is exactly what a mid-run "stop" should do. The
-  // live-socket effect's own onclose handler reconnects with the real event
-  // handler wired up, so the next send still works — it must not be
-  // replaced here with a one-off socket, or every event after a stop would
-  // silently vanish into a dead handler for the rest of the session.
   const handleStop = useCallback(() => {
-    setRunState('done');
-    setPendingApproval(null);
-    setIteration(null);
-    setLoadingModel(false);
-    setResponseStartedAt(null);
-    buildingMsgIdRef.current = null;
-    wsRef.current?.close();
+    const id = activeIdRef.current;
+    const stream = id ? streamingByConvRef.current[id] : undefined;
+    if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
   }, []);
 
   const handleModeChange = useCallback((next: PermissionMode) => {
@@ -618,12 +670,16 @@ export function useAgentSession(token: string | null) {
   }, []);
 
   const setRunModel = useCallback((id: string, modelId: string) => {
-    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, model: modelId } : r)));
-    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+    setRuns((prev) => {
+      const run = prev.find((r) => r.id === id);
+      if (!run?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+      return prev.map((r) => (r.id === id ? { ...r, model: modelId } : r));
+    });
   }, []);
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
+  const activeStream = activeId ? streamingByConv[activeId] : undefined;
   const busy = runState === 'running' || runState === 'awaiting_approval';
 
   return {
@@ -634,8 +690,8 @@ export function useAgentSession(token: string | null) {
     mode,
     runState,
     busy,
-    loadingModel,
-    responseStartedAt,
+    loadingModel: activeStream?.loadingModel ?? false,
+    responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     iteration,
     todos: liveTodos,
@@ -651,4 +707,28 @@ export function useAgentSession(token: string | null) {
     handleRename,
     setRunModel,
   };
+}
+
+/** Aggregates every file diff seen in the run into a per-path add/del summary. */
+function computeChangedFiles(msgs: Message[]): ChangedFile[] {
+  const byPath = new Map<string, { adds: number; dels: number }>();
+  for (const msg of msgs) {
+    for (const tool of msg.tools ?? []) {
+      if (!tool.diff) continue;
+      let path: string | null = null;
+      for (const line of tool.diff) {
+        if (line.type === 'meta') {
+          const match = line.text.match(/^(?:\+\+\+|---(?: \/ \+\+\+)?) (.+?)(?: \(new file\))?$/);
+          path = match ? match[1] : null;
+          if (path && !byPath.has(path)) byPath.set(path, { adds: 0, dels: 0 });
+          continue;
+        }
+        if (!path) continue;
+        const entry = byPath.get(path)!;
+        if (line.type === 'add') entry.adds++;
+        else if (line.type === 'del') entry.dels++;
+      }
+    }
+  }
+  return [...byPath.entries()].map(([path, counts]) => ({ path, ...counts }));
 }
