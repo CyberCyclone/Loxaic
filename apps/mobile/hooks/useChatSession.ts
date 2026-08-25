@@ -6,6 +6,7 @@ import {
   getMessages,
   updateConversation,
   type ChatClientEvent,
+  type ApiMessage,
   type ApiMessageUsage,
 } from '@shannon/api-client';
 import type { Conversation, Message, MessageUsage } from '@/lib/types';
@@ -39,6 +40,31 @@ function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | undefined
     cache: 0,
   };
 }
+
+function mapRows(rows: ApiMessage[]): Message[] {
+  return rows
+    .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
+    .map((m) => ({
+      id: m.id,
+      role: m.authorType === 'user' ? 'user' : 'assistant',
+      model: m.model ?? undefined,
+      text: extractText(m.content as Array<{ kind: string; text?: string }>),
+      thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
+      error: m.status === 'error',
+      usage: toMessageUsage(m.usage),
+    }));
+}
+
+// How long to keep re-polling a conversation whose socket died mid-response,
+// waiting for the DB row to resolve to "complete"/"error". A dropped mobile
+// connection often looks alive to the server (no clean close, so
+// socket.send() on the dead connection never throws) — the response finishes
+// generating and gets persisted, but the send-outs silently go nowhere, and
+// the client never gets a chat.message_complete/chat.error to act on. This
+// is the only thing that later fetches the true DB state instead of leaving
+// the message permanently stuck exactly as it looked at the moment of drop.
+const RECONCILE_ATTEMPTS = 5;
+const RECONCILE_DELAY_MS = 3000;
 
 /** Per-conversation in-flight state — keyed by conversation id so switching
  * threads mid-response can never show one conversation's stop button,
@@ -132,17 +158,7 @@ export function useChatSession(token: string | null) {
         setActiveId(latest.id);
         try {
           const { messages: rows } = await getMessages(latest.id);
-          const msgs: Message[] = rows
-            .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
-            .map((m) => ({
-              id: m.id,
-              role: m.authorType === 'user' ? 'user' : 'assistant',
-              model: m.model ?? undefined,
-              text: extractText(m.content as Array<{ kind: string; text?: string }>),
-              thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
-              error: m.status === 'error',
-              usage: toMessageUsage(m.usage),
-            }));
+          const msgs = mapRows(rows);
           if (msgs.length > 0) {
             setConversations((prev) =>
               prev.map((c) => (c.id === latest.id ? { ...c, msgs } : c)),
@@ -163,33 +179,62 @@ export function useChatSession(token: string | null) {
   // dropped socket left `streaming` stuck true forever even though the
   // server had already finished and persisted the response, making the
   // chat look permanently hung. This reconnects with backoff and, on every
-  // (re)connect, refreshes the active thread from the server so whatever
-  // completed while disconnected actually shows up.
+  // (re)connect, reconciles the server's actual state for the active
+  // conversation *and* every conversation that had a response in flight
+  // when the drop happened (which may not be the one currently being
+  // viewed — the user could easily have switched threads first). A dropped
+  // mobile socket often isn't a clean close on either end, so the server's
+  // in-progress response finishes and gets persisted, but the events
+  // announcing that never arrive on a connection that's already gone —
+  // reconciliation is what actually catches that up instead of leaving the
+  // message frozen exactly as it looked at the moment of the drop.
   useEffect(() => {
     if (!token) return;
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
+    // Conversation ids whose in-flight response we lost the live connection
+    // to and haven't yet confirmed a terminal (complete/error) status for.
+    const pendingReconcile = new Set<string>();
+    const reconcileTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-    const refreshActiveConversation = () => {
-      const convId = activeIdRef.current;
-      if (!convId) return;
+    const clearReconcileTimer = (convId: string) => {
+      const timer = reconcileTimers.get(convId);
+      if (timer) {
+        clearTimeout(timer);
+        reconcileTimers.delete(convId);
+      }
+    };
+
+    const reconcileConversation = (convId: string, retriesLeft: number) => {
+      if (cancelled) return;
       getMessages(convId)
         .then(({ messages: rows }) => {
-          const msgs: Message[] = rows
-            .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
-            .map((m) => ({
-              id: m.id,
-              role: m.authorType === 'user' ? 'user' : 'assistant',
-              model: m.model ?? undefined,
-              text: extractText(m.content as Array<{ kind: string; text?: string }>),
-              thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
-              error: m.status === 'error',
-              usage: toMessageUsage(m.usage),
-            }));
+          if (cancelled) return;
+          const msgs = mapRows(rows);
           setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, msgs } : c)));
+          const lastRow = rows[rows.length - 1];
+          const stillUnresolved = lastRow?.authorType === 'assistant' && lastRow.status === 'streaming';
+          if (stillUnresolved && retriesLeft > 0) {
+            clearReconcileTimer(convId);
+            reconcileTimers.set(
+              convId,
+              setTimeout(() => reconcileConversation(convId, retriesLeft - 1), RECONCILE_DELAY_MS),
+            );
+          } else {
+            pendingReconcile.delete(convId);
+            clearReconcileTimer(convId);
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          // Left in pendingReconcile — the next reconnect's onopen will retry.
+        });
+    };
+
+    const refreshActiveConversation = () => {
+      const targets = new Set(pendingReconcile);
+      if (activeIdRef.current) targets.add(activeIdRef.current);
+      for (const convId of targets) reconcileConversation(convId, RECONCILE_ATTEMPTS);
     };
 
     const onEvent = (event: ChatClientEvent) => {
@@ -337,10 +382,10 @@ export function useChatSession(token: string | null) {
         if (cancelled) return;
         // Whatever was in flight is now unknown client-side — the server may
         // well have finished it already (it doesn't stop on a dropped
-        // socket). Stop showing "streaming" as if frozen and reconcile with
-        // the server's actual state once reconnected (onopen, above). The
-        // whole socket died, so every in-flight conversation is affected —
-        // not just the active one.
+        // socket). Stop showing "streaming" as if frozen; every conversation
+        // that had an entry gets queued for reconciliation once reconnected
+        // (onopen, above) instead of being silently forgotten.
+        for (const convId of Object.keys(streamingByConvRef.current)) pendingReconcile.add(convId);
         setStreamingByConv(() => ({}));
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
@@ -353,6 +398,7 @@ export function useChatSession(token: string | null) {
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      for (const timer of reconcileTimers.values()) clearTimeout(timer);
       wsRef.current?.close();
     };
   }, [token, setActiveId, showToast, patchStream, clearStream, setStreamingByConv]);
