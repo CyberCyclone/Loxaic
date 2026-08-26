@@ -17,8 +17,8 @@ export type ThemePref = 'light' | 'dark' | 'system'
 export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
 export type { ModelInfo } from '@shannon/api-client'
-export type { ContextBreakdown, ContextCategory, ContextPart } from '@shannon/api-client'
-import type { ContextBreakdown } from '@shannon/api-client'
+export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand } from '@shannon/api-client'
+import type { ContextBreakdown, CompactionStats } from '@shannon/api-client'
 
 export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
 
@@ -60,7 +60,7 @@ export interface DiffLine {
 
 export interface Message {
   id?: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'summary'
   model?: string
   text: string
   thinking?: string
@@ -71,6 +71,9 @@ export interface Message {
   error?: boolean
   /** User-initiated stop (stream.stop), not a failure — rendered distinctly from `error`. */
   stopped?: boolean
+  /** Present only on role: 'summary' — what a /compact did. Absent while the
+   * summary is still streaming (its own `compaction` event hasn't landed yet). */
+  compaction?: CompactionStats
 }
 
 export interface Conversation {

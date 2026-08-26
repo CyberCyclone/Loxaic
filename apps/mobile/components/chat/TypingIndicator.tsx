@@ -12,6 +12,9 @@ interface TypingIndicatorProps {
   since: number;
   /** Model the request was sent to — shown the same way Message shows it, so this doesn't read as a headerless indicator. */
   model?: string;
+  /** True when this placeholder stands in for a /compact run's summary
+   * message rather than a normal reply — same gap, different label. */
+  compacting?: boolean;
 }
 
 // Shown only before *any* token (reasoning or answer) has streamed — once
@@ -25,7 +28,7 @@ interface TypingIndicatorProps {
 // back *is* the first generated token, which is also what ends this phase.
 // So there's nothing to count until it's already over. An elapsed-time
 // counter is the honest version of "live feedback" for this window.
-export function TypingIndicator({ loadingModel, since, model }: TypingIndicatorProps) {
+export function TypingIndicator({ loadingModel, since, model, compacting }: TypingIndicatorProps) {
   return (
     <Box className="px-4 py-2">
       <HStack space="sm" className="items-start">
@@ -41,7 +44,7 @@ export function TypingIndicator({ loadingModel, since, model }: TypingIndicatorP
           <HStack space="xs" className="items-center">
             <Spinner size="small" className="text-muted-foreground" />
             <Text size="xs" className="text-muted-foreground">
-              {loadingModel ? 'Loading model…' : 'Processing prompt…'}
+              {loadingModel ? 'Loading model…' : compacting ? 'Compacting…' : 'Processing prompt…'}
             </Text>
             <LiveElapsed since={since} />
           </HStack>

@@ -33,9 +33,11 @@ interface InspectorBodyProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
   context: ContextView | null;
+  onCompact?: () => void;
+  busy?: boolean;
 }
 
-function InspectorBody({ todos, changedFiles, context }: InspectorBodyProps) {
+function InspectorBody({ todos, changedFiles, context, onCompact, busy }: InspectorBodyProps) {
   return (
     <VStack space="lg">
       <VStack space="xs">
@@ -91,7 +93,7 @@ function InspectorBody({ todos, changedFiles, context }: InspectorBodyProps) {
           <Text size="sm" className="font-semibold text-foreground">
             Context
           </Text>
-          <ContextBreakdown context={context} />
+          <ContextBreakdown context={context} onCompact={onCompact} busy={busy} />
         </VStack>
       )}
     </VStack>
@@ -105,9 +107,14 @@ interface InspectorProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
   context: ContextView | null;
+  /** Absent in the wide (persistent side-panel) layout's own contract — both
+   * layouts accept it identically, it's the caller (agent.tsx) that decides
+   * whether pressing it should also dismiss the narrow-layout Actionsheet. */
+  onCompact?: () => void;
+  busy?: boolean;
 }
 
-export function Inspector({ open, onClose, wide, todos, changedFiles, context }: InspectorProps) {
+export function Inspector({ open, onClose, wide, todos, changedFiles, context, onCompact, busy }: InspectorProps) {
   if (!open) return null;
 
   if (wide) {
@@ -122,7 +129,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context }:
           </Pressable>
         </HStack>
         <Box className="p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} onCompact={onCompact} busy={busy} />
         </Box>
       </Box>
     );
@@ -136,7 +143,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context }:
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
         <Box className="w-full p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} onCompact={onCompact} busy={busy} />
         </Box>
       </ActionsheetContent>
     </Actionsheet>

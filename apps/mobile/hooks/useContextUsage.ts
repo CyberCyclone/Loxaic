@@ -52,6 +52,7 @@ const LABELS: Record<ContextCategory | 'free' | 'used', string> = {
   used: 'Context used',
   system: 'System prompt',
   tools: 'Tool definitions',
+  summary: 'Compacted summary',
   history: 'Conversation history',
   reasoning: 'Reasoning (carried over)',
   tool_io: 'Tool calls & results',
@@ -75,7 +76,12 @@ export function useContextUsage(msgs: Message[] | undefined, window: ModelWindow
     // Prefer it: the model list can be mid-refresh, or the conversation's model
     // may have changed since it was fetched.
     const effective = breakdown?.window_tokens ?? window?.effective ?? null;
-    const used = usage ? usage.in + usage.out : 0;
+    // Identical to usage.in + usage.out by construction on an ordinary turn —
+    // but not after a compaction, where the breakdown describes the
+    // post-compaction window while `usage` still carries the compact call's
+    // own (much larger) prompt_tokens. Preferring the breakdown is what keeps
+    // the ring from jumping up right after compacting.
+    const used = breakdown ? breakdown.used_tokens : usage ? usage.in + usage.out : 0;
     const percent = effective && effective > 0 ? Math.round((used / effective) * 100) : 0;
 
     const frac = (n: number) => (effective && effective > 0 ? n / effective : 0);

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { MessagesSquare, PanelRight } from 'lucide-react-native';
+import { findCommand } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -22,6 +23,7 @@ import { useContextUsage } from '@/hooks/useContextUsage';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
+import { useToastHelper } from '@/hooks/useToastHelper';
 
 export default function AgentScreen() {
   const shell = useShell();
@@ -34,6 +36,7 @@ export default function AgentScreen() {
     selectRun,
     mode,
     runState,
+    busy,
     loadingModel,
     responseStartedAt,
     pendingApproval,
@@ -42,6 +45,7 @@ export default function AgentScreen() {
     changedFiles,
     handleSend,
     handleStop,
+    handleCommand,
     handleNewRun,
     handleModeChange,
     handleApprove,
@@ -53,6 +57,7 @@ export default function AgentScreen() {
   } = useAgentSession(token, () => refreshModels());
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
+  const { showToast } = useToastHelper();
 
   const [settings] = useSettings();
   const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
@@ -60,6 +65,11 @@ export default function AgentScreen() {
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  // The Inspector renders its own copy of the context popup outside the
+  // Composer's subtree — its Compact button reaches the input through this,
+  // bumping `token` so pressing it twice in a row still re-seeds. See
+  // Composer's `commandSeed` prop.
+  const [commandSeed, setCommandSeed] = useState<{ token: number; text: string } | null>(null);
 
   const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
   const wide = breakpoint === 'wide';
@@ -72,6 +82,27 @@ export default function AgentScreen() {
     '';
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
+
+  const handleRunCommand = useCallback(
+    (name: string, args: string) => {
+      const cmd = findCommand(name);
+      if (cmd?.requiresConversation && !activeId) {
+        showToast('Start a run first');
+        return;
+      }
+      handleCommand(name, args, selectedModel);
+    },
+    [activeId, selectedModel, handleCommand, showToast],
+  );
+
+  // The Inspector's own Compact button (outside the Composer) seeds the
+  // input the same way the ring popup's does inside it, then — narrow layout
+  // only — dismisses the Actionsheet so the composer with the seeded text is
+  // actually visible.
+  const handleCompactFromInspector = useCallback(() => {
+    setCommandSeed({ token: Date.now(), text: '/compact ' });
+    if (!wide) setInspectorOpen(false);
+  }, [wide]);
 
   const threadList = (
     <ThreadList
@@ -148,10 +179,13 @@ export default function AgentScreen() {
               <Composer
                 onSend={(text) => handleSend(text, selectedModel)}
                 onStop={handleStop}
-                streaming={runState === 'running' || runState === 'awaiting_approval'}
+                streaming={busy}
                 modelName={selectedModel ? getName(selectedModel) : 'Select model'}
                 context={context}
                 onOpenModelModal={() => setModelModalOpen(true)}
+                surface="agent"
+                onRunCommand={handleRunCommand}
+                commandSeed={commandSeed}
               />
             </VStack>
 
@@ -163,6 +197,8 @@ export default function AgentScreen() {
                 todos={todos}
                 changedFiles={changedFiles}
                 context={context}
+                onCompact={handleCompactFromInspector}
+                busy={busy}
               />
             )}
           </HStack>
@@ -184,6 +220,8 @@ export default function AgentScreen() {
           todos={todos}
           changedFiles={changedFiles}
           context={context}
+          onCompact={handleCompactFromInspector}
+          busy={busy}
         />
       )}
 

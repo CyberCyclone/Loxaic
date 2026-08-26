@@ -3,6 +3,7 @@ import { Divider } from '@/components/ui/divider';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
+import { Pressable } from '@/components/ui/pressable';
 import type { ContextView } from '@/hooks/useContextUsage';
 import { ContextBar } from './ContextBar';
 import { SEGMENT_CLASS } from './segments';
@@ -30,21 +31,49 @@ function Note({ children, warn }: { children: string; warn?: boolean }) {
   );
 }
 
+function CompactButton({ onPress, busy }: { onPress: () => void; busy?: boolean }) {
+  return (
+    <Pressable
+      onPress={busy ? undefined : onPress}
+      disabled={busy}
+      className={`items-center rounded-md border border-border px-3 py-1.5 ${busy ? 'opacity-40' : 'web:hover:bg-muted/50'}`}
+    >
+      <Text size="xs" className="font-medium text-foreground">
+        Compact
+      </Text>
+    </Pressable>
+  );
+}
+
 /**
  * What is actually consuming the context window, and how fast the last turn
  * ran. Rows minus free space always equal the last turn's in + out, so the
  * numbers can be checked against each other on sight.
  */
-export function ContextBreakdown({ context }: { context: ContextView }) {
+export function ContextBreakdown({
+  context,
+  onCompact,
+  busy,
+}: {
+  context: ContextView;
+  /** Present only where there's an active conversation to compact — the
+   * caller gates this the same way it gates rendering this popup at all. */
+  onCompact?: () => void;
+  /** Disables the button while a run is already in flight. */
+  busy?: boolean;
+}) {
   const { window, used, percent, segments, lastTurn } = context;
   const over = window != null && used > window;
 
   // No resolvable window means no honest denominator. Say so rather than
-  // rendering a percentage against a number we invented.
+  // rendering a percentage against a number we invented — but compaction
+  // still works regardless of whether the window itself is known, so the
+  // button stays available here too.
   if (window == null) {
     return (
-      <VStack space="xs">
+      <VStack space="sm">
         <Note>Context window unknown for this model.</Note>
+        {onCompact && <CompactButton onPress={onCompact} busy={busy} />}
         {lastTurn && <LastTurnRows lastTurn={lastTurn} />}
       </VStack>
     );
@@ -94,6 +123,8 @@ export function ContextBreakdown({ context }: { context: ContextView }) {
           <Note>{`Showing last ${context.historyLimit} messages; older turns already dropped.`}</Note>
         )}
       </VStack>
+
+      {onCompact && <CompactButton onPress={onCompact} busy={busy} />}
 
       {lastTurn && (
         <>

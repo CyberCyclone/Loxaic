@@ -94,15 +94,18 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
   // load and prompt processing both happen in the gap before the first token.
   // So "nothing to show yet" isn't just "no assistant message exists"; it's
   // "the assistant message exists but has neither thinking nor text yet".
+  // A /compact run's summary message goes through the identical gap before
+  // its first delta, so it gets the same placeholder treatment.
   const msgs = conversation?.msgs ?? [];
   const lastIndex = msgs.length - 1;
   const lastMsg = msgs[lastIndex];
-  const lastIsEmptyAssistant = lastMsg?.role === 'assistant' && !lastMsg.thinking && !lastMsg.text;
-  const showTyping = pending && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyAssistant);
+  const lastIsEmptyGenerating =
+    (lastMsg?.role === 'assistant' || lastMsg?.role === 'summary') && !lastMsg.thinking && !lastMsg.text;
+  const showTyping = pending && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyGenerating);
   // While the empty placeholder is represented by the typing indicator, don't
   // *also* render it as its own contentless row — that produced two stacked
   // "S" rows for the same in-flight response.
-  const msgsToRender = pending && lastIsEmptyAssistant ? msgs.slice(0, lastIndex) : msgs;
+  const msgsToRender = pending && lastIsEmptyGenerating ? msgs.slice(0, lastIndex) : msgs;
   // Reasoning is "live" only for the last message, while it's still streaming
   // and hasn't moved on to the answer yet — once `text` starts, the model has
   // finished thinking even if this message object lingers.
@@ -150,7 +153,12 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
       ListHeaderComponent={
         showTyping ? (
           <Box className="mx-auto w-full max-w-[820px]">
-            <TypingIndicator loadingModel={loadingModel} since={responseStartedAt!} model={model} />
+            <TypingIndicator
+              loadingModel={loadingModel}
+              since={responseStartedAt!}
+              model={model}
+              compacting={lastMsg?.role === 'summary'}
+            />
           </Box>
         ) : null
       }

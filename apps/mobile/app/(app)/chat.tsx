@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { MessagesSquare } from 'lucide-react-native';
+import { findCommand } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -20,6 +21,7 @@ import { useContextUsage } from '@/hooks/useContextUsage';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
+import { useToastHelper } from '@/hooks/useToastHelper';
 
 export default function ChatScreen() {
   const shell = useShell();
@@ -35,6 +37,7 @@ export default function ChatScreen() {
     responseStartedAt,
     handleSend,
     handleStop,
+    handleCommand,
     handleNewChat,
     handleFork,
     handleDelete,
@@ -43,6 +46,7 @@ export default function ChatScreen() {
   } = useChatSession(token, () => refreshModels());
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
+  const { showToast } = useToastHelper();
 
   const [settings] = useSettings();
   const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
@@ -66,6 +70,18 @@ export default function ChatScreen() {
     '';
 
   const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
+
+  const handleRunCommand = useCallback(
+    (name: string, args: string) => {
+      const cmd = findCommand(name);
+      if (cmd?.requiresConversation && !activeId) {
+        showToast('Start a conversation first');
+        return;
+      }
+      handleCommand(name, args, selectedModel);
+    },
+    [activeId, selectedModel, handleCommand, showToast],
+  );
 
   const threadList = (
     <ThreadList
@@ -130,6 +146,8 @@ export default function ChatScreen() {
           incognito={incognito}
           onToggleIncognito={() => setPendingIncognito((v) => !v)}
           incognitoLocked={incognitoLocked}
+          surface="chat"
+          onRunCommand={handleRunCommand}
         />
         </KeyboardAvoidingView>
       </VStack>

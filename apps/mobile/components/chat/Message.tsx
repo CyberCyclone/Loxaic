@@ -11,6 +11,7 @@ import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCallCard } from './ToolCallCard';
 import { CodeBlock } from './CodeBlock';
 import { LiveElapsed } from './LiveElapsed';
+import { CompactionCard } from './CompactionCard';
 import type { Message as MessageType } from '@/lib/types';
 
 const FENCE_RE = /```(\w+)?\n([\s\S]*?)```/g;
@@ -54,6 +55,13 @@ interface MessageProps {
 }
 
 function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps) {
+  // A compaction summary isn't a conversational turn from either party — it
+  // renders as a divider card, not a bubble, and skips everything below
+  // (avatar, usage row, copy/fork actions) that assumes one.
+  if (msg.role === 'summary') {
+    return <CompactionCard stats={msg.compaction} summaryText={msg.text || undefined} />;
+  }
+
   const isUser = msg.role === 'user';
 
   return (

@@ -3,6 +3,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import {
   createChatSocket,
   sendChatMessage,
+  sendCommand,
   subscribeStreams,
   stopStream,
   getConversations,
@@ -14,10 +15,28 @@ import {
   type TurnUsage,
   type ApiMessage,
 } from '@shannon/api-client';
+import type { CompactionStats, ContentBlock } from '@shannon/types';
 import type { Conversation, Message } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
 import { useToastHelper } from './useToastHelper';
+
+/** Author types the client renders as a message row — everything else
+ * (currently nothing else) is dropped. Kept as one list so the REST loader
+ * and the two live paths (snapshot, message.start) agree on what counts. */
+function roleOf(authorType: string): Message['role'] | null {
+  if (authorType === 'user') return 'user';
+  if (authorType === 'assistant') return 'assistant';
+  if (authorType === 'summary') return 'summary';
+  return null;
+}
+
+function extractCompaction(blocks: Array<{ kind: string } & Record<string, unknown>>): CompactionStats | undefined {
+  const block = blocks.find((b) => b.kind === 'compaction');
+  if (!block) return undefined;
+  const { kind: _kind, ...stats } = block;
+  return stats as CompactionStats;
+}
 
 function extractText(blocks: Array<{ kind: string; text?: string }>): string {
   return blocks
@@ -37,17 +56,23 @@ function extractThinking(blocks: Array<{ kind: string; text?: string }>): string
 /** Cold history load only (REST) — live state is driven entirely by the
  * stream protocol below, never by re-fetching and clobbering in place. */
 function mapRows(rows: ApiMessage[]): Message[] {
-  return rows
-    .filter((m) => m.authorType === 'user' || m.authorType === 'assistant')
-    .map((m) => ({
+  const out: Message[] = [];
+  for (const m of rows) {
+    const role = roleOf(m.authorType);
+    if (!role) continue;
+    const blocks = m.content as ContentBlock[];
+    out.push({
       id: m.id,
-      role: m.authorType === 'user' ? 'user' : 'assistant',
+      role,
       model: m.model ?? undefined,
-      text: extractText(m.content as Array<{ kind: string; text?: string }>),
-      thinking: extractThinking(m.content as Array<{ kind: string; text?: string }>),
+      text: extractText(blocks as Array<{ kind: string; text?: string }>),
+      thinking: extractThinking(blocks as Array<{ kind: string; text?: string }>),
       error: m.status === 'error',
       usage: toMessageUsage(m.usage),
-    }));
+      compaction: role === 'summary' ? extractCompaction(blocks as Array<{ kind: string } & Record<string, unknown>>) : undefined,
+    });
+  }
+  return out;
 }
 
 /** A `stream.sync` snapshot is authoritative — unlike the old reconcile
@@ -57,15 +82,17 @@ function mapRows(rows: ApiMessage[]): Message[] {
 function applySnapshotToMsgs(msgs: Message[], snapshot: StreamSnapshot): Message[] {
   const result = [...msgs];
   for (const sm of snapshot.messages) {
+    const role = roleOf(sm.author_type) ?? 'assistant';
     const converted: Message = {
       id: sm.message_id,
-      role: sm.author_type === 'user' ? 'user' : 'assistant',
+      role,
       model: sm.model,
       text: sm.text,
       thinking: sm.thinking || undefined,
       usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
       error: sm.status === 'error',
       stopped: sm.status === 'cancelled',
+      compaction: role === 'summary' ? sm.compaction : undefined,
     };
     const idx = result.findIndex((m) => m.id === sm.message_id);
     if (idx >= 0) result[idx] = converted;
@@ -82,7 +109,7 @@ function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
         ...msgs,
         {
           id: event.message_id,
-          role: event.author_type === 'user' ? 'user' : 'assistant',
+          role: roleOf(event.author_type) ?? 'assistant',
           model: event.model,
           text: event.text ?? '',
         },
@@ -92,6 +119,10 @@ function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
       return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
     case 'thinking.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
+    case 'compaction': {
+      const { kind: _kind, message_id, ...stats } = event;
+      return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
+    }
     case 'message.end':
       return msgs.map((m) =>
         m.id === event.message_id
@@ -463,6 +494,15 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
   }, []);
 
+  /** Runs a built-in slash command (currently just "compact") against the
+   * active conversation. Unlike handleSend, there's no optimistic bubble to
+   * push — the command has no user-authored message, only its result. */
+  const handleCommand = useCallback((name: string, args: string, model: string) => {
+    const id = activeIdRef.current;
+    if (!wsRef.current || !id) return;
+    sendCommand(wsRef.current, name, id, model, args || undefined);
+  }, []);
+
   const handleNewChat = useCallback(() => setActiveId(null), [setActiveId]);
 
   const handleFork = useCallback(
@@ -525,6 +565,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     handleSend,
     handleStop,
+    handleCommand,
     handleNewChat,
     handleFork,
     handleDelete,

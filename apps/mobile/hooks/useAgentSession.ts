@@ -3,6 +3,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import {
   createAgentSocket,
   sendAgentMessage,
+  sendCommand,
   subscribeStreams,
   stopStream,
   setAgentMode,
@@ -20,8 +21,26 @@ import {
   type PermissionMode,
   type Todo,
 } from '@shannon/api-client';
-import type { ContentBlock, FileDiff } from '@shannon/types';
+import type { CompactionStats, ContentBlock, FileDiff } from '@shannon/types';
 import type { Conversation, Message, ToolCall, ChangedFile } from '@/lib/types';
+
+/** Author types the client renders as a message row. Mirrors useChatSession's
+ * roleOf — kept local rather than shared because the two hooks' Message
+ * construction diverges everywhere else (tool reconstruction, snapshot
+ * folding), and a shared three-line function isn't worth a new module for. */
+function roleOf(authorType: string): Message['role'] | null {
+  if (authorType === 'user') return 'user';
+  if (authorType === 'assistant') return 'assistant';
+  if (authorType === 'summary') return 'summary';
+  return null;
+}
+
+function extractCompaction(blocks: ContentBlock[]): CompactionStats | undefined {
+  const block = blocks.find((b) => b.kind === 'compaction') as ({ kind: 'compaction' } & CompactionStats) | undefined;
+  if (!block) return undefined;
+  const { kind: _kind, ...stats } = block;
+  return stats;
+}
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 import { useToastHelper } from './useToastHelper';
@@ -96,6 +115,19 @@ function reconstructMessages(rows: ApiMessage[]): Message[] {
       continue;
     }
 
+    if (row.authorType === 'summary') {
+      const msg: Message = {
+        id: row.id,
+        role: 'summary',
+        model: row.model ?? undefined,
+        text: extractField(blocks, 'text'),
+        compaction: extractCompaction(blocks),
+      };
+      out.push(msg);
+      byId.set(row.id, msg);
+      continue;
+    }
+
     if (row.authorType === 'assistant') {
       const thinking = extractField(blocks, 'thinking');
       const tools: ToolCall[] = [];
@@ -145,9 +177,10 @@ function reconstructMessages(rows: ApiMessage[]): Message[] {
  * assistant message, same shape reconstructMessages produces from cold
  * storage. */
 function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
+  const role = roleOf(sm.author_type) ?? 'assistant';
   return {
     id: sm.message_id,
-    role: sm.author_type === 'user' ? 'user' : 'assistant',
+    role,
     model: sm.model,
     text: sm.text,
     thinking: sm.thinking || undefined,
@@ -164,6 +197,7 @@ function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
     usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
     error: sm.status === 'error',
     stopped: sm.status === 'cancelled',
+    compaction: role === 'summary' ? sm.compaction : undefined,
   };
 }
 
@@ -184,13 +218,17 @@ function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
       if (msgs.some((m) => m.id === event.message_id)) return msgs;
       return [
         ...msgs,
-        { id: event.message_id, role: event.author_type === 'user' ? 'user' : 'assistant', model: event.model, text: event.text ?? '' },
+        { id: event.message_id, role: roleOf(event.author_type) ?? 'assistant', model: event.model, text: event.text ?? '' },
       ];
     }
     case 'text.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
     case 'thinking.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
+    case 'compaction': {
+      const { kind: _kind, message_id, ...stats } = event;
+      return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
+    }
     case 'message.end':
       return msgs.map((m) =>
         m.id === event.message_id
@@ -610,6 +648,14 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
   }, []);
 
+  /** See useChatSession's handleCommand: no optimistic bubble, since a
+   * command has no user-authored message of its own. */
+  const handleCommand = useCallback((name: string, args: string, model: string) => {
+    const id = activeIdRef.current;
+    if (!wsRef.current || !id) return;
+    sendCommand(wsRef.current, name, id, model, args || undefined);
+  }, []);
+
   const handleModeChange = useCallback((next: PermissionMode) => {
     setModeState(next);
     if (wsRef.current) setAgentMode(wsRef.current, next);
@@ -687,6 +733,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     changedFiles,
     handleSend,
     handleStop,
+    handleCommand,
     handleNewRun,
     handleModeChange,
     handleApprove,
