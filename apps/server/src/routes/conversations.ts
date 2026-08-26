@@ -6,7 +6,7 @@ import type { ContextBreakdown } from "@shannon/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@shannon/sync";
 
-export async function conversationRoutes(app: FastifyInstance) {
+export function conversationRoutes(app: FastifyInstance) {
   // List conversations
   app.get("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
@@ -38,7 +38,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     const { title } = request.body as { title?: string };
     const [row] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: title || "New conversation" })
+      .values({ ownerId: userId, title: title ?? "New conversation" })
       .returning();
     return row;
   });
@@ -47,14 +47,16 @@ export async function conversationRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const { model_pref } = request.body as { model_pref?: { model?: string } };
-    const [row] = await db
+    // Drizzle's `.returning()` type doesn't reflect that a non-matching
+    // WHERE yields zero rows — cast to what actually comes back at runtime.
+    const [row] = (await db
       .update(conversations)
       .set({
         ...(model_pref !== undefined ? { modelPref: model_pref } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)))
-      .returning();
+      .returning()) as (typeof conversations.$inferSelect | undefined)[];
     if (!row) {
       reply.code(404);
       return { error: "Not found" };

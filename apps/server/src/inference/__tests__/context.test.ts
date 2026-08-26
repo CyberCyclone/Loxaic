@@ -54,8 +54,9 @@ describe("apportion", () => {
     // Equal characters, but tool JSON tokenises denser than prose, so it must
     // be attributed more tokens. This is the whole reason for the weighting.
     const result = apportion({ history: 10_000, tools: 10_000 }, 5000, 0, META);
-    const history = result.parts.find((p) => p.category === "history")!;
-    const tools = result.parts.find((p) => p.category === "tools")!;
+    const history = result.parts.find((p) => p.category === "history");
+    const tools = result.parts.find((p) => p.category === "tools");
+    if (!history || !tools) throw new Error("expected history and tools parts");
 
     expect(tools.tokens).toBeGreaterThan(history.tokens);
   });
@@ -150,7 +151,7 @@ describe("tallyChatMessages", () => {
     const eightTools: OpenAiTool[] = Array.from({ length: 8 }, (_, i) => ({
       type: "function" as const,
       function: {
-        name: `tool_${i}`,
+        name: `tool_${String(i)}`,
         description: "A tool that does a thing, described in a sentence or two of prose.",
         parameters: {
           type: "object",
@@ -166,7 +167,8 @@ describe("tallyChatMessages", () => {
 
     const tally = tallyChatMessages(messages, eightTools);
     const result = apportion(tally, 1600, 40, { ...META, historyMessages: 0 });
-    const toolsPart = result.parts.find((p) => p.category === "tools")!;
+    const toolsPart = result.parts.find((p) => p.category === "tools");
+    if (!toolsPart) throw new Error("expected a tools part");
 
     expect(toolsPart.tokens).toBeGreaterThan(1000);
     expect(toolsPart.tokens).toBeLessThan(1500);

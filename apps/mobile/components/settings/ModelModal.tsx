@@ -112,7 +112,7 @@ export function ModelModal({
             rows.map((item, i) =>
               item.type === 'header' ? (
                 <Text
-                  key={`h${i}`}
+                  key={`h${String(i)}`}
                   size="2xs"
                   className="px-4 pt-3 pb-1 uppercase tracking-wider text-muted-foreground"
                 >
@@ -167,7 +167,7 @@ export function ModelModal({
             {THINKING_LEVELS.map((level) => (
               <Pressable
                 key={level}
-                onPress={() => onThinkingLevel(level)}
+                onPress={() => { onThinkingLevel(level); }}
                 className={`rounded-md border px-2.5 py-1 ${
                   thinkingLevel === level ? 'border-primary bg-primary' : 'border-border bg-background'
                 }`}

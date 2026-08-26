@@ -29,7 +29,7 @@ const USAGE_AGGREGATE = {
   avgTotalMs: sql<number>`AVG(${usageRecords.totalMs})::float8`,
 };
 
-type UsageAggRow = {
+interface UsageAggRow {
   totalInputTokens: number;
   totalCachedTokens: number;
   totalOutputTokens: number;
@@ -38,7 +38,7 @@ type UsageAggRow = {
   avgPromptTps: number | null;
   avgPredictedTps: number | null;
   avgTotalMs: number | null;
-};
+}
 
 function shapeUsage(r: UsageAggRow) {
   const hitRate = r.totalInputTokens > 0 ? (r.totalCachedTokens / r.totalInputTokens) * 100 : 0;
@@ -58,7 +58,7 @@ function shapeUsage(r: UsageAggRow) {
 
 const SPARK_BUCKETS = 10;
 
-export async function statsRoutes(app: FastifyInstance) {
+export function statsRoutes(app: FastifyInstance) {
   app.get("/v1/stats/usage", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const { conversation_id, model, from, to, range } = request.query as {
@@ -278,7 +278,7 @@ export async function statsRoutes(app: FastifyInstance) {
       const conv = r.conversationId ? convMap.get(r.conversationId) : undefined;
       return {
         conversationId: r.conversationId,
-        title: conv?.title || "Untitled",
+        title: conv?.title ?? "Untitled",
         kind: conv?.kind ?? "chat",
         model: r.model,
         tokens: r.inputTokens + r.outputTokens,

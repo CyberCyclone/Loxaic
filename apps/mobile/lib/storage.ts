@@ -29,7 +29,7 @@ export async function hydrateStorage(): Promise<void> {
 export function getItem(key: string): string | null {
   if (Platform.OS === 'web') {
     try {
-      return globalThis.localStorage?.getItem(key) ?? null;
+      return globalThis.localStorage.getItem(key);
     } catch {
       return null;
     }
@@ -40,7 +40,7 @@ export function getItem(key: string): string | null {
 export function setItem(key: string, value: string): void {
   if (Platform.OS === 'web') {
     try {
-      globalThis.localStorage?.setItem(key, value);
+      globalThis.localStorage.setItem(key, value);
     } catch {
       /* private mode etc. */
     }
@@ -53,7 +53,7 @@ export function setItem(key: string, value: string): void {
 export function removeItem(key: string): void {
   if (Platform.OS === 'web') {
     try {
-      globalThis.localStorage?.removeItem(key);
+      globalThis.localStorage.removeItem(key);
     } catch {
       /* ignore */
     }

@@ -21,16 +21,16 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
   const copy = async () => {
     await Clipboard.setStringAsync(code);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setTimeout(() => { setCopied(false); }, 1500);
   };
 
   return (
     <Box className="my-2 overflow-hidden rounded-md border border-border bg-code">
       <HStack className="items-center justify-between border-b border-border px-3 py-1.5">
         <Text size="xs" className="text-muted-foreground">
-          {lang || 'code'}
+          {lang ?? 'code'}
         </Text>
-        <Pressable onPress={copy} className="flex-row items-center gap-1 p-1">
+        <Pressable onPress={() => { void copy(); }} className="flex-row items-center gap-1 p-1">
           <Icon as={copied ? Check : Copy} size="xs" className="text-muted-foreground" />
           {copied && (
             <Text size="xs" className="text-muted-foreground">

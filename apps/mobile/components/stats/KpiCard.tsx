@@ -1,10 +1,9 @@
 import Svg, { Polyline } from 'react-native-svg';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
-import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 
-export type KpiDelta = { text: string; dir: 'up' | 'down' };
+export interface KpiDelta { text: string; dir: 'up' | 'down' }
 
 interface KpiCardProps {
   label: string;
@@ -25,7 +24,7 @@ export function KpiCard({ label, value, delta, hint, spark }: KpiCardProps) {
       <Text size="lg" className="mt-1 font-semibold text-foreground">
         {value}
       </Text>
-      {(delta || hint) && (
+      {(delta ?? hint) && (
         <HStack space="xs" className="mt-1 items-center">
           {delta && (
             <Box className={`rounded-sm px-1.5 py-0.5 ${delta.dir === 'up' ? 'bg-success/15' : 'bg-destructive/15'}`}>
@@ -69,9 +68,9 @@ function Sparkline({ data, height = 32 }: { data: (number | null)[]; height?: nu
   if (points.length < 2) return null;
 
   return (
-    <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+    <Svg width="100%" height={height} viewBox={`0 0 ${String(width)} ${String(height)}`}>
       <Polyline
-        points={points.map(([x, y]) => `${x},${y}`).join(' ')}
+        points={points.map(([x, y]) => `${String(x)},${String(y)}`).join(' ')}
         fill="none"
         stroke="#0096ff"
         strokeWidth={1.5}

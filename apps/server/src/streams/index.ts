@@ -15,9 +15,9 @@ let broker: StreamBroker | null = null;
  * silently drop the durability guarantee incognito conversations depend on.
  */
 export async function initStreamBroker(): Promise<StreamBroker> {
-  const backend = process.env.STREAM_BACKEND || "memory";
+  const backend = process.env.STREAM_BACKEND ?? "memory";
   if (backend === "redis") {
-    const url = process.env.REDIS_URL || "redis://localhost:6379";
+    const url = process.env.REDIS_URL ?? "redis://localhost:6379";
     const redis = new Redis(url, { maxRetriesPerRequest: 3, lazyConnect: true });
     try {
       await redis.connect();

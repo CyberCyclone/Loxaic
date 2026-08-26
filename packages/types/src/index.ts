@@ -16,11 +16,11 @@ export type MessageStatus = "streaming" | "complete" | "error" | "cancelled";
 
 export type AuthorType = "user" | "assistant" | "system" | "tool" | "summary";
 
-export type FileDiff = {
+export interface FileDiff {
   path: string;
   oldContent: string | null;
   newContent: string | null;
-};
+}
 
 export type ContentBlock =
   | { kind: "text"; text: string }
@@ -33,7 +33,7 @@ export type ContentBlock =
    * path to this data. */
   | ({ kind: "compaction" } & CompactionStats);
 
-export type ModelInfo = {
+export interface ModelInfo {
   id: string;
   display_name: string;
   quant: string;
@@ -56,14 +56,14 @@ export type ModelInfo = {
   location: "server" | "device" | "remote";
   price: number;
   loaded: boolean;
-};
+}
 
-export type ModelPref = { model?: string };
+export interface ModelPref { model?: string }
 
 export * from "./stream-protocol";
 export * from "./commands";
 
-export type UsageRecord = {
+export interface UsageRecord {
   id: string;
   userId: string;
   deviceId: string | null;
@@ -85,4 +85,4 @@ export type UsageRecord = {
    * that didn't report usage. The UI must handle that, not assume it. */
   contextBreakdown: ContextBreakdown | null;
   createdAt: string;
-};
+}

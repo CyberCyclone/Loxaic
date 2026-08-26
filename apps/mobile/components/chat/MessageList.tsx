@@ -98,9 +98,14 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
   // its first delta, so it gets the same placeholder treatment.
   const msgs = conversation?.msgs ?? [];
   const lastIndex = msgs.length - 1;
-  const lastMsg = msgs[lastIndex];
+  // Asserted, not just annotated: a plain `const lastMsg = msgs[lastIndex]`
+  // infers (and — for a `const`, narrows to) always-defined (no
+  // noUncheckedIndexedAccess), which would make every `?.` below look
+  // redundant to the linter even though `lastIndex` is -1 for an empty
+  // conversation and `msgs[-1]` is genuinely undefined then.
+  const lastMsg = msgs[lastIndex] as MessageType | undefined;
   const lastIsEmptyGenerating =
-    (lastMsg?.role === 'assistant' || lastMsg?.role === 'summary') && !lastMsg.thinking && !lastMsg.text;
+    !!lastMsg && (lastMsg.role === 'assistant' || lastMsg.role === 'summary') && !lastMsg.thinking && !lastMsg.text;
   const showTyping = pending && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyGenerating);
   // While the empty placeholder is represented by the typing indicator, don't
   // *also* render it as its own contentless row — that produced two stacked
@@ -155,7 +160,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
           <Box className="mx-auto w-full max-w-[820px]">
             <TypingIndicator
               loadingModel={loadingModel}
-              since={responseStartedAt!}
+              since={responseStartedAt}
               model={model}
               compacting={lastMsg?.role === 'summary'}
             />

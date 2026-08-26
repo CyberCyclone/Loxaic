@@ -150,7 +150,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
           {!isUser && (
             <HStack space="sm" className="pt-1">
               <Pressable
-                onPress={() => Clipboard.setStringAsync(msg.text)}
+                onPress={() => { void Clipboard.setStringAsync(msg.text); }}
                 className="flex-row items-center gap-1 rounded-sm p-1 web:hover:bg-muted/50"
               >
                 <Icon as={Copy} size="xs" className="text-muted-foreground" />

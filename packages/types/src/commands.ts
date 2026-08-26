@@ -14,7 +14,7 @@ export type CommandKind = "command" | "skill";
 
 export type CommandSurface = "chat" | "agent";
 
-export type SlashCommand = {
+export interface SlashCommand {
   name: string;
   kind: CommandKind;
   description: string;
@@ -24,7 +24,7 @@ export type SlashCommand = {
   /** True when the command acts on an existing thread — nothing to compact in
    * a conversation that hasn't started. */
   requiresConversation: boolean;
-};
+}
 
 export const BUILT_IN_COMMANDS: SlashCommand[] = [
   {
@@ -68,5 +68,5 @@ const COMMAND_RE = /^\/([a-z0-9-]+)(?:\s+([\s\S]*))?$/i;
 export function parseCommand(text: string): { name: string; args: string } | null {
   const m = COMMAND_RE.exec(text.trim());
   if (!m) return null;
-  return { name: m[1].toLowerCase(), args: (m[2] ?? "").trim() };
+  return { name: m[1].toLowerCase(), args: (m[2] || "").trim() };
 }

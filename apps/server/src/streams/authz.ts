@@ -12,7 +12,7 @@ export class NotFoundError extends Error {
   }
 }
 
-export type AccessGrant = { conversationId: string; incognito: boolean };
+export interface AccessGrant { conversationId: string; incognito: boolean }
 
 /**
  * Single authz chokepoint for every conversation-scoped WS command
@@ -30,8 +30,8 @@ export async function assertConversationAccess(userId: string, conversationId: s
     }),
     getStreamBroker().driver.getEphemeralConv(conversationId),
   ]);
-  if (row && row.ownerId === userId) return { conversationId, incognito: false };
-  if (econv && econv.ownerId === userId) return { conversationId, incognito: true };
+  if (row?.ownerId === userId) return { conversationId, incognito: false };
+  if (econv?.ownerId === userId) return { conversationId, incognito: true };
   throw new NotFoundError();
 }
 
@@ -44,5 +44,5 @@ export async function assertParentInConversation(conversationId: string, parentI
     where: eq(messages.id, parentId),
     columns: { conversationId: true },
   });
-  if (!row || row.conversationId !== conversationId) throw new NotFoundError();
+  if (row?.conversationId !== conversationId) throw new NotFoundError();
 }

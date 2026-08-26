@@ -20,7 +20,7 @@ export function ThinkingBlock({ text, live, since }: ThinkingBlockProps) {
   const [open, setOpen] = useState(false);
   return (
     <Box className="my-1.5 rounded-md border border-border bg-card">
-      <Pressable onPress={() => setOpen((o) => !o)}>
+      <Pressable onPress={() => { setOpen((o) => !o); }}>
         <HStack className="items-center gap-1.5 px-3 py-2">
           <Icon
             as={ChevronRight}

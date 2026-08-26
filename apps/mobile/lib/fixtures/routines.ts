@@ -1,4 +1,4 @@
-import type { Routine, RoutineRun, AgentRun } from '../types'
+import type { Routine, RoutineRun } from '../types'
 
 export const ROUTINES: Routine[] = [
   {
@@ -73,18 +73,18 @@ export function validateCron(cron: string): string | null {
     if (parts[i] === '*/n' || /^\*\/\d+$/.test(parts[i])) continue
     if (parts[i].includes('-')) {
       const [a, b] = parts[i].split('-').map(Number)
-      if (isNaN(a) || isNaN(b) || a < ranges[i][0] || b > ranges[i][1]) return `Field ${i + 1}: invalid range`
+      if (isNaN(a) || isNaN(b) || a < ranges[i][0] || b > ranges[i][1]) return `Field ${String(i + 1)}: invalid range`
       continue
     }
     if (parts[i].includes(',')) {
       for (const v of parts[i].split(',')) {
         const n = parseInt(v)
-        if (isNaN(n) || n < ranges[i][0] || n > ranges[i][1]) return `Field ${i + 1}: ${v} out of range`
+        if (isNaN(n) || n < ranges[i][0] || n > ranges[i][1]) return `Field ${String(i + 1)}: ${v} out of range`
       }
       continue
     }
     const n = parseInt(parts[i])
-    if (isNaN(n) || n < ranges[i][0] || n > ranges[i][1]) return `Field ${i + 1}: ${parts[i]} out of range (${ranges[i][0]}-${ranges[i][1]})`
+    if (isNaN(n) || n < ranges[i][0] || n > ranges[i][1]) return `Field ${String(i + 1)}: ${parts[i]} out of range (${String(ranges[i][0])}-${String(ranges[i][1])})`
   }
   return null
 }

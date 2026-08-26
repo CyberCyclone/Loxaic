@@ -7,7 +7,6 @@
     "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
     "build": "tsup src/index.ts --format esm --clean",
     "start": "node --env-file-if-exists=../../.env dist/index.js",
-    "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

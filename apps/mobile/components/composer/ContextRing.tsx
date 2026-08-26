@@ -25,7 +25,7 @@ export function ContextRing({ percent, size = 16 }: { percent: number; size?: nu
   const offset = circumference * (1 - Math.min(100, Math.max(0, percent)) / 100);
 
   return (
-    <Svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+    <Svg width={size} height={size} viewBox={`0 0 ${String(size)} ${String(size)}`}>
       <Circle cx={size / 2} cy={size / 2} r={radius} stroke={TRACK} strokeWidth={strokeWidth} fill="none" />
       <Circle
         cx={size / 2}
@@ -37,7 +37,7 @@ export function ContextRing({ percent, size = 16 }: { percent: number; size?: nu
         strokeDasharray={circumference}
         strokeDashoffset={offset}
         strokeLinecap="round"
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        transform={`rotate(-90 ${String(size / 2)} ${String(size / 2)})`}
       />
     </Svg>
   );

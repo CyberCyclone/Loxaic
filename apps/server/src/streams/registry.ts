@@ -5,7 +5,7 @@
  * nature: the AbortController driving this process's inference request, and
  * pending approval resolvers for this process's tool loop.
  */
-export type RunHandle = {
+export interface RunHandle {
   streamId: string;
   conversationId: string;
   userId: string;
@@ -13,7 +13,7 @@ export type RunHandle = {
   /** call_id -> resolver. Approvals are run-scoped, not connection-scoped: a
    * different device/socket than the one that started the run can approve. */
   approvals: Map<string, (approved: boolean) => void>;
-};
+}
 
 const runsByStreamId = new Map<string, RunHandle>();
 /** conversationId -> streamId — enforces one active run per conversation. */

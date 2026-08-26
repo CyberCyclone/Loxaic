@@ -1,6 +1,6 @@
 import type { ModelInfo } from "@shannon/types";
 
-const BASE_URL = process.env.INFERENCE_BASE_URL || "http://localhost:4002";
+const BASE_URL = process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
 const MOCK_MODE = process.env.MOCK_INFERENCE === "true";
 const TTL_MS = 5000;
 const FETCH_TIMEOUT_MS = 2000;
@@ -38,13 +38,42 @@ const MOCK_MODELS: ModelInfo[] = [
 
 let cache: { at: number; models: ModelInfo[] } | null = null;
 
-async function fetchJson(url: string): Promise<any> {
+/** A model entry from LM Studio's native `/api/v0/models`. */
+interface LmStudioModel {
+  id: string;
+  type?: string;
+  state?: string;
+  loaded_context_length?: number;
+  max_context_length?: number;
+  quantization?: string;
+  compatibility_type?: string;
+}
+
+interface LmStudioModelsResponse {
+  data?: LmStudioModel[];
+}
+
+interface LlamaCppPropsResponse {
+  default_generation_settings?: { n_ctx?: number };
+}
+
+/** A model entry from the OpenAI-compatible `/v1/models`. */
+interface OpenAiModel {
+  id: string;
+  meta?: { n_ctx_train?: number };
+}
+
+interface OpenAiModelsResponse {
+  data?: OpenAiModel[];
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => { controller.abort(); }, FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`GET ${url} ${res.status}`);
-    return await res.json();
+    if (!res.ok) throw new Error(`GET ${url} ${String(res.status)}`);
+    return (await res.json()) as T;
   } finally {
     clearTimeout(timer);
   }
@@ -52,10 +81,10 @@ async function fetchJson(url: string): Promise<any> {
 
 /** LM Studio's native REST API — richer than OpenAI's /v1/models (quant, context, load state). */
 async function listViaLmStudioNative(): Promise<ModelInfo[]> {
-  const data = await fetchJson(`${BASE_URL}/api/v0/models`);
+  const data = await fetchJson<LmStudioModelsResponse>(`${BASE_URL}/api/v0/models`);
   return (data.data ?? [])
-    .filter((m: any) => m.type === "llm" || m.type === "vlm")
-    .map((m: any): ModelInfo => {
+    .filter((m) => m.type === "llm" || m.type === "vlm")
+    .map((m): ModelInfo => {
       // `loaded_context_length` is only meaningful while the model is actually
       // loaded. `max_context_length` is what the model *could* do — reporting
       // that as the live window is how a 262,144 shows up next to an 8,192
@@ -65,7 +94,7 @@ async function listViaLmStudioNative(): Promise<ModelInfo[]> {
       return {
         id: m.id,
         display_name: m.id,
-        quant: m.quantization || "—",
+        quant: m.quantization ?? "—",
         format: typeof m.compatibility_type === "string" ? m.compatibility_type : "—",
         context_tokens: loaded ?? max,
         max_context_tokens: max,
@@ -88,8 +117,8 @@ async function listViaLmStudioNative(): Promise<ModelInfo[]> {
  */
 async function fetchLoadedCtx(): Promise<number | null> {
   try {
-    const props = await fetchJson(`${BASE_URL}/props`);
-    const ctx = props?.default_generation_settings?.n_ctx;
+    const props = await fetchJson<LlamaCppPropsResponse>(`${BASE_URL}/props`);
+    const ctx = props.default_generation_settings?.n_ctx;
     return typeof ctx === "number" && ctx > 0 ? ctx : null;
   } catch {
     // Not llama.cpp, older build, or unreachable — degrade to the training bound.
@@ -99,9 +128,12 @@ async function fetchLoadedCtx(): Promise<number | null> {
 
 /** OpenAI-compatible fallback (llama.cpp and others) — no load-state or quant info. */
 async function listViaOpenAiCompat(): Promise<ModelInfo[]> {
-  const [data, loadedCtx] = await Promise.all([fetchJson(`${BASE_URL}/v1/models`), fetchLoadedCtx()]);
-  return (data.data ?? []).map((m: any): ModelInfo => {
-    const trained: number | null = m.meta?.n_ctx_train ?? null;
+  const [data, loadedCtx] = await Promise.all([
+    fetchJson<OpenAiModelsResponse>(`${BASE_URL}/v1/models`),
+    fetchLoadedCtx(),
+  ]);
+  return (data.data ?? []).map((m): ModelInfo => {
+    const trained = m.meta?.n_ctx_train ?? null;
     const max = trained ?? loadedCtx ?? 8192;
     return {
       id: m.id,

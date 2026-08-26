@@ -9,7 +9,7 @@ export async function saveToken(token: string): Promise<void> {
   setAuthToken(token);
   if (Platform.OS === 'web') {
     try {
-      globalThis.localStorage?.setItem(TOKEN_KEY, token);
+      globalThis.localStorage.setItem(TOKEN_KEY, token);
     } catch {
       /* ignore */
     }
@@ -22,7 +22,7 @@ export async function loadToken(): Promise<string | null> {
   let token: string | null = null;
   if (Platform.OS === 'web') {
     try {
-      token = globalThis.localStorage?.getItem(TOKEN_KEY) ?? null;
+      token = globalThis.localStorage.getItem(TOKEN_KEY);
     } catch {
       token = null;
     }
@@ -37,7 +37,7 @@ export async function clearToken(): Promise<void> {
   setAuthToken(null);
   if (Platform.OS === 'web') {
     try {
-      globalThis.localStorage?.removeItem(TOKEN_KEY);
+      globalThis.localStorage.removeItem(TOKEN_KEY);
     } catch {
       /* ignore */
     }
