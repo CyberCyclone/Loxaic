@@ -4,10 +4,10 @@ import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { vstackStyle } from './styles';
 
 type IVStackProps = React.ComponentProps<'div'> &
-  VariantProps<typeof vstackStyle>;
+  VariantProps<typeof vstackStyle> & { testID?: string };
 
 const VStack = React.forwardRef<React.ComponentRef<'div'>, IVStackProps>(
-  function VStack({ className, space, reversed, ...props }, ref) {
+  function VStack({ className, space, reversed, testID, ...props }, ref) {
     return (
       <div
         className={vstackStyle({
@@ -15,6 +15,7 @@ const VStack = React.forwardRef<React.ComponentRef<'div'>, IVStackProps>(
           reversed: reversed as boolean,
           class: className,
         })}
+        data-testid={testID}
         {...props}
         ref={ref}
       />

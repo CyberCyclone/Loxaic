@@ -4,6 +4,7 @@ import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 type IHeadingProps = VariantProps<typeof headingStyle> &
   React.ComponentPropsWithoutRef<'h1'> & {
     as?: React.ElementType;
+    testID?: string;
   };
 
 const MappedHeading = memo(
@@ -18,6 +19,7 @@ const MappedHeading = memo(
       sub,
       italic,
       highlight,
+      testID,
       ...props
     },
     ref
@@ -39,6 +41,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />
@@ -57,6 +60,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />
@@ -75,6 +79,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />
@@ -93,6 +98,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />
@@ -111,6 +117,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />
@@ -130,6 +137,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />
@@ -148,6 +156,7 @@ const MappedHeading = memo(
               highlight: highlight as boolean,
               class: className,
             })}
+            data-testid={testID}
             {...props}
             ref={ref}
           />

@@ -61,6 +61,33 @@ pnpm --filter @shannon/server test -- src/streams/__tests__/drivers.test.ts
   follows real ESM resolution rules (dev's `tsx` loader is more forgiving and won't catch
   a missing extension).
 
+### testIDs and e2e selectors
+
+- **Naming scheme:** dot-separated `area.element[.qualifier]`, lowerCamel per segment
+  (`login.submit`, `agent.mode.manual`, `sidebar.nav.chat`). `area` is the screen or shared
+  component family (`login`, `composer`, `chat`, `agent`, `sidebar`, `shell`); `qualifier`
+  is used for items generated from an existing data array (`MODES`, `NAV_ITEMS`) — never an
+  invented string.
+- **testID goes on the interactive element the user actually touches** (the real
+  `InputField`/`TextareaInput`/`Pressable`/`Button`), not a decorative wrapper — except for
+  assertion anchors that have no interactive element of their own (a message bubble, an
+  error `Text`).
+- **Web/Electron selector caveat:** most `apps/mobile/components/ui/**` wrappers spread
+  `{...props}` straight through, so `testID` reaches react-native-web's `Button`/
+  `Pressable`/`Input`/`Textarea`/native `FlatList`, which map it to the DOM attribute
+  `data-testid` automatically. But `box`, `heading`, `hstack`, `vstack`, and `text` have
+  `.web.tsx` overrides that render a raw DOM element directly (`<div>`, `<span>`, `<h1>`–
+  `<h6>`) — those five have been patched by hand to also emit `data-testid={testID}`, so
+  every testID resolves to `[data-testid="…"]` on web regardless of which wrapper it's on.
+  **If gluestack is ever re-vendored/regenerated, this patch is lost and must be re-applied**
+  to those five `index.web.tsx` files. `icon`'s `.web.tsx` delegates to a third-party
+  `PrimitiveIcon`/`Svg` layer instead of rendering DOM directly and is not patched — don't
+  put a testID on an `Icon` element; put it on the `Pressable`/`Button` that wraps it.
+- **Per-platform mapping:** web/Electron → `[data-testid="…"]`; iOS → RN exposes `testID` as
+  `accessibilityIdentifier`, found via XCUITest's `accessibility id` strategy (`~id`);
+  Android → exposed as an unprefixed `resource-id`, found via UiAutomator2
+  (`new UiSelector().resourceId("id")`).
+
 ### DB / Drizzle
 
 - **Never import from `drizzle-orm` directly.** `packages/db` re-exports every operator

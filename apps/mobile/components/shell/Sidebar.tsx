@@ -1,4 +1,5 @@
-import { MessageSquare, Bot, Clock, BarChart3, Settings, Plus } from 'lucide-react-native';
+import { MessageSquare, Bot, Clock, BarChart3, Settings, Plus, LogOut } from 'lucide-react-native';
+import { useRouter } from 'expo-router';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
@@ -8,6 +9,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import type { SurfaceId } from '@/lib/types';
 import { useSettings } from '@/hooks/useSettings';
+import { useSession } from '@/lib/session';
 
 interface SidebarProps {
   activeSurface: SurfaceId;
@@ -28,14 +30,17 @@ function NavItem({
   icon,
   active,
   onPress,
+  testID,
 }: {
   label: string;
   icon: typeof MessageSquare;
   active?: boolean;
   onPress: () => void;
+  testID?: string;
 }) {
   return (
     <Pressable
+      testID={testID}
       onPress={onPress}
       className={`flex-row items-center gap-2.5 rounded-sm px-3 py-2 ${
         active ? 'bg-muted' : 'web:hover:bg-muted/50'
@@ -58,6 +63,8 @@ function NavItem({
 
 export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }: SidebarProps) {
   const [settings] = useSettings();
+  const { signOut } = useSession();
+  const router = useRouter();
   const initials =
     settings.name
       .split(' ')
@@ -80,6 +87,7 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
 
       <Box className="px-3 pb-2">
         <Button
+          testID="sidebar.newChat"
           variant="outline"
           size="sm"
           className="justify-start border-border"
@@ -97,13 +105,14 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
         {NAV_ITEMS.map((item) => (
           <NavItem
             key={item.id}
+            testID={`sidebar.nav.${item.id}`}
             label={item.label}
             icon={item.icon}
             active={activeSurface === item.id}
             onPress={() => { onNavigate(item.id); }}
           />
         ))}
-        <NavItem label="Settings" icon={Settings} onPress={onOpenSettings} />
+        <NavItem testID="sidebar.settings" label="Settings" icon={Settings} onPress={onOpenSettings} />
       </VStack>
 
       <VStack space="sm" className="border-t border-border px-4 py-3">
@@ -113,20 +122,31 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
             Server connected · llama.cpp
           </Text>
         </HStack>
-        <HStack space="sm" className="items-center">
-          <Box className="h-8 w-8 items-center justify-center rounded-full bg-muted">
-            <Text size="xs" className="font-semibold text-foreground">
-              {initials}
-            </Text>
-          </Box>
-          <VStack>
-            <Text size="sm" className="font-medium text-foreground">
-              {settings.name || 'Signed in'}
-            </Text>
-            <Text size="xs" className="text-muted-foreground">
-              {settings.tailscale || settings.endpoint || 'local server'}
-            </Text>
-          </VStack>
+        <HStack space="sm" className="items-center justify-between">
+          <HStack space="sm" className="items-center">
+            <Box className="h-8 w-8 items-center justify-center rounded-full bg-muted">
+              <Text size="xs" className="font-semibold text-foreground">
+                {initials}
+              </Text>
+            </Box>
+            <VStack>
+              <Text size="sm" className="font-medium text-foreground">
+                {settings.name || 'Signed in'}
+              </Text>
+              <Text size="xs" className="text-muted-foreground">
+                {settings.tailscale || settings.endpoint || 'local server'}
+              </Text>
+            </VStack>
+          </HStack>
+          <Pressable
+            testID="sidebar.signOut"
+            onPress={() => {
+              void signOut().then(() => { router.replace('/login'); });
+            }}
+            className="rounded-sm p-1.5 web:hover:bg-muted/50"
+          >
+            <Icon as={LogOut} size="sm" className="text-muted-foreground" />
+          </Pressable>
         </HStack>
       </VStack>
     </VStack>

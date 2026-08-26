@@ -18,7 +18,11 @@ export function MainHeader({ title, subtitle, onOpenMenu, right }: MainHeaderPro
     <HStack className="h-14 items-center justify-between border-b border-border bg-background px-4">
       <HStack space="sm" className="flex-1 items-center">
         {onOpenMenu && (
-          <Pressable onPress={onOpenMenu} className="rounded-sm p-1.5 web:hover:bg-muted/50">
+          <Pressable
+            testID="shell.menuButton"
+            onPress={onOpenMenu}
+            className="rounded-sm p-1.5 web:hover:bg-muted/50"
+          >
             <Icon as={MenuIcon} size="md" className="text-foreground" />
           </Pressable>
         )}

@@ -20,17 +20,21 @@ interface PermissionBarProps {
 
 export function PermissionBar({ tool, args, onAllow, onDeny }: PermissionBarProps) {
   return (
-    <VStack space="xs" className="border-t border-warning/30 bg-warning/10 px-4 py-3">
+    <VStack
+      testID="agent.permission.bar"
+      space="xs"
+      className="border-t border-warning/30 bg-warning/10 px-4 py-3"
+    >
       <Text size="sm" className="text-foreground">
         Agent wants to run <Text size="sm" className="font-mono text-warning">{tool}</Text>
         {' — '}
         <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
       </Text>
       <HStack space="sm" className="justify-end">
-        <Button variant="outline" size="sm" onPress={onDeny}>
+        <Button testID="agent.permission.deny" variant="outline" size="sm" onPress={onDeny}>
           <ButtonText>Deny</ButtonText>
         </Button>
-        <Button size="sm" onPress={onAllow}>
+        <Button testID="agent.permission.allow" size="sm" onPress={onAllow}>
           <ButtonText>Allow once</ButtonText>
         </Button>
       </HStack>

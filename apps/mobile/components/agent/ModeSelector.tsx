@@ -20,6 +20,7 @@ export function ModeSelector({ mode, onChange }: ModeSelectorProps) {
       {MODES.map((m) => (
         <Pressable
           key={m.value}
+          testID={`agent.mode.${m.value}`}
           onPress={() => { onChange(m.value); }}
           className={`rounded-full px-2.5 py-1 ${mode === m.value ? 'bg-primary/15' : 'bg-muted'}`}
         >
