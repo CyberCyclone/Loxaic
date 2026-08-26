@@ -10,6 +10,7 @@ import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
+import { createModelDebugTap } from "../debug-bus.ts";
 import { loadChatHistory, HISTORY_LIMIT as CHAT_HISTORY_LIMIT } from "./chatRun.ts";
 import { loadHistory as loadAgentHistory, HISTORY_LIMIT as AGENT_HISTORY_LIMIT } from "./agentRun.ts";
 
@@ -302,15 +303,28 @@ async function runCompactGeneration(ctx: {
     const before = incognito ? null : await lastTurnTokens(convId);
 
     let doneResult: CompletionResult | null = null;
-    for await (const event of streamCompletion(model, ctx.promptMessages, { signal: abort.signal })) {
-      if (event.type === "delta") {
-        summaryText += event.content;
-        producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
-      } else if (event.type === "done") {
-        doneResult = event.result;
+    // Keyed on the parent conversation so a compact lands in the panel the
+    // user already has open for that thread.
+    const debugTap = createModelDebugTap({ conversationId: convId, streamId, model });
+    const turnStart = Date.now();
+    try {
+      for await (const event of streamCompletion(model, ctx.promptMessages, {
+        signal: abort.signal,
+        onRequest: debugTap.onRequest,
+        onRawLine: debugTap.onRawLine,
+      })) {
+        if (event.type === "delta") {
+          summaryText += event.content;
+          producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
+        } else if (event.type === "done") {
+          doneResult = event.result;
+          debugTap.done({ finishReason: event.result.finishReason, durationMs: Date.now() - turnStart });
+        }
+        // Thinking deltas are dropped: the summary is the deliverable, and
+        // replaying reasoning into the card (or the log) buys nothing.
       }
-      // Thinking deltas are dropped: the summary is the deliverable, and
-      // replaying reasoning into the card (or the log) buys nothing.
+    } finally {
+      debugTap.close();
     }
 
     if (jitLoaded) {

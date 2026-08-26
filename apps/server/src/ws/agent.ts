@@ -4,8 +4,9 @@ import { findCommand, type ClientMessage, type PermissionMode, type ServerMessag
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
-import { NotFoundError } from "../streams/authz.ts";
+import { assertConversationAccess, NotFoundError } from "../streams/authz.ts";
 import { findRunByApprovalCallId, getRun } from "../streams/registry.ts";
+import { createDebugSubscriptions } from "../streams/debug-bus.ts";
 
 export function agentWsHandler(app: FastifyInstance) {
   app.get("/ws/agent", { websocket: true }, async (socket, request) => {
@@ -26,7 +27,11 @@ export function agentWsHandler(app: FastifyInstance) {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
     const delivery = createDelivery(userId, safeSend, () => socket.bufferedAmount);
-    socket.on("close", () => delivery.close());
+    const debug = createDebugSubscriptions(safeSend);
+    socket.on("close", () => {
+      delivery.close();
+      debug.close();
+    });
 
     socket.on("message", async (raw: Buffer) => {
       let msg: ClientMessage;
@@ -106,6 +111,12 @@ export function agentWsHandler(app: FastifyInstance) {
           // Modes are carried explicitly on every agent.send; this is just a
           // UI-preference echo, not durable server state.
           safeSend({ type: "agent.mode_changed", mode: msg.mode });
+        } else if (msg.type === "debug.subscribe") {
+          // Same authz chokepoint as every other conversation-scoped command.
+          await assertConversationAccess(userId, msg.conversation_id);
+          debug.subscribe(msg.conversation_id);
+        } else if (msg.type === "debug.unsubscribe") {
+          debug.unsubscribe(msg.conversation_id);
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
           const run = findRunByApprovalCallId(userId, msg.call_id);
           const resolve = run?.approvals.get(msg.call_id);

@@ -4,8 +4,9 @@ import { findCommand, type ClientMessage, type ServerMessage } from "@shannon/ty
 import { startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
-import { NotFoundError } from "../streams/authz.ts";
+import { assertConversationAccess, NotFoundError } from "../streams/authz.ts";
 import { getRun } from "../streams/registry.ts";
+import { createDebugSubscriptions } from "../streams/debug-bus.ts";
 
 export function chatWsHandler(app: FastifyInstance) {
   app.get("/ws/chat", { websocket: true }, async (socket, request) => {
@@ -35,7 +36,11 @@ export function chatWsHandler(app: FastifyInstance) {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
     const delivery = createDelivery(userId, safeSend, () => socket.bufferedAmount);
-    socket.on("close", () => delivery.close());
+    const debug = createDebugSubscriptions(safeSend);
+    socket.on("close", () => {
+      delivery.close();
+      debug.close();
+    });
 
     socket.on("message", async (raw: Buffer) => {
       let msg: ClientMessage;
@@ -115,6 +120,12 @@ export function chatWsHandler(app: FastifyInstance) {
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "stream.subscribe") {
           await delivery.handleSubscribe(msg.conversation_id, msg.cursors);
+        } else if (msg.type === "debug.subscribe") {
+          // Same authz chokepoint as every other conversation-scoped command.
+          await assertConversationAccess(userId, msg.conversation_id);
+          debug.subscribe(msg.conversation_id);
+        } else if (msg.type === "debug.unsubscribe") {
+          debug.unsubscribe(msg.conversation_id);
         } else if (msg.type === "stream.stop") {
           // Silently no-op for an unknown/foreign/already-finished stream —
           // matches "no existence oracle": a wrong-owner stop must look

@@ -9,6 +9,7 @@ import type { PermissionMode, ToolName } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { createModelDebugTap } from "../debug-bus.ts";
 import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -224,8 +225,16 @@ async function runAgentTurn(ctx: {
         windowTokens,
       };
 
+      const debugTap = createModelDebugTap({ conversationId: convId, streamId, model });
+      const iterationStart = Date.now();
+
       try {
-        for await (const event of streamCompletion(model, chatMessages, { tools, signal: abort.signal })) {
+        for await (const event of streamCompletion(model, chatMessages, {
+          tools,
+          signal: abort.signal,
+          onRequest: debugTap.onRequest,
+          onRawLine: debugTap.onRawLine,
+        })) {
           if (event.type === "delta") {
             text += event.content;
             producer.emit({ kind: "text.delta", message_id: assistantMsgId, text: event.content });
@@ -235,6 +244,10 @@ async function runAgentTurn(ctx: {
           } else if (event.type === "done") {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
+            debugTap.done({
+              finishReason: event.result.finishReason,
+              durationMs: Date.now() - iterationStart,
+            });
             await recordUsage({
               runId: streamId,
               userId,
@@ -252,6 +265,7 @@ async function runAgentTurn(ctx: {
           }
         }
       } catch (err) {
+        debugTap.close();
         const isAbort = (err as Error)?.name === "AbortError" || abort.signal.aborted;
         const status = isAbort ? "cancelled" : "error";
         const errorMessage = (err as Error).message;
