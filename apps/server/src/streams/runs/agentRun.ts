@@ -138,7 +138,7 @@ async function runAgentTurn(ctx: {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
 
   try {
-    const toolset = await buildToolset(userId, { mode });
+    const toolset = await buildToolset(userId, { mode, conversationId: convId });
     const systemPrompt =
       (mode === "planning" ? PLANNING_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT) +
       (toolset.systemPromptAddendum ? `\n\n${toolset.systemPromptAddendum}` : "");
@@ -431,6 +431,21 @@ async function runOneToolCall(
       });
       return { output };
     }
+  }
+
+  if (resolved.source.kind === "mcp") {
+    // No sandbox involvement: MCP dispatch validates args, calls the server,
+    // and returns wrapped untrusted output. Failures are ok:false results.
+    const result = await toolset.dispatchMcp(resolved, args);
+    producer.emit({
+      kind: "tool.result",
+      message_id: assistantMsgId,
+      call_id: call.id,
+      tool: toolName,
+      output: result.output,
+      ok: result.ok,
+    });
+    return { output: result.output };
   }
 
   // Builtin names come from TOOLS by construction, so the narrowing is sound.

@@ -83,6 +83,13 @@ export async function* streamCompletion(
 // would be untestable without a GGUF.
 
 const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
+  // MCP entries first — a trigger only fires when the tool is actually in
+  // options.tools, so these double as a wiring test of the MCP registry.
+  { match: /\bmcp echo\b/i, name: "mockmcp__echo", args: { text: "hello from mcp" } },
+  { match: /\bmcp slow\b/i, name: "mockmcp__slow", args: {} },
+  { match: /\bmcp huge\b/i, name: "mockmcp__huge", args: {} },
+  { match: /\bmcp evil\b/i, name: "mockmcp__evil", args: {} },
+  { match: /\bmcp bad args\b/i, name: "mockmcp__echo", args: { wrong: 1 } },
   { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
   { match: /\btodo|\bplan\b/i, name: "todo_write", args: { todos: [
     { id: "1", text: "Investigate the request", status: "completed" },
