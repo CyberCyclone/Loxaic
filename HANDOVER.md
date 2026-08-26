@@ -88,12 +88,30 @@ pnpm --filter @shannon/desktop package       # prod: export:web + tsnet sidecar 
 Full details, including Android emulator adb reverse-tunnel setup and EAS Update
 (over-the-air phone updates with no dev machine): [docs/DEPLOY.md](docs/DEPLOY.md).
 
+### Dev vs. stable
+
+The commands above are the **dev** stack: bare-metal server + Metro, ports 4000/8081,
+`docker compose up -d` for just the infra (Postgres/Redis/inference/ntfy — no server
+container). A separate, fully containerized **stable** stack can run at the same time
+on the same machine, isolated ports/database/volumes (the 41xx block):
+
+```bash
+cp .env.prod.example .env.prod   # once — fill in BETTER_AUTH_SECRET, TRUSTED_ORIGINS, etc.
+pnpm stable:up                    # docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Promote `master` to stable with `git pull && pnpm stable:up` — migrations run
+automatically at server boot. See [docs/DEPLOY.md](docs/DEPLOY.md#stable-stack-docker)
+for the full port list, native dev-variant app, and trade-offs (e.g. shared inference).
+
 ## Deploy
 
-- **Server + web, same origin**: `docker compose up --build` (Postgres + server, which
-  builds and serves the web export itself — see `infra/docker/server.Dockerfile`) or
-  bare-metal via `pnpm --filter @shannon/mobile export:web && pnpm --filter
-  @shannon/server dev`.
+- **Server + web, same origin**: `pnpm stable:up` — a fully containerized, isolated
+  stack (Postgres + server, which builds and serves the web export itself — see
+  `infra/docker/server.Dockerfile`) on its own ports (4100 by default), safe to run
+  alongside the bare-metal dev stack on the same machine. See "Dev vs. stable" below
+  and [docs/DEPLOY.md](docs/DEPLOY.md#stable-stack-docker). Or bare-metal via
+  `pnpm --filter @shannon/mobile export:web && pnpm --filter @shannon/server dev`.
 - **Remote access**: [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — Tailscale Serve
   (recommended, free, no open ports) or bring your own reverse proxy.
 - **Inference**: [docs/RUNTIME.md](docs/RUNTIME.md) — native llama.cpp with Metal on

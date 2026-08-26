@@ -32,7 +32,7 @@ export **is** the web app, served same-origin by `apps/server` (see HANDOVER.md)
 ```bash
 pnpm install
 pnpm dev                          # turbo: server (4000) — mobile/web/desktop have their own dev scripts, see HANDOVER.md
-docker compose up --build         # db + server (serves API + web same-origin) + inference + ntfy
+docker compose up -d              # dev infra only: db + redis + inference + ntfy (server runs bare-metal, above)
 pnpm --filter @shannon/mobile web # Expo web dev server (localhost:8081)
 pnpm --filter @shannon/mobile ios # or android
 
@@ -40,6 +40,20 @@ pnpm test        # turbo test — vitest (only apps/server has tests today)
 pnpm lint        # turbo lint — eslint (apps/server)
 pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
 ```
+
+**Stable (production) stack** — a separate, fully containerized instance that
+can run alongside the dev stack above (its own ports, database, and volumes):
+
+```bash
+cp .env.prod.example .env.prod    # once — fill in BETTER_AUTH_SECRET etc.
+pnpm stable:up                     # builds & starts server + db + redis + ntfy on the 41xx ports
+pnpm stable:logs                   # tail the server
+pnpm stable:down                   # stop it — dev stack is untouched
+```
+
+See [issue #30](https://github.com/CyberCyclone/Open-Shannon/issues/30) and
+[docs/DEPLOY.md](docs/DEPLOY.md#stable-stack-docker) for the full design and
+promotion workflow.
 
 Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
 
@@ -109,7 +123,9 @@ pnpm --filter @shannon/server test -- src/streams/__tests__/drivers.test.ts
 
 - pnpm workspaces + Turborepo; packages scoped `@shannon/*`; TypeScript strict.
 - Minimal changes; match existing file style; don't add deps without a reason.
-- Ports (dev): server 4000, inference 4002, ntfy 4003, Postgres 5432, Expo web 8081.
+- Ports (dev): server 4000, inference 4002, ntfy 4003, Postgres 5432, Redis 6379, Expo web 8081.
+- Ports (stable, the 41xx block — see `docker-compose.prod.yml`): server 4100,
+  Postgres 5433, ntfy 4103, optional dedicated inference 4102.
 - **Semantic gluestack tokens only** for UI colors (`text-foreground`, `bg-primary`, etc.)
   — never numbered Tailwind colors (`gray-500`) or raw hex in className. `react-native-svg`
   can't resolve CSS custom properties, so SVG fills/strokes are the one exception: literal

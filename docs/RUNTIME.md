@@ -51,9 +51,11 @@ you're not using the default Docker Desktop/Engine socket location.
 ```bash
 # Mac: native inference, Docker Desktop/OrbStack for everything else
 llama-server --host 0.0.0.0 --port 4002 --jinja -m model.gguf -ngl 999 &
-docker compose up db server   # skip the `inference` service
+docker compose up -d db   # infra only — skip the `inference` service; the
+                            # dev server itself runs bare-metal (see AGENTS.md)
 
-# Proxmox / AMD ROCm: everything in Docker
+# Proxmox / AMD ROCm: inference + infra in Docker (dev server still bare-metal;
+# for a fully containerized instance see docs/DEPLOY.md#stable-stack-docker)
 docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
 
 # Podman anywhere
@@ -64,3 +66,9 @@ docker compose up -d   # `docker compose` works fine against a podman socket via
 
 See [`docs/REMOTE_ACCESS.md`](REMOTE_ACCESS.md) for exposing whichever setup
 you land on to other devices.
+
+**Running a stable stack alongside dev?** `docker-compose.prod.yml` reuses
+this same `inference` backend by default (shared, on `INFERENCE_BASE_URL`) —
+or run a second, dedicated instance for it on port 4102 via
+`docker compose -f docker-compose.prod.yml --profile inference up -d`. See
+[docs/DEPLOY.md](DEPLOY.md#stable-stack-docker).

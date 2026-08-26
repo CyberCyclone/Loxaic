@@ -23,6 +23,58 @@ Then open `http://<lan-ip>:4000` on your network, or
 Override the build location with `WEB_DIST_DIR` if you deploy the export
 somewhere else. Without a build present, the server runs API-only.
 
+## Stable stack (Docker)
+
+The above is the **dev** workflow — bare-metal, hot-reloading, port 4000. For
+a **stable** instance that stays up and doesn't move when you're iterating on
+dev, `docker-compose.prod.yml` runs a fully isolated, containerized copy: its
+own server, Postgres, Redis, and ntfy, on their own ports and volumes, so it
+can run on the same machine as the dev stack with zero collisions.
+
+```bash
+cp .env.prod.example .env.prod
+# edit .env.prod: BETTER_AUTH_SECRET (openssl rand -base64 32), TRUSTED_ORIGINS,
+# BETTER_AUTH_URL, LAN_API_URL/PUBLIC_API_URL for the LAN IP or tailnet URL
+# you'll actually reach it at.
+
+pnpm stable:up      # build + start: server (4100), db (5433), redis, ntfy (4103)
+pnpm stable:logs    # watch startup / migrations
+pnpm stable:down    # stop — the dev stack is untouched
+```
+
+Open `http://<lan-ip>:4100` (or your tailnet URL on 4100) for the web UI.
+
+**Promoting `master` to stable:**
+
+```bash
+git checkout master && git pull
+pnpm stable:up       # rebuilds the image; Drizzle migrations run automatically at boot
+```
+
+**Inference**: by default the stable server reaches the same llama.cpp
+instance dev uses (`host.docker.internal:<INFERENCE_BASE_URL's port>`), so
+stopping the dev compose stack also stops stable's chats. Either accept that
+trade-off (everything else keeps working, and `MOCK_INFERENCE=true` is always
+an out), or run a dedicated instance for stable:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile inference --env-file .env.prod up -d
+# and set INFERENCE_BASE_URL=http://inference:8080 in .env.prod
+```
+
+**Native app**: `apps/mobile`'s dev builds (`APP_VARIANT=development`, EAS
+`development` profile) use a distinct bundle id/scheme (`com.shannon.app.dev`,
+`openshannon-dev`) from the stable app, so both install side-by-side on one
+device with independent settings/sessions — point either one at its server via
+the Settings endpoint override. See `apps/mobile/app.config.ts`. (First EAS/
+dev-client build of `com.shannon.app.dev` triggers a one-time iOS provisioning
+prompt — expected, just click through it.)
+
+**Remote access** to the stable stack works the same way as dev — see
+[REMOTE_ACCESS.md](REMOTE_ACCESS.md); `docker-compose.tailscale.yml` overlays
+`docker-compose.prod.yml`, not the dev compose file (dev has no `server`
+service to attach a sidecar to).
+
 ## Expo Go on your phone
 
 **Dev iteration** (with your dev machine running):
@@ -65,6 +117,11 @@ adb shell am start -a android.intent.action.VIEW \
 (The app's own endpoint detection already falls back to `10.0.2.2:4000`,
 the emulator's alias for the host, so the API works without the reverse
 tunnel — but Metro needs it.)
+
+To point an emulator build at the **stable** stack instead, reverse-tunnel
+4100 (`adb reverse tcp:4100 tcp:4100`) and set the Settings endpoint override
+to `http://localhost:4100`, since the `10.0.2.2` fallback only knows about
+dev's port.
 
 **On the go via EAS Update** (no dev machine needed) — one-time setup:
 
