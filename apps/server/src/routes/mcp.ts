@@ -3,7 +3,7 @@ import { and, db, eq } from "@shannon/db";
 import { mcpServers } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
 import { assertPublicUrl } from "../agent/executor.ts";
-import { BUILTIN_CATALOG, catalogEntry } from "../mcp/catalog.ts";
+import { BUILTIN_CATALOG, canLaunch, catalogEntry } from "../mcp/catalog.ts";
 import { closeServerClients, dropEntry, listServerTools, type McpServerRow } from "../mcp/client-manager.ts";
 import { reconcileTools, type ToolPolicies, type ToolPolicy } from "../mcp/change-detection.ts";
 import { isValidSlug, namespaceTool } from "../mcp/naming.ts";
@@ -82,14 +82,18 @@ export async function mcpRoutes(app: FastifyInstance) {
     const userId = await authenticate(request, reply);
     const rows = await db.select().from(mcpServers).where(eq(mcpServers.ownerId, userId));
     const configured = new Set(rows.map((r) => r.builtinKey).filter(Boolean));
-    return BUILTIN_CATALOG.map((entry) => ({
-      key: entry.key,
-      name: entry.name,
-      slug: entry.slug,
-      description: entry.description,
-      secretKeys: entry.secretKeys,
-      configured: configured.has(entry.key),
-    }));
+    return BUILTIN_CATALOG
+      // Never advertise dev tooling this deployment couldn't actually start.
+      .filter((entry) => !entry.dev || canLaunch(entry))
+      .map((entry) => ({
+        key: entry.key,
+        name: entry.name,
+        slug: entry.slug,
+        description: entry.description,
+        secretKeys: entry.secretKeys,
+        configured: configured.has(entry.key),
+        ...(entry.dev ? { dev: true as const } : {}),
+      }));
   });
 
   app.post("/v1/mcp/servers", async (request, reply) => {

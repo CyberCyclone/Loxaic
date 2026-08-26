@@ -62,6 +62,10 @@ export type StreamEvent =
 export type StreamOptions = {
   tools?: OpenAiTool[];
   signal?: AbortSignal;
+  /** Dev mode: the exact request body, once, before it is sent. */
+  onRequest?: (body: unknown) => void;
+  /** Dev mode: every raw SSE line as received, before parsing or filtering. */
+  onRawLine?: (line: string) => void;
 };
 
 export async function* streamCompletion(
@@ -123,12 +127,26 @@ async function* mockStream(
     ? undefined
     : MOCK_TOOL_TRIGGERS.find((t) => toolNames.has(t.name) && t.match.test(prompt));
 
+  // Dev mode has to work without a GGUF, so the mock synthesizes the same
+  // request body and SSE frames a live backend would produce.
+  const rawLine = (delta: Record<string, unknown>) =>
+    options.onRawLine?.(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}`);
+  options.onRequest?.({
+    model: "mock",
+    messages,
+    stream: true,
+    stream_options: { include_usage: true },
+    ...(options.tools?.length ? { tools: options.tools, tool_choice: "auto" } : {}),
+  });
+
   let ttftMs: number | null = null;
   const emit = async function* (text: string): AsyncGenerator<StreamEvent> {
     const words = text.split(" ");
     for (let i = 0; i < words.length; i++) {
       if (ttftMs === null) ttftMs = Date.now() - startTime;
-      yield { type: "delta" as const, content: (i === 0 ? "" : " ") + words[i] };
+      const content = (i === 0 ? "" : " ") + words[i];
+      rawLine({ content });
+      yield { type: "delta" as const, content };
       await new Promise((r) => setTimeout(r, 20));
     }
   };
@@ -141,11 +159,17 @@ async function* mockStream(
     fullText = preamble;
     yield* emit(preamble);
     if (ttftMs === null) ttftMs = Date.now() - startTime;
-    toolCalls.push({
+    const call: ToolCall = {
       id: `mock_call_${Date.now().toString(36)}`,
       type: "function",
       function: { name: trigger.name, arguments: JSON.stringify(trigger.args) },
+    };
+    rawLine({
+      tool_calls: [
+        { index: 0, id: call.id, type: "function", function: { name: call.function.name, arguments: call.function.arguments } },
+      ],
     });
+    toolCalls.push(call);
   } else {
     const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
     fullText = lastTool
@@ -155,6 +179,7 @@ async function* mockStream(
   }
 
   const completionTokens = fullText.split(" ").length;
+  options.onRawLine?.("data: [DONE]");
   yield {
     type: "done",
     result: {
@@ -210,6 +235,8 @@ async function* liveStream(
     body.tool_choice = "auto";
   }
 
+  options.onRequest?.(body);
+
   const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -253,6 +280,9 @@ async function* liveStream(
 
       for (const line of lines) {
         const trimmed = line.trim();
+        // Tapped before any filtering so dev mode sees exactly what the
+        // backend sent — keep-alives, `event: error` frames, [DONE] and all.
+        if (trimmed) options.onRawLine?.(trimmed);
         if (!trimmed || !trimmed.startsWith("data: ")) continue;
         const jsonStr = trimmed.slice(6);
         if (jsonStr === "[DONE]") continue;

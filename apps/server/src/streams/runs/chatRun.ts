@@ -10,6 +10,7 @@ import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
+import { createModelDebugTap } from "../debug-bus.ts";
 
 export type StartChatRunResult = {
   streamId: string;
@@ -180,17 +181,29 @@ async function runChatGeneration(ctx: {
       ? [summaryMessage(history.summaryText), ...history.messages]
       : history.messages;
     let doneResult: CompletionResult | null = null;
+    // Chat offers no tools, so there are no MCP credentials to redact against.
+    const debugTap = createModelDebugTap({ conversationId: convId, streamId, model });
+    const turnStart = Date.now();
 
-    for await (const event of streamCompletion(model, chatMessages, { signal: abort.signal })) {
-      if (event.type === "delta") {
-        fullText += event.content;
-        producer.emit({ kind: "text.delta", message_id: assistantMsgId, text: event.content });
-      } else if (event.type === "thinking") {
-        fullThinking += event.content;
-        producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
-      } else if (event.type === "done") {
-        doneResult = event.result;
+    try {
+      for await (const event of streamCompletion(model, chatMessages, {
+        signal: abort.signal,
+        onRequest: debugTap.onRequest,
+        onRawLine: debugTap.onRawLine,
+      })) {
+        if (event.type === "delta") {
+          fullText += event.content;
+          producer.emit({ kind: "text.delta", message_id: assistantMsgId, text: event.content });
+        } else if (event.type === "thinking") {
+          fullThinking += event.content;
+          producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
+        } else if (event.type === "done") {
+          doneResult = event.result;
+          debugTap.done({ finishReason: event.result.finishReason, durationMs: Date.now() - turnStart });
+        }
       }
+    } finally {
+      debugTap.close();
     }
 
     const blocks: ContentBlock[] = [];

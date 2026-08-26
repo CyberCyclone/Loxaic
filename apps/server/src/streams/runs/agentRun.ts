@@ -9,6 +9,14 @@ import type { PermissionMode, ToolName } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { capString, createModelDebugTap, hasDebugSubscribers, publishDebug } from "../debug-bus.ts";
+import { redact } from "../../mcp/secrets.ts";
+
+/** Model-produced arguments, serialized and capped for a debug payload. */
+function capArgs(args: Record<string, unknown>): { args: string; truncated?: true } {
+  const { text, truncated } = capString(JSON.stringify(args) ?? "{}");
+  return truncated ? { args: text, truncated } : { args: text };
+}
 import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -224,8 +232,23 @@ async function runAgentTurn(ctx: {
         windowTokens,
       };
 
+      const debugTap = createModelDebugTap({
+        conversationId: convId,
+        streamId,
+        model,
+        // Prior MCP results replayed in `messages` can echo secret-bearing text.
+        secrets: () => toolset.debugSecrets(),
+        redact,
+      });
+      const iterationStart = Date.now();
+
       try {
-        for await (const event of streamCompletion(model, chatMessages, { tools, signal: abort.signal })) {
+        for await (const event of streamCompletion(model, chatMessages, {
+          tools,
+          signal: abort.signal,
+          onRequest: debugTap.onRequest,
+          onRawLine: debugTap.onRawLine,
+        })) {
           if (event.type === "delta") {
             text += event.content;
             producer.emit({ kind: "text.delta", message_id: assistantMsgId, text: event.content });
@@ -235,6 +258,10 @@ async function runAgentTurn(ctx: {
           } else if (event.type === "done") {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
+            debugTap.done({
+              finishReason: event.result.finishReason,
+              durationMs: Date.now() - iterationStart,
+            });
             await recordUsage({
               runId: streamId,
               userId,
@@ -252,6 +279,7 @@ async function runAgentTurn(ctx: {
           }
         }
       } catch (err) {
+        debugTap.close();
         const isAbort = (err as Error)?.name === "AbortError" || abort.signal.aborted;
         const status = isAbort ? "cancelled" : "error";
         const errorMessage = (err as Error).message;
@@ -433,10 +461,41 @@ async function runOneToolCall(
     }
   }
 
+  // Dev mode: every tool invocation is traced with its source, raw arguments,
+  // raw (pre-sanitization) result and wall-clock. Guarded so a run with no
+  // panel open builds nothing.
+  const tracing = hasDebugSubscribers(convId);
+  if (tracing) {
+    publishDebug(convId, {
+      channel: "tool.call",
+      stream_id: ctx.streamId,
+      call_id: call.id,
+      tool: toolName,
+      source:
+        resolved.source.kind === "mcp"
+          ? { kind: "mcp", server: resolved.source.serverSlug }
+          : { kind: "builtin" },
+      ...capArgs(args),
+    });
+  }
+
   if (resolved.source.kind === "mcp") {
     // No sandbox involvement: MCP dispatch validates args, calls the server,
     // and returns wrapped untrusted output. Failures are ok:false results.
-    const result = await toolset.dispatchMcp(resolved, args);
+    const result = await toolset.dispatchMcp(resolved, args, { trace: tracing });
+    if (tracing && result.trace) {
+      const { text, truncated } = capString(result.trace.rawText);
+      publishDebug(convId, {
+        channel: "tool.result_raw",
+        stream_id: ctx.streamId,
+        call_id: call.id,
+        tool: toolName,
+        ok: result.ok,
+        raw: text,
+        duration_ms: result.trace.ms,
+        ...(truncated ? { truncated } : {}),
+      });
+    }
     producer.emit({
       kind: "tool.result",
       message_id: assistantMsgId,
@@ -469,9 +528,24 @@ async function runOneToolCall(
     }
   }
 
+  const builtinStarted = Date.now();
   const result: ToolResult = builtinName
     ? await executeTool(container, builtinName, args)
     : { ok: false, output: `Unknown tool: ${toolName}` };
+  if (tracing) {
+    // Builtin output is our own, never third-party — no redaction needed.
+    const { text, truncated } = capString(result.output);
+    publishDebug(convId, {
+      channel: "tool.result_raw",
+      stream_id: ctx.streamId,
+      call_id: call.id,
+      tool: toolName,
+      ok: result.ok,
+      raw: text,
+      duration_ms: Date.now() - builtinStarted,
+      ...(truncated ? { truncated } : {}),
+    });
+  }
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",

@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
-import { MessagesSquare, PanelRight } from 'lucide-react-native';
+import { MessagesSquare, PanelRight, Terminal } from 'lucide-react-native';
 import { findCommand } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -16,6 +16,7 @@ import { Inspector } from '@/components/agent/Inspector';
 import { ModeSelector } from '@/components/agent/ModeSelector';
 import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
+import { RawIoPanel } from '@/components/debug/RawIoPanel';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
@@ -55,6 +56,11 @@ export default function AgentScreen() {
     handleDelete,
     handleRename,
     setRunModel,
+    debugEntries,
+    debugActive,
+    openDebug,
+    closeDebug,
+    clearDebug,
   } = useAgentSession(token, () => refreshModels());
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -83,6 +89,12 @@ export default function AgentScreen() {
     '';
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
+  const devMode = !!settings.devMode;
+  const toggleDebug = useCallback(() => {
+    if (debugActive) closeDebug();
+    else openDebug();
+  }, [debugActive, openDebug, closeDebug]);
+
   const mcpOverrides = useMcpOverrides(token, activeId);
   const mcpControls =
     mcpOverrides.servers.length > 0
@@ -139,6 +151,14 @@ export default function AgentScreen() {
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
             <HStack space="sm" className="items-center">
+              {devMode && (
+                <Pressable
+                  onPress={toggleDebug}
+                  className={`rounded-sm p-1.5 web:hover:bg-muted/50 ${debugActive ? 'bg-primary/15' : ''}`}
+                >
+                  <Icon as={Terminal} size="sm" className={debugActive ? 'text-primary' : 'text-foreground'} />
+                </Pressable>
+              )}
               {activeRun && (
                 <Pressable
                   onPress={() => setInspectorOpen((o) => !o)}
@@ -196,6 +216,10 @@ export default function AgentScreen() {
             </VStack>
 
             {wide && (
+              <RawIoPanel open={debugActive} onClose={closeDebug} wide entries={debugEntries} onClear={clearDebug} />
+            )}
+
+            {wide && (
               <Inspector
                 open={inspectorOpen}
                 onClose={() => setInspectorOpen(false)}
@@ -231,6 +255,10 @@ export default function AgentScreen() {
           onCompact={handleCompactFromInspector}
           busy={busy}
         />
+      )}
+
+      {!wide && (
+        <RawIoPanel open={debugActive} onClose={closeDebug} wide={false} entries={debugEntries} onClear={clearDebug} />
       )}
 
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />

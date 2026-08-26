@@ -21,6 +21,11 @@ type Entry = {
   configStamp: string;
   lastUsedAt: number;
   tools: SanitizedToolMeta[] | null;
+  /** Cleared when the transport closes (child exited, socket dropped). A
+   * cached-but-dead client would otherwise keep serving a stale tool list and
+   * fail only at call time — sandbox-manager re-checks liveness the same way
+   * before reusing a container. */
+  alive: boolean;
 };
 
 // Keyed `${userId}:${serverId}`. Same shape as sandbox-manager: an `active`
@@ -93,7 +98,14 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
   }
 
   await recordConnectResult(row.id, null);
-  return { client, configStamp: stampOf(row), lastUsedAt: Date.now(), tools: null };
+  const entry: Entry = { client, configStamp: stampOf(row), lastUsedAt: Date.now(), tools: null, alive: true };
+  // A stdio child can exit at any time (crash, OOM, a parent restart orphaning
+  // it). Marking the entry dead here means the next use reconnects instead of
+  // serving a cached tool list from a connection that no longer exists.
+  client.onclose = () => {
+    entry.alive = false;
+  };
+  return entry;
 }
 
 async function recordConnectResult(serverId: string, error: string | null): Promise<void> {
@@ -107,7 +119,7 @@ async function recordConnectResult(serverId: string, error: string | null): Prom
 async function resolveEntry(userId: string, row: McpServerRow): Promise<Entry> {
   const key = keyOf(userId, row.id);
   const existing = active.get(key);
-  if (existing && existing.configStamp === stampOf(row)) {
+  if (existing && existing.alive && existing.configStamp === stampOf(row)) {
     existing.lastUsedAt = Date.now();
     return existing;
   }

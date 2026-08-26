@@ -8,6 +8,7 @@
     "android": "dotenv -e ../../.env -- expo start --android",
     "ios": "dotenv -e ../../.env -- expo start --ios",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "export:web": "dotenv -e ../../.env -- expo export --platform web",
     "web": "dotenv -e ../../.env -- expo start --web"
   },
@@ -52,6 +53,7 @@
     "babel-plugin-module-resolver": "^5.0.0",
     "dotenv-cli": "^7.4.4",
     "tailwindcss": "^4.3.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

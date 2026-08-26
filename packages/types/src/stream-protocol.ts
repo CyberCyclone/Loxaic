@@ -152,6 +152,51 @@ export type StreamSnapshot = {
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> };
 };
 
+/**
+ * Dev-mode telemetry. Deliberately NOT a `StreamEventKind`: debug traffic is
+ * live-only and rides its own ephemeral bus, so it never enters the durable
+ * stream log, never consumes a `seq`, and can't bloat a reconnect's catch-up
+ * read. A client that never subscribes receives none of it, and one that
+ * doesn't understand it ignores an unknown `type` like any other.
+ *
+ * Discriminated on `channel` so the payload narrows with it.
+ */
+export type DebugEvent =
+  /** The exact JSON body sent to the inference backend, pretty-printed. */
+  | { channel: "model.request"; stream_id: string; model: string; body: string; truncated?: boolean }
+  /** Raw SSE lines as they arrived, including reasoning frames and [DONE]. */
+  | { channel: "model.raw"; stream_id: string; lines: string[] }
+  | {
+      channel: "model.done";
+      stream_id: string;
+      finish_reason?: string | null;
+      usage?: TurnUsage;
+      duration_ms: number;
+    }
+  | {
+      channel: "tool.call";
+      stream_id: string;
+      call_id: string;
+      tool: string;
+      source: { kind: "builtin" | "mcp"; server?: string };
+      args: string;
+      truncated?: boolean;
+    }
+  /** The tool's result *before* sanitization/wrapping (secrets redacted). */
+  | {
+      channel: "tool.result_raw";
+      stream_id: string;
+      call_id: string;
+      tool: string;
+      ok: boolean;
+      raw: string;
+      duration_ms: number;
+      truncated?: boolean;
+    }
+  | { channel: "mcp.lifecycle"; server: string; event: "connect_failed" | "unavailable"; message: string };
+
+export type DebugChannel = DebugEvent["channel"];
+
 export type ServerMessage =
   | { type: "turn.started"; stream_id: string; conversation_id: string; user_message_id: string; incognito: boolean }
   | {
@@ -178,6 +223,8 @@ export type ServerMessage =
       error?: string;
     }
   | { type: "agent.mode_changed"; mode: PermissionMode }
+  /** Dev mode only — sent solely to sockets that asked for it. */
+  | { type: "debug.event"; conversation_id: string; ts: number; event: DebugEvent }
   | { type: "error"; error: string; conversation_id?: string; stream_id?: string };
 
 export type ClientMessage =
@@ -207,4 +254,8 @@ export type ClientMessage =
   | { type: "stream.stop"; stream_id: string }
   | { type: "agent.mode"; mode: PermissionMode }
   | { type: "agent.approve"; call_id: string }
-  | { type: "agent.deny"; call_id: string };
+  | { type: "agent.deny"; call_id: string }
+  /** Dev mode: start/stop receiving `debug.event`s for a conversation. Capture
+   * lives only as long as the subscription — nothing is buffered server-side. */
+  | { type: "debug.subscribe"; conversation_id: string }
+  | { type: "debug.unsubscribe"; conversation_id: string };

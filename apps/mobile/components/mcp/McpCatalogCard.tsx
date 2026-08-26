@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles } from 'lucide-react-native';
+import { FlaskConical, Sparkles } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -39,10 +39,10 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
   return (
     <Box className="rounded-md border border-border bg-card p-3">
       <HStack space="xs" className="items-center">
-        <Icon as={Sparkles} size="xs" className="text-primary" />
+        <Icon as={entry.dev ? FlaskConical : Sparkles} size="xs" className="text-primary" />
         <Text className="font-medium text-foreground">{entry.name}</Text>
         <Text size="2xs" className="rounded-full bg-primary/15 px-2 py-0.5 text-primary">
-          built-in
+          {entry.dev ? 'dev' : 'built-in'}
         </Text>
       </HStack>
       <Text size="xs" className="mt-1 text-muted-foreground">

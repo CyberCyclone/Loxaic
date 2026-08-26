@@ -299,6 +299,8 @@ export type McpCatalogEntry = {
   description: string;
   secretKeys: { env: string; label: string }[];
   configured: boolean;
+  /** Dev tooling — shown only when the user has dev mode enabled. */
+  dev?: boolean;
 };
 
 export type McpServerInput = {
@@ -467,6 +469,8 @@ export type {
   ServerMessage,
   ClientMessage,
   StreamEventKind,
+  DebugEvent,
+  DebugChannel,
   StreamSnapshot,
   StreamSnapshotMessage,
   StreamStatus,
@@ -577,6 +581,16 @@ export function subscribeStreams(ws: WebSocket, conversationId: string, cursors?
 
 export function stopStream(ws: WebSocket, streamId: string): boolean {
   return trySend(ws, { type: "stream.stop", stream_id: streamId });
+}
+
+/** Dev mode: start/stop the raw telemetry feed for a conversation. Capture
+ * exists only between these two calls — nothing is buffered server-side. */
+export function subscribeDebug(ws: WebSocket, conversationId: string): boolean {
+  return trySend(ws, { type: "debug.subscribe", conversation_id: conversationId });
+}
+
+export function unsubscribeDebug(ws: WebSocket, conversationId: string): boolean {
+  return trySend(ws, { type: "debug.unsubscribe", conversation_id: conversationId });
 }
 
 export function setAgentMode(ws: WebSocket, mode: import("@shannon/types").PermissionMode): boolean {

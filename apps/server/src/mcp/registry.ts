@@ -8,6 +8,7 @@ import { callServerTool, listServerTools, type McpServerRow } from "./client-man
 import { namespaceTool } from "./naming.ts";
 import { compactSchemaForModel, extractResultText, MCP_SYSTEM_ADDENDUM, wrapResult } from "./sanitize.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
+import { capString, publishDebug } from "../streams/debug-bus.ts";
 
 /** The tools available to one agent run: what the model is offered, plus the
  * lookup, approval policy, and dispatch for every name the model may come
@@ -21,8 +22,17 @@ export type Toolset = {
   requiresApproval(tool: ResolvedTool, mode: PermissionMode): boolean;
   /** Appended to the system prompt when untrusted (MCP) tools are offered. */
   systemPromptAddendum: string | null;
-  /** Execute an MCP-sourced tool. Never rejects — failures become ok:false. */
-  dispatchMcp(tool: ResolvedTool, args: Record<string, unknown>): Promise<{ ok: boolean; output: string }>;
+  /** Execute an MCP-sourced tool. Never rejects — failures become ok:false.
+   * With `trace`, also returns the pre-sanitization result and wall-clock for
+   * dev mode; without it, no credentials are decrypted at all. */
+  dispatchMcp(
+    tool: ResolvedTool,
+    args: Record<string, unknown>,
+    opts?: { trace?: boolean },
+  ): Promise<{ ok: boolean; output: string; trace?: { ms: number; rawText: string } }>;
+  /** Merged credentials of this run's enabled servers, for redacting debug
+   * payloads. Empty unless something is actually watching. */
+  debugSecrets(): Record<string, string>;
 };
 
 // MCP servers ship arbitrary JSON Schema; strict mode would reject harmless
@@ -75,7 +85,17 @@ export async function buildToolset(
     get: (name) => byName.get(name),
     requiresApproval: toolsetRequiresApproval,
     systemPromptAddendum: hasMcp ? MCP_SYSTEM_ADDENDUM : null,
-    dispatchMcp: (tool, args) => dispatchMcpTool(userId, tool, args, mcpEntries),
+    dispatchMcp: (tool, args, opts) => dispatchMcpTool(userId, tool, args, mcpEntries, opts),
+    debugSecrets: () => {
+      const merged: Record<string, string> = {};
+      const seen = new Set<string>();
+      for (const entry of mcpEntries.values()) {
+        if (seen.has(entry.row.id) || !entry.row.secrets) continue;
+        seen.add(entry.row.id);
+        Object.assign(merged, safeDecrypt(entry.row.secrets));
+      }
+      return merged;
+    },
   };
 }
 
@@ -122,9 +142,18 @@ async function resolveMcpTools(
     if (result.status === "rejected") {
       const row = activeRows[i];
       const secrets = row.secrets ? safeDecrypt(row.secrets) : {};
-      console.warn(
-        `MCP server "${row.name}" unavailable this run: ${redact(String((result.reason as Error)?.message ?? result.reason), secrets)}`,
-      );
+      const message = redact(String((result.reason as Error)?.message ?? result.reason), secrets);
+      console.warn(`MCP server "${row.name}" unavailable this run: ${message}`);
+      // A skipped server silently costs the model its tools — surface it to
+      // dev mode so "why didn't it use my MCP?" is answerable.
+      if (opts.conversationId) {
+        publishDebug(opts.conversationId, {
+          channel: "mcp.lifecycle",
+          server: row.slug,
+          event: "unavailable",
+          message: capString(message, 2048).text,
+        });
+      }
       continue;
     }
 
@@ -208,7 +237,8 @@ async function dispatchMcpTool(
   tool: ResolvedTool,
   args: Record<string, unknown>,
   entries: Map<string, McpToolEntry>,
-): Promise<{ ok: boolean; output: string }> {
+  opts?: { trace?: boolean },
+): Promise<{ ok: boolean; output: string; trace?: { ms: number; rawText: string } }> {
   if (tool.source.kind !== "mcp") return { ok: false, output: `Not an MCP tool: ${tool.name}` };
   const entry = entries.get(tool.name);
   if (!entry) return { ok: false, output: `Unknown tool: ${tool.name}` };
@@ -219,18 +249,30 @@ async function dispatchMcpTool(
   // the model so it can retry, never forwarded.
   if (entry.validate && !entry.validate(args)) {
     const detail = ajv.errorsText(entry.validate.errors, { dataVar: "arguments" });
-    return { ok: false, output: `Invalid arguments for ${tool.name}: ${detail}` };
+    const output = `Invalid arguments for ${tool.name}: ${detail}`;
+    return { ok: false, output, ...(opts?.trace ? { trace: { ms: 0, rawText: output } } : {}) };
   }
 
+  // Decrypting to redact with is only worth it when someone is watching.
+  const secretsFor = () => (entry.row.secrets ? safeDecrypt(entry.row.secrets) : {});
+  const started = Date.now();
   try {
     const raw = await callServerTool(userId, entry.row, remoteName, args);
     const { text, ok } = extractResultText(raw);
-    return { ok, output: wrapResult(serverSlug, remoteName, text) };
+    return {
+      ok,
+      output: wrapResult(serverSlug, remoteName, text),
+      // The raw pre-sanitization text is the one path where MCP success
+      // content is exposed unwrapped, so it is redacted here even though the
+      // model-facing copy never was.
+      ...(opts?.trace ? { trace: { ms: Date.now() - started, rawText: redact(text, secretsFor()) } } : {}),
+    };
   } catch (err) {
-    const secrets = entry.row.secrets ? safeDecrypt(entry.row.secrets) : {};
+    const message = redact(String((err as Error).message ?? err), secretsFor());
     return {
       ok: false,
-      output: `MCP server "${serverSlug}" failed: ${redact(String((err as Error).message ?? err), secrets)}`,
+      output: `MCP server "${serverSlug}" failed: ${message}`,
+      ...(opts?.trace ? { trace: { ms: Date.now() - started, rawText: message } } : {}),
     };
   }
 }

@@ -176,6 +176,9 @@ export interface Settings {
   defaultThinkingLevel: ThinkingLevel
   tailscale: string
   endpoint: string
+  /** Reveals raw model I/O, tool traces, and dev-only test servers. Absent
+   * from settings blobs stored before it existed, so always read as truthy. */
+  devMode?: boolean
 }
 
 export interface SmartRouting {

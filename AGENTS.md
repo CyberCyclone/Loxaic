@@ -112,6 +112,24 @@ pnpm --filter @shannon/mobile ios # or android
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
 
+### Dev mode
+
+- A per-device Settings toggle (`Settings.devMode`) reveals the Raw I/O panel and dev-only
+  catalog entries. Read it as `!!settings.devMode` — blobs saved before it existed lack the key.
+- Telemetry rides an **ephemeral bus** (`apps/server/src/streams/debug-bus.ts`) and a top-level
+  `debug.event` message, never the durable stream log: raw SSE lines are high-frequency and the
+  memory driver doesn't evict an in-flight run, so the broker would grow RSS for the whole run
+  and bloat every reconnect's catch-up read. Nothing is stored, capture lasts only while a
+  client is subscribed, and every tap checks `hasDebugSubscribers` before building a payload.
+- Channels: `model.request` (exact redacted request JSON), `model.raw` (raw SSE lines, batched
+  64/100ms), `model.done`, `tool.call` / `tool.result_raw` (raw pre-sanitization result — the
+  one place MCP success content is unwrapped, so it is redacted there), `mcp.lifecycle`
+  (a server skipped by the per-server isolation, which is otherwise invisible).
+- Payloads cap at 32KB (`capString`); the client keeps 300 entries and flushes state on a timer.
+  `MOCK_INFERENCE=true` synthesizes request/raw frames so the panel works without a GGUF.
+- "Mock MCP (dev)" is a catalog entry whose availability is **probed** (`canLaunch`) rather than
+  gated on NODE_ENV — a prod install ships neither tsx nor the fixture, so it self-omits.
+
 ### Electron
 
 - Never `loadFile()`/`file://` for the packaged build — expo-router's client-side routing

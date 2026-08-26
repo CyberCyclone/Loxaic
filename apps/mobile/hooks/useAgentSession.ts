@@ -9,6 +9,8 @@ import {
   setAgentMode,
   approveTool,
   denyTool,
+  subscribeDebug,
+  unsubscribeDebug,
   getConversations,
   getMessages,
   updateConversation,
@@ -41,6 +43,7 @@ function extractCompaction(blocks: ContentBlock[]): CompactionStats | undefined 
   const { kind: _kind, ...stats } = block;
   return stats;
 }
+import { DebugRing, type DebugEntry } from '@/lib/debug-ring';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 import { useToastHelper } from './useToastHelper';
@@ -276,6 +279,9 @@ type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt:
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
 
+/** Debug state is flushed on this cadence, not per event. */
+const DEBUG_FLUSH_MS = 250;
+
 export function useAgentSession(token: string | null, onStreamEnd?: () => void) {
   const [runs, setRuns] = useState<Conversation[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
@@ -286,6 +292,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
   const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
   const { showToast } = useToastHelper();
+
+  // Dev-mode telemetry. The ring absorbs bursts (raw SSE lines arrive per
+  // token) and state is flushed on a timer so a fast model can't drive one
+  // render per frame.
+  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+  const [debugActive, setDebugActive] = useState(false);
+  const debugRingRef = useRef(new DebugRing());
+  const debugConvRef = useRef<string | null>(null);
+  const debugActiveRef = useRef(false);
+  const debugFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const loadingRef = useRef(false);
@@ -574,6 +590,14 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
         setModeState(event.mode);
+      } else if (event.type === 'debug.event') {
+        debugRingRef.current.push(event.ts, event.event);
+        if (!debugFlushRef.current) {
+          debugFlushRef.current = setTimeout(() => {
+            debugFlushRef.current = null;
+            setDebugEntries(debugRingRef.current.snapshot());
+          }, DEBUG_FLUSH_MS);
+        }
       } else if (event.type === 'error') {
         showToast(`Agent error: ${event.error}`, 6000);
       }
@@ -584,6 +608,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       ws.onopen = () => {
         attempt = 0;
         resubscribeKnown();
+        // A reconnect drops the server-side listener with the socket.
+        if (debugActiveRef.current && debugConvRef.current) subscribeDebug(ws, debugConvRef.current);
       };
       ws.onclose = () => {
         if (cancelled) return;
@@ -606,10 +632,46 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (debugFlushRef.current) clearTimeout(debugFlushRef.current);
       appStateSub.remove();
       wsRef.current?.close();
     };
   }, [token, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
+
+  // Follows the active run while the panel is open — including the moment a
+  // brand-new conversation gets its server id, which is the only chance to
+  // catch that run's model.request.
+  useEffect(() => {
+    if (!debugActive) return;
+    const ws = wsRef.current;
+    if (!ws || !activeId || debugConvRef.current === activeId) return;
+    if (debugConvRef.current) unsubscribeDebug(ws, debugConvRef.current);
+    debugConvRef.current = activeId;
+    subscribeDebug(ws, activeId);
+  }, [debugActive, activeId]);
+
+  const openDebug = useCallback(() => {
+    debugActiveRef.current = true;
+    setDebugActive(true);
+    const convId = activeIdRef.current;
+    if (convId && wsRef.current) {
+      debugConvRef.current = convId;
+      subscribeDebug(wsRef.current, convId);
+    }
+  }, []);
+
+  const closeDebug = useCallback(() => {
+    debugActiveRef.current = false;
+    setDebugActive(false);
+    const convId = debugConvRef.current;
+    debugConvRef.current = null;
+    if (convId && wsRef.current) unsubscribeDebug(wsRef.current, convId);
+  }, []);
+
+  const clearDebug = useCallback(() => {
+    debugRingRef.current.clear();
+    setDebugEntries([]);
+  }, []);
 
   const handleSend = useCallback(
     (text: string, model: string, incognito?: boolean) => {
@@ -742,6 +804,11 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     handleDelete,
     handleRename,
     setRunModel,
+    debugEntries,
+    debugActive,
+    openDebug,
+    closeDebug,
+    clearDebug,
   };
 }
 
