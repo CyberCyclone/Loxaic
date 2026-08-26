@@ -2,7 +2,8 @@
 
 Self-hosted, multi-user AI platform — an open-source Claude + Claude Code replacement running
 on your own hardware (llama.cpp inference, custom agent harness, sandboxed code execution,
-offline-first clients with conversation forks).
+MCP plugin support with the official Brave Search server built in, offline-first clients with
+conversation forks).
 
 **Start here: [`HANDOVER.md`](HANDOVER.md)** — architecture, run matrix, deploy story,
 and known gaps. **[`AGENTS.md`](AGENTS.md)** has conventions and gotchas for anyone

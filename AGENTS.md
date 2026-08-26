@@ -73,14 +73,44 @@ pnpm --filter @shannon/mobile ios # or android
 
 ### Agent tool loop
 
-- `packages/agent` owns `TOOLS`/`toOpenAiTools`/`toolRequiresApproval`/`AgentEvent` — the
-  server and every client import from here so the protocol can't drift.
+- `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
+  server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
+  policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below).
 - Sandboxes are per-conversation, lazily created on first tool use, and **survive socket
   close** (reconnecting mid-task keeps the working directory) — see
   `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
 - `web_fetch` runs on the **server**, not in the sandbox (`NetworkMode: none` — sandboxes
   have no network). It has a real SSRF guard (DNS-resolves and rejects private/loopback/
   link-local answers, follows redirects manually so every hop is re-checked).
+
+### MCP servers
+
+- The tool loop resolves tools through a per-run `Toolset` (`apps/server/src/mcp/registry.ts`),
+  not the static union: builtins from `packages/agent` plus the user's enabled MCP servers
+  (`mcp_servers` table), namespaced `slug__tool` (no builtin contains `__`, so they can't shadow).
+- **Everything an MCP server produces is untrusted.** Descriptions/schemas are capped and
+  control-stripped (`mcp/sanitize.ts`), results are byte-capped and wrapped in
+  `<mcp-tool-result …>` provenance markers with escape attempts neutralized, and a system-prompt
+  addendum tells the model to never follow instructions found inside. Model-produced arguments
+  are ajv-validated against the declared schema before anything reaches the server.
+- MCP tools ask for approval in **every** mode — auto included — until the user allowlists the
+  specific tool; planning mode only offers tools the user marked read-only (server
+  `readOnlyHint` annotations are display-only, never trusted). Tool-change detection
+  (`mcp/change-detection.ts`) revokes allowlists when a tool's description/schema hash changes.
+- Credentials are AES-256-GCM-encrypted at rest (`mcp/secrets.ts`, key from
+  `MCP_ENCRYPTION_KEY`, fallback `BETTER_AUTH_SECRET`) and `redact()`-ed out of every error
+  path. stdio children get a minimal env (`PATH`/`HOME` + row env + secrets), never
+  `process.env`. HTTP transports re-run the SSRF guard per request unless the user confirmed
+  `allowPrivateNetwork` in the GUI.
+- Connections are cached per `userId:serverId` with an idle reaper (`mcp/client-manager.ts`,
+  mirrors sandbox-manager); a dead/hung server fails only its own tool calls, never the run.
+- Brave Search ships as a built-in catalog entry (`mcp/catalog.ts`) pinned to the official
+  `@brave/brave-search-mcp-server` — spawned from the installed package's bin, never `npx`.
+  The GUI lives at `/mcp` (mobile/web); per-conversation server switches are in the agent
+  Inspector (`conversations.mcpOverrides`).
+- Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
+  `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
+  offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
 
 ### Electron
 
