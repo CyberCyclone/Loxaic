@@ -1,0 +1,288 @@
+import type { FastifyInstance } from "fastify";
+import { and, db, eq } from "@shannon/db";
+import { mcpServers } from "@shannon/db/schema";
+import { authenticate } from "../auth/middleware";
+import { assertPublicUrl } from "../agent/executor.ts";
+import { BUILTIN_CATALOG, catalogEntry } from "../mcp/catalog.ts";
+import { closeServerClients, dropEntry, listServerTools, type McpServerRow } from "../mcp/client-manager.ts";
+import { reconcileTools, type ToolPolicies, type ToolPolicy } from "../mcp/change-detection.ts";
+import { isValidSlug, namespaceTool } from "../mcp/naming.ts";
+import { decryptSecrets, encryptSecrets, redact, secretKeys } from "../mcp/secrets.ts";
+
+async function findOwnedServer(id: string, userId: string) {
+  return db.query.mcpServers.findFirst({
+    where: and(eq(mcpServers.id, id), eq(mcpServers.ownerId, userId)),
+  });
+}
+
+/** What the API exposes about a server row — never the secret blob. */
+function toApi(row: McpServerRow) {
+  const { secrets, ...rest } = row;
+  return { ...rest, secretKeys: secretKeys(secrets) };
+}
+
+function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/** Merge a secrets patch over the stored blob: string sets, null deletes. */
+function mergeSecrets(existingBlob: string | null, patch: Record<string, unknown>): string | null {
+  const merged: Record<string, string> = existingBlob ? decryptSecrets(existingBlob) : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete merged[key];
+    else if (typeof value === "string" && value.length > 0) merged[key] = value;
+  }
+  return Object.keys(merged).length > 0 ? encryptSecrets(merged) : null;
+}
+
+function sanitizePolicyPatch(existing: ToolPolicies, patch: Record<string, unknown>): ToolPolicies {
+  const out: ToolPolicies = { ...existing };
+  for (const [toolName, raw] of Object.entries(patch)) {
+    const p = asOptionalRecord(raw);
+    if (!p) continue;
+    const prev: ToolPolicy = out[toolName] ?? { enabled: true, approval: "ask", readOnly: false };
+    out[toolName] = {
+      enabled: typeof p.enabled === "boolean" ? p.enabled : prev.enabled,
+      approval: p.approval === "allow" ? "allow" : p.approval === "ask" ? "ask" : prev.approval,
+      readOnly: typeof p.readOnly === "boolean" ? p.readOnly : prev.readOnly,
+      // Re-saving a policy acknowledges the change badge.
+      changed: false,
+      missing: prev.missing,
+    };
+  }
+  return out;
+}
+
+async function vetHttpUrl(rawUrl: string, allowPrivateNetwork: boolean): Promise<string | null> {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return "url is not a valid URL";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "url must be http or https";
+  if (!allowPrivateNetwork) {
+    try {
+      await assertPublicUrl(url);
+    } catch (err) {
+      return (err as Error).message;
+    }
+  }
+  return null;
+}
+
+export async function mcpRoutes(app: FastifyInstance) {
+  app.get("/v1/mcp/servers", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const rows = await db.select().from(mcpServers).where(eq(mcpServers.ownerId, userId));
+    return rows.map(toApi);
+  });
+
+  app.get("/v1/mcp/catalog", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const rows = await db.select().from(mcpServers).where(eq(mcpServers.ownerId, userId));
+    const configured = new Set(rows.map((r) => r.builtinKey).filter(Boolean));
+    return BUILTIN_CATALOG.map((entry) => ({
+      key: entry.key,
+      name: entry.name,
+      slug: entry.slug,
+      description: entry.description,
+      secretKeys: entry.secretKeys,
+      configured: configured.has(entry.key),
+    }));
+  });
+
+  app.post("/v1/mcp/servers", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const body = (request.body ?? {}) as Record<string, unknown>;
+
+    let insert: Partial<typeof mcpServers.$inferInsert>;
+    if (typeof body.builtinKey === "string") {
+      const entry = catalogEntry(body.builtinKey);
+      if (!entry) {
+        reply.code(400);
+        return { error: `Unknown builtin "${body.builtinKey}"` };
+      }
+      const launch = entry.resolveLaunch();
+      insert = {
+        name: entry.name,
+        slug: entry.slug,
+        transport: entry.transport,
+        command: launch.command,
+        args: launch.args,
+        builtinKey: entry.key,
+      };
+    } else {
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      const slug = typeof body.slug === "string" ? body.slug.trim() : "";
+      const transport = body.transport;
+      if (!name) {
+        reply.code(400);
+        return { error: "name is required" };
+      }
+      if (!isValidSlug(slug)) {
+        reply.code(400);
+        return { error: "slug must match [a-z0-9][a-z0-9-]{0,31} and not be a builtin tool name" };
+      }
+      if (transport !== "stdio" && transport !== "http") {
+        reply.code(400);
+        return { error: "transport must be 'stdio' or 'http'" };
+      }
+      const allowPrivateNetwork = body.allowPrivateNetwork === true;
+      if (transport === "stdio") {
+        if (typeof body.command !== "string" || !body.command.trim()) {
+          reply.code(400);
+          return { error: "command is required for stdio servers" };
+        }
+      } else {
+        if (typeof body.url !== "string" || !body.url.trim()) {
+          reply.code(400);
+          return { error: "url is required for http servers" };
+        }
+        const urlError = await vetHttpUrl(body.url, allowPrivateNetwork);
+        if (urlError) {
+          reply.code(400);
+          return { error: urlError, ssrf: true };
+        }
+      }
+      insert = {
+        name,
+        slug,
+        transport,
+        command: typeof body.command === "string" ? body.command.trim() : null,
+        args: Array.isArray(body.args) ? body.args.map(String) : null,
+        url: typeof body.url === "string" ? body.url.trim() : null,
+        headers: asOptionalRecord(body.headers) ?? null,
+        env: asOptionalRecord(body.env) ?? null,
+        allowPrivateNetwork,
+      };
+    }
+
+    const secretsPatch = asOptionalRecord(body.secrets);
+    const [row] = await db
+      .insert(mcpServers)
+      .values({
+        ...insert,
+        ownerId: userId,
+        secrets: secretsPatch ? mergeSecrets(null, secretsPatch) : null,
+        enabled: body.enabled !== false,
+      } as typeof mcpServers.$inferInsert)
+      .returning()
+      .catch((err: Error) => {
+        if (/mcp_servers_owner_slug_idx|duplicate key/.test(err.message)) {
+          return [];
+        }
+        throw err;
+      });
+    if (!row) {
+      reply.code(409);
+      return { error: "A server with that slug already exists" };
+    }
+    return toApi(row);
+  });
+
+  app.patch<{ Params: { id: string } }>("/v1/mcp/servers/:id", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const existing = await findOwnedServer(request.params.id, userId);
+    if (!existing) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const patch: Partial<typeof mcpServers.$inferInsert> = {};
+
+    if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
+    if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+    if (typeof body.command === "string" && existing.builtinKey === null) patch.command = body.command.trim();
+    if (Array.isArray(body.args) && existing.builtinKey === null) patch.args = body.args.map(String);
+    if (asOptionalRecord(body.env)) patch.env = asOptionalRecord(body.env);
+    if (asOptionalRecord(body.headers)) patch.headers = asOptionalRecord(body.headers);
+
+    const allowPrivateNetwork =
+      typeof body.allowPrivateNetwork === "boolean" ? body.allowPrivateNetwork : existing.allowPrivateNetwork;
+    if (typeof body.allowPrivateNetwork === "boolean") patch.allowPrivateNetwork = body.allowPrivateNetwork;
+    if (typeof body.url === "string" && existing.transport === "http") {
+      const urlError = await vetHttpUrl(body.url, allowPrivateNetwork);
+      if (urlError) {
+        reply.code(400);
+        return { error: urlError, ssrf: true };
+      }
+      patch.url = body.url.trim();
+    } else if (typeof body.allowPrivateNetwork === "boolean" && body.allowPrivateNetwork === false && existing.url) {
+      const urlError = await vetHttpUrl(existing.url, false);
+      if (urlError) {
+        reply.code(400);
+        return { error: urlError, ssrf: true };
+      }
+    }
+
+    const secretsPatch = asOptionalRecord(body.secrets);
+    if (secretsPatch) patch.secrets = mergeSecrets(existing.secrets, secretsPatch);
+
+    const policyPatch = asOptionalRecord(body.toolPolicies);
+    if (policyPatch) {
+      patch.toolPolicies = sanitizePolicyPatch((existing.toolPolicies ?? {}) as ToolPolicies, policyPatch);
+    }
+
+    // Any config change invalidates cached connections via the updatedAt stamp.
+    patch.updatedAt = new Date();
+    const [updated] = await db.update(mcpServers).set(patch).where(eq(mcpServers.id, existing.id)).returning();
+    await closeServerClients(existing.id);
+    return toApi(updated);
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/mcp/servers/:id", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const existing = await findOwnedServer(request.params.id, userId);
+    if (!existing) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    // Hard delete, unlike routines' soft-disable: stored credentials must not
+    // outlive the user's intent to remove the server.
+    await closeServerClients(existing.id);
+    await db.delete(mcpServers).where(eq(mcpServers.id, existing.id));
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string } }>("/v1/mcp/servers/:id/test", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const existing = await findOwnedServer(request.params.id, userId);
+    if (!existing) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+
+    // Force a fresh connect + listing rather than serving a cached tool list.
+    await dropEntry(userId, existing.id);
+    try {
+      const tools = await listServerTools(userId, existing);
+      const reconciled = reconcileTools(
+        {
+          toolPolicies: (existing.toolPolicies ?? {}) as ToolPolicies,
+          knownTools: (existing.knownTools ?? {}) as Record<string, string>,
+        },
+        tools,
+      );
+      await db
+        .update(mcpServers)
+        .set({ toolPolicies: reconciled.toolPolicies, knownTools: reconciled.knownTools })
+        .where(eq(mcpServers.id, existing.id));
+
+      return {
+        ok: true,
+        changedTools: reconciled.changedTools,
+        tools: tools.map((t) => ({
+          name: t.name,
+          namespacedName: namespaceTool(existing.slug, t.name),
+          description: t.description,
+          annotations: t.annotations ?? null,
+          policy: reconciled.toolPolicies[t.name],
+        })),
+      };
+    } catch (err) {
+      const secrets = existing.secrets ? decryptSecrets(existing.secrets) : {};
+      return { ok: false, error: redact((err as Error).message, secrets) };
+    }
+  });
+}

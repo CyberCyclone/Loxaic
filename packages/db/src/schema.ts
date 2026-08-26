@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
 // ── Better-Auth (auto-managed, needed for adapter schema) ──
@@ -66,6 +66,8 @@ export const conversations = pgTable("conversations", {
   kind: text("kind", { enum: ["chat", "agent", "routine"] }).notNull().default("chat"),
   activeLeafId: uuid("active_leaf_id"),
   modelPref: jsonb("model_pref"),
+  /** Per-conversation MCP overrides, e.g. { disabledServerIds: string[] }. */
+  mcpOverrides: jsonb("mcp_overrides"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at"),
@@ -194,6 +196,43 @@ export const modelRegistry = pgTable("model_registry", {
   capabilities: jsonb("capabilities"),
   location: text("location", { enum: ["server", "device", "both"] }).notNull().default("server"),
 });
+
+// ── MCP Servers ──
+export const mcpServers = pgTable(
+  "mcp_servers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull().references(() => user.id),
+    name: text("name").notNull(),
+    /** Short [a-z0-9-] identifier; namespaces the server's tools as `slug__tool`. */
+    slug: text("slug").notNull(),
+    transport: text("transport", { enum: ["stdio", "http"] }).notNull(),
+    // stdio transport
+    command: text("command"),
+    args: jsonb("args"),
+    // http transport
+    url: text("url"),
+    headers: jsonb("headers"),
+    /** Non-secret environment variables for stdio servers. */
+    env: jsonb("env"),
+    /** Encrypted secret blob (see apps/server/src/mcp/secrets.ts); never returned raw. */
+    secrets: text("secrets"),
+    /** Set when the row was created from the built-in catalog (e.g. 'brave'). */
+    builtinKey: text("builtin_key"),
+    enabled: boolean("enabled").notNull().default(true),
+    /** User-confirmed opt-out of the SSRF guard for http servers on private addresses. */
+    allowPrivateNetwork: boolean("allow_private_network").notNull().default(false),
+    /** Per-tool policy map: { [remoteName]: { enabled, approval: 'ask'|'allow', readOnly } }. */
+    toolPolicies: jsonb("tool_policies").notNull().default({}),
+    /** Last-discovered tool snapshot (hashes) for change detection. */
+    knownTools: jsonb("known_tools").notNull().default({}),
+    lastConnectedAt: timestamp("last_connected_at"),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("mcp_servers_owner_slug_idx").on(t.ownerId, t.slug)],
+);
 
 // ── Relations ──
 export const conversationsRelations = relations(conversations, ({ many }) => ({

@@ -20,6 +20,8 @@ import { startRoutineScheduler } from "./routines/scheduler";
 import { startSandboxReaper } from "./agent/sandbox-manager";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
+import { mcpRoutes } from "./routes/mcp";
+import { startMcpReaper } from "./mcp/client-manager";
 
 const app = Fastify({ logger: true });
 
@@ -88,6 +90,7 @@ await syncRoutes(app);
 await sandboxRoutes(app);
 await routineRoutes(app);
 await modelRoutes(app);
+await mcpRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
@@ -152,4 +155,5 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   app.log.info(`Server listening at http://${HOST}:${PORT}`);
   startRoutineScheduler().catch((e) => app.log.warn(`Scheduler start skipped: ${e.message}`));
   startSandboxReaper((n) => app.log.info(`Reaped ${n} idle agent sandbox(es)`));
+  startMcpReaper((n) => app.log.info(`Closed ${n} idle MCP connection(s)`));
 });
