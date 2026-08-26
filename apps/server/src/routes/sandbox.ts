@@ -84,7 +84,8 @@ export function sandboxRoutes(app: FastifyInstance) {
 
     const { path } = request.query as { path?: string };
     const container = getContainer(sandbox.containerId);
-    return getSandboxFileTree(container, path ?? "/home/shannon/repo");
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty ?path= must still fall back to the repo dir; ?? would pass "".
+    return getSandboxFileTree(container, path || "/home/shannon/repo");
   });
 
   app.get<{ Params: { id: string } }>("/v1/sandboxes/:id/files/read", async (request, reply) => {

@@ -38,7 +38,8 @@ export function conversationRoutes(app: FastifyInstance) {
     const { title } = request.body as { title?: string };
     const [row] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: title ?? "New conversation" })
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty title must still fall back to the default; ?? would store "".
+      .values({ ownerId: userId, title: title || "New conversation" })
       .returning();
     return row;
   });
