@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useRouter } from 'expo-router';
+import { ChevronRight, Plug } from 'lucide-react-native';
 import { setApiBaseUrl } from '@shannon/api-client';
 import {
   Modal,
@@ -31,6 +33,7 @@ const THEMES: ThemePreference[] = ['light', 'dark', 'system'];
 export function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [settings, setSettings] = useSettings();
   const [themePref, setThemePref] = useThemePreference();
+  const router = useRouter();
   const { showToast } = useToastHelper();
   const [draft, setDraft] = useState<Settings>(settings);
   const [dirty, setDirty] = useState(false);
@@ -146,6 +149,29 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 ))}
               </HStack>
             </VStack>
+
+            <Box className="h-px bg-border" />
+
+            <Pressable
+              onPress={() => {
+                onClose();
+                router.push('/mcp');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={Plug} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    MCP Servers
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Connect external tools for the agent
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
 
             <Box className="h-px bg-border" />
 

@@ -11,6 +11,7 @@ import {
   Globe,
   ListTodo,
   HelpCircle,
+  Plug,
 } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -41,10 +42,18 @@ const TOOL_TINT: Record<string, string> = {
   todo_write: 'text-primary-hover bg-primary/15',
 };
 
+/** MCP tools arrive namespaced as `server__tool`; builtins never contain `__`. */
+export function splitMcpTool(name: string): { server: string; tool: string } | null {
+  const idx = name.indexOf('__');
+  if (idx <= 0) return null;
+  return { server: name.slice(0, idx), tool: name.slice(idx + 2) };
+}
+
 export function ToolCallCard({ tool }: { tool: ToolCall }) {
   const [open, setOpen] = useState(false);
-  const ToolIcon = TOOL_ICONS[tool.tool] ?? HelpCircle;
-  const tint = TOOL_TINT[tool.tool] ?? 'text-muted-foreground bg-muted';
+  const mcp = splitMcpTool(tool.tool);
+  const ToolIcon = mcp ? Plug : (TOOL_ICONS[tool.tool] ?? HelpCircle);
+  const tint = mcp ? 'text-primary bg-primary/15' : (TOOL_TINT[tool.tool] ?? 'text-muted-foreground bg-muted');
 
   return (
     <Box className="my-1.5 rounded-md border border-border bg-card">
@@ -54,7 +63,16 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
             <Icon as={ToolIcon} size="xs" />
           </Box>
           <Text size="sm" className="flex-1 text-card-foreground" numberOfLines={1}>
-            {tool.summary}
+            {mcp ? (
+              <>
+                {`${mcp.server} · ${mcp.tool}`}
+                {tool.summary && tool.summary !== '{}' ? (
+                  <Text size="sm" className="text-muted-foreground">{`  ${tool.summary}`}</Text>
+                ) : null}
+              </>
+            ) : (
+              tool.summary
+            )}
           </Text>
           {tool.duration && (
             <Text size="xs" className="text-muted-foreground">

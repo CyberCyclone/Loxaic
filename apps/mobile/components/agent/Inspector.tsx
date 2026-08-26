@@ -1,4 +1,5 @@
 import { X, Check, Circle, Loader } from 'lucide-react-native';
+import { Switch } from '@/components/ui/switch';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -29,15 +30,22 @@ const TODO_TINT: Record<Todo['status'], string> = {
   pending: 'text-muted-foreground',
 };
 
+export type McpOverrideControls = {
+  servers: { id: string; name: string }[];
+  disabledIds: string[];
+  onToggle: (serverId: string, disabled: boolean) => void;
+};
+
 interface InspectorBodyProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
   context: ContextView | null;
+  mcp?: McpOverrideControls | null;
   onCompact?: () => void;
   busy?: boolean;
 }
 
-function InspectorBody({ todos, changedFiles, context, onCompact, busy }: InspectorBodyProps) {
+function InspectorBody({ todos, changedFiles, context, mcp, onCompact, busy }: InspectorBodyProps) {
   return (
     <VStack space="lg">
       <VStack space="xs">
@@ -88,6 +96,32 @@ function InspectorBody({ todos, changedFiles, context, onCompact, busy }: Inspec
         )}
       </VStack>
 
+      {mcp && mcp.servers.length > 0 && (
+        <VStack space="xs">
+          <Text size="sm" className="font-semibold text-foreground">
+            MCP Servers
+          </Text>
+          {mcp.servers.map((server) => {
+            const disabled = mcp.disabledIds.includes(server.id);
+            return (
+              <HStack key={server.id} className="items-center justify-between">
+                <Text size="sm" className="flex-1 pr-2 text-foreground" numberOfLines={1}>
+                  {server.name}
+                </Text>
+                <Switch
+                  size="sm"
+                  value={!disabled}
+                  onValueChange={(on) => mcp.onToggle(server.id, !on)}
+                />
+              </HStack>
+            );
+          })}
+          <Text size="2xs" className="text-muted-foreground">
+            Off = this conversation only. Takes effect on the next run.
+          </Text>
+        </VStack>
+      )}
+
       {context && (
         <VStack space="xs">
           <Text size="sm" className="font-semibold text-foreground">
@@ -107,6 +141,7 @@ interface InspectorProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
   context: ContextView | null;
+  mcp?: McpOverrideControls | null;
   /** Absent in the wide (persistent side-panel) layout's own contract — both
    * layouts accept it identically, it's the caller (agent.tsx) that decides
    * whether pressing it should also dismiss the narrow-layout Actionsheet. */
@@ -114,7 +149,7 @@ interface InspectorProps {
   busy?: boolean;
 }
 
-export function Inspector({ open, onClose, wide, todos, changedFiles, context, onCompact, busy }: InspectorProps) {
+export function Inspector({ open, onClose, wide, todos, changedFiles, context, mcp, onCompact, busy }: InspectorProps) {
   if (!open) return null;
 
   if (wide) {
@@ -129,7 +164,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, o
           </Pressable>
         </HStack>
         <Box className="p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} onCompact={onCompact} busy={busy} />
         </Box>
       </Box>
     );
@@ -143,7 +178,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, o
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
         <Box className="w-full p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} onCompact={onCompact} busy={busy} />
         </Box>
       </ActionsheetContent>
     </Actionsheet>

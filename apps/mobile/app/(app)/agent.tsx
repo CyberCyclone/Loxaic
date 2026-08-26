@@ -20,6 +20,7 @@ import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
+import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -82,6 +83,11 @@ export default function AgentScreen() {
     '';
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
+  const mcpOverrides = useMcpOverrides(token, activeId);
+  const mcpControls =
+    mcpOverrides.servers.length > 0
+      ? { servers: mcpOverrides.servers, disabledIds: mcpOverrides.disabledIds, onToggle: mcpOverrides.toggle }
+      : null;
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
@@ -197,6 +203,7 @@ export default function AgentScreen() {
                 todos={todos}
                 changedFiles={changedFiles}
                 context={context}
+                mcp={mcpControls}
                 onCompact={handleCompactFromInspector}
                 busy={busy}
               />
@@ -220,6 +227,7 @@ export default function AgentScreen() {
           todos={todos}
           changedFiles={changedFiles}
           context={context}
+          mcp={mcpControls}
           onCompact={handleCompactFromInspector}
           busy={busy}
         />

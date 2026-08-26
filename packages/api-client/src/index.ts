@@ -101,6 +101,7 @@ export type Conversation = {
   kind: string;
   activeLeafId: string | null;
   modelPref: import("@shannon/types").ModelPref | null;
+  mcpOverrides: { disabledServerIds?: string[] } | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -116,7 +117,10 @@ export async function getConversations(): Promise<Conversation[]> {
 
 export async function updateConversation(
   id: string,
-  patch: { model_pref?: import("@shannon/types").ModelPref },
+  patch: {
+    model_pref?: import("@shannon/types").ModelPref;
+    mcp_overrides?: { disabledServerIds?: string[] };
+  },
 ): Promise<Conversation> {
   return (
     await authedFetch(`/v1/conversations/${id}`, {
@@ -240,6 +244,134 @@ export async function runRoutineNow(id: string): Promise<RoutineRun> {
 
 export async function getRoutineRuns(id: string): Promise<RoutineRun[]> {
   return (await authedFetch(`/v1/routines/${id}/runs`)).json();
+}
+
+// ── MCP servers ───────────────────────────────────────────
+export type McpToolPolicy = {
+  enabled: boolean;
+  approval: "ask" | "allow";
+  readOnly: boolean;
+  changed?: boolean;
+  missing?: boolean;
+};
+
+export type McpServer = {
+  id: string;
+  ownerId: string;
+  name: string;
+  slug: string;
+  transport: "stdio" | "http";
+  command: string | null;
+  args: unknown;
+  url: string | null;
+  headers: unknown;
+  env: unknown;
+  builtinKey: string | null;
+  enabled: boolean;
+  allowPrivateNetwork: boolean;
+  toolPolicies: Record<string, McpToolPolicy>;
+  knownTools: Record<string, string>;
+  lastConnectedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Names of stored secrets; values never leave the server. */
+  secretKeys: string[];
+};
+
+export type McpDiscoveredTool = {
+  name: string;
+  namespacedName: string;
+  description: string;
+  /** Server-claimed, display-only — never used for policy decisions. */
+  annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean } | null;
+  policy: McpToolPolicy;
+};
+
+export type McpTestResult =
+  | { ok: true; changedTools: string[]; tools: McpDiscoveredTool[] }
+  | { ok: false; error: string };
+
+export type McpCatalogEntry = {
+  key: string;
+  name: string;
+  slug: string;
+  description: string;
+  secretKeys: { env: string; label: string }[];
+  configured: boolean;
+};
+
+export type McpServerInput = {
+  name?: string;
+  slug?: string;
+  transport?: "stdio" | "http";
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+  /** string sets a secret, null deletes it. */
+  secrets?: Record<string, string | null>;
+  enabled?: boolean;
+  allowPrivateNetwork?: boolean;
+  builtinKey?: string;
+  toolPolicies?: Record<string, Partial<McpToolPolicy>>;
+};
+
+/** Carries the server's error body so the UI can offer the SSRF override. */
+export class McpApiError extends Error {
+  status: number;
+  ssrf: boolean;
+  constructor(message: string, status: number, ssrf: boolean) {
+    super(message);
+    this.status = status;
+    this.ssrf = ssrf;
+  }
+}
+
+async function mcpFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAuthToken();
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...init,
+    headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; ssrf?: boolean };
+    throw new McpApiError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${res.status}`, res.status, body.ssrf === true);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function getMcpServers(): Promise<McpServer[]> {
+  return mcpFetch("/v1/mcp/servers");
+}
+
+export async function getMcpCatalog(): Promise<McpCatalogEntry[]> {
+  return mcpFetch("/v1/mcp/catalog");
+}
+
+export async function createMcpServer(input: McpServerInput): Promise<McpServer> {
+  return mcpFetch("/v1/mcp/servers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateMcpServer(id: string, patch: McpServerInput): Promise<McpServer> {
+  return mcpFetch(`/v1/mcp/servers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteMcpServer(id: string): Promise<{ ok: true }> {
+  return mcpFetch(`/v1/mcp/servers/${id}`, { method: "DELETE" });
+}
+
+export async function testMcpServer(id: string): Promise<McpTestResult> {
+  return mcpFetch(`/v1/mcp/servers/${id}/test`, { method: "POST" });
 }
 
 // ── Stats ─────────────────────────────────────────────────

@@ -43,14 +43,26 @@ export async function conversationRoutes(app: FastifyInstance) {
     return row;
   });
 
-  // Update conversation (currently: per-conversation model preference)
+  // Update conversation (per-conversation model preference / MCP overrides)
   app.patch<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { model_pref } = request.body as { model_pref?: { model?: string } };
+    const { model_pref, mcp_overrides } = request.body as {
+      model_pref?: { model?: string };
+      mcp_overrides?: { disabledServerIds?: string[] };
+    };
+    const mcpOverrides =
+      mcp_overrides !== undefined
+        ? {
+            disabledServerIds: Array.isArray(mcp_overrides?.disabledServerIds)
+              ? mcp_overrides.disabledServerIds.map(String)
+              : [],
+          }
+        : undefined;
     const [row] = await db
       .update(conversations)
       .set({
         ...(model_pref !== undefined ? { modelPref: model_pref } : {}),
+        ...(mcpOverrides !== undefined ? { mcpOverrides } : {}),
         updatedAt: new Date(),
       })
       .where(and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)))
