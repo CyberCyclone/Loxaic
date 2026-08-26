@@ -153,3 +153,30 @@ describe("buildToolset with the fixture server", () => {
     }
   }, 20_000);
 });
+
+describe("compileValidator", () => {
+  it("compiles 2020-12 schemas carrying a $schema meta pointer (Brave's shape)", async () => {
+    const { compileValidator } = await import("../registry.ts");
+    const validate = compileValidator({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: { query: { type: "string", maxLength: 400 } },
+      required: ["query"],
+      additionalProperties: false,
+    });
+    expect(validate({ query: "hi" })).toBe(true);
+    expect(validate({})).toBe(false);
+    expect(validate({ query: "hi", extra: 1 })).toBe(false);
+  });
+
+  it("compiles draft-07-style schemas too", async () => {
+    const { compileValidator } = await import("../registry.ts");
+    const validate = compileValidator({
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+      properties: { n: { type: "integer", minimum: 1 } },
+    });
+    expect(validate({ n: 3 })).toBe(true);
+    expect(validate({ n: 0 })).toBe(false);
+  });
+});

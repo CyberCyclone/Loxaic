@@ -77,6 +77,44 @@ export function sanitizeToolMeta(raw: {
   return { name, description, inputSchema: schema, ...(annotations ? { annotations } : {}) };
 }
 
+export const MAX_ENUM_VALUES = 12;
+export const MAX_NESTED_DESCRIPTION = 300;
+
+/**
+ * Model-facing copy of a tool schema, slimmed to keep prompt cost sane —
+ * real servers ship enormous schemas (Brave's 8 tools carry ~34KB of country/
+ * language enums, enough to overflow a small context window on their own).
+ * Long enums collapse into a description note and nested descriptions are
+ * capped. Argument VALIDATION always runs against the full original schema,
+ * so a model that picks a value outside a collapsed enum simply gets the
+ * validation error back and can retry.
+ */
+export function compactSchemaForModel(schema: Record<string, unknown>): Record<string, unknown> {
+  return walk(schema) as Record<string, unknown>;
+
+  function walk(node: unknown): unknown {
+    if (Array.isArray(node)) return node.map(walk);
+    if (!node || typeof node !== "object") return node;
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === "$schema") continue;
+      if (key === "description" && typeof value === "string" && value.length > MAX_NESTED_DESCRIPTION) {
+        out[key] = `${value.slice(0, MAX_NESTED_DESCRIPTION)}…`;
+        continue;
+      }
+      out[key] = walk(value);
+    }
+    const e = out.enum;
+    if (Array.isArray(e) && e.length > MAX_ENUM_VALUES) {
+      delete out.enum;
+      const sample = e.slice(0, 8).map(String).join(", ");
+      const note = `One of ${e.length} allowed values, e.g. ${sample}, …`;
+      out.description = typeof out.description === "string" && out.description ? `${out.description} ${note}` : note;
+    }
+    return out;
+  }
+}
+
 /**
  * Flatten an MCP CallToolResult's content blocks to text. Non-text blocks
  * (images, audio, embedded resources) are represented by a placeholder rather

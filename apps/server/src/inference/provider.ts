@@ -264,6 +264,15 @@ async function* liveStream(
           continue; // partial or non-JSON keepalive
         }
 
+        // Backends report failures mid-stream as an SSE error payload with a
+        // 200 status (llama.cpp/LM Studio: `event: error` + {"error": …}).
+        // Swallowing it would end the turn as a silent empty message.
+        if (parsed.error) {
+          const detail =
+            typeof parsed.error === "string" ? parsed.error : (parsed.error.message ?? JSON.stringify(parsed.error));
+          throw new Error(`Inference backend error: ${detail}`);
+        }
+
         const choice = parsed.choices?.[0];
         if (choice?.finish_reason) finishReason = choice.finish_reason;
 

@@ -1,4 +1,4 @@
-import Ajv, { type ValidateFunction } from "ajv";
+import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import type { OpenAiTool, PermissionMode, ResolvedTool } from "@shannon/agent";
 import { resolveBuiltinTools, resolvedToOpenAiTool } from "@shannon/agent";
 import { and, db, eq } from "@shannon/db";
@@ -6,7 +6,7 @@ import { conversations, mcpServers } from "@shannon/db/schema";
 import { reconcileTools, type ToolPolicies, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
-import { extractResultText, MCP_SYSTEM_ADDENDUM, wrapResult } from "./sanitize.ts";
+import { compactSchemaForModel, extractResultText, MCP_SYSTEM_ADDENDUM, wrapResult } from "./sanitize.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 
 /** The tools available to one agent run: what the model is offered, plus the
@@ -27,8 +27,17 @@ export type Toolset = {
 
 // MCP servers ship arbitrary JSON Schema; strict mode would reject harmless
 // idioms and formats aren't worth a dependency. An uncompilable schema drops
-// the tool — it never silently skips validation.
-const ajv = new Ajv({ strict: false, validateFormats: false, allErrors: false });
+// the tool — it never silently skips validation. The 2020-12 build matches
+// the MCP spec's dialect (draft-07 keywords still compile under it).
+const ajv = new Ajv2020({ strict: false, validateFormats: false, allErrors: false });
+
+/** Compile a server-declared input schema into a validator. The $schema
+ * pointer is stripped first — servers commonly stamp a meta-schema URL
+ * (Brave does), and ajv would otherwise try to resolve it as a ref. */
+export function compileValidator(schema: Record<string, unknown>): ValidateFunction {
+  const { $schema: _meta, ...compilable } = schema;
+  return ajv.compile(compilable);
+}
 
 type McpToolEntry = {
   row: McpServerRow;
@@ -146,9 +155,9 @@ async function resolveMcpTools(
 
       let validate: ValidateFunction | null = null;
       try {
-        validate = ajv.compile(meta.inputSchema);
-      } catch {
-        console.warn(`Dropping MCP tool ${row.slug}/${meta.name}: schema failed to compile`);
+        validate = compileValidator(meta.inputSchema);
+      } catch (err) {
+        console.warn(`Dropping MCP tool ${row.slug}/${meta.name}: schema failed to compile: ${(err as Error).message}`);
         continue;
       }
 
@@ -157,7 +166,9 @@ async function resolveMcpTools(
         tool: {
           name,
           description: meta.description,
-          parameters: meta.inputSchema,
+          // The model sees a compacted copy; the validator (above) enforces
+          // the server's full original schema.
+          parameters: compactSchemaForModel(meta.inputSchema),
           requiresApproval: policy.approval !== "allow",
           isWrite: !policy.readOnly,
           source: {
