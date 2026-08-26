@@ -149,6 +149,7 @@ export class StreamBroker {
           m.parent_id = event.parent_id;
           if (event.model) m.model = event.model;
           if (event.text) m.text = event.text;
+          if (event.attachments?.length) m.attachments = event.attachments;
           break;
         }
         case "text.delta":

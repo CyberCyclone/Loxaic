@@ -1,8 +1,16 @@
 import { v4 as uuid } from "uuid";
 import { and, db, eq, gt } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
-import type { ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
-import { streamCompletion, type ChatMessage, type ToolCall, type CompletionResult } from "../../inference/provider.ts";
+import type { AttachmentRef, ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
+import {
+  countImageParts,
+  streamCompletion,
+  visionErrorMessage,
+  type ChatMessage,
+  type ToolCall,
+  type CompletionResult,
+} from "../../inference/provider.ts";
+import { attachmentContentParts } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
@@ -78,6 +86,9 @@ export async function runToolLoop(ctx: {
       ...(summaryMsg ? [summaryMsg] : []),
       ...history.messages,
     ];
+    // Only user turns ever carry image parts, and the loop below only appends
+    // assistant and tool messages — so this holds for every iteration.
+    const hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
 
     let parentId = ctx.userMsgId;
     let lastAssistantId: string | null = null;
@@ -183,7 +194,11 @@ export async function runToolLoop(ctx: {
       } catch (err) {
         const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
         const status = isAbort ? "cancelled" : "error";
-        const errorMessage = (err as Error).message;
+        // A text-only model choking on image parts is a user-fixable
+        // situation, not an outage — say so instead of relaying the backend's
+        // phrasing, which is different for every runtime.
+        const raw = (err as Error).message;
+        const errorMessage = !isAbort && hadImages ? (visionErrorMessage(raw) ?? raw) : raw;
         const blocks: ContentBlock[] = [];
         if (thinking) blocks.push({ kind: "thinking", text: thinking });
         if (text) blocks.push({ kind: "text", text });
@@ -549,7 +564,14 @@ export async function loadHistory(
 
     if (row.authorType === "user") {
       const text = textOf(blocks);
-      if (text) out.push({ role: "user", content: text });
+      const atts = attachmentsOf(blocks);
+      // Image-only turns have no text at all, so the emptiness check can't
+      // gate them the way it gates a genuinely blank message.
+      if (atts.length > 0) {
+        out.push({ role: "user", content: await attachmentContentParts(atts, text) });
+      } else if (text) {
+        out.push({ role: "user", content: text });
+      }
       continue;
     }
 
@@ -576,6 +598,14 @@ export async function loadHistory(
     }
   }
   return { messages: out, truncated, summaryText };
+}
+
+/** Attachment blocks in stored order — which is the order they were sent in,
+ * and the order they must reach the model in. */
+function attachmentsOf(blocks: ContentBlock[]): AttachmentRef[] {
+  return blocks
+    .filter((b): b is Extract<ContentBlock, { kind: "attachment" }> => b.kind === "attachment")
+    .map((b) => ({ ref: b.ref, mime: b.mime }));
 }
 
 function textOf(blocks: ContentBlock[]): string {
@@ -616,7 +646,16 @@ export async function loadEphemeralHistory(
         continue;
       }
       if (m.author_type === "user") {
-        if (m.text) items.push({ kind: "msgs", msgs: [{ role: "user", content: m.text }] });
+        // Incognito writes nothing to Postgres, so message.start's attachment
+        // list is the only record that this turn carried images at all.
+        if (m.attachments?.length) {
+          items.push({
+            kind: "msgs",
+            msgs: [{ role: "user", content: await attachmentContentParts(m.attachments, m.text) }],
+          });
+        } else if (m.text) {
+          items.push({ kind: "msgs", msgs: [{ role: "user", content: m.text }] });
+        }
         continue;
       }
       if (m.author_type === "assistant") {

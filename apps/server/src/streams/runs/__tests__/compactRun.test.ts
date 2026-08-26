@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeCompactionStats } from "../compactRun.ts";
+import { computeCompactionStats, stripImagesForCompaction } from "../compactRun.ts";
+import type { ChatMessage } from "../../../inference/provider.ts";
 
 /**
  * `saved = before - after`, floored at 0. `after` is exact whenever the
@@ -106,5 +107,49 @@ describe("computeCompactionStats", () => {
       completionTokens: 50,
     });
     expect(stats.messages_compacted).toBe(47);
+  });
+});
+
+/**
+ * A text-only model choking on stray image parts is exactly the failure this
+ * guards against — the summary call must never see one, regardless of what
+ * the surface's own history loader handed it.
+ */
+describe("stripImagesForCompaction", () => {
+  it("collapses an image-carrying user message to its text, images before text or not", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "sys" },
+      {
+        role: "user",
+        content: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } },
+          { type: "text", text: "what is this" },
+        ],
+      },
+      { role: "assistant", content: "reply" },
+    ];
+    expect(stripImagesForCompaction(messages)).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "what is this" },
+      { role: "assistant", content: "reply" },
+    ]);
+  });
+
+  it("collapses an image-only user message to an empty string, not left as an array", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }] },
+    ];
+    const [stripped] = stripImagesForCompaction(messages);
+    expect(typeof stripped.content).toBe("string");
+    expect(stripped.content).toBe("");
+  });
+
+  it("leaves a plain-string user message, and non-user roles, untouched", () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: "just text" },
+      { role: "assistant", content: "reply" },
+    ];
+    expect(stripImagesForCompaction(messages)).toEqual(messages);
   });
 });

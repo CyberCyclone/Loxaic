@@ -1,5 +1,6 @@
 import type { ContextBreakdown, ContextCategory, ContextPart } from "@shannon/types";
 import type { ChatMessage, OpenAiTool } from "./provider.ts";
+import { textOfContent } from "./provider.ts";
 
 /**
  * Attributing a prompt's token count to the things that made it up.
@@ -48,7 +49,7 @@ export function estimateTokens(category: ContextCategory, text: string): number 
 export const SUMMARY_PREAMBLE =
   "Summary of the conversation so far. Earlier messages were compacted into this summary; treat it as the authoritative history.\n\n";
 
-export function summaryMessage(summaryText: string): ChatMessage {
+export function summaryMessage(summaryText: string): Extract<ChatMessage, { role: "system" }> {
   return { role: "system", content: SUMMARY_PREAMBLE + summaryText };
 }
 
@@ -79,7 +80,10 @@ export function tallyChatMessages(messages: ChatMessage[], tools?: OpenAiTool[])
         addChars(tally, "system", msg.content);
         break;
       case "user":
-        addChars(tally, i === lastUserIdx ? "current" : "history", msg.content);
+        // Image parts are deliberately not tallied: their prompt-token cost is
+        // backend-specific (patch embeddings, not text), so pretending a char
+        // count covers them would be worse than leaving them out of the split.
+        addChars(tally, i === lastUserIdx ? "current" : "history", textOfContent(msg.content));
         break;
       case "assistant":
         addChars(tally, "history", msg.content);

@@ -37,8 +37,11 @@ services:
       BETTER_AUTH_SECRET: dev-secret-change-me
       STREAM_BACKEND: redis
       REDIS_URL: redis://redis:6379
+      UPLOADS_DIR: /data/uploads
     ports:
       - "4000:4000"
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -76,3 +79,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  uploads:

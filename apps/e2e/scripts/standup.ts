@@ -60,6 +60,12 @@ const DATABASE_URL =
 export const ADMIN_FILE = path.join(RUN_DIR, 'admin.json');
 const SANDBOX_HOST_ROOT = path.join(RUN_DIR, 'sandboxes');
 /**
+ * Where uploaded attachments land. Kept under the run directory rather than
+ * apps/server's default ./uploads so a suite run never leaves image files in
+ * the working tree, and so teardown can drop them wholesale.
+ */
+const UPLOADS_DIR = path.join(RUN_DIR, 'uploads');
+/**
  * Real-model mode: drives the agent with an actual inference endpoint
  * instead of the mock, so it has to genuinely read instructions and write
  * working code — see the "Real-model task suite" section of the README.
@@ -230,6 +236,7 @@ async function ensureServer(): Promise<void> {
 
   log(`starting server on port ${String(PORT)} with ${REAL_MODEL ? `INFERENCE_BASE_URL=${String(INFERENCE_URL)}` : 'MOCK_INFERENCE=true'}`);
   mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
+  mkdirSync(UPLOADS_DIR, { recursive: true });
   const { email: adminEmail } = writeAdminCreds();
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
@@ -259,6 +266,7 @@ async function ensureServer(): Promise<void> {
       // host mode then needs somewhere disposable to write, hence the root.
       ADMIN_EMAILS: adminEmail,
       SANDBOX_HOST_ROOT,
+      UPLOADS_DIR,
     },
   });
   spawnedServer = child;
@@ -321,6 +329,7 @@ export async function teardown(): Promise<void> {
   rmSync(PID_FILE, { force: true });
   if (owned) {
     rmSync(SANDBOX_HOST_ROOT, { recursive: true, force: true });
+    rmSync(UPLOADS_DIR, { recursive: true, force: true });
     rmSync(ADMIN_FILE, { force: true });
   }
   // Postgres is deliberately left running: it is slow to start, holds no

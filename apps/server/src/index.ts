@@ -1,6 +1,8 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
+import { MAX_ATTACHMENT_BYTES } from "@shannon/types";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -25,6 +27,7 @@ import { configRoutes } from "./routes/config";
 import { mcpRoutes } from "./routes/mcp";
 import { prefsRoutes } from "./routes/prefs";
 import { adminSettingsRoutes } from "./routes/admin-settings";
+import { fileRoutes } from "./routes/files";
 import { loadServerSettings } from "./settings";
 import { startMcpReaper } from "./mcp/client-manager";
 
@@ -58,6 +61,7 @@ await recoverOrphanedStreams();
 
 await app.register(cors, { origin: true, credentials: true });
 await app.register(websocket);
+await app.register(multipart, { limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 } });
 
 // ── Health ────────────────────────────────────────────────
 app.get("/health", async () => {
@@ -108,6 +112,7 @@ configRoutes(app);
 mcpRoutes(app);
 prefsRoutes(app);
 adminSettingsRoutes(app);
+fileRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);

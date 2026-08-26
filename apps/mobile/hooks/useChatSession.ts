@@ -16,9 +16,10 @@ import {
   updateMcpServer,
   updatePrefs,
   type ServerMessage,
+  type AttachmentRef,
 } from '@shannon/api-client';
 import type { Conversation } from '@/lib/types';
-import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from '@/lib/streamMessages';
+import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
 import { useToastHelper } from './useToastHelper';
 
@@ -115,9 +116,32 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     [setStreamingByConv],
   );
 
+  // Threads whose history has been fetched (or is in flight). The mount-time
+  // load below only ever covered the single most recent thread, so switching
+  // to any older one left it permanently empty — nothing else backfills it
+  // (stream.subscribe replays live runs, not cold history).
+  const loadedConvIdsRef = useRef<Set<string>>(new Set());
+
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
+    // Optimistic local ids (created before the server assigns a real
+    // one — see handleSend below) aren't fetchable: the server has never
+    // heard of them, and the id gets swapped for the real one as soon as
+    // turn.started arrives, no fetch required.
+    if (!id || !isServerConvId(id) || loadedConvIdsRef.current.has(id)) return;
+    loadedConvIdsRef.current.add(id);
+    getMessages(id)
+      .then(({ messages: rows }) => {
+        const msgs = reconstructMessages(rows);
+        if (msgs.length === 0) return;
+        // Only fill a thread that is still empty: one already streaming (or
+        // already populated by this same fetch) must not be clobbered.
+        setConversations((prev) =>
+          prev.map((c) => (c.id === id && c.msgs.length === 0 ? { ...c, msgs } : c)),
+        );
+      })
+      .catch(() => undefined);
   }, []);
 
   /** Renames the pending optimistic user bubble (if any) to its real
@@ -139,7 +163,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     if (!token || loadingRef.current) return;
     loadingRef.current = true;
     getConversations()
-      .then(async (convs) => {
+      .then((convs) => {
         if (convs.length === 0) return;
         const apiConversations: Conversation[] = convs.map((c) => ({
           id: c.id,
@@ -156,19 +180,9 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           return [...fresh, ...prev];
         });
 
-        const latest = convs[0];
-        setActiveId(latest.id);
-        try {
-          const { messages: rows } = await getMessages(latest.id);
-          const msgs = reconstructMessages(rows);
-          if (msgs.length > 0) {
-            setConversations((prev) =>
-              prev.map((c) => (c.id === latest.id ? { ...c, msgs } : c)),
-            );
-          }
-        } catch {
-          // Non-fatal: thread list still loaded, just no history preview yet.
-        }
+        // History for this thread — and any other the user switches to — is
+        // fetched lazily by setActiveId.
+        setActiveId(convs[0].id);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -392,32 +406,39 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   }, [token, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
-    (text: string, model: string, incognito?: boolean) => {
+    (text: string, model: string, incognito?: boolean, attachments?: AttachmentRef[]) => {
       if (!wsRef.current) return;
       const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
+      // The optimistic bubble keeps the full refs so it can render a thumbnail
+      // immediately; the wire only needs the ids.
+      const refs = attachments?.map((a) => a.ref);
       if (!activeIdRef.current) {
         const localId = `c${String(Date.now())}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
         const newConv: Conversation = {
           id: localId,
-          title: text.slice(0, 40),
+          title: text.slice(0, 40) || 'Image',
           kind: 'chat',
           time: 'now',
           model,
           location: 'server',
-          msgs: [{ id: localMsgId, role: 'user', text }],
+          msgs: [{ id: localMsgId, role: 'user', text, attachments }],
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        sendChatMessage(wsRef.current, text, model, undefined, undefined, incognito);
+        sendChatMessage(wsRef.current, text, model, undefined, undefined, incognito, refs);
       } else {
         const id = activeIdRef.current;
         setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, msgs: [...c.msgs, { id: localMsgId, role: 'user', text }] } : c)),
+          prev.map((c) =>
+            c.id === id
+              ? { ...c, msgs: [...c.msgs, { id: localMsgId, role: 'user', text, attachments }] }
+              : c,
+          ),
         );
-        sendChatMessage(wsRef.current, text, model, id, undefined, incognito);
+        sendChatMessage(wsRef.current, text, model, id, undefined, incognito, refs);
       }
     },
     [setActiveId],

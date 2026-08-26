@@ -107,6 +107,11 @@ Gradle caches the JS bundle, so changing that variable alone will not rebuild it
 Release builds block cleartext HTTP, which every self-hosted/LAN endpoint here relies on, so
 `app.json` enables `usesCleartextTraffic` through `expo-build-properties`.
 
+**A photo is seeded into the emulator's library before each run** (`onPrepare`), for
+`attachments.spec.ts`'s system-picker step — `adb push` plus a `MEDIA_SCANNER_SCAN_FILE`
+broadcast, since the picker reads MediaStore, not the filesystem, and a pushed file is invisible
+until the media scanner indexes it. See `seedAndroidPhoto` in `scripts/native.ts`.
+
 ### iOS
 
 ```bash
@@ -150,6 +155,10 @@ Two harness behaviours specific to iOS, both handled automatically:
   run's session token would auto-sign the app in and break the sign-up spec on every re-run.
 - **System alerts are auto-dismissed** (`appium:autoDismissAlerts`): iOS interrupts the first
   sign-in with a "Save Password?" sheet that sits above the app and blocks every element query.
+- **A photo is seeded into the simulator's library before each run**, for `attachments.spec.ts`'s
+  PHPicker step — `xcrun simctl addmedia`, the supported way in (it imports through Photos
+  itself, so a plain file copy would never appear in the picker). See `seedIosPhoto` in
+  `scripts/native.ts`, including what to do if that command hangs.
 
 Two setup traps worth knowing, both hit while building this:
 
@@ -167,6 +176,41 @@ mock-inference reply → trigger an agent tool call and approve it through the p
 sign-out. Assertions target the mock provider's deterministic output (`[Mock] Echo: …`,
 `[Mock] Done. The tool returned: …`), which is what makes the run repeatable.
 
+## What the attachments spec covers
+
+`src/specs/attachments.spec.ts` — pick an image → upload → send → thumbnail in the bubble →
+fullscreen viewer → and the two negative cases the server-side guards exist for (an image-only
+message with no text, and one user's ref being unreachable to another).
+
+The load-bearing assertion is `[Mock] Received 1 image(s).`: the mock provider only emits that
+when the assembled prompt actually carried `image_url` parts, so it proves the whole chain —
+multipart upload, ownership check, `attachment` content blocks, the history loader, OpenAI content
+parts — rather than merely that a thumbnail rendered locally.
+
+**Getting an image into the composer is the one platform-shaped step**, and it lives entirely in
+`helpers/attachments.ts`:
+
+| Platform | How |
+|---|---|
+| web, Electron | `browser.uploadFile()` + `addValue` on the composer's real `<input type="file">` (`composer.attach.input`). `addValue`, not `setValue` — the latter clears first, and `clearValue` on a file input throws. |
+| iOS | Taps through to PHPicker and selects the first cell, seeded by `simctl addmedia` in `onPrepare`. |
+| Android | Taps through to the system photo picker and selects the first cell, seeded by `adb push` + a `MEDIA_SCANNER_SCAN_FILE` broadcast in `onPrepare`. |
+
+The two native branches select **system UI we don't own** (Apple's and Google's pickers), so they
+match on OS accessibility traits rather than `testID`s. That is a deliberate exception to the rule
+in AGENTS.md, in the same category as `appium:autoDismissAlerts` — and it is confined to that one
+helper so a picker redesign breaks one function, not every spec.
+
+The fixture is `fixtures/images/red-square.png` (64×64 solid crimson, 136 bytes) — deliberately a
+colour nothing in the app's own chrome uses, so a thumbnail of it is unmistakable in a screenshot.
+
+The **camera** path is deliberately not covered: the iOS simulator has no camera to drive. It
+carries a `testID` (`composer.attach.camera`) and is verified by hand.
+
+> **If `seedIosPhoto` fails with "addmedia hung"**, that simulator's Photos daemon is wedged —
+> `xcrun simctl shutdown <udid>` (or erasing the simulator) clears it. The helper bounds the call
+> at 60s rather than letting `onPrepare` hang indefinitely.
+
 ## What stand-up actually does
 
 `scripts/standup.ts`, run automatically from the wdio `onPrepare` hook:
@@ -178,6 +222,9 @@ sign-out. Assertions target the mock provider's deterministic output (`[Mock] Ec
 3. **Web export** — built if `apps/mobile/dist/index.html` is missing. Must happen *before* the
    server starts: static serving is only registered at boot, and only if the export exists.
 4. **Server** — started with `MOCK_INFERENCE=true`, or reused if one is already healthy.
+   Attachment uploads are pointed at `artifacts/.run/uploads` (`UPLOADS_DIR`) rather than
+   `apps/server`'s default `./uploads`, so a run never leaves image files in the working tree;
+   `teardown()` removes it alongside the sandbox root.
 5. **Readiness gate** — polls `GET /health` until it reports both `database: "ok"` and
    `inference: "mock"`. That one check proves the DB is up *and* migrated (the endpoint runs a
    real query) and that the server booted in mock mode.

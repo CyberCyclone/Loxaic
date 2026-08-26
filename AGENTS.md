@@ -93,6 +93,13 @@ screenshots showing that behaviour working. Writing those tests is the implement
   them external, so they run under Node's native TypeScript support in production, which
   follows real ESM resolution rules (dev's `tsx` loader is more forgiving and won't catch
   a missing extension).
+- **`expo-image-picker` is native-only.** Its web implementation creates a transient hidden
+  `<input type="file">` at click time and clicks it programmatically — no stable element to
+  attach a `testID` to, and nothing for e2e to drive. The composer's attach control is split
+  per-platform instead (`components/composer/AttachButton.tsx` / `.web.tsx`, same convention as
+  `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actionsheet over
+  `expo-image-picker`, web renders a real, persistent `<input type="file">`
+  (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly.
 
 ### testIDs and e2e selectors
 

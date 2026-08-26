@@ -19,7 +19,9 @@ import {
   androidApkPath,
   ensureAndroidEnv,
   requireAppiumDrivers,
+  seedAndroidPhoto,
 } from './scripts/native.ts';
+import { IMAGE_FIXTURE } from './src/helpers/attachments.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
 process.env.E2E_PLATFORM = 'android';
@@ -49,6 +51,9 @@ export const config: WebdriverIO.Config = {
     await standup();
     // After stand-up, so the port being forwarded is one that already answers.
     adbReverse(PORT);
+    // The attachments spec picks the first photo out of the system picker, so
+    // the media store has to have one.
+    seedAndroidPhoto(IMAGE_FIXTURE);
   },
 
   onComplete: async function onComplete() {

@@ -2,7 +2,7 @@ import { v4 as uuid } from "uuid";
 import { db, desc, eq } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import type { CompactionStats, ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
-import { streamCompletion, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
+import { streamCompletion, textOfContent, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { estimateTokens, summaryMessage } from "../../inference/context.ts";
 import { assertConversationAccess } from "../authz.ts";
@@ -52,6 +52,19 @@ const COMPACT_INSTRUCTION = [
 function buildInstruction(guidance: string | undefined): string {
   if (!guidance) return COMPACT_INSTRUCTION;
   return `${COMPACT_INSTRUCTION}\n\nAdditional instructions from the user for this summary — follow them when deciding what to emphasise or include:\n${guidance}`;
+}
+
+/**
+ * Images don't need to survive compaction — the summary is a text document,
+ * and sending them would risk the call failing on a non-vision model for no
+ * benefit. Collapses any image-carrying user turn back to its text; every
+ * other message is untouched. Pure and exported for tests, same as
+ * computeCompactionStats below.
+ */
+export function stripImagesForCompaction(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) =>
+    m.role === "user" && Array.isArray(m.content) ? { ...m, content: textOfContent(m.content) } : m,
+  );
 }
 
 /**
@@ -214,9 +227,10 @@ export async function startCompactRun(input: {
   // instruction as the final user turn. No agent system prompt and no tools:
   // this call summarises the conversation, it doesn't continue the loop.
   const instruction = buildInstruction(guidance);
+  const textOnlyHistory: ChatMessage[] = stripImagesForCompaction(history.messages);
   const promptMessages: ChatMessage[] = [
     ...(history.summaryText ? [summaryMessage(history.summaryText)] : []),
-    ...history.messages,
+    ...textOnlyHistory,
     { role: "user", content: instruction },
   ];
 

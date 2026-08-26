@@ -129,7 +129,11 @@ export default function ChatScreen() {
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
             breakpoint !== 'wide' ? (
-              <Pressable onPress={() => { setThreadListOpen(true); }} className="rounded-sm p-1.5 web:hover:bg-muted/50">
+              <Pressable
+                testID="chat.threadList.toggle"
+                onPress={() => { setThreadListOpen(true); }}
+                className="rounded-sm p-1.5 web:hover:bg-muted/50"
+              >
                 <Icon as={MessagesSquare} size="sm" className="text-foreground" />
               </Pressable>
             ) : undefined
@@ -151,7 +155,7 @@ export default function ChatScreen() {
           <PromptSuggestions onPick={(text) => { handleSend(text, selectedModel, incognito); }} />
         )}
         <Composer
-          onSend={(text) => { handleSend(text, selectedModel, incognito); }}
+          onSend={(text, attachments) => { handleSend(text, selectedModel, incognito, attachments); }}
           onStop={handleStop}
           streaming={streaming}
           modelName={selectedModel ? getName(selectedModel) : 'Select model'}

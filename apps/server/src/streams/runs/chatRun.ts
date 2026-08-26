@@ -2,7 +2,11 @@ import { v4 as uuid } from "uuid";
 import { db } from "@shannon/db";
 import { conversations, messages } from "@shannon/db/schema";
 import type { ContentBlock } from "@shannon/types";
-import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
+import {
+  assertAttachmentsOwned,
+  assertConversationAccess,
+  assertParentInConversation,
+} from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
@@ -44,9 +48,15 @@ export async function startChatRun(input: {
   conversationId?: string;
   parentId?: string;
   incognito?: boolean;
+  /** Attachment refs from POST /v1/files, in display order. */
+  attachments?: string[];
 }): Promise<StartChatRunResult> {
   const { userId, content, model } = input;
   const broker = getStreamBroker();
+
+  // Before anything is written: a bad ref must fail the whole send, not
+  // leave a half-created conversation behind.
+  const atts = input.attachments?.length ? await assertAttachmentsOwned(userId, input.attachments) : [];
 
   let convId = input.conversationId;
   let incognito = false;
@@ -62,13 +72,16 @@ export async function startChatRun(input: {
     await broker.driver.putEphemeralConv({
       id: convId,
       ownerId: userId,
-      title: content.slice(0, 80),
+      title: content.slice(0, 80) || "Image",
       kind: "chat",
       createdAt: Date.now(),
     });
     incognito = true;
   } else {
-    const [conv] = await db.insert(conversations).values({ ownerId: userId, title: content.slice(0, 80) }).returning();
+    const [conv] = await db
+      .insert(conversations)
+      .values({ ownerId: userId, title: content.slice(0, 80) || "Image" })
+      .returning();
     convId = conv.id;
   }
 
@@ -86,7 +99,10 @@ export async function startChatRun(input: {
       authorUserId: userId,
       origin: "server",
       lamport: Date.now(),
-      content: [{ kind: "text", text: content }] as ContentBlock[],
+      content: [
+        ...atts.map((a): ContentBlock => ({ kind: "attachment", ref: a.ref, mime: a.mime })),
+        { kind: "text", text: content },
+      ] as ContentBlock[],
       status: "complete",
       createdAt: new Date(),
     });
@@ -109,6 +125,7 @@ export async function startChatRun(input: {
     author_type: "user",
     parent_id: input.parentId ?? null,
     text: content,
+    ...(atts.length ? { attachments: atts } : {}),
   });
   producer.emit({ kind: "message.end", message_id: userMsgId, status: "complete" });
 

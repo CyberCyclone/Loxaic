@@ -118,6 +118,42 @@ containerized llama.cpp on a Mac would be CPU-only. Run it natively there.
 | **Linux / Proxmox / AMD (ROCm)** | Use the provided override: `docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d`. Tuned for the AMD V620 (gfx1030, `HSA_OVERRIDE_GFX_VERSION=10.3.0`) — adjust that value for other RDNA2/3 cards per the [ROCm gfx compatibility table](https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html). |
 | **Linux / NVIDIA** | The default `docker-compose.yml` `inference` image, or swap for a CUDA build + `--gpus all` in a compose override, similar to the ROCm one. |
 
+## Vision models
+
+Picture attachments (see the composer's **+** button) are always sendable, but
+the loaded model only *sees* them if `llama-server` was started with a
+multimodal projector. Without one, llama.cpp rejects the request and the chat
+shows a friendly "this model can't see images" message instead of failing
+silently — the message and image are still saved either way.
+
+A vision model is two files: the main GGUF and its `mmproj` (multimodal
+projector) GGUF, usually published in the same Hugging Face repo. Pass both to
+`llama-server`:
+
+```bash
+# Native (e.g. macOS/Metal)
+llama-server --host 0.0.0.0 --port 4002 --jinja \
+  -m Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf \
+  --mmproj Qwen2.5-VL-7B-Instruct-mmproj-F16.gguf \
+  -ngl 999
+```
+
+For the Docker Compose `inference` service, drop both GGUFs into `./models/`
+and add the flag to `command`:
+
+```yaml
+  inference:
+    command: >
+      --host 0.0.0.0 --port 8080
+      -m /models/model.gguf
+      --mmproj /models/mmproj.gguf
+      --ctx-size 8192
+      --jinja
+```
+
+Any llama.cpp-supported VLM works (Qwen2.5-VL, Gemma 3, LLaVA, etc.) as long
+as the `mmproj` file matches the main model's release.
+
 ## Putting it together
 
 ```bash
