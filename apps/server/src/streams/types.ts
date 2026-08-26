@@ -1,8 +1,8 @@
 import type { StreamEventKind, StreamStatus } from "@shannon/types";
 
-export type StreamRecord = { seq: number; ts: number; event: StreamEventKind };
+export interface StreamRecord { seq: number; ts: number; event: StreamEventKind }
 
-export type StreamMeta = {
+export interface StreamMeta {
   streamId: string;
   conversationId: string;
   userId: string;
@@ -12,15 +12,15 @@ export type StreamMeta = {
   lastSeq: number;
   createdAt: number;
   updatedAt: number;
-};
+}
 
-export type EphemeralConv = {
+export interface EphemeralConv {
   id: string;
   ownerId: string;
   title: string;
   kind: "chat";
   createdAt: number;
-};
+}
 
 /**
  * Storage contract for the durable stream log. Implementations only store —

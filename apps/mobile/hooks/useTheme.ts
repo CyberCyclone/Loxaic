@@ -33,7 +33,7 @@ export function useThemePreference(): [ThemePreference, (p: ThemePreference) => 
   const setPref = useCallback((p: ThemePreference) => {
     current = p;
     setItem(KEY, p);
-    listeners.forEach((l) => l());
+    listeners.forEach((l) => { l(); });
   }, []);
   return [pref, setPref];
 }

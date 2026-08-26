@@ -20,7 +20,7 @@ export function ModeSelector({ mode, onChange }: ModeSelectorProps) {
       {MODES.map((m) => (
         <Pressable
           key={m.value}
-          onPress={() => onChange(m.value)}
+          onPress={() => { onChange(m.value); }}
           className={`rounded-full px-2.5 py-1 ${mode === m.value ? 'bg-primary/15' : 'bg-muted'}`}
         >
           <Text size="2xs" className={mode === m.value ? 'text-primary' : 'text-muted-foreground'}>

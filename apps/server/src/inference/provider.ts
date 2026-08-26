@@ -1,12 +1,12 @@
-const BASE_URL = process.env.INFERENCE_BASE_URL || "http://localhost:4002";
+const BASE_URL = process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
 const MOCK_MODE = process.env.MOCK_INFERENCE === "true";
 
 /** An OpenAI-shaped tool call. `arguments` is a JSON *string*, per the spec. */
-export type ToolCall = {
+export interface ToolCall {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
-};
+}
 
 export type ChatMessage =
   | { role: "system"; content: string }
@@ -15,12 +15,12 @@ export type ChatMessage =
   | { role: "tool"; content: string; tool_call_id: string; name?: string };
 
 /** JSON-Schema tool definition sent to the model. */
-export type OpenAiTool = {
+export interface OpenAiTool {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
-};
+}
 
-export type LlamaTimings = {
+export interface LlamaTimings {
   prompt_n: number;
   prompt_ms: number;
   prompt_per_token_ms: number;
@@ -31,9 +31,9 @@ export type LlamaTimings = {
   predicted_per_second: number;
   cache_n?: number;
   total_ms?: number;
-};
+}
 
-export type CompletionResult = {
+export interface CompletionResult {
   text: string;
   content: string;
   toolCalls: ToolCall[];
@@ -52,17 +52,17 @@ export type CompletionResult = {
    */
   promptTps: number | null;
   genTps: number | null;
-};
+}
 
 export type StreamEvent =
   | { type: "delta"; content: string }
   | { type: "thinking"; content: string }
   | { type: "done"; result: CompletionResult };
 
-export type StreamOptions = {
+export interface StreamOptions {
   tools?: OpenAiTool[];
   signal?: AbortSignal;
-};
+}
 
 export async function* streamCompletion(
   model: string,
@@ -120,7 +120,7 @@ async function* mockStream(
   const emit = async function* (text: string): AsyncGenerator<StreamEvent> {
     const words = text.split(" ");
     for (let i = 0; i < words.length; i++) {
-      if (ttftMs === null) ttftMs = Date.now() - startTime;
+      ttftMs ??= Date.now() - startTime;
       yield { type: "delta" as const, content: (i === 0 ? "" : " ") + words[i] };
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -133,7 +133,7 @@ async function* mockStream(
     const preamble = `[Mock] I'll use the ${trigger.name} tool.`;
     fullText = preamble;
     yield* emit(preamble);
-    if (ttftMs === null) ttftMs = Date.now() - startTime;
+    ttftMs ??= Date.now() - startTime;
     toolCalls.push({
       id: `mock_call_${Date.now().toString(36)}`,
       type: "function",
@@ -142,7 +142,7 @@ async function* mockStream(
   } else {
     const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
     fullText = lastTool
-      ? `[Mock] Done. The tool returned: ${String(lastTool.content).slice(0, 200)}`
+      ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
       : `[Mock] Echo: ${prompt || "Hello"}`;
     yield* emit(fullText);
   }
@@ -179,7 +179,43 @@ async function* mockStream(
 // ── Live (llama.cpp / any OpenAI-compatible server) ───────
 
 /** Accumulator for streamed tool-call fragments, keyed by choice index. */
-type ToolCallFragment = { id: string; name: string; args: string };
+interface ToolCallFragment { id: string; name: string; args: string }
+
+interface InferenceErrorResponse {
+  error?: { message?: string };
+}
+
+/** A tool-call fragment as it arrives in a streamed `delta` — accumulated across chunks by index. */
+interface StreamChunkToolCallDelta {
+  index?: number;
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
+/** Some backends send one complete, non-streamed tool call instead of fragments. */
+interface StreamChunkCompleteToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: unknown };
+}
+
+interface StreamChunkChoice {
+  finish_reason?: string | null;
+  delta?: {
+    content?: string | null;
+    reasoning_content?: string | null;
+    tool_calls?: StreamChunkToolCallDelta[];
+  };
+  message?: {
+    content?: string | null;
+    tool_calls?: StreamChunkCompleteToolCall[];
+  };
+}
+
+interface StreamChunk {
+  choices?: StreamChunkChoice[];
+  usage?: CompletionResult["usage"];
+  timings?: LlamaTimings;
+}
 
 async function* liveStream(
   model: string,
@@ -217,12 +253,13 @@ async function* liveStream(
     // so the client can show it directly rather than a JSON dump.
     let message = errText;
     try {
-      const parsed = JSON.parse(errText);
-      message = parsed?.error?.message || errText;
+      const parsed = JSON.parse(errText) as InferenceErrorResponse;
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty (but present) message should still fall back to errText; ?? would keep the empty string instead.
+      message = parsed.error?.message || errText;
     } catch {
       // Not JSON — use the raw text as-is.
     }
-    throw new Error(message || `Inference error ${response.status}`);
+    throw new Error(message || `Inference error ${String(response.status)}`);
   }
 
   if (!response.body) throw new Error("Inference response has no body");
@@ -236,23 +273,23 @@ async function* liveStream(
   const fragments = new Map<number, ToolCallFragment>();
 
   try {
-    while (true) {
+    for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      buffer = lines.pop() ?? "";
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        if (!trimmed.startsWith("data: ")) continue;
         const jsonStr = trimmed.slice(6);
         if (jsonStr === "[DONE]") continue;
 
-        let parsed: any;
+        let parsed: StreamChunk;
         try {
-          parsed = JSON.parse(jsonStr);
+          parsed = JSON.parse(jsonStr) as StreamChunk;
         } catch {
           continue; // partial or non-JSON keepalive
         }
@@ -262,23 +299,24 @@ async function* liveStream(
 
         // Reasoning models (and llama.cpp with a reasoning template) stream
         // chain-of-thought separately from the answer.
-        const reasoning = choice?.delta?.reasoning_content;
+        const delta = choice?.delta;
+        const reasoning = delta?.reasoning_content;
         if (typeof reasoning === "string" && reasoning.length > 0) {
-          if (ttftMs === null) ttftMs = Date.now() - startTime;
+          ttftMs ??= Date.now() - startTime;
           yield { type: "thinking", content: reasoning };
         }
 
-        if (choice?.delta?.content) {
-          if (ttftMs === null) ttftMs = Date.now() - startTime;
-          fullText += choice.delta.content;
-          yield { type: "delta", content: choice.delta.content };
+        if (delta?.content) {
+          ttftMs ??= Date.now() - startTime;
+          fullText += delta.content;
+          yield { type: "delta", content: delta.content };
         }
 
         // Tool calls arrive as fragments: the id and name land on the first
         // chunk for an index, the JSON arguments dribble in across many.
-        if (Array.isArray(choice?.delta?.tool_calls)) {
-          if (ttftMs === null) ttftMs = Date.now() - startTime;
-          for (const tc of choice.delta.tool_calls) {
+        if (Array.isArray(delta?.tool_calls)) {
+          ttftMs ??= Date.now() - startTime;
+          for (const tc of delta.tool_calls) {
             const idx = typeof tc.index === "number" ? tc.index : 0;
             const cur = fragments.get(idx) ?? { id: "", name: "", args: "" };
             if (tc.id) cur.id = tc.id;
@@ -289,8 +327,9 @@ async function* liveStream(
         }
 
         // Some builds send a complete, non-streamed message instead.
-        if (Array.isArray(choice?.message?.tool_calls)) {
-          choice.message.tool_calls.forEach((tc: any, i: number) => {
+        const message = choice?.message;
+        if (Array.isArray(message?.tool_calls)) {
+          message.tool_calls.forEach((tc, i) => {
             fragments.set(i, {
               id: tc.id ?? "",
               name: tc.function?.name ?? "",
@@ -300,13 +339,13 @@ async function* liveStream(
             });
           });
         }
-        if (typeof choice?.message?.content === "string" && choice.message.content && !fullText) {
-          fullText = choice.message.content;
-          yield { type: "delta", content: choice.message.content };
+        if (typeof message?.content === "string" && message.content && !fullText) {
+          fullText = message.content;
+          yield { type: "delta", content: message.content };
         }
 
         if (parsed.usage) lastUsage = parsed.usage;
-        if (parsed.timings) lastTimings = parsed.timings as LlamaTimings;
+        if (parsed.timings) lastTimings = parsed.timings;
       }
     }
   } finally {
@@ -320,12 +359,12 @@ async function* liveStream(
     .sort(([a], [b]) => a - b)
     .filter(([, f]) => f.name)
     .map(([idx, f]) => ({
-      id: f.id || `call_${idx}_${Date.now().toString(36)}`,
+      id: f.id || `call_${String(idx)}_${Date.now().toString(36)}`,
       type: "function" as const,
       function: { name: f.name, arguments: f.args || "{}" },
     }));
 
-  const usage = lastUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const usage = lastUsage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   // Prompt eval finishes right when the first token (reasoning or content)
   // comes back, so ttftMs is a reasonable stand-in for prompt-eval duration;
   // whatever's left of the total is generation.

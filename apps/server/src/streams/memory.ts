@@ -1,7 +1,7 @@
 import type { StreamEventKind } from "@shannon/types";
 import type { EphemeralConv, StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
-type Entry = { meta: StreamMeta; records: StreamRecord[] };
+interface Entry { meta: StreamMeta; records: StreamRecord[] }
 
 /**
  * In-process driver — the bare `pnpm dev` default, zero new services. A
@@ -18,8 +18,8 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
   private sweepTimer: ReturnType<typeof setInterval>;
 
   constructor(private ttlSeconds: number) {
-    this.sweepTimer = setInterval(() => this.sweep(), 60_000);
-    this.sweepTimer.unref?.();
+    this.sweepTimer = setInterval(() => { this.sweep(); }, 60_000);
+    this.sweepTimer.unref();
   }
 
   private sweep() {
@@ -35,18 +35,18 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
     }
   }
 
-  async createStream(meta: Omit<StreamMeta, "lastSeq" | "status" | "updatedAt">): Promise<StreamMeta> {
+  createStream(meta: Omit<StreamMeta, "lastSeq" | "status" | "updatedAt">): Promise<StreamMeta> {
     const full: StreamMeta = { ...meta, status: "active", lastSeq: 0, updatedAt: Date.now() };
     this.streams.set(meta.streamId, { meta: full, records: [] });
     const list = this.convStreams.get(meta.conversationId) ?? [];
     list.push(meta.streamId);
     this.convStreams.set(meta.conversationId, list);
-    return full;
+    return Promise.resolve(full);
   }
 
-  async append(streamId: string, events: StreamEventKind[]): Promise<StreamRecord[]> {
+  append(streamId: string, events: StreamEventKind[]): Promise<StreamRecord[]> {
     const entry = this.streams.get(streamId);
-    if (!entry) throw new Error(`Unknown stream ${streamId}`);
+    if (!entry) return Promise.reject(new Error(`Unknown stream ${streamId}`));
     const now = Date.now();
     const out: StreamRecord[] = events.map((event) => {
       entry.meta.lastSeq += 1;
@@ -54,55 +54,61 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
     });
     entry.records.push(...out);
     entry.meta.updatedAt = now;
-    return out;
+    return Promise.resolve(out);
   }
 
-  async readFrom(streamId: string, afterSeq: number): Promise<StreamRecord[]> {
+  readFrom(streamId: string, afterSeq: number): Promise<StreamRecord[]> {
     const entry = this.streams.get(streamId);
-    if (!entry) return [];
-    return entry.records.filter((r) => r.seq > afterSeq);
+    if (!entry) return Promise.resolve([]);
+    return Promise.resolve(entry.records.filter((r) => r.seq > afterSeq));
   }
 
-  async getMeta(streamId: string): Promise<StreamMeta | null> {
-    return this.streams.get(streamId)?.meta ?? null;
+  getMeta(streamId: string): Promise<StreamMeta | null> {
+    return Promise.resolve(this.streams.get(streamId)?.meta ?? null);
   }
 
-  async finalize(streamId: string, status: "complete" | "error" | "cancelled"): Promise<void> {
+  finalize(streamId: string, status: "complete" | "error" | "cancelled"): Promise<void> {
     const entry = this.streams.get(streamId);
-    if (!entry) return;
+    if (!entry) return Promise.resolve();
     entry.meta.status = status;
     entry.meta.updatedAt = Date.now();
+    return Promise.resolve();
   }
 
-  async listActive(conversationId: string): Promise<StreamMeta[]> {
+  listActive(conversationId: string): Promise<StreamMeta[]> {
     const ids = this.convStreams.get(conversationId) ?? [];
-    return ids
-      .map((id) => this.streams.get(id)?.meta)
-      .filter((m): m is StreamMeta => !!m && m.status === "active");
+    return Promise.resolve(
+      ids
+        .map((id) => this.streams.get(id)?.meta)
+        .filter((m): m is StreamMeta => !!m && m.status === "active"),
+    );
   }
 
-  async listOrphaned(): Promise<StreamMeta[]> {
-    return [];
+  listOrphaned(): Promise<StreamMeta[]> {
+    return Promise.resolve([]);
   }
 
-  async deleteStream(streamId: string): Promise<void> {
+  deleteStream(streamId: string): Promise<void> {
     this.streams.delete(streamId);
+    return Promise.resolve();
   }
 
-  async putEphemeralConv(conv: EphemeralConv): Promise<void> {
+  putEphemeralConv(conv: EphemeralConv): Promise<void> {
     this.ephemeralConvs.set(conv.id, conv);
+    return Promise.resolve();
   }
 
-  async getEphemeralConv(id: string): Promise<EphemeralConv | null> {
-    return this.ephemeralConvs.get(id) ?? null;
+  getEphemeralConv(id: string): Promise<EphemeralConv | null> {
+    return Promise.resolve(this.ephemeralConvs.get(id) ?? null);
   }
 
-  async touchEphemeralConv(id: string): Promise<void> {
+  touchEphemeralConv(id: string): Promise<void> {
     const conv = this.ephemeralConvs.get(id);
     if (conv) conv.createdAt = Date.now();
+    return Promise.resolve();
   }
 
-  async listConvStreams(conversationId: string): Promise<string[]> {
-    return this.convStreams.get(conversationId) ?? [];
+  listConvStreams(conversationId: string): Promise<string[]> {
+    return Promise.resolve(this.convStreams.get(conversationId) ?? []);
   }
 }

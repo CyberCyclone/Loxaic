@@ -38,7 +38,7 @@ export function TokensChart({ points, height = 180 }: TokensChartProps) {
 
   return (
     <VStack space="xs">
-      <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+      <Svg width="100%" height={height} viewBox={`0 0 ${String(width)} ${String(height)}`}>
         {[0, 0.5, 1].map((f) => (
           <Line
             key={f}
@@ -62,8 +62,7 @@ export function TokensChart({ points, height = 180 }: TokensChartProps) {
             return (
               <Rect
                 key={`${p.bucket}-${m}`}
-                x={x}
-                y={y}
+                transform={[{ translateX: x }, { translateY: y }]}
                 width={barW}
                 height={Math.max(barH, 1)}
                 fill={COLORS[mi % COLORS.length]}

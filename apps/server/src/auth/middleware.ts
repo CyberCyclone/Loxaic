@@ -6,7 +6,7 @@ export async function authenticate(
   reply: FastifyReply,
 ): Promise<string> {
   const header = request.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) {
+  if (!header?.startsWith("Bearer ")) {
     reply.code(401).send({ error: "Missing authorization header" });
     throw new Error("Unauthorized");
   }

@@ -13,23 +13,23 @@ import type { ModelWindow } from './useModels';
  * which is exactly what the next prompt will start from.
  */
 
-export type ContextSegment = {
+export interface ContextSegment {
   category: ContextCategory | 'free' | 'used';
   label: string;
   tokens: number;
   /** Share of the window, for the stacked bar. */
   fraction: number;
-};
+}
 
-export type LastTurn = {
+export interface LastTurn {
   in: number;
   out: number;
   promptTps: number | null;
   genTps: number | null;
   totalMs: number | null;
-};
+}
 
-export type ContextView = {
+export interface ContextView {
   /** Deliberately NOT clamped — being over the window is the single most
    * useful thing this indicator can tell you. */
   percent: number;
@@ -46,7 +46,7 @@ export type ContextView = {
   windowSource: ModelWindow['source'];
   maxWindow: number | null;
   lastTurn: LastTurn | null;
-};
+}
 
 const LABELS: Record<ContextCategory | 'free' | 'used', string> = {
   used: 'Context used',

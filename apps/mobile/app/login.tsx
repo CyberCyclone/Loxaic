@@ -97,9 +97,9 @@ export default function LoginScreen() {
                 onChangeText={setPassword}
                 secureTextEntry={!showPassword}
                 textContentType="password"
-                onSubmitEditing={submit}
+                onSubmitEditing={() => { void submit(); }}
               />
-              <InputSlot className="pr-3" onPress={() => setShowPassword((v) => !v)}>
+              <InputSlot className="pr-3" onPress={() => { setShowPassword((v) => !v); }}>
                 <InputIcon as={showPassword ? EyeOff : Eye} className="text-muted-foreground" />
               </InputSlot>
             </Input>
@@ -113,7 +113,7 @@ export default function LoginScreen() {
             <Button
               size="lg"
               className="bg-primary data-[hover=true]:bg-primary-hover"
-              onPress={submit}
+              onPress={() => { void submit(); }}
               isDisabled={busy}
             >
               {busy && <ButtonSpinner className="text-primary-foreground" />}

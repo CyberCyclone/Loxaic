@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { auth } from "../auth";
 
-export async function authRoutes(app: FastifyInstance) {
+export function authRoutes(app: FastifyInstance) {
   // Sign up
   app.post("/api/auth/sign-up", async (request, reply) => {
     const { email, password, name } = request.body as {
@@ -14,6 +14,7 @@ export async function authRoutes(app: FastifyInstance) {
       return { error: "Email and password required" };
     }
     const res = await auth.api.signUpEmail({
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty name must still fall back to the email local-part; ?? would keep the empty string.
       body: { email, password, name: name || email.split("@")[0] },
       headers: new Headers(request.headers as HeadersInit),
       asResponse: true,
@@ -86,7 +87,7 @@ async function forwardAuthResponse(res: Response, reply: FastifyReply) {
   const text = await res.text();
   if (!text) return null;
   try {
-    return JSON.parse(text);
+    return JSON.parse(text) as unknown;
   } catch {
     return text;
   }

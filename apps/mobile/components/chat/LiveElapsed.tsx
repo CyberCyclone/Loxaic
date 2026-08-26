@@ -15,8 +15,8 @@ export function LiveElapsed({ since, className }: LiveElapsedProps) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(id);
+    const id = setInterval(() => { setNow(Date.now()); }, 100);
+    return () => { clearInterval(id); };
   }, []);
 
   const elapsedSec = Math.max(0, now - since) / 1000;

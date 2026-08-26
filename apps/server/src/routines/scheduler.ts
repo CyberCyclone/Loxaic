@@ -1,11 +1,11 @@
 import cron from "node-cron";
+import type { ScheduledTask } from "node-cron";
 import { v4 as uuid } from "uuid";
 import { eq } from "@shannon/db";
 import { db } from "@shannon/db";
 import { routines, routineRuns, conversations, messages } from "@shannon/db/schema";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const jobs = new Map<string, any>();
+const jobs = new Map<string, ScheduledTask>();
 
 export async function startRoutineScheduler() {
   const rows = await db.select().from(routines).where(eq(routines.enabled, true));
@@ -14,7 +14,7 @@ export async function startRoutineScheduler() {
 
 export function scheduleRoutine(routineId: string, cronExpr: string) {
   const existing = jobs.get(routineId);
-  if (existing) existing.stop();
+  if (existing) void existing.stop();
 
   const job = cron.schedule(cronExpr, async () => {
     await executeRoutine(routineId);
@@ -24,7 +24,7 @@ export function scheduleRoutine(routineId: string, cronExpr: string) {
 
 export function unscheduleRoutine(routineId: string) {
   const job = jobs.get(routineId);
-  if (job) { job.stop(); jobs.delete(routineId); }
+  if (job) { void job.stop(); jobs.delete(routineId); }
 }
 
 export async function executeRoutine(routineId: string) {
@@ -70,8 +70,8 @@ export async function executeRoutine(routineId: string) {
     }).where(eq(routineRuns.id, runId));
 
     // ntfy push notification
-    sendNtfyNotification(routine.ownerId, routine.name, "Routine completed").catch(() => {});
-  } catch (err) {
+    sendNtfyNotification(routine.ownerId, routine.name, "Routine completed").catch(() => undefined);
+  } catch {
     await db.update(routineRuns).set({
       status: "failed", finishedAt: new Date(),
     }).where(eq(routineRuns.id, runId));
@@ -88,7 +88,7 @@ export async function executeRoutine(routineId: string) {
 }
 
 async function sendNtfyNotification(userId: string, title: string, message: string) {
-  const ntfyUrl = process.env.NTFY_URL || "http://localhost:4003";
+  const ntfyUrl = process.env.NTFY_URL ?? "http://localhost:4003";
   try {
     await fetch(`${ntfyUrl}/shannon-${userId}`, {
       method: "POST",

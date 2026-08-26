@@ -16,7 +16,7 @@ import type { Routine, RoutineRun } from '@shannon/api-client';
 function formatDuration(startedAt: string, finishedAt: string | null): string {
   if (!finishedAt) return 'running…';
   const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
-  if (ms < 1000) return `${ms}ms`;
+  if (ms < 1000) return `${String(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
@@ -35,8 +35,8 @@ export function RunHistorySheet({ routine, onClose, getRuns }: RunHistorySheetPr
     setLoading(true);
     getRuns(routine.id)
       .then(setRuns)
-      .catch(() => setRuns([]))
-      .finally(() => setLoading(false));
+      .catch(() => { setRuns([]); })
+      .finally(() => { setLoading(false); });
   }, [routine, getRuns]);
 
   return (

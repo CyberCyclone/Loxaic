@@ -20,12 +20,12 @@ export function toolNeedsSandbox(tool: ToolName): boolean {
   return SANDBOX_TOOLS.includes(tool);
 }
 
-export type ToolResult = {
+export interface ToolResult {
   output: string;
   ok: boolean;
   diff?: FileDiff[];
   todos?: Todo[];
-};
+}
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
 const WEB_FETCH_MAX_BYTES = 100 * 1024;
@@ -59,16 +59,20 @@ export async function executeTool(
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   try {
-    if (toolNeedsSandbox(tool) && !container) {
-      return { ok: false, output: "No sandbox is available for this tool." };
+    if (toolNeedsSandbox(tool)) {
+      if (!container) {
+        return { ok: false, output: "No sandbox is available for this tool." };
+      }
+      switch (tool) {
+        case "fs_read":  return await runFsRead(container, args);
+        case "fs_write": return await runFsWrite(container, args);
+        case "fs_edit":  return await runFsEdit(container, args);
+        case "bash":     return await runBash(container, args);
+        case "grep":     return await runGrep(container, args);
+        case "glob":     return await runGlob(container, args);
+      }
     }
     switch (tool) {
-      case "fs_read":   return await runFsRead(container!, args);
-      case "fs_write":  return await runFsWrite(container!, args);
-      case "fs_edit":   return await runFsEdit(container!, args);
-      case "bash":      return await runBash(container!, args);
-      case "grep":      return await runGrep(container!, args);
-      case "glob":      return await runGlob(container!, args);
       case "web_fetch": return await runWebFetch(args);
       case "todo_write": return runTodoWrite(args);
       default:
@@ -103,7 +107,7 @@ async function runFsWrite(container: Docker.Container, args: Record<string, unkn
   await writeSandboxFile(container, path, content);
   return {
     ok: true,
-    output: `Wrote ${content.length} bytes to ${path}`,
+    output: `Wrote ${String(content.length)} bytes to ${path}`,
     diff: [{ path, oldContent, newContent: content }],
   };
 }
@@ -120,7 +124,7 @@ async function runFsEdit(container: Docker.Container, args: Record<string, unkno
   const occurrences = current.split(oldText).length - 1;
   if (occurrences === 0) return { ok: false, output: `oldText not found in ${path}` };
   if (occurrences > 1) {
-    return { ok: false, output: `oldText appears ${occurrences} times in ${path}; it must be unique. Include more surrounding context.` };
+    return { ok: false, output: `oldText appears ${String(occurrences)} times in ${path}; it must be unique. Include more surrounding context.` };
   }
 
   const updated = current.replace(oldText, newText);
@@ -143,7 +147,7 @@ async function runBash(container: Docker.Container, args: Record<string, unknown
   const body = [res.stdout, res.stderr].filter((s) => s.trim() !== "").join("\n");
   return {
     ok: res.exitCode === 0,
-    output: `${body}${body ? "\n" : ""}[exit ${res.exitCode}]`,
+    output: `${body}${body ? "\n" : ""}[exit ${String(res.exitCode)}]`,
   };
 }
 
@@ -190,7 +194,10 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
     const status = item.status;
     return {
       id: typeof item.id === "string" ? item.id : String(i + 1),
-      text: typeof item.text === "string" ? item.text : String(item.text ?? ""),
+      text:
+        typeof item.text === "string" ? item.text
+        : typeof item.text === "number" || typeof item.text === "boolean" ? String(item.text)
+        : "",
       status: status === "completed" || status === "in_progress" ? status : "pending",
     };
   });
@@ -226,7 +233,7 @@ function isBlockedAddress(ip: string, family: number): boolean {
   const v6 = ip.toLowerCase();
   if (v6 === "::1" || v6 === "::") return true;
   // IPv4-mapped (::ffff:10.0.0.1) has to be unwrapped and re-checked.
-  const mapped = v6.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
   if (mapped) return isBlockedAddress(mapped[1], 4);
   if (/^f[cd]/.test(v6)) return true;   // fc00::/7 unique local
   if (/^fe[89ab]/.test(v6)) return true; // fe80::/10 link local
@@ -275,7 +282,7 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
+  const timer = setTimeout(() => { controller.abort(); }, WEB_FETCH_TIMEOUT_MS);
   try {
     let response: Response | null = null;
     // Redirects are followed by hand so every hop gets the SSRF check —
@@ -287,29 +294,30 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
         signal: controller.signal,
         headers: { "User-Agent": "Open-Shannon-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
       });
-      if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
-        url = new URL(res.headers.get("location")!, url);
+      const location = res.headers.get("location");
+      if (res.status >= 300 && res.status < 400 && location) {
+        url = new URL(location, url);
         continue;
       }
       response = res;
       break;
     }
-    if (!response) return { ok: false, output: `Too many redirects (>${MAX_REDIRECTS})` };
-    if (!response.ok) return { ok: false, output: `HTTP ${response.status} ${response.statusText} for ${url.href}` };
+    if (!response) return { ok: false, output: `Too many redirects (>${String(MAX_REDIRECTS)})` };
+    if (!response.ok) return { ok: false, output: `HTTP ${String(response.status)} ${response.statusText} for ${url.href}` };
 
     const buf = Buffer.from(await response.arrayBuffer());
     const truncated = buf.length > WEB_FETCH_MAX_BYTES;
     const bodyText = buf.subarray(0, WEB_FETCH_MAX_BYTES).toString("utf8");
-    const contentType = response.headers.get("content-type") || "";
+    const contentType = response.headers.get("content-type") ?? "";
     const text = contentType.includes("html") ? htmlToText(bodyText) : bodyText;
 
     return {
       ok: true,
-      output: `${text}${truncated ? `\n… [truncated at ${WEB_FETCH_MAX_BYTES} bytes]` : ""}`,
+      output: `${text}${truncated ? `\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} bytes]` : ""}`,
     };
   } catch (err) {
     const message = (err as Error).name === "AbortError"
-      ? `Request timed out after ${WEB_FETCH_TIMEOUT_MS}ms`
+      ? `Request timed out after ${String(WEB_FETCH_TIMEOUT_MS)}ms`
       : (err as Error).message;
     return { ok: false, output: `Fetch failed: ${message}` };
   } finally {

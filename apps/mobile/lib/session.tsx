@@ -15,14 +15,14 @@ import { clearToken, loadToken, saveToken } from './auth';
 import { resolveEndpoint } from './endpoint';
 import { hydrateStorage } from './storage';
 
-type SessionState = {
+interface SessionState {
   /** Bootstrap (storage hydration + stored-token load) finished. */
   ready: boolean;
   token: string | null;
   signIn: (email: string, password: string) => Promise<Session>;
   signUp: (email: string, password: string, name?: string) => Promise<Session>;
   signOut: () => Promise<void>;
-};
+}
 
 const SessionContext = createContext<SessionState | null>(null);
 
@@ -31,18 +31,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    const state = { cancelled: false };
+    void (async () => {
       await hydrateStorage();
       await resolveEndpoint();
       const stored = await loadToken();
-      if (!cancelled) {
+      if (!state.cancelled) {
         setToken(stored);
         setReady(true);
       }
     })();
     return () => {
-      cancelled = true;
+      state.cancelled = true;
     };
   }, []);
 

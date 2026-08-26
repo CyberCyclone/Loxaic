@@ -11,7 +11,7 @@ async function findOwnedRoutine(id: string, userId: string) {
   });
 }
 
-export async function routineRoutes(app: FastifyInstance) {
+export function routineRoutes(app: FastifyInstance) {
   app.get("/v1/routines", async (request, reply) => {
     const userId = await authenticate(request, reply);
     return db.select().from(routines).where(eq(routines.ownerId, userId));

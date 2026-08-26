@@ -53,7 +53,7 @@ export const TOKENS_OVER_TIME: Record<string, ChartPoint[]> = {
     { label: 'Sun', values: { 'Llama 3.1 8B': 90000, 'Qwen 2.5 14B': 40000, 'Phi 3 Mini': 12000 } },
   ],
   month: Array.from({ length: 30 }, (_, i) => ({
-    label: `${i + 1}`,
+    label: String(i + 1),
     values: {
       'Llama 3.1 8B': 100000 + Math.round(Math.sin(i * 0.3) * 50000) + 200000,
       'Qwen 2.5 14B': 50000 + Math.round(Math.cos(i * 0.4) * 30000) + 100000,
@@ -87,7 +87,7 @@ export const CACHE_HIT_RATE: Record<string, { label: string; value: number }[]> 
     { label: 'Mon', value: 60 }, { label: 'Tue', value: 62 }, { label: 'Wed', value: 59 },
     { label: 'Thu', value: 63 }, { label: 'Fri', value: 64 }, { label: 'Sat', value: 58 }, { label: 'Sun', value: 57 },
   ],
-  month: Array.from({ length: 30 }, (_, i) => ({ label: `${i + 1}`, value: 55 + Math.round(Math.sin(i * 0.3) * 8) + 5 })),
+  month: Array.from({ length: 30 }, (_, i) => ({ label: String(i + 1), value: 55 + Math.round(Math.sin(i * 0.3) * 8) + 5 })),
   session: [
     { label: '10m', value: 65 }, { label: '20m', value: 68 }, { label: '30m', value: 71 }, { label: 'now', value: 72 },
   ],

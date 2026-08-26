@@ -3,7 +3,7 @@ import { db } from "@shannon/db";
 import { modelRegistry } from "@shannon/db/schema";
 import { listBackendModels } from "../inference/models";
 
-export async function modelRoutes(app: FastifyInstance) {
+export function modelRoutes(app: FastifyInstance) {
   app.get("/v1/models", async () => listBackendModels());
 
   app.get("/v1/model-registry", async () => {
@@ -15,8 +15,8 @@ export async function modelRoutes(app: FastifyInstance) {
       id: string; display_name: string; gguf_url?: string; location?: "server" | "device" | "both";
     };
     const [r] = await db.insert(modelRegistry).values({
-      id, displayName: display_name, ggufUrl: gguf_url || null,
-      location: location || "server",
+      id, displayName: display_name, ggufUrl: gguf_url ?? null,
+      location: location ?? "server",
     }).onConflictDoUpdate({ target: modelRegistry.id, set: { displayName: display_name } }).returning();
     return r;
   });
