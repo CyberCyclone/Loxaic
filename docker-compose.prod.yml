@@ -1,0 +1,107 @@
+# Stable/production stack — fully isolated from docker-compose.yml (dev
+# infra) so both can run on the same machine at once: its own compose
+# project name, its own Postgres/Redis/ntfy, its own volumes, its own ports
+# (the 41xx block — dev port + 100).
+#
+# Usage:
+#   cp .env.prod.example .env.prod   # fill in BETTER_AUTH_SECRET, LAN/public URLs
+#   pnpm stable:up                    # or: docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build
+#
+# Inference: by default the stable server reaches the same llama.cpp instance
+# dev uses, at INFERENCE_BASE_URL (host.docker.internal:4002 for the compose
+# dev stack, or wherever your host inference server runs). Taking the dev
+# stack down also takes chat away from stable — set MOCK_INFERENCE=true on
+# stable or run `docker compose -f docker-compose.prod.yml --profile inference
+# --env-file .env.prod up -d` for a dedicated instance on 4102.
+name: shannon-prod
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shannon
+    ports:
+      - "${STABLE_DB_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: infra/docker/server.Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/shannon
+      INFERENCE_BASE_URL: ${INFERENCE_BASE_URL:-http://host.docker.internal:4002}
+      MOCK_INFERENCE: ${MOCK_INFERENCE:-false}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env.prod}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:4100}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
+      MCP_ENCRYPTION_KEY: ${MCP_ENCRYPTION_KEY:-}
+      STREAM_BACKEND: redis
+      REDIS_URL: redis://redis:6379
+      NTFY_URL: http://ntfy:80
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-}
+      LAN_API_URL: ${LAN_API_URL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${STABLE_PORT:-4100}:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ntfy:
+    image: binwiederhier/ntfy:latest
+    command: serve
+    environment:
+      NTFY_BASE_URL: "http://localhost:${STABLE_NTFY_PORT:-4103}"
+    ports:
+      - "${STABLE_NTFY_PORT:-4103}:80"
+
+  # Optional dedicated inference instance for stable, independent of dev's.
+  # Enable with: docker compose -f docker-compose.prod.yml --profile inference --env-file .env.prod up -d
+  # and set INFERENCE_BASE_URL=http://inference:8080 in .env.prod.
+  inference:
+    profiles: ["inference"]
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >
+      --host 0.0.0.0 --port 8080
+      -m /models/model.gguf
+      --ctx-size 8192
+      --jinja
+    volumes:
+      - ./models:/models:ro
+    ports:
+      - "4102:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  pgdata:
+  redisdata:

@@ -3,6 +3,7 @@
 **/.turbo
 **/.expo
 .git
+.env*
 docker-compose*.yml
 infra/tsnet-proxy/resources
 apps/desktop/resources

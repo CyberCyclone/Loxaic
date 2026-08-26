@@ -1,3 +1,10 @@
+# Dev infrastructure only — Postgres, Redis, inference, ntfy on the usual dev
+# ports (5432, 6379, 4002, 4003). The server itself runs bare-metal via
+# `pnpm --filter @shannon/server dev` (see HANDOVER.md's run matrix), not as a
+# compose service, so it can hot-reload with tsx watch.
+#
+# For the containerized, stable/production stack (its own ports, DB, and
+# volumes — safe to run alongside this dev stack) see docker-compose.prod.yml.
 services:
   db:
     image: postgres:17-alpine
@@ -18,6 +25,8 @@ services:
   redis:
     image: redis:7-alpine
     command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:
@@ -26,27 +35,6 @@ services:
       timeout: 3s
       retries: 5
 
-  server:
-    build:
-      context: .
-      dockerfile: infra/docker/server.Dockerfile
-    environment:
-      PORT: 4000
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/shannon
-      INFERENCE_BASE_URL: http://inference:8080
-      BETTER_AUTH_SECRET: dev-secret-change-me
-      STREAM_BACKEND: redis
-      REDIS_URL: redis://redis:6379
-    ports:
-      - "4000:4000"
-    depends_on:
-      db:
-        condition: service_healthy
-      inference:
-        condition: service_started
-      redis:
-        condition: service_healthy
-
   inference:
     image: ghcr.io/ggml-org/llama.cpp:server
     command: >
@@ -54,6 +42,7 @@ services:
       -m /models/model.gguf
       --ctx-size 8192
       --jinja
+      --parallel 2
     volumes:
       - ./models:/models:ro
     ports:

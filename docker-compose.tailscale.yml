@@ -1,15 +1,20 @@
-# Optional Tailscale sidecar — exposes the server on your tailnet over HTTPS
-# with no open ports. Entirely optional: if you run the server directly on the
-# host, `tailscale serve` on the host is simpler (see docs/REMOTE_ACCESS.md).
+# Optional Tailscale sidecar — exposes the stable server on your tailnet over
+# HTTPS with no open ports. Entirely optional: if you run the server directly
+# on the host, `tailscale serve` on the host is simpler (see
+# docs/REMOTE_ACCESS.md).
+#
+# This overlays docker-compose.prod.yml (the stable stack) — the dev compose
+# file has no `server` service to attach a sidecar to; run `tailscale serve`
+# on the host instead if you want to expose dev.
 #
 # Usage:
 #   1. Create an auth key: https://login.tailscale.com/admin/settings/keys
 #      (reusable, tagged keys recommended for servers)
-#   2. Put it in .env as TS_AUTHKEY=tskey-auth-...
-#   3. docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+#   2. Put it in .env.prod as TS_AUTHKEY=tskey-auth-...
+#   3. docker compose -f docker-compose.prod.yml -f docker-compose.tailscale.yml --env-file .env.prod up -d
 #
 # The sidecar joins your tailnet as machine "shannon" and serves
-# https://shannon.<tailnet>.ts.net → the server container on port 4000.
+# https://shannon.<tailnet>.ts.net → the stable server container on port 4000.
 # Enable MagicDNS + HTTPS certificates in the Tailscale admin console first.
 
 services:

@@ -1,5 +1,9 @@
-# Proxmox + AMD V620 (gfx1030) override
+# Proxmox + AMD V620 (gfx1030) override for the dev inference service.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
+#
+# Applies equally to the stable stack's optional dedicated inference service
+# (docker-compose.prod.yml's `inference` profile):
+#   docker compose -f docker-compose.prod.yml -f docker-compose.rocm.yml --profile inference --env-file .env.prod up -d
 
 services:
   inference:
