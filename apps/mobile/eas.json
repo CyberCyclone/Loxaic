@@ -7,15 +7,26 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "channel": "development"
+      "channel": "development",
+      "env": {
+        "APP_VARIANT": "development"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "channel": "preview"
+      "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://caseys-macbook-pro.tail47eac7.ts.net",
+        "EXPO_PUBLIC_LAN_API_URL": "http://192.168.1.143:4100"
+      }
     },
     "production": {
       "autoIncrement": true,
-      "channel": "production"
+      "channel": "production",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://caseys-macbook-pro.tail47eac7.ts.net",
+        "EXPO_PUBLIC_LAN_API_URL": "http://192.168.1.143:4100"
+      }
     }
   },
   "submit": {

@@ -4,9 +4,9 @@
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
-    "start": "dotenv -e ../../.env -- expo start",
-    "android": "dotenv -e ../../.env -- expo start --android",
-    "ios": "dotenv -e ../../.env -- expo start --ios",
+    "start": "APP_VARIANT=development dotenv -e ../../.env -- expo start",
+    "android": "APP_VARIANT=development dotenv -e ../../.env -- expo start --android",
+    "ios": "APP_VARIANT=development dotenv -e ../../.env -- expo start --ios",
     "typecheck": "tsc --noEmit",
     "export:web": "dotenv -e ../../.env -- expo export --platform web",
     "web": "dotenv -e ../../.env -- expo start --web",
