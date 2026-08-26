@@ -1,7 +1,7 @@
 # AGENTS.md
 
-**Read [`HANDOVER.md`](HANDOVER.md) first.** It's the source of truth for architecture,
-the run matrix, and current state.
+**This file is the source of truth** for architecture, conventions, and gotchas.
+([`HANDOVER.md`](HANDOVER.md) is a legacy document kept for historical context only.)
 
 ## Project in one line
 
@@ -35,6 +35,18 @@ pnpm dev                          # turbo: server (4000) — mobile/web/desktop 
 docker compose up --build         # db + server (serves API + web same-origin) + inference + ntfy
 pnpm --filter @shannon/mobile web # Expo web dev server (localhost:8081)
 pnpm --filter @shannon/mobile ios # or android
+
+pnpm test        # turbo test — vitest (only apps/server has tests today)
+pnpm lint        # turbo lint — eslint (apps/server)
+pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
+```
+
+Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
+
+```bash
+pnpm --filter @shannon/server test               # all server tests
+pnpm --filter @shannon/server test -- authz      # tests matching "authz"
+pnpm --filter @shannon/server test -- src/streams/__tests__/drivers.test.ts
 ```
 
 ## Gotchas
