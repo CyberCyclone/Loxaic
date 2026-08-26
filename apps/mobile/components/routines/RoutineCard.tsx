@@ -1,7 +1,6 @@
 import { Play, History, Pencil, Trash2 } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
-import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
@@ -16,11 +15,11 @@ function formatTimestamp(iso: string | null): string {
   const diffMs = Date.now() - d.getTime();
   const mins = Math.round(diffMs / 60000);
   if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return `${String(mins)}m ago`;
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return `${String(hours)}h ago`;
   const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  return `${String(days)}d ago`;
 }
 
 interface RoutineCardProps {

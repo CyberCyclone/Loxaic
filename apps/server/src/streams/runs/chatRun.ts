@@ -11,12 +11,12 @@ import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 
-export type StartChatRunResult = {
+export interface StartChatRunResult {
   streamId: string;
   conversationId: string;
   userMessageId: string;
   incognito: boolean;
-};
+}
 
 export async function startChatRun(input: {
   userId: string;
@@ -64,7 +64,7 @@ export async function startChatRun(input: {
     await db.insert(messages).values({
       id: userMsgId,
       conversationId: convId,
-      parentId: input.parentId || null,
+      parentId: input.parentId ?? null,
       authorType: "user",
       authorUserId: userId,
       origin: "server",
@@ -188,7 +188,7 @@ async function runChatGeneration(ctx: {
       } else if (event.type === "thinking") {
         fullThinking += event.content;
         producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
-      } else if (event.type === "done") {
+      } else {
         doneResult = event.result;
       }
     }
@@ -233,11 +233,11 @@ async function runChatGeneration(ctx: {
           model,
           origin: "server",
           inputTokens: doneResult.usage.prompt_tokens,
-          cachedTokens: doneResult.timings?.cache_n || 0,
+          cachedTokens: doneResult.timings?.cache_n ?? 0,
           outputTokens: doneResult.usage.completion_tokens,
           ttftMs: doneResult.ttftMs,
-          promptMs: doneResult.timings?.prompt_ms || null,
-          predictMs: doneResult.timings?.predicted_ms || null,
+          promptMs: doneResult.timings?.prompt_ms ?? null,
+          predictMs: doneResult.timings?.predicted_ms ?? null,
           totalMs: doneResult.totalMs,
           promptTps: doneResult.promptTps,
           predictedTps: doneResult.genTps,
@@ -249,7 +249,7 @@ async function runChatGeneration(ctx: {
     producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
     await producer.end("complete", { usage });
   } catch (err) {
-    const isAbort = (err as Error)?.name === "AbortError" || abort.signal.aborted;
+    const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
     const status = isAbort ? "cancelled" : "error";
     const errorMessage = (err as Error).message;
 
@@ -260,12 +260,12 @@ async function runChatGeneration(ctx: {
     blocks.push({ kind: "text", text: fullText });
 
     if (!incognito) {
-      await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => {});
+      await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
     }
 
     const eventError = isAbort ? undefined : errorMessage;
     producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
-    await producer.end(status, { error: eventError }).catch(() => {});
+    await producer.end(status, { error: eventError }).catch(() => undefined);
   } finally {
     unregisterRun(streamId);
   }
@@ -280,7 +280,7 @@ export const HISTORY_LIMIT = 50;
  * cutoff is missed and the full (capped) history is sent — safe, only wasteful. */
 const SUMMARY_LOOKBACK = 20;
 
-export type LoadedHistory = {
+export interface LoadedHistory {
   /** WITHOUT the summary — the caller composes it via summaryMessage(), so
    * chat and the compact run assemble prompts from the same parts. */
   messages: ChatMessage[];
@@ -290,7 +290,7 @@ export type LoadedHistory = {
   tally: ContextTally;
   historyMessages: number;
   historyTruncated: boolean;
-};
+}
 
 /**
  * Prior reasoning is deliberately dropped. This used to fold `thinking` blocks

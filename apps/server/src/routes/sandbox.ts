@@ -13,7 +13,7 @@ import {
   getContainer,
 } from "../sandbox/orchestrator";
 
-export async function sandboxRoutes(app: FastifyInstance) {
+export function sandboxRoutes(app: FastifyInstance) {
   app.post("/v1/sandboxes", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const { repo_url, branch, token, conversation_id } = request.body as {
@@ -33,12 +33,12 @@ export async function sandboxRoutes(app: FastifyInstance) {
       .insert(sandboxes)
       .values({
         ownerId: userId,
-        conversationId: conversation_id || null,
+        conversationId: conversation_id ?? null,
         containerId: info.containerId,
         image: "shannon-sandbox",
         status: "running",
-        repoUrl: repo_url || null,
-        branch: branch || null,
+        repoUrl: repo_url ?? null,
+        branch: branch ?? null,
         limits: { memory: 512, cpu: 1 },
       })
       .returning();
@@ -84,6 +84,7 @@ export async function sandboxRoutes(app: FastifyInstance) {
 
     const { path } = request.query as { path?: string };
     const container = getContainer(sandbox.containerId);
+    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty ?path= must still fall back to the repo dir; ?? would pass "".
     return getSandboxFileTree(container, path || "/home/shannon/repo");
   });
 

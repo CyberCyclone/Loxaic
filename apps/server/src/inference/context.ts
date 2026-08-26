@@ -96,12 +96,12 @@ export function tallyChatMessages(messages: ChatMessage[], tools?: OpenAiTool[])
   return tally;
 }
 
-export type ApportionMeta = {
+export interface ApportionMeta {
   historyMessages: number;
   historyLimit: number;
   historyTruncated: boolean;
   windowTokens?: number | null;
-};
+}
 
 /**
  * Split `promptTokens` across the tallied categories, then append the measured

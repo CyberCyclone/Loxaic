@@ -47,7 +47,9 @@ export function CompactionCard({ stats, summaryText }: CompactionCardProps) {
   return (
     <Box className="my-2 px-4">
       <Pressable
-        onPress={() => !live && setOpen((o) => !o)}
+        onPress={() => {
+          if (!live) setOpen((o) => !o);
+        }}
         className="mx-auto max-w-[820px] items-center"
       >
         <HStack space="xs" className="items-center rounded-full border border-border bg-card px-3 py-1.5">
@@ -62,7 +64,7 @@ export function CompactionCard({ stats, summaryText }: CompactionCardProps) {
             <>
               <Icon as={Scissors} size="2xs" className="text-muted-foreground" />
               <Text size="xs" className="text-muted-foreground">
-                {`Compacted · ${stats.messages_compacted} message${stats.messages_compacted === 1 ? '' : 's'} → summary · `}
+                {`Compacted · ${String(stats.messages_compacted)} message${stats.messages_compacted === 1 ? '' : 's'} → summary · `}
                 {stats.before_estimated ? '~' : ''}
                 {fmt(stats.before_tokens)} → {fmt(stats.after_tokens)} tokens · saved{' '}
                 {stats.before_estimated ? '~' : ''}

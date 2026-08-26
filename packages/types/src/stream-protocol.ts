@@ -5,7 +5,7 @@ import type { FileDiff } from "./index";
  * agent-loop *logic* (toolRequiresApproval etc.), this is only the wire shape. */
 export type PermissionMode = "planning" | "manual" | "auto";
 
-export type Todo = { id?: string; text: string; status: "pending" | "in_progress" | "completed" };
+export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
 /**
  * What a turn's prompt was made of. Attribution has to happen server-side:
@@ -23,9 +23,9 @@ export type ContextCategory =
   | "current" /** The user message that triggered this turn. */
   | "response"; /** The reply just generated — measured, never apportioned. */
 
-export type ContextPart = { category: ContextCategory; tokens: number };
+export interface ContextPart { category: ContextCategory; tokens: number }
 
-export type ContextBreakdown = {
+export interface ContextBreakdown {
   /** `parts` sum to exactly this. Includes the response: it's in the window
    * now and will be in the next prompt, so the bar and the ring agree. */
   used_tokens: number;
@@ -39,9 +39,9 @@ export type ContextBreakdown = {
    * top of the client's model-list refresh: it closes the races refresh can't
    * (refresh in flight, model changed mid-conversation, MOCK_INFERENCE). */
   window_tokens?: number | null;
-};
+}
 
-export type TurnUsage = {
+export interface TurnUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
@@ -49,7 +49,7 @@ export type TurnUsage = {
   gen_tps: number | null;
   total_ms: number;
   context?: ContextBreakdown;
-};
+}
 
 export type StreamStatus = "active" | "complete" | "error" | "cancelled";
 
@@ -61,7 +61,7 @@ export type StreamStatus = "active" | "complete" | "error" | "cancelled";
  * measure `before` from, it's estimated and `before_estimated` says so — the
  * UI renders a `~` rather than passing an estimate off as a measurement.
  */
-export type CompactionStats = {
+export interface CompactionStats {
   messages_compacted: number;
   before_tokens: number;
   after_tokens: number;
@@ -72,7 +72,7 @@ export type CompactionStats = {
   skipped?: "already_compacted" | "too_short";
   /** The user's steering text ("make sure to include …"), verbatim. */
   guidance?: string;
-};
+}
 
 /**
  * Payload kinds appended to a stream's durable log. Chat and agent share one
@@ -119,7 +119,7 @@ export type StreamEventKind =
    * card renders, attached to the summary message. */
   | ({ kind: "compaction"; message_id: string } & CompactionStats);
 
-export type StreamSnapshotMessage = {
+export interface StreamSnapshotMessage {
   message_id: string;
   author_type: "user" | "assistant" | "tool" | "summary";
   parent_id: string | null;
@@ -139,18 +139,18 @@ export type StreamSnapshotMessage = {
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;
   error?: string;
-};
+}
 
 /** Everything-so-far, folded server-side from the durable log. The client
  * renders this instantly on subscribe, then applies live `stream.event`s
  * with `seq` greater than this snapshot's `seq`. */
-export type StreamSnapshot = {
+export interface StreamSnapshot {
   messages: StreamSnapshotMessage[];
   // agent-only:
   iteration?: { n: number; max: number };
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> };
-};
+}
 
 export type ServerMessage =
   | { type: "turn.started"; stream_id: string; conversation_id: string; user_message_id: string; incognito: boolean }

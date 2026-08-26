@@ -17,10 +17,11 @@ function PercentileRow({ label, value, max }: { label: string; value: number | n
         {label}
       </Text>
       <Box className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+        {/* eslint-disable-next-line @typescript-eslint/restrict-template-expressions -- must stay a raw numeric interpolation: TS only infers the `${number}%` literal type RN's DimensionValue needs when the placeholder's own type is `number`; String(pct) widens it to `string` and breaks the style prop's type. */}
         <Box className="h-full rounded-full bg-primary" style={{ width: `${pct}%` }} />
       </Box>
       <Text size="2xs" className="w-12 text-right text-muted-foreground">
-        {value === null ? '—' : `${Math.round(value)}ms`}
+        {value === null ? '—' : `${String(Math.round(value))}ms`}
       </Text>
     </HStack>
   );

@@ -42,7 +42,7 @@ export function useStats(token: string | null, range: StatsRange) {
   }, [token, range]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   return { usage, series, models, conversations, loading, refresh };

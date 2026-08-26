@@ -24,7 +24,7 @@ export function PromptSuggestions({ onPick }: { onPick: (text: string) => void }
           {PROMPT_SUGGESTIONS.map((s, i) => (
             <Pressable
               key={i}
-              onPress={() => onPick(s.title)}
+              onPress={() => { onPick(s.title); }}
               className="rounded-md border border-border bg-card p-4 web:hover:bg-muted/30"
               style={{ width: columns === 1 ? '100%' : '48%' }}
             >

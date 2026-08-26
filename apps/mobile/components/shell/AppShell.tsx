@@ -8,14 +8,14 @@ import { Sidebar } from './Sidebar';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import type { SurfaceId } from '@/lib/types';
 
-type ShellState = {
+interface ShellState {
   /** True when the sidebar is a slide-over (medium/narrow layouts). */
   overlaySidebar: boolean;
   openSidebar: () => void;
   openSettings: () => void;
   settingsOpen: boolean;
   closeSettings: () => void;
-};
+}
 
 const ShellContext = createContext<ShellState | null>(null);
 
@@ -47,10 +47,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shell = useMemo<ShellState>(
     () => ({
       overlaySidebar,
-      openSidebar: () => setSidebarOpen(true),
-      openSettings: () => setSettingsOpen(true),
+      openSidebar: () => { setSidebarOpen(true); },
+      openSettings: () => { setSettingsOpen(true); },
       settingsOpen,
-      closeSettings: () => setSettingsOpen(false),
+      closeSettings: () => { setSettingsOpen(false); },
     }),
     [overlaySidebar, settingsOpen],
   );
@@ -63,7 +63,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setSidebarOpen(false);
         setSettingsOpen(true);
       }}
-      onNewChat={() => navigate('chat')}
+      onNewChat={() => { navigate('chat'); }}
     />
   );
 
@@ -87,7 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {overlaySidebar && sidebarOpen && (
             <>
               <Pressable
-                onPress={() => setSidebarOpen(false)}
+                onPress={() => { setSidebarOpen(false); }}
                 className="absolute inset-0 bg-black/40"
               />
               <Box className="absolute bottom-0 left-0 top-0 shadow-lg">{sidebar}</Box>

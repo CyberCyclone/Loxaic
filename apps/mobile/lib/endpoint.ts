@@ -34,7 +34,7 @@ const PROBE_TIMEOUT_MS = 1500;
 
 async function probe(url: string): Promise<boolean> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => { controller.abort(); }, PROBE_TIMEOUT_MS);
   try {
     const res = await fetch(`${url.replace(/\/+$/, '')}/health`, {
       signal: controller.signal,
@@ -102,7 +102,7 @@ export async function resolveEndpoint(force = false): Promise<string> {
     }
     // Nothing reachable right now — prefer the remote URL (most likely to
     // start working once the tailnet reconnects) and let callers re-probe.
-    const best = remote || candidates[0];
+    const best = remote ?? candidates[0];
     resolved = best;
     setApiBaseUrl(best);
     return best;

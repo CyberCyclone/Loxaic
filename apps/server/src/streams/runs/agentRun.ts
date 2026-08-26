@@ -21,6 +21,17 @@ const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 /** How many prior messages to replay as context. */
 export const HISTORY_LIMIT = 50;
 
+/**
+ * A plain function call rather than a direct `abort.signal.aborted` read:
+ * the signal can flip true at any point during the awaits that follow an
+ * earlier check in the same iteration, but the type checker doesn't model
+ * that, so a direct re-read gets narrowed to a stale "still false" — this
+ * indirection is what keeps that narrowing from applying.
+ */
+function isAborted(controller: AbortController): boolean {
+  return controller.signal.aborted;
+}
+
 /** See chatRun's SUMMARY_LOOKBACK — skip cards are `summary`-authored but
  * textless, and must never act as a compaction cutoff. */
 const SUMMARY_LOOKBACK = 20;
@@ -39,12 +50,12 @@ const PLANNING_SYSTEM_PROMPT = [
   "no files may change in this mode. Finish with the plan as prose.",
 ].join(" ");
 
-export type StartAgentRunResult = {
+export interface StartAgentRunResult {
   streamId: string;
   conversationId: string;
   userMessageId: string;
   incognito: boolean;
-};
+}
 
 export async function startAgentRun(input: {
   userId: string;
@@ -87,7 +98,7 @@ export async function startAgentRun(input: {
   await db.insert(messages).values({
     id: userMsgId,
     conversationId: convId,
-    parentId: input.parentId || null,
+    parentId: input.parentId ?? null,
     authorType: "user",
     authorUserId: userId,
     origin: "server",
@@ -157,7 +168,7 @@ async function runAgentTurn(ctx: {
     // and with it the context window — can be dropped before the client refreshes.
     let jitLoaded = false;
 
-    for (let iteration = 1; iteration <= MAX_ITERATIONS && !finished; iteration++) {
+    for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       if (abort.signal.aborted) break;
       producer.emit({ kind: "iteration", n: iteration, max: MAX_ITERATIONS });
 
@@ -228,7 +239,7 @@ async function runAgentTurn(ctx: {
           } else if (event.type === "thinking") {
             thinking += event.content;
             producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
-          } else if (event.type === "done") {
+          } else {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
             await recordUsage({
@@ -248,16 +259,16 @@ async function runAgentTurn(ctx: {
           }
         }
       } catch (err) {
-        const isAbort = (err as Error)?.name === "AbortError" || abort.signal.aborted;
+        const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
         const status = isAbort ? "cancelled" : "error";
         const errorMessage = (err as Error).message;
         const blocks: ContentBlock[] = [];
         if (thinking) blocks.push({ kind: "thinking", text: thinking });
         if (text) blocks.push({ kind: "text", text });
-        await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => {});
+        await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
         const eventError = isAbort ? undefined : errorMessage;
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
-        await producer.end(status, { error: eventError }).catch(() => {});
+        await producer.end(status, { error: eventError }).catch(() => undefined);
         return;
       }
 
@@ -358,7 +369,7 @@ async function runAgentTurn(ctx: {
       });
       parentId = toolMsgId;
 
-      if (abort.signal.aborted) {
+      if (isAborted(abort)) {
         // This iteration's tools already ran and its message.end already
         // went out above as "complete" — the tool results are real and
         // stay. What stops here is the *run continuing to another
@@ -381,7 +392,7 @@ async function runAgentTurn(ctx: {
           .where(eq(conversations.id, convId));
       }
       await producer.end("error", {
-        error: `Stopped after ${MAX_ITERATIONS} tool iterations without a final answer.`,
+        error: `Stopped after ${String(MAX_ITERATIONS)} tool iterations without a final answer.`,
       });
     }
   } finally {
@@ -484,7 +495,7 @@ function waitForApproval(streamId: string, callId: string): Promise<boolean> {
 
 function safeParseArgs(raw: string): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(raw || "{}");
+    const parsed: unknown = JSON.parse(raw || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {};
@@ -514,7 +525,7 @@ async function recordUsage(input: {
     model: input.model,
     origin: "server",
     inputTokens: result.usage.prompt_tokens,
-    cachedTokens: result.timings?.cache_n || 0,
+    cachedTokens: result.timings?.cache_n ?? 0,
     outputTokens: result.usage.completion_tokens,
     ttftMs: result.ttftMs,
     promptMs: result.timings?.prompt_ms ?? null,
@@ -577,7 +588,7 @@ export async function loadHistory(
   const out: ChatMessage[] = [];
   for (const row of ordered) {
     if (row.status !== "complete") continue;
-    const blocks = (row.content as ContentBlock[]) ?? [];
+    const blocks = (row.content ?? []) as ContentBlock[];
 
     if (row.authorType === "user") {
       const text = textOf(blocks);

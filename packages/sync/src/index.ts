@@ -1,30 +1,30 @@
-export type SyncOp = {
+export interface SyncOp {
   client_op_id: string;
   op_type: "message.create" | "message.update_meta" | "conversation.create" | "conversation.update_meta" | "usage.record";
   entity_id: string;
   payload: Record<string, unknown>;
   lamport: number;
-};
+}
 
-export type SyncPushRequest = {
+export interface SyncPushRequest {
   device_id: string;
   ops: SyncOp[];
-};
+}
 
-export type SyncPushResponse = {
-  accepted: Array<{ client_op_id: string; seq: number }>;
-  rejected: Array<{ client_op_id: string; reason: string }>;
-};
+export interface SyncPushResponse {
+  accepted: { client_op_id: string; seq: number }[];
+  rejected: { client_op_id: string; reason: string }[];
+}
 
-export type SyncPullRequest = {
+export interface SyncPullRequest {
   since: number;
   limit?: number;
-};
+}
 
-export type SyncPullResponse = {
-  ops: Array<{ seq: number; op_type: string; entity_id: string; payload: unknown; lamport: number; device_id: string | null; created_at: string }>;
+export interface SyncPullResponse {
+  ops: { seq: number; op_type: string; entity_id: string; payload: unknown; lamport: number; device_id: string | null; created_at: string }[];
   cursor: number;
-};
+}
 
 /** Resolve a conflict: LWW by (lamport, device_id) */
 export function resolveLWW<T extends { lamport: number; device_id: string }>(a: T, b: T): T {
@@ -34,19 +34,19 @@ export function resolveLWW<T extends { lamport: number; device_id: string }>(a: 
 }
 
 /** Detect forks in a message tree: nodes with multiple non-deleted children */
-export type ForkGroup = {
+export interface ForkGroup {
   parent_id: string;
   branches: string[]; // leaf message IDs for each branch
-};
+}
 
 export function detectForks(
-  messages: Array<{ id: string; parent_id: string | null; deleted_at?: string | null }>,
+  messages: { id: string; parent_id: string | null; deleted_at?: string | null }[],
 ): ForkGroup[] {
   const childrenByParent = new Map<string, string[]>();
   for (const msg of messages) {
     if (msg.deleted_at) continue;
-    const key = msg.parent_id || "__root__";
-    const list = childrenByParent.get(key) || [];
+    const key = msg.parent_id ?? "__root__";
+    const list = childrenByParent.get(key) ?? [];
     list.push(msg.id);
     childrenByParent.set(key, list);
   }

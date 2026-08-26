@@ -37,7 +37,7 @@ function computeDelta(cur: number | null | undefined, prev: number | null | unde
     case 'pct-point':
       return { text: `${arrow} ${Math.abs(diff).toFixed(1)}%`, dir };
     case 'ms':
-      return { text: `${arrow} ${Math.abs(Math.round(diff))}ms`, dir };
+      return { text: `${arrow} ${String(Math.abs(Math.round(diff)))}ms`, dir };
     case 'raw':
       return { text: `${arrow} ${Math.abs(diff).toFixed(1)}`, dir };
   }
@@ -57,7 +57,7 @@ export default function StatsScreen() {
         {RANGES.map((r) => (
           <Pressable
             key={r}
-            onPress={() => setRange(r)}
+            onPress={() => { setRange(r); }}
             className={`rounded-full px-3 py-1.5 ${range === r ? 'bg-primary/15' : 'bg-muted'}`}
           >
             <Text size="xs" className={range === r ? 'text-primary' : 'text-muted-foreground'}>
@@ -84,14 +84,14 @@ export default function StatsScreen() {
               />
               <KpiCard
                 label="Cache Hit %"
-                value={usage ? `${usage.cacheHitRate}%` : '—'}
+                value={usage ? `${String(usage.cacheHitRate)}%` : '—'}
                 delta={computeDelta(usage?.cacheHitRate, usage?.previous?.cacheHitRate, 'pct-point')}
                 hint={usage?.previous ? 'vs previous period' : undefined}
                 spark={usage?.spark?.cacheHitRate}
               />
               <KpiCard
                 label="Avg TTFT"
-                value={usage?.avgTtftMs != null ? `${Math.round(usage.avgTtftMs)}ms` : '—'}
+                value={usage?.avgTtftMs != null ? `${String(Math.round(usage.avgTtftMs))}ms` : '—'}
                 delta={computeDelta(usage?.avgTtftMs, usage?.previous?.avgTtftMs, 'ms')}
                 hint="lower is better"
                 spark={usage?.spark?.avgTtftMs}

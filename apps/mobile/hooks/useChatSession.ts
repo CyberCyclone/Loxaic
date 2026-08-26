@@ -12,7 +12,6 @@ import {
   type ServerMessage,
   type StreamEventKind,
   type StreamSnapshot,
-  type TurnUsage,
   type ApiMessage,
 } from '@shannon/api-client';
 import type { CompactionStats, ContentBlock } from '@shannon/types';
@@ -31,21 +30,23 @@ function roleOf(authorType: string): Message['role'] | null {
   return null;
 }
 
-function extractCompaction(blocks: Array<{ kind: string } & Record<string, unknown>>): CompactionStats | undefined {
-  const block = blocks.find((b) => b.kind === 'compaction');
+function extractCompaction(blocks: ContentBlock[]): CompactionStats | undefined {
+  const block = blocks.find(
+    (b): b is Extract<ContentBlock, { kind: 'compaction' }> => b.kind === 'compaction',
+  );
   if (!block) return undefined;
   const { kind: _kind, ...stats } = block;
-  return stats as CompactionStats;
+  return stats;
 }
 
-function extractText(blocks: Array<{ kind: string; text?: string }>): string {
+function extractText(blocks: { kind: string; text?: string }[]): string {
   return blocks
     .filter((b) => b.kind === 'text')
     .map((b) => b.text ?? '')
     .join('\n');
 }
 
-function extractThinking(blocks: Array<{ kind: string; text?: string }>): string | undefined {
+function extractThinking(blocks: { kind: string; text?: string }[]): string | undefined {
   const thinking = blocks
     .filter((b) => b.kind === 'thinking')
     .map((b) => b.text ?? '')
@@ -60,16 +61,16 @@ function mapRows(rows: ApiMessage[]): Message[] {
   for (const m of rows) {
     const role = roleOf(m.authorType);
     if (!role) continue;
-    const blocks = m.content as ContentBlock[];
+    const blocks = m.content;
     out.push({
       id: m.id,
       role,
       model: m.model ?? undefined,
-      text: extractText(blocks as Array<{ kind: string; text?: string }>),
-      thinking: extractThinking(blocks as Array<{ kind: string; text?: string }>),
+      text: extractText(blocks),
+      thinking: extractThinking(blocks),
       error: m.status === 'error',
       usage: toMessageUsage(m.usage),
-      compaction: role === 'summary' ? extractCompaction(blocks as Array<{ kind: string } & Record<string, unknown>>) : undefined,
+      compaction: role === 'summary' ? extractCompaction(blocks) : undefined,
     });
   }
   return out;
@@ -120,7 +121,9 @@ function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
     case 'thinking.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
     case 'compaction': {
-      const { kind: _kind, message_id, ...stats } = event;
+      const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
+        event;
+      const stats = { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
       return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
     }
     case 'message.end':
@@ -150,7 +153,7 @@ function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
  * no reason. It's only ever cleared by an authoritative terminal status —
  * `stream.sync.status !== "active"` (already finished by the time we
  * caught up) or a live `stream.end`. */
-type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string };
+interface StreamState { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string }
 
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
@@ -158,7 +161,7 @@ const RESYNC_COOLDOWN_MS = 500;
 export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
-  const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
+  const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -173,7 +176,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   // the moment the user switches threads mid-stream. Route deltas by this
   // instead (falls back to the event's own conversation_id when unset).
   const activeIdRef = useRef<string | null>(null);
-  const streamingByConvRef = useRef<Record<string, StreamState>>({});
+  const streamingByConvRef = useRef<Partial<Record<string, StreamState>>>({});
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
   // The optimistic user bubble pushed by handleSend has no server id yet;
@@ -192,10 +195,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
    * when React flushes would still read as stale for the rest of that batch,
    * making every event after the first look like a gap and get dropped.
    */
-  const cursorsRef = useRef<Record<string, number>>({});
+  const cursorsRef = useRef<Partial<Record<string, number>>>({});
 
   const setStreamingByConv = useCallback(
-    (updater: (prev: Record<string, StreamState>) => Record<string, StreamState>) => {
+    (
+      updater: (
+        prev: Partial<Record<string, StreamState>>,
+      ) => Partial<Record<string, StreamState>>,
+    ) => {
       setStreamingByConvState((prev) => {
         const next = updater(prev);
         streamingByConvRef.current = next;
@@ -209,9 +216,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     (id: string) => {
       setStreamingByConv((prev) => {
         if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
-        return next;
+        return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id));
       });
     },
     [setStreamingByConv],
@@ -272,7 +277,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           // Non-fatal: thread list still loaded, just no history preview yet.
         }
       })
-      .catch(() => {})
+      .catch(() => undefined)
       .finally(() => {
         loadingRef.current = false;
       });
@@ -291,12 +296,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     let attempt = 0;
 
     const resubscribeKnown = () => {
+      const ws = wsRef.current;
+      if (!ws) return;
       const targets = new Set(Object.keys(streamingByConvRef.current));
       if (activeIdRef.current) targets.add(activeIdRef.current);
       for (const convId of targets) {
         const tracked = streamingByConvRef.current[convId];
         subscribeStreams(
-          wsRef.current!,
+          ws,
           convId,
           tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined,
         );
@@ -321,7 +328,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         }
         setActiveId(realId);
         if (modelForPatch && !event.incognito) {
-          updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
+          updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
@@ -377,9 +384,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           // cause the very drops it is trying to repair.
           const now = Date.now();
           const lastAsk = lastResyncAtRef.current[event.stream_id] ?? 0;
-          if (now - lastAsk > RESYNC_COOLDOWN_MS) {
+          const ws = wsRef.current;
+          if (ws && now - lastAsk > RESYNC_COOLDOWN_MS) {
             lastResyncAtRef.current[event.stream_id] = now;
-            subscribeStreams(wsRef.current!, convId, { [event.stream_id]: lastSeq });
+            subscribeStreams(ws, convId, { [event.stream_id]: lastSeq });
           }
           return;
         }
@@ -459,10 +467,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const handleSend = useCallback(
     (text: string, model: string, incognito?: boolean) => {
       if (!wsRef.current) return;
-      const localMsgId = `lm${Date.now()}`;
+      const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
       if (!activeIdRef.current) {
-        const localId = `c${Date.now()}`;
+        const localId = `c${String(Date.now())}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
         const newConv: Conversation = {
@@ -503,7 +511,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     sendCommand(wsRef.current, name, id, model, args || undefined);
   }, []);
 
-  const handleNewChat = useCallback(() => setActiveId(null), [setActiveId]);
+  const handleNewChat = useCallback(() => { setActiveId(null); }, [setActiveId]);
 
   const handleFork = useCallback(
     (id: string) => {
@@ -512,7 +520,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         if (!conv) return prev;
         const forked: Conversation = {
           ...conv,
-          id: `c${Date.now()}`,
+          id: `c${String(Date.now())}`,
           title: `${conv.title} (fork)`,
           time: 'now',
           msgs: conv.msgs.slice(0, Math.ceil(conv.msgs.length / 2)),
@@ -544,7 +552,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const setConversationModel = useCallback((id: string, modelId: string) => {
     setConversations((prev) => {
       const conv = prev.find((c) => c.id === id);
-      if (!conv?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+      if (!conv?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
       return prev.map((c) => (c.id === id ? { ...c, model: modelId } : c));
     });
   }, []);

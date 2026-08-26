@@ -5,7 +5,7 @@ import { RedisStreamLogDriver } from "../redis.ts";
 import type { StreamLogDriver } from "../types.ts";
 
 let seq = 0;
-const freshId = (label: string) => `test-${label}-${Date.now()}-${seq++}`;
+const freshId = (label: string) => `test-${label}-${String(Date.now())}-${String(seq++)}`;
 
 /**
  * One contract, run against every driver. Both must agree on everything a
@@ -150,7 +150,7 @@ function driverContract(label: string, driver: StreamLogDriver) {
 
 driverContract("memory", new MemoryStreamLogDriver(86400));
 
-const redisUrl = process.env.TEST_REDIS_URL || process.env.REDIS_URL || "redis://localhost:6379";
+const redisUrl = process.env.TEST_REDIS_URL ?? process.env.REDIS_URL ?? "redis://localhost:6379";
 let redis: Redis | null = null;
 
 try {
@@ -171,7 +171,7 @@ if (redis) {
   driverContract("redis", new RedisStreamLogDriver(redis, 86400));
 } else {
   describe.skip(`StreamLogDriver contract: redis (skipped — no reachable Redis at ${redisUrl})`, () => {
-    it("skipped", () => {});
+    it("skipped", () => undefined);
   });
 }
 

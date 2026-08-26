@@ -79,7 +79,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 Display name
               </Text>
               <Input className="border-border bg-card">
-                <InputField value={draft.name} onChangeText={(v) => update('name', v)} />
+                <InputField value={draft.name} onChangeText={(v) => { update('name', v); }} />
               </Input>
             </VStack>
 
@@ -91,7 +91,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 {MODES.map((m) => (
                   <Pressable
                     key={m}
-                    onPress={() => update('defaultMode', m)}
+                    onPress={() => { update('defaultMode', m); }}
                     className={`rounded-full px-3 py-1.5 ${
                       draft.defaultMode === m ? 'bg-primary/15' : 'bg-muted'
                     }`}
@@ -112,7 +112,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 {THINKING.map((level) => (
                   <Pressable
                     key={level}
-                    onPress={() => update('defaultThinkingLevel', level)}
+                    onPress={() => { update('defaultThinkingLevel', level); }}
                     className={`rounded-full px-3 py-1.5 ${
                       draft.defaultThinkingLevel === level ? 'bg-primary/15' : 'bg-muted'
                     }`}
@@ -136,7 +136,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 {THEMES.map((t) => (
                   <Pressable
                     key={t}
-                    onPress={() => setThemePref(t)}
+                    onPress={() => { setThemePref(t); }}
                     className={`rounded-full px-3 py-1.5 ${themePref === t ? 'bg-primary/15' : 'bg-muted'}`}
                   >
                     <Text size="sm" className={themePref === t ? 'text-primary' : 'text-muted-foreground'}>
@@ -158,7 +158,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   placeholder="https://your-server.tailnet.ts.net"
                   autoCapitalize="none"
                   value={draft.endpoint}
-                  onChangeText={(v) => update('endpoint', v)}
+                  onChangeText={(v) => { update('endpoint', v); }}
                 />
               </Input>
               <Text size="2xs" className="text-muted-foreground">
