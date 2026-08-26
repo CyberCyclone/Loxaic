@@ -6,6 +6,7 @@ import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
+import { Markdown } from '@/components/markdown/Markdown';
 import { LiveElapsed } from './LiveElapsed';
 
 interface ThinkingBlockProps {
@@ -36,9 +37,9 @@ export function ThinkingBlock({ text, live, since }: ThinkingBlockProps) {
         </HStack>
       </Pressable>
       {open && (
-        <Text size="sm" className="border-t border-border px-3 py-2 text-muted-foreground">
-          {text}
-        </Text>
+        <Box className="border-t border-border px-3 py-2">
+          <Markdown text={text} tone="muted" size="sm" />
+        </Box>
       )}
     </Box>
   );
