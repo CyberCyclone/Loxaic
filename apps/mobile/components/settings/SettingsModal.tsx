@@ -18,6 +18,7 @@ import { Text } from '@/components/ui/text';
 import { Heading } from '@/components/ui/heading';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
@@ -147,6 +148,25 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     </Text>
                   </Pressable>
                 ))}
+              </HStack>
+            </VStack>
+
+            <Box className="h-px bg-border" />
+
+            <VStack space="xs">
+              <Text size="xs" className="text-muted-foreground">
+                Developer
+              </Text>
+              <HStack className="items-center justify-between rounded-md border border-border bg-card px-3 py-2.5">
+                <VStack className="flex-1 pr-3">
+                  <Text size="sm" className="text-foreground">
+                    Dev mode
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Show raw model I/O, tool traces, and test servers.
+                  </Text>
+                </VStack>
+                <Switch value={!!draft.devMode} onValueChange={(v) => update('devMode', v)} />
               </HStack>
             </VStack>
 

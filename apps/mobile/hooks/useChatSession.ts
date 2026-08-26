@@ -6,6 +6,8 @@ import {
   sendCommand,
   subscribeStreams,
   stopStream,
+  subscribeDebug,
+  unsubscribeDebug,
   getConversations,
   getMessages,
   updateConversation,
@@ -15,6 +17,7 @@ import {
   type TurnUsage,
   type ApiMessage,
 } from '@shannon/api-client';
+import { DebugRing, type DebugEntry } from '@/lib/debug-ring';
 import type { CompactionStats, ContentBlock } from '@shannon/types';
 import type { Conversation, Message } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
@@ -155,11 +158,22 @@ type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt:
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
 
+/** Debug state is flushed on this cadence, not per event. */
+const DEBUG_FLUSH_MS = 250;
+
 export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
   const { showToast } = useToastHelper();
+
+  // Dev-mode telemetry — same ring + throttled flush as the agent hook.
+  const [debugEntries, setDebugEntries] = useState<DebugEntry[]>([]);
+  const [debugActive, setDebugActive] = useState(false);
+  const debugRingRef = useRef(new DebugRing());
+  const debugConvRef = useRef<string | null>(null);
+  const debugActiveRef = useRef(false);
+  const debugFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const loadingRef = useRef(false);
@@ -406,6 +420,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         // A run may have JIT-loaded the model, which changes the context
         // window out from under a model list fetched at mount.
         onStreamEndRef.current?.();
+      } else if (event.type === 'debug.event') {
+        debugRingRef.current.push(event.ts, event.event);
+        if (!debugFlushRef.current) {
+          debugFlushRef.current = setTimeout(() => {
+            debugFlushRef.current = null;
+            setDebugEntries(debugRingRef.current.snapshot());
+          }, DEBUG_FLUSH_MS);
+        }
       } else if (event.type === 'error') {
         showToast(event.error || 'Chat error', 6000);
       }
@@ -416,6 +438,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       ws.onopen = () => {
         attempt = 0;
         resubscribeKnown();
+        // A reconnect drops the server-side listener with the socket.
+        if (debugActiveRef.current && debugConvRef.current) subscribeDebug(ws, debugConvRef.current);
       };
       ws.onclose = () => {
         if (cancelled) return;
@@ -553,11 +577,50 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   // Scoped to the active conversation on purpose — a background thread that's
   // still streaming must never light up the stop button, elapsed timer, or
   // typing indicator for whichever conversation the user has switched to.
+  // Follows the active conversation while the panel is open, including the
+  // moment a brand-new conversation gets its server id.
+  useEffect(() => {
+    if (!debugActive) return;
+    const ws = wsRef.current;
+    if (!ws || !activeId || debugConvRef.current === activeId) return;
+    if (debugConvRef.current) unsubscribeDebug(ws, debugConvRef.current);
+    debugConvRef.current = activeId;
+    subscribeDebug(ws, activeId);
+  }, [debugActive, activeId]);
+
+  const openDebug = useCallback(() => {
+    debugActiveRef.current = true;
+    setDebugActive(true);
+    const convId = activeIdRef.current;
+    if (convId && wsRef.current) {
+      debugConvRef.current = convId;
+      subscribeDebug(wsRef.current, convId);
+    }
+  }, []);
+
+  const closeDebug = useCallback(() => {
+    debugActiveRef.current = false;
+    setDebugActive(false);
+    const convId = debugConvRef.current;
+    debugConvRef.current = null;
+    if (convId && wsRef.current) unsubscribeDebug(wsRef.current, convId);
+  }, []);
+
+  const clearDebug = useCallback(() => {
+    debugRingRef.current.clear();
+    setDebugEntries([]);
+  }, []);
+
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
 
   return {
     conversations,
     activeId,
+    debugEntries,
+    debugActive,
+    openDebug,
+    closeDebug,
+    clearDebug,
     activeConv,
     setActiveId,
     streaming: !!activeStream,

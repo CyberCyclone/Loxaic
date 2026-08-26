@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
-import { MessagesSquare } from 'lucide-react-native';
+import { MessagesSquare, Terminal } from 'lucide-react-native';
 import { findCommand } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -14,6 +14,7 @@ import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
 import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
+import { RawIoPanel } from '@/components/debug/RawIoPanel';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
@@ -43,6 +44,11 @@ export default function ChatScreen() {
     handleDelete,
     handleRename,
     setConversationModel,
+    debugEntries,
+    debugActive,
+    openDebug,
+    closeDebug,
+    clearDebug,
   } = useChatSession(token, () => refreshModels());
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -114,11 +120,21 @@ export default function ChatScreen() {
           subtitle={activeConv?.incognito ? 'Incognito · not saved' : undefined}
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
-            breakpoint !== 'wide' ? (
-              <Pressable onPress={() => setThreadListOpen(true)} className="rounded-sm p-1.5 web:hover:bg-muted/50">
-                <Icon as={MessagesSquare} size="sm" className="text-foreground" />
-              </Pressable>
-            ) : undefined
+            <HStack space="sm" className="items-center">
+              {!!settings.devMode && (
+                <Pressable
+                  onPress={debugActive ? closeDebug : openDebug}
+                  className={`rounded-sm p-1.5 web:hover:bg-muted/50 ${debugActive ? 'bg-primary/15' : ''}`}
+                >
+                  <Icon as={Terminal} size="sm" className={debugActive ? 'text-primary' : 'text-foreground'} />
+                </Pressable>
+              )}
+              {breakpoint !== 'wide' && (
+                <Pressable onPress={() => setThreadListOpen(true)} className="rounded-sm p-1.5 web:hover:bg-muted/50">
+                  <Icon as={MessagesSquare} size="sm" className="text-foreground" />
+                </Pressable>
+              )}
+            </HStack>
           }
         />
         <KeyboardAvoidingView
@@ -152,11 +168,19 @@ export default function ChatScreen() {
         </KeyboardAvoidingView>
       </VStack>
 
+      {breakpoint === 'wide' && (
+        <RawIoPanel open={debugActive} onClose={closeDebug} wide entries={debugEntries} onClear={clearDebug} />
+      )}
+
       {breakpoint !== 'wide' && threadListOpen && (
         <>
           <Pressable onPress={() => setThreadListOpen(false)} className="absolute inset-0 bg-black/40" />
           <Box className="absolute bottom-0 right-0 top-0 shadow-lg">{threadList}</Box>
         </>
+      )}
+
+      {breakpoint !== 'wide' && (
+        <RawIoPanel open={debugActive} onClose={closeDebug} wide={false} entries={debugEntries} onClear={clearDebug} />
       )}
 
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />

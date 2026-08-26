@@ -15,6 +15,7 @@ import { McpServerModal } from '@/components/mcp/McpServerModal';
 import { McpToolsSheet } from '@/components/mcp/McpToolsSheet';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { useMcpServers } from '@/hooks/useMcpServers';
+import { useSettings } from '@/hooks/useSettings';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useSession } from '@/lib/session';
 import type { McpServer, McpServerInput, McpCatalogEntry } from '@shannon/api-client';
@@ -28,6 +29,8 @@ export default function McpScreen() {
   const { token } = useSession();
   const { servers, catalog, loading, create, update, toggle, remove, test } = useMcpServers(token);
   const { showToast } = useToastHelper();
+  const [settings] = useSettings();
+  const devMode = !!settings.devMode;
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<McpServer | null>(null);
   const [toolsFor, setToolsFor] = useState<McpServer | null>(null);
@@ -72,7 +75,10 @@ export default function McpScreen() {
   };
 
   const rows: Row[] = [
-    ...catalog.filter((c) => !c.configured).map((entry) => ({ type: 'catalog' as const, entry })),
+    // Dev tooling stays hidden until the user turns dev mode on.
+    ...catalog
+      .filter((c) => !c.configured && (!c.dev || devMode))
+      .map((entry) => ({ type: 'catalog' as const, entry })),
     ...servers.map((server) => ({ type: 'server' as const, server })),
   ];
 

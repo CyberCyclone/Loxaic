@@ -7,6 +7,7 @@ const DEFAULT_SETTINGS: Settings = {
   defaultThinkingLevel: 'Medium',
   tailscale: '',
   endpoint: '',
+  devMode: false,
 };
 
 const DEFAULT_ROUTING: SmartRouting = {
