@@ -180,3 +180,42 @@ describe("compileValidator", () => {
     expect(validate({ n: 0 })).toBe(false);
   });
 });
+
+describe("dispatchMcp tracing", () => {
+  it("omits the trace entirely unless it is asked for", async () => {
+    const ts = await buildToolset(userId, { mode: "manual" });
+    const result = await ts.dispatchMcp(ts.get("mockmcp__echo")!, { text: "hi" });
+    expect(result.trace).toBeUndefined();
+  }, 20_000);
+
+  it("returns raw pre-sanitization text and timing, with secrets redacted", async () => {
+    const ts = await buildToolset(userId, { mode: "manual" });
+    // The fixture echoes its argument back, so planting the server's own
+    // credential as input proves the raw channel is redacted — the wrapped
+    // model-facing copy never was.
+    const result = await ts.dispatchMcp(
+      ts.get("mockmcp__echo")!,
+      { text: "fake-secret-value" },
+      { trace: true },
+    );
+    expect(result.trace).toBeDefined();
+    expect(result.trace!.rawText).not.toContain("fake-secret-value");
+    expect(result.trace!.rawText).toContain("[redacted]");
+    // Raw means raw: no provenance wrapper, unlike the model-facing output.
+    expect(result.trace!.rawText).not.toContain("mcp-tool-result");
+    expect(result.output).toContain("mcp-tool-result");
+    expect(typeof result.trace!.ms).toBe("number");
+  }, 20_000);
+
+  it("traces validation failures without ever reaching the server", async () => {
+    const ts = await buildToolset(userId, { mode: "manual" });
+    const result = await ts.dispatchMcp(ts.get("mockmcp__echo")!, { wrong: 1 }, { trace: true });
+    expect(result.ok).toBe(false);
+    expect(result.trace!.rawText).toMatch(/Invalid arguments/);
+  }, 20_000);
+
+  it("exposes merged credentials for redacting model requests", async () => {
+    const ts = await buildToolset(userId, { mode: "manual" });
+    expect(ts.debugSecrets()).toMatchObject({ FAKE_KEY: "fake-secret-value" });
+  }, 20_000);
+});

@@ -299,6 +299,8 @@ export type McpCatalogEntry = {
   description: string;
   secretKeys: { env: string; label: string }[];
   configured: boolean;
+  /** Dev tooling — shown only when the user has dev mode enabled. */
+  dev?: boolean;
 };
 
 export type McpServerInput = {
