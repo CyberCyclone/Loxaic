@@ -1,10 +1,10 @@
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
+import { and, db, eq, gt } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import type { ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
 import { streamCompletion, type ChatMessage, type ToolCall, type CompletionResult } from "../../inference/provider.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
-import { apportion, tallyChatMessages } from "../../inference/context.ts";
+import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import { isToolName, toOpenAiTools, toolRequiresApproval, WRITE_TOOLS, type PermissionMode } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
@@ -19,7 +19,11 @@ const MAX_ITERATIONS = 20;
 /** An approval request left unanswered this long is treated as a denial. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 /** How many prior messages to replay as context. */
-const HISTORY_LIMIT = 50;
+export const HISTORY_LIMIT = 50;
+
+/** See chatRun's SUMMARY_LOOKBACK — skip cards are `summary`-authored but
+ * textless, and must never act as a compaction cutoff. */
+const SUMMARY_LOOKBACK = 20;
 
 const BASE_SYSTEM_PROMPT = [
   "You are Shannon, a coding agent working inside an isolated Linux sandbox.",
@@ -136,7 +140,15 @@ async function runAgentTurn(ctx: {
     const systemPrompt = mode === "planning" ? PLANNING_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT;
     const tools = toOpenAiTools(mode === "planning" ? WRITE_TOOLS : []);
     const history = await loadHistory(convId);
-    const chatMessages: ChatMessage[] = [{ role: "system", content: systemPrompt }, ...history.messages];
+    // The compaction summary rides as a second system message, after the real
+    // system prompt and before the replayed turns — everything older than it
+    // stays in Postgres and on screen but is no longer sent.
+    const summaryMsg = history.summaryText ? summaryMessage(history.summaryText) : null;
+    const chatMessages: ChatMessage[] = [
+      { role: "system", content: systemPrompt },
+      ...(summaryMsg ? [summaryMsg] : []),
+      ...history.messages,
+    ];
 
     let parentId = ctx.userMsgId;
     let lastAssistantId: string | null = null;
@@ -193,7 +205,14 @@ async function runAgentTurn(ctx: {
       // as tool calls and results are appended, so it has to be measured here
       // rather than once per run — and `tools` is measured with it, since the
       // schemas ride in `body.tools` and appear nowhere in the message list.
-      const tally = tallyChatMessages(chatMessages, tools);
+      // The summary message is tallied separately: tallyChatMessages would
+      // classify its system role as `system` and silently fold the compacted
+      // history into the system-prompt row.
+      const tally = tallyChatMessages(
+        summaryMsg ? chatMessages.filter((m) => m !== summaryMsg) : chatMessages,
+        tools,
+      );
+      if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
       const breakdownMeta = {
         historyMessages: history.messages.length,
         historyLimit: HISTORY_LIMIT,
@@ -513,11 +532,33 @@ async function recordUsage(input: {
  * matching tool_result are stripped — an interrupted run would otherwise
  * leave a dangling call that most servers reject.
  */
-async function loadHistory(conversationId: string): Promise<{ messages: ChatMessage[]; truncated: boolean }> {
+export async function loadHistory(
+  conversationId: string,
+): Promise<{ messages: ChatMessage[]; truncated: boolean; summaryText: string | null }> {
+  // The newest real compaction point, keyed on lamport — the same ordering
+  // the main query below uses. Rows at or before it are represented by the
+  // summary text and excluded from the replay.
+  const summaryRows = await db.query.messages.findMany({
+    where: and(
+      eq(messages.conversationId, conversationId),
+      eq(messages.authorType, "summary"),
+      eq(messages.status, "complete"),
+    ),
+    orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
+    columns: { content: true, lamport: true },
+    limit: SUMMARY_LOOKBACK,
+  });
+  const summaryRow = summaryRows
+    .map((r) => ({ text: textOf(r.content as ContentBlock[]), lamport: r.lamport }))
+    .find((r) => r.text.length > 0);
+  const summaryText = summaryRow?.text ?? null;
+
   // One over the limit, so we can tell the client whether older turns were
   // already dropped. Cheaper than a second COUNT(*).
   const rows = await db.query.messages.findMany({
-    where: eq(messages.conversationId, conversationId),
+    where: summaryRow
+      ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
+      : eq(messages.conversationId, conversationId),
     orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
     columns: { authorType: true, content: true, status: true, lamport: true },
     limit: HISTORY_LIMIT + 1,
@@ -566,7 +607,7 @@ async function loadHistory(conversationId: string): Promise<{ messages: ChatMess
       }
     }
   }
-  return { messages: out, truncated };
+  return { messages: out, truncated, summaryText };
 }
 
 function textOf(blocks: ContentBlock[]): string {

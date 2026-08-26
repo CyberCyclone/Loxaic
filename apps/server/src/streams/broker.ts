@@ -194,6 +194,11 @@ export class StreamBroker {
         case "todos":
           todos = event.todos;
           break;
+        case "compaction": {
+          const { kind: _kind, message_id, ...stats } = event;
+          ensure(message_id).compaction = stats;
+          break;
+        }
       }
     }
 

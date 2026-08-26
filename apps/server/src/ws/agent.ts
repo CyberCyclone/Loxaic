@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { auth } from "../auth";
-import type { ClientMessage, PermissionMode, ServerMessage } from "@shannon/types";
+import { findCommand, type ClientMessage, type PermissionMode, type ServerMessage } from "@shannon/types";
 import { startAgentRun } from "../streams/runs/agentRun.ts";
+import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { NotFoundError } from "../streams/authz.ts";
 import { findRunByApprovalCallId, getRun } from "../streams/registry.ts";
@@ -66,6 +67,33 @@ export function agentWsHandler(app: FastifyInstance) {
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
+            incognito: result.incognito,
+          });
+          await delivery.autoSubscribe(result.streamId, result.conversationId);
+        } else if (msg.type === "command.run") {
+          // See ws/chat.ts — same dispatch, agent surface: the compact run
+          // reads history through the agent's own loader.
+          const cmd = findCommand(msg.command ?? "");
+          if (!cmd || cmd.name !== "compact") {
+            safeSend({ type: "error", error: `Unknown command: ${msg.command}` });
+            return;
+          }
+          if (!msg.conversation_id) {
+            safeSend({ type: "error", error: "Nothing to compact — start a run first" });
+            return;
+          }
+          const result = await startCompactRun({
+            userId,
+            conversationId: msg.conversation_id,
+            model: msg.model || "default",
+            args: msg.args,
+            surface: "agent",
+          });
+          safeSend({
+            type: "turn.started",
+            stream_id: result.streamId,
+            conversation_id: result.conversationId,
+            user_message_id: result.summaryMessageId,
             incognito: result.incognito,
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);

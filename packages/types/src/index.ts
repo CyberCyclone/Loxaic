@@ -1,4 +1,4 @@
-import type { ContextBreakdown } from "./stream-protocol";
+import type { CompactionStats, ContextBreakdown } from "./stream-protocol";
 
 export type Result<T, E = Error> =
   | { ok: true; data: T }
@@ -27,7 +27,11 @@ export type ContentBlock =
   | { kind: "thinking"; text: string }
   | { kind: "tool_call"; call_id: string; tool: string; args: unknown }
   | { kind: "tool_result"; call_id: string; output: string; diff?: FileDiff[] }
-  | { kind: "attachment"; ref: string; mime: string };
+  | { kind: "attachment"; ref: string; mime: string }
+  /** Rides alongside a summary message's text block so a cold REST load can
+   * render the compaction card with its stats — the stream isn't the only
+   * path to this data. */
+  | ({ kind: "compaction" } & CompactionStats);
 
 export type ModelInfo = {
   id: string;
@@ -57,6 +61,7 @@ export type ModelInfo = {
 export type ModelPref = { model?: string };
 
 export * from "./stream-protocol";
+export * from "./commands";
 
 export type UsageRecord = {
   id: string;

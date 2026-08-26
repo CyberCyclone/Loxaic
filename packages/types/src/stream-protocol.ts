@@ -16,6 +16,7 @@ export type Todo = { id?: string; text: string; status: "pending" | "in_progress
 export type ContextCategory =
   | "system" /** System prompt. Agent only — chat sends none. */
   | "tools" /** JSON tool schemas, sent out-of-band in `body.tools`. */
+  | "summary" /** The newest compaction summary, replayed in place of everything before it. */
   | "history" /** Prior user + assistant turns replayed into the prompt. */
   | "reasoning" /** Prior thinking blocks re-fed. Chat-only, and now always 0. */
   | "tool_io" /** tool_call args + tool_result output. Unbounded; the runaway one. */
@@ -53,6 +54,27 @@ export type TurnUsage = {
 export type StreamStatus = "active" | "complete" | "error" | "cancelled";
 
 /**
+ * What a `/compact` did. `saved_tokens = before - after` (floored at 0):
+ * `after` is the backend's own `completion_tokens` for the summary — exact —
+ * and `before` is the previous turn's `prompt + completion`, i.e. exactly what
+ * the next prompt would have replayed. When no prior usage record existed to
+ * measure `before` from, it's estimated and `before_estimated` says so — the
+ * UI renders a `~` rather than passing an estimate off as a measurement.
+ */
+export type CompactionStats = {
+  messages_compacted: number;
+  before_tokens: number;
+  after_tokens: number;
+  saved_tokens: number;
+  before_estimated: boolean;
+  /** Set when the run refused without calling the model: a summary with
+   * nothing after it, or a thread too short to bother. Costs zero tokens. */
+  skipped?: "already_compacted" | "too_short";
+  /** The user's steering text ("make sure to include …"), verbatim. */
+  guidance?: string;
+};
+
+/**
  * Payload kinds appended to a stream's durable log. Chat and agent share one
  * envelope — the agent-only kinds (iteration, tool.*, approval.request,
  * todos) simply never appear on a chat stream. Every event that names a
@@ -64,7 +86,7 @@ export type StreamEventKind =
   | {
       kind: "message.start";
       message_id: string;
-      author_type: "user" | "assistant" | "tool";
+      author_type: "user" | "assistant" | "tool" | "summary";
       parent_id: string | null;
       model?: string;
       /** User messages arrive already-complete and carry their full text here. */
@@ -92,15 +114,20 @@ export type StreamEventKind =
       ok: boolean;
       diff?: FileDiff[];
     }
-  | { kind: "todos"; todos: Todo[] };
+  | { kind: "todos"; todos: Todo[] }
+  /** Emitted once by a compact run, before its message.end — the stats the
+   * card renders, attached to the summary message. */
+  | ({ kind: "compaction"; message_id: string } & CompactionStats);
 
 export type StreamSnapshotMessage = {
   message_id: string;
-  author_type: "user" | "assistant" | "tool";
+  author_type: "user" | "assistant" | "tool" | "summary";
   parent_id: string | null;
   model?: string;
   text: string;
   thinking: string;
+  /** Present on summary messages once their compaction event has landed. */
+  compaction?: CompactionStats;
   tool_calls: {
     call_id: string;
     tool: string;
@@ -171,6 +198,10 @@ export type ClientMessage =
       parent_id?: string;
       incognito?: boolean;
     }
+  /** Run a built-in slash command against an existing conversation. The
+   * surface is implied by which socket this arrives on (chat vs agent), which
+   * decides whose history loader the command sees. */
+  | { type: "command.run"; command: string; conversation_id: string; model?: string; args?: string }
   /** cursors = last seq the client has already applied, per stream_id it knows about. */
   | { type: "stream.subscribe"; conversation_id: string; cursors?: Record<string, number> }
   | { type: "stream.stop"; stream_id: string }

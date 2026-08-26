@@ -344,8 +344,13 @@ export type {
   ContextPart,
   PermissionMode,
   Todo,
+  CompactionStats,
+  CommandKind,
+  CommandSurface,
+  SlashCommand,
 } from "@shannon/types";
 import type { ServerMessage } from "@shannon/types";
+export { BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand } from "@shannon/types";
 
 /** True if the send was actually written to the socket — false (never
  * throws) if the connection isn't open, so callers can decide whether to
@@ -412,6 +417,24 @@ export function sendAgentMessage(
     parent_id: parentId,
     model: model || "default",
     incognito,
+  });
+}
+
+/** Run a built-in slash command (currently just "compact") against an
+ * existing conversation. Surface is implied by which socket this rides on. */
+export function sendCommand(
+  ws: WebSocket,
+  command: string,
+  conversationId: string,
+  model?: string,
+  args?: string,
+): boolean {
+  return trySend(ws, {
+    type: "command.run",
+    command,
+    conversation_id: conversationId,
+    model: model || "default",
+    args,
   });
 }
 

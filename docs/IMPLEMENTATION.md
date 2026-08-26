@@ -298,8 +298,15 @@ tool-loop iteration, linked by `run_id`), routines, and device-local generations
   - `planning` — read-only tools only; output is a plan artifact in the conversation; no writes.
   - `manual` — every mutating tool call emits `agent.approval_request`; UI approves/denies.
   - `auto` — allowlisted tools auto-approved; denylist always asks.
-- **Context management**: token counting via llama.cpp `/tokenize`; when approaching the
-  model's context budget, older messages are compacted into a `summary` node.
+- **Context management**: `/compact` (chat and agent, invoked via the composer's slash
+  palette or the context ring's Compact button) summarizes the conversation into a
+  `summary`-authored message and continues from it. Nothing is deleted — every prior
+  message stays in Postgres and on screen; the history loaders (`loadChatHistory`,
+  `agentRun`'s `loadHistory`) simply start replaying from the newest summary instead of
+  the top, so what's *sent* shrinks while what's *shown* doesn't. A repeat `/compact` with
+  nothing new since the last one is refused without a model call. Token savings are
+  computed from real usage records where one exists (`apps/server/src/streams/runs/compactRun.ts`),
+  falling back to an estimate — flagged as such — only when none does.
 - **Event schema** (`packages/agent`):
 
 ```ts

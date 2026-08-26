@@ -1,10 +1,10 @@
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
+import { and, db, eq, gt } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import type { ContentBlock, TurnUsage } from "@shannon/types";
 import { streamCompletion, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
-import { addChars, apportion, type ContextTally } from "../../inference/context.ts";
+import { addChars, apportion, SUMMARY_PREAMBLE, summaryMessage, type ContextTally } from "../../inference/context.ts";
 import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -173,7 +173,12 @@ async function runChatGeneration(ctx: {
     }
 
     const history = await loadChatHistory(convId, incognito);
-    const chatMessages = history.messages;
+    // Everything before the newest compaction is represented by its summary,
+    // replayed as a system message — the messages themselves stay in Postgres
+    // and on screen, they just aren't sent.
+    const chatMessages = history.summaryText
+      ? [summaryMessage(history.summaryText), ...history.messages]
+      : history.messages;
     let doneResult: CompletionResult | null = null;
 
     for await (const event of streamCompletion(model, chatMessages, { signal: abort.signal })) {
@@ -266,10 +271,22 @@ async function runChatGeneration(ctx: {
   }
 }
 
-const HISTORY_LIMIT = 50;
+export const HISTORY_LIMIT = 50;
 
-type LoadedHistory = {
+/** How many trailing `summary` rows to inspect when looking for the newest
+ * real compaction point. Skipped-compaction cards are also `summary`-authored
+ * but carry no text — they must never act as a cutoff, so the search skips
+ * them. A spam of more than this many consecutive skip cards just means the
+ * cutoff is missed and the full (capped) history is sent — safe, only wasteful. */
+const SUMMARY_LOOKBACK = 20;
+
+export type LoadedHistory = {
+  /** WITHOUT the summary — the caller composes it via summaryMessage(), so
+   * chat and the compact run assemble prompts from the same parts. */
   messages: ChatMessage[];
+  /** The newest compaction summary's text, or null if never compacted. */
+  summaryText: string | null;
+  /** Includes the summary's share when one exists. */
   tally: ContextTally;
   historyMessages: number;
   historyTruncated: boolean;
@@ -302,15 +319,35 @@ function splitBlocks(blocks: ContentBlock[]): { text: string } {
  * Tallies as it goes rather than walking the returned ChatMessages: by then
  * the blocks are flattened to strings and `reasoning` can no longer be told
  * apart from `history`. */
-async function loadChatHistory(conversationId: string, incognito: boolean): Promise<LoadedHistory> {
+export async function loadChatHistory(conversationId: string, incognito: boolean): Promise<LoadedHistory> {
   const tally: ContextTally = {};
   const out: ChatMessage[] = [];
 
   if (!incognito) {
+    // The newest real compaction point, if any. Everything at or before it is
+    // represented by its summary text and excluded from the replay below.
+    const summaryRows = await db.query.messages.findMany({
+      where: and(
+        eq(messages.conversationId, conversationId),
+        eq(messages.authorType, "summary"),
+        eq(messages.status, "complete"),
+      ),
+      orderBy: (msgs, { desc }) => [desc(msgs.createdAt)],
+      columns: { content: true, createdAt: true },
+      limit: SUMMARY_LOOKBACK,
+    });
+    const summaryRow = summaryRows
+      .map((r) => ({ text: splitBlocks(r.content as ContentBlock[]).text, createdAt: r.createdAt }))
+      .find((r) => r.text.trim().length > 0);
+    const summaryText = summaryRow?.text ?? null;
+    if (summaryText) addChars(tally, "summary", SUMMARY_PREAMBLE + summaryText);
+
     // One over the limit: if the extra row comes back, older turns are being
     // dropped and the UI should say so. Cheaper than a second COUNT(*).
     const rows = await db.query.messages.findMany({
-      where: eq(messages.conversationId, conversationId),
+      where: summaryRow
+        ? and(eq(messages.conversationId, conversationId), gt(messages.createdAt, summaryRow.createdAt))
+        : eq(messages.conversationId, conversationId),
       orderBy: (msgs, { desc }) => [desc(msgs.createdAt)],
       columns: { authorType: true, content: true },
       limit: HISTORY_LIMIT + 1,
@@ -324,24 +361,37 @@ async function loadChatHistory(conversationId: string, incognito: boolean): Prom
       out.push({ role: h.authorType, content: text });
     }
     tallyHistoryRoles(tally, out);
-    return { messages: out, tally, historyMessages: out.length, historyTruncated: truncated };
+    return { messages: out, summaryText, tally, historyMessages: out.length, historyTruncated: truncated };
   }
 
+  // Incognito: rebuilt from the stream log's folded snapshots. The newest
+  // summary (a compact run's message) lives in that same log, so find it and
+  // replay only what came after — same cutoff rule as the Postgres path.
   const broker = getStreamBroker();
   const runIds = (await broker.driver.listConvStreams(conversationId)).slice(-HISTORY_LIMIT);
+  const entries: { author: "user" | "assistant" | "summary"; text: string }[] = [];
   for (const runId of runIds) {
     const records = await broker.readFrom(runId, 0);
     const snapshot = broker.foldSnapshot(records);
     for (const m of snapshot.messages) {
-      if (m.author_type !== "user" && m.author_type !== "assistant") continue;
+      if (m.author_type !== "user" && m.author_type !== "assistant" && m.author_type !== "summary") continue;
       if (!m.text) continue;
-      out.push({ role: m.author_type, content: m.text });
+      // Skip cards have no text, so they never land here — an entry with
+      // author "summary" is always a real compaction point.
+      entries.push({ author: m.author_type, text: m.text });
     }
+  }
+  const lastSummaryIdx = entries.map((e) => e.author).lastIndexOf("summary");
+  const summaryText = lastSummaryIdx >= 0 ? entries[lastSummaryIdx].text : null;
+  if (summaryText) addChars(tally, "summary", SUMMARY_PREAMBLE + summaryText);
+  for (const e of entries.slice(lastSummaryIdx + 1)) {
+    if (e.author === "summary") continue;
+    out.push({ role: e.author, content: e.text });
   }
   const truncated = out.length > HISTORY_LIMIT;
   const capped = out.slice(-HISTORY_LIMIT);
   tallyHistoryRoles(tally, capped);
-  return { messages: capped, tally, historyMessages: capped.length, historyTruncated: truncated };
+  return { messages: capped, summaryText, tally, historyMessages: capped.length, historyTruncated: truncated };
 }
 
 /** The trailing user message is this turn's prompt; everything before it is

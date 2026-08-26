@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { auth } from "../auth";
-import type { ClientMessage, ServerMessage } from "@shannon/types";
+import { findCommand, type ClientMessage, type ServerMessage } from "@shannon/types";
 import { startChatRun } from "../streams/runs/chatRun.ts";
+import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { NotFoundError } from "../streams/authz.ts";
 import { getRun } from "../streams/registry.ts";
@@ -78,6 +79,37 @@ export function chatWsHandler(app: FastifyInstance) {
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
+            incognito: result.incognito,
+          });
+          await delivery.autoSubscribe(result.streamId, result.conversationId);
+        } else if (msg.type === "command.run") {
+          // The registry is the authority — the same list the client's
+          // palette renders. `compact` is the only entry today; the palette
+          // never offers anything else, so an unknown name here is a bug or
+          // a hand-rolled client, and an explicit error beats silence.
+          const cmd = findCommand(msg.command ?? "");
+          if (!cmd || cmd.name !== "compact") {
+            safeSend({ type: "error", error: `Unknown command: ${msg.command}` });
+            return;
+          }
+          if (!msg.conversation_id) {
+            safeSend({ type: "error", error: "Nothing to compact — start a conversation first" });
+            return;
+          }
+          const result = await startCompactRun({
+            userId,
+            conversationId: msg.conversation_id,
+            model: msg.model || "default",
+            args: msg.args,
+            surface: "chat",
+          });
+          safeSend({
+            type: "turn.started",
+            stream_id: result.streamId,
+            conversation_id: result.conversationId,
+            // No user message exists for a command — the summary message is
+            // the run's root, and the client only uses this for correlation.
+            user_message_id: result.summaryMessageId,
             incognito: result.incognito,
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);

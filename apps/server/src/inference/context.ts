@@ -27,12 +27,30 @@ import type { ChatMessage, OpenAiTool } from "./provider.ts";
 const CHARS_PER_TOKEN: Record<ContextCategory, number> = {
   system: 4.0,
   tools: 3.0,
+  summary: 4.0,
   history: 4.0,
   reasoning: 4.0,
   tool_io: 3.2,
   current: 4.0,
   response: 4.0,
 };
+
+/** Standalone estimate for one category's text — used only where no measured
+ * figure exists at all (e.g. the compact run's `before` fallback). Anything
+ * with a real token count from the backend must use that instead. */
+export function estimateTokens(category: ContextCategory, text: string): number {
+  return Math.round(text.length / CHARS_PER_TOKEN[category]);
+}
+
+/** How a compaction summary is replayed into subsequent prompts. One shared
+ * constant: the loaders that build prompts with it and the tallies that
+ * attribute its tokens must be measuring the same string. */
+export const SUMMARY_PREAMBLE =
+  "Summary of the conversation so far. Earlier messages were compacted into this summary; treat it as the authoritative history.\n\n";
+
+export function summaryMessage(summaryText: string): ChatMessage {
+  return { role: "system", content: SUMMARY_PREAMBLE + summaryText };
+}
 
 /** Character counts per category, accumulated while a prompt is assembled. */
 export type ContextTally = Partial<Record<ContextCategory, number>>;
