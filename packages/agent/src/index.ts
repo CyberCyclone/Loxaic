@@ -160,6 +160,60 @@ export function isToolName(value: unknown): value is ToolName {
   return typeof value === "string" && TOOLS.some((t) => t.name === value);
 }
 
+/** Where a resolved tool comes from. MCP tools carry enough provenance to
+ * dispatch back to their server and to attribute them in the UI. */
+export type ToolSource =
+  | { kind: "builtin" }
+  | {
+      kind: "mcp";
+      serverId: string;
+      serverSlug: string;
+      serverName: string;
+      /** The tool's un-namespaced name on the MCP server. */
+      remoteName: string;
+      /** User-asserted (never taken from server annotations). Gates planning mode. */
+      readOnly: boolean;
+    };
+
+/** A tool as offered to the model for one run — builtin or dynamically
+ * discovered. `name` is the wire name (namespaced for MCP tools). */
+export type ResolvedTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  /** Manual-mode default; MCP tools override this via user policy. */
+  requiresApproval: boolean;
+  /** Planning mode never offers write tools. */
+  isWrite: boolean;
+  source: ToolSource;
+};
+
+export function resolveBuiltinTools(): ResolvedTool[] {
+  return TOOLS.map((t) => ({
+    name: t.name,
+    description: t.description,
+    parameters: t.parameters,
+    requiresApproval: t.requiresApproval,
+    isWrite: WRITE_TOOLS.includes(t.name),
+    source: { kind: "builtin" },
+  }));
+}
+
+/** Builtin schemas are closed exactly as toOpenAiTools does; MCP schemas pass
+ * through untouched — forcing additionalProperties:false onto an arbitrary
+ * server-supplied schema would break tools that accept open maps. */
+export function resolvedToOpenAiTool(t: ResolvedTool): OpenAiTool {
+  return {
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters:
+        t.source.kind === "builtin" ? { ...t.parameters, additionalProperties: false } : t.parameters,
+    },
+  };
+}
+
 export type Todo = { id?: string; text: string; status: "pending" | "in_progress" | "completed" };
 
 export type FileDiff = { path: string; oldContent: string | null; newContent: string | null };

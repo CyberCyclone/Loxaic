@@ -5,9 +5,10 @@ import type { ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
 import { streamCompletion, type ChatMessage, type ToolCall, type CompletionResult } from "../../inference/provider.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
-import { isToolName, toOpenAiTools, toolRequiresApproval, WRITE_TOOLS, type PermissionMode } from "@shannon/agent";
-import { executeTool, toolNeedsSandbox } from "../../agent/executor.ts";
+import type { PermissionMode, ToolName } from "@shannon/agent";
+import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
+import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -137,8 +138,11 @@ async function runAgentTurn(ctx: {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
 
   try {
-    const systemPrompt = mode === "planning" ? PLANNING_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT;
-    const tools = toOpenAiTools(mode === "planning" ? WRITE_TOOLS : []);
+    const toolset = await buildToolset(userId, { mode });
+    const systemPrompt =
+      (mode === "planning" ? PLANNING_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT) +
+      (toolset.systemPromptAddendum ? `\n\n${toolset.systemPromptAddendum}` : "");
+    const tools = toolset.openAiTools;
     const history = await loadHistory(convId);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
@@ -328,7 +332,7 @@ async function runAgentTurn(ctx: {
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
       for (const call of toolCalls) {
-        const outcome = await runOneToolCall({ streamId, convId, userId, mode, producer, assistantMsgId }, call);
+        const outcome = await runOneToolCall({ streamId, convId, userId, mode, toolset, producer, assistantMsgId }, call);
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
@@ -391,14 +395,15 @@ async function runAgentTurn(ctx: {
 
 /** Approval gate + execution for a single model-requested tool call. */
 async function runOneToolCall(
-  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; producer: StreamProducer; assistantMsgId: string },
+  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; toolset: Toolset; producer: StreamProducer; assistantMsgId: string },
   call: ToolCall,
 ): Promise<{ output: string; diff?: { path: string; oldContent: string | null; newContent: string | null }[] }> {
-  const { convId, userId, mode, producer, assistantMsgId } = ctx;
+  const { convId, userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
   const args = safeParseArgs(call.function.arguments);
 
-  if (!isToolName(toolName)) {
+  const resolved = toolset.get(toolName);
+  if (!resolved) {
     const output = `Unknown tool "${toolName}". Available tools: see the tool list.`;
     producer.emit({
       kind: "tool.result",
@@ -411,7 +416,7 @@ async function runOneToolCall(
     return { output };
   }
 
-  if (toolRequiresApproval(toolName, mode)) {
+  if (toolset.requiresApproval(resolved, mode)) {
     producer.emit({ kind: "approval.request", call_id: call.id, tool: toolName, args });
     const approved = await waitForApproval(ctx.streamId, call.id);
     if (!approved) {
@@ -428,8 +433,11 @@ async function runOneToolCall(
     }
   }
 
+  // Builtin names come from TOOLS by construction, so the narrowing is sound.
+  const builtinName = resolved.source.kind === "builtin" ? (resolved.name as ToolName) : null;
+
   let container = null;
-  if (toolNeedsSandbox(toolName)) {
+  if (builtinName && toolNeedsSandbox(builtinName)) {
     try {
       container = await getConversationSandbox(userId, convId);
     } catch (err) {
@@ -446,7 +454,9 @@ async function runOneToolCall(
     }
   }
 
-  const result = await executeTool(container, toolName, args);
+  const result: ToolResult = builtinName
+    ? await executeTool(container, builtinName, args)
+    : { ok: false, output: `Unknown tool: ${toolName}` };
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",
