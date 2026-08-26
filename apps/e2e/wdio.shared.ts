@@ -9,7 +9,10 @@ import { standup, teardown } from './scripts/standup.ts';
 
 export const sharedConfig: Partial<WebdriverIO.Config> = {
   runner: 'local',
-  specs: ['./src/specs/**/*.spec.ts'],
+  // Deliberately one level deep: specs directly in src/specs are the shared,
+  // every-platform ones. Platform-only specs live in a subdirectory and are
+  // opted into by that platform's config.
+  specs: ['./src/specs/*.spec.ts'],
 
   // One session at a time: the suites share a single backing server and a
   // simulator/emulator can only host one app instance anyway.

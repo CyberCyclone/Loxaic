@@ -4,10 +4,10 @@ End-to-end suites driven by [WebdriverIO](https://webdriver.io/). One shared smo
 written against `testID`s and runs unchanged on every platform; the per-platform difference is
 confined to a selector mapping and a wdio config.
 
-> **Status:** the **web** suite is implemented and passing. Electron, iOS and Android land in
-> the following PRs of this stack, along with the Appium drivers they need — the selector
-> helper already speaks all four platforms so the shared spec doesn't have to change when they
-> arrive.
+> **Status:** the **web** and **Electron** suites are implemented and passing, running the same
+> smoke spec unchanged. iOS and Android land in the next PR of this stack, along with the Appium
+> drivers they need — the selector helper already speaks all four platforms, so the shared spec
+> won't change when they arrive.
 
 ## Quick start (web)
 
@@ -30,6 +30,27 @@ To watch it happen in a real browser window instead of headless:
 ```bash
 E2E_HEADED=1 pnpm --filter @shannon/e2e test:web
 ```
+
+## Electron
+
+Needs an unpacked desktop build first, then runs like any other suite:
+
+```bash
+pnpm --filter @shannon/desktop package:dir     # builds the web export + packages the app
+pnpm --filter @shannon/e2e test:electron
+```
+
+Re-run `package:dir` whenever `apps/desktop` or the app itself changes — the suite drives the
+built binary, not your working tree.
+
+It runs against the **packaged** app rather than `pnpm dev` on purpose. Electron is the one
+target that can't assume same-origin: the window loads from `app://`, where no server exists, so
+the renderer only learns where the API is through the main process's `window.shannon.apiBaseUrl`
+bridge. The dev shell loads Metro over http instead and never exercises that path.
+`src/specs/electron/endpoint.spec.ts` covers the bridge specifically.
+
+Chromedriver is matched to the Electron version automatically, read from the version
+`apps/desktop` actually has installed — so the two can't drift apart.
 
 ## What the smoke suite covers
 
@@ -113,13 +134,15 @@ read as behaviour rather than as clicks.
 ```
 wdio.shared.ts        base config: hooks, timeouts, stand-up wiring
 wdio.web.ts           web capabilities (Chrome against the served export)
+wdio.electron.ts      electron capabilities (the packaged desktop build)
 scripts/standup.ts    bring the stack up + readiness gate; also the teardown
 src/helpers/
   selectors.ts        testID → per-platform selector; the shared vocabulary
   app.ts              app-level steps (sign in, send a message, …)
   auth.ts             unique per-run test users
   screenshot.ts       named screenshots into artifacts/
-src/specs/            the suites
+src/specs/*.spec.ts   shared suites — every platform runs these
+src/specs/<platform>/ platform-only suites, opted into by that platform's config
 ```
 
 ## Notes for the platforms still to land
@@ -134,5 +157,3 @@ Recorded here so the next PRs don't have to rediscover them:
   `UiSelector().resourceId(...)` form is used rather than Appium's `id` strategy, which would
   prepend the app package. Release builds also block cleartext HTTP, which the LAN/emulator
   endpoints rely on.
-- **Electron** — not same-origin, so it exercises the `window.shannon.apiBaseUrl` bridge; needs
-  an unpacked (`electron-builder --dir`) build to drive.
