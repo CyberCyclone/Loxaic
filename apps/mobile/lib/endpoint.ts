@@ -86,8 +86,8 @@ export async function resolveEndpoint(force = false): Promise<string> {
     return url;
   }
 
-  const lan = process.env.EXPO_PUBLIC_LAN_API_URL as string | undefined;
-  const remote = process.env.EXPO_PUBLIC_API_URL as string | undefined;
+  const lan = process.env.EXPO_PUBLIC_LAN_API_URL;
+  const remote = process.env.EXPO_PUBLIC_API_URL;
   const fallback =
     Platform.OS === 'android' ? 'http://10.0.2.2:4000' : 'http://localhost:4000';
 

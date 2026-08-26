@@ -40,9 +40,11 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
         </Pressable>
       </HStack>
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        {/* Size/leading via classes: on web this Text is a raw <span>, where a
+            numeric inline lineHeight is a unitless multiplier, not px. */}
         <Text
-          className="p-3 text-card-foreground"
-          style={{ fontFamily: 'monospace', fontSize: 13, lineHeight: 19.5 }}
+          className="p-3 text-card-foreground text-[13px] leading-[19.5px]"
+          style={{ fontFamily: 'monospace' }}
         >
           {code}
         </Text>
