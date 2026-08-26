@@ -9,3 +9,4 @@ models/
 *.tgz
 apps/desktop/resources/
 apps/desktop/dist/
+apps/e2e/artifacts/

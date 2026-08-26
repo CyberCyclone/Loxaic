@@ -1,0 +1,7 @@
+{
+  "extends": "@shannon/config-ts/node.json",
+  "compilerOptions": {
+    "types": ["node", "mocha", "@wdio/globals/types", "expect-webdriverio"]
+  },
+  "include": ["src", "scripts", "wdio.shared.ts", "wdio.web.ts"]
+}
