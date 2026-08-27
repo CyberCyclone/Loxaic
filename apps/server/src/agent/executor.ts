@@ -1,19 +1,9 @@
-import type Docker from "dockerode";
 import { promises as dns } from "node:dns";
 import posix from "node:path/posix";
-import {
-  execInContainer,
-  readSandboxFile,
-  writeSandboxFile,
-} from "../sandbox/orchestrator";
+import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@shannon/agent";
 
-/** Everything the agent can touch lives under here. */
-export const SANDBOX_ROOT = "/home/shannon";
-/** Relative paths resolve against the repo checkout. */
-export const SANDBOX_WORKDIR = "/home/shannon/repo";
-
-/** Tools that need a live container; the rest run in-process on the server. */
+/** Tools that need a live sandbox; the rest run in-process on the server. */
 const SANDBOX_TOOLS: ToolName[] = ["fs_read", "fs_write", "fs_edit", "bash", "grep", "glob"];
 
 export function toolNeedsSandbox(tool: ToolName): boolean {
@@ -33,15 +23,20 @@ const MAX_REDIRECTS = 3;
 
 /**
  * Resolve a model-supplied path to an absolute path inside the sandbox,
- * rejecting anything that escapes SANDBOX_ROOT (../, symlink-ish absolute
- * paths, etc.).
+ * rejecting anything that escapes the handle's root (../, symlink-ish
+ * absolute paths, etc.). Re-rooted per handle rather than a hardcoded
+ * constant so container mode (/home/shannon) and host mode (a per-sandbox
+ * directory under SANDBOX_HOST_ROOT) get the same guarantee. Exported so the
+ * REST sandbox routes — which touch sandbox files directly, outside the
+ * agent tool loop — get the same validation instead of trusting a
+ * caller-supplied path outright.
  */
-function resolvePath(raw: unknown): string {
+export function resolvePath(handle: SandboxHandle, raw: unknown): string {
   if (typeof raw !== "string" || raw.trim() === "") {
     throw new Error("path must be a non-empty string");
   }
-  const abs = posix.resolve(raw.startsWith("/") ? raw : posix.join(SANDBOX_WORKDIR, raw));
-  if (abs !== SANDBOX_ROOT && !abs.startsWith(`${SANDBOX_ROOT}/`)) {
+  const abs = posix.resolve(raw.startsWith("/") ? raw : posix.join(handle.workdir, raw));
+  if (abs !== handle.root && !abs.startsWith(`${handle.root}/`)) {
     throw new Error(`path escapes the sandbox: ${raw}`);
   }
   return abs;
@@ -54,22 +49,22 @@ function requireString(args: Record<string, unknown>, key: string): string {
 }
 
 export async function executeTool(
-  container: Docker.Container | null,
+  handle: SandboxHandle | null,
   tool: ToolName,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
   try {
     if (toolNeedsSandbox(tool)) {
-      if (!container) {
+      if (!handle) {
         return { ok: false, output: "No sandbox is available for this tool." };
       }
       switch (tool) {
-        case "fs_read":  return await runFsRead(container, args);
-        case "fs_write": return await runFsWrite(container, args);
-        case "fs_edit":  return await runFsEdit(container, args);
-        case "bash":     return await runBash(container, args);
-        case "grep":     return await runGrep(container, args);
-        case "glob":     return await runGlob(container, args);
+        case "fs_read":  return await runFsRead(handle, args);
+        case "fs_write": return await runFsWrite(handle, args);
+        case "fs_edit":  return await runFsEdit(handle, args);
+        case "bash":     return await runBash(handle, args);
+        case "grep":     return await runGrep(handle, args);
+        case "glob":     return await runGlob(handle, args);
       }
     }
     switch (tool) {
@@ -85,26 +80,26 @@ export async function executeTool(
 
 // ── Filesystem ────────────────────────────────────────────
 
-async function runFsRead(container: Docker.Container, args: Record<string, unknown>): Promise<ToolResult> {
-  const path = resolvePath(args.path);
-  const content = await readSandboxFile(container, path);
+async function runFsRead(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
+  const path = resolvePath(handle, args.path);
+  const content = await handle.readFile(path);
   return { ok: true, output: content === "" ? "(empty file)" : content };
 }
 
 /** Reads a file, returning null when it doesn't exist (rather than throwing). */
-async function readOrNull(container: Docker.Container, path: string): Promise<string | null> {
+async function readOrNull(handle: SandboxHandle, path: string): Promise<string | null> {
   try {
-    return await readSandboxFile(container, path);
+    return await handle.readFile(path);
   } catch {
     return null;
   }
 }
 
-async function runFsWrite(container: Docker.Container, args: Record<string, unknown>): Promise<ToolResult> {
-  const path = resolvePath(args.path);
+async function runFsWrite(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
+  const path = resolvePath(handle, args.path);
   const content = requireString(args, "content");
-  const oldContent = await readOrNull(container, path);
-  await writeSandboxFile(container, path, content);
+  const oldContent = await readOrNull(handle, path);
+  await handle.writeFile(path, content);
   return {
     ok: true,
     output: `Wrote ${String(content.length)} bytes to ${path}`,
@@ -112,13 +107,13 @@ async function runFsWrite(container: Docker.Container, args: Record<string, unkn
   };
 }
 
-async function runFsEdit(container: Docker.Container, args: Record<string, unknown>): Promise<ToolResult> {
-  const path = resolvePath(args.path);
+async function runFsEdit(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
+  const path = resolvePath(handle, args.path);
   const oldText = requireString(args, "oldText");
   const newText = requireString(args, "newText");
   if (oldText === "") return { ok: false, output: "oldText must not be empty" };
 
-  const current = await readOrNull(container, path);
+  const current = await readOrNull(handle, path);
   if (current === null) return { ok: false, output: `File not found: ${path}` };
 
   const occurrences = current.split(oldText).length - 1;
@@ -128,7 +123,7 @@ async function runFsEdit(container: Docker.Container, args: Record<string, unkno
   }
 
   const updated = current.replace(oldText, newText);
-  await writeSandboxFile(container, path, updated);
+  await handle.writeFile(path, updated);
   return {
     ok: true,
     output: `Edited ${path}`,
@@ -138,10 +133,10 @@ async function runFsEdit(container: Docker.Container, args: Record<string, unkno
 
 // ── Shell / search ────────────────────────────────────────
 
-async function runBash(container: Docker.Container, args: Record<string, unknown>): Promise<ToolResult> {
+async function runBash(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
   const command = requireString(args, "command");
-  const res = await execInContainer(container, ["bash", "-lc", command], {
-    workdir: SANDBOX_WORKDIR,
+  const res = await handle.exec(["bash", "-lc", command], {
+    workdir: handle.workdir,
     timeoutMs: 60_000,
   });
   const body = [res.stdout, res.stderr].filter((s) => s.trim() !== "").join("\n");
@@ -151,16 +146,16 @@ async function runBash(container: Docker.Container, args: Record<string, unknown
   };
 }
 
-async function runGrep(container: Docker.Container, args: Record<string, unknown>): Promise<ToolResult> {
+async function runGrep(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
   const pattern = requireString(args, "pattern");
-  const searchPath = args.path === undefined ? SANDBOX_WORKDIR : resolvePath(args.path);
+  const searchPath = args.path === undefined ? handle.workdir : resolvePath(handle, args.path);
   // rg exits 1 on "no matches", which the pipe to head would mask, so the
   // empty-output case is interpreted here rather than from the exit code.
-  const res = await execInContainer(container, [
+  const res = await handle.exec([
     "bash", "-c",
     'rg --line-number --no-heading --color=never --smart-case -e "$1" -- "$2" | head -n 500',
     "_", pattern, searchPath,
-  ], { workdir: SANDBOX_WORKDIR, timeoutMs: 30_000 });
+  ], { workdir: handle.workdir, timeoutMs: 30_000 });
 
   if (res.stdout.trim() === "") {
     return { ok: true, output: res.stderr.trim() || `No matches for /${pattern}/ in ${searchPath}` };
@@ -168,14 +163,14 @@ async function runGrep(container: Docker.Container, args: Record<string, unknown
   return { ok: true, output: res.stdout };
 }
 
-async function runGlob(container: Docker.Container, args: Record<string, unknown>): Promise<ToolResult> {
+async function runGlob(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
   const pattern = requireString(args, "pattern");
-  const searchPath = args.path === undefined ? SANDBOX_WORKDIR : resolvePath(args.path);
-  const res = await execInContainer(container, [
+  const searchPath = args.path === undefined ? handle.workdir : resolvePath(handle, args.path);
+  const res = await handle.exec([
     "bash", "-c",
     'rg --files --hidden --glob "$1" -- "$2" | head -n 500',
     "_", pattern, searchPath,
-  ], { workdir: SANDBOX_WORKDIR, timeoutMs: 30_000 });
+  ], { workdir: handle.workdir, timeoutMs: 30_000 });
 
   if (res.stdout.trim() === "") {
     return { ok: true, output: res.stderr.trim() || `No files match ${pattern} under ${searchPath}` };
@@ -208,7 +203,7 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
   return { ok: true, output: `Todo list updated:\n${rendered}`, todos };
 }
 
-// ── web_fetch (runs on the server: the sandbox has no network) ──
+// ── web_fetch (runs on the server: sandboxes may have no network) ──
 
 /**
  * True for addresses that must never be reachable from a model-chosen URL:

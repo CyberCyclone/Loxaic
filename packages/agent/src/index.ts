@@ -58,7 +58,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "bash",
-    description: "Run a shell command in the sandbox and return its output and exit code.",
+    description: "Run a shell command in the workspace and return its output and exit code.",
     parameters: {
       type: "object",
       properties: {

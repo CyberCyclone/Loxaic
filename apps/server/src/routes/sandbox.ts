@@ -3,39 +3,52 @@ import { and, eq } from "@shannon/db";
 import { db } from "@shannon/db";
 import { sandboxes } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
-import {
-  createSandbox,
-  stopSandbox,
-  execInContainer,
-  getSandboxFileTree,
-  readSandboxFile,
-  writeSandboxFile,
-  getContainer,
-} from "../sandbox/orchestrator";
+import { resolvePath } from "../agent/executor.ts";
+import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
 
 export function sandboxRoutes(app: FastifyInstance) {
   app.post("/v1/sandboxes", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { repo_url, branch, token, conversation_id } = request.body as {
+    const { repo_url, branch, token, conversation_id, provider: providerOverride } = request.body as {
       repo_url?: string;
       branch?: string;
       token?: string;
       conversation_id?: string;
+      provider?: string;
     };
+    // An explicit `provider` in the body always wins; otherwise this follows
+    // the server's configured SANDBOX_MODE rather than hardcoding
+    // "container" — a REST caller that doesn't ask for a specific provider
+    // should get whatever the deployment is actually set up to use.
+    const globalMode = getSandboxMode();
+    if (providerOverride !== "host" && providerOverride !== "container" && globalMode === "off") {
+      return reply.code(400).send({ error: "sandboxes are disabled (SANDBOX_MODE=off)" });
+    }
+    const kind: "container" | "host" =
+      providerOverride === "host" || providerOverride === "container"
+        ? providerOverride
+        : globalMode === "host" ? "host" : "container";
+    // Host mode has real network access unlike a container's NetworkMode:
+    // none, so it *could* clone — but the REST surface is unauthenticated-ish
+    // (any signed-in user, no per-repo scoping), and giving arbitrary host
+    // execution a network-fetching clone step on top is a bigger step than
+    // this endpoint should take without a more deliberate design. Rejected
+    // outright for now rather than half-supported.
+    if (kind === "host" && repo_url) {
+      return reply.code(400).send({ error: "repo_url is not supported with provider=host" });
+    }
 
-    const info = await createSandbox(userId, {
-      repoUrl: repo_url,
-      branch,
-      token,
-    });
+    const provider = await getProviderByKind(kind);
+    const handle = await provider.create(userId, { repoUrl: repo_url, branch, token });
 
     const [row] = await db
       .insert(sandboxes)
       .values({
         ownerId: userId,
         conversationId: conversation_id ?? null,
-        containerId: info.containerId,
-        image: "shannon-sandbox",
+        containerId: handle.ref,
+        provider: kind,
+        image: kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
         status: "running",
         repoUrl: repo_url ?? null,
         branch: branch ?? null,
@@ -53,7 +66,9 @@ export function sandboxRoutes(app: FastifyInstance) {
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
-    await stopSandbox(sandbox.containerId);
+    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const handle = await provider.attach(sandbox.containerId);
+    await handle.stop();
     await db
       .update(sandboxes)
       .set({ status: "stopped", stoppedAt: new Date() })
@@ -70,8 +85,9 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { command, workdir } = request.body as { command: string; workdir?: string };
-    const container = getContainer(sandbox.containerId);
-    const result = await execInContainer(container, ["bash", "-c", command], { workdir });
+    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const handle = await provider.attach(sandbox.containerId);
+    const result = await handle.exec(["bash", "-c", command], { workdir });
     return result;
   });
 
@@ -83,9 +99,14 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { path } = request.query as { path?: string };
-    const container = getContainer(sandbox.containerId);
-    // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty ?path= must still fall back to the repo dir; ?? would pass "".
-    return getSandboxFileTree(container, path || "/home/shannon/repo");
+    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const handle = await provider.attach(sandbox.containerId);
+    try {
+      const treePath = path ? resolvePath(handle, path) : handle.workdir;
+      return await handle.fileTree(treePath);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   app.get<{ Params: { id: string } }>("/v1/sandboxes/:id/files/read", async (request, reply) => {
@@ -95,11 +116,16 @@ export function sandboxRoutes(app: FastifyInstance) {
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
-    const { path } = request.query as { path: string };
-    if (!path) return reply.code(400).send({ error: "path required" });
-
-    const container = getContainer(sandbox.containerId);
-    const content = await readSandboxFile(container, path);
+    const { path } = request.query as { path?: string };
+    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const handle = await provider.attach(sandbox.containerId);
+    let resolved: string;
+    try {
+      resolved = resolvePath(handle, path);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+    const content = await handle.readFile(resolved);
     return { content };
   });
 
@@ -111,8 +137,15 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { path, content } = request.body as { path: string; content: string };
-    const container = getContainer(sandbox.containerId);
-    await writeSandboxFile(container, path, content);
+    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const handle = await provider.attach(sandbox.containerId);
+    let resolved: string;
+    try {
+      resolved = resolvePath(handle, path);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+    await handle.writeFile(resolved, content);
     return { ok: true };
   });
 }

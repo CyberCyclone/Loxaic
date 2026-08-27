@@ -277,6 +277,9 @@ importers:
       postgres:
         specifier: ^3.4.0
         version: 3.4.9
+      tar-fs:
+        specifier: ^2.1.4
+        version: 2.1.5
       uuid:
         specifier: ^14.0.1
         version: 14.0.1
@@ -290,6 +293,9 @@ importers:
       '@types/node-cron':
         specifier: ^3.0.11
         version: 3.0.11
+      '@types/tar-fs':
+        specifier: ^2.0.4
+        version: 2.0.4
       '@types/uuid':
         specifier: ^11.0.0
         version: 11.0.0
@@ -3696,6 +3702,12 @@ packages:
 
   '@types/stack-utils@2.0.3':
     resolution: {integrity: sha512-9aEbYZ3TbYMznPdcdr3SmIrLXwC/AKZXQeCf9Pgao5CKb8CyHuEX5jzWPTkvregvhRJHcpRO6BFoGW9ycaOkYw==}
+
+  '@types/tar-fs@2.0.4':
+    resolution: {integrity: sha512-ipPec0CjTmVDWE+QKr9cTmIIoTl7dFG/yARCM5MqK8i6CNLIG1P8x4kwDsOQY1ChZOZjH0wO9nvfgBvWl4R3kA==}
+
+  '@types/tar-stream@3.1.4':
+    resolution: {integrity: sha512-921gW0+g29mCJX0fRvqeHzBlE/XclDaAG0Ousy1LCghsOhvaKacDeRGEVzQP9IPfKn8Vysy7FEXAIxycpc/CMg==}
 
   '@types/triple-beam@1.3.5':
     resolution: {integrity: sha512-6WaYesThRMCl19iryMYP7/x2OVgCtbIVflDGFpWnb9irXI3UjYE4AzmYuiUKY1AJstGijoY+MgUszMgRxIYTYw==}
@@ -13223,6 +13235,15 @@ snapshots:
       '@types/node': 18.19.130
 
   '@types/stack-utils@2.0.3': {}
+
+  '@types/tar-fs@2.0.4':
+    dependencies:
+      '@types/node': 26.2.0
+      '@types/tar-stream': 3.1.4
+
+  '@types/tar-stream@3.1.4':
+    dependencies:
+      '@types/node': 26.2.0
 
   '@types/triple-beam@1.3.5': {}
 

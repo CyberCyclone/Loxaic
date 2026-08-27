@@ -8,6 +8,7 @@ import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../in
 import { isToolName, toOpenAiTools, toolRequiresApproval, WRITE_TOOLS, type PermissionMode } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
+import { getSandboxMode } from "../../sandbox/provider.ts";
 import { assertConversationAccess, assertParentInConversation } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -36,19 +37,28 @@ function isAborted(controller: AbortController): boolean {
  * textless, and must never act as a compaction cutoff. */
 const SUMMARY_LOOKBACK = 20;
 
-const BASE_SYSTEM_PROMPT = [
-  "You are Shannon, a coding agent working inside an isolated Linux sandbox.",
-  "The repository is checked out at /home/shannon/repo, which is your working directory; relative paths resolve there.",
-  "Work in small, verifiable steps: read before you edit, and prefer fs_edit over rewriting a whole file.",
-  "Use the tools available to you rather than guessing at file contents. Explain what you are doing as you go,",
-  "and finish with a short summary of what changed.",
-].join(" ");
+/** Built at call time (not a module-load const): SANDBOX_MODE shapes what's
+ * true to tell the model about where it's actually running. */
+function baseSystemPrompt(): string {
+  const location = getSandboxMode() === "host"
+    ? "directly on the host machine, in a scratch working directory created for this conversation"
+    : "inside an isolated Linux sandbox container, with the repository checked out at /home/shannon/repo (your working directory; relative paths resolve there)";
+  return [
+    `You are Shannon, a coding agent working ${location}.`,
+    "Work in small, verifiable steps: read before you edit, and prefer fs_edit over rewriting a whole file.",
+    "Use the tools available to you rather than guessing at file contents. Explain what you are doing as you go,",
+    "and finish with a short summary of what changed.",
+  ].join(" ");
+}
 
-const PLANNING_SYSTEM_PROMPT = [
-  "You are Shannon in PLANNING mode. Investigate the repository at /home/shannon/repo using the read-only tools",
-  "available to you and produce a concrete, step-by-step plan. Do not write, edit, or execute anything —",
-  "no files may change in this mode. Finish with the plan as prose.",
-].join(" ");
+function planningSystemPrompt(): string {
+  const location = getSandboxMode() === "host" ? "on the host machine" : "at /home/shannon/repo";
+  return [
+    `You are Shannon in PLANNING mode. Investigate the repository ${location} using the read-only tools`,
+    "available to you and produce a concrete, step-by-step plan. Do not write, edit, or execute anything —",
+    "no files may change in this mode. Finish with the plan as prose.",
+  ].join(" ");
+}
 
 export interface StartAgentRunResult {
   streamId: string;
@@ -148,7 +158,7 @@ async function runAgentTurn(ctx: {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
 
   try {
-    const systemPrompt = mode === "planning" ? PLANNING_SYSTEM_PROMPT : BASE_SYSTEM_PROMPT;
+    const systemPrompt = mode === "planning" ? planningSystemPrompt() : baseSystemPrompt();
     const tools = toOpenAiTools(mode === "planning" ? WRITE_TOOLS : []);
     const history = await loadHistory(convId);
     // The compaction summary rides as a second system message, after the real
@@ -439,11 +449,14 @@ async function runOneToolCall(
     }
   }
 
-  let container = null;
+  let handle = null;
   if (toolNeedsSandbox(toolName)) {
     try {
-      container = await getConversationSandbox(userId, convId);
+      handle = await getConversationSandbox(userId, convId);
     } catch (err) {
+      // The underlying error (from the container provider) already names
+      // what was tried and how to fix it — see container-provider.ts's
+      // requireDocker().
       const output = `Could not start a sandbox: ${(err as Error).message}`;
       producer.emit({
         kind: "tool.result",
@@ -457,7 +470,7 @@ async function runOneToolCall(
     }
   }
 
-  const result = await executeTool(container, toolName, args);
+  const result = await executeTool(handle, toolName, args);
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",
