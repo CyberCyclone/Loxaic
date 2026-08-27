@@ -4,10 +4,8 @@ End-to-end suites driven by [WebdriverIO](https://webdriver.io/). One shared smo
 written against `testID`s and runs unchanged on every platform; the per-platform difference is
 confined to a selector mapping and a wdio config.
 
-> **Status:** the **web** and **Electron** suites are implemented and passing, running the same
-> smoke spec unchanged. iOS and Android land in the next PR of this stack, along with the Appium
-> drivers they need — the selector helper already speaks all four platforms, so the shared spec
-> won't change when they arrive.
+> **Status:** all four platforms — web, Electron, iOS and Android — run the same smoke spec
+> unchanged.
 
 ## Quick start (web)
 
@@ -51,6 +49,77 @@ bridge. The dev shell loads Metro over http instead and never exercises that pat
 
 Chromedriver is matched to the Electron version automatically, read from the version
 `apps/desktop` actually has installed — so the two can't drift apart.
+
+## iOS and Android
+
+Both use Appium. Install its drivers once — they go into a repo-local `.appium/`, so a run uses
+the versions this repo pins rather than whatever is installed globally:
+
+```bash
+pnpm --filter @shannon/e2e setup:appium
+```
+
+### Android
+
+```bash
+pnpm --filter @shannon/mobile prebuild:android
+cd apps/mobile/android && ./gradlew assembleRelease
+pnpm --filter @shannon/e2e test:android
+```
+
+Needs the Android SDK (`ANDROID_HOME`, or Android Studio's default location) and a running
+emulator or connected device.
+
+A **release** build is used because release embeds the JS bundle, so the app under test is
+self-contained and no Metro server has to stay alive beside the suite. It is signed with the
+debug keystore, which is fine for an emulator.
+
+**Networking.** The suite runs `adb reverse` so the device reaches the server at plain
+`localhost`. The emulator could instead use its `10.0.2.2` host alias — and does, by default, via
+the app's own fallback — but that alias is emulator-only, whereas the reversed port behaves
+identically on a physical device.
+
+On the **default port 4000** that fallback needs no configuration at all. On **any other port**,
+or on a physical device, the APK must be built with the URL baked in, because `EXPO_PUBLIC_*`
+values are inlined at bundle time rather than read at runtime:
+
+```bash
+EXPO_PUBLIC_API_URL=http://localhost:4055 ./gradlew assembleRelease
+E2E_PORT=4055 pnpm --filter @shannon/e2e test:android
+```
+
+Gradle caches the JS bundle, so changing that variable alone will not rebuild it — pass
+`--rerun-tasks` (or delete `app/build/generated/assets`) when you change the URL.
+
+Release builds block cleartext HTTP, which every self-hosted/LAN endpoint here relies on, so
+`app.json` enables `usesCleartextTraffic` through `expo-build-properties`.
+
+### iOS
+
+```bash
+pnpm --filter @shannon/mobile prebuild:ios
+cd apps/mobile/ios && pod install
+xcodebuild -workspace openshannon.xcworkspace -scheme openshannon \
+  -configuration Release -sdk iphonesimulator -derivedDataPath build \
+  CODE_SIGNING_ALLOWED=NO build
+pnpm --filter @shannon/e2e test:ios
+```
+
+Point `E2E_IOS_DEVICE` at a simulator name (default `iPhone 16`) and `E2E_IOS_APP` at a `.app`
+bundle if yours is somewhere other than the default derived-data path.
+
+No port forwarding is needed: the simulator shares the host's loopback, so the app's own
+`localhost` fallback already reaches the server, and App Transport Security exempts localhost
+from HTTPS. That is why iOS needs neither `adb reverse` nor the cleartext opt-in Android does.
+
+Two setup traps worth knowing, both hit while building this:
+
+- **CocoaPods needs a UTF-8 locale.** Without it `pod install` dies with
+  `Unicode Normalization not appropriate for ASCII-8BIT`. Export `LANG=en_US.UTF-8`.
+- **Xcode needs its iOS platform runtime downloaded**, separately from Xcode itself. Without it
+  `xcodebuild` reports *"Found no destinations for the scheme"* / *"iOS <version> is not
+  installed"* even though simulators exist and the SDKs are present. Fix with
+  `xcodebuild -downloadPlatform iOS` (~8.5 GB).
 
 ## What the smoke suite covers
 
@@ -101,6 +170,11 @@ PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end
 | `E2E_FRESH_WEB` | — | `1` forces a rebuild of the Expo web export. |
 | `E2E_HEADED` | — | `1` runs Chrome headed instead of headless. |
 | `E2E_LOG_LEVEL` | `warn` | WebdriverIO log level (`trace`…`error`). |
+| `E2E_IOS_DEVICE` | `iPhone 16` | Simulator to run the iOS suite on. |
+| `E2E_IOS_VERSION` | — | Pin a simulator iOS version (e.g. `18.6`). |
+| `E2E_IOS_APP` | — | Path to a built `.app` bundle, if not in the default location. |
+| `E2E_ANDROID_AVD` | — | AVD to boot; otherwise uses the running emulator/device. |
+| `ANDROID_HOME` | Android Studio's default SDK path | Android SDK location. |
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/shannon` | Test database. |
 
 Stand-up and teardown can also be driven on their own, which is handy when iterating on a spec
@@ -135,7 +209,10 @@ read as behaviour rather than as clicks.
 wdio.shared.ts        base config: hooks, timeouts, stand-up wiring
 wdio.web.ts           web capabilities (Chrome against the served export)
 wdio.electron.ts      electron capabilities (the packaged desktop build)
+wdio.ios.ts           XCUITest against a simulator
+wdio.android.ts       UiAutomator2 against an emulator/device
 scripts/standup.ts    bring the stack up + readiness gate; also the teardown
+scripts/native.ts     Appium home, SDK resolution, adb reverse, build paths
 src/helpers/
   selectors.ts        testID → per-platform selector; the shared vocabulary
   app.ts              app-level steps (sign in, send a message, …)
@@ -145,15 +222,31 @@ src/specs/*.spec.ts   shared suites — every platform runs these
 src/specs/<platform>/ platform-only suites, opted into by that platform's config
 ```
 
-## Notes for the platforms still to land
+## How testIDs resolve, per platform
 
-Recorded here so the next PRs don't have to rediscover them:
+Verified against a real build on each platform, not assumed:
 
-- **Appium 2, not 3.** Appium 3 changed the driver/CLI surface; the drivers will be installed
-  into a repo-local `APPIUM_HOME` (`apps/e2e/.appium/`) so runs are deterministic.
-- **iOS** — `expo prebuild` then a Release simulator build (Release embeds the JS bundle, so no
-  Metro). testID arrives as `accessibilityIdentifier`, matched by `~id`.
-- **Android** — testID arrives as an *unprefixed* `resource-id`, so the raw
-  `UiSelector().resourceId(...)` form is used rather than Appium's `id` strategy, which would
-  prepend the app package. Release builds also block cleartext HTTP, which the LAN/emulator
-  endpoints rely on.
+| Platform | `testID` becomes | Selector used |
+| --- | --- | --- |
+| web / Electron | `data-testid` attribute | `[data-testid="id"]` |
+| iOS | `accessibilityIdentifier` | `~id` (accessibility id) |
+| Android | **unprefixed** `resource-id` | `new UiSelector().resourceId("id")` |
+
+The Android row is the one with a trap in it. Appium's `id` strategy prepends
+`<appPackage>:id/`, which never matches a testID-derived resource-id — hence the raw
+`UiSelector` form. Confirmed by dumping the live hierarchy from a release build on an emulator:
+`resource-id="login.email"`, with no package prefix, under React Native 0.81 with the new
+architecture enabled.
+
+**Appium 3, not 2.** The current `uiautomator2` and `xcuitest` drivers both require Appium 3
+(`^3.0.0-rc.2`); pinning Appium 2 would mean pinning older drivers, which is the riskier choice
+against a recent Xcode and RN's new architecture.
+
+## Asserting on text
+
+`waitForTextIn` looks deliberately asymmetric, and the asymmetry is load-bearing. On the web,
+`getText()` returns the DOM's concatenated `textContent`, so searching the whole message-list
+container holds even when the markdown renderer splits a reply across several nodes. On native
+there is no such concatenation — `getText()` on a container returns *that view's own* (empty)
+text — so the search has to go to the leaf that actually carries the string, via
+`textContains` / an `NSPredicate`. Using the web approach on Android silently finds nothing.

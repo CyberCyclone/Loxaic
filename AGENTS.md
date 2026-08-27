@@ -108,10 +108,13 @@ screenshots showing that behaviour working. Writing those tests is the implement
   to those five `index.web.tsx` files. `icon`'s `.web.tsx` delegates to a third-party
   `PrimitiveIcon`/`Svg` layer instead of rendering DOM directly and is not patched — don't
   put a testID on an `Icon` element; put it on the `Pressable`/`Button` that wraps it.
-- **Per-platform mapping:** web/Electron → `[data-testid="…"]`; iOS → RN exposes `testID` as
-  `accessibilityIdentifier`, found via XCUITest's `accessibility id` strategy (`~id`);
-  Android → exposed as an unprefixed `resource-id`, found via UiAutomator2
-  (`new UiSelector().resourceId("id")`).
+- **Per-platform mapping** (each verified against a real build): web/Electron →
+  `[data-testid="…"]`; iOS → RN exposes `testID` as `accessibilityIdentifier`, found via
+  XCUITest's `accessibility id` strategy (`~id`); Android → exposed as an **unprefixed**
+  `resource-id`, found via UiAutomator2 (`new UiSelector().resourceId("id")`) — note Appium's
+  `id` strategy prepends `<appPackage>:id/` and so never matches.
+- Don't hand-roll these selectors in specs — use the helpers in `apps/e2e/src/helpers/`, which
+  own the mapping.
 
 ### DB / Drizzle
 

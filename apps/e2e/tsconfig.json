@@ -10,5 +10,5 @@
       "wdio-electron-service"
     ]
   },
-  "include": ["src", "scripts", "wdio.shared.ts", "wdio.web.ts", "wdio.electron.ts"]
+  "include": ["src", "scripts", "wdio.*.ts"]
 }

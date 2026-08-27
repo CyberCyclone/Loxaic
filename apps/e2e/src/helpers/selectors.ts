@@ -63,15 +63,40 @@ export async function waitForGone(id: string, timeout = 60_000): Promise<void> {
 }
 
 /**
- * Waits for `text` to appear anywhere inside the element identified by
- * `containerId`.
+ * A selector matching any element whose visible text contains `text`.
  *
- * Deliberately a substring search over the container rather than a match on
- * one element: assistant replies are rendered through the markdown component,
- * which is free to split a single logical string across several nodes, so no
- * individual element is guaranteed to hold the whole thing. It also avoids
- * indexing into the message list, which is inverted and virtualised — position
- * is not a stable way to find a message.
+ * Native only — the web/Electron path doesn't need it (see waitForTextIn).
+ */
+function containsTextSelector(text: string): string {
+  // JSON.stringify gives a correctly quoted-and-escaped string literal for
+  // both the Java (UiSelector) and NSPredicate syntaxes.
+  const quoted = JSON.stringify(text);
+  switch (platform()) {
+    case 'android':
+      return `android=new UiSelector().textContains(${quoted})`;
+    case 'ios':
+      // Which attribute carries the string depends on how the element was
+      // built, so accept any of the three rather than betting on one.
+      return `-ios predicate string:label CONTAINS ${quoted} OR name CONTAINS ${quoted} OR value CONTAINS ${quoted}`;
+    case 'web':
+    case 'electron':
+      return `//*[contains(text(), ${quoted})]`;
+  }
+}
+
+/**
+ * Waits for `text` to appear inside the element identified by `containerId`.
+ *
+ * Never indexes into the message list to find a reply: the list is inverted
+ * *and* virtualised, so position is not a stable way to identify a message.
+ *
+ * The two branches exist because "the text under this container" means
+ * genuinely different things per platform. On the web, `getText()` returns the
+ * DOM's concatenated `textContent`, so a substring search over the container
+ * holds even when the markdown renderer splits a reply across several nodes.
+ * On native there is no such concatenation — `getText()` on a ViewGroup returns
+ * that view's own (empty) text — so the search has to go to the leaf that
+ * actually carries the string.
  */
 export async function waitForTextIn(
   containerId: string,
@@ -80,12 +105,19 @@ export async function waitForTextIn(
 ): Promise<void> {
   const container = byTestId(containerId);
   await container.waitForDisplayed({ timeout });
-  await browser.waitUntil(
-    async () => (await container.getText()).includes(text),
-    {
+
+  const p = platform();
+  if (p === 'web' || p === 'electron') {
+    await browser.waitUntil(async () => (await container.getText()).includes(text), {
       timeout,
       interval: 500,
       timeoutMsg: `expected "${text}" to appear in [${containerId}] within ${String(timeout)}ms`,
-    },
-  );
+    });
+    return;
+  }
+
+  await $(containsTextSelector(text)).waitForDisplayed({
+    timeout,
+    timeoutMsg: `expected an element containing "${text}" within ${String(timeout)}ms`,
+  });
 }
