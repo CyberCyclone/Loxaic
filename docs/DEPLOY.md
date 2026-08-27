@@ -118,3 +118,51 @@ can't assume same-origin: its main process resolves the API base URL itself
 it to the renderer via a `contextBridge` preload script. See
 [REMOTE_ACCESS.md](REMOTE_ACCESS.md#electron-desktop-app) for the
 embedded-Tailscale sidecar.
+
+### Self-contained headless server
+
+The same distributable runs with no window for server installs — a Proxmox
+VM/LXC, a bare Linux box, anything you'd rather not put a display on. Two
+equivalent ways to invoke it:
+
+- **Convenience, on a machine with a display**: `Open-Shannon --headless`.
+  The GUI binary re-execs itself as plain Node running `headless.js` before
+  touching Electron/Chromium at all — best-effort, since a truly
+  display-less machine may not let the GUI binary get that far.
+- **The real headless path, for systemd**: set `ELECTRON_RUN_AS_NODE=1` and
+  invoke `headless.js` inside the packaged app directly. This never
+  initialises Chromium, so it needs no display and no `xvfb`, ever.
+
+```ini
+# /etc/systemd/system/open-shannon.service
+[Unit]
+Description=Open Shannon
+After=network.target
+
+[Service]
+Environment=ELECTRON_RUN_AS_NODE=1
+ExecStart=/opt/open-shannon/open-shannon /opt/open-shannon/resources/app/src/headless.js \
+  --data-dir=/var/lib/open-shannon --port=4100
+Restart=on-failure
+User=shannon
+
+[Install]
+WantedBy=multi-user.target
+```
+
+(For an AppImage, extract it first — `./Open-Shannon.AppImage --appimage-extract`
+— and point `ExecStart` at `squashfs-root/open-shannon` and
+`squashfs-root/resources/app/src/headless.js`; a `.deb`/`.rpm` target with a
+stable install path is tracked for a later pass.)
+
+Flags: `--port` (default 4100, or `$SHANNON_PORT`), `--host` (default
+`0.0.0.0`), `--data-dir` (default the platform user-data dir, or
+`$SHANNON_DATA_DIR`), `--inference-url`, `--mock-inference`, `--help`. The
+GUI's `--shannon-port`/`--shannon-data-dir` names are accepted too, so one
+set of flags works with either entry point.
+
+The GUI and the headless server share the same data directory by default (an
+account created in one signs in from the other) — a machine can move between
+"desktop app you look at" and "background service" without a migration step.
+`Ctrl-C`/`SIGTERM` drains the server and shuts Postgres down cleanly before
+exiting; a `systemctl restart` reuses the existing database.
