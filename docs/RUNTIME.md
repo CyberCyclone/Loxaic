@@ -1,28 +1,68 @@
 # Runtime: container engine + inference backend
 
-Shannon needs two things from the host it runs on: a container engine (for
-Postgres and disposable agent sandboxes) and an inference backend (llama.cpp).
-Neither is locked to a specific product — pick what fits your hardware.
+Shannon runs two ways — see [`DEPLOY.md`](DEPLOY.md) for the full comparison:
 
-## Container engine
+- **Self-contained** (the packaged desktop app, or its `--headless` /
+  `headless.js` entry): embeds its own Postgres, no container engine needed
+  to chat at all. A container engine is only relevant for the **Code/Agent**
+  feature's sandboxed tool execution — and even that has a no-isolation
+  fallback that needs no engine (`SANDBOX_MODE=host`, see below).
+- **Docker Compose**: containers for everything — Postgres, agent sandboxes,
+  and (optionally) inference.
+
+Either way, the pieces below — which container engine, and which inference
+backend — are independent choices; pick what fits your hardware.
+
+## Container engine (agent sandboxes)
 
 The server talks to containers through [dockerode](https://github.com/apocas/dockerode),
 which speaks the **Docker Engine API** — not "Docker" specifically. Any engine
-that exposes that API works. Point the server at it with `CONTAINER_SOCKET` in
-`.env` (see [`.env.example`](../.env.example)); leave it empty to use the
-default `/var/run/docker.sock`.
+that exposes that API works, and is now **auto-discovered**: the default
+socket is tried first, then common Podman locations (rootless on Linux, the
+`podman machine` socket on macOS/Windows) — re-probed live, so starting the
+engine after Shannon is already running needs no restart. Set
+`CONTAINER_SOCKET` in `.env` (see [`.env.example`](../.env.example)) only to
+pin a specific socket or skip discovery.
 
 | Engine | Platforms | Socket | Notes |
 |---|---|---|---|
 | **Docker Desktop** | Mac, Windows, Linux | default | Easiest on Mac/Windows. Free for personal/small-business use. |
 | **OrbStack** | Mac | default (drop-in) | Lighter/faster than Docker Desktop on Mac; fully compatible. |
 | **Colima** | Mac, Linux | `~/.colima/default/docker.sock` | Free, open-source Docker Desktop alternative. |
-| **Podman** | Linux, Mac, Windows | `podman machine` prints the socket path | Fully open-source, daemonless. Rootless by default. |
+| **Podman** | Linux, Mac, Windows | auto-discovered, or `podman machine inspect` prints it | Fully open-source, daemonless. Rootless by default. |
 | **Docker Engine (native)** | Linux, Proxmox LXC/VM | default | What you're likely running on a Proxmox host or VM already. |
 
-Only Postgres and the `shannon-sandbox` image need the container engine —
-inference does not go through it (see below), so this choice has no bearing on
-GPU access for the model.
+The `shannon-sandbox` image is built automatically on first use if it isn't
+already present (from `infra/docker/sandbox.Dockerfile`, or a copy the
+packaged app ships) — nothing needs to build it ahead of time. Only agent
+sandboxes need the engine — inference does not go through it (see below), so
+this choice has no bearing on GPU access for the model.
+
+### No engine? `SANDBOX_MODE`
+
+`SANDBOX_MODE` picks how agent tool calls (bash, fs_read/write/edit, grep,
+glob) actually run:
+
+| Mode | Behavior |
+|---|---|
+| `container` (default) | Isolated via the engine above. If none is reachable, sandboxed tool calls fail with an instructive message (which engine/socket was tried, and the two ways to fix it) — chat and everything else keeps working. |
+| `host` | **No isolation** — commands run directly on the machine Shannon is on. An explicit opt-in: logs a prominent warning at boot and on first use. Only enable this if you trust everything the agent might be asked to run. |
+| `off` | Sandboxed tools are disabled entirely; the agent falls back to read-only/no-tool behavior. |
+
+`GET /v1/config` reports the current mode and whether it's actually usable
+right now (`{"sandbox":{"mode":"container","available":false,"reason":"…"}}`)
+— useful for a client to show *why* before a tool call fails mid-run.
+
+## Postgres
+
+**Self-contained**: embedded automatically (via [`embedded-postgres`](https://www.npmjs.com/package/embedded-postgres)) —
+data lives under the app's user-data directory, on an ephemeral localhost
+port chosen at startup. No container engine, no separate install, nothing to
+configure. See [`DEPLOY.md`](DEPLOY.md) for the exact data-dir/port defaults
+and how they coexist with a dev stack on the same machine.
+
+**Docker Compose**: unchanged — the `db` service (`postgres:17-alpine`), same
+as always.
 
 ## Inference backend
 
@@ -43,23 +83,23 @@ containerized llama.cpp on a Mac would be CPU-only. Run it natively there.
 
 ## Putting it together
 
-`docker-compose.yml` covers Postgres + the sandbox image unconditionally; the
-`inference` service is a convenience default (CPU-friendly llama.cpp image) —
-override or replace it per the table above. Set `CONTAINER_SOCKET` only if
-you're not using the default Docker Desktop/Engine socket location.
-
 ```bash
-# Mac: native inference, Docker Desktop/OrbStack for everything else
+# Self-contained app: no container engine needed at all to chat.
+# For agent sandboxes, install Docker or Podman — nothing else to configure,
+# it's auto-discovered. Without one, SANDBOX_MODE=host or =off still work.
+open Open-Shannon.dmg   # or: ./open-shannon --headless
+
+# Docker Compose — Mac: native inference, Docker Desktop/OrbStack for everything else
 llama-server --host 0.0.0.0 --port 4002 --jinja -m model.gguf -ngl 999 &
 docker compose up db server   # skip the `inference` service
 
-# Proxmox / AMD ROCm: everything in Docker
+# Docker Compose — Proxmox / AMD ROCm: everything in Docker
 docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
 
-# Podman anywhere
+# Docker Compose — Podman anywhere
 podman machine start
-export CONTAINER_SOCKET=$(podman machine inspect --format '{{.ConnectionInfo.PodmanSocket.Path}}')
-docker compose up -d   # `docker compose` works fine against a podman socket via podman-compose or docker-compose + DOCKER_HOST
+docker compose up -d   # CONTAINER_SOCKET is usually unnecessary now (auto-discovered);
+                        # `docker compose` itself still needs DOCKER_HOST or podman-compose
 ```
 
 See [`docs/REMOTE_ACCESS.md`](REMOTE_ACCESS.md) for exposing whichever setup
