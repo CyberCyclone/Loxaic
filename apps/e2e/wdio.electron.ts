@@ -14,6 +14,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Must come before the standup import: it allocates the free port a
+// self-contained run serves on, which standup reads at module load.
+import { SELF_CONTAINED, selfContainedDataDir } from './scripts/electron-env.ts';
 import { BASE_URL } from './scripts/standup.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
@@ -21,12 +24,21 @@ process.env.E2E_PLATFORM = 'electron';
 
 // The service spawns the app, which inherits this process's environment, so the
 // app's config has to be in place before the session starts.
-//
-// main.js resolves its API base URL before creating the window, probing each
-// candidate with a 1.5s timeout and falling back to localhost:4000. Handing it
-// one that answers immediately keeps startup snappy and, more importantly, pins
-// the app to *this* run's server rather than whatever holds the default port.
-process.env.EXPO_PUBLIC_API_URL = BASE_URL;
+if (SELF_CONTAINED) {
+  // The app must run its embedded stack, so nothing may push it into a
+  // client-only mode — and the supervisor passes MOCK_INFERENCE through to
+  // the server child it spawns.
+  delete process.env.EXPO_PUBLIC_API_URL;
+  delete process.env.EXPO_PUBLIC_LAN_API_URL;
+  delete process.env.SHANNON_REMOTE_URL;
+  process.env.MOCK_INFERENCE = 'true';
+} else {
+  // main.js resolves its API base URL before creating the window, probing each
+  // candidate with a 1.5s timeout. Handing it one that answers immediately
+  // keeps startup snappy and, more importantly, pins the app to *this* run's
+  // server rather than whatever holds the default port.
+  process.env.EXPO_PUBLIC_API_URL = BASE_URL;
+}
 // Never let a developer's real tailnet config hijack a test run: with this set,
 // main.js spawns the sidecar and points the app at a tailnet host instead.
 delete process.env.TSNET_TARGET;
@@ -90,6 +102,16 @@ export const config: WebdriverIO.Config = {
       browserVersion: electronVersion(),
       'wdio:electronServiceOptions': {
         appBinaryPath: appBinaryPath(),
+        // Self-contained: the app runs its own stack on this run's free port,
+        // with a throwaway data dir so runs never share state.
+        ...(SELF_CONTAINED && selfContainedDataDir
+          ? {
+              appArgs: [
+                `--shannon-port=${process.env.E2E_PORT ?? ''}`,
+                `--shannon-data-dir=${selfContainedDataDir}`,
+              ],
+            }
+          : {}),
       },
     },
   ],

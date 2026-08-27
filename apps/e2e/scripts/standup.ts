@@ -29,6 +29,12 @@ const PID_FILE = path.join(RUN_DIR, 'server.pid');
 
 export const PORT = Number(process.env.E2E_PORT ?? 4000);
 export const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${String(PORT)}`;
+/**
+ * Self-contained mode: the app under test (the packaged Electron build) brings
+ * up its own embedded Postgres + server, so this harness stands up nothing and
+ * tears down nothing — the app owns its stack's lifecycle.
+ */
+export const SELF_CONTAINED = process.env.E2E_SELF_CONTAINED === '1';
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/shannon';
 
@@ -191,6 +197,10 @@ export async function standup(): Promise<{ baseUrl: string }> {
     log(`E2E_NO_STANDUP=1 — assuming a stack is already serving ${BASE_URL}`);
     return { baseUrl: BASE_URL };
   }
+  if (SELF_CONTAINED) {
+    log(`E2E_SELF_CONTAINED=1 — the packaged app brings its own stack at ${BASE_URL}`);
+    return { baseUrl: BASE_URL };
+  }
   await ensurePostgres();
   await ensureMigrations();
   await ensureWebExport();
@@ -199,6 +209,9 @@ export async function standup(): Promise<{ baseUrl: string }> {
 }
 
 export async function teardown(): Promise<void> {
+  // Nothing was stood up, and a stale PID file from an earlier external-server
+  // run must not get a kill signal it doesn't own.
+  if (SELF_CONTAINED) return;
   const stop = (pid: number): void => {
     try {
       process.kill(pid);
