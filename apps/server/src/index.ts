@@ -21,6 +21,7 @@ import { startSandboxReaper } from "./agent/sandbox-manager";
 import { closeDb } from "@shannon/db";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
+import { configRoutes } from "./routes/config";
 
 const app = Fastify({ logger: true });
 
@@ -93,6 +94,7 @@ syncRoutes(app);
 sandboxRoutes(app);
 routineRoutes(app);
 modelRoutes(app);
+configRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
