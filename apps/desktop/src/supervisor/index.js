@@ -13,6 +13,9 @@ const PASSTHROUGH_ENV = [
   "MOCK_INFERENCE",
   "INFERENCE_BASE_URL",
   "CONTAINER_SOCKET",
+  "SANDBOX_MODE",
+  "SANDBOX_HOST_ROOT",
+  "SANDBOX_IMAGE",
   "NTFY_URL",
 ];
 
@@ -125,6 +128,10 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
     WEB_DIST_DIR: webDistDir,
     MIGRATIONS_DIR: migrationsDir,
     MIGRATIONS_STRICT: "1",
+    // Lets the container sandbox provider auto-build its image on first use
+    // even though a packaged install has no repo checkout to build from —
+    // build-server.mjs ships a copy of infra/docker/sandbox.Dockerfile here.
+    SANDBOX_BUILD_CONTEXT: path.join(serverDir, "sandbox"),
     BETTER_AUTH_SECRET: secrets.betterAuthSecret,
     BETTER_AUTH_URL: `http://localhost:${port}`,
     SHANNON_DATA_DIR: dataDir,
