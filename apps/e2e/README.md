@@ -4,8 +4,9 @@ End-to-end suites driven by [WebdriverIO](https://webdriver.io/). One shared smo
 written against `testID`s and runs unchanged on every platform; the per-platform difference is
 confined to a selector mapping and a wdio config.
 
-> **Status:** all four platforms — web, Electron, iOS and Android — run the same smoke spec
-> unchanged.
+> **Status:** **web**, **Electron** and **Android** run the same smoke spec unchanged and pass.
+> **iOS** is configured and its build steps are documented, but the suite has not yet been run
+> end-to-end — see "iOS" below for the one outstanding prerequisite.
 
 ## Quick start (web)
 
@@ -112,14 +113,20 @@ No port forwarding is needed: the simulator shares the host's loopback, so the a
 `localhost` fallback already reaches the server, and App Transport Security exempts localhost
 from HTTPS. That is why iOS needs neither `adb reverse` nor the cleartext opt-in Android does.
 
+**This suite has not been run end-to-end yet.** Everything above is in place — prebuild, pods,
+and the wdio config — and the two setup traps below were found and cleared by getting as far as
+the build. What is outstanding is the platform runtime, which needs ~8.5 GB of download and
+~16 GB installed; it was removed again rather than left occupying a full disk. Once that is
+installed, `test:ios` should run like the others. Treat iOS as unproven until someone does.
+
 Two setup traps worth knowing, both hit while building this:
 
 - **CocoaPods needs a UTF-8 locale.** Without it `pod install` dies with
   `Unicode Normalization not appropriate for ASCII-8BIT`. Export `LANG=en_US.UTF-8`.
 - **Xcode needs its iOS platform runtime downloaded**, separately from Xcode itself. Without it
   `xcodebuild` reports *"Found no destinations for the scheme"* / *"iOS <version> is not
-  installed"* even though simulators exist and the SDKs are present. Fix with
-  `xcodebuild -downloadPlatform iOS` (~8.5 GB).
+  installed"* even though simulators exist and both SDKs are present — a confusing error, since
+  nothing about it points at a missing runtime. Fix with `xcodebuild -downloadPlatform iOS`.
 
 ## What the smoke suite covers
 
@@ -224,13 +231,11 @@ src/specs/<platform>/ platform-only suites, opted into by that platform's config
 
 ## How testIDs resolve, per platform
 
-Verified against a real build on each platform, not assumed:
-
-| Platform | `testID` becomes | Selector used |
-| --- | --- | --- |
-| web / Electron | `data-testid` attribute | `[data-testid="id"]` |
-| iOS | `accessibilityIdentifier` | `~id` (accessibility id) |
-| Android | **unprefixed** `resource-id` | `new UiSelector().resourceId("id")` |
+| Platform | `testID` becomes | Selector used | Confirmed? |
+| --- | --- | --- | --- |
+| web / Electron | `data-testid` attribute | `[data-testid="id"]` | yes, against a real build |
+| Android | **unprefixed** `resource-id` | `new UiSelector().resourceId("id")` | yes, against a real build |
+| iOS | `accessibilityIdentifier` | `~id` (accessibility id) | not yet — from RN's documented behaviour |
 
 The Android row is the one with a trap in it. Appium's `id` strategy prepends
 `<appPackage>:id/`, which never matches a testID-derived resource-id — hence the raw
