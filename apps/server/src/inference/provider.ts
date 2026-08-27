@@ -1,5 +1,7 @@
-const BASE_URL = process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
-const MOCK_MODE = process.env.MOCK_INFERENCE === "true";
+// Read at call time, not module load — a supervisor sets these in the child's
+// env, and module-scope reads would freeze them before any caller could act.
+const BASE_URL = () => process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
+const MOCK_MODE = () => process.env.MOCK_INFERENCE === "true";
 
 /** An OpenAI-shaped tool call. `arguments` is a JSON *string*, per the spec. */
 export interface ToolCall {
@@ -69,7 +71,7 @@ export async function* streamCompletion(
   messages: ChatMessage[],
   options: StreamOptions = {},
 ): AsyncGenerator<StreamEvent, void, unknown> {
-  if (MOCK_MODE) {
+  if (MOCK_MODE()) {
     yield* mockStream(messages, options);
     return;
   }
@@ -239,7 +241,7 @@ async function* liveStream(
     body.tool_choice = "auto";
   }
 
-  const response = await fetch(`${BASE_URL}/v1/chat/completions`, {
+  const response = await fetch(`${BASE_URL()}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

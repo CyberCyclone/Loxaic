@@ -1,7 +1,8 @@
 import type { ModelInfo } from "@shannon/types";
 
-const BASE_URL = process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
-const MOCK_MODE = process.env.MOCK_INFERENCE === "true";
+// Read at call time, not module load — see provider.ts.
+const BASE_URL = () => process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
+const MOCK_MODE = () => process.env.MOCK_INFERENCE === "true";
 const TTL_MS = 5000;
 const FETCH_TIMEOUT_MS = 2000;
 
@@ -81,7 +82,7 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 /** LM Studio's native REST API — richer than OpenAI's /v1/models (quant, context, load state). */
 async function listViaLmStudioNative(): Promise<ModelInfo[]> {
-  const data = await fetchJson<LmStudioModelsResponse>(`${BASE_URL}/api/v0/models`);
+  const data = await fetchJson<LmStudioModelsResponse>(`${BASE_URL()}/api/v0/models`);
   return (data.data ?? [])
     .filter((m) => m.type === "llm" || m.type === "vlm")
     .map((m): ModelInfo => {
@@ -117,7 +118,7 @@ async function listViaLmStudioNative(): Promise<ModelInfo[]> {
  */
 async function fetchLoadedCtx(): Promise<number | null> {
   try {
-    const props = await fetchJson<LlamaCppPropsResponse>(`${BASE_URL}/props`);
+    const props = await fetchJson<LlamaCppPropsResponse>(`${BASE_URL()}/props`);
     const ctx = props.default_generation_settings?.n_ctx;
     return typeof ctx === "number" && ctx > 0 ? ctx : null;
   } catch {
@@ -129,7 +130,7 @@ async function fetchLoadedCtx(): Promise<number | null> {
 /** OpenAI-compatible fallback (llama.cpp and others) — no load-state or quant info. */
 async function listViaOpenAiCompat(): Promise<ModelInfo[]> {
   const [data, loadedCtx] = await Promise.all([
-    fetchJson<OpenAiModelsResponse>(`${BASE_URL}/v1/models`),
+    fetchJson<OpenAiModelsResponse>(`${BASE_URL()}/v1/models`),
     fetchLoadedCtx(),
   ]);
   return (data.data ?? []).map((m): ModelInfo => {
@@ -176,7 +177,7 @@ export function invalidateBackendModels(): void {
 }
 
 export async function listBackendModels(): Promise<ModelInfo[]> {
-  if (MOCK_MODE) return MOCK_MODELS;
+  if (MOCK_MODE()) return MOCK_MODELS;
   if (cache && Date.now() - cache.at < TTL_MS) return cache.models;
 
   let models: ModelInfo[] = [];

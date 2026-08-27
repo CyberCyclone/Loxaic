@@ -27,6 +27,12 @@ export function unscheduleRoutine(routineId: string) {
   if (job) { void job.stop(); jobs.delete(routineId); }
 }
 
+/** Stop every scheduled job so the process can exit cleanly. */
+export function stopRoutineScheduler() {
+  for (const job of jobs.values()) void job.stop();
+  jobs.clear();
+}
+
 export async function executeRoutine(routineId: string) {
   const routine = await db.query.routines.findFirst({
     where: eq(routines.id, routineId),

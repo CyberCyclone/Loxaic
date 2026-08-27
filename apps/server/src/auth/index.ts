@@ -21,5 +21,10 @@ export const auth = betterAuth({
     "http://localhost:5173",
     "http://localhost:4000",
     "http://localhost:4001",
+    // The packaged Electron renderer's origin (electron-serve app:// scheme).
+    "app://-",
+    ...(process.env.TRUSTED_ORIGINS?.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean) ?? []),
   ],
 });

@@ -16,18 +16,23 @@ import { sandboxRoutes } from "./routes/sandbox";
 import { chatWsHandler } from "./ws/chat";
 import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
-import { startRoutineScheduler } from "./routines/scheduler";
+import { startRoutineScheduler, stopRoutineScheduler } from "./routines/scheduler";
 import { startSandboxReaper } from "./agent/sandbox-manager";
+import { closeDb } from "@shannon/db";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
 
 const app = Fastify({ logger: true });
 
 // ── Run DB migrations before registering routes ──────────
+// MIGRATIONS_STRICT=1 (set by the desktop supervisor) turns a failed
+// migration into a fatal boot error instead of a warning — a supervised
+// server that silently skips migrations would fail at request time instead.
 try {
   await runMigrations();
   app.log.info("Migrations applied");
 } catch (err) {
+  if (process.env.MIGRATIONS_STRICT === "1") throw err;
   app.log.warn(`Migration skipped: ${(err as Error).message}`);
 }
 
@@ -141,17 +146,54 @@ if (existsSync(path.join(webDist, "index.html"))) {
 }
 
 // ── Start ─────────────────────────────────────────────────
-const PORT = Number(process.env.PORT) || 4000;
+// PORT=0 is valid (bind an ephemeral port; the supervisor reads the real one
+// from the SHANNON_LISTENING handshake), so no `|| 4000` here — that maps 0
+// to the default.
+const PORT =
+  process.env.PORT === undefined || process.env.PORT === ""
+    ? 4000
+    : Number(process.env.PORT);
+if (Number.isNaN(PORT)) throw new Error(`Invalid PORT: ${process.env.PORT ?? ""}`);
 const HOST = process.env.HOST ?? "0.0.0.0";
+
+let reaperTimer: NodeJS.Timeout | null = null;
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
     app.log.error(err);
     process.exit(1);
   }
-  app.log.info(`Server listening at http://${HOST}:${String(PORT)}`);
+  const addr = app.server.address();
+  const actualPort = typeof addr === "object" && addr ? addr.port : PORT;
+  app.log.info(`Server listening at http://${HOST}:${String(actualPort)}`);
+  // Machine-readable readiness handshake for the desktop supervisor (same
+  // pattern as tsnet-proxy's `LISTENING <addr>` line). Must be plain stdout,
+  // not pino, so a readline consumer can match it without parsing JSON.
+  console.log(`SHANNON_LISTENING ${String(actualPort)}`);
   startRoutineScheduler().catch((e: unknown) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
-  startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
+  reaperTimer = startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
 });
+
+// ── Graceful shutdown ─────────────────────────────────────
+// The desktop supervisor stops the server with SIGTERM before stopping
+// Postgres; draining here keeps that teardown (and Ctrl-C in dev) clean.
+let shuttingDown = false;
+async function shutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info(`${signal} received — shutting down`);
+  try {
+    stopRoutineScheduler();
+    if (reaperTimer) clearInterval(reaperTimer);
+    await app.close();
+    await closeDb();
+  } catch (e) {
+    app.log.error(e);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+process.once("SIGINT", () => { void shutdown("SIGINT"); });
