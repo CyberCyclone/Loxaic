@@ -1,3 +1,4 @@
+import "./cwd-guard.js";
 import { app, BrowserWindow, dialog, shell } from "electron";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";

@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
-import EmbeddedPostgres from "embedded-postgres";
 import { tcpOpen } from "./ports.js";
 
 const DB_NAME = "shannon";
@@ -60,6 +59,11 @@ export async function startPostgres({ dataDir, port, password, log }) {
     rmSync(path.join(databaseDir, "postmaster.pid"), { force: true });
   }
 
+  // Imported lazily, not at module scope: the library calls process.cwd() at
+  // load time (for a default databaseDir we never use), which throws EPERM
+  // when the app was spawned with a TCC-restricted cwd (e.g. by chromedriver
+  // from ~/Documents) — see cwd-guard.js. By exec time the guard has run.
+  const { default: EmbeddedPostgres } = await import("embedded-postgres");
   const pg = new EmbeddedPostgres({
     databaseDir,
     port,
