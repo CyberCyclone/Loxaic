@@ -12,6 +12,7 @@ import { useShell } from '@/components/shell/AppShell';
 import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
+import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
 import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
@@ -35,10 +36,14 @@ export default function ChatScreen() {
     streaming,
     loadingModel,
     responseStartedAt,
+    pendingApproval,
     handleSend,
     handleStop,
     handleCommand,
     handleNewChat,
+    handleApprove,
+    handleDeny,
+    handleAllowAlways,
     handleFork,
     handleDelete,
     handleRename,
@@ -70,6 +75,13 @@ export default function ChatScreen() {
     '';
 
   const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
+
+  // The dialog's "reason" is whatever the model said alongside this call —
+  // no separate protocol field for it, just the assistant message that owns
+  // the pending tool_call.
+  const approvalReason = pendingApproval
+    ? activeConv?.msgs.find((m) => m.tools?.some((t) => t.callId === pendingApproval.callId))?.text
+    : undefined;
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
@@ -157,6 +169,17 @@ export default function ChatScreen() {
           <Pressable onPress={() => setThreadListOpen(false)} className="absolute inset-0 bg-black/40" />
           <Box className="absolute bottom-0 right-0 top-0 shadow-lg">{threadList}</Box>
         </>
+      )}
+
+      {pendingApproval && (
+        <ToolApprovalDialog
+          tool={pendingApproval.tool}
+          args={pendingApproval.args}
+          reason={approvalReason}
+          onAllowOnce={() => handleApprove(pendingApproval.callId)}
+          onAllowAlways={() => handleAllowAlways(pendingApproval.callId, pendingApproval.tool)}
+          onReject={() => handleDeny(pendingApproval.callId)}
+        />
       )}
 
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
