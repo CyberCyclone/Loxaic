@@ -13,6 +13,16 @@
     "node": ">=22.0.0"
   },
   "packageManager": "pnpm@10.4.1",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "embedded-postgres",
+      "@embedded-postgres/darwin-arm64",
+      "@embedded-postgres/darwin-x64",
+      "@embedded-postgres/linux-arm64",
+      "@embedded-postgres/linux-x64",
+      "@embedded-postgres/windows-x64"
+    ]
+  },
   "devDependencies": {
     "@eslint/js": "^9",
     "eslint": "^9",

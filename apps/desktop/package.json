@@ -8,27 +8,33 @@
     "dev": "electron .",
     "build:web": "pnpm --filter @shannon/mobile export:web",
     "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
-    "package": "pnpm build:web && pnpm build:tsnet-proxy && electron-builder",
-    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && electron-builder --dir",
-    "typecheck": "echo ok"
+    "build:server": "node scripts/build-server.mjs",
+    "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder",
+    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && pnpm build:server && electron-builder --dir",
+    "typecheck": "echo ok",
+    "test": "vitest run"
   },
   "dependencies": {
-    "electron-serve": "^3.0.1"
+    "electron-serve": "^3.0.1",
+    "embedded-postgres": "17.10.0-beta.17"
   },
   "devDependencies": {
     "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
+    "electron-builder": "^25.0.0",
+    "vitest": "^3.0.0"
   },
   "build": {
     "appId": "com.shannon.desktop",
     "productName": "Open-Shannon",
     "npmRebuild": false,
+    "asar": false,
     "files": [
       "src/**/*"
     ],
     "extraResources": [
       { "from": "../mobile/dist", "to": "web" },
-      { "from": "resources/tsnet-proxy", "to": "tsnet-proxy" }
+      { "from": "resources/tsnet-proxy", "to": "tsnet-proxy" },
+      { "from": "resources/server", "to": "server" }
     ],
     "mac": {
       "target": "dmg",

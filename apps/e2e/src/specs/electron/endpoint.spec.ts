@@ -20,9 +20,11 @@ describe('electron endpoint resolution', () => {
 
     expect(bridge).toBeDefined();
     expect(bridge?.platform).toBe('electron');
-    // Caveat worth knowing: main.js's last-resort fallback is localhost:4000,
-    // so on the default port this exact match can't tell "resolved correctly"
-    // from "fell back". Running on any other port (E2E_PORT) makes it strict —
+    // In self-contained mode (E2E_SELF_CONTAINED=1) BASE_URL is a per-run free
+    // port the embedded stack was told to serve on, so this equality is strict:
+    // it proves the supervisor's stack is what the renderer was handed. In
+    // external-server mode it proves the EXPO_PUBLIC_API_URL probe won — though
+    // on the default port 4000 it can't tell "resolved" from "dev fallback",
     // which is why the second test checks the URL is live rather than equal.
     expect(bridge?.apiBaseUrl).toBe(BASE_URL);
   });
