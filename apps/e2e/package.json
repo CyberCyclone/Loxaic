@@ -1,0 +1,26 @@
+{
+  "name": "@shannon/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:web": "wdio run ./wdio.web.ts",
+    "standup": "tsx scripts/standup.ts",
+    "teardown": "tsx scripts/teardown.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@shannon/config-ts": "workspace:*",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.2.0",
+    "@wdio/cli": "^9.31.0",
+    "@wdio/globals": "^9.31.0",
+    "@wdio/local-runner": "^9.31.0",
+    "@wdio/mocha-framework": "^9.31.0",
+    "@wdio/spec-reporter": "^9.31.0",
+    "@wdio/types": "^9.31.0",
+    "expect-webdriverio": "^6.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

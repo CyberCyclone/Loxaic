@@ -49,6 +49,31 @@ pnpm --filter @shannon/server test -- authz      # tests matching "authz"
 pnpm --filter @shannon/server test -- src/streams/__tests__/drivers.test.ts
 ```
 
+End-to-end suites are WebdriverIO, in `apps/e2e`, and run on demand (never as part of
+`pnpm test`). They stand the whole stack up themselves:
+
+```bash
+pnpm --filter @shannon/e2e test:web   # see apps/e2e/README.md for setup + env vars
+```
+
+## End-to-end tests
+
+**Every feature PR adds or updates e2e coverage for the behaviour it changes**, and carries
+screenshots showing that behaviour working. Writing those tests is the implementer's job
+(human or AI) — the harness already exists, so this is normally a spec file and a few
+`testID`s, not new infrastructure.
+
+- **Tests** live in `apps/e2e/src/specs/`. Select by `testID` using the helpers in
+  `src/helpers/` — never by CSS class, text position, or list index (the message list is
+  inverted and virtualised, so position is not stable). New interactive elements need a
+  `testID` following the convention in Gotchas above.
+- **Screenshots** are captured with `shot('name')` at the moments that actually evidence the
+  feature — the state that would look wrong if it regressed, not just the happy end state.
+  Failures are captured automatically.
+- **Screenshots are never committed.** `apps/e2e/artifacts/` is gitignored; embed the PNGs in
+  the PR description instead, straight from that directory.
+- If a change genuinely isn't user-visible, say so in the PR rather than skipping the section.
+
 ## Gotchas
 
 ### TypeScript + React Native

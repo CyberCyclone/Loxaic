@@ -32,6 +32,7 @@ export default tseslint.config(
       "apps/mobile/dist/**",
       "packages/db/drizzle/**", // generated migration SQL + snapshots, not hand-written source
       "apps/mobile/components/ui/**", // gluestack-ui's copy-paste output, not hand-authored app code
+      "apps/e2e/artifacts/**", // screenshots + run state from local e2e runs
     ],
   },
 
@@ -92,12 +93,34 @@ export default tseslint.config(
     },
   },
 
+  // ── Strict, type-aware TypeScript: e2e suites ──────────────
+  //    Its tsconfig includes the wdio configs and scripts as well
+  //    as src, so everything here has a type-aware project and
+  //    none of it needs the lighter tooling pass below.
+  {
+    files: ["apps/e2e/**/*.ts"],
+    extends: [
+      js.configs.recommended,
+      ...tseslint.configs.strictTypeChecked,
+      ...tseslint.configs.stylisticTypeChecked,
+    ],
+    languageOptions: {
+      parserOptions: { projectService: true, tsconfigRootDir: TS_ROOT },
+      globals: { ...globals.node, ...globals.mocha },
+    },
+  },
+
   // ── Destructuring a key off an object specifically to spread the
   //    rest (`const { kind: _kind, ...rest } = x`) is how this
   //    codebase omits a discriminant before forwarding the payload —
   //    the discarded binding isn't a mistake, so don't flag it. ──
   {
-    files: ["apps/server/src/**/*.ts", "packages/*/src/**/*.ts", "apps/mobile/**/*.{ts,tsx}"],
+    files: [
+      "apps/server/src/**/*.ts",
+      "packages/*/src/**/*.ts",
+      "apps/mobile/**/*.{ts,tsx}",
+      "apps/e2e/**/*.ts",
+    ],
     rules: {
       "@typescript-eslint/no-unused-vars": [
         "error",
