@@ -31,7 +31,7 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
   const toolCount = Object.keys(server.knownTools).length;
 
   return (
-    <Box className="rounded-md border border-border bg-card p-3">
+    <Box testID={`mcp.serverRow.${server.id}`} className="rounded-md border border-border bg-card p-3">
       <HStack className="items-start justify-between">
         <Pressable onPress={onEdit} className="flex-1 pr-2">
           <HStack space="xs" className="items-center">
@@ -48,7 +48,7 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
             {server.transport === 'stdio' ? (server.builtinKey ? 'stdio' : server.command) : server.url}
           </Text>
         </Pressable>
-        <Switch value={server.enabled} onValueChange={onToggle} />
+        <Switch testID={`mcp.serverToggle.${server.id}`} value={server.enabled} onValueChange={onToggle} />
       </HStack>
 
       <HStack space="xs" className="mt-2 items-center">
@@ -73,22 +73,27 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
       </HStack>
 
       <HStack space="md" className="mt-3 items-center justify-end border-t border-border pt-2">
-        <Pressable onPress={onTest} disabled={testing} className="flex-row items-center gap-1 p-1">
+        <Pressable
+          testID={`mcp.serverTest.${server.id}`}
+          onPress={onTest}
+          disabled={testing}
+          className="flex-row items-center gap-1 p-1"
+        >
           {testing ? <Spinner size="small" /> : <Icon as={Plug} size="xs" className="text-muted-foreground" />}
           <Text size="xs" className="text-muted-foreground">
             Test
           </Text>
         </Pressable>
-        <Pressable onPress={onTools} className="flex-row items-center gap-1 p-1">
+        <Pressable testID={`mcp.serverTools.${server.id}`} onPress={onTools} className="flex-row items-center gap-1 p-1">
           <Icon as={Wrench} size="xs" className="text-muted-foreground" />
           <Text size="xs" className="text-muted-foreground">
             Tools
           </Text>
         </Pressable>
-        <Pressable onPress={onEdit} className="p-1">
+        <Pressable testID={`mcp.serverEdit.${server.id}`} onPress={onEdit} className="p-1">
           <Icon as={Pencil} size="xs" className="text-muted-foreground" />
         </Pressable>
-        <Pressable onPress={onDelete} className="p-1">
+        <Pressable testID={`mcp.serverDelete.${server.id}`} onPress={onDelete} className="p-1">
           <Icon as={Trash2} size="xs" className="text-destructive" />
         </Pressable>
       </HStack>

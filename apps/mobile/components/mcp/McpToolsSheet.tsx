@@ -67,7 +67,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
   return (
     <Actionsheet isOpen={!!server} onClose={onClose}>
       <ActionsheetBackdrop />
-      <ActionsheetContent className="max-h-[80%]">
+      <ActionsheetContent testID="mcp.toolsSheet.dialog" className="max-h-[80%]">
         <ActionsheetDragIndicatorWrapper>
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
@@ -86,7 +86,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
               </Text>
             ) : (
               tools.map((tool) => (
-                <VStack key={tool.name} space="xs" className="border-b border-border py-2">
+                <VStack key={tool.name} testID={`mcp.toolRow.${tool.name}`} space="xs" className="border-b border-border py-2">
                   <HStack className="items-center justify-between">
                     <HStack space="xs" className="flex-1 items-center pr-2">
                       <Text size="sm" className="font-medium text-foreground" numberOfLines={1}>
@@ -104,6 +104,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                       )}
                     </HStack>
                     <Switch
+                      testID={`mcp.toolEnable.${tool.name}`}
                       size="sm"
                       value={tool.policy.enabled}
                       onValueChange={(enabled) => patchPolicy(tool, { enabled })}
@@ -134,6 +135,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                     {APPROVALS.map((a) => (
                       <Pressable
                         key={a.value}
+                        testID={`mcp.toolApproval.${tool.name}.${a.value}`}
                         onPress={() => { void patchPolicy(tool, { approval: a.value }); }}
                         className={`rounded-full px-3 py-1 ${tool.policy.approval === a.value ? 'bg-primary/15' : 'bg-muted'}`}
                       >
@@ -146,6 +148,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                       </Pressable>
                     ))}
                     <Pressable
+                      testID={`mcp.toolReadOnly.${tool.name}`}
                       onPress={() => { void patchPolicy(tool, { readOnly: !tool.policy.readOnly }); }}
                       className={`rounded-full px-3 py-1 ${tool.policy.readOnly ? 'bg-primary/15' : 'bg-muted'}`}
                     >
