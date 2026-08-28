@@ -234,6 +234,16 @@ export const mcpServers = pgTable(
   (t) => [uniqueIndex("mcp_servers_owner_slug_idx").on(t.ownerId, t.slug)],
 );
 
+export const userPrefs = pgTable("user_prefs", {
+  userId: text("user_id").primaryKey().references(() => user.id),
+  /** Builtin tool names the user has allowlisted ("allow always") — these
+   * stop asking for approval anywhere the tool loop runs (chat and agent
+   * manual mode alike). MCP tools have their own per-server toolPolicies
+   * allowlist instead. */
+  toolAllowlist: jsonb("tool_allowlist").notNull().default([]),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // ── Relations ──
 export const conversationsRelations = relations(conversations, ({ many }) => ({
   messages: many(messages),

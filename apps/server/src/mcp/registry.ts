@@ -2,7 +2,7 @@ import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import type { OpenAiTool, PermissionMode, ResolvedTool } from "@shannon/agent";
 import { resolveBuiltinTools, resolvedToOpenAiTool } from "@shannon/agent";
 import { and, db, eq } from "@shannon/db";
-import { conversations, mcpServers } from "@shannon/db/schema";
+import { conversations, mcpServers, userPrefs } from "@shannon/db/schema";
 import { reconcileTools, type ToolPolicies, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
@@ -49,7 +49,10 @@ export async function buildToolset(
   userId: string,
   opts: { mode: PermissionMode; conversationId?: string },
 ): Promise<Toolset> {
-  const resolved = resolveBuiltinTools();
+  const allowlist = await builtinAllowlist(userId);
+  const resolved = resolveBuiltinTools().map((t) =>
+    allowlist.has(t.name) ? { ...t, requiresApproval: false } : t,
+  );
   const mcpEntries = new Map<string, McpToolEntry>();
 
   for (const { tool, entry } of await resolveMcpTools(userId, opts)) {
@@ -185,6 +188,20 @@ async function resolveMcpTools(
     }
   }
   return out;
+}
+
+/** Builtin tools the user has allowlisted ("allow always") — global, applies
+ * to every run regardless of surface or mode. */
+async function builtinAllowlist(userId: string): Promise<Set<string>> {
+  try {
+    const row = await db.query.userPrefs.findFirst({
+      where: eq(userPrefs.userId, userId),
+      columns: { toolAllowlist: true },
+    });
+    return new Set(Array.isArray(row?.toolAllowlist) ? row.toolAllowlist.map(String) : []);
+  } catch {
+    return new Set();
+  }
 }
 
 async function disabledServerIds(conversationId: string | undefined): Promise<Set<string>> {

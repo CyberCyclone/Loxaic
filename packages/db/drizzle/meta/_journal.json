@@ -43,6 +43,13 @@
       "when": 1787727141153,
       "tag": "0005_neat_rhino",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787881617817,
+      "tag": "0006_tense_rockslide",
+      "breakpoints": true
     }
   ]
 }

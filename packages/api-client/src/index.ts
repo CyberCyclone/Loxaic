@@ -374,6 +374,27 @@ export async function testMcpServer(id: string): Promise<McpTestResult> {
   return mcpFetch(`/v1/mcp/servers/${id}/test`, { method: "POST" });
 }
 
+// ── User prefs (builtin tool "allow always") ────────────────
+export type UserPrefs = {
+  /** Builtin tool names allowlisted globally — skip approval anywhere the
+   * tool loop runs. MCP tools have their own per-server allowlist instead. */
+  toolAllowlist: string[];
+};
+
+export async function getPrefs(): Promise<UserPrefs> {
+  return (await authedFetch("/v1/prefs")).json();
+}
+
+export async function updatePrefs(patch: Partial<UserPrefs>): Promise<UserPrefs> {
+  return (
+    await authedFetch("/v1/prefs", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  ).json();
+}
+
 // ── Stats ─────────────────────────────────────────────────
 export type StatsRange = "session" | "today" | "week" | "month" | "year";
 

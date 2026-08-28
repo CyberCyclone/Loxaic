@@ -21,6 +21,7 @@ import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manage
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
 import { mcpRoutes } from "./routes/mcp";
+import { prefsRoutes } from "./routes/prefs";
 import { startMcpReaper } from "./mcp/client-manager";
 
 const app = Fastify({ logger: true });
@@ -91,6 +92,7 @@ await sandboxRoutes(app);
 await routineRoutes(app);
 await modelRoutes(app);
 await mcpRoutes(app);
+await prefsRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
