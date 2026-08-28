@@ -9,6 +9,7 @@
     "build:web": "pnpm --filter @shannon/mobile export:web",
     "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
     "package": "pnpm build:web && pnpm build:tsnet-proxy && electron-builder",
+    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && electron-builder --dir",
     "typecheck": "echo ok"
   },
   "dependencies": {

@@ -1,7 +1,14 @@
 {
   "extends": "@shannon/config-ts/node.json",
   "compilerOptions": {
-    "types": ["node", "mocha", "@wdio/globals/types", "expect-webdriverio"]
+    "types": [
+      "node",
+      "mocha",
+      "@wdio/globals/types",
+      "expect-webdriverio",
+      // Augments WebdriverIO.Capabilities with 'wdio:electronServiceOptions'.
+      "wdio-electron-service"
+    ]
   },
-  "include": ["src", "scripts", "wdio.shared.ts", "wdio.web.ts"]
+  "include": ["src", "scripts", "wdio.shared.ts", "wdio.web.ts", "wdio.electron.ts"]
 }

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:web": "wdio run ./wdio.web.ts",
+    "test:electron": "wdio run ./wdio.electron.ts",
     "standup": "tsx scripts/standup.ts",
     "teardown": "tsx scripts/teardown.ts",
     "typecheck": "tsc --noEmit"
@@ -21,6 +22,7 @@
     "@wdio/types": "^9.31.0",
     "expect-webdriverio": "^6.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "wdio-electron-service": "^9.2.1"
   }
 }
