@@ -11,11 +11,13 @@
  * the cleartext-traffic opt-in Android does.
  */
 import { standup, teardown } from './scripts/standup.ts';
-import { iosAppPath, requireAppiumDrivers } from './scripts/native.ts';
+import { iosAppPath, requireAppiumDrivers, resetIosSimulatorKeychain } from './scripts/native.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
 process.env.E2E_PLATFORM = 'ios';
 requireAppiumDrivers();
+
+const IOS_DEVICE = process.env.E2E_IOS_DEVICE ?? 'iPhone 15';
 
 export const config: WebdriverIO.Config = {
   ...sharedConfig,
@@ -25,8 +27,13 @@ export const config: WebdriverIO.Config = {
     {
       platformName: 'iOS',
       'appium:automationName': 'XCUITest',
-      'appium:deviceName': process.env.E2E_IOS_DEVICE ?? 'iPhone 15',
+      'appium:deviceName': IOS_DEVICE,
       'appium:app': iosAppPath(),
+      // iOS interrupts the first sign-in with a system "Save Password?"
+      // sheet, which sits above the app and blocks every element query.
+      // Dismiss system alerts automatically ("Not Now"); the suite never
+      // needs to accept one.
+      'appium:autoDismissAlerts': true,
       // First launch also builds/installs WebDriverAgent onto the simulator,
       // which is far slower than any later run.
       'appium:wdaLaunchTimeout': 240_000,
@@ -37,6 +44,10 @@ export const config: WebdriverIO.Config = {
 
   onPrepare: async function onPrepare() {
     await standup();
+    // The iOS keychain outlives app reinstalls — a previous run's session
+    // token would auto-sign the app in and break the sign-up spec. See
+    // resetIosSimulatorKeychain for the full story.
+    resetIosSimulatorKeychain(IOS_DEVICE, process.env.E2E_IOS_VERSION);
   },
 
   onComplete: async function onComplete() {

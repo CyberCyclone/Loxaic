@@ -3,6 +3,7 @@
  * ("sign in", "send a message") rather than in clicks. Specs read as behaviour;
  * anything platform- or layout-specific is absorbed here.
  */
+import { browser } from '@wdio/globals';
 import { byTestId, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
 import type { Credentials } from './auth.ts';
 
@@ -28,9 +29,21 @@ export const TOOL_PROMPT = 'write a file called notes';
  * working on a phone, a tablet and a desktop window without per-platform config.
  */
 export async function openSidebar(): Promise<void> {
-  if (await byTestId('sidebar.signOut').isDisplayed()) return;
-  await tap('shell.menuButton');
-  await waitForVisible('sidebar.signOut');
+  // Retry loop rather than a single tap: right after a navigation the screen
+  // may still be animating, and a tap that lands mid-transition is silently
+  // swallowed (seen on iOS immediately after sign-up). Re-checking before
+  // each tap keeps this idempotent — if the drawer opened meanwhile, no
+  // second tap fires to toggle it shut.
+  await browser.waitUntil(
+    async () => {
+      if (await byTestId('sidebar.signOut').isDisplayed()) return true;
+      await tap('shell.menuButton');
+      return await byTestId('sidebar.signOut')
+        .waitForDisplayed({ timeout: 3000 })
+        .then(() => true, () => false);
+    },
+    { timeout: 20_000, interval: 250, timeoutMsg: 'sidebar did not open' },
+  );
 }
 
 export async function signUp(creds: Credentials): Promise<void> {

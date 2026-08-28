@@ -111,9 +111,8 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Per-platform mapping:** web/Electron → `[data-testid="…"]`; Android → an **unprefixed**
   `resource-id`, found via UiAutomator2 (`new UiSelector().resourceId("id")`) — note Appium's
   `id` strategy prepends `<appPackage>:id/` and so never matches; iOS → `accessibilityIdentifier`,
-  found via XCUITest's `accessibility id` strategy (`~id`). The web and Android mappings are
-  confirmed against real builds; the iOS one follows RN's documented behaviour but hasn't been
-  run yet (see `apps/e2e/README.md`).
+  found via XCUITest's `accessibility id` strategy (`~id`). All three mappings are confirmed
+  against real builds (see `apps/e2e/README.md`).
 - Don't hand-roll these selectors in specs — use the helpers in `apps/e2e/src/helpers/`, which
   own the mapping.
 

@@ -4,9 +4,8 @@ End-to-end suites driven by [WebdriverIO](https://webdriver.io/). One shared smo
 written against `testID`s and runs unchanged on every platform; the per-platform difference is
 confined to a selector mapping and a wdio config.
 
-> **Status:** **web**, **Electron** and **Android** run the same smoke spec unchanged and pass.
-> **iOS** is configured and its build steps are documented, but the suite has not yet been run
-> end-to-end — see "iOS" below for the one outstanding prerequisite.
+> **Status:** **web**, **Electron**, **Android** and **iOS** all run the same smoke spec
+> unchanged and pass, each against a real build.
 
 ## Quick start (web)
 
@@ -102,22 +101,42 @@ pnpm --filter @shannon/mobile prebuild:ios
 cd apps/mobile/ios && pod install
 xcodebuild -workspace openshannon.xcworkspace -scheme openshannon \
   -configuration Release -sdk iphonesimulator -derivedDataPath build \
-  CODE_SIGNING_ALLOWED=NO build
+  -destination 'platform=iOS Simulator,name=iPhone 17' build
 pnpm --filter @shannon/e2e test:ios
 ```
 
-Point `E2E_IOS_DEVICE` at a simulator name (default `iPhone 16`) and `E2E_IOS_APP` at a `.app`
+Do **not** pass `CODE_SIGNING_ALLOWED=NO`. Simulator builds need no team or certificate —
+Xcode ad-hoc signs them — but disabling signing entirely also strips the app's
+*entitlements*, and the Keychain (expo-secure-store, where the session token lives) fails
+every call without the application-identifier entitlement. The failure mode is nasty: the
+app launches and sits on a blank white screen with no visible error, because the rejection
+happens during session bootstrap before anything renders. Match `-destination` to a
+simulator that exists for your Xcode's iOS runtime (`xcrun simctl list devices available`).
+
+Point `E2E_IOS_DEVICE` at a simulator name (default `iPhone 15`) and `E2E_IOS_APP` at a `.app`
 bundle if yours is somewhere other than the default derived-data path.
 
 No port forwarding is needed: the simulator shares the host's loopback, so the app's own
 `localhost` fallback already reaches the server, and App Transport Security exempts localhost
 from HTTPS. That is why iOS needs neither `adb reverse` nor the cleartext opt-in Android does.
 
-**This suite has not been run end-to-end yet.** Everything above is in place — prebuild, pods,
-and the wdio config — and the two setup traps below were found and cleared by getting as far as
-the build. What is outstanding is the platform runtime, which needs ~8.5 GB of download and
-~16 GB installed; it was removed again rather than left occupying a full disk. Once that is
-installed, `test:ios` should run like the others. Treat iOS as unproven until someone does.
+**Non-default ports need the URL baked in**, exactly like Android: the loopback fallback only
+covers port 4000, and `EXPO_PUBLIC_*` values are inlined at bundle time. Without this the app
+silently talks to whatever occupies 4000 — possibly a *real* dev server, which fails the mock
+assertions confusingly (or worse, runs real inference):
+
+```bash
+EXPO_PUBLIC_API_URL=http://localhost:4055 xcodebuild ... build
+E2E_PORT=4055 pnpm --filter @shannon/e2e test:ios
+```
+
+Two harness behaviours specific to iOS, both handled automatically:
+
+- **The simulator keychain is reset before each run** (`onPrepare`). Unlike Android — where
+  uninstalling the app wipes its storage — the iOS keychain survives reinstalls, so a previous
+  run's session token would auto-sign the app in and break the sign-up spec on every re-run.
+- **System alerts are auto-dismissed** (`appium:autoDismissAlerts`): iOS interrupts the first
+  sign-in with a "Save Password?" sheet that sits above the app and blocks every element query.
 
 Two setup traps worth knowing, both hit while building this:
 
@@ -177,7 +196,7 @@ PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end
 | `E2E_FRESH_WEB` | — | `1` forces a rebuild of the Expo web export. |
 | `E2E_HEADED` | — | `1` runs Chrome headed instead of headless. |
 | `E2E_LOG_LEVEL` | `warn` | WebdriverIO log level (`trace`…`error`). |
-| `E2E_IOS_DEVICE` | `iPhone 16` | Simulator to run the iOS suite on. |
+| `E2E_IOS_DEVICE` | `iPhone 15` | Simulator to run the iOS suite on. |
 | `E2E_IOS_VERSION` | — | Pin a simulator iOS version (e.g. `18.6`). |
 | `E2E_IOS_APP` | — | Path to a built `.app` bundle, if not in the default location. |
 | `E2E_ANDROID_AVD` | — | AVD to boot; otherwise uses the running emulator/device. |
@@ -235,7 +254,7 @@ src/specs/<platform>/ platform-only suites, opted into by that platform's config
 | --- | --- | --- | --- |
 | web / Electron | `data-testid` attribute | `[data-testid="id"]` | yes, against a real build |
 | Android | **unprefixed** `resource-id` | `new UiSelector().resourceId("id")` | yes, against a real build |
-| iOS | `accessibilityIdentifier` | `~id` (accessibility id) | not yet — from RN's documented behaviour |
+| iOS | `accessibilityIdentifier` | `~id` (accessibility id) | yes, against a real build |
 
 The Android row is the one with a trap in it. Appium's `id` strategy prepends
 `<appPackage>:id/`, which never matches a testID-derived resource-id — hence the raw
