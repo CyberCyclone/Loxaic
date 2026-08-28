@@ -10,6 +10,7 @@ import { startAgentRun } from "../../streams/runs/agentRun.ts";
 import { startChatRun } from "../../streams/runs/chatRun.ts";
 import { stopSandbox } from "../../sandbox/orchestrator.ts";
 import type { PermissionMode } from "@shannon/agent";
+import Docker from "dockerode";
 
 /**
  * Full-loop e2e against real Postgres + the mock inference loop + the stdio
@@ -24,6 +25,27 @@ import type { PermissionMode } from "@shannon/agent";
 const userId = `test-mcp-e2e-${uuid()}`;
 const convIds: string[] = [];
 let serverId: string;
+
+/**
+ * Every case here runs on the mock inference loop, so only the one builtin
+ * case that actually *executes* (bash) needs a container. Building
+ * `shannon-sandbox` is a multi-minute ubuntu + build-essential + Node + Python
+ * image — far too much to add to every CI run for a single assertion — so CI
+ * has no such image and that one case is skipped there, the same way
+ * drivers.test.ts skips its Redis contract when no Redis is reachable. It
+ * reports as a skipped test rather than silently passing.
+ */
+const sandboxImage = await (async () => {
+  try {
+    const docker = process.env.CONTAINER_SOCKET
+      ? new Docker({ socketPath: process.env.CONTAINER_SOCKET })
+      : new Docker();
+    await docker.getImage("shannon-sandbox").inspect();
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 async function waitFor<T>(fn: () => T | null | Promise<T | null>, timeoutMs = 20_000): Promise<T> {
   const start = Date.now();
@@ -242,12 +264,17 @@ describe("MCP end-to-end through the chat loop", () => {
     expect(second.sawApproval).toBe(false);
   }, 30_000);
 
-  it("bash asks in chat too, and a fresh conversation's history has nothing dangling", async () => {
+  it("bash asks in chat too", async () => {
     // bash is a builtin with no MCP wiring — proves chat's approval gate
-    // covers builtins, not just MCP tools.
+    // covers builtins, not just MCP tools. The gate fires before the
+    // container is ever touched, so this needs no sandbox image.
     const turn = await runTurn("please run a bash command", "manual", true, { surface: "chat" });
     expect(turn.sawApproval).toBe(true);
     expect(turn.toolCalls.map((c) => c.tool)).toContain("bash");
+  }, 30_000);
+
+  it.runIf(sandboxImage)("runs the approved bash call in a real sandbox", async () => {
+    const turn = await runTurn("please run a bash command", "manual", true, { surface: "chat" });
     expect(turn.toolResults[0].output).toContain("hello from the sandbox");
   }, 30_000);
 });
