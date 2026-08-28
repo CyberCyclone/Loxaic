@@ -5,7 +5,7 @@ import { startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { NotFoundError } from "../streams/authz.ts";
-import { getRun } from "../streams/registry.ts";
+import { findRunByApprovalCallId, getRun } from "../streams/registry.ts";
 
 export function chatWsHandler(app: FastifyInstance) {
   app.get("/ws/chat", { websocket: true }, async (socket, request) => {
@@ -121,6 +121,18 @@ export function chatWsHandler(app: FastifyInstance) {
           // identical to a stop for a stream that never existed.
           const run = getRun(msg.stream_id);
           if (run && run.userId === userId) run.abort.abort();
+        } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
+          // Chat is tool-capable, so approvals resolve here too. Run-scoped
+          // (registry), so any of the user's sockets — either surface, any
+          // device — can answer.
+          const run = findRunByApprovalCallId(userId, msg.call_id);
+          const resolve = run?.approvals.get(msg.call_id);
+          if (resolve) {
+            run!.approvals.delete(msg.call_id);
+            resolve(msg.type === "agent.approve");
+          }
+          // Silently no-op otherwise — unknown/foreign/already-resolved
+          // call_id, same "no existence oracle" rule as stream.stop.
         }
       } catch (err) {
         if (err instanceof NotFoundError) {

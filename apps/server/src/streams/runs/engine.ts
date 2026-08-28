@@ -9,6 +9,7 @@ import type { PermissionMode, ToolName } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 
@@ -56,7 +57,7 @@ export async function runToolLoop(ctx: {
     );
     const systemPrompt = promptParts.length ? promptParts.join("\n\n") : null;
     const tools = toolset.openAiTools;
-    const history = await loadHistory(convId);
+    const history = incognito ? await loadEphemeralHistory(convId) : await loadHistory(convId);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
@@ -255,7 +256,7 @@ export async function runToolLoop(ctx: {
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
       for (const call of toolCalls) {
-        const outcome = await runOneToolCall({ streamId, convId, userId, mode, toolset, producer, assistantMsgId }, call);
+        const outcome = await runOneToolCall({ streamId, convId, userId, mode, incognito, toolset, producer, assistantMsgId }, call);
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
@@ -322,10 +323,10 @@ export async function runToolLoop(ctx: {
 
 /** Approval gate + execution for a single model-requested tool call. */
 async function runOneToolCall(
-  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; toolset: Toolset; producer: StreamProducer; assistantMsgId: string },
+  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; incognito: boolean; toolset: Toolset; producer: StreamProducer; assistantMsgId: string },
   call: ToolCall,
 ): Promise<{ output: string; diff?: { path: string; oldContent: string | null; newContent: string | null }[] }> {
-  const { convId, userId, mode, toolset, producer, assistantMsgId } = ctx;
+  const { convId, userId, mode, incognito, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
   const args = safeParseArgs(call.function.arguments);
 
@@ -381,7 +382,9 @@ async function runOneToolCall(
   let container = null;
   if (builtinName && toolNeedsSandbox(builtinName)) {
     try {
-      container = await getConversationSandbox(userId, convId);
+      // Incognito conversations get a sandbox with no Postgres bookkeeping
+      // row — the boot-time orphan sweep covers a crashed process instead.
+      container = await getConversationSandbox(userId, convId, { ephemeral: incognito });
     } catch (err) {
       const output = `Could not start a sandbox: ${(err as Error).message}`;
       producer.emit({
@@ -568,4 +571,74 @@ function textOf(blocks: ContentBlock[]): string {
     .map((b) => (b as { text: string }).text)
     .join("\n")
     .trim();
+}
+
+/**
+ * Incognito counterpart of loadHistory: rebuilt from the stream log's folded
+ * snapshots — there's no Postgres row to query, since none was ever written.
+ * Tool turns replay too: the fold attaches each tool.result onto its call, so
+ * a call with an `output` is resolved and a call without one is dangling and
+ * stripped, mirroring the Postgres loader exactly. The newest summary (a
+ * compact run's message) lives in the same log; only what came after it is
+ * replayed — same cutoff rule as the Postgres path, and skip cards are
+ * textless so they never act as a cutoff.
+ */
+export async function loadEphemeralHistory(
+  conversationId: string,
+): Promise<{ messages: ChatMessage[]; truncated: boolean; summaryText: string | null }> {
+  const broker = getStreamBroker();
+  const runIds = (await broker.driver.listConvStreams(conversationId)).slice(-HISTORY_LIMIT);
+
+  // Snapshot messages become either a summary marker or a batch of prompt
+  // messages (an assistant turn and its tool results travel together, so the
+  // cutoff below can never separate a call from its result).
+  const items: ({ kind: "summary"; text: string } | { kind: "msgs"; msgs: ChatMessage[] })[] = [];
+  for (const runId of runIds) {
+    const records = await broker.readFrom(runId, 0);
+    const snapshot = broker.foldSnapshot(records);
+    for (const m of snapshot.messages) {
+      if (m.status !== "complete") continue;
+      if (m.author_type === "summary") {
+        if (m.text) items.push({ kind: "summary", text: m.text });
+        continue;
+      }
+      if (m.author_type === "user") {
+        if (m.text) items.push({ kind: "msgs", msgs: [{ role: "user", content: m.text }] });
+        continue;
+      }
+      if (m.author_type === "assistant") {
+        const resolved = m.tool_calls.filter((t) => t.output !== undefined);
+        const calls: ToolCall[] = resolved.map((t) => ({
+          id: t.call_id,
+          type: "function" as const,
+          function: { name: t.tool, arguments: JSON.stringify(t.args ?? {}) },
+        }));
+        if (!m.text && calls.length === 0) continue;
+        items.push({
+          kind: "msgs",
+          msgs: [
+            { role: "assistant", content: m.text || null, ...(calls.length ? { tool_calls: calls } : {}) },
+            ...resolved.map((t) => ({ role: "tool" as const, tool_call_id: t.call_id, content: t.output as string })),
+          ],
+        });
+      }
+      // author_type "tool" snapshot messages carry nothing to replay: the
+      // fold already attached their results onto the assistant's calls.
+    }
+  }
+
+  const lastSummaryIdx = items.map((i) => i.kind).lastIndexOf("summary");
+  const summaryText =
+    lastSummaryIdx >= 0 ? (items[lastSummaryIdx] as { kind: "summary"; text: string }).text : null;
+
+  const out: ChatMessage[] = [];
+  for (const item of items.slice(lastSummaryIdx + 1)) {
+    if (item.kind === "msgs") out.push(...item.msgs);
+  }
+  const truncated = out.length > HISTORY_LIMIT;
+  const capped = out.slice(-HISTORY_LIMIT);
+  // A head cut can behead an assistant-with-calls, leaving its tool messages
+  // orphaned at the front — drop those or the backend rejects the list.
+  while (capped.length && capped[0].role === "tool") capped.shift();
+  return { messages: capped, truncated, summaryText };
 }

@@ -14,11 +14,11 @@ export type Todo = { id?: string; text: string; status: "pending" | "in_progress
  * and on a small window that's the single largest slice.
  */
 export type ContextCategory =
-  | "system" /** System prompt. Agent only — chat sends none. */
+  | "system" /** System prompt. */
   | "tools" /** JSON tool schemas, sent out-of-band in `body.tools`. */
   | "summary" /** The newest compaction summary, replayed in place of everything before it. */
   | "history" /** Prior user + assistant turns replayed into the prompt. */
-  | "reasoning" /** Prior thinking blocks re-fed. Chat-only, and now always 0. */
+  | "reasoning" /** Prior thinking blocks re-fed. Legacy category — always 0 now. */
   | "tool_io" /** tool_call args + tool_result output. Unbounded; the runaway one. */
   | "current" /** The user message that triggered this turn. */
   | "response"; /** The reply just generated — measured, never apportioned. */
@@ -76,11 +76,10 @@ export type CompactionStats = {
 
 /**
  * Payload kinds appended to a stream's durable log. Chat and agent share one
- * envelope — the agent-only kinds (iteration, tool.*, approval.request,
- * todos) simply never appear on a chat stream. Every event that names a
- * message carries `message_id` (including tool calls/results — the client
- * used to have to infer this via a placeholder-promotion hack; it doesn't
- * need to anymore).
+ * envelope, and both surfaces are tool-capable — every kind can appear on
+ * either stream. Every event that names a message carries `message_id`
+ * (including tool calls/results — the client used to have to infer this via
+ * a placeholder-promotion hack; it doesn't need to anymore).
  */
 export type StreamEventKind =
   | {

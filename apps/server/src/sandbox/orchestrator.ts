@@ -247,6 +247,19 @@ export function getContainer(containerId: string): Docker.Container {
   return docker.getContainer(containerId);
 }
 
+/** IDs of every running container this module ever creates (all sandboxes
+ * carry the shannon.sandbox label). Used by the boot-time orphan sweep. */
+export async function listSandboxContainers(): Promise<string[]> {
+  try {
+    const containers = await docker.listContainers({
+      filters: { label: ["shannon.sandbox"] },
+    });
+    return containers.map((c) => c.Id);
+  } catch {
+    return [];
+  }
+}
+
 /** True when the container still exists and is running. */
 export async function isContainerRunning(containerId: string): Promise<boolean> {
   try {

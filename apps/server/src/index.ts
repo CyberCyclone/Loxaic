@@ -17,7 +17,7 @@ import { chatWsHandler } from "./ws/chat";
 import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
 import { startRoutineScheduler } from "./routines/scheduler";
-import { startSandboxReaper } from "./agent/sandbox-manager";
+import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manager";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
 import { mcpRoutes } from "./routes/mcp";
@@ -155,5 +155,10 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   app.log.info(`Server listening at http://${HOST}:${PORT}`);
   startRoutineScheduler().catch((e) => app.log.warn(`Scheduler start skipped: ${e.message}`));
   startSandboxReaper((n) => app.log.info(`Reaped ${n} idle agent sandbox(es)`));
+  // Ephemeral (incognito) sandboxes have no DB row; a crashed process's
+  // leftovers are only findable by their container label.
+  sweepOrphanSandboxes()
+    .then((n) => { if (n > 0) app.log.info(`Swept ${n} orphaned sandbox container(s)`); })
+    .catch(() => {});
   startMcpReaper((n) => app.log.info(`Closed ${n} idle MCP connection(s)`));
 });

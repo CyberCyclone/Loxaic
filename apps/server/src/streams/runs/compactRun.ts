@@ -10,8 +10,7 @@ import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
-import { loadChatHistory, HISTORY_LIMIT as CHAT_HISTORY_LIMIT } from "./chatRun.ts";
-import { loadHistory as loadAgentHistory, HISTORY_LIMIT as AGENT_HISTORY_LIMIT } from "./engine.ts";
+import { loadEphemeralHistory, loadHistory, HISTORY_LIMIT } from "./engine.ts";
 
 /**
  * `/compact`: summarise the conversation into a `summary` message and continue
@@ -121,14 +120,12 @@ export async function startCompactRun(input: {
     throw new Error("A response is already in progress for this conversation");
   }
 
-  // Load through the surface's own loader, so what gets compacted is exactly
-  // what that surface would have sent — including starting at any previous
-  // summary, which is what makes repeat compaction correct, not cumulative.
-  const history =
-    surface === "agent"
-      ? await loadAgentHistory(convId)
-      : await loadChatHistory(convId, incognito);
-  const historyLimit = surface === "agent" ? AGENT_HISTORY_LIMIT : CHAT_HISTORY_LIMIT;
+  // Both surfaces now share one loader (tool turns included), so what gets
+  // compacted is exactly what the next prompt would have replayed — starting
+  // at any previous summary, which is what makes repeat compaction correct,
+  // not cumulative. Incognito history lives only in the stream log.
+  const history = incognito ? await loadEphemeralHistory(convId) : await loadHistory(convId);
+  const historyLimit = HISTORY_LIMIT;
   const hasSummary = !!history.summaryText;
   const count = history.messages.length;
 
