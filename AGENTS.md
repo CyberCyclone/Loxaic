@@ -71,17 +71,38 @@ pnpm --filter @shannon/mobile ios # or android
   `INFERENCE_BASE_URL` (default `http://localhost:4002`). See `docs/RUNTIME.md` for the
   per-platform (Mac/Windows/Linux, Metal/CUDA/ROCm) setup matrix.
 
-### Agent tool loop
+### Tool loop (Chat and Agent both)
 
+- **Chat and Agent share one tool loop** — `apps/server/src/streams/runs/engine.ts`'s
+  `runToolLoop`, parameterized by surface, base prompt, and `incognito`. The two starters
+  (`chatRun.ts`, `agentRun.ts`) only differ in conversation setup and which system prompt
+  they pass in; `agentRun.ts` additionally exposes planning/manual/auto modes. **Chat has no
+  mode selector** — it always runs manual-mode approval semantics (write builtins and
+  non-allowlisted MCP tools ask; read-only builtins run free).
 - `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
   server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
   policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below).
+- **"Allow always"**: an MCP tool patches its server's own per-tool policy
+  (`PATCH /v1/mcp/servers/:id`, same allowlist the `/mcp` screen manages); a builtin patches
+  the user's global allowlist instead — the `user_prefs.tool_allowlist` column, read by
+  `buildToolset` (`apps/server/src/mcp/registry.ts`) and exposed via `GET`/`PATCH /v1/prefs`.
+  This is global and mode-independent (it clears `requiresApproval`, not the `isWrite` gate),
+  so it also silently benefits agent's manual mode — planning mode is unaffected since it
+  filters on `isWrite` regardless of approval policy.
 - Sandboxes are per-conversation, lazily created on first tool use, and **survive socket
   close** (reconnecting mid-task keeps the working directory) — see
   `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
+  Ephemeral (incognito) conversations get a sandbox with **no Postgres row** — the container
+  is tracked only in-process — so a crashed server's leftovers are only findable by their
+  `shannon.sandbox` label; `sweepOrphanSandboxes()` does that sweep at boot, alongside the
+  stream log's own orphan recovery.
 - `web_fetch` runs on the **server**, not in the sandbox (`NetworkMode: none` — sandboxes
   have no network). It has a real SSRF guard (DNS-resolves and rejects private/loopback/
   link-local answers, follows redirects manually so every hop is re-checked).
+- Incognito conversations are tool-capable too. `loadEphemeralHistory` (`engine.ts`) rebuilds
+  the OpenAI message list — including resolved tool_call/tool_result pairs, dangling calls
+  stripped exactly like the Postgres loader — from the stream log's folded snapshots rather
+  than a DB query, since incognito writes nothing conversation-scoped to Postgres.
 
 ### MCP servers
 

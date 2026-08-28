@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@shannon/db";
-import { mcpServers, user } from "@shannon/db/schema";
+import { mcpServers, user, userPrefs } from "@shannon/db/schema";
 import { toOpenAiTools } from "@shannon/agent";
 import { buildToolset } from "../registry.ts";
 import { encryptSecrets } from "../secrets.ts";
@@ -130,6 +130,25 @@ describe("buildToolset with the fixture server", () => {
     const ts = await buildToolset(userId, { mode: "manual" });
     expect(ts.openAiTools.map((t) => t.function.name)).not.toContain("mockmcp__echo");
     await db.update(mcpServers).set({ enabled: true }).where(eq(mcpServers.id, serverId));
+  }, 20_000);
+
+  it("clears requiresApproval for a builtin on the user's allow-always list", async () => {
+    const before = await buildToolset(userId, { mode: "manual" });
+    expect(before.requiresApproval(before.get("bash")!, "manual")).toBe(true);
+
+    await db.insert(userPrefs).values({ userId, toolAllowlist: ["bash"] });
+    try {
+      const after = await buildToolset(userId, { mode: "manual" });
+      expect(after.requiresApproval(after.get("bash")!, "manual")).toBe(false);
+      // Untouched: only the allowlisted name is affected.
+      expect(after.requiresApproval(after.get("fs_write")!, "manual")).toBe(true);
+      // Planning gates on isWrite regardless of the allowlist — "allow
+      // always" doesn't defeat planning mode's no-writes guarantee.
+      const planning = await buildToolset(userId, { mode: "planning" });
+      expect(planning.openAiTools.map((t) => t.function.name)).not.toContain("bash");
+    } finally {
+      await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+    }
   }, 20_000);
 
   it("skips an unreachable server without failing the run", async () => {
