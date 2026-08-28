@@ -12,14 +12,17 @@
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "1.6.26",
+    "@brave/brave-search-mcp-server": "2.1.3",
     "@fastify/cors": "^10.0.0",
     "@fastify/express": "^4.0.7",
     "@fastify/static": "^10.1.3",
     "@fastify/websocket": "^11.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@shannon/agent": "workspace:*",
     "@shannon/db": "workspace:*",
     "@shannon/sync": "workspace:*",
     "@shannon/types": "workspace:*",
+    "ajv": "^8.20.0",
     "better-auth": "1.6.26",
     "dockerode": "^5.0.1",
     "drizzle-orm": "^0.38.0",
@@ -27,7 +30,8 @@
     "ioredis": "^5.4.1",
     "node-cron": "^4.6.0",
     "postgres": "^3.4.0",
-    "uuid": "^14.0.1"
+    "uuid": "^14.0.1",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@shannon/config-ts": "workspace:*",
