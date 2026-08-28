@@ -111,9 +111,8 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Per-platform mapping:** web/Electron → `[data-testid="…"]`; Android → an **unprefixed**
   `resource-id`, found via UiAutomator2 (`new UiSelector().resourceId("id")`) — note Appium's
   `id` strategy prepends `<appPackage>:id/` and so never matches; iOS → `accessibilityIdentifier`,
-  found via XCUITest's `accessibility id` strategy (`~id`). The web and Android mappings are
-  confirmed against real builds; the iOS one follows RN's documented behaviour but hasn't been
-  run yet (see `apps/e2e/README.md`).
+  found via XCUITest's `accessibility id` strategy (`~id`). All three mappings are confirmed
+  against real builds (see `apps/e2e/README.md`).
 - Don't hand-roll these selectors in specs — use the helpers in `apps/e2e/src/helpers/`, which
   own the mapping.
 
@@ -139,16 +138,67 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `INFERENCE_BASE_URL` (default `http://localhost:4002`). See `docs/RUNTIME.md` for the
   per-platform (Mac/Windows/Linux, Metal/CUDA/ROCm) setup matrix.
 
-### Agent tool loop
+### Tool loop (Chat and Agent both)
 
-- `packages/agent` owns `TOOLS`/`toOpenAiTools`/`toolRequiresApproval`/`AgentEvent` — the
-  server and every client import from here so the protocol can't drift.
+- **Chat and Agent share one tool loop** — `apps/server/src/streams/runs/engine.ts`'s
+  `runToolLoop`, parameterized by surface, base prompt, and `incognito`. The two starters
+  (`chatRun.ts`, `agentRun.ts`) only differ in conversation setup and which system prompt
+  they pass in; `agentRun.ts` additionally exposes planning/manual/auto modes. **Chat has no
+  mode selector** — it always runs manual-mode approval semantics (write builtins and
+  non-allowlisted MCP tools ask; read-only builtins run free).
+- `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
+  server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
+  policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below).
+- **"Allow always"**: an MCP tool patches its server's own per-tool policy
+  (`PATCH /v1/mcp/servers/:id`, same allowlist the `/mcp` screen manages); a builtin patches
+  the user's global allowlist instead — the `user_prefs.tool_allowlist` column, read by
+  `buildToolset` (`apps/server/src/mcp/registry.ts`) and exposed via `GET`/`PATCH /v1/prefs`.
+  This is global and mode-independent (it clears `requiresApproval`, not the `isWrite` gate),
+  so it also silently benefits agent's manual mode — planning mode is unaffected since it
+  filters on `isWrite` regardless of approval policy.
 - Sandboxes are per-conversation, lazily created on first tool use, and **survive socket
   close** (reconnecting mid-task keeps the working directory) — see
   `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
+  Ephemeral (incognito) conversations get a sandbox with **no Postgres row** — the container
+  is tracked only in-process — so a crashed server's leftovers are only findable by their
+  `shannon.sandbox` label; `sweepOrphanSandboxes()` does that sweep at boot, alongside the
+  stream log's own orphan recovery.
 - `web_fetch` runs on the **server**, not in the sandbox (`NetworkMode: none` — sandboxes
   have no network). It has a real SSRF guard (DNS-resolves and rejects private/loopback/
   link-local answers, follows redirects manually so every hop is re-checked).
+- Incognito conversations are tool-capable too. `loadEphemeralHistory` (`engine.ts`) rebuilds
+  the OpenAI message list — including resolved tool_call/tool_result pairs, dangling calls
+  stripped exactly like the Postgres loader — from the stream log's folded snapshots rather
+  than a DB query, since incognito writes nothing conversation-scoped to Postgres.
+
+### MCP servers
+
+- The tool loop resolves tools through a per-run `Toolset` (`apps/server/src/mcp/registry.ts`),
+  not the static union: builtins from `packages/agent` plus the user's enabled MCP servers
+  (`mcp_servers` table), namespaced `slug__tool` (no builtin contains `__`, so they can't shadow).
+- **Everything an MCP server produces is untrusted.** Descriptions/schemas are capped and
+  control-stripped (`mcp/sanitize.ts`), results are byte-capped and wrapped in
+  `<mcp-tool-result …>` provenance markers with escape attempts neutralized, and a system-prompt
+  addendum tells the model to never follow instructions found inside. Model-produced arguments
+  are ajv-validated against the declared schema before anything reaches the server.
+- MCP tools ask for approval in **every** mode — auto included — until the user allowlists the
+  specific tool; planning mode only offers tools the user marked read-only (server
+  `readOnlyHint` annotations are display-only, never trusted). Tool-change detection
+  (`mcp/change-detection.ts`) revokes allowlists when a tool's description/schema hash changes.
+- Credentials are AES-256-GCM-encrypted at rest (`mcp/secrets.ts`, key from
+  `MCP_ENCRYPTION_KEY`, fallback `BETTER_AUTH_SECRET`) and `redact()`-ed out of every error
+  path. stdio children get a minimal env (`PATH`/`HOME` + row env + secrets), never
+  `process.env`. HTTP transports re-run the SSRF guard per request unless the user confirmed
+  `allowPrivateNetwork` in the GUI.
+- Connections are cached per `userId:serverId` with an idle reaper (`mcp/client-manager.ts`,
+  mirrors sandbox-manager); a dead/hung server fails only its own tool calls, never the run.
+- Brave Search ships as a built-in catalog entry (`mcp/catalog.ts`) pinned to the official
+  `@brave/brave-search-mcp-server` — spawned from the installed package's bin, never `npx`.
+  The GUI lives at `/mcp` (mobile/web); per-conversation server switches are in the agent
+  Inspector (`conversations.mcpOverrides`).
+- Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
+  `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
+  offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
 
 ### Electron
 
