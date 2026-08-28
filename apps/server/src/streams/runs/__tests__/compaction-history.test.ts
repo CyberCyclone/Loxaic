@@ -5,7 +5,7 @@ import { conversations, messages, usageRecords, user } from "@shannon/db/schema"
 import type { ContentBlock } from "@shannon/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { loadChatHistory } from "../chatRun.ts";
-import { loadHistory as loadAgentHistory } from "../agentRun.ts";
+import { loadHistory as loadAgentHistory } from "../engine.ts";
 import { startCompactRun } from "../compactRun.ts";
 
 /**

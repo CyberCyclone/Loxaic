@@ -11,7 +11,7 @@ import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { loadChatHistory, HISTORY_LIMIT as CHAT_HISTORY_LIMIT } from "./chatRun.ts";
-import { loadHistory as loadAgentHistory, HISTORY_LIMIT as AGENT_HISTORY_LIMIT } from "./agentRun.ts";
+import { loadHistory as loadAgentHistory, HISTORY_LIMIT as AGENT_HISTORY_LIMIT } from "./engine.ts";
 
 /**
  * `/compact`: summarise the conversation into a `summary` message and continue
