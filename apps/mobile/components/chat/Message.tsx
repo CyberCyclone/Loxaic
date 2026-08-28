@@ -34,7 +34,10 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
   const isUser = msg.role === 'user';
 
   return (
-    <Box className={`px-4 py-2 ${isUser ? 'bg-primary/5' : ''}`}>
+    <Box
+      testID={`chat.message.${msg.role}`}
+      className={`px-4 py-2 ${isUser ? 'bg-primary/5' : ''}`}
+    >
       <HStack space="sm" className="items-start">
         <Box
           className={`h-6 w-6 items-center justify-center rounded-full ${

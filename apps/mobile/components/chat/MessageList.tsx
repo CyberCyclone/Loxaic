@@ -147,6 +147,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
 
   return (
     <FlatList
+      testID="chat.messageList"
       ref={listRef}
       className="flex-1"
       inverted

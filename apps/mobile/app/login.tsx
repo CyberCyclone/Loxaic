@@ -72,6 +72,7 @@ export default function LoginScreen() {
             {mode === 'sign-up' && (
               <Input className="h-12">
                 <InputField
+                  testID="login.name"
                   placeholder="Name"
                   value={name}
                   onChangeText={setName}
@@ -82,6 +83,7 @@ export default function LoginScreen() {
             )}
             <Input className="h-12">
               <InputField
+                testID="login.email"
                 placeholder="Email"
                 value={email}
                 onChangeText={setEmail}
@@ -92,6 +94,7 @@ export default function LoginScreen() {
             </Input>
             <Input className="h-12">
               <InputField
+                testID="login.password"
                 placeholder="Password"
                 value={password}
                 onChangeText={setPassword}
@@ -99,18 +102,23 @@ export default function LoginScreen() {
                 textContentType="password"
                 onSubmitEditing={() => { void submit(); }}
               />
-              <InputSlot className="pr-3" onPress={() => { setShowPassword((v) => !v); }}>
+              <InputSlot
+                testID="login.showPassword"
+                className="pr-3"
+                onPress={() => { setShowPassword((v) => !v); }}
+              >
                 <InputIcon as={showPassword ? EyeOff : Eye} className="text-muted-foreground" />
               </InputSlot>
             </Input>
 
             {error && (
-              <Text size="sm" className="text-destructive">
+              <Text testID="login.error" size="sm" className="text-destructive">
                 {error}
               </Text>
             )}
 
             <Button
+              testID="login.submit"
               size="lg"
               className="bg-primary data-[hover=true]:bg-primary-hover"
               onPress={() => { void submit(); }}
@@ -128,6 +136,7 @@ export default function LoginScreen() {
               {mode === 'sign-in' ? 'No account?' : 'Already registered?'}
             </Text>
             <Pressable
+              testID="login.toggleMode"
               onPress={() => {
                 setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in');
                 setError(null);

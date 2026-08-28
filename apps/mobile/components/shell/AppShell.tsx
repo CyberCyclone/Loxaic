@@ -87,6 +87,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {overlaySidebar && sidebarOpen && (
             <>
               <Pressable
+                testID="shell.sidebarScrim"
                 onPress={() => { setSidebarOpen(false); }}
                 className="absolute inset-0 bg-black/40"
               />

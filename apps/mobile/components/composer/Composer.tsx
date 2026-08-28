@@ -168,6 +168,7 @@ export function Composer({
           )}
           <Textarea size="md" className="border-border bg-card">
             <TextareaInput
+              testID="composer.input"
               // gluestack's forwarded ref type resolves to TextInputProps
               // instead of the TextInput instance it actually is at runtime
               // (confirmed: .focus() works) — cast around the mistyping.
@@ -275,11 +276,17 @@ export function Composer({
           )}
 
           {streaming ? (
-            <Button size="sm" className="rounded-full bg-destructive px-3" onPress={onStop}>
+            <Button
+              testID="composer.stop"
+              size="sm"
+              className="rounded-full bg-destructive px-3"
+              onPress={onStop}
+            >
               <ButtonIcon as={Square} className="text-white" />
             </Button>
           ) : (
             <Button
+              testID="composer.send"
               size="sm"
               className="rounded-full bg-primary px-3"
               onPress={send}
