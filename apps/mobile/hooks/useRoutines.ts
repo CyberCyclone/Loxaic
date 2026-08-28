@@ -29,7 +29,7 @@ export function useRoutines(token: string | null) {
   }, [token, showToast]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   const create = useCallback(

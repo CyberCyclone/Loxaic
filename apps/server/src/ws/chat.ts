@@ -7,15 +7,30 @@ import { createDelivery } from "./delivery.ts";
 import { NotFoundError } from "../streams/authz.ts";
 import { findRunByApprovalCallId, getRun } from "../streams/registry.ts";
 
+/** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
+ * no type declarations of its own (and none are installed here), so without
+ * this, everything @fastify/websocket hands us as `socket` resolves to `any`. */
+interface WsConnection {
+  readonly readyState: number;
+  readonly OPEN: number;
+  readonly bufferedAmount: number;
+  pause(): void;
+  resume(): void;
+  close(code?: number, reason?: string): void;
+  send(data: string): void;
+  on(event: "message", listener: (data: Buffer) => void): void;
+  on(event: "close", listener: () => void): void;
+}
+
 export function chatWsHandler(app: FastifyInstance) {
-  app.get("/ws/chat", { websocket: true }, async (socket, request) => {
+  app.get("/ws/chat", { websocket: true }, async (socket: WsConnection, request) => {
     // Pause the socket immediately: auth below is async, and a client that
     // sends its first message right after `open` can otherwise have that
     // frame parsed and emitted (to zero listeners) before we've attached
     // ours further down — silently dropping it. Resumed once we're ready.
     socket.pause();
 
-    const url = new URL(request.url, `http://${request.headers.host}`);
+    const url = new URL(request.url, `http://${request.headers.host ?? ""}`);
     const token = url.searchParams.get("token");
     if (!token) {
       socket.close(4001, "Missing token");
@@ -35,12 +50,12 @@ export function chatWsHandler(app: FastifyInstance) {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg));
     };
     const delivery = createDelivery(userId, safeSend, () => socket.bufferedAmount);
-    socket.on("close", () => delivery.close());
+    socket.on("close", () => { delivery.close(); });
 
-    socket.on("message", async (raw: Buffer) => {
+    const handleMessage = async (raw: Buffer): Promise<void> => {
       let msg: ClientMessage;
       try {
-        msg = JSON.parse(raw.toString());
+        msg = JSON.parse(raw.toString()) as ClientMessage;
       } catch {
         safeSend({ type: "error", error: "Invalid JSON" });
         return;
@@ -69,7 +84,7 @@ export function chatWsHandler(app: FastifyInstance) {
           const result = await startChatRun({
             userId,
             content: msg.content,
-            model: msg.model || "default",
+            model: msg.model ?? "default",
             conversationId: msg.conversation_id,
             parentId: msg.parent_id,
             incognito: msg.incognito,
@@ -87,8 +102,8 @@ export function chatWsHandler(app: FastifyInstance) {
           // palette renders. `compact` is the only entry today; the palette
           // never offers anything else, so an unknown name here is a bug or
           // a hand-rolled client, and an explicit error beats silence.
-          const cmd = findCommand(msg.command ?? "");
-          if (!cmd || cmd.name !== "compact") {
+          const cmd = findCommand(msg.command);
+          if (cmd?.name !== "compact") {
             safeSend({ type: "error", error: `Unknown command: ${msg.command}` });
             return;
           }
@@ -99,7 +114,7 @@ export function chatWsHandler(app: FastifyInstance) {
           const result = await startCompactRun({
             userId,
             conversationId: msg.conversation_id,
-            model: msg.model || "default",
+            model: msg.model ?? "default",
             args: msg.args,
             surface: "chat",
           });
@@ -120,15 +135,15 @@ export function chatWsHandler(app: FastifyInstance) {
           // matches "no existence oracle": a wrong-owner stop must look
           // identical to a stop for a stream that never existed.
           const run = getRun(msg.stream_id);
-          if (run && run.userId === userId) run.abort.abort();
+          if (run?.userId === userId) run.abort.abort();
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
           // Chat is tool-capable, so approvals resolve here too. Run-scoped
           // (registry), so any of the user's sockets — either surface, any
           // device — can answer.
           const run = findRunByApprovalCallId(userId, msg.call_id);
           const resolve = run?.approvals.get(msg.call_id);
-          if (resolve) {
-            run!.approvals.delete(msg.call_id);
+          if (run && resolve) {
+            run.approvals.delete(msg.call_id);
             resolve(msg.type === "agent.approve");
           }
           // Silently no-op otherwise — unknown/foreign/already-resolved
@@ -141,7 +156,9 @@ export function chatWsHandler(app: FastifyInstance) {
           safeSend({ type: "error", error: (err as Error).message });
         }
       }
-    });
+    };
+
+    socket.on("message", (raw: Buffer) => { void handleMessage(raw); });
 
     socket.resume();
   });

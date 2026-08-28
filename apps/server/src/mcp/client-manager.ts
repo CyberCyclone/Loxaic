@@ -15,13 +15,13 @@ const REAP_INTERVAL_MS = 5 * 60 * 1000;
 export const CONNECT_TIMEOUT_MS = 10_000;
 export const CALL_TIMEOUT_MS = 60_000;
 
-type Entry = {
+interface Entry {
   client: Client;
   /** row.updatedAt at connect time — an edited row invalidates the cache. */
   configStamp: string;
   lastUsedAt: number;
   tools: SanitizedToolMeta[] | null;
-};
+}
 
 // Keyed `${userId}:${serverId}`. Same shape as sandbox-manager: an `active`
 // cache plus a `pending` map so concurrent tool calls share one connect.
@@ -86,8 +86,8 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
     }
   } catch (err) {
-    await client.close().catch(() => {});
-    const message = redact((err as Error).message ?? String(err), secrets);
+    await client.close().catch(() => undefined);
+    const message = redact(err instanceof Error ? err.message : String(err), secrets);
     await recordConnectResult(row.id, message);
     throw new Error(`Could not connect to MCP server "${row.name}": ${message}`);
   }
@@ -101,19 +101,19 @@ async function recordConnectResult(serverId: string, error: string | null): Prom
     .update(mcpServers)
     .set(error === null ? { lastConnectedAt: new Date(), lastError: null } : { lastError: error })
     .where(eq(mcpServers.id, serverId))
-    .catch(() => {});
+    .catch(() => undefined);
 }
 
 async function resolveEntry(userId: string, row: McpServerRow): Promise<Entry> {
   const key = keyOf(userId, row.id);
   const existing = active.get(key);
-  if (existing && existing.configStamp === stampOf(row)) {
+  if (existing?.configStamp === stampOf(row)) {
     existing.lastUsedAt = Date.now();
     return existing;
   }
   if (existing) {
     active.delete(key);
-    await existing.client.close().catch(() => {});
+    await existing.client.close().catch(() => undefined);
   }
 
   const inFlight = pending.get(key);
@@ -145,7 +145,7 @@ export async function listServerTools(userId: string, row: McpServerRow): Promis
     return tools;
   } catch (err) {
     await dropEntry(userId, row.id);
-    throw new Error(redact((err as Error).message ?? String(err), secrets));
+    throw new Error(redact(err instanceof Error ? err.message : String(err), secrets));
   }
 }
 
@@ -168,7 +168,7 @@ export async function callServerTool(
     // Drop the cached connection: a timeout usually means a wedged server,
     // and the next call should respawn/reconnect rather than reuse it.
     await dropEntry(userId, row.id);
-    throw new Error(redact((err as Error).message ?? String(err), secrets));
+    throw new Error(redact(err instanceof Error ? err.message : String(err), secrets));
   }
 }
 
@@ -177,7 +177,7 @@ export async function dropEntry(userId: string, serverId: string): Promise<void>
   const entry = active.get(key);
   if (!entry) return;
   active.delete(key);
-  await entry.client.close().catch(() => {});
+  await entry.client.close().catch(() => undefined);
 }
 
 /** Close every cached connection for a server, regardless of user. Used by
@@ -186,7 +186,7 @@ export async function closeServerClients(serverId: string): Promise<void> {
   for (const [key, entry] of active) {
     if (key.endsWith(`:${serverId}`)) {
       active.delete(key);
-      await entry.client.close().catch(() => {});
+      await entry.client.close().catch(() => undefined);
     }
   }
 }
@@ -196,7 +196,7 @@ export async function reapIdleMcpClients(now = Date.now()): Promise<number> {
   for (const [key, entry] of active) {
     if (now - entry.lastUsedAt > IDLE_TTL_MS) {
       active.delete(key);
-      await entry.client.close().catch(() => {});
+      await entry.client.close().catch(() => undefined);
       reaped++;
     }
   }

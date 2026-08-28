@@ -3,9 +3,9 @@ import { eq } from "@shannon/db";
 import { db } from "@shannon/db";
 import { syncOps } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
-import type { SyncPushRequest, SyncPullRequest, SyncPushResponse } from "@shannon/sync";
+import type { SyncPushRequest, SyncPushResponse } from "@shannon/sync";
 
-export async function syncRoutes(app: FastifyInstance) {
+export function syncRoutes(app: FastifyInstance) {
   // Push operations from device to server
   app.post("/sync/push", async (request, reply) => {
     const userId = await authenticate(request, reply);
@@ -44,7 +44,7 @@ export async function syncRoutes(app: FastifyInstance) {
     const userId = await authenticate(request, reply);
     const { since, limit } = request.query as { since: string; limit?: string };
     const sinceSeq = parseInt(since, 10) || 0;
-    const pullLimit = parseInt(limit || "100", 10);
+    const pullLimit = limit ? parseInt(limit, 10) : 100;
 
     const rows = await db.query.syncOps.findMany({
       where: eq(syncOps.userId, userId),

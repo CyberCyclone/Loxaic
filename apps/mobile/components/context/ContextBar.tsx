@@ -36,7 +36,11 @@ export function ContextBar({ segments, over }: { segments: ContextSegment[]; ove
         <Box
           key={s.category}
           className={SEGMENT_CLASS[s.category]}
-          style={{ width: `${Math.max(s.fraction, 0) * scale * 100}%` }}
+          // Built via concatenation, then narrowed with `as`, rather than a
+          // template literal: RN's DimensionValue requires the literal type
+          // `${number}%`, which a plain `string` (what String(n) + '%'
+          // produces) doesn't structurally satisfy without this assertion.
+          style={{ width: (String(Math.max(s.fraction, 0) * scale * 100) + '%') as `${number}%` }}
         />
       ))}
     </HStack>

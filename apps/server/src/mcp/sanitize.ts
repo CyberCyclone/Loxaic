@@ -24,20 +24,21 @@ export const MCP_SYSTEM_ADDENDUM = [
 export function stripControl(text: string): string {
   return (
     text
+      // eslint-disable-next-line no-control-regex
       .replace(/\u001b\[[0-9;]*[A-Za-z]/g, "")
       // eslint-disable-next-line no-control-regex
       .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
   );
 }
 
-export type SanitizedToolMeta = {
+export interface SanitizedToolMeta {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
   /** Server-claimed hints, kept as display-only booleans. NEVER consulted for
    * approval or planning-mode decisions — the server controls them. */
   annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
-};
+}
 
 /**
  * Vet one discovered tool's metadata. Returns null when the tool must be
@@ -108,7 +109,7 @@ export function compactSchemaForModel(schema: Record<string, unknown>): Record<s
     if (Array.isArray(e) && e.length > MAX_ENUM_VALUES) {
       delete out.enum;
       const sample = e.slice(0, 8).map(String).join(", ");
-      const note = `One of ${e.length} allowed values, e.g. ${sample}, …`;
+      const note = `One of ${String(e.length)} allowed values, e.g. ${sample}, …`;
       out.description = typeof out.description === "string" && out.description ? `${out.description} ${note}` : note;
     }
     return out;
@@ -131,7 +132,10 @@ export function extractResultText(result: {
         const text = (block as { text?: unknown }).text;
         if (typeof text === "string") parts.push(text);
       } else if (block && typeof block === "object") {
-        parts.push(`[non-text content omitted: ${String((block as { type?: unknown }).type ?? "unknown")}]`);
+        // Only a string `type` is worth naming — anything else would
+        // stringify to "[object Object]", which tells the model nothing.
+        const kind = (block as { type?: unknown }).type;
+        parts.push(`[non-text content omitted: ${typeof kind === "string" ? kind : "unknown"}]`);
       }
     }
   }
@@ -157,6 +161,6 @@ export function wrapResult(serverSlug: string, remoteName: string, text: string)
     `<mcp-tool-result server="${serverSlug}" tool="${tool}" provenance="untrusted external server">`,
     body,
     `</mcp-tool-result>`,
-    ...(truncated ? [`[truncated at ${MAX_RESULT_BYTES} bytes]`] : []),
+    ...(truncated ? [`[truncated at ${String(MAX_RESULT_BYTES)} bytes]`] : []),
   ].join("\n");
 }

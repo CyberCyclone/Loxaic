@@ -48,8 +48,8 @@ describe("assertConversationAccess", () => {
 
   it("nonexistent and non-owner produce the identical error message (no existence oracle)", async () => {
     const [msgNonexistent, msgNonOwner] = await Promise.all([
-      assertConversationAccess(userA, uuid()).catch((e) => (e as Error).message),
-      assertConversationAccess(userB, ownedConvId).catch((e) => (e as Error).message),
+      assertConversationAccess(userA, uuid()).catch((e: unknown) => (e instanceof Error ? e.message : String(e))),
+      assertConversationAccess(userB, ownedConvId).catch((e: unknown) => (e instanceof Error ? e.message : String(e))),
     ]);
     expect(msgNonexistent).toBe(msgNonOwner);
   });

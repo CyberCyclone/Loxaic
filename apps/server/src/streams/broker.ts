@@ -4,7 +4,7 @@ import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
 export type StreamProducerMeta = Omit<StreamMeta, "lastSeq" | "status" | "updatedAt" | "createdAt">;
 
-export type StreamEndInfo = { usage?: TurnUsage; error?: string };
+export interface StreamEndInfo { usage?: TurnUsage; error?: string }
 
 export interface StreamProducer {
   emit(event: StreamEventKind): void;
@@ -118,7 +118,7 @@ export class StreamBroker {
    * catch-up delivery path and boot-time orphan recovery. */
   foldSnapshot(records: StreamRecord[]): StreamSnapshot {
     const messages = new Map<string, StreamSnapshotMessage>();
-    const order: string[] = [];
+    const orderedMessages: StreamSnapshotMessage[] = [];
     let iteration: StreamSnapshot["iteration"];
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
@@ -136,7 +136,7 @@ export class StreamBroker {
           status: "streaming",
         };
         messages.set(id, m);
-        order.push(id);
+        orderedMessages.push(m);
       }
       return m;
     };
@@ -196,6 +196,7 @@ export class StreamBroker {
           break;
         case "compaction": {
           const { kind: _kind, message_id, ...stats } = event;
+          void _kind;
           ensure(message_id).compaction = stats;
           break;
         }
@@ -203,7 +204,7 @@ export class StreamBroker {
     }
 
     return {
-      messages: order.map((id) => messages.get(id)!),
+      messages: orderedMessages,
       ...(iteration ? { iteration } : {}),
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),

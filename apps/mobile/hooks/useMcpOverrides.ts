@@ -15,20 +15,25 @@ export function useMcpOverrides(token: string | null, conversationId: string | n
 
   useEffect(() => {
     if (!token) return;
-    let cancelled = false;
-    (async () => {
+    // A field rather than a plain `let`: the cleanup below flips this from a
+    // different closure, which the type checker doesn't model — it would
+    // narrow a local to a stale `false` and treat both guards as dead. A
+    // property read is never narrowed that way (same reasoning as the
+    // engine's isAborted indirection).
+    const live = { cancelled: false };
+    void (async () => {
       try {
         const [allServers, convs] = await Promise.all([getMcpServers(), getConversations()]);
-        if (cancelled) return;
+        if (live.cancelled) return;
         setServers(allServers.filter((s) => s.enabled));
         const conv = conversationId ? convs.find((c) => c.id === conversationId) : undefined;
         setDisabledIds(conv?.mcpOverrides?.disabledServerIds ?? []);
       } catch {
-        if (!cancelled) setServers([]);
+        if (!live.cancelled) setServers([]);
       }
     })();
     return () => {
-      cancelled = true;
+      live.cancelled = true;
     };
   }, [token, conversationId]);
 

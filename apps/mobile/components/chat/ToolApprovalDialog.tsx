@@ -27,9 +27,13 @@ interface ToolApprovalDialogProps {
 export function ToolApprovalDialog({ tool, args, reason, onAllowOnce, onAllowAlways, onReject }: ToolApprovalDialogProps) {
   const mcp = splitMcpTool(tool);
   const pretty = JSON.stringify(args, null, 2);
+  // Explicit length check rather than `??`: a reason that trims to empty must
+  // still fall back, which nullish-coalescing would let through as blank.
+  const reasonText = reason?.trim();
+  const reasonLabel = reasonText && reasonText.length > 0 ? reasonText : 'No reason given.';
 
   return (
-    <Modal isOpen onClose={() => {}} size="md">
+    <Modal isOpen onClose={() => undefined} size="md">
       <ModalBackdrop />
       <ModalContent className="max-h-[85%]">
         <ModalHeader>
@@ -51,7 +55,7 @@ export function ToolApprovalDialog({ tool, args, reason, onAllowOnce, onAllowAlw
             </HStack>
             <VStack space="xs">
               <Text size="xs" className="uppercase text-muted-foreground">Reason</Text>
-              <Text size="sm" className="text-foreground">{reason?.trim() || 'No reason given.'}</Text>
+              <Text size="sm" className="text-foreground">{reasonLabel}</Text>
             </VStack>
             <VStack space="xs">
               <Text size="xs" className="uppercase text-muted-foreground">Call</Text>

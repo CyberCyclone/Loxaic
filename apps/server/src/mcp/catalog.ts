@@ -7,7 +7,7 @@ import path from "node:path";
  * installed package's bin directly (never `npx`): the exact audited version
  * from the lockfile runs, offline, with no cold-start install.
  */
-export type CatalogEntry = {
+export interface CatalogEntry {
   key: string;
   name: string;
   slug: string;
@@ -15,7 +15,7 @@ export type CatalogEntry = {
   description: string;
   secretKeys: { env: string; label: string }[];
   resolveLaunch(): { command: string; args: string[] };
-};
+}
 
 const require = createRequire(import.meta.url);
 

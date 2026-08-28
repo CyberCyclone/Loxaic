@@ -25,7 +25,7 @@ const userId = `test-mcp-e2e-${uuid()}`;
 const convIds: string[] = [];
 let serverId: string;
 
-async function waitFor<T>(fn: () => Promise<T | null>, timeoutMs = 20_000): Promise<T> {
+async function waitFor<T>(fn: () => T | null | Promise<T | null>, timeoutMs = 20_000): Promise<T> {
   const start = Date.now();
   for (;;) {
     const value = await fn();
@@ -62,7 +62,7 @@ async function runTurn(
 
   let sawApproval = false;
   if (approve !== null) {
-    await waitFor(async () => {
+    await waitFor(() => {
       const run = getRun(streamId);
       if (!run) return true; // finished without asking
       const entry = run.approvals.entries().next();
@@ -76,13 +76,13 @@ async function runTurn(
   }
 
   // Wait for the run to unregister (turn complete).
-  await waitFor(async () => (getRun(streamId) ? null : true));
+  await waitFor(() => (getRun(streamId) ? null : true));
 
   const rows = await db.query.messages.findMany({
     where: eq(messages.conversationId, conversationId),
     orderBy: (m, { asc }) => [asc(m.lamport)],
   });
-  const blocks = rows.flatMap((r) => (r.content as ContentBlock[]) ?? []);
+  const blocks = rows.flatMap((r) => (r.content ?? []) as ContentBlock[]);
   return {
     streamId,
     conversationId,
@@ -105,7 +105,7 @@ async function runIncognitoChatTurn(content: string, conversationId: string | un
 
   let sawApproval = false;
   if (approve !== null) {
-    await waitFor(async () => {
+    await waitFor(() => {
       const run = getRun(streamId);
       if (!run) return true;
       const entry = run.approvals.entries().next();
@@ -117,7 +117,7 @@ async function runIncognitoChatTurn(content: string, conversationId: string | un
       return null;
     });
   }
-  await waitFor(async () => (getRun(streamId) ? null : true));
+  await waitFor(() => (getRun(streamId) ? null : true));
 
   const broker = getStreamBroker();
   const records = await broker.readFrom(streamId, 0);
@@ -155,7 +155,7 @@ afterAll(async () => {
     // container itself, not just its bookkeeping row, before the row (and
     // the user it references) are deleted.
     const rows = await db.query.sandboxes.findMany({ where: inArray(sandboxes.conversationId, convIds) });
-    for (const row of rows) await stopSandbox(row.containerId).catch(() => {});
+    for (const row of rows) await stopSandbox(row.containerId).catch(() => undefined);
     await db.delete(sandboxes).where(inArray(sandboxes.conversationId, convIds));
     await db.delete(messages).where(inArray(messages.conversationId, convIds));
     await db.delete(usageRecords).where(inArray(usageRecords.conversationId, convIds));
@@ -273,18 +273,29 @@ describe("Incognito chat with tools", () => {
     // only ever looks at its own turn, so it can't prove this indirectly).
     const { loadEphemeralHistory } = await import("../../streams/runs/engine.ts");
     const history = await loadEphemeralHistory(first.conversationId);
-    expect(history.messages).toEqual([
-      { role: "user", content: "please use mcp echo" },
-      {
-        role: "assistant",
-        content: "[Mock] I'll use the mockmcp__echo tool.",
-        tool_calls: [
-          { id: expect.any(String), type: "function", function: { name: "mockmcp__echo", arguments: JSON.stringify({ text: "hello from mcp" }) } },
-        ],
-      },
-      { role: "tool", tool_call_id: expect.any(String), content: expect.stringContaining("echo: hello from mcp") },
-      { role: "assistant", content: expect.stringContaining("echo: hello from mcp") },
-    ]);
+    // Asserted field-by-field rather than against one literal: the call id is
+    // generated, and matching it with expect.any() would put `any` values
+    // into the expected object.
+    const [userMsg, assistantMsg, toolMsg, closingMsg] = history.messages;
+    expect(history.messages).toHaveLength(4);
+    expect(userMsg).toEqual({ role: "user", content: "please use mcp echo" });
+
+    expect(assistantMsg.role).toBe("assistant");
+    expect(assistantMsg.content).toBe("[Mock] I'll use the mockmcp__echo tool.");
+    const calls = assistantMsg.role === "assistant" ? (assistantMsg.tool_calls ?? []) : [];
+    expect(calls).toHaveLength(1);
+    expect(calls[0].function).toEqual({
+      name: "mockmcp__echo",
+      arguments: JSON.stringify({ text: "hello from mcp" }),
+    });
+
+    // The pairing is the point: the tool message must carry the same call_id
+    // the assistant's call announced, or a real backend rejects the list.
+    expect(toolMsg.role).toBe("tool");
+    expect(toolMsg.role === "tool" ? toolMsg.tool_call_id : null).toBe(calls[0].id);
+    expect(toolMsg.content).toContain("echo: hello from mcp");
+    expect(closingMsg.role).toBe("assistant");
+    expect(closingMsg.content).toContain("echo: hello from mcp");
 
     // A second turn on the same ephemeral conversation must actually
     // complete (not error) using that replayed history as its prompt.

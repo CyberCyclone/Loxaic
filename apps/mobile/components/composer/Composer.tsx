@@ -1,10 +1,5 @@
 import { useEffect, useRef, useState, type ComponentProps, type Ref } from 'react';
-import {
-  Platform,
-  TextInput,
-  type NativeSyntheticEvent,
-  type TextInputKeyPressEventData,
-} from 'react-native';
+import { Platform, TextInput, type TextInputKeyPressEvent } from 'react-native';
 import { ArrowUp, Square, ChevronDown, CircleDot, EyeOff } from 'lucide-react-native';
 import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
@@ -106,7 +101,7 @@ export function Composer({
     if (!trimmed || streaming) return;
     const parsed = parseCommand(trimmed);
     const cmd = parsed ? findCommand(parsed.name) : undefined;
-    if (parsed && cmd && cmd.surfaces.includes(surface)) {
+    if (parsed && cmd?.surfaces.includes(surface)) {
       onRunCommand(cmd.name, parsed.args);
       setText('');
       setInputHeight(20);
@@ -120,29 +115,31 @@ export function Composer({
     setInputHeight(20);
   };
 
-  const onKeyPress = (e: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+  const onKeyPress = (e: TextInputKeyPressEvent) => {
     if (Platform.OS !== 'web') return;
     const nativeEvent = e.nativeEvent as unknown as { key: string; shiftKey?: boolean };
 
     if (paletteOpen) {
       if (nativeEvent.key === 'ArrowDown') {
-        e.preventDefault?.();
+        e.preventDefault();
         setSelectedCmdIndex((i) => Math.min(i + 1, filteredCommands.length - 1));
         return;
       }
       if (nativeEvent.key === 'ArrowUp') {
-        e.preventDefault?.();
+        e.preventDefault();
         setSelectedCmdIndex((i) => Math.max(i - 1, 0));
         return;
       }
       if (nativeEvent.key === 'Enter' || nativeEvent.key === 'Tab') {
-        e.preventDefault?.();
+        e.preventDefault();
+        // Guarded by `paletteOpen` above, which already requires
+        // `filteredCommands.length > 0` — so this index is always in range.
         const cmd = filteredCommands[Math.min(selectedCmdIndex, filteredCommands.length - 1)];
-        if (cmd) insertCommand(cmd);
+        insertCommand(cmd);
         return;
       }
       if (nativeEvent.key === 'Escape') {
-        e.preventDefault?.();
+        e.preventDefault();
         setPaletteDismissed(true);
         return;
       }
@@ -153,7 +150,7 @@ export function Composer({
     }
 
     if (nativeEvent.key === 'Enter' && !nativeEvent.shiftKey) {
-      e.preventDefault?.();
+      e.preventDefault();
       send();
     }
   };
@@ -179,8 +176,7 @@ export function Composer({
               value={text}
               onChangeText={setText}
               onKeyPress={onKeyPress}
-              onContentSizeChange={(e) =>
-                setInputHeight(Math.min(200, Math.max(20, e.nativeEvent.contentSize.height)))
+              onContentSizeChange={(e) => { setInputHeight(Math.min(200, Math.max(20, e.nativeEvent.contentSize.height))); }
               }
               style={{ height: inputHeight, maxHeight: 200 }}
               multiline
@@ -237,8 +233,8 @@ export function Composer({
             <Popover
               placement="top left"
               isOpen={ctxPopoverOpen}
-              onOpen={() => setCtxPopoverOpen(true)}
-              onClose={() => setCtxPopoverOpen(false)}
+              onOpen={() => { setCtxPopoverOpen(true); }}
+              onClose={() => { setCtxPopoverOpen(false); }}
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
@@ -256,7 +252,7 @@ export function Composer({
                         : 'text-muted-foreground'
                     }
                   >
-                    {context.window != null ? `${context.percent}%` : '—'}
+                    {context.window != null ? `${String(context.percent)}%` : '—'}
                   </Text>
                 </Pressable>
               )}

@@ -31,7 +31,7 @@ export function CommandPalette({ commands, selectedIndex, onSelect }: CommandPal
         {commands.map((cmd, i) => (
           <Pressable
             key={cmd.name}
-            onPress={() => onSelect(cmd)}
+            onPress={() => { onSelect(cmd); }}
             className={`px-3 py-2 ${i === selectedIndex ? 'bg-muted' : ''}`}
           >
             <VStack space="xs">

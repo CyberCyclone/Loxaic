@@ -48,7 +48,7 @@ export default function ChatScreen() {
     handleDelete,
     handleRename,
     setConversationModel,
-  } = useChatSession(token, () => refreshModels());
+  } = useChatSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { showToast } = useToastHelper();
@@ -65,7 +65,9 @@ export default function ChatScreen() {
   const incognito = activeConv ? !!activeConv.incognito : pendingIncognito;
   const incognitoLocked = !!activeConv;
 
-  const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
+  const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
+  const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
+  const thinkingLevel = storedThinkingLevel ?? settings.defaultThinkingLevel;
 
   const prefModel = activeConv?.model;
   const selectedModel =
@@ -127,7 +129,7 @@ export default function ChatScreen() {
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
             breakpoint !== 'wide' ? (
-              <Pressable onPress={() => setThreadListOpen(true)} className="rounded-sm p-1.5 web:hover:bg-muted/50">
+              <Pressable onPress={() => { setThreadListOpen(true); }} className="rounded-sm p-1.5 web:hover:bg-muted/50">
                 <Icon as={MessagesSquare} size="sm" className="text-foreground" />
               </Pressable>
             ) : undefined
@@ -146,17 +148,17 @@ export default function ChatScreen() {
             model={selectedModel ? getName(selectedModel) : undefined}
           />
         ) : (
-          <PromptSuggestions onPick={(text) => handleSend(text, selectedModel, incognito)} />
+          <PromptSuggestions onPick={(text) => { handleSend(text, selectedModel, incognito); }} />
         )}
         <Composer
-          onSend={(text) => handleSend(text, selectedModel, incognito)}
+          onSend={(text) => { handleSend(text, selectedModel, incognito); }}
           onStop={handleStop}
           streaming={streaming}
           modelName={selectedModel ? getName(selectedModel) : 'Select model'}
           context={context}
-          onOpenModelModal={() => setModelModalOpen(true)}
+          onOpenModelModal={() => { setModelModalOpen(true); }}
           incognito={incognito}
-          onToggleIncognito={() => setPendingIncognito((v) => !v)}
+          onToggleIncognito={() => { setPendingIncognito((v) => !v); }}
           incognitoLocked={incognitoLocked}
           surface="chat"
           onRunCommand={handleRunCommand}
@@ -166,7 +168,7 @@ export default function ChatScreen() {
 
       {breakpoint !== 'wide' && threadListOpen && (
         <>
-          <Pressable onPress={() => setThreadListOpen(false)} className="absolute inset-0 bg-black/40" />
+          <Pressable onPress={() => { setThreadListOpen(false); }} className="absolute inset-0 bg-black/40" />
           <Box className="absolute bottom-0 right-0 top-0 shadow-lg">{threadList}</Box>
         </>
       )}
@@ -176,22 +178,25 @@ export default function ChatScreen() {
           tool={pendingApproval.tool}
           args={pendingApproval.args}
           reason={approvalReason}
-          onAllowOnce={() => handleApprove(pendingApproval.callId)}
-          onAllowAlways={() => handleAllowAlways(pendingApproval.callId, pendingApproval.tool)}
-          onReject={() => handleDeny(pendingApproval.callId)}
+          onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
+          onAllowAlways={() => { void handleAllowAlways(pendingApproval.callId, pendingApproval.tool); }}
+          onReject={() => { handleDeny(pendingApproval.callId); }}
         />
       )}
 
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal
         open={modelModalOpen}
-        onClose={() => setModelModalOpen(false)}
+        onClose={() => { setModelModalOpen(false); }}
         models={models}
         loading={modelsLoading}
         error={modelsError}
-        onRefresh={refreshModels}
+        onRefresh={() => { void refreshModels(); }}
         selectedModel={selectedModel}
-        onSelect={(id) => (activeId ? setConversationModel(activeId, id) : setPendingModel(id))}
+        onSelect={(id) => {
+          if (activeId) setConversationModel(activeId, id);
+          else setPendingModel(id);
+        }}
         thinkingLevel={thinkingLevel}
         onThinkingLevel={(level) => {
           if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));

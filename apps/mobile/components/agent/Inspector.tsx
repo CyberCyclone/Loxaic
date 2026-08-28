@@ -30,11 +30,11 @@ const TODO_TINT: Record<Todo['status'], string> = {
   pending: 'text-muted-foreground',
 };
 
-export type McpOverrideControls = {
+export interface McpOverrideControls {
   servers: { id: string; name: string }[];
   disabledIds: string[];
   onToggle: (serverId: string, disabled: boolean) => void;
-};
+}
 
 interface InspectorBodyProps {
   todos: Todo[];
@@ -111,7 +111,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, onCompact, busy }: I
                 <Switch
                   size="sm"
                   value={!disabled}
-                  onValueChange={(on) => mcp.onToggle(server.id, !on)}
+                  onValueChange={(on) => { mcp.onToggle(server.id, !on); }}
                 />
               </HStack>
             );

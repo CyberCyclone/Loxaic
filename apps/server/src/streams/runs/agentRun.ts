@@ -23,12 +23,12 @@ const PLANNING_SYSTEM_PROMPT = [
   "no files may change in this mode. Finish with the plan as prose.",
 ].join(" ");
 
-export type StartAgentRunResult = {
+export interface StartAgentRunResult {
   streamId: string;
   conversationId: string;
   userMessageId: string;
   incognito: boolean;
-};
+}
 
 export async function startAgentRun(input: {
   userId: string;
@@ -71,7 +71,7 @@ export async function startAgentRun(input: {
   await db.insert(messages).values({
     id: userMsgId,
     conversationId: convId,
-    parentId: input.parentId || null,
+    parentId: input.parentId ?? null,
     authorType: "user",
     authorUserId: userId,
     origin: "server",

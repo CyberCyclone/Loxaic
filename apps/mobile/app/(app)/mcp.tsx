@@ -58,8 +58,8 @@ export default function McpScreen() {
       if (result.ok) {
         showToast(
           result.changedTools.length > 0
-            ? `Connected — ${result.tools.length} tools (${result.changedTools.length} changed, approvals reset)`
-            : `Connected — ${result.tools.length} tools`,
+            ? `Connected — ${String(result.tools.length)} tools (${String(result.changedTools.length)} changed, approvals reset)`
+            : `Connected — ${String(result.tools.length)} tools`,
         );
       } else {
         showToast(`Connection failed: ${result.error}`, 5000);
@@ -117,19 +117,19 @@ export default function McpScreen() {
               <McpServerCard
                 server={item.server}
                 testing={testingId === item.server.id}
-                onToggle={(enabled) => toggle(item.server.id, enabled)}
-                onTest={() => handleTest(item.server)}
-                onTools={() => setToolsFor(item.server)}
-                onEdit={() => openEdit(item.server)}
-                onDelete={() => remove(item.server.id)}
+                onToggle={(enabled) => { void toggle(item.server.id, enabled); }}
+                onTest={() => { void handleTest(item.server); }}
+                onTools={() => { setToolsFor(item.server); }}
+                onEdit={() => { openEdit(item.server); }}
+                onDelete={() => { void remove(item.server.id); }}
               />
             )
           }
         />
       )}
 
-      <McpServerModal open={modalOpen} onClose={() => setModalOpen(false)} onSave={handleSave} editing={editing} />
-      <McpToolsSheet server={toolsFor} onClose={() => setToolsFor(null)} test={test} update={update} />
+      <McpServerModal open={modalOpen} onClose={() => { setModalOpen(false); }} onSave={handleSave} editing={editing} />
+      <McpToolsSheet server={toolsFor} onClose={() => { setToolsFor(null); }} test={test} update={update} />
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );

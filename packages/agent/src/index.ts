@@ -5,7 +5,7 @@ export type PermissionMode = "planning" | "manual" | "auto";
 /** Tools that mutate state. Planning mode never offers these to the model. */
 export const WRITE_TOOLS: ToolName[] = ["fs_write", "fs_edit", "bash"];
 
-export type ToolDef = {
+export interface ToolDef {
   name: ToolName;
   description: string;
   /** JSON Schema for the tool's arguments, as sent to the model. */
@@ -16,7 +16,7 @@ export type ToolDef = {
     additionalProperties?: boolean;
   };
   requiresApproval: boolean; // true if manual/permission required
-};
+}
 
 export const TOOLS: ToolDef[] = [
   {
@@ -139,10 +139,10 @@ export function toolRequiresApproval(tool: ToolName, mode: PermissionMode): bool
   return td?.requiresApproval ?? true;
 }
 
-export type OpenAiTool = {
+export interface OpenAiTool {
   type: "function";
   function: { name: string; description: string; parameters: Record<string, unknown> };
-};
+}
 
 /** Convert TOOLS to the OpenAI `tools` array, optionally omitting some. */
 export function toOpenAiTools(exclude: ToolName[] = []): OpenAiTool[] {
@@ -177,7 +177,7 @@ export type ToolSource =
 
 /** A tool as offered to the model for one run — builtin or dynamically
  * discovered. `name` is the wire name (namespaced for MCP tools). */
-export type ResolvedTool = {
+export interface ResolvedTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
@@ -186,7 +186,7 @@ export type ResolvedTool = {
   /** Planning mode never offers write tools. */
   isWrite: boolean;
   source: ToolSource;
-};
+}
 
 export function resolveBuiltinTools(): ResolvedTool[] {
   return TOOLS.map((t) => ({
@@ -214,6 +214,6 @@ export function resolvedToOpenAiTool(t: ResolvedTool): OpenAiTool {
   };
 }
 
-export type Todo = { id?: string; text: string; status: "pending" | "in_progress" | "completed" };
+export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
-export type FileDiff = { path: string; oldContent: string | null; newContent: string | null };
+export interface FileDiff { path: string; oldContent: string | null; newContent: string | null }

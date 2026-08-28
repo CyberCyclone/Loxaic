@@ -11,7 +11,7 @@ function toApi(row: { toolAllowlist: unknown }) {
   return { toolAllowlist: allowlist };
 }
 
-export async function prefsRoutes(app: FastifyInstance) {
+export function prefsRoutes(app: FastifyInstance) {
   app.get("/v1/prefs", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const row = await db.query.userPrefs.findFirst({ where: eq(userPrefs.userId, userId) });

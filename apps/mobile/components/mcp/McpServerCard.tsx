@@ -28,7 +28,7 @@ interface McpServerCardProps {
 
 export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEdit, onDelete }: McpServerCardProps) {
   const status = statusLine(server);
-  const toolCount = Object.keys(server.knownTools ?? {}).length;
+  const toolCount = Object.keys(server.knownTools).length;
 
   return (
     <Box className="rounded-md border border-border bg-card p-3">

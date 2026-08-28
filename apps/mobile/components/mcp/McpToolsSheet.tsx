@@ -45,8 +45,8 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
         if (result.ok) setTools(result.tools);
         else setError(result.error);
       })
-      .catch(() => setError('Could not reach the server'))
-      .finally(() => setLoading(false));
+      .catch(() => { setError('Could not reach the server'); })
+      .finally(() => { setLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server?.id]);
 
@@ -134,7 +134,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                     {APPROVALS.map((a) => (
                       <Pressable
                         key={a.value}
-                        onPress={() => patchPolicy(tool, { approval: a.value })}
+                        onPress={() => { void patchPolicy(tool, { approval: a.value }); }}
                         className={`rounded-full px-3 py-1 ${tool.policy.approval === a.value ? 'bg-primary/15' : 'bg-muted'}`}
                       >
                         <Text
@@ -146,7 +146,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                       </Pressable>
                     ))}
                     <Pressable
-                      onPress={() => patchPolicy(tool, { readOnly: !tool.policy.readOnly })}
+                      onPress={() => { void patchPolicy(tool, { readOnly: !tool.policy.readOnly }); }}
                       className={`rounded-full px-3 py-1 ${tool.policy.readOnly ? 'bg-primary/15' : 'bg-muted'}`}
                     >
                       <Text size="xs" className={tool.policy.readOnly ? 'text-primary' : 'text-muted-foreground'}>

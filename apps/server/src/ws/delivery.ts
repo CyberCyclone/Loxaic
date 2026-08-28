@@ -35,7 +35,7 @@ export function createDelivery(
     // both pass the guard above and each register a live tap, double-
     // delivering every event. The placeholder is replaced with the real
     // unsubscribers once they exist; nothing reads `subs` before then.
-    subs.set(streamId, { unsubRecord: () => {}, unsubEnd: () => {} });
+    subs.set(streamId, { unsubRecord: () => undefined, unsubEnd: () => undefined });
     const broker = getStreamBroker();
 
     // Race-free handoff: tap live records BEFORE reading catch-up, buffer
@@ -167,7 +167,7 @@ export function createDelivery(
 
     if (!convWatches.has(conversationId)) {
       const unwatch = watchConversation(conversationId, (streamId) => {
-        subscribeToStream(streamId, conversationId, 0).catch(() => {});
+        subscribeToStream(streamId, conversationId, 0).catch(() => undefined);
       });
       convWatches.set(conversationId, unwatch);
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { reconcileTools, toolHash, DEFAULT_POLICY } from "../change-detection.ts";
+import { reconcileTools, toolHash, DEFAULT_POLICY, type ToolPolicies, type ToolPolicy } from "../change-detection.ts";
 import type { SanitizedToolMeta } from "../sanitize.ts";
 
 const tool = (name: string, description = "desc"): SanitizedToolMeta => ({
@@ -8,10 +8,18 @@ const tool = (name: string, description = "desc"): SanitizedToolMeta => ({
   inputSchema: { type: "object", properties: {} },
 });
 
+/** A policy the reconcile was expected to produce — a lookup miss is itself a
+ * failure worth naming, rather than an undefined-property error downstream. */
+function policyFor(policies: ToolPolicies, name: string): ToolPolicy {
+  const policy = policies[name];
+  if (!policy) throw new Error(`expected a policy for "${name}"`);
+  return policy;
+}
+
 describe("mcp change detection", () => {
   it("gives new tools the ask-by-default policy", () => {
     const r = reconcileTools({ toolPolicies: {}, knownTools: {} }, [tool("a")]);
-    expect(r.toolPolicies.a).toEqual(DEFAULT_POLICY);
+    expect(policyFor(r.toolPolicies, "a")).toEqual(DEFAULT_POLICY);
     expect(r.knownTools.a).toBe(toolHash(tool("a")));
     expect(r.changedTools).toEqual([]);
   });
@@ -23,9 +31,9 @@ describe("mcp change detection", () => {
       knownTools: before.knownTools,
     };
     const after = reconcileTools(granted, [tool("a", "v2 — now exfiltrates your data")]);
-    expect(after.toolPolicies.a.approval).toBe("ask");
-    expect(after.toolPolicies.a.readOnly).toBe(false);
-    expect(after.toolPolicies.a.changed).toBe(true);
+    expect(policyFor(after.toolPolicies, "a").approval).toBe("ask");
+    expect(policyFor(after.toolPolicies, "a").readOnly).toBe(false);
+    expect(policyFor(after.toolPolicies, "a").changed).toBe(true);
     expect(after.changedTools).toEqual(["a"]);
   });
 
@@ -36,9 +44,9 @@ describe("mcp change detection", () => {
       knownTools: before.knownTools,
     };
     const after = reconcileTools(granted, [tool("a")]);
-    expect(after.toolPolicies.a.approval).toBe("allow");
-    expect(after.toolPolicies.a.readOnly).toBe(true);
-    expect(after.toolPolicies.a.changed).toBeUndefined();
+    expect(policyFor(after.toolPolicies, "a").approval).toBe("allow");
+    expect(policyFor(after.toolPolicies, "a").readOnly).toBe(true);
+    expect(policyFor(after.toolPolicies, "a").changed).toBeUndefined();
   });
 
   it("flags vanished tools as missing and clears the flag on return", () => {
@@ -47,11 +55,11 @@ describe("mcp change detection", () => {
       { toolPolicies: before.toolPolicies, knownTools: before.knownTools },
       [],
     );
-    expect(gone.toolPolicies.a.missing).toBe(true);
+    expect(policyFor(gone.toolPolicies, "a").missing).toBe(true);
     const back = reconcileTools(
       { toolPolicies: gone.toolPolicies, knownTools: gone.knownTools },
       [tool("a")],
     );
-    expect(back.toolPolicies.a.missing).toBe(false);
+    expect(policyFor(back.toolPolicies, "a").missing).toBe(false);
   });
 });

@@ -27,9 +27,11 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
 
 /** Merge a secrets patch over the stored blob: string sets, null deletes. */
 function mergeSecrets(existingBlob: string | null, patch: Record<string, unknown>): string | null {
-  const merged: Record<string, string> = existingBlob ? decryptSecrets(existingBlob) : {};
+  let merged: Record<string, string> = existingBlob ? decryptSecrets(existingBlob) : {};
   for (const [key, value] of Object.entries(patch)) {
-    if (value === null) delete merged[key];
+    // A null clears the secret; rebuilt without the key rather than deleted,
+    // since a computed `delete` is disallowed here.
+    if (value === null) merged = Object.fromEntries(Object.entries(merged).filter(([k]) => k !== key));
     else if (typeof value === "string" && value.length > 0) merged[key] = value;
   }
   return Object.keys(merged).length > 0 ? encryptSecrets(merged) : null;
@@ -71,7 +73,7 @@ async function vetHttpUrl(rawUrl: string, allowPrivateNetwork: boolean): Promise
   return null;
 }
 
-export async function mcpRoutes(app: FastifyInstance) {
+export function mcpRoutes(app: FastifyInstance) {
   app.get("/v1/mcp/servers", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const rows = await db.select().from(mcpServers).where(eq(mcpServers.ownerId, userId));
@@ -168,12 +170,14 @@ export async function mcpRoutes(app: FastifyInstance) {
         enabled: body.enabled !== false,
       } as typeof mcpServers.$inferInsert)
       .returning()
-      .catch((err: Error) => {
-        if (/mcp_servers_owner_slug_idx|duplicate key/.test(err.message)) {
+      // Drizzle's `.returning()` type doesn't reflect that the duplicate-slug
+      // catch below yields zero rows — cast to what actually comes back.
+      .catch((err: unknown) => {
+        if (err instanceof Error && /mcp_servers_owner_slug_idx|duplicate key/.test(err.message)) {
           return [];
         }
         throw err;
-      });
+      }) as (typeof mcpServers.$inferSelect | undefined)[];
     if (!row) {
       reply.code(409);
       return { error: "A server with that slug already exists" };
@@ -208,7 +212,7 @@ export async function mcpRoutes(app: FastifyInstance) {
         return { error: urlError, ssrf: true };
       }
       patch.url = body.url.trim();
-    } else if (typeof body.allowPrivateNetwork === "boolean" && body.allowPrivateNetwork === false && existing.url) {
+    } else if (body.allowPrivateNetwork === false && existing.url) {
       const urlError = await vetHttpUrl(existing.url, false);
       if (urlError) {
         reply.code(400);
@@ -221,7 +225,7 @@ export async function mcpRoutes(app: FastifyInstance) {
 
     const policyPatch = asOptionalRecord(body.toolPolicies);
     if (policyPatch) {
-      patch.toolPolicies = sanitizePolicyPatch((existing.toolPolicies ?? {}) as ToolPolicies, policyPatch);
+      patch.toolPolicies = sanitizePolicyPatch(existing.toolPolicies ?? {}, policyPatch);
     }
 
     // Any config change invalidates cached connections via the updatedAt stamp.
@@ -259,8 +263,8 @@ export async function mcpRoutes(app: FastifyInstance) {
       const tools = await listServerTools(userId, existing);
       const reconciled = reconcileTools(
         {
-          toolPolicies: (existing.toolPolicies ?? {}) as ToolPolicies,
-          knownTools: (existing.knownTools ?? {}) as Record<string, string>,
+          toolPolicies: existing.toolPolicies ?? {},
+          knownTools: existing.knownTools ?? {},
         },
         tools,
       );

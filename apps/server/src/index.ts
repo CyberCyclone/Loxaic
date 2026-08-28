@@ -40,7 +40,7 @@ try {
 // the memory driver (which would silently drop the durability guarantee
 // incognito conversations depend on).
 await initStreamBroker();
-app.log.info(`Stream backend: ${process.env.STREAM_BACKEND || "memory"}`);
+app.log.info(`Stream backend: ${process.env.STREAM_BACKEND ?? "memory"}`);
 await recoverOrphanedStreams();
 
 await app.register(cors, { origin: true, credentials: true });
@@ -60,9 +60,9 @@ app.get("/health", async () => {
   if (process.env.MOCK_INFERENCE === "true") {
     inferenceStatus = "mock";
   } else {
-    const base = process.env.INFERENCE_BASE_URL || "http://localhost:4002";
+    const base = process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1500);
+    const timer = setTimeout(() => { controller.abort(); }, 1500);
     try {
       const res = await fetch(`${base}/v1/models`, { signal: controller.signal });
       inferenceStatus = res.ok ? "ok" : "unavailable";
@@ -84,15 +84,15 @@ app.get("/health", async () => {
 });
 
 // ── Routes ────────────────────────────────────────────────
-await authRoutes(app);
-await conversationRoutes(app);
-await statsRoutes(app);
-await syncRoutes(app);
-await sandboxRoutes(app);
-await routineRoutes(app);
-await modelRoutes(app);
-await mcpRoutes(app);
-await prefsRoutes(app);
+authRoutes(app);
+conversationRoutes(app);
+statsRoutes(app);
+syncRoutes(app);
+sandboxRoutes(app);
+routineRoutes(app);
+modelRoutes(app);
+mcpRoutes(app);
+prefsRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
@@ -104,7 +104,7 @@ agentWsHandler(app);
 // Override the location with WEB_DIST_DIR; skipped when the dir is absent.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const webDist =
-  process.env.WEB_DIST_DIR ||
+  process.env.WEB_DIST_DIR ??
   path.resolve(__dirname, "../../mobile/dist");
 if (existsSync(path.join(webDist, "index.html"))) {
   await app.register(fastifyStatic, {
@@ -126,7 +126,7 @@ if (existsSync(path.join(webDist, "index.html"))) {
   // handles the path client-side). Asset-like paths 404 properly instead of
   // returning HTML (which would mask stale-bundle errors).
   app.setNotFoundHandler((request, reply) => {
-    const url = (request.raw.url || "").split("?")[0];
+    const url = (request.raw.url ?? "").split("?")[0];
     const isApi =
       url.startsWith("/v1") ||
       url.startsWith("/api") ||
@@ -147,20 +147,22 @@ if (existsSync(path.join(webDist, "index.html"))) {
 
 // ── Start ─────────────────────────────────────────────────
 const PORT = Number(process.env.PORT) || 4000;
-const HOST = process.env.HOST || "0.0.0.0";
+const HOST = process.env.HOST ?? "0.0.0.0";
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
     app.log.error(err);
     process.exit(1);
   }
-  app.log.info(`Server listening at http://${HOST}:${PORT}`);
-  startRoutineScheduler().catch((e) => app.log.warn(`Scheduler start skipped: ${e.message}`));
-  startSandboxReaper((n) => app.log.info(`Reaped ${n} idle agent sandbox(es)`));
+  app.log.info(`Server listening at http://${HOST}:${String(PORT)}`);
+  startRoutineScheduler().catch((e: unknown) => {
+    app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
+  });
+  startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
   // Ephemeral (incognito) sandboxes have no DB row; a crashed process's
   // leftovers are only findable by their container label.
   sweepOrphanSandboxes()
-    .then((n) => { if (n > 0) app.log.info(`Swept ${n} orphaned sandbox container(s)`); })
-    .catch(() => {});
-  startMcpReaper((n) => app.log.info(`Closed ${n} idle MCP connection(s)`));
+    .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
+    .catch(() => { /* best-effort sweep */ });
+  startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
 });

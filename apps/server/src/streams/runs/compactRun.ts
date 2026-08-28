@@ -81,10 +81,11 @@ export function computeCompactionStats(input: {
 }): CompactionStats {
   const afterEstimated = input.completionTokens <= 0;
   const after = afterEstimated ? estimateTokens("summary", input.summaryText) : input.completionTokens;
-  const beforeEstimated = input.lastTurnTokens == null;
+  const { lastTurnTokens } = input;
+  const beforeEstimated = lastTurnTokens == null;
   const before = beforeEstimated
     ? Math.max(0, input.promptTokens - input.instructionTokens)
-    : input.lastTurnTokens!;
+    : lastTurnTokens;
   return {
     messages_compacted: input.messagesCompacted,
     before_tokens: before,
@@ -95,12 +96,12 @@ export function computeCompactionStats(input: {
   };
 }
 
-export type StartCompactRunResult = {
+export interface StartCompactRunResult {
   streamId: string;
   conversationId: string;
   summaryMessageId: string;
   incognito: boolean;
-};
+}
 
 export async function startCompactRun(input: {
   userId: string;
@@ -110,7 +111,7 @@ export async function startCompactRun(input: {
   surface: "chat" | "agent";
 }): Promise<StartCompactRunResult> {
   const { userId, conversationId: convId, model, surface } = input;
-  const guidance = input.args?.trim() || undefined;
+  const guidance = input.args?.trim();
   const broker = getStreamBroker();
 
   const access = await assertConversationAccess(userId, convId);
@@ -241,12 +242,17 @@ export async function startCompactRun(input: {
 /** The newest usage record is what the next prompt would have replayed — and
  * what the context ring was showing. Null when nothing was ever recorded. */
 async function lastTurnTokens(convId: string): Promise<number | null> {
-  const [row] = await db
+  const rows = await db
     .select({ inputTokens: usageRecords.inputTokens, outputTokens: usageRecords.outputTokens })
     .from(usageRecords)
     .where(eq(usageRecords.conversationId, convId))
     .orderBy(desc(usageRecords.createdAt))
     .limit(1);
+  // `.at(0)` rather than destructuring `[row]`: TS types array destructuring
+  // as always-defined here, but `.limit(1)` doesn't guarantee a row exists
+  // (a conversation with no usage yet gets none) — `.at()` keeps that
+  // `| undefined` honest so the check below isn't type-checked away.
+  const row = rows.at(0);
   return row ? row.inputTokens + row.outputTokens : null;
 }
 
@@ -374,11 +380,11 @@ async function runCompactGeneration(ctx: {
           model,
           origin: "server",
           inputTokens: doneResult.usage.prompt_tokens,
-          cachedTokens: doneResult.timings?.cache_n || 0,
+          cachedTokens: doneResult.timings?.cache_n ?? 0,
           outputTokens: doneResult.usage.completion_tokens,
           ttftMs: doneResult.ttftMs,
-          promptMs: doneResult.timings?.prompt_ms || null,
-          predictMs: doneResult.timings?.predicted_ms || null,
+          promptMs: doneResult.timings?.prompt_ms ?? null,
+          predictMs: doneResult.timings?.predicted_ms ?? null,
           totalMs: doneResult.totalMs,
           promptTps: doneResult.promptTps,
           predictedTps: doneResult.genTps,
@@ -391,7 +397,7 @@ async function runCompactGeneration(ctx: {
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete", usage });
     await producer.end("complete", { usage });
   } catch (err) {
-    const isAbort = (err as Error)?.name === "AbortError" || abort.signal.aborted;
+    const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
     const status = isAbort ? "cancelled" : "error";
     const errorMessage = (err as Error).message;
 
@@ -403,12 +409,12 @@ async function runCompactGeneration(ctx: {
         .update(messages)
         .set({ content: [{ kind: "text", text: summaryText }], status })
         .where(eq(messages.id, summaryMsgId))
-        .catch(() => {});
+        .catch(() => undefined);
     }
 
     const eventError = isAbort ? undefined : errorMessage;
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status, error: eventError });
-    await producer.end(status, { error: eventError }).catch(() => {});
+    await producer.end(status, { error: eventError }).catch(() => undefined);
   } finally {
     unregisterRun(streamId);
   }

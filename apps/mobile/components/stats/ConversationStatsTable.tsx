@@ -9,10 +9,10 @@ function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   const mins = Math.round((Date.now() - d.getTime()) / 60000);
   if (mins < 1) return 'Just now';
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return `${String(mins)}m ago`;
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  if (hours < 24) return `${String(hours)}h ago`;
+  return `${String(Math.round(hours / 24))}d ago`;
 }
 
 export function ConversationStatsTable({ conversations }: { conversations: ConversationStats[] }) {
@@ -44,7 +44,7 @@ export function ConversationStatsTable({ conversations }: { conversations: Conve
             </HStack>
             <Text size="2xs" className="text-muted-foreground">
               {c.model} · {formatTimestamp(c.lastUsedAt)}
-              {c.avgTtftMs != null ? ` · ${Math.round(c.avgTtftMs)}ms ttft` : ''}
+              {c.avgTtftMs != null ? ` · ${String(Math.round(c.avgTtftMs))}ms ttft` : ''}
             </Text>
           </VStack>
           <VStack className="items-end">

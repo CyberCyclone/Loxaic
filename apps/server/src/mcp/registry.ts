@@ -3,7 +3,7 @@ import type { OpenAiTool, PermissionMode, ResolvedTool } from "@shannon/agent";
 import { resolveBuiltinTools, resolvedToOpenAiTool } from "@shannon/agent";
 import { and, db, eq } from "@shannon/db";
 import { conversations, mcpServers, userPrefs } from "@shannon/db/schema";
-import { reconcileTools, type ToolPolicies, type ToolPolicy } from "./change-detection.ts";
+import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
 import { compactSchemaForModel, extractResultText, MCP_SYSTEM_ADDENDUM, wrapResult } from "./sanitize.ts";
@@ -13,7 +13,7 @@ import { decryptSecrets, redact } from "./secrets.ts";
  * lookup, approval policy, and dispatch for every name the model may come
  * back with. Built once per run — MCP servers connect (or fail) here, not
  * mid-loop, and a dead server only costs its own tools. */
-export type Toolset = {
+export interface Toolset {
   /** What goes into the completion request's `tools` array. */
   openAiTools: OpenAiTool[];
   /** Resolve a model-returned tool name; undefined means unknown tool. */
@@ -23,7 +23,7 @@ export type Toolset = {
   systemPromptAddendum: string | null;
   /** Execute an MCP-sourced tool. Never rejects — failures become ok:false. */
   dispatchMcp(tool: ResolvedTool, args: Record<string, unknown>): Promise<{ ok: boolean; output: string }>;
-};
+}
 
 // MCP servers ship arbitrary JSON Schema; strict mode would reject harmless
 // idioms and formats aren't worth a dependency. An uncompilable schema drops
@@ -39,11 +39,11 @@ export function compileValidator(schema: Record<string, unknown>): ValidateFunct
   return ajv.compile(compilable);
 }
 
-type McpToolEntry = {
+interface McpToolEntry {
   row: McpServerRow;
   remoteName: string;
   validate: ValidateFunction | null;
-};
+}
 
 export async function buildToolset(
   userId: string,
@@ -126,7 +126,7 @@ async function resolveMcpTools(
       const row = activeRows[i];
       const secrets = row.secrets ? safeDecrypt(row.secrets) : {};
       console.warn(
-        `MCP server "${row.name}" unavailable this run: ${redact(String((result.reason as Error)?.message ?? result.reason), secrets)}`,
+        `MCP server "${row.name}" unavailable this run: ${redact(result.reason instanceof Error ? result.reason.message : String(result.reason), secrets)}`,
       );
       continue;
     }
@@ -134,8 +134,8 @@ async function resolveMcpTools(
     const { row, tools } = result.value;
     const reconciled = reconcileTools(
       {
-        toolPolicies: (row.toolPolicies ?? {}) as ToolPolicies,
-        knownTools: (row.knownTools ?? {}) as Record<string, string>,
+        toolPolicies: row.toolPolicies ?? {},
+        knownTools: row.knownTools ?? {},
       },
       tools,
     );
@@ -145,7 +145,7 @@ async function resolveMcpTools(
       .update(mcpServers)
       .set({ toolPolicies: reconciled.toolPolicies, knownTools: reconciled.knownTools })
       .where(eq(mcpServers.id, row.id))
-      .catch(() => {});
+      .catch(() => undefined);
 
     for (const meta of tools) {
       const policy: ToolPolicy = reconciled.toolPolicies[meta.name] ?? {
@@ -247,7 +247,7 @@ async function dispatchMcpTool(
     const secrets = entry.row.secrets ? safeDecrypt(entry.row.secrets) : {};
     return {
       ok: false,
-      output: `MCP server "${serverSlug}" failed: ${redact(String((err as Error).message ?? err), secrets)}`,
+      output: `MCP server "${serverSlug}" failed: ${redact(err instanceof Error ? err.message : String(err), secrets)}`,
     };
   }
 }

@@ -77,8 +77,8 @@ export function ThreadList({
         contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 8 }}
         renderItem={({ item }) => (
           <Pressable
-            onPress={() => onSelect(item.id)}
-            onLongPress={() => setActionsFor(item)}
+            onPress={() => { onSelect(item.id); }}
+            onLongPress={() => { setActionsFor(item); }}
             className={`mb-1 rounded-md p-2.5 ${
               activeId === item.id ? 'bg-muted' : 'web:hover:bg-muted/40'
             }`}
@@ -98,7 +98,7 @@ export function ThreadList({
         )}
       />
 
-      <Actionsheet isOpen={!!actionsFor} onClose={() => setActionsFor(null)}>
+      <Actionsheet isOpen={!!actionsFor} onClose={() => { setActionsFor(null); }}>
         <ActionsheetBackdrop />
         <ActionsheetContent>
           <ActionsheetDragIndicatorWrapper>
@@ -147,7 +147,7 @@ export function ThreadList({
         </ActionsheetContent>
       </Actionsheet>
 
-      <Actionsheet isOpen={!!renaming} onClose={() => setRenaming(null)}>
+      <Actionsheet isOpen={!!renaming} onClose={() => { setRenaming(null); }}>
         <ActionsheetBackdrop />
         <ActionsheetContent>
           <ActionsheetDragIndicatorWrapper>
@@ -156,7 +156,7 @@ export function ThreadList({
           <VStack space="sm" className="w-full p-3">
             <HStack className="items-center justify-between">
               <Text className="font-medium text-foreground">Rename conversation</Text>
-              <Pressable onPress={() => setRenaming(null)}>
+              <Pressable onPress={() => { setRenaming(null); }}>
                 <Icon as={X} size="sm" className="text-muted-foreground" />
               </Pressable>
             </HStack>

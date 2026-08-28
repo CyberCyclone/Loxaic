@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getModels, type ModelInfo } from '@shannon/api-client';
 
-export type ModelWindow = {
+export interface ModelWindow {
   /** The window actually in force — the only valid meter denominator. */
   effective: number | null;
   /** The largest window this model could be loaded at. */
@@ -9,7 +9,7 @@ export type ModelWindow = {
   /** What the backend really allocated; null when unloaded or unreported. */
   loaded: number | null;
   source: ModelInfo['context_source'] | null;
-};
+}
 
 export function useModels(token: string | null) {
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -32,11 +32,11 @@ export function useModels(token: string | null) {
   }, [token]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
   }, [refresh]);
 
   const loadedModel = models.find((m) => m.loaded) ?? null;
-  const defaultModel = loadedModel ?? models[0] ?? null;
+  const defaultModel = loadedModel ?? models.at(0) ?? null;
   const getName = useCallback(
     (id: string) => models.find((m) => m.id === id)?.display_name ?? id,
     [models],

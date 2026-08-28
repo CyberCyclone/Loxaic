@@ -31,11 +31,11 @@ export function CacheRateChart({ points, height = 180 }: CacheRateChartProps) {
   const x = (i: number) => padding.left + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
   const y = (v: number) => padding.top + plotH - (v / max) * plotH;
 
-  const linePoints = points.map((p, i) => `${x(i)},${y(p.cacheHitRate)}`).join(' ');
-  const areaPoints = `${padding.left},${padding.top + plotH} ${linePoints} ${x(points.length - 1)},${padding.top + plotH}`;
+  const linePoints = points.map((p, i) => `${String(x(i))},${String(y(p.cacheHitRate))}`).join(' ');
+  const areaPoints = `${String(padding.left)},${String(padding.top + plotH)} ${linePoints} ${String(x(points.length - 1))},${String(padding.top + plotH)}`;
 
   return (
-    <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+    <Svg width="100%" height={height} viewBox={`0 0 ${String(width)} ${String(height)}`}>
       {[0, 0.5, 1].map((f) => (
         <Line
           key={f}

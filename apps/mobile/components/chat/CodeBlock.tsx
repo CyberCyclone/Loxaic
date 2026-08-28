@@ -21,16 +21,16 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
   const copy = async () => {
     await Clipboard.setStringAsync(code);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setTimeout(() => { setCopied(false); }, 1500);
   };
 
   return (
     <Box className="my-2 overflow-hidden rounded-md border border-border bg-code">
       <HStack className="items-center justify-between border-b border-border px-3 py-1.5">
         <Text size="xs" className="text-muted-foreground">
-          {lang || 'code'}
+          {lang ?? 'code'}
         </Text>
-        <Pressable onPress={copy} className="flex-row items-center gap-1 p-1">
+        <Pressable onPress={() => { void copy(); }} className="flex-row items-center gap-1 p-1">
           <Icon as={copied ? Check : Copy} size="xs" className="text-muted-foreground" />
           {copied && (
             <Text size="xs" className="text-muted-foreground">
@@ -40,9 +40,11 @@ export function CodeBlock({ code, lang }: CodeBlockProps) {
         </Pressable>
       </HStack>
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        {/* Size/leading via classes: on web this Text is a raw <span>, where a
+            numeric inline lineHeight is a unitless multiplier, not px. */}
         <Text
-          className="p-3 text-card-foreground"
-          style={{ fontFamily: 'monospace', fontSize: 13, lineHeight: 19.5 }}
+          className="p-3 text-card-foreground text-[13px] leading-[19.5px]"
+          style={{ fontFamily: 'monospace' }}
         >
           {code}
         </Text>

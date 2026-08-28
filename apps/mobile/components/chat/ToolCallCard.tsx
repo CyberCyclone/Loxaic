@@ -57,7 +57,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
 
   return (
     <Box className="my-1.5 rounded-md border border-border bg-card">
-      <Pressable onPress={() => setOpen((o) => !o)}>
+      <Pressable onPress={() => { setOpen((o) => !o); }}>
         <HStack className="items-center gap-2 px-3 py-2">
           <Box className={`h-5 w-5 items-center justify-center rounded-sm ${tint}`}>
             <Icon as={ToolIcon} size="xs" />

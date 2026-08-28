@@ -101,7 +101,7 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
             label={item.label}
             icon={item.icon}
             active={activeSurface === item.id}
-            onPress={() => onNavigate(item.id)}
+            onPress={() => { onNavigate(item.id); }}
           />
         ))}
         <NavItem label="Settings" icon={Settings} onPress={onOpenSettings} />

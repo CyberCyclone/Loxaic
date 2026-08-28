@@ -8,7 +8,7 @@ import type { SanitizedToolMeta } from "./sanitize.ts";
  * new and changed tools always fall back to approval-required.
  */
 
-export type ToolPolicy = {
+export interface ToolPolicy {
   enabled: boolean;
   approval: "ask" | "allow";
   /** User-asserted; gates planning mode. Never derived from server annotations. */
@@ -17,10 +17,13 @@ export type ToolPolicy = {
   changed?: boolean;
   /** Set when the tool disappeared from the server's listing. */
   missing?: boolean;
-};
+}
 
-export type ToolPolicies = Record<string, ToolPolicy>;
-export type KnownTools = Record<string, string>; // remoteName -> content hash
+// Partial: a lookup by tool name misses for any tool not yet seen, which is
+// the normal case this module exists to handle — the honest type is what
+// makes the "no prior policy / no prior hash" guards below meaningful.
+export type ToolPolicies = Partial<Record<string, ToolPolicy>>;
+export type KnownTools = Partial<Record<string, string>>; // remoteName -> content hash
 
 export const DEFAULT_POLICY: ToolPolicy = { enabled: true, approval: "ask", readOnly: false };
 
@@ -59,12 +62,12 @@ export function reconcileTools(
   }
 
   for (const [name, policy] of Object.entries(policies)) {
-    if (!seen.has(name)) {
-      if (!policy.missing) policies[name] = { ...policy, missing: true };
-      // Keep the last-seen hash so a tool that returns *changed* still trips
-      // the policy reset above.
-      if (stored.knownTools[name]) known[name] = stored.knownTools[name];
-    }
+    if (!policy || seen.has(name)) continue;
+    if (!policy.missing) policies[name] = { ...policy, missing: true };
+    // Keep the last-seen hash so a tool that returns *changed* still trips
+    // the policy reset above.
+    const priorHash = stored.knownTools[name];
+    if (priorHash) known[name] = priorHash;
   }
 
   return { toolPolicies: policies, knownTools: known, changedTools };

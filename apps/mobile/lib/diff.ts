@@ -55,7 +55,7 @@ export function computeLineDiff(oldContent: string | null, newContent: string | 
     return oldLines.map((text) => ({ type: 'del' as const, text }));
   }
   if (oldLines.length * newLines.length > MAX_DIFF_CELLS) {
-    return [{ type: 'meta', text: `${oldLines.length} lines → ${newLines.length} lines (too large to diff line-by-line)` }];
+    return [{ type: 'meta', text: `${String(oldLines.length)} lines → ${String(newLines.length)} lines (too large to diff line-by-line)` }];
   }
   return lcsDiff(oldLines, newLines);
 }

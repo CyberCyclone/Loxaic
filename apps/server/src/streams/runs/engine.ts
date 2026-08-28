@@ -20,6 +20,17 @@ const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 /** How many prior messages to replay as context. */
 export const HISTORY_LIMIT = 50;
 
+/**
+ * A plain function call rather than a direct `abort.signal.aborted` read:
+ * the signal can flip true at any point during the awaits that follow an
+ * earlier check in the same iteration, but the type checker doesn't model
+ * that, so a direct re-read gets narrowed to a stale "still false" — this
+ * indirection is what keeps that narrowing from applying.
+ */
+function isAborted(controller: AbortController): boolean {
+  return controller.signal.aborted;
+}
+
 /** See loadEphemeralHistory's SUMMARY_LOOKBACK — skip cards are
  * `summary`-authored but textless, and must never act as a compaction cutoff. */
 const SUMMARY_LOOKBACK = 20;
@@ -75,7 +86,7 @@ export async function runToolLoop(ctx: {
     // and with it the context window — can be dropped before the client refreshes.
     let jitLoaded = false;
 
-    for (let iteration = 1; iteration <= MAX_ITERATIONS && !finished; iteration++) {
+    for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       if (abort.signal.aborted) break;
       producer.emit({ kind: "iteration", n: iteration, max: MAX_ITERATIONS });
 
@@ -148,7 +159,7 @@ export async function runToolLoop(ctx: {
           } else if (event.type === "thinking") {
             thinking += event.content;
             producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
-          } else if (event.type === "done") {
+          } else {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
             if (!incognito) {
@@ -170,18 +181,18 @@ export async function runToolLoop(ctx: {
           }
         }
       } catch (err) {
-        const isAbort = (err as Error)?.name === "AbortError" || abort.signal.aborted;
+        const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
         const status = isAbort ? "cancelled" : "error";
         const errorMessage = (err as Error).message;
         const blocks: ContentBlock[] = [];
         if (thinking) blocks.push({ kind: "thinking", text: thinking });
         if (text) blocks.push({ kind: "text", text });
         if (!incognito) {
-          await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => {});
+          await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
         }
         const eventError = isAbort ? undefined : errorMessage;
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
-        await producer.end(status, { error: eventError }).catch(() => {});
+        await producer.end(status, { error: eventError }).catch(() => undefined);
         return;
       }
 
@@ -288,7 +299,7 @@ export async function runToolLoop(ctx: {
       }
       parentId = toolMsgId;
 
-      if (abort.signal.aborted) {
+      if (isAborted(abort)) {
         // This iteration's tools already ran and its message.end already
         // went out above as "complete" — the tool results are real and
         // stay. What stops here is the *run continuing to another
@@ -313,7 +324,7 @@ export async function runToolLoop(ctx: {
           .where(eq(conversations.id, convId));
       }
       await producer.end("error", {
-        error: `Stopped after ${MAX_ITERATIONS} tool iterations without a final answer.`,
+        error: `Stopped after ${String(MAX_ITERATIONS)} tool iterations without a final answer.`,
       });
     }
   } finally {
@@ -376,11 +387,12 @@ async function runOneToolCall(
     return { output: result.output };
   }
 
-  // Builtin names come from TOOLS by construction, so the narrowing is sound.
-  const builtinName = resolved.source.kind === "builtin" ? (resolved.name as ToolName) : null;
+  // The MCP branch returned above, so this is a builtin by construction — and
+  // builtin names come from TOOLS, so the ToolName narrowing is sound.
+  const builtinName = resolved.name as ToolName;
 
   let container = null;
-  if (builtinName && toolNeedsSandbox(builtinName)) {
+  if (toolNeedsSandbox(builtinName)) {
     try {
       // Incognito conversations get a sandbox with no Postgres bookkeeping
       // row — the boot-time orphan sweep covers a crashed process instead.
@@ -399,9 +411,7 @@ async function runOneToolCall(
     }
   }
 
-  const result: ToolResult = builtinName
-    ? await executeTool(container, builtinName, args)
-    : { ok: false, output: `Unknown tool: ${toolName}` };
+  const result: ToolResult = await executeTool(container, builtinName, args);
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",
@@ -439,7 +449,7 @@ function waitForApproval(streamId: string, callId: string): Promise<boolean> {
 
 function safeParseArgs(raw: string): Record<string, unknown> {
   try {
-    const parsed = JSON.parse(raw || "{}");
+    const parsed: unknown = JSON.parse(raw || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
       : {};
@@ -469,7 +479,7 @@ async function recordUsage(input: {
     model: input.model,
     origin: "server",
     inputTokens: result.usage.prompt_tokens,
-    cachedTokens: result.timings?.cache_n || 0,
+    cachedTokens: result.timings?.cache_n ?? 0,
     outputTokens: result.usage.completion_tokens,
     ttftMs: result.ttftMs,
     promptMs: result.timings?.prompt_ms ?? null,
@@ -532,7 +542,7 @@ export async function loadHistory(
   const out: ChatMessage[] = [];
   for (const row of ordered) {
     if (row.status !== "complete") continue;
-    const blocks = (row.content as ContentBlock[]) ?? [];
+    const blocks = (row.content ?? []) as ContentBlock[];
 
     if (row.authorType === "user") {
       const text = textOf(blocks);
@@ -607,18 +617,22 @@ export async function loadEphemeralHistory(
         continue;
       }
       if (m.author_type === "assistant") {
-        const resolved = m.tool_calls.filter((t) => t.output !== undefined);
+        // Type-predicate filter, so `output` narrows to string for the tool
+        // messages below rather than needing a non-null assertion.
+        const resolved = m.tool_calls.filter(
+          (t): t is typeof t & { output: string } => t.output !== undefined,
+        );
         const calls: ToolCall[] = resolved.map((t) => ({
           id: t.call_id,
           type: "function" as const,
-          function: { name: t.tool, arguments: JSON.stringify(t.args ?? {}) },
+          function: { name: t.tool, arguments: JSON.stringify(t.args) },
         }));
         if (!m.text && calls.length === 0) continue;
         items.push({
           kind: "msgs",
           msgs: [
             { role: "assistant", content: m.text || null, ...(calls.length ? { tool_calls: calls } : {}) },
-            ...resolved.map((t) => ({ role: "tool" as const, tool_call_id: t.call_id, content: t.output as string })),
+            ...resolved.map((t) => ({ role: "tool" as const, tool_call_id: t.call_id, content: t.output })),
           ],
         });
       }

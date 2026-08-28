@@ -19,33 +19,33 @@ export function setAuthToken(token: string | null) {
   AUTH_TOKEN = token;
 }
 
-export type HealthResponse = {
+export interface HealthResponse {
   status: string;
   timestamp: string;
   services: {
     database: "ok" | "error";
     inference: "ok" | "error" | "unavailable";
   };
-};
+}
 
 export async function getHealth(): Promise<HealthResponse> {
   const res = await fetch(`${BASE_URL}/health`);
-  if (!res.ok) throw new Error(`GET /health ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`GET /health ${String(res.status)}`);
+  return res.json() as Promise<HealthResponse>;
 }
 
 export type { ModelInfo, ModelPref } from "@shannon/types";
 
 export async function getModels(): Promise<import("@shannon/types").ModelInfo[]> {
-  return (await authedFetch("/v1/models")).json();
+  return (await authedFetch("/v1/models")).json() as Promise<import("@shannon/types").ModelInfo[]>;
 }
 
 // ── Auth ──────────────────────────────────────────────────
-export type Session = {
+export interface Session {
   token: string;
   user: { id: string; email: string; name: string; emailVerified: boolean; image: string | null; createdAt: string; updatedAt: string };
   redirect?: boolean;
-};
+}
 
 export async function signUp(email: string, password: string, name?: string): Promise<Session> {
   const res = await fetch(`${BASE_URL}/api/auth/sign-up`, {
@@ -54,8 +54,8 @@ export async function signUp(email: string, password: string, name?: string): Pr
     credentials: "include",
     body: JSON.stringify({ email, password, name }),
   });
-  if (!res.ok) throw new Error(`Sign up failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`Sign up failed: ${String(res.status)}`);
+  return res.json() as Promise<Session>;
 }
 
 export async function signIn(email: string, password: string): Promise<Session> {
@@ -65,8 +65,8 @@ export async function signIn(email: string, password: string): Promise<Session> 
     credentials: "include",
     body: JSON.stringify({ email, password }),
   });
-  if (!res.ok) throw new Error(`Sign in failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`Sign in failed: ${String(res.status)}`);
+  return res.json() as Promise<Session>;
 }
 
 export async function getSession(): Promise<Session | null> {
@@ -74,8 +74,8 @@ export async function getSession(): Promise<Session | null> {
     credentials: "include",
   });
   if (res.status === 401) return null;
-  if (!res.ok) throw new Error(`Session fetch failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`Session fetch failed: ${String(res.status)}`);
+  return res.json() as Promise<Session>;
 }
 
 export async function getAuthToken(): Promise<string | null> {
@@ -94,7 +94,7 @@ export async function getAuthToken(): Promise<string | null> {
 }
 
 // ── Conversations ─────────────────────────────────────────
-export type Conversation = {
+export interface Conversation {
   id: string;
   ownerId: string;
   title: string;
@@ -104,15 +104,15 @@ export type Conversation = {
   mcpOverrides: { disabledServerIds?: string[] } | null;
   createdAt: string;
   updatedAt: string;
-};
+}
 
 export async function getConversations(): Promise<Conversation[]> {
   const token = await getAuthToken();
   const res = await fetch(`${BASE_URL}/v1/conversations`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${String(token)}` },
   });
-  if (!res.ok) throw new Error(`Conversations failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`Conversations failed: ${String(res.status)}`);
+  return res.json() as Promise<Conversation[]>;
 }
 
 export async function updateConversation(
@@ -128,10 +128,10 @@ export async function updateConversation(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     })
-  ).json();
+  ).json() as Promise<Conversation>;
 }
 
-export type ApiMessageUsage = {
+export interface ApiMessageUsage {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
@@ -144,9 +144,9 @@ export type ApiMessageUsage = {
   /** null for rows written before this column existed, and for any backend
    * that reported no usage — the UI must degrade rather than assume. */
   contextBreakdown: import("@shannon/types").ContextBreakdown | null;
-};
+}
 
-export type ApiMessage = {
+export interface ApiMessage {
   id: string;
   conversationId: string;
   parentId: string | null;
@@ -162,21 +162,21 @@ export type ApiMessage = {
   deletedAt: string | null;
   /** Persisted usage/timing for this message — null for user messages or if never recorded. */
   usage: ApiMessageUsage | null;
-};
+}
 
 export async function getMessages(
   conversationId: string,
 ): Promise<{ messages: ApiMessage[]; forks: unknown }> {
   const token = await getAuthToken();
   const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${String(token)}` },
   });
-  if (!res.ok) throw new Error(`Messages failed: ${res.status}`);
-  return res.json();
+  if (!res.ok) throw new Error(`Messages failed: ${String(res.status)}`);
+  return res.json() as Promise<{ messages: ApiMessage[]; forks: unknown }>;
 }
 
 // ── Routines ──────────────────────────────────────────────
-export type Routine = {
+export interface Routine {
   id: string;
   ownerId: string;
   name: string;
@@ -186,29 +186,28 @@ export type Routine = {
   enabled: boolean;
   lastRunAt: string | null;
   nextRunAt: string | null;
-};
+}
 
-export type RoutineRun = {
+export interface RoutineRun {
   id: string;
   routineId: string;
   conversationId: string;
   status: string;
   startedAt: string;
   finishedAt: string | null;
-};
+}
 
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
   const token = await getAuthToken();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} failed: ${res.status}`);
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${String(token)}`);
+  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`);
   return res;
 }
 
 export async function getRoutines(): Promise<Routine[]> {
-  return (await authedFetch("/v1/routines")).json();
+  return (await authedFetch("/v1/routines")).json() as Promise<Routine[]>;
 }
 
 export async function createRoutine(input: { name: string; cron: string; prompt: string }): Promise<Routine> {
@@ -218,7 +217,7 @@ export async function createRoutine(input: { name: string; cron: string; prompt:
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     })
-  ).json();
+  ).json() as Promise<Routine>;
 }
 
 export async function updateRoutine(
@@ -231,31 +230,31 @@ export async function updateRoutine(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     })
-  ).json();
+  ).json() as Promise<Routine>;
 }
 
 export async function deleteRoutine(id: string): Promise<{ ok: true }> {
-  return (await authedFetch(`/v1/routines/${id}`, { method: "DELETE" })).json();
+  return (await authedFetch(`/v1/routines/${id}`, { method: "DELETE" })).json() as Promise<{ ok: true }>;
 }
 
 export async function runRoutineNow(id: string): Promise<RoutineRun> {
-  return (await authedFetch(`/v1/routines/${id}/run`, { method: "POST" })).json();
+  return (await authedFetch(`/v1/routines/${id}/run`, { method: "POST" })).json() as Promise<RoutineRun>;
 }
 
 export async function getRoutineRuns(id: string): Promise<RoutineRun[]> {
-  return (await authedFetch(`/v1/routines/${id}/runs`)).json();
+  return (await authedFetch(`/v1/routines/${id}/runs`)).json() as Promise<RoutineRun[]>;
 }
 
 // ── MCP servers ───────────────────────────────────────────
-export type McpToolPolicy = {
+export interface McpToolPolicy {
   enabled: boolean;
   approval: "ask" | "allow";
   readOnly: boolean;
   changed?: boolean;
   missing?: boolean;
-};
+}
 
-export type McpServer = {
+export interface McpServer {
   id: string;
   ownerId: string;
   name: string;
@@ -277,31 +276,31 @@ export type McpServer = {
   updatedAt: string;
   /** Names of stored secrets; values never leave the server. */
   secretKeys: string[];
-};
+}
 
-export type McpDiscoveredTool = {
+export interface McpDiscoveredTool {
   name: string;
   namespacedName: string;
   description: string;
   /** Server-claimed, display-only — never used for policy decisions. */
   annotations: { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean } | null;
   policy: McpToolPolicy;
-};
+}
 
 export type McpTestResult =
   | { ok: true; changedTools: string[]; tools: McpDiscoveredTool[] }
   | { ok: false; error: string };
 
-export type McpCatalogEntry = {
+export interface McpCatalogEntry {
   key: string;
   name: string;
   slug: string;
   description: string;
   secretKeys: { env: string; label: string }[];
   configured: boolean;
-};
+}
 
-export type McpServerInput = {
+export interface McpServerInput {
   name?: string;
   slug?: string;
   transport?: "stdio" | "http";
@@ -316,7 +315,7 @@ export type McpServerInput = {
   allowPrivateNetwork?: boolean;
   builtinKey?: string;
   toolPolicies?: Record<string, Partial<McpToolPolicy>>;
-};
+}
 
 /** Carries the server's error body so the UI can offer the SSRF override. */
 export class McpApiError extends Error {
@@ -331,13 +330,16 @@ export class McpApiError extends Error {
 
 async function mcpFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await getAuthToken();
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: { ...(init?.headers ?? {}), Authorization: `Bearer ${token}` },
-  });
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${String(token)}`);
+  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; ssrf?: boolean };
-    throw new McpApiError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${res.status}`, res.status, body.ssrf === true);
+    throw new McpApiError(
+      body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`,
+      res.status,
+      body.ssrf === true,
+    );
   }
   return res.json() as Promise<T>;
 }
@@ -375,14 +377,14 @@ export async function testMcpServer(id: string): Promise<McpTestResult> {
 }
 
 // ── User prefs (builtin tool "allow always") ────────────────
-export type UserPrefs = {
+export interface UserPrefs {
   /** Builtin tool names allowlisted globally — skip approval anywhere the
    * tool loop runs. MCP tools have their own per-server allowlist instead. */
   toolAllowlist: string[];
-};
+}
 
 export async function getPrefs(): Promise<UserPrefs> {
-  return (await authedFetch("/v1/prefs")).json();
+  return (await authedFetch("/v1/prefs")).json() as Promise<UserPrefs>;
 }
 
 export async function updatePrefs(patch: Partial<UserPrefs>): Promise<UserPrefs> {
@@ -392,13 +394,13 @@ export async function updatePrefs(patch: Partial<UserPrefs>): Promise<UserPrefs>
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     })
-  ).json();
+  ).json() as Promise<UserPrefs>;
 }
 
 // ── Stats ─────────────────────────────────────────────────
 export type StatsRange = "session" | "today" | "week" | "month" | "year";
 
-export type UsageStatsSnapshot = {
+export interface UsageStatsSnapshot {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
@@ -409,14 +411,14 @@ export type UsageStatsSnapshot = {
   avgPromptTps: number | null;
   avgPredictedTps: number | null;
   avgTotalMs: number | null;
-};
+}
 
-export type UsageStatsSpark = {
+export interface UsageStatsSpark {
   totalTokens: number[];
   cacheHitRate: number[];
   avgTtftMs: (number | null)[];
   avgPredictedTps: (number | null)[];
-};
+}
 
 export type UsageStats = UsageStatsSnapshot & {
   /** The equivalent-length window immediately before this one — null for a custom from/to range, which has no natural "previous period". */
@@ -432,20 +434,20 @@ export async function getUsageStats(params?: {
   to?: string;
   range?: StatsRange;
 }): Promise<UsageStats> {
-  const qs = new URLSearchParams(params as Record<string, string>).toString();
-  return (await authedFetch(`/v1/stats/usage${qs ? `?${qs}` : ""}`)).json();
+  const qs = new URLSearchParams(params).toString();
+  return (await authedFetch(`/v1/stats/usage${qs ? `?${qs}` : ""}`)).json() as Promise<UsageStats>;
 }
 
-export type StatsSeriesPoint = { bucket: string; values: Record<string, number> };
-export type CacheRatePoint = { bucket: string; cacheHitRate: number };
-export type StatsSeries = { range: StatsRange; points: StatsSeriesPoint[]; cachePoints: CacheRatePoint[] };
+export interface StatsSeriesPoint { bucket: string; values: Record<string, number> }
+export interface CacheRatePoint { bucket: string; cacheHitRate: number }
+export interface StatsSeries { range: StatsRange; points: StatsSeriesPoint[]; cachePoints: CacheRatePoint[] }
 
 export async function getStatsSeries(range?: StatsRange): Promise<StatsSeries> {
   const qs = range ? `?range=${range}` : "";
-  return (await authedFetch(`/v1/stats/series${qs}`)).json();
+  return (await authedFetch(`/v1/stats/series${qs}`)).json() as Promise<StatsSeries>;
 }
 
-export type ModelStats = {
+export interface ModelStats {
   model: string;
   conversations: number;
   tokens: number;
@@ -455,14 +457,14 @@ export type ModelStats = {
   ttftP50: number | null;
   ttftP95: number | null;
   ttftP99: number | null;
-};
+}
 
 export async function getModelStats(range?: StatsRange): Promise<ModelStats[]> {
   const qs = range ? `?range=${range}` : "";
-  return (await authedFetch(`/v1/stats/models${qs}`)).json();
+  return (await authedFetch(`/v1/stats/models${qs}`)).json() as Promise<ModelStats[]>;
 }
 
-export type ConversationStats = {
+export interface ConversationStats {
   conversationId: string;
   title: string;
   kind: "chat" | "agent" | "routine";
@@ -471,14 +473,14 @@ export type ConversationStats = {
   cachePct: number;
   avgTtftMs: number | null;
   lastUsedAt: string;
-};
+}
 
 export async function getConversationStats(range?: StatsRange, limit?: number): Promise<ConversationStats[]> {
   const params = new URLSearchParams();
   if (range) params.set("range", range);
   if (limit) params.set("limit", String(limit));
   const qs = params.toString();
-  return (await authedFetch(`/v1/stats/conversations${qs ? `?${qs}` : ""}`)).json();
+  return (await authedFetch(`/v1/stats/conversations${qs ? `?${qs}` : ""}`)).json() as Promise<ConversationStats[]>;
 }
 
 // ── Streaming protocol (shared by chat + agent WebSockets) ─
@@ -519,7 +521,7 @@ function createStreamSocket(path: string, token: string, onEvent: (event: Server
   const ws = new WebSocket(`${wsBase}${path}?token=${token}`);
   ws.onmessage = (msg) => {
     try {
-      onEvent(JSON.parse(msg.data) as ServerMessage);
+      onEvent(JSON.parse(msg.data as string) as ServerMessage);
     } catch {
       // ignore
     }
@@ -546,7 +548,7 @@ export function sendChatMessage(
   return trySend(ws, {
     type: "chat.send",
     content,
-    model: model || "default",
+    model: model ?? "default",
     conversation_id: conversationId,
     parent_id: parentId,
     incognito,
@@ -568,7 +570,7 @@ export function sendAgentMessage(
     mode,
     conversation_id: convId,
     parent_id: parentId,
-    model: model || "default",
+    model: model ?? "default",
     incognito,
   });
 }
@@ -586,7 +588,7 @@ export function sendCommand(
     type: "command.run",
     command,
     conversation_id: conversationId,
-    model: model || "default",
+    model: model ?? "default",
     args,
   });
 }

@@ -153,7 +153,12 @@ export function RoutineModal({ open, onClose, onSave, editing }: RoutineModalPro
             <Button variant="outline" size="sm" onPress={onClose}>
               <ButtonText>Cancel</ButtonText>
             </Button>
-            <Button size="sm" className="bg-primary" onPress={handleSave} isDisabled={!name.trim() || saving}>
+            <Button
+              size="sm"
+              className="bg-primary"
+              onPress={() => { void handleSave(); }}
+              isDisabled={!name.trim() || saving}
+            >
               {saving && <ButtonSpinner />}
               <ButtonText className="text-primary-foreground">Save routine</ButtonText>
             </Button>

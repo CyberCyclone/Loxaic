@@ -58,7 +58,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
             <Input className="border-border bg-background">
               <InputField
                 value={values[k.env] ?? ''}
-                onChangeText={(v) => setValues((prev) => ({ ...prev, [k.env]: v }))}
+                onChangeText={(v) => { setValues((prev) => ({ ...prev, [k.env]: v })); }}
                 placeholder={k.env}
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -75,7 +75,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
         <Button
           size="sm"
           className="mt-1 self-start bg-primary"
-          onPress={handleEnable}
+          onPress={() => { void handleEnable(); }}
           isDisabled={!complete || saving}
         >
           {saving && <ButtonSpinner />}

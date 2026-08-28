@@ -20,10 +20,11 @@ export function roleOf(authorType: string): Message['role'] | null {
 }
 
 export function extractCompaction(blocks: ContentBlock[]): CompactionStats | undefined {
-  const block = blocks.find((b) => b.kind === 'compaction') as ({ kind: 'compaction' } & CompactionStats) | undefined;
+  const block = blocks.find((b) => b.kind === 'compaction');
   if (!block) return undefined;
-  const { kind: _kind, ...stats } = block;
-  return stats;
+  const { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
+    block;
+  return { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
 }
 
 export function extractField(blocks: ContentBlock[], kind: 'text' | 'thinking'): string {
@@ -53,7 +54,7 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
     case 'todo_write': {
       const todos = args.todos;
       const n = Array.isArray(todos) ? todos.length : 0;
-      return `${n} item${n === 1 ? '' : 's'}`;
+      return `${String(n)} item${n === 1 ? '' : 's'}`;
     }
     default:
       return JSON.stringify(args);
@@ -83,7 +84,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
 
   for (const row of rows) {
     if (row.status === 'cancelled') continue;
-    const blocks = row.content as ContentBlock[];
+    const blocks = row.content;
 
     if (row.authorType === 'user') {
       const msg: Message = { id: row.id, role: 'user', text: extractField(blocks, 'text') };
@@ -203,7 +204,9 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
     case 'thinking.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
     case 'compaction': {
-      const { kind: _kind, message_id, ...stats } = event;
+      const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
+        event;
+      const stats = { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
       return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
     }
     case 'message.end':

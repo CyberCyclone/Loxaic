@@ -12,6 +12,15 @@ import { MAX_RESULT_BYTES } from "../sanitize.ts";
 
 process.env.MCP_ENCRYPTION_KEY ??= "registry-test-key";
 
+/** A tool the toolset was expected to offer. Failing here names the missing
+ * tool, which a bare non-null assertion would turn into a confusing
+ * "cannot read property of undefined" further down the assertion. */
+function mustGet(ts: Awaited<ReturnType<typeof buildToolset>>, name: string) {
+  const tool = ts.get(name);
+  if (!tool) throw new Error(`toolset did not offer "${name}"`);
+  return tool;
+}
+
 const userId = `test-mcp-${uuid()}`;
 let serverId: string;
 
@@ -61,33 +70,36 @@ describe("buildToolset with the fixture server", () => {
     expect(names).toContain("mockmcp__slow");
     expect(ts.systemPromptAddendum).toMatch(/UNTRUSTED/);
     // MCP schemas pass through without an injected additionalProperties.
-    const echo = ts.openAiTools.find((t) => t.function.name === "mockmcp__echo")!;
+    const echo = ts.openAiTools.find((t) => t.function.name === "mockmcp__echo");
+    if (!echo) throw new Error("mockmcp__echo was not offered");
     expect(Object.prototype.hasOwnProperty.call(echo.function.parameters, "additionalProperties")).toBe(false);
   }, 20_000);
 
   it("requires approval for MCP tools in every mode until allowlisted", async () => {
     const ts = await buildToolset(userId, { mode: "auto" });
-    const echo = ts.get("mockmcp__echo")!;
+    const echo = mustGet(ts, "mockmcp__echo");
     expect(ts.requiresApproval(echo, "auto")).toBe(true);
     expect(ts.requiresApproval(echo, "manual")).toBe(true);
     // Builtins keep their auto-mode behavior.
-    expect(ts.requiresApproval(ts.get("bash")!, "auto")).toBe(false);
+    expect(ts.requiresApproval(mustGet(ts, "bash"), "auto")).toBe(false);
   }, 20_000);
 
   it("honors an explicit allowlist and readOnly planning gate", async () => {
     const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, serverId) });
+    if (!row) throw new Error("fixture server row missing");
     await db
       .update(mcpServers)
       .set({
         toolPolicies: {
-          ...(row!.toolPolicies as Record<string, unknown>),
+          // The jsonb column is typed `unknown`, so the spread needs a shape.
+          ...(row.toolPolicies as Record<string, unknown>),
           echo: { enabled: true, approval: "allow", readOnly: true },
         },
       })
       .where(eq(mcpServers.id, serverId));
 
     const manual = await buildToolset(userId, { mode: "manual" });
-    expect(manual.requiresApproval(manual.get("mockmcp__echo")!, "manual")).toBe(false);
+    expect(manual.requiresApproval(mustGet(manual, "mockmcp__echo"), "manual")).toBe(false);
 
     const planning = await buildToolset(userId, { mode: "planning" });
     const names = planning.openAiTools.map((t) => t.function.name);
@@ -98,7 +110,7 @@ describe("buildToolset with the fixture server", () => {
 
   it("dispatches echo and wraps the result in provenance markers", async () => {
     const ts = await buildToolset(userId, { mode: "manual" });
-    const result = await ts.dispatchMcp(ts.get("mockmcp__echo")!, { text: "hi" });
+    const result = await ts.dispatchMcp(mustGet(ts, "mockmcp__echo"), { text: "hi" });
     expect(result.ok).toBe(true);
     expect(result.output).toContain('<mcp-tool-result server="mockmcp" tool="echo"');
     expect(result.output).toContain("echo: hi");
@@ -106,7 +118,7 @@ describe("buildToolset with the fixture server", () => {
 
   it("rejects schema-invalid arguments before dispatch", async () => {
     const ts = await buildToolset(userId, { mode: "manual" });
-    const result = await ts.dispatchMcp(ts.get("mockmcp__echo")!, { wrong: 1 });
+    const result = await ts.dispatchMcp(mustGet(ts, "mockmcp__echo"), { wrong: 1 });
     expect(result.ok).toBe(false);
     expect(result.output).toMatch(/Invalid arguments for mockmcp__echo/);
     expect(result.output).not.toContain("mcp-tool-result"); // never reached the server
@@ -114,13 +126,13 @@ describe("buildToolset with the fixture server", () => {
 
   it("caps oversized results with a truncation marker", async () => {
     const ts = await buildToolset(userId, { mode: "manual" });
-    const result = await ts.dispatchMcp(ts.get("mockmcp__huge")!, {});
-    expect(result.output).toContain(`[truncated at ${MAX_RESULT_BYTES} bytes]`);
+    const result = await ts.dispatchMcp(mustGet(ts, "mockmcp__huge"), {});
+    expect(result.output).toContain(`[truncated at ${String(MAX_RESULT_BYTES)} bytes]`);
   }, 20_000);
 
   it("neutralizes wrapper-escape attempts in results", async () => {
     const ts = await buildToolset(userId, { mode: "manual" });
-    const result = await ts.dispatchMcp(ts.get("mockmcp__evil")!, {});
+    const result = await ts.dispatchMcp(mustGet(ts, "mockmcp__evil"), {});
     // Exactly one genuine closing tag — the wrapper's own.
     expect(result.output.split("</mcp-tool-result").length).toBe(2);
   }, 20_000);
@@ -134,14 +146,14 @@ describe("buildToolset with the fixture server", () => {
 
   it("clears requiresApproval for a builtin on the user's allow-always list", async () => {
     const before = await buildToolset(userId, { mode: "manual" });
-    expect(before.requiresApproval(before.get("bash")!, "manual")).toBe(true);
+    expect(before.requiresApproval(mustGet(before, "bash"), "manual")).toBe(true);
 
     await db.insert(userPrefs).values({ userId, toolAllowlist: ["bash"] });
     try {
       const after = await buildToolset(userId, { mode: "manual" });
-      expect(after.requiresApproval(after.get("bash")!, "manual")).toBe(false);
+      expect(after.requiresApproval(mustGet(after, "bash"), "manual")).toBe(false);
       // Untouched: only the allowlisted name is affected.
-      expect(after.requiresApproval(after.get("fs_write")!, "manual")).toBe(true);
+      expect(after.requiresApproval(mustGet(after, "fs_write"), "manual")).toBe(true);
       // Planning gates on isWrite regardless of the allowlist — "allow
       // always" doesn't defeat planning mode's no-writes guarantee.
       const planning = await buildToolset(userId, { mode: "planning" });

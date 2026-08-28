@@ -41,12 +41,11 @@ export function ModelSpeedChart({ models, height = 200 }: ModelSpeedChartProps) 
 
   return (
     <VStack space="xs">
-      <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
+      <Svg width="100%" height={height} viewBox={`0 0 ${String(width)} ${String(height)}`}>
         {[0, 0.5, 1].map((f) => (
           <Rect
             key={f}
-            x={padding.left}
-            y={padding.top + plotH * (1 - f)}
+            transform={[{ translateX: padding.left }, { translateY: padding.top + plotH * (1 - f) }]}
             width={plotW}
             height={0.5}
             fill="rgba(128,128,128,0.2)"
@@ -61,16 +60,14 @@ export function ModelSpeedChart({ models, height = 200 }: ModelSpeedChartProps) 
           return (
             <Fragment key={m.model}>
               <Rect
-                x={cx - barW - 2}
-                y={padding.top + plotH - ppH}
+                transform={[{ translateX: cx - barW - 2 }, { translateY: padding.top + plotH - ppH }]}
                 width={barW}
                 height={Math.max(ppH, 1)}
                 fill={PP_COLOR}
                 rx={2}
               />
               <Rect
-                x={cx + 2}
-                y={padding.top + plotH - tgH}
+                transform={[{ translateX: cx + 2 }, { translateY: padding.top + plotH - tgH }]}
                 width={barW}
                 height={Math.max(tgH, 1)}
                 fill={TG_COLOR}

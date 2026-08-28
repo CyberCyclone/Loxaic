@@ -229,7 +229,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                   {TRANSPORTS.map((t) => (
                     <Pressable
                       key={t}
-                      onPress={() => setTransport(t)}
+                      onPress={() => { setTransport(t); }}
                       className={`rounded-full px-3 py-1.5 ${transport === t ? 'bg-primary/15' : 'bg-muted'}`}
                     >
                       <Text size="sm" className={transport === t ? 'text-primary' : 'text-muted-foreground'}>
@@ -366,7 +366,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                   This URL points at a private or local address. Only allow it if you run the MCP server
                   yourself and trust it.
                 </Text>
-                <Button size="sm" variant="outline" className="self-start" onPress={() => handleSave(true)}>
+                <Button size="sm" variant="outline" className="self-start" onPress={() => { void handleSave(true); }}>
                   <ButtonText>Allow private address</ButtonText>
                 </Button>
               </VStack>
@@ -378,7 +378,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
             <Button variant="outline" size="sm" onPress={onClose}>
               <ButtonText>Cancel</ButtonText>
             </Button>
-            <Button size="sm" className="bg-primary" onPress={() => handleSave()} isDisabled={!name.trim() || saving}>
+            <Button size="sm" className="bg-primary" onPress={() => { void handleSave(); }} isDisabled={!name.trim() || saving}>
               {saving && <ButtonSpinner />}
               <ButtonText className="text-primary-foreground">Save server</ButtonText>
             </Button>

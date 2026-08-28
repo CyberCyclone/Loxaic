@@ -20,7 +20,7 @@ export const MAX_OUTPUT_BYTES = 256 * 1024;
 /** Default wall-clock budget for a single exec. */
 const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
 
-export type SandboxConfig = {
+export interface SandboxConfig {
   limits?: {
     memory?: number;   // bytes
     cpu?: number;      // nano CPUs
@@ -29,17 +29,17 @@ export type SandboxConfig = {
   repoUrl?: string;
   branch?: string;
   token?: string;
-};
+}
 
-export type SandboxInfo = {
+export interface SandboxInfo {
   id: string;
   containerId: string;
   status: string;
   repoUrl?: string;
   createdAt: string;
-};
+}
 
-export type ExecResult = {
+export interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -47,7 +47,7 @@ export type ExecResult = {
   truncated: boolean;
   /** True when the exec exceeded its timeout and was abandoned. */
   timedOut: boolean;
-};
+}
 
 export async function createSandbox(
   userId: string,
@@ -89,7 +89,7 @@ export async function createSandbox(
     ]);
     if (clone.exitCode !== 0) {
       await stopSandbox(container.id);
-      throw new Error(`Repo clone failed (exit ${clone.exitCode}): ${clone.stderr.trim()}`);
+      throw new Error(`Repo clone failed (exit ${String(clone.exitCode)}): ${clone.stderr.trim()}`);
     }
   } else {
     // Every sandbox gets the working directory the agent tools default to.
@@ -99,7 +99,7 @@ export async function createSandbox(
   return {
     id: container.id,
     containerId: container.id,
-    status: info.State?.Status || "running",
+    status: info.State.Status || "running",
     repoUrl: config.repoUrl,
     createdAt: new Date().toISOString(),
   };
@@ -107,8 +107,8 @@ export async function createSandbox(
 
 export async function stopSandbox(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
-  await container.stop({ t: 10 }).catch(() => {});
-  await container.remove({ force: true }).catch(() => {});
+  await container.stop({ t: 10 }).catch(() => undefined);
+  await container.remove({ force: true }).catch(() => undefined);
 }
 
 /**
@@ -138,8 +138,17 @@ class CappedSink extends Writable {
 
   text(): string {
     const body = Buffer.concat(this.chunks).toString("utf8");
-    return this.truncated ? `${body}\n… [output truncated at ${MAX_OUTPUT_BYTES} bytes]` : body;
+    return this.truncated ? `${body}\n… [output truncated at ${String(MAX_OUTPUT_BYTES)} bytes]` : body;
   }
+}
+
+/**
+ * dockerode types `Container.modem` as `any`; this is the one method of it
+ * this file relies on, narrowed by hand so that reliance doesn't leak `any`
+ * into the rest of the function.
+ */
+interface DemuxCapableModem {
+  demuxStream(stream: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, stderr: NodeJS.WritableStream): void;
 }
 
 export async function execInContainer(
@@ -151,7 +160,7 @@ export async function execInContainer(
     Cmd: command,
     AttachStdout: true,
     AttachStderr: true,
-    WorkingDir: options?.workdir || "/home/shannon",
+    WorkingDir: options?.workdir ?? "/home/shannon",
   });
 
   const stream = await exec.start({ hijack: true, stdin: false });
@@ -161,23 +170,22 @@ export async function execInContainer(
   // Docker frames stdout/stderr into one hijacked stream with an 8-byte
   // header per chunk. demuxStream handles frames split across TCP reads,
   // which a hand-rolled `chunk[0]` / `chunk.slice(8)` parser does not.
-  container.modem.demuxStream(stream, out, err);
+  const modem = container.modem as DemuxCapableModem;
+  modem.demuxStream(stream, out, err);
 
   const timeoutMs = options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
-  let timedOut = false;
 
-  await new Promise<void>((resolve, reject) => {
+  const timedOut = await new Promise<boolean>((resolve, reject) => {
     const timer = setTimeout(() => {
-      timedOut = true;
       // The Docker API has no "kill exec" call; detaching is all we can do.
       // The process stays until the container is reaped, bounded by the
       // container's own memory/CPU/pid limits.
       stream.destroy();
-      resolve();
+      resolve(true);
     }, timeoutMs);
 
-    stream.on("end", () => { clearTimeout(timer); resolve(); });
-    stream.on("close", () => { clearTimeout(timer); resolve(); });
+    stream.on("end", () => { clearTimeout(timer); resolve(false); });
+    stream.on("close", () => { clearTimeout(timer); resolve(false); });
     stream.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
   });
 
@@ -190,7 +198,7 @@ export async function execInContainer(
 
   return {
     stdout: out.text(),
-    stderr: err.text() + (timedOut ? `\n… [timed out after ${timeoutMs}ms]` : ""),
+    stderr: err.text() + (timedOut ? `\n… [timed out after ${String(timeoutMs)}ms]` : ""),
     exitCode,
     truncated: out.truncated || err.truncated,
     timedOut,
@@ -199,7 +207,7 @@ export async function execInContainer(
 
 export async function getSandboxFileTree(
   container: Docker.Container,
-  path: string = "/home/shannon",
+  path = "/home/shannon",
 ): Promise<{ name: string; type: "file" | "dir"; path: string }[]> {
   const { stdout } = await execInContainer(container, [
     "find", path, "-maxdepth", "3", "-printf", "%y %P\n",
@@ -210,7 +218,7 @@ export async function getSandboxFileTree(
     .map((line) => {
       const [type, relPath] = line.split(" ", 2);
       return {
-        name: relPath.split("/").pop() || relPath,
+        name: relPath.split("/").pop() ?? relPath,
         type: type === "d" ? "dir" : "file",
         path: `${path}/${relPath}`,
       };
@@ -222,7 +230,7 @@ export async function readSandboxFile(
   path: string,
 ): Promise<string> {
   const { stdout, stderr, exitCode } = await execInContainer(container, ["cat", "--", path]);
-  if (exitCode !== 0) throw new Error(stderr.trim() || `cat failed (exit ${exitCode})`);
+  if (exitCode !== 0) throw new Error(stderr.trim() || `cat failed (exit ${String(exitCode)})`);
   return stdout;
 }
 
@@ -240,7 +248,7 @@ export async function writeSandboxFile(
     'mkdir -p "$(dirname "$1")" && printf %s "$2" | base64 -d > "$1"',
     "_", path, encoded,
   ]);
-  if (exitCode !== 0) throw new Error(stderr.trim() || `write failed (exit ${exitCode})`);
+  if (exitCode !== 0) throw new Error(stderr.trim() || `write failed (exit ${String(exitCode)})`);
 }
 
 export function getContainer(containerId: string): Docker.Container {
@@ -264,7 +272,7 @@ export async function listSandboxContainers(): Promise<string[]> {
 export async function isContainerRunning(containerId: string): Promise<boolean> {
   try {
     const info = await docker.getContainer(containerId).inspect();
-    return info.State?.Running === true;
+    return info.State.Running;
   } catch {
     return false;
   }

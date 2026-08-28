@@ -23,11 +23,11 @@ import { useToastHelper } from './useToastHelper';
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
 
-export type PendingApproval = { callId: string; tool: string; args: Record<string, unknown> };
+export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
 
 /** Per-conversation in-flight stream state — see useChatSession for why this
  * is preserved across a reconnect rather than cleared on close. */
-type StreamState = { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string };
+interface StreamState { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string }
 
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
@@ -40,7 +40,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
-  const [streamingByConv, setStreamingByConvState] = useState<Record<string, StreamState>>({});
+  const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -51,7 +51,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const onStreamEndRef = useRef(onStreamEnd);
   onStreamEndRef.current = onStreamEnd;
   const activeIdRef = useRef<string | null>(null);
-  const streamingByConvRef = useRef<Record<string, StreamState>>({});
+  const streamingByConvRef = useRef<Partial<Record<string, StreamState>>>({});
   const pendingLocalIdRef = useRef<string | null>(null);
   const pendingModelRef = useRef<string | null>(null);
   // See useChatSession: the optimistic user bubble has no server id yet, so
@@ -66,10 +66,14 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
    * cursor that only advances on React flush reads as stale for the rest of
    * the tick, so every batched event after the first looks like a gap.
    */
-  const cursorsRef = useRef<Record<string, number>>({});
+  const cursorsRef = useRef<Partial<Record<string, number>>>({});
 
   const setStreamingByConv = useCallback(
-    (updater: (prev: Record<string, StreamState>) => Record<string, StreamState>) => {
+    (
+      updater: (
+        prev: Partial<Record<string, StreamState>>,
+      ) => Partial<Record<string, StreamState>>,
+    ) => {
       setStreamingByConvState((prev) => {
         const next = updater(prev);
         streamingByConvRef.current = next;
@@ -83,9 +87,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     (id: string) => {
       setStreamingByConv((prev) => {
         if (!(id in prev)) return prev;
-        const next = { ...prev };
-        delete next[id];
-        return next;
+        return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id));
       });
     },
     [setStreamingByConv],
@@ -169,7 +171,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           // Non-fatal: run list still loaded, just no history preview yet.
         }
       })
-      .catch(() => {})
+      .catch(() => undefined)
       .finally(() => {
         loadingRef.current = false;
       });
@@ -187,12 +189,14 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     let attempt = 0;
 
     const resubscribeKnown = () => {
+      const ws = wsRef.current;
+      if (!ws) return;
       const targets = new Set(Object.keys(streamingByConvRef.current));
       if (activeIdRef.current) targets.add(activeIdRef.current);
       for (const convId of targets) {
         const tracked = streamingByConvRef.current[convId];
         subscribeStreams(
-          wsRef.current!,
+          ws,
           convId,
           tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined,
         );
@@ -244,7 +248,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         });
         setActiveId(realId);
         if (modelForPatch && !event.incognito) {
-          updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => {});
+          updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
@@ -281,9 +285,10 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           // socket-saturating storm.
           const now = Date.now();
           const lastAsk = lastResyncAtRef.current[event.stream_id] ?? 0;
-          if (now - lastAsk > RESYNC_COOLDOWN_MS) {
+          const ws = wsRef.current;
+          if (ws && now - lastAsk > RESYNC_COOLDOWN_MS) {
             lastResyncAtRef.current[event.stream_id] = now;
-            subscribeStreams(wsRef.current!, convId, { [event.stream_id]: lastSeq });
+            subscribeStreams(ws, convId, { [event.stream_id]: lastSeq });
           }
           return;
         }
@@ -372,7 +377,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       if (!wsRef.current) return;
 
       const convId = activeIdRef.current;
-      const localMsgId = `lm${Date.now()}`;
+      const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
       if (!convId) {
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
@@ -463,7 +468,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const setRunModel = useCallback((id: string, modelId: string) => {
     setRuns((prev) => {
       const run = prev.find((r) => r.id === id);
-      if (!run?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => {});
+      if (!run?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
       return prev.map((r) => (r.id === id ? { ...r, model: modelId } : r));
     });
   }, []);
@@ -510,13 +515,14 @@ function computeChangedFiles(msgs: Message[]): ChangedFile[] {
       let path: string | null = null;
       for (const line of tool.diff) {
         if (line.type === 'meta') {
-          const match = line.text.match(/^(?:\+\+\+|---(?: \/ \+\+\+)?) (.+?)(?: \(new file\))?$/);
+          const match = /^(?:\+\+\+|---(?: \/ \+\+\+)?) (.+?)(?: \(new file\))?$/.exec(line.text);
           path = match ? match[1] : null;
           if (path && !byPath.has(path)) byPath.set(path, { adds: 0, dels: 0 });
           continue;
         }
         if (!path) continue;
-        const entry = byPath.get(path)!;
+        const entry = byPath.get(path);
+        if (!entry) continue;
         if (line.type === 'add') entry.adds++;
         else if (line.type === 'del') entry.dels++;
       }

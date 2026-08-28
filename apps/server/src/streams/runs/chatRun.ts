@@ -23,12 +23,12 @@ const CHAT_SYSTEM_PROMPT = [
   "reading or writing files — and skip tools otherwise. Before calling a tool, state in one short sentence why.",
 ].join(" ");
 
-export type StartChatRunResult = {
+export interface StartChatRunResult {
   streamId: string;
   conversationId: string;
   userMessageId: string;
   incognito: boolean;
-};
+}
 
 export async function startChatRun(input: {
   userId: string;
@@ -74,7 +74,7 @@ export async function startChatRun(input: {
     await db.insert(messages).values({
       id: userMsgId,
       conversationId: convId,
-      parentId: input.parentId || null,
+      parentId: input.parentId ?? null,
       authorType: "user",
       authorUserId: userId,
       origin: "server",

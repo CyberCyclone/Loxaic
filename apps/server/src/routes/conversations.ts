@@ -6,7 +6,7 @@ import type { ContextBreakdown } from "@shannon/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@shannon/sync";
 
-export async function conversationRoutes(app: FastifyInstance) {
+export function conversationRoutes(app: FastifyInstance) {
   // List conversations
   app.get("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
@@ -38,6 +38,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     const { title } = request.body as { title?: string };
     const [row] = await db
       .insert(conversations)
+      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty title must still fall back to the default; ?? would store "".
       .values({ ownerId: userId, title: title || "New conversation" })
       .returning();
     return row;
@@ -53,12 +54,14 @@ export async function conversationRoutes(app: FastifyInstance) {
     const mcpOverrides =
       mcp_overrides !== undefined
         ? {
-            disabledServerIds: Array.isArray(mcp_overrides?.disabledServerIds)
+            disabledServerIds: Array.isArray(mcp_overrides.disabledServerIds)
               ? mcp_overrides.disabledServerIds.map(String)
               : [],
           }
         : undefined;
-    const [row] = await db
+    // Drizzle's `.returning()` type doesn't reflect that a non-matching
+    // WHERE yields zero rows — cast to what actually comes back at runtime.
+    const [row] = (await db
       .update(conversations)
       .set({
         ...(model_pref !== undefined ? { modelPref: model_pref } : {}),
@@ -66,7 +69,7 @@ export async function conversationRoutes(app: FastifyInstance) {
         updatedAt: new Date(),
       })
       .where(and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)))
-      .returning();
+      .returning()) as (typeof conversations.$inferSelect | undefined)[];
     if (!row) {
       reply.code(404);
       return { error: "Not found" };

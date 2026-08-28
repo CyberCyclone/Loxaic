@@ -120,7 +120,7 @@ export function ContextBreakdown({
           <Note>Estimated from model max — actual window unknown.</Note>
         )}
         {context.truncated && (
-          <Note>{`Showing last ${context.historyLimit} messages; older turns already dropped.`}</Note>
+          <Note>{`Showing last ${String(context.historyLimit)} messages; older turns already dropped.`}</Note>
         )}
       </VStack>
 
@@ -144,8 +144,8 @@ function LastTurnRows({ lastTurn }: { lastTurn: NonNullable<ContextView['lastTur
       </Text>
       <Row label="Tokens in" value={fmt(lastTurn.in)} />
       <Row label="Tokens out" value={fmt(lastTurn.out)} />
-      {lastTurn.promptTps != null && <Row label="Prompt speed" value={`${Math.round(lastTurn.promptTps)} tok/s`} />}
-      {lastTurn.genTps != null && <Row label="Generation speed" value={`${Math.round(lastTurn.genTps)} tok/s`} />}
+      {lastTurn.promptTps != null && <Row label="Prompt speed" value={`${String(Math.round(lastTurn.promptTps))} tok/s`} />}
+      {lastTurn.genTps != null && <Row label="Generation speed" value={`${String(Math.round(lastTurn.genTps))} tok/s`} />}
       {lastTurn.totalMs != null && <Row label="Duration" value={`${(lastTurn.totalMs / 1000).toFixed(1)}s`} />}
     </VStack>
   );

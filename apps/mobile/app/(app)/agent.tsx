@@ -55,7 +55,7 @@ export default function AgentScreen() {
     handleDelete,
     handleRename,
     setRunModel,
-  } = useAgentSession(token, () => refreshModels());
+  } = useAgentSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { showToast } = useToastHelper();
@@ -72,7 +72,9 @@ export default function AgentScreen() {
   // Composer's `commandSeed` prop.
   const [commandSeed, setCommandSeed] = useState<{ token: number; text: string } | null>(null);
 
-  const thinkingLevel = (activeId && thinkingLevels[activeId]) || settings.defaultThinkingLevel;
+  const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
+  const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
+  const thinkingLevel = storedThinkingLevel ?? settings.defaultThinkingLevel;
   const wide = breakpoint === 'wide';
 
   const prefModel = activeRun?.model;
@@ -141,7 +143,7 @@ export default function AgentScreen() {
             <HStack space="sm" className="items-center">
               {activeRun && (
                 <Pressable
-                  onPress={() => setInspectorOpen((o) => !o)}
+                  onPress={() => { setInspectorOpen((o) => !o); }}
                   className="flex-row items-center gap-1 rounded-sm p-1.5 web:hover:bg-muted/50"
                 >
                   <Icon as={PanelRight} size="sm" className="text-foreground" />
@@ -154,7 +156,7 @@ export default function AgentScreen() {
               )}
               {!wide && (
                 <Pressable
-                  onPress={() => setThreadListOpen(true)}
+                  onPress={() => { setThreadListOpen(true); }}
                   className="rounded-sm p-1.5 web:hover:bg-muted/50"
                 >
                   <Icon as={MessagesSquare} size="sm" className="text-foreground" />
@@ -178,17 +180,17 @@ export default function AgentScreen() {
                 loadingModel={loadingModel}
                 responseStartedAt={responseStartedAt}
                 pendingApproval={pendingApproval}
-                onAllow={() => pendingApproval && handleApprove(pendingApproval.callId)}
-                onDeny={() => pendingApproval && handleDeny(pendingApproval.callId)}
+                onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
+                onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
               />
               <ModeSelector mode={mode} onChange={handleModeChange} />
               <Composer
-                onSend={(text) => handleSend(text, selectedModel)}
+                onSend={(text) => { handleSend(text, selectedModel); }}
                 onStop={handleStop}
                 streaming={busy}
                 modelName={selectedModel ? getName(selectedModel) : 'Select model'}
                 context={context}
-                onOpenModelModal={() => setModelModalOpen(true)}
+                onOpenModelModal={() => { setModelModalOpen(true); }}
                 surface="agent"
                 onRunCommand={handleRunCommand}
                 commandSeed={commandSeed}
@@ -198,7 +200,7 @@ export default function AgentScreen() {
             {wide && (
               <Inspector
                 open={inspectorOpen}
-                onClose={() => setInspectorOpen(false)}
+                onClose={() => { setInspectorOpen(false); }}
                 wide
                 todos={todos}
                 changedFiles={changedFiles}
@@ -214,7 +216,7 @@ export default function AgentScreen() {
 
       {!wide && threadListOpen && (
         <>
-          <Pressable onPress={() => setThreadListOpen(false)} className="absolute inset-0 bg-black/40" />
+          <Pressable onPress={() => { setThreadListOpen(false); }} className="absolute inset-0 bg-black/40" />
           <Box className="absolute bottom-0 right-0 top-0 shadow-lg">{threadList}</Box>
         </>
       )}
@@ -222,7 +224,7 @@ export default function AgentScreen() {
       {!wide && (
         <Inspector
           open={inspectorOpen}
-          onClose={() => setInspectorOpen(false)}
+          onClose={() => { setInspectorOpen(false); }}
           wide={false}
           todos={todos}
           changedFiles={changedFiles}
@@ -236,13 +238,16 @@ export default function AgentScreen() {
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal
         open={modelModalOpen}
-        onClose={() => setModelModalOpen(false)}
+        onClose={() => { setModelModalOpen(false); }}
         models={models}
         loading={modelsLoading}
         error={modelsError}
-        onRefresh={refreshModels}
+        onRefresh={() => { void refreshModels(); }}
         selectedModel={selectedModel}
-        onSelect={(id) => (activeId ? setRunModel(activeId, id) : setPendingModel(id))}
+        onSelect={(id) => {
+          if (activeId) setRunModel(activeId, id);
+          else setPendingModel(id);
+        }}
         thinkingLevel={thinkingLevel}
         onThinkingLevel={(level) => {
           if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));

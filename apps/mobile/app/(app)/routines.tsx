@@ -5,7 +5,6 @@ import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
-import { Icon } from '@/components/ui/icon';
 import { Button, ButtonText, ButtonIcon } from '@/components/ui/button';
 import { Spinner } from '@/components/ui/spinner';
 import { MainHeader } from '@/components/shell/MainHeader';
@@ -90,18 +89,18 @@ export default function RoutinesScreen() {
             <RoutineCard
               routine={item}
               running={runningId === item.id}
-              onToggle={(enabled) => toggle(item.id, enabled)}
-              onRunNow={() => handleRunNow(item.id)}
-              onEdit={() => openEdit(item)}
-              onDelete={() => remove(item.id)}
-              onViewHistory={() => setHistoryFor(item)}
+              onToggle={(enabled) => { void toggle(item.id, enabled); }}
+              onRunNow={() => { void handleRunNow(item.id); }}
+              onEdit={() => { openEdit(item); }}
+              onDelete={() => { void remove(item.id); }}
+              onViewHistory={() => { setHistoryFor(item); }}
             />
           )}
         />
       )}
 
-      <RoutineModal open={modalOpen} onClose={() => setModalOpen(false)} onSave={handleSave} editing={editing} />
-      <RunHistorySheet routine={historyFor} onClose={() => setHistoryFor(null)} getRuns={getRuns} />
+      <RoutineModal open={modalOpen} onClose={() => { setModalOpen(false); }} onSave={handleSave} editing={editing} />
+      <RunHistorySheet routine={historyFor} onClose={() => { setHistoryFor(null); }} getRuns={getRuns} />
     </VStack>
   );
 }

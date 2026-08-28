@@ -15,7 +15,7 @@ const IDLE_TTL_MS = 30 * 60 * 1000;
 const REAP_INTERVAL_MS = 5 * 60 * 1000;
 
 /** rowId is null for ephemeral (incognito) sandboxes — no Postgres row. */
-type Entry = { rowId: string | null; containerId: string; lastUsedAt: number };
+interface Entry { rowId: string | null; containerId: string; lastUsedAt: number }
 
 /** conversationId → live sandbox. */
 const active = new Map<string, Entry>();
@@ -109,7 +109,7 @@ async function markStopped(rowId: string): Promise<void> {
     .update(sandboxes)
     .set({ status: "stopped", stoppedAt: new Date() })
     .where(eq(sandboxes.id, rowId))
-    .catch(() => {});
+    .catch(() => undefined);
 }
 
 /** Stops and forgets every sandbox idle for longer than IDLE_TTL_MS. */
@@ -118,7 +118,7 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
   for (const [conversationId, entry] of [...active.entries()]) {
     if (now - entry.lastUsedAt < IDLE_TTL_MS) continue;
     active.delete(conversationId);
-    await stopSandbox(entry.containerId).catch(() => {});
+    await stopSandbox(entry.containerId).catch(() => undefined);
     if (entry.rowId) await markStopped(entry.rowId);
     reaped++;
   }
@@ -146,7 +146,7 @@ export async function sweepOrphanSandboxes(): Promise<number> {
   let swept = 0;
   for (const id of ids) {
     if (known.has(id)) continue;
-    await stopSandbox(id).catch(() => {});
+    await stopSandbox(id).catch(() => undefined);
     swept++;
   }
   return swept;
@@ -156,7 +156,7 @@ export function startSandboxReaper(onReap?: (count: number) => void): NodeJS.Tim
   const timer = setInterval(() => {
     reapIdleSandboxes()
       .then((n) => { if (n > 0) onReap?.(n); })
-      .catch(() => {});
+      .catch(() => undefined);
   }, REAP_INTERVAL_MS);
   timer.unref();
   return timer;

@@ -9,7 +9,8 @@
     "ios": "dotenv -e ../../.env -- expo start --ios",
     "typecheck": "tsc --noEmit",
     "export:web": "dotenv -e ../../.env -- expo export --platform web",
-    "web": "dotenv -e ../../.env -- expo start --web"
+    "web": "dotenv -e ../../.env -- expo start --web",
+    "test": "vitest run"
   },
   "dependencies": {
     "@expo-google-fonts/public-sans": "^0.4.2",
@@ -31,6 +32,7 @@
     "expo-secure-store": "~15.0.8",
     "expo-updates": "~29.0.20",
     "lucide-react-native": "^1.33.0",
+    "marked": "^18.0.11",
     "react": "^19.1.0",
     "react-aria": "^3.45.0",
     "react-dom": "19.1.0",
@@ -52,6 +54,7 @@
     "babel-plugin-module-resolver": "^5.0.0",
     "dotenv-cli": "^7.4.4",
     "tailwindcss": "^4.3.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

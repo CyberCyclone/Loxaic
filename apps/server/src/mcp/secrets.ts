@@ -49,11 +49,14 @@ export function decryptSecrets(blob: string): Record<string, string> {
   const decipher = createDecipheriv("aes-256-gcm", deriveKey(Buffer.from(saltB64, "base64")), Buffer.from(ivB64, "base64"));
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
   const plain = Buffer.concat([decipher.update(Buffer.from(ctB64, "base64")), decipher.final()]).toString("utf8");
-  const parsed = JSON.parse(plain) as Record<string, string>;
+  // Parsed as unknown, not asserted: decrypted plaintext is still arbitrary
+  // JSON, so the shape check below has to actually narrow rather than be
+  // pre-empted by an assertion that would make it dead code.
+  const parsed: unknown = JSON.parse(plain);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("MCP secret blob did not decode to an object");
   }
-  return parsed;
+  return parsed as Record<string, string>;
 }
 
 /** The only thing the API ever exposes about stored secrets: which keys exist. */
