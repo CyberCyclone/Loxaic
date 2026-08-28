@@ -270,9 +270,12 @@ describe("MCP end-to-end through the chat loop", () => {
 
   it("bash asks in chat too", async () => {
     // bash is a builtin with no MCP wiring — proves chat's approval gate
-    // covers builtins, not just MCP tools. The gate fires before the
-    // container is ever touched, so this needs no sandbox image.
-    const turn = await runTurn("please run a bash command", "manual", true, { surface: "chat" });
+    // covers builtins, not just MCP tools. Denied rather than approved: an
+    // approved bash call would go on to create a sandbox, and on a machine
+    // without the shannon-sandbox image the container provider would build
+    // it from scratch mid-test (multi-minute). The gate itself is the claim
+    // here; real execution is the runIf(sandboxImage) case below.
+    const turn = await runTurn("please run a bash command", "manual", false, { surface: "chat" });
     expect(turn.sawApproval).toBe(true);
     expect(turn.toolCalls.map((c) => c.tool)).toContain("bash");
   }, 30_000);
