@@ -6,142 +6,30 @@ import {
   sendCommand,
   subscribeStreams,
   stopStream,
+  approveTool,
+  denyTool,
   getConversations,
   getMessages,
+  getMcpServers,
+  getPrefs,
   updateConversation,
+  updateMcpServer,
+  updatePrefs,
   type ServerMessage,
-  type StreamEventKind,
-  type StreamSnapshot,
-  type ApiMessage,
 } from '@shannon/api-client';
-import type { CompactionStats, ContentBlock } from '@shannon/types';
-import type { Conversation, Message } from '@/lib/types';
-import { toMessageUsage, usageFromTurn } from '@/lib/usage';
+import type { Conversation } from '@/lib/types';
+import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from '@/lib/streamMessages';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
 import { useToastHelper } from './useToastHelper';
 
-/** Author types the client renders as a message row — everything else
- * (currently nothing else) is dropped. Kept as one list so the REST loader
- * and the two live paths (snapshot, message.start) agree on what counts. */
-function roleOf(authorType: string): Message['role'] | null {
-  if (authorType === 'user') return 'user';
-  if (authorType === 'assistant') return 'assistant';
-  if (authorType === 'summary') return 'summary';
-  return null;
-}
+export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
 
-function extractCompaction(blocks: ContentBlock[]): CompactionStats | undefined {
-  const block = blocks.find(
-    (b): b is Extract<ContentBlock, { kind: 'compaction' }> => b.kind === 'compaction',
-  );
-  if (!block) return undefined;
-  const { kind: _kind, ...stats } = block;
-  return stats;
-}
-
-function extractText(blocks: { kind: string; text?: string }[]): string {
-  return blocks
-    .filter((b) => b.kind === 'text')
-    .map((b) => b.text ?? '')
-    .join('\n');
-}
-
-function extractThinking(blocks: { kind: string; text?: string }[]): string | undefined {
-  const thinking = blocks
-    .filter((b) => b.kind === 'thinking')
-    .map((b) => b.text ?? '')
-    .join('\n');
-  return thinking || undefined;
-}
-
-/** Cold history load only (REST) — live state is driven entirely by the
- * stream protocol below, never by re-fetching and clobbering in place. */
-function mapRows(rows: ApiMessage[]): Message[] {
-  const out: Message[] = [];
-  for (const m of rows) {
-    const role = roleOf(m.authorType);
-    if (!role) continue;
-    const blocks = m.content;
-    out.push({
-      id: m.id,
-      role,
-      model: m.model ?? undefined,
-      text: extractText(blocks),
-      thinking: extractThinking(blocks),
-      error: m.status === 'error',
-      usage: toMessageUsage(m.usage),
-      compaction: role === 'summary' ? extractCompaction(blocks) : undefined,
-    });
-  }
-  return out;
-}
-
-/** A `stream.sync` snapshot is authoritative — unlike the old reconcile
- * poll, there's no risk of clobbering live content with a stale empty DB
- * row, because the snapshot itself *is* the live state, folded server-side
- * from the same durable log the deltas come from. */
-function applySnapshotToMsgs(msgs: Message[], snapshot: StreamSnapshot): Message[] {
-  const result = [...msgs];
-  for (const sm of snapshot.messages) {
-    const role = roleOf(sm.author_type) ?? 'assistant';
-    const converted: Message = {
-      id: sm.message_id,
-      role,
-      model: sm.model,
-      text: sm.text,
-      thinking: sm.thinking || undefined,
-      usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
-      error: sm.status === 'error',
-      stopped: sm.status === 'cancelled',
-      compaction: role === 'summary' ? sm.compaction : undefined,
-    };
-    const idx = result.findIndex((m) => m.id === sm.message_id);
-    if (idx >= 0) result[idx] = converted;
-    else result.push(converted);
-  }
-  return result;
-}
-
-function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
-  switch (event.kind) {
-    case 'message.start': {
-      if (msgs.some((m) => m.id === event.message_id)) return msgs;
-      return [
-        ...msgs,
-        {
-          id: event.message_id,
-          role: roleOf(event.author_type) ?? 'assistant',
-          model: event.model,
-          text: event.text ?? '',
-        },
-      ];
-    }
-    case 'text.delta':
-      return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
-    case 'thinking.delta':
-      return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
-    case 'compaction': {
-      const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
-        event;
-      const stats = { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
-      return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
-    }
-    case 'message.end':
-      return msgs.map((m) =>
-        m.id === event.message_id
-          ? {
-              ...m,
-              usage: event.usage ? usageFromTurn(event.usage) : m.usage,
-              error: event.status === 'error',
-              stopped: event.status === 'cancelled',
-            }
-          : m,
-      );
-    default:
-      // model.loading/iteration/tool.*/approval.request/todos — chat never
-      // emits these; only the agent surface does.
-      return msgs;
-  }
+/** MCP tools arrive namespaced as `server__tool`; builtins never contain
+ * `__` — mirrors ToolCallCard/PermissionBar's splitMcpTool. */
+function splitMcpTool(name: string): { slug: string; remoteName: string } | null {
+  const idx = name.indexOf('__');
+  if (idx <= 0) return null;
+  return { slug: name.slice(0, idx), remoteName: name.slice(idx + 2) };
 }
 
 /** Per-conversation in-flight stream state — keyed by conversation id so
@@ -162,6 +50,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
+  // Keyed by conversation, unlike the agent surface's flat pendingApproval
+  // (GitHub issue #1) — a background chat send that hits an approval must
+  // never show its dialog over whatever conversation the user has switched
+  // to, and switching back to it should find the dialog still there.
+  const [pendingApprovalByConv, setPendingApprovalByConv] = useState<Partial<Record<string, PendingApproval>>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -267,7 +160,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         setActiveId(latest.id);
         try {
           const { messages: rows } = await getMessages(latest.id);
-          const msgs = mapRows(rows);
+          const msgs = reconstructMessages(rows);
           if (msgs.length > 0) {
             setConversations((prev) =>
               prev.map((c) => (c.id === latest.id ? { ...c, msgs } : c)),
@@ -337,6 +230,20 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot) } : c)),
         );
+        // Same "is this sync for the run we're actually tracking" guard as
+        // clearStream below — an older, already-finished run's catch-up sync
+        // must not clobber a still-active different run's approval state.
+        const trackedForApproval = streamingByConvRef.current[convId];
+        if (!trackedForApproval || trackedForApproval.streamId === event.stream_id) {
+          setPendingApprovalByConv((prev) => {
+            const pa = event.snapshot.pending_approval;
+            if (!pa) {
+              if (!(convId in prev)) return prev;
+              return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+            }
+            return { ...prev, [convId]: { callId: pa.call_id, tool: pa.tool, args: pa.args } };
+          });
+        }
         if (event.status !== 'active') {
           // A reconnect's catch-up re-syncs the conversation's last few
           // runs, not just the current one — an older, already-finished
@@ -404,6 +311,18 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         setConversations((prev) =>
           prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event) } : c)),
         );
+        const inner = event.event;
+        if (inner.kind === 'approval.request') {
+          setPendingApprovalByConv((prev) => ({
+            ...prev,
+            [convId]: { callId: inner.call_id, tool: inner.tool, args: inner.args },
+          }));
+        } else if (inner.kind === 'tool.result') {
+          setPendingApprovalByConv((prev) => {
+            if (prev[convId]?.callId !== inner.call_id) return prev;
+            return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+          });
+        }
       } else if (event.type === 'stream.end') {
         // The message's own final state (text/usage/status) already landed
         // via its `message.end` stream.event, which is guaranteed to have
@@ -411,6 +330,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         // stream.end after the producer's last flush completes. This just
         // clears the "something is streaming" UI state.
         clearStream(event.conversation_id);
+        // Safety net: a run that ends without an explicit tool.result for a
+        // still-pending call (denied via timeout, aborted) must not leave a
+        // dialog on screen for a call nothing will ever resolve.
+        setPendingApprovalByConv((prev) => {
+          const convId = event.conversation_id;
+          if (!(convId in prev)) return prev;
+          return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+        });
         // A run may have JIT-loaded the model, which changes the context
         // window out from under a model list fetched at mount.
         onStreamEndRef.current?.();
@@ -502,6 +429,57 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
   }, []);
 
+  const clearApproval = useCallback((convId: string) => {
+    setPendingApprovalByConv((prev) => {
+      if (!(convId in prev)) return prev;
+      return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+    });
+  }, []);
+
+  const handleApprove = useCallback(
+    (callId: string) => {
+      if (wsRef.current) approveTool(wsRef.current, callId);
+      if (activeIdRef.current) clearApproval(activeIdRef.current);
+    },
+    [clearApproval],
+  );
+
+  const handleDeny = useCallback(
+    (callId: string) => {
+      if (wsRef.current) denyTool(wsRef.current, callId);
+      if (activeIdRef.current) clearApproval(activeIdRef.current);
+    },
+    [clearApproval],
+  );
+
+  /** "Allow always": persists the tool's approval policy before approving
+   * this call — an MCP tool patches its server's per-tool policy (the same
+   * allowlist the /mcp screen's tool sheet manages), a builtin patches the
+   * user's global tool_allowlist (PATCH /v1/prefs). If the persist fails,
+   * this call is still approved — the user's "allow" click is honored now,
+   * they just weren't spared the next prompt too. */
+  const handleAllowAlways = useCallback(
+    async (callId: string, tool: string) => {
+      try {
+        const mcp = splitMcpTool(tool);
+        if (mcp) {
+          const servers = await getMcpServers();
+          const server = servers.find((s) => s.slug === mcp.slug);
+          if (server) {
+            await updateMcpServer(server.id, { toolPolicies: { [mcp.remoteName]: { approval: 'allow' } } });
+          }
+        } else {
+          const prefs = await getPrefs();
+          await updatePrefs({ toolAllowlist: [...new Set([...prefs.toolAllowlist, tool])] });
+        }
+      } catch {
+        showToast('Could not save "always allow" — approved just this once');
+      }
+      handleApprove(callId);
+    },
+    [handleApprove, showToast],
+  );
+
   /** Runs a built-in slash command (currently just "compact") against the
    * active conversation. Unlike handleSend, there's no optimistic bubble to
    * push — the command has no user-authored message, only its result. */
@@ -571,10 +549,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     streaming: !!activeStream,
     loadingModel: activeStream?.loadingModel ?? false,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
+    pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
     handleSend,
     handleStop,
     handleCommand,
     handleNewChat,
+    handleApprove,
+    handleDeny,
+    handleAllowAlways,
     handleFork,
     handleDelete,
     handleRename,

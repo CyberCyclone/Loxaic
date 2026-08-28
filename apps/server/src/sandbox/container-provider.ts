@@ -294,6 +294,23 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
   };
 }
 
+/** IDs of every running container this provider ever creates (all sandboxes
+ * carry the shannon.sandbox label). Used by the boot-time orphan sweep.
+ * Empty when no engine is reachable — a sweep on a host-mode or engineless
+ * machine is a no-op, not an error. */
+export async function listSandboxContainers(): Promise<string[]> {
+  const found = await getDocker();
+  if (!found) return [];
+  try {
+    const containers = await found.docker.listContainers({
+      filters: { label: ["shannon.sandbox"] },
+    });
+    return containers.map((c) => c.Id);
+  } catch {
+    return [];
+  }
+}
+
 let provider: SandboxProvider | null = null;
 
 export function getContainerProvider(): SandboxProvider {

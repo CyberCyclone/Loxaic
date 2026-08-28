@@ -2,13 +2,15 @@ import { and, db, eq } from "@shannon/db";
 import { sandboxes } from "@shannon/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
+import { listSandboxContainers } from "../sandbox/container-provider.ts";
 
 /** How long a conversation's sandbox may sit unused before it's reaped. */
 const IDLE_TTL_MS = 30 * 60 * 1000;
 /** How often the reaper looks for idle sandboxes. */
 const REAP_INTERVAL_MS = 5 * 60 * 1000;
 
-interface Entry { rowId: string; provider: SandboxKind; ref: string; lastUsedAt: number }
+/** rowId is null for ephemeral (incognito) sandboxes — no Postgres row. */
+interface Entry { rowId: string | null; provider: SandboxKind; ref: string; lastUsedAt: number }
 
 /** conversationId → live sandbox. */
 const active = new Map<string, Entry>();
@@ -19,15 +21,22 @@ const pending = new Map<string, Promise<Entry>>();
  * Returns the conversation's sandbox handle, creating it on first use.
  * Sandboxes deliberately outlive the WebSocket: a client that reconnects
  * mid-task keeps its working directory.
+ *
+ * `ephemeral` (incognito conversations) skips the sandboxes bookkeeping row —
+ * nothing conversation-scoped touches Postgres. The sandbox then survives
+ * only as long as this process knows about it: the idle reaper stops it as
+ * usual, and a crashed process's leftovers are caught by the boot-time
+ * orphan sweep instead of DB recovery.
  */
 export async function getConversationSandbox(
   userId: string,
   conversationId: string,
+  opts?: { ephemeral?: boolean },
 ): Promise<SandboxHandle> {
   const provider = await getSandboxProvider();
   if (!provider) throw new Error("sandboxes are disabled (SANDBOX_MODE=off)");
 
-  const entry = await resolveEntry(provider, userId, conversationId);
+  const entry = await resolveEntry(provider, userId, conversationId, opts?.ephemeral === true);
   entry.lastUsedAt = Date.now();
   const entryProvider = entry.provider === provider.kind ? provider : await getProviderByKind(entry.provider);
   return entryProvider.attach(entry.ref);
@@ -37,6 +46,7 @@ async function resolveEntry(
   currentProvider: SandboxProvider,
   userId: string,
   conversationId: string,
+  ephemeral: boolean,
 ): Promise<Entry> {
   const cached = active.get(conversationId);
   if (cached) {
@@ -49,13 +59,13 @@ async function resolveEntry(
     // Either vanished (crash, engine restart, manual `docker rm`), or the
     // mode changed since it was created — either way it's no longer usable.
     active.delete(conversationId);
-    await markStopped(cached.rowId);
+    if (cached.rowId) await markStopped(cached.rowId);
   }
 
   const inFlight = pending.get(conversationId);
   if (inFlight) return inFlight;
 
-  const creation = createEntry(currentProvider, userId, conversationId).finally(() => {
+  const creation = createEntry(currentProvider, userId, conversationId, ephemeral).finally(() => {
     pending.delete(conversationId);
   });
   pending.set(conversationId, creation);
@@ -66,43 +76,50 @@ async function createEntry(
   provider: SandboxProvider,
   userId: string,
   conversationId: string,
+  ephemeral: boolean,
 ): Promise<Entry> {
-  // A previous process may have left a usable sandbox recorded in the DB —
-  // but only if it was created under the *same* provider kind as the one
-  // active now; a row left over from a prior SANDBOX_MODE is dead weight.
-  const existing = await db.query.sandboxes.findFirst({
-    where: and(
-      eq(sandboxes.conversationId, conversationId),
-      eq(sandboxes.ownerId, userId),
-      eq(sandboxes.status, "running"),
-      eq(sandboxes.provider, provider.kind),
-    ),
-  });
-  if (existing) {
-    const handle = await provider.attach(existing.containerId);
-    if (await handle.isRunning()) {
-      const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
-      active.set(conversationId, entry);
-      return entry;
+  if (!ephemeral) {
+    // A previous process may have left a usable sandbox recorded in the DB —
+    // but only if it was created under the *same* provider kind as the one
+    // active now; a row left over from a prior SANDBOX_MODE is dead weight.
+    const existing = await db.query.sandboxes.findFirst({
+      where: and(
+        eq(sandboxes.conversationId, conversationId),
+        eq(sandboxes.ownerId, userId),
+        eq(sandboxes.status, "running"),
+        eq(sandboxes.provider, provider.kind),
+      ),
+    });
+    if (existing) {
+      const handle = await provider.attach(existing.containerId);
+      if (await handle.isRunning()) {
+        const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
+        active.set(conversationId, entry);
+        return entry;
+      }
+      await markStopped(existing.id);
     }
-    await markStopped(existing.id);
   }
 
   const handle = await provider.create(userId, {});
-  const [row] = await db
-    .insert(sandboxes)
-    .values({
-      ownerId: userId,
-      conversationId,
-      containerId: handle.ref,
-      provider: provider.kind,
-      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
-      status: "running",
-      limits: { memory: 512, cpu: 1 },
-    })
-    .returning();
+  let rowId: string | null = null;
+  if (!ephemeral) {
+    const [row] = await db
+      .insert(sandboxes)
+      .values({
+        ownerId: userId,
+        conversationId,
+        containerId: handle.ref,
+        provider: provider.kind,
+        image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
+        status: "running",
+        limits: { memory: 512, cpu: 1 },
+      })
+      .returning();
+    rowId = row.id;
+  }
 
-  const entry: Entry = { rowId: row.id, provider: provider.kind, ref: handle.ref, lastUsedAt: Date.now() };
+  const entry: Entry = { rowId, provider: provider.kind, ref: handle.ref, lastUsedAt: Date.now() };
   active.set(conversationId, entry);
   return entry;
 }
@@ -124,10 +141,42 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
     const provider = await getProviderByKind(entry.provider);
     const handle = await provider.attach(entry.ref);
     await handle.stop().catch(() => undefined);
-    await markStopped(entry.rowId);
+    if (entry.rowId) await markStopped(entry.rowId);
     reaped++;
   }
   return reaped;
+}
+
+/**
+ * Boot-time counterpart of the DB recovery path, for sandboxes with no row:
+ * an ephemeral (incognito) sandbox left behind by a crashed process is
+ * unreachable — no DB row, no in-memory entry — so stop any labeled sandbox
+ * container this process doesn't know about and the DB doesn't claim.
+ * Mirrors the stream log's boot-time orphan recovery.
+ *
+ * Container provider only: host-mode sandboxes are plain directories with no
+ * process to stop, and the identifying label only exists on containers.
+ */
+export async function sweepOrphanSandboxes(): Promise<number> {
+  const ids = await listSandboxContainers();
+  if (ids.length === 0) return 0;
+
+  const known = new Set<string>();
+  for (const entry of active.values()) known.add(entry.ref);
+  const rows = await db.query.sandboxes
+    .findMany({ where: eq(sandboxes.status, "running"), columns: { containerId: true } })
+    .catch(() => []);
+  for (const row of rows) known.add(row.containerId);
+
+  const provider = await getProviderByKind("container");
+  let swept = 0;
+  for (const id of ids) {
+    if (known.has(id)) continue;
+    const handle = await provider.attach(id);
+    await handle.stop().catch(() => undefined);
+    swept++;
+  }
+  return swept;
 }
 
 export function startSandboxReaper(onReap?: (count: number) => void): NodeJS.Timeout {

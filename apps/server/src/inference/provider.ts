@@ -85,6 +85,13 @@ export async function* streamCompletion(
 // would be untestable without a GGUF.
 
 const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
+  // MCP entries first — a trigger only fires when the tool is actually in
+  // options.tools, so these double as a wiring test of the MCP registry.
+  { match: /\bmcp echo\b/i, name: "mockmcp__echo", args: { text: "hello from mcp" } },
+  { match: /\bmcp slow\b/i, name: "mockmcp__slow", args: {} },
+  { match: /\bmcp huge\b/i, name: "mockmcp__huge", args: {} },
+  { match: /\bmcp evil\b/i, name: "mockmcp__evil", args: {} },
+  { match: /\bmcp bad args\b/i, name: "mockmcp__echo", args: { wrong: 1 } },
   { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
   { match: /\btodo|\bplan\b/i, name: "todo_write", args: { todos: [
     { id: "1", text: "Investigate the request", status: "completed" },
@@ -217,6 +224,10 @@ interface StreamChunk {
   choices?: StreamChunkChoice[];
   usage?: CompletionResult["usage"];
   timings?: LlamaTimings;
+  /** Backends report a mid-stream failure as an SSE error payload carrying a
+   * 200 status (llama.cpp/LM Studio: `event: error` + {"error": …}) — shape
+   * varies, so both the bare-string and object forms are accepted. */
+  error?: string | { message?: string };
 }
 
 async function* liveStream(
@@ -294,6 +305,15 @@ async function* liveStream(
           parsed = JSON.parse(jsonStr) as StreamChunk;
         } catch {
           continue; // partial or non-JSON keepalive
+        }
+
+        // Backends report failures mid-stream as an SSE error payload with a
+        // 200 status (llama.cpp/LM Studio: `event: error` + {"error": …}).
+        // Swallowing it would end the turn as a silent empty message.
+        if (parsed.error) {
+          const detail =
+            typeof parsed.error === "string" ? parsed.error : (parsed.error.message ?? JSON.stringify(parsed.error));
+          throw new Error(`Inference backend error: ${detail}`);
         }
 
         const choice = parsed.choices?.[0];

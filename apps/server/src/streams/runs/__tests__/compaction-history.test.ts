@@ -4,8 +4,7 @@ import { db, eq } from "@shannon/db";
 import { conversations, messages, usageRecords, user } from "@shannon/db/schema";
 import type { ContentBlock } from "@shannon/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
-import { loadChatHistory } from "../chatRun.ts";
-import { loadHistory as loadAgentHistory } from "../agentRun.ts";
+import { loadHistory as loadAgentHistory } from "../engine.ts";
 import { startCompactRun } from "../compactRun.ts";
 
 /**
@@ -57,37 +56,56 @@ describe("compaction: history cutoff + no-op guard", () => {
     { kind: "compaction", messages_compacted: 2, before_tokens: 100, after_tokens: 20, saved_tokens: 80, before_estimated: false },
   ];
 
-  it("loadChatHistory replays only what came after the newest summary (createdAt-ordered)", async () => {
+  // Chat now uses the same lamport-ordered, tool-aware loader as the agent
+  // surface (its old createdAt-ordered, text-only loader is gone) — so what
+  // is worth pinning here is the tool round-trip: persisted tool turns
+  // replay, and a dangling call (no matching result) is stripped.
+  it("loadHistory replays tool turns and strips dangling calls", async () => {
     const convId = await newConv();
-    const t0 = Date.now();
-    const at = (offsetMs: number) => new Date(t0 + offsetMs);
+    let lamport = 1000;
 
     await db.insert(messages).values([
-      { id: uuid(), conversationId: convId, authorType: "user", origin: "server", lamport: t0, content: textBlock("old question"), status: "complete", createdAt: at(0) },
-      { id: uuid(), conversationId: convId, authorType: "assistant", origin: "server", lamport: t0 + 1, content: textBlock("old answer"), status: "complete", createdAt: at(1000) },
-    ]);
-    await db.insert(messages).values({
-      id: uuid(),
-      conversationId: convId,
-      authorType: "summary",
-      origin: "server",
-      lamport: t0 + 2,
-      content: summaryBlocks("SUMMARY OF OLD EXCHANGE"),
-      status: "complete",
-      createdAt: at(2000),
-    });
-    await db.insert(messages).values([
-      { id: uuid(), conversationId: convId, authorType: "user", origin: "server", lamport: t0 + 3, content: textBlock("new question"), status: "complete", createdAt: at(3000) },
-      { id: uuid(), conversationId: convId, authorType: "assistant", origin: "server", lamport: t0 + 4, content: textBlock("new answer"), status: "complete", createdAt: at(4000) },
+      { id: uuid(), conversationId: convId, authorType: "user", origin: "server", lamport: lamport++, content: textBlock("run something"), status: "complete", createdAt: new Date() },
+      {
+        id: uuid(),
+        conversationId: convId,
+        authorType: "assistant",
+        origin: "server",
+        lamport: lamport++,
+        content: [
+          { kind: "text", text: "Running it." },
+          { kind: "tool_call", call_id: "call-ok", tool: "bash", args: { command: "echo hi" } },
+          { kind: "tool_call", call_id: "call-dangling", tool: "bash", args: { command: "echo lost" } },
+        ] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      },
+      {
+        id: uuid(),
+        conversationId: convId,
+        authorType: "tool",
+        origin: "server",
+        lamport: lamport++,
+        content: [{ kind: "tool_result", call_id: "call-ok", output: "hi" }] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      },
+      { id: uuid(), conversationId: convId, authorType: "assistant", origin: "server", lamport: lamport++, content: textBlock("Done."), status: "complete", createdAt: new Date() },
     ]);
 
-    const history = await loadChatHistory(convId, false);
-    expect(history.summaryText).toBe("SUMMARY OF OLD EXCHANGE");
+    const history = await loadAgentHistory(convId);
     expect(history.messages).toEqual([
-      { role: "user", content: "new question" },
-      { role: "assistant", content: "new answer" },
+      { role: "user", content: "run something" },
+      {
+        role: "assistant",
+        content: "Running it.",
+        tool_calls: [
+          { id: "call-ok", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "echo hi" }) } },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-ok", content: "hi" },
+      { role: "assistant", content: "Done." },
     ]);
-    expect(history.historyMessages).toBe(2);
   });
 
   it("loadHistory (agent) replays only what came after the newest summary, by lamport — not createdAt", async () => {
@@ -148,7 +166,7 @@ describe("compaction: history cutoff + no-op guard", () => {
       createdAt: at(2000),
     });
 
-    const history = await loadChatHistory(convId, false);
+    const history = await loadAgentHistory(convId);
     expect(history.summaryText).toBeNull();
     expect(history.messages).toEqual([
       { role: "user", content: "q1" },

@@ -17,11 +17,14 @@ import { chatWsHandler } from "./ws/chat";
 import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
 import { startRoutineScheduler, stopRoutineScheduler } from "./routines/scheduler";
-import { startSandboxReaper } from "./agent/sandbox-manager";
+import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manager";
 import { closeDb } from "@shannon/db";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
 import { configRoutes } from "./routes/config";
+import { mcpRoutes } from "./routes/mcp";
+import { prefsRoutes } from "./routes/prefs";
+import { startMcpReaper } from "./mcp/client-manager";
 
 const app = Fastify({ logger: true });
 
@@ -95,6 +98,8 @@ sandboxRoutes(app);
 routineRoutes(app);
 modelRoutes(app);
 configRoutes(app);
+mcpRoutes(app);
+prefsRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
@@ -159,6 +164,7 @@ if (Number.isNaN(PORT)) throw new Error(`Invalid PORT: ${process.env.PORT ?? ""}
 const HOST = process.env.HOST ?? "0.0.0.0";
 
 let reaperTimer: NodeJS.Timeout | null = null;
+let mcpReaperTimer: NodeJS.Timeout | null = null;
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
@@ -176,6 +182,12 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
   reaperTimer = startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
+  // Ephemeral (incognito) sandboxes have no DB row; a crashed process's
+  // leftovers are only findable by their container label.
+  sweepOrphanSandboxes()
+    .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
+    .catch(() => { /* best-effort sweep */ });
+  mcpReaperTimer = startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
 });
 
 // ── Graceful shutdown ─────────────────────────────────────
@@ -189,6 +201,7 @@ async function shutdown(signal: string) {
   try {
     stopRoutineScheduler();
     if (reaperTimer) clearInterval(reaperTimer);
+    if (mcpReaperTimer) clearInterval(mcpReaperTimer);
     await app.close();
     await closeDb();
   } catch (e) {
