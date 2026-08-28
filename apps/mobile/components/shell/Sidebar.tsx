@@ -1,4 +1,4 @@
-import { MessageSquare, Bot, Clock, BarChart3, Settings, Plus, LogOut } from 'lucide-react-native';
+import { MessageSquare, Bot, Clock, BarChart3, Plug, Settings, Plus, LogOut } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -22,6 +22,7 @@ const NAV_ITEMS: { id: SurfaceId; label: string; icon: typeof MessageSquare }[] 
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'agent', label: 'Agent', icon: Bot },
   { id: 'routines', label: 'Routines', icon: Clock },
+  { id: 'mcp', label: 'MCP Servers', icon: Plug },
   { id: 'stats', label: 'Stats', icon: BarChart3 },
 ];
 

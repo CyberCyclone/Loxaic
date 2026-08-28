@@ -1,4 +1,4 @@
-export type SurfaceId = 'chat' | 'agent' | 'routines' | 'stats' | 'launcher'
+export type SurfaceId = 'chat' | 'agent' | 'routines' | 'mcp' | 'stats' | 'launcher'
 
 export type ModelLocation = 'server' | 'device' | 'remote'
 

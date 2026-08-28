@@ -215,7 +215,7 @@ function runTodoWrite(args: Record<string, unknown>): ToolResult {
  * loopback, link-local, and the RFC1918 / carrier-grade / benchmarking
  * ranges that make up a typical private network.
  */
-function isBlockedAddress(ip: string, family: number): boolean {
+export function isBlockedAddress(ip: string, family: number): boolean {
   if (family === 4) {
     const p = ip.split(".").map(Number);
     if (p.length !== 4 || p.some((n) => Number.isNaN(n))) return true;
@@ -240,7 +240,7 @@ function isBlockedAddress(ip: string, family: number): boolean {
   return false;
 }
 
-async function assertPublicUrl(url: URL): Promise<void> {
+export async function assertPublicUrl(url: URL): Promise<void> {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`only http and https URLs are allowed (got ${url.protocol})`);
   }

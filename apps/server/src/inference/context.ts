@@ -61,12 +61,10 @@ export function addChars(tally: ContextTally, category: ContextCategory, text: s
 }
 
 /**
- * Tally a prompt straight off the wire payload. Used by the agent, which has
- * no block-level view of its history — by the time messages are `ChatMessage`s
- * the thinking has already been dropped, so there's nothing to separate.
- *
- * Chat can't use this: it needs to distinguish `reasoning` from `history`,
- * which is only possible while the content blocks are still structured.
+ * Tally a prompt straight off the wire payload. Used by the shared tool loop
+ * (both surfaces), which has no block-level view of its history — by the time
+ * messages are `ChatMessage`s the thinking has already been dropped, so
+ * there's nothing to separate: no `reasoning` category ever applies.
  */
 export function tallyChatMessages(messages: ChatMessage[], tools?: OpenAiTool[]): ContextTally {
   const tally: ContextTally = {};
