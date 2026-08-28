@@ -93,6 +93,41 @@ export function androidApkPath(): string {
   return apk;
 }
 
+/**
+ * Boots the target simulator (Appium would anyway) and resets its keychain.
+ *
+ * Unlike Android — where uninstalling the app wipes its SecureStore data —
+ * the iOS keychain survives app reinstalls, so a previous run's session token
+ * auto-signs the app in and the suite's sign-up spec never sees a login
+ * screen. Without this, the iOS suite passes once per simulator and then
+ * fails on every re-run. The keychain on a dedicated test simulator holds
+ * nothing worth keeping.
+ */
+export function resetIosSimulatorKeychain(deviceName: string, osVersion?: string): void {
+  const listJson = execFileSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
+    encoding: 'utf8',
+  });
+  const parsed = JSON.parse(listJson) as {
+    devices: Record<string, { name: string; udid: string; state: string }[]>;
+  };
+  const candidates = Object.entries(parsed.devices)
+    .filter(([runtime]) => !osVersion || runtime.endsWith(osVersion.replace(/\./g, '-')))
+    .flatMap(([, list]) => list)
+    .filter((d) => d.name === deviceName);
+  const device = candidates.at(0);
+  if (!device) {
+    throw new Error(
+      `No available simulator named "${deviceName}"${osVersion ? ` on iOS ${osVersion}` : ''}. ` +
+        `See: xcrun simctl list devices available`,
+    );
+  }
+  if (device.state !== 'Booted') {
+    execFileSync('xcrun', ['simctl', 'boot', device.udid], { stdio: 'ignore' });
+    execFileSync('xcrun', ['simctl', 'bootstatus', device.udid, '-b'], { stdio: 'ignore' });
+  }
+  execFileSync('xcrun', ['simctl', 'keychain', device.udid, 'reset'], { stdio: 'ignore' });
+}
+
 export function iosAppPath(): string {
   const fromEnv = process.env.E2E_IOS_APP;
   if (fromEnv) {

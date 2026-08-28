@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { Keyboard } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Box } from '@/components/ui/box';
@@ -47,7 +48,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shell = useMemo<ShellState>(
     () => ({
       overlaySidebar,
-      openSidebar: () => { setSidebarOpen(true); },
+      openSidebar: () => {
+        // With a composer focused, the software keyboard would otherwise sit
+        // on top of the slide-over and hide the drawer's footer (sign-out).
+        Keyboard.dismiss();
+        setSidebarOpen(true);
+      },
       openSettings: () => { setSettingsOpen(true); },
       settingsOpen,
       closeSettings: () => { setSettingsOpen(false); },
