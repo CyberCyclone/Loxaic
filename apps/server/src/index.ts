@@ -17,9 +17,12 @@ import { chatWsHandler } from "./ws/chat";
 import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
 import { startRoutineScheduler } from "./routines/scheduler";
-import { startSandboxReaper } from "./agent/sandbox-manager";
+import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manager";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
+import { mcpRoutes } from "./routes/mcp";
+import { prefsRoutes } from "./routes/prefs";
+import { startMcpReaper } from "./mcp/client-manager";
 
 const app = Fastify({ logger: true });
 
@@ -88,6 +91,8 @@ syncRoutes(app);
 sandboxRoutes(app);
 routineRoutes(app);
 modelRoutes(app);
+mcpRoutes(app);
+prefsRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
@@ -154,4 +159,10 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
   startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
+  // Ephemeral (incognito) sandboxes have no DB row; a crashed process's
+  // leftovers are only findable by their container label.
+  sweepOrphanSandboxes()
+    .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
+    .catch(() => { /* best-effort sweep */ });
+  startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
 });
