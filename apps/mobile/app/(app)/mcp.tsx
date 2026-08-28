@@ -82,7 +82,7 @@ export default function McpScreen() {
         title="MCP Servers"
         onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
         right={
-          <Button size="sm" className="bg-primary" onPress={openCreate}>
+          <Button testID="mcp.addServer" size="sm" className="bg-primary" onPress={openCreate}>
             <ButtonIcon as={Plus} className="text-primary-foreground" />
             <ButtonText className="text-primary-foreground">Add</ButtonText>
           </Button>
@@ -100,12 +100,13 @@ export default function McpScreen() {
             Connect Model Context Protocol servers to give the agent new tools — search, APIs, your own
             services. Every tool asks for approval until you allow it.
           </Text>
-          <Pressable onPress={openCreate} className="rounded-full bg-primary px-4 py-2">
+          <Pressable testID="mcp.addFirstServer" onPress={openCreate} className="rounded-full bg-primary px-4 py-2">
             <Text className="text-primary-foreground">Add your first server</Text>
           </Pressable>
         </Box>
       ) : (
         <FlatList
+          testID="mcp.list"
           data={rows}
           keyExtractor={(row) => (row.type === 'catalog' ? `catalog-${row.entry.key}` : row.server.id)}
           contentContainerStyle={{ padding: 12, gap: 8 }}

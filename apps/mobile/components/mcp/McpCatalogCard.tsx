@@ -37,7 +37,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
   };
 
   return (
-    <Box className="rounded-md border border-border bg-card p-3">
+    <Box testID={`mcp.catalogRow.${entry.key}`} className="rounded-md border border-border bg-card p-3">
       <HStack space="xs" className="items-center">
         <Icon as={Sparkles} size="xs" className="text-primary" />
         <Text className="font-medium text-foreground">{entry.name}</Text>
@@ -73,6 +73,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
           </Text>
         )}
         <Button
+          testID={`mcp.catalogEnable.${entry.key}`}
           size="sm"
           className="mt-1 self-start bg-primary"
           onPress={() => { void handleEnable(); }}

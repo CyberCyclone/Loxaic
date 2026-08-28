@@ -181,7 +181,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
   return (
     <Modal isOpen={open} onClose={onClose} size="md">
       <ModalBackdrop />
-      <ModalContent className="max-h-[85%]">
+      <ModalContent testID="mcp.serverModal.dialog" className="max-h-[85%]">
         <ModalHeader>
           <Heading size="sm">{editing ? `Edit ${editing.name}` : 'Add MCP Server'}</Heading>
           <ModalCloseButton>
@@ -195,7 +195,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                 Name
               </Text>
               <Input className="border-border bg-card">
-                <InputField value={name} onChangeText={updateName} placeholder="My MCP server" />
+                <InputField testID="mcp.serverModal.name" value={name} onChangeText={updateName} placeholder="My MCP server" />
               </Input>
             </VStack>
 
@@ -206,6 +206,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                 </Text>
                 <Input className="border-border bg-card">
                   <InputField
+                    testID="mcp.serverModal.slug"
                     value={slug}
                     onChangeText={(v) => {
                       setSlugTouched(true);
@@ -249,6 +250,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                   </Text>
                   <Input className="border-border bg-card">
                     <InputField
+                      testID="mcp.serverModal.command"
                       value={command}
                       onChangeText={setCommand}
                       placeholder="/usr/local/bin/my-mcp-server"
@@ -285,6 +287,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                   </Text>
                   <Input className="border-border bg-card">
                     <InputField
+                      testID="mcp.serverModal.url"
                       value={url}
                       onChangeText={setUrl}
                       placeholder="https://mcp.example.com/mcp"
@@ -375,10 +378,16 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
         </ModalBody>
         <ModalFooter className="justify-end border-t border-border">
           <HStack space="sm">
-            <Button variant="outline" size="sm" onPress={onClose}>
+            <Button testID="mcp.serverModal.cancel" variant="outline" size="sm" onPress={onClose}>
               <ButtonText>Cancel</ButtonText>
             </Button>
-            <Button size="sm" className="bg-primary" onPress={() => { void handleSave(); }} isDisabled={!name.trim() || saving}>
+            <Button
+              testID="mcp.serverModal.save"
+              size="sm"
+              className="bg-primary"
+              onPress={() => { void handleSave(); }}
+              isDisabled={!name.trim() || saving}
+            >
               {saving && <ButtonSpinner />}
               <ButtonText className="text-primary-foreground">Save server</ButtonText>
             </Button>

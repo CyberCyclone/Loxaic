@@ -35,7 +35,7 @@ export function ToolApprovalDialog({ tool, args, reason, onAllowOnce, onAllowAlw
   return (
     <Modal isOpen onClose={() => undefined} size="md">
       <ModalBackdrop />
-      <ModalContent className="max-h-[85%]">
+      <ModalContent testID="chat.approval.dialog" className="max-h-[85%]">
         <ModalHeader>
           <Heading size="md">Tool call wants to run</Heading>
         </ModalHeader>
@@ -71,13 +71,13 @@ export function ToolApprovalDialog({ tool, args, reason, onAllowOnce, onAllowAlw
           </VStack>
         </ModalBody>
         <ModalFooter className="flex-wrap justify-end gap-2 border-t border-border">
-          <Button variant="outline" size="sm" onPress={onReject}>
+          <Button testID="chat.approval.reject" variant="outline" size="sm" onPress={onReject}>
             <ButtonText>Reject</ButtonText>
           </Button>
-          <Button variant="outline" size="sm" onPress={onAllowAlways}>
+          <Button testID="chat.approval.allowAlways" variant="outline" size="sm" onPress={onAllowAlways}>
             <ButtonText>Allow always</ButtonText>
           </Button>
-          <Button size="sm" onPress={onAllowOnce}>
+          <Button testID="chat.approval.allowOnce" size="sm" onPress={onAllowOnce}>
             <ButtonText>Allow once</ButtonText>
           </Button>
         </ModalFooter>
