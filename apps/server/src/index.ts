@@ -24,6 +24,8 @@ import { modelRoutes } from "./routes/models";
 import { configRoutes } from "./routes/config";
 import { mcpRoutes } from "./routes/mcp";
 import { prefsRoutes } from "./routes/prefs";
+import { adminSettingsRoutes } from "./routes/admin-settings";
+import { loadServerSettings } from "./settings";
 import { startMcpReaper } from "./mcp/client-manager";
 
 const app = Fastify({ logger: true });
@@ -39,6 +41,11 @@ try {
   if (process.env.MIGRATIONS_STRICT === "1") throw err;
   app.log.warn(`Migration skipped: ${(err as Error).message}`);
 }
+
+// ── Server-level settings ─────────────────────────────────
+// After migrations (the table must exist) and before any route or sandbox
+// operation can read them. Env vars still win over anything stored here.
+await loadServerSettings();
 
 // ── Stream log ────────────────────────────────────────────
 // Deliberately NOT wrapped in try/catch: STREAM_BACKEND=redis with an
@@ -100,6 +107,7 @@ modelRoutes(app);
 configRoutes(app);
 mcpRoutes(app);
 prefsRoutes(app);
+adminSettingsRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);

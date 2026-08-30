@@ -243,6 +243,16 @@ export const mcpServers = pgTable(
   (t) => [uniqueIndex("mcp_servers_owner_slug_idx").on(t.ownerId, t.slug)],
 );
 
+/** Server-level (not per-user) configuration set through the admin GUI, e.g.
+ * the agent sandbox's mode/engine/network. Key-value so a new setting group
+ * costs a row rather than a migration. Environment variables always take
+ * precedence over anything stored here — see apps/server/src/settings.ts. */
+export const serverSettings = pgTable("server_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull().default({}),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const userPrefs = pgTable("user_prefs", {
   userId: text("user_id").primaryKey().references(() => user.id),
   /** Builtin tool names the user has allowlisted ("allow always") — these

@@ -7,6 +7,7 @@ import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { v4 as uuid } from "uuid";
 import { CappedSink } from "./exec-common.ts";
+import { getSandboxSettings } from "../settings.ts";
 import type {
   CreateSandboxConfig,
   ExecOptions,
@@ -43,28 +44,66 @@ function buildContextDir(): string {
 
 // ── Engine discovery ──────────────────────────────────────
 // dockerode speaks the Docker Engine API, which Docker, Podman, OrbStack, and
-// Colima all expose — CONTAINER_SOCKET (an explicit override) always wins;
-// otherwise the default socket is tried first, then a couple of well-known
-// Podman locations. Re-probed on every call that needs a live engine (not
-// cached as "up"), so a stopped-then-started engine is picked up without a
-// restart — but the *socket that worked* is remembered, so a live engine
-// doesn't get re-discovered on every single sandbox operation.
+// Colima all expose. Which sockets are tried comes from the sandbox settings
+// (env CONTAINER_SOCKET > an admin's engine pick > auto): "auto" keeps the
+// historical order — default Docker socket, then Podman's, then Colima's.
+// Re-probed on every call that needs a live engine (not cached as "up"), so a
+// stopped-then-started engine is picked up without a restart — but the
+// *socket that worked* is remembered, so a live engine doesn't get
+// re-discovered on every single sandbox operation.
 interface Candidate { label: string; socketPath: string | undefined }
 
-function candidates(): Candidate[] {
-  if (process.env.CONTAINER_SOCKET) {
-    return [{ label: process.env.CONTAINER_SOCKET, socketPath: process.env.CONTAINER_SOCKET }];
-  }
-  const home = os.homedir();
-  const list: Candidate[] = [{ label: "default (/var/run/docker.sock)", socketPath: undefined }];
+function dockerDefaultCandidate(): Candidate {
+  return { label: "default (/var/run/docker.sock)", socketPath: undefined };
+}
+
+function colimaCandidate(): Candidate {
+  return { label: "colima", socketPath: path.join(os.homedir(), ".colima/default/docker.sock") };
+}
+
+function podmanCandidates(): Candidate[] {
+  const list: Candidate[] = [];
   if (process.env.XDG_RUNTIME_DIR) {
     list.push({ label: "podman (rootless)", socketPath: path.join(process.env.XDG_RUNTIME_DIR, "podman/podman.sock") });
   }
-  list.push({ label: "podman machine (macOS)", socketPath: path.join(home, ".local/share/containers/podman/machine/podman.sock") });
+  list.push({
+    label: "podman machine",
+    socketPath: path.join(os.homedir(), ".local/share/containers/podman/machine/podman.sock"),
+  });
   return list;
 }
 
+function candidates(): Candidate[] {
+  const { engine, customSocket } = getSandboxSettings();
+  // A CONTAINER_SOCKET pin surfaces from settings as engine "custom", so this
+  // one branch covers both the env pin and an admin-chosen socket path.
+  if (engine === "custom" && customSocket) {
+    return [{ label: customSocket, socketPath: customSocket }];
+  }
+  // Colima and OrbStack both serve the Docker API, so they belong to the
+  // "docker" pick; only the default socket and Colima's are well-known enough
+  // to probe blindly (OrbStack takes over the default socket).
+  if (engine === "docker") return [dockerDefaultCandidate(), colimaCandidate()];
+  if (engine === "podman") return podmanCandidates();
+  return [dockerDefaultCandidate(), ...podmanCandidates(), colimaCandidate()];
+}
+
+/** Test seam: the candidate list is pure (settings + env in, sockets out),
+ * and asserting it directly is what keeps the engine picker honest without
+ * requiring both engines installed on the machine running the suite. */
+export const __candidatesForTest = candidates;
+
 let cached: { docker: Docker; label: string } | null = null;
+
+/**
+ * Forgets the discovered engine so the next operation rediscovers from
+ * scratch. Required whenever the engine selection changes: `getDocker()`
+ * only rediscovers when a ping *fails*, so switching Docker → Podman while
+ * Docker is still running would otherwise keep using Docker indefinitely.
+ */
+export function resetEngineCache(): void {
+  cached = null;
+}
 
 async function discover(): Promise<{ docker: Docker; label: string } | null> {
   for (const c of candidates()) {
@@ -294,6 +333,72 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
   };
 }
 
+// ── Per-engine probing (admin settings UI) ────────────────
+
+export interface EngineProbe {
+  id: "docker" | "podman";
+  available: boolean;
+  /** The socket that answered. Admin-only: the public /v1/config omits it. */
+  socketPath?: string;
+  /** What the engine calls itself, when that differs from the slot it was
+   * found in — a Podman service bound to the default Docker socket is
+   * reported honestly rather than as "Docker". */
+  detectedAs?: "docker" | "podman";
+}
+
+/** Long enough for a busy engine, short enough that four dead sockets don't
+ * stall the settings screen (they're probed concurrently anyway). */
+const PROBE_TIMEOUT_MS = 2_000;
+
+function identifyEngine(version: unknown): "docker" | "podman" | null {
+  const v = version as { Platform?: { Name?: string }; Components?: { Name?: string }[] };
+  const haystack = [v.Platform?.Name ?? "", ...(v.Components ?? []).map((c) => c.Name ?? "")]
+    .join(" ")
+    .toLowerCase();
+  if (haystack.includes("podman")) return "podman";
+  if (haystack.includes("docker")) return "docker";
+  return null;
+}
+
+async function probeCandidate(c: Candidate): Promise<{ socketPath?: string; detectedAs?: "docker" | "podman" } | null> {
+  const docker = c.socketPath
+    ? new Docker({ socketPath: c.socketPath, timeout: PROBE_TIMEOUT_MS })
+    : new Docker({ timeout: PROBE_TIMEOUT_MS });
+  try {
+    await docker.ping();
+  } catch {
+    return null;
+  }
+  const version: unknown = await docker.version().catch(() => null);
+  const detectedAs = version ? identifyEngine(version) : null;
+  return { socketPath: c.socketPath ?? "/var/run/docker.sock", ...(detectedAs ? { detectedAs } : {}) };
+}
+
+/**
+ * Independently probes each engine we know how to find, so the settings GUI
+ * can offer Docker and Podman as real choices and grey out whichever isn't
+ * installed or running. Deliberately bypasses the serving cache and the
+ * configured engine pin — this answers "what *could* you use", not "what are
+ * you using".
+ */
+export async function probeEngines(): Promise<EngineProbe[]> {
+  const groups: { id: "docker" | "podman"; list: Candidate[] }[] = [
+    { id: "docker", list: [dockerDefaultCandidate(), colimaCandidate()] },
+    { id: "podman", list: podmanCandidates() },
+  ];
+  return Promise.all(
+    groups.map(async ({ id, list }) => {
+      const results = await Promise.all(list.map((c) => probeCandidate(c)));
+      // A Podman service on the default Docker socket answers the docker
+      // probe too; prefer a hit whose self-report matches the slot so each
+      // engine is attributed to the socket that really is that engine.
+      const hit = results.find((r) => r?.detectedAs === id) ?? results.find(Boolean);
+      if (!hit) return { id, available: false };
+      return { id, available: true, ...hit };
+    }),
+  );
+}
+
 /** IDs of every running container this provider ever creates (all sandboxes
  * carry the shannon.sandbox label). Used by the boot-time orphan sweep.
  * Empty when no engine is reachable — a sweep on a host-mode or engineless
@@ -329,6 +434,13 @@ export function getContainerProvider(): SandboxProvider {
       const { docker } = await requireDocker();
       await ensureImage(docker);
 
+      // Off by default: everything in here is model-directed, so an outbound
+      // network is an exfiltration path. Admins can turn it on (with a
+      // warning) when the agent genuinely needs to install dependencies.
+      // Fixed at create time — the settings writer stops live sandboxes so a
+      // toggle takes effect on the next one.
+      const { allowNetwork } = getSandboxSettings();
+
       const container = await docker.createContainer({
         Image: sandboxImage(),
         Cmd: ["tail", "-f", "/dev/null"],
@@ -337,7 +449,7 @@ export function getContainerProvider(): SandboxProvider {
           NanoCpus: config.limits?.cpu ?? DEFAULT_LIMITS.NanoCpus,
           PidsLimit: config.limits?.pids ?? DEFAULT_LIMITS.PidsLimit,
           AutoRemove: true,
-          NetworkMode: "none",
+          NetworkMode: allowNetwork ? "bridge" : "none",
         },
         Labels: {
           "shannon.user": userId,
@@ -348,10 +460,9 @@ export function getContainerProvider(): SandboxProvider {
 
       const handle = makeHandle(docker, container.id);
 
-      // A repo clone needs the network, which the sandbox deliberately lacks
-      // (NetworkMode: "none"). Callers that need a repo must provide it
-      // another way; we surface the failure rather than silently producing
-      // an empty repo.
+      // A repo clone needs the network, which the sandbox lacks unless an
+      // admin enabled it (NetworkMode: "none" by default). We surface the
+      // clone failure rather than silently producing an empty repo.
       if (config.repoUrl) {
         let url = config.repoUrl;
         if (config.token) url = url.replace("https://", `https://x-access-token:${config.token}@`);

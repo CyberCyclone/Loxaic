@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq } from "@shannon/db";
+import { and, desc, eq } from "@shannon/db";
 import { db } from "@shannon/db";
 import { sandboxes } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
@@ -7,6 +7,20 @@ import { resolvePath } from "../agent/executor.ts";
 import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
 
 export function sandboxRoutes(app: FastifyInstance) {
+  // Lets a caller find the sandbox backing a conversation — agent sandboxes
+  // are created lazily by the tool loop, so their id is otherwise never
+  // surfaced to a client. Newest first; own rows only.
+  app.get("/v1/sandboxes", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const { conversation_id } = request.query as { conversation_id?: string };
+    return db.query.sandboxes.findMany({
+      where: conversation_id
+        ? and(eq(sandboxes.ownerId, userId), eq(sandboxes.conversationId, conversation_id))
+        : eq(sandboxes.ownerId, userId),
+      orderBy: desc(sandboxes.createdAt),
+    });
+  });
+
   app.post("/v1/sandboxes", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const { repo_url, branch, token, conversation_id, provider: providerOverride } = request.body as {

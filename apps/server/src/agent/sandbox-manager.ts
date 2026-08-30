@@ -148,6 +148,53 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
 }
 
 /**
+ * Stops every sandbox this server knows about, in memory and in the DB.
+ *
+ * Called when the sandbox settings change: neither the container engine nor a
+ * container's network mode can be altered under a running container, so the
+ * old ones have to go for the new setting to mean anything. Without this they
+ * would linger for the full idle TTL still running under the old config.
+ *
+ * It also clears rows a *previous* mode left behind. `createEntry()`'s
+ * recovery query filters on the current provider kind, so a row from another
+ * kind is skipped but never marked stopped — those would otherwise read as
+ * "running" forever.
+ */
+export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
+  let stopped = 0;
+
+  for (const [conversationId, entry] of [...active.entries()]) {
+    if (kind && entry.provider !== kind) continue;
+    active.delete(conversationId);
+    const provider = await getProviderByKind(entry.provider);
+    const handle = await provider.attach(entry.ref).catch(() => null);
+    await handle?.stop().catch(() => undefined);
+    if (entry.rowId) await markStopped(entry.rowId);
+    stopped++;
+  }
+
+  // Runs after the loop above has already marked its own rows stopped, so
+  // nothing is counted or stopped twice.
+  const rows = await db.query.sandboxes
+    .findMany({ where: eq(sandboxes.status, "running") })
+    .catch(() => []);
+  for (const row of rows) {
+    const rowKind = row.provider as SandboxKind;
+    if (kind && rowKind !== kind) continue;
+    const provider = await getProviderByKind(rowKind);
+    // attach() throws when no engine is reachable — which is exactly the
+    // case when someone is switching *away* from a dead engine. Marking the
+    // row stopped is still correct and is the point of the sweep.
+    const handle = await provider.attach(row.containerId).catch(() => null);
+    await handle?.stop().catch(() => undefined);
+    await markStopped(row.id);
+    stopped++;
+  }
+
+  return stopped;
+}
+
+/**
  * Boot-time counterpart of the DB recovery path, for sandboxes with no row:
  * an ephemeral (incognito) sandbox left behind by a crashed process is
  * unreachable — no DB row, no in-memory entry — so stop any labeled sandbox
