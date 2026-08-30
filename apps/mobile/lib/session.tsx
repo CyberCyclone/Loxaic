@@ -41,13 +41,35 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     void (async () => {
       await hydrateStorage();
       await resolveEndpoint();
-      const stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
+      let stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
+      let sessionUser: SessionUser | null = null;
+
       if (stored) {
-        const info = await apiGetSession().catch(() => null);
-        if (!state.cancelled) setUser(info?.user ?? null);
+        // getSession resolves null *only* on a 401 — a definitively dead
+        // token — and throws when the server can't be reached. Those must not
+        // be conflated: signing someone out because their self-hosted server
+        // was briefly down would be worse than carrying on with a token that
+        // is very probably still good.
+        try {
+          const info = await apiGetSession();
+          if (info) {
+            sessionUser = info.user;
+          } else {
+            // Dead token. It has to be cleared, not just left unused: the app
+            // gate in app/(app)/_layout.tsx keys on `token` alone, so keeping
+            // it drops the user into the authenticated shell where every
+            // request 401s and nothing ever signs them out.
+            await clearToken();
+            stored = null;
+          }
+        } catch {
+          // Server unreachable — no conclusion can be drawn about the token.
+        }
       }
+
       if (!state.cancelled) {
         setToken(stored);
+        setUser(sessionUser);
         setReady(true);
       }
     })();
@@ -81,11 +103,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }, []);
 
-  const isAdmin = user?.role === 'admin';
-
   const value = useMemo(
-    () => ({ ready, token, user, isAdmin, signIn, signUp, signOut }),
-    [ready, token, user, isAdmin, signIn, signUp, signOut],
+    () => ({ ready, token, user, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
+    [ready, token, user, signIn, signUp, signOut],
   );
 
   return (

@@ -5,7 +5,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { db, eq, inArray } from "@shannon/db";
 import { account, session, user } from "@shannon/db/schema";
 import { auth } from "../index.ts";
-import { requireAdmin } from "../middleware.ts";
+import { authenticate, requireAdmin } from "../middleware.ts";
 
 const PASSWORD = "password123";
 const emails: string[] = [];
@@ -76,6 +76,63 @@ describe("admin role", () => {
     const { reply, calls } = fakeReply();
     const userId = await requireAdmin(requestWithToken(signInRes.token), reply);
     expect(userId).toBe(signInRes.user.id);
+    expect(calls.code).toBeUndefined();
+  });
+});
+
+/**
+ * better-auth only checks `banned` when a session is created, and its own ban
+ * endpoints delete the user's sessions — so the gap these cover is a ban
+ * applied *out of band* (a direct SQL UPDATE, the shape of the documented
+ * role-promotion recovery path), which leaves live sessions untouched and
+ * would otherwise never be enforced anywhere.
+ */
+describe("ban enforcement on the read path", () => {
+  async function signUpThenBan(opts: { banExpires?: Date | null; role?: string } = {}) {
+    const email = `banned-${uuid()}@example.test`;
+    const res = await signUp(email);
+    await db
+      .update(user)
+      .set({
+        banned: true,
+        banReason: "test",
+        banExpires: opts.banExpires ?? null,
+        ...(opts.role ? { role: opts.role } : {}),
+      })
+      .where(eq(user.id, res.user.id));
+    return res;
+  }
+
+  it("authenticate: 403 for a session whose user was banned after signing in", async () => {
+    const res = await signUpThenBan();
+    const { reply, calls } = fakeReply();
+    await expect(authenticate(requestWithToken(res.token), reply)).rejects.toThrow();
+    expect(calls.code).toBe(403);
+  });
+
+  it("requireAdmin: 403 for a banned *admin* — the ban outranks the role", async () => {
+    // Deliberately an admin: a banned non-admin would be rejected for the
+    // role anyway, so it would pass this test even with ban enforcement
+    // removed entirely (confirmed — that's why this grants admin first).
+    const res = await signUpThenBan({ role: "admin" });
+    const { reply, calls } = fakeReply();
+    await expect(requireAdmin(requestWithToken(res.token), reply)).rejects.toThrow();
+    expect(calls.code).toBe(403);
+    expect(calls.body).toEqual({ error: "Account suspended" });
+  });
+
+  it("treats an expired ban as lifted, mirroring better-auth's auto-unban", async () => {
+    const res = await signUpThenBan({ banExpires: new Date(Date.now() - 60_000) });
+    const { reply, calls } = fakeReply();
+    await expect(authenticate(requestWithToken(res.token), reply)).resolves.toBe(res.user.id);
+    expect(calls.code).toBeUndefined();
+  });
+
+  it("leaves an unbanned user alone", async () => {
+    const email = `not-banned-${uuid()}@example.test`;
+    const res = await signUp(email);
+    const { reply, calls } = fakeReply();
+    await expect(authenticate(requestWithToken(res.token), reply)).resolves.toBe(res.user.id);
     expect(calls.code).toBeUndefined();
   });
 });

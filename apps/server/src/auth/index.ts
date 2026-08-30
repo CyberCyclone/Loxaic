@@ -32,10 +32,12 @@ export const auth = betterAuth({
         // for a self-hosted app; ADMIN_EMAILS or a manual `UPDATE "user" SET
         // role='admin'` covers recovery/upgrade of an existing deployment.
         before: async (data: { email: string }) => {
+          // ADMIN_EMAILS first: an in-memory Set lookup, and the branch this
+          // feature exists to serve — no reason to make the recovery path pay
+          // for a full-table COUNT whose answer can't change the outcome.
+          if (ADMIN_EMAILS.has(data.email.toLowerCase())) return { data: { role: "admin" } };
           const [{ n }] = await db.select({ n: count() }).from(user);
-          if (n === 0 || ADMIN_EMAILS.has(data.email.toLowerCase())) {
-            return { data: { role: "admin" } };
-          }
+          if (n === 0) return { data: { role: "admin" } };
         },
       },
     },

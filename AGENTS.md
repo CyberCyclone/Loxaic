@@ -138,6 +138,13 @@ screenshots showing that behaviour working. Writing those tests is the implement
   listed in `ADMIN_EMAILS`) gets `role: "admin"` via a `databaseHooks.user.create.before`
   hook — an existing deployment's already-registered user does not retroactively become
   admin; use `ADMIN_EMAILS` or `UPDATE "user" SET role='admin'` to promote one.
+- **`banned` is enforced by our own middleware, not by better-auth.** The admin plugin only
+  checks it in `session.create.before` (i.e. at sign-in), so a ban applied out of band — the
+  `UPDATE "user" SET banned = true` counterpart to the promotion above — would leave every
+  live session working. `resolveSession()` in `apps/server/src/auth/middleware.ts` re-checks
+  it on every authenticated request (403, expired bans treated as lifted). Route handlers get
+  this for free by going through `authenticate`/`requireAdmin`; anything that calls
+  `auth.api.getSession` directly does not.
 - **Postgres/postgres.js returns `SUM()`/`AVG()` over `integer` columns as strings**
   (bigint/numeric precision preservation). Cast to `::float8` in SQL, not `::int` (avoids a
   32-bit overflow ceiling on lifetime token sums). Columns typed `real` parse natively.
