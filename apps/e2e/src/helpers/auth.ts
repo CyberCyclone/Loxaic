@@ -6,7 +6,7 @@
  * checkout needs no manual seeding. better-auth is configured without email
  * verification, so a signed-up user is immediately usable.
  */
-import { BASE_URL } from '../../scripts/standup.ts';
+import { BASE_URL, E2E_ADMIN_EMAIL } from '../../scripts/standup.ts';
 
 export interface Credentials {
   email: string;
@@ -38,5 +38,31 @@ export async function provisionUser(creds: Credentials = uniqueCreds()): Promise
   if (!res.ok) {
     throw new Error(`sign-up failed (${String(res.status)}): ${await res.text()}`);
   }
+  return creds;
+}
+
+/**
+ * A fixed account granted the admin role via ADMIN_EMAILS on the server
+ * standup.ts spawns (see there) — sandbox specs need a real admin session,
+ * and "whoever signs up first" is unreliable against a DB standup reuses
+ * across runs, unlike provisionUser()'s per-run unique accounts.
+ *
+ * Sign-up-or-sign-in: the first sandbox spec to run creates the account,
+ * every later one (this run or a previous one against a reused DB) just
+ * signs in to the same one. Only meaningful when standup.ts started the
+ * server this run talks to — a manually-pointed or coincidentally-reused
+ * server must already grant admin to this email itself.
+ */
+export function adminCreds(): Credentials {
+  return { email: E2E_ADMIN_EMAIL, password: 'Password123!', name: 'E2E Admin' };
+}
+
+export async function provisionAdmin(): Promise<Credentials> {
+  const creds = adminCreds();
+  await fetch(`${BASE_URL}/api/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(creds),
+  }); // Failure here almost always means the account already exists — signIn (by the caller) is the real check.
   return creds;
 }

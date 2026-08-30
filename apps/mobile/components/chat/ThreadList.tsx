@@ -60,7 +60,7 @@ export function ThreadList({
         <Text size="sm" className="font-semibold text-foreground">
           {title}
         </Text>
-        <Pressable onPress={onNewChat} className="rounded-sm p-1 web:hover:bg-muted/50">
+        <Pressable testID="threadList.newChat" onPress={onNewChat} className="rounded-sm p-1 web:hover:bg-muted/50">
           <Icon as={Plus} size="sm" className="text-foreground" />
         </Pressable>
       </HStack>

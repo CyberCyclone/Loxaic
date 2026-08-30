@@ -85,7 +85,7 @@ export default function SandboxScreen() {
             reason={config.sandbox.reason}
             showFixes
           />
-          <Text size="xs" className="text-muted-foreground">
+          <Text testID="sandbox.readOnly.notice" size="xs" className="text-muted-foreground">
             Sandbox mode, engine, and network access are set by an administrator.
           </Text>
         </VStack>

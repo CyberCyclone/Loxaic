@@ -50,6 +50,19 @@ bridge. The dev shell loads Metro over http instead and never exercises that pat
 Chromedriver is matched to the Electron version automatically, read from the version
 `apps/desktop` actually has installed — so the two can't drift apart.
 
+### Self-contained mode
+
+```bash
+E2E_SELF_CONTAINED=1 pnpm --filter @shannon/e2e test:electron
+```
+
+Targets the packaged app's own embedded stack (its bundled Postgres + spawned server) instead of
+a server this harness stands up — the strongest proof that a real install works end to end, not
+just the renderer. `scripts/electron-env.ts` allocates a free port and a throwaway data directory
+before `standup.ts` is even imported (module-load order matters here); `standup()`/`teardown()`
+become no-ops since the app's own supervisor owns that stack's lifecycle. Electron-only — there is
+no equivalent for the web suite, which has no supervisor to embed a stack under.
+
 ## iOS and Android
 
 Both use Appium. Install its drivers once — they go into a repo-local `.appium/`, so a run uses
@@ -178,6 +191,29 @@ single-server, single-run suite needs.
 Docker is needed for more than Postgres — an approved `fs_write` executes in the agent sandbox,
 so the tool-approval step of the smoke suite needs a working Docker socket.
 
+## What the sandbox specs cover
+
+`sandbox-bash.spec.ts`, `sandbox-settings.spec.ts`, and `sandbox-degraded.spec.ts` exercise the
+admin-only sandbox settings API and GUI (mode, container engine, network access — see
+`apps/server/src/settings.ts` and the `/sandbox` screen). They log in as a fixed admin account,
+`e2e-admin@shannon.test` (see `helpers/auth.ts`'s `provisionAdmin()`), rather than a per-run unique
+one: "whoever signs up first" is unreliable against a database stand-up reuses across runs, so this
+email is granted the admin role via `ADMIN_EMAILS`, which `standup.ts` sets on the server it spawns.
+
+These specs switch sandbox mode **live, through the real GUI**, mid-run — container → host → back
+— rather than starting separate server processes per mode. That is a deliberate choice, not a
+shortcut: it is a stronger test than a static per-mode server, because it exercises the exact
+runtime-apply path `updateSandboxSettings()` exists for (resetting the container engine's cached
+connection, stopping sandboxes so a new one picks up the new mode) — the same class of bug that
+made an engine switch silently keep using the old engine before that code existed. A host-mode
+sandbox created this way writes under a per-run temp directory (`artifacts/.run/sandboxes`,
+via `SANDBOX_HOST_ROOT`) that `teardown()` removes.
+
+Because mode is server-wide state, every sandbox spec restores it to the default
+(`{mode: "container", engine: "auto", allowNetwork: false}`) in an `after()` hook, straight through
+the API rather than the UI, so restoration still runs (and still works) if the test itself failed
+partway through a UI flow — see `resetSandboxSettings()` in `helpers/app.ts`.
+
 ## Screenshots
 
 `shot('name')` writes `artifacts/<platform>/<run-timestamp>/NN-name.png`, numbered in capture
@@ -193,7 +229,8 @@ PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end
 | `E2E_PORT` | `4000` | Port the test server listens on. |
 | `E2E_BASE_URL` | `http://localhost:$E2E_PORT` | Point the suite at an already-running stack. |
 | `E2E_NO_STANDUP` | — | `1` skips stand-up entirely and assumes the stack is up. |
-| `E2E_FRESH_WEB` | — | `1` forces a rebuild of the Expo web export. |
+| `E2E_SELF_CONTAINED` | — | `1` targets a packaged Electron build's own embedded stack instead of a server this harness spawns — see "Self-contained mode" under Electron. |
+| `E2E_FRESH_WEB` | — | `1` forces a rebuild of the Expo web export. Needed after any `apps/mobile` change — a stale export is reused otherwise (see `ensureWebExport()`), which silently tests old UI. |
 | `E2E_HEADED` | — | `1` runs Chrome headed instead of headless. |
 | `E2E_LOG_LEVEL` | `warn` | WebdriverIO log level (`trace`…`error`). |
 | `E2E_IOS_DEVICE` | `iPhone 15` | Simulator to run the iOS suite on. |

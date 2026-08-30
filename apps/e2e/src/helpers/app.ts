@@ -5,7 +5,8 @@
  */
 import { browser } from '@wdio/globals';
 import { byTestId, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
-import type { Credentials } from './auth.ts';
+import { adminCreds, type Credentials } from './auth.ts';
+import { BASE_URL } from '../../scripts/standup.ts';
 
 /** Text the mock inference provider echoes back for a plain chat turn. */
 export function mockEcho(prompt: string): string {
@@ -21,6 +22,16 @@ export const MOCK_TOOL_DONE = '[Mock] Done. The tool returned:';
  * exercising the permission flow. See apps/server/src/inference/provider.ts.
  */
 export const TOOL_PROMPT = 'write a file called notes';
+
+/** A prompt the mock provider answers with a `bash` tool call — the probe
+ * used to check that a sandbox actually executes, in whichever mode is
+ * currently configured (container or host). See MOCK_TOOL_TRIGGERS in
+ * apps/server/src/inference/provider.ts. */
+export const BASH_PROMPT = 'run a bash command';
+
+/** Substring of the bash trigger's stdout, echoed back inside the mock's
+ * `[Mock] Done. The tool returned: …` wrap-up once the tool call resolves. */
+export const MOCK_BASH_OUTPUT = 'hello from the sandbox';
 
 /**
  * The sidebar is permanently visible on wide layouts and a slide-over
@@ -86,4 +97,49 @@ export async function goToSurface(surface: 'chat' | 'agent' | 'routines' | 'stat
   await openSidebar();
   await tap(`sidebar.nav.${surface}`);
   await waitForVisible('composer.input');
+}
+
+/** Opens Settings and navigates to the Agent Sandbox screen, for admin and
+ * non-admin sessions alike — the screen itself branches on role. */
+export async function openSandboxSettings(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.settings');
+  await tap('settings.nav.sandbox');
+  await waitForVisible('sandbox.status');
+}
+
+/** Selects a sandbox mode from the Agent Sandbox screen (caller must already
+ * be there — see openSandboxSettings()), confirming host mode's warning
+ * dialog when that's the target. Waits for the status card to reflect it,
+ * which is also the proof the change round-tripped through the server. */
+export async function setSandboxMode(mode: 'container' | 'host' | 'off'): Promise<void> {
+  await tap(`sandbox.mode.${mode}`);
+  if (mode === 'host') {
+    await waitForVisible('sandbox.hostWarning.confirm');
+    await tap('sandbox.hostWarning.confirm');
+  }
+  await waitForTextIn('sandbox.status', `(${mode})`);
+}
+
+/**
+ * Restores the sandbox settings a spec changed, straight through the API
+ * rather than the UI — so cleanup still runs (and still works) if the test
+ * itself failed partway through a UI flow. Every sandbox spec must leave
+ * this in an `after()` hook: mode/engine/network are global server state,
+ * and a later spec file otherwise inherits whatever the previous one left.
+ */
+export async function resetSandboxSettings(): Promise<void> {
+  const creds = adminCreds();
+  const signIn = await fetch(`${BASE_URL}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: creds.email, password: creds.password }),
+  });
+  if (!signIn.ok) return; // Nothing to reset if the admin account was never provisioned.
+  const { token } = (await signIn.json()) as { token: string };
+  await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ mode: 'container', engine: 'auto', allowNetwork: false }),
+  });
 }

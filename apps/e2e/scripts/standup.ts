@@ -37,6 +37,14 @@ export const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${String(P
 export const SELF_CONTAINED = process.env.E2E_SELF_CONTAINED === '1';
 const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/shannon';
+/**
+ * Sandbox specs need an admin session, and "first user ever" is unreliable
+ * against a DB standup reuses across runs — this is the fixed email granted
+ * admin via ADMIN_EMAILS on the server this file spawns. See
+ * helpers/auth.ts's provisionAdmin().
+ */
+export const E2E_ADMIN_EMAIL = 'e2e-admin@shannon.test';
+const SANDBOX_HOST_ROOT = path.join(RUN_DIR, 'sandboxes');
 
 /** Kept so onComplete can stop exactly the server onPrepare started. */
 let spawnedServer: ChildProcess | null = null;
@@ -164,6 +172,7 @@ async function ensureServer(): Promise<void> {
   }
 
   log(`starting server on port ${String(PORT)} with MOCK_INFERENCE=true`);
+  mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
@@ -175,6 +184,11 @@ async function ensureServer(): Promise<void> {
       DATABASE_URL,
       BETTER_AUTH_SECRET:
         process.env.BETTER_AUTH_SECRET ?? 'e2e-only-secret-not-for-production-0123456789',
+      // Sandbox specs sign in as this email to get the admin role (see
+      // provisionAdmin()) and switch mode live through the settings API —
+      // host mode then needs somewhere disposable to write, hence the root.
+      ADMIN_EMAILS: E2E_ADMIN_EMAIL,
+      SANDBOX_HOST_ROOT,
     },
   });
   spawnedServer = child;
@@ -229,6 +243,7 @@ export async function teardown(): Promise<void> {
     if (Number.isFinite(pid) && pid > 0) stop(pid);
   }
   rmSync(PID_FILE, { force: true });
+  rmSync(SANDBOX_HOST_ROOT, { recursive: true, force: true });
   // Postgres is deliberately left running: it is slow to start, holds no
   // per-run state worth clearing, and is very often not ours to stop.
   await Promise.resolve();
