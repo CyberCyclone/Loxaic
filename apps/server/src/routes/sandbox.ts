@@ -5,6 +5,8 @@ import { sandboxes } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
 import { resolvePath } from "../agent/executor.ts";
 import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
+import type { SandboxKind } from "../sandbox/provider.ts";
+import { sandboxDisabledReason } from "../settings.ts";
 
 export function sandboxRoutes(app: FastifyInstance) {
   // Lets a caller find the sandbox backing a conversation — agent sandboxes
@@ -23,31 +25,30 @@ export function sandboxRoutes(app: FastifyInstance) {
 
   app.post("/v1/sandboxes", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { repo_url, branch, token, conversation_id, provider: providerOverride } = request.body as {
+    const { repo_url, branch, token, conversation_id } = request.body as {
       repo_url?: string;
       branch?: string;
       token?: string;
       conversation_id?: string;
-      provider?: string;
     };
-    // An explicit `provider` in the body always wins; otherwise this follows
-    // the server's configured SANDBOX_MODE rather than hardcoding
-    // "container" — a REST caller that doesn't ask for a specific provider
-    // should get whatever the deployment is actually set up to use.
-    const globalMode = getSandboxMode();
-    if (providerOverride !== "host" && providerOverride !== "container" && globalMode === "off") {
-      return reply.code(400).send({ error: "sandboxes are disabled (SANDBOX_MODE=off)" });
+    // The execution model is a deployment-wide, admin-only decision (see
+    // routes/admin-settings.ts) and is deliberately NOT selectable per
+    // request. This route used to honour a `provider` field in the body,
+    // which let ANY signed-in user ask for `provider: "host"` — arbitrary
+    // command execution on the host as the server process — and, because the
+    // disabled-check was skipped whenever that field was present, sidestep
+    // `mode: "off"` entirely. Derive the kind from configuration only.
+    const mode = getSandboxMode();
+    if (mode === "off") {
+      return reply.code(400).send({ error: sandboxDisabledReason() });
     }
-    const kind: "container" | "host" =
-      providerOverride === "host" || providerOverride === "container"
-        ? providerOverride
-        : globalMode === "host" ? "host" : "container";
+    const kind: SandboxKind = mode;
     // Host mode has real network access unlike a container's NetworkMode:
-    // none, so it *could* clone — but the REST surface is unauthenticated-ish
-    // (any signed-in user, no per-repo scoping), and giving arbitrary host
-    // execution a network-fetching clone step on top is a bigger step than
-    // this endpoint should take without a more deliberate design. Rejected
-    // outright for now rather than half-supported.
+    // none, so it *could* clone — but the REST surface is broad (any
+    // signed-in user, no per-repo scoping), and giving host execution a
+    // network-fetching clone step on top is a bigger step than this endpoint
+    // should take without a more deliberate design. Rejected outright rather
+    // than half-supported.
     if (kind === "host" && repo_url) {
       return reply.code(400).send({ error: "repo_url is not supported with provider=host" });
     }

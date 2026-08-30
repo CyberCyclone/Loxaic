@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "@shannon/db";
 import { db } from "@shannon/db";
 import { sandboxes } from "@shannon/db/schema";
-import { auth } from "../auth";
+import { resolveSessionFromToken } from "../auth/middleware";
 import { getProviderByKind } from "../sandbox/provider.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
@@ -35,9 +35,7 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       return;
     }
 
-    const session = await auth.api.getSession({
-      headers: new Headers({ authorization: `Bearer ${token}` }),
-    });
+    const session = await resolveSessionFromToken(token);
     if (!session) {
       socket.close(4001, "Invalid session");
       return;

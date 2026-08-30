@@ -17,7 +17,7 @@
  */
 import { db, eq } from "@shannon/db";
 import { serverSettings } from "@shannon/db/schema";
-import type { SandboxMode } from "./sandbox/provider.ts";
+import type { SandboxKind, SandboxMode } from "./sandbox/provider.ts";
 
 /** Which container engine to talk to. "auto" is the historical discovery
  * behaviour (try the default Docker socket, then Podman's, then Colima's);
@@ -73,6 +73,8 @@ export class SettingsError extends Error {
 }
 
 let persisted: Partial<SandboxSettings> = {};
+/** Set when loadServerSettings() couldn't read the row — see there. */
+let loadFailed = false;
 
 // ── Environment reads ─────────────────────────────────────
 // All at call time, never cached at module load, so a supervisor can set the
@@ -114,11 +116,17 @@ export function getSandboxSettings(): SandboxSettingsView {
   const socket = envSocket();
   const allowNetwork = envAllowNetwork();
 
+  // Fail *closed* when the settings row couldn't be read: falling through to
+  // DEFAULTS.mode ("container") would silently restart agent execution that
+  // an admin had deliberately turned off. An explicit env pin still wins —
+  // it's authoritative and readable without the database.
+  const storedMode = loadFailed ? "off" : (persisted.mode ?? DEFAULTS.mode);
+
   // CONTAINER_SOCKET pins *which socket*, which is what `engine` +
   // `customSocket` express together — so an env socket surfaces as the
   // "custom" engine and both fields count as overridden by the one variable.
   return {
-    mode: mode ?? persisted.mode ?? DEFAULTS.mode,
+    mode: mode ?? storedMode,
     engine: socket !== null ? "custom" : (persisted.engine ?? DEFAULTS.engine),
     customSocket: socket ?? persisted.customSocket ?? DEFAULTS.customSocket,
     allowNetwork: allowNetwork ?? persisted.allowNetwork ?? DEFAULTS.allowNetwork,
@@ -145,17 +153,39 @@ function coerce(raw: unknown): Partial<SandboxSettings> {
   return out;
 }
 
-/** Loads persisted settings into the in-memory cache. Called once at boot,
- * after migrations. A missing table or unreachable DB is not fatal — the
- * server still runs on env + defaults, the same as before this table
- * existed. */
+/**
+ * Loads persisted settings into the in-memory cache. Called once at boot,
+ * after migrations.
+ *
+ * A read failure is non-fatal to boot but is NOT treated as "no settings":
+ * that distinction matters because migrations only warn in non-strict mode,
+ * so a missing `server_settings` table reaches exactly this path — and
+ * quietly resolving to the permissive default would re-enable sandboxes an
+ * admin had disabled. `getSandboxSettings()` resolves mode to "off" while
+ * this flag is set.
+ */
 export async function loadServerSettings(): Promise<void> {
   try {
     const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
     persisted = coerce(row?.value);
-  } catch {
+    loadFailed = false;
+  } catch (err) {
     persisted = {};
+    loadFailed = true;
+    console.error(
+      "[settings] could not read server_settings — agent sandboxes are disabled until this is fixed: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
   }
+}
+
+/** Why sandboxes report unavailable when mode is "off". Names the actual
+ * source: telling an admin who disabled them through the API to go check an
+ * environment variable that isn't set would send them the wrong way. */
+export function sandboxDisabledReason(): string {
+  if (envMode() !== null) return "sandboxes are disabled by the SANDBOX_MODE environment variable";
+  if (loadFailed) return "server settings could not be read — sandboxes are disabled until the database is reachable";
+  return "sandboxes are disabled in server settings";
 }
 
 /** Narrows untrusted JSON (straight off the wire) into a patch we're willing
@@ -229,14 +259,24 @@ function validate(input: unknown): SandboxSettingsPatch {
  * container's network mode can be changed under a running container.
  */
 export async function updateSandboxSettings(input: unknown): Promise<SandboxSettingsView> {
+  // Serialized: `next` is built from the in-memory `persisted` before the
+  // first await, so two concurrent PATCHes would both read the same base and
+  // the second would silently drop the first's field.
+  const run = writeChain.catch(() => undefined).then(() => performUpdate(input));
+  writeChain = run.catch(() => undefined);
+  return run;
+}
+
+let writeChain: Promise<unknown> = Promise.resolve();
+
+async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
   const patch = validate(input);
 
   const before = getSandboxSettings();
   const next: SandboxSettings = {
-    mode: patch.mode ?? persisted.mode ?? DEFAULTS.mode,
-    engine: patch.engine ?? persisted.engine ?? DEFAULTS.engine,
-    customSocket: patch.customSocket !== undefined ? patch.customSocket : (persisted.customSocket ?? DEFAULTS.customSocket),
-    allowNetwork: patch.allowNetwork ?? persisted.allowNetwork ?? DEFAULTS.allowNetwork,
+    ...DEFAULTS,
+    ...persisted,
+    ...patch,
   };
 
   await db
@@ -251,22 +291,83 @@ export async function updateSandboxSettings(input: unknown): Promise<SandboxSett
     before.engine !== after.engine ||
     before.customSocket !== after.customSocket ||
     before.allowNetwork !== after.allowNetwork;
-  if (changed) await applySandboxSettings();
+  if (changed && applyEnabled) await applySandboxSettings(before, after);
   return after;
+}
+
+/**
+ * Which sandbox kinds a change actually invalidates.
+ *
+ * Deliberately narrow. A host sandbox's `stop()` deletes its working
+ * directory, so sweeping a kind the change cannot affect would destroy other
+ * users' in-progress work for no reason — the engine, socket, and network
+ * toggle are all container-only concerns.
+ */
+function invalidatedKinds(before: SandboxSettingsView, after: SandboxSettingsView): SandboxKind[] {
+  const kinds = new Set<SandboxKind>();
+  // The engine a container lives in, and the NetworkMode fixed at its
+  // creation — neither can change under a running container.
+  if (
+    before.engine !== after.engine ||
+    before.customSocket !== after.customSocket ||
+    before.allowNetwork !== after.allowNetwork
+  ) {
+    kinds.add("container");
+  }
+  // Switching away from a mode retires that mode's sandboxes — turning host
+  // mode off has to actually stop host sandboxes, that being the whole point.
+  if (before.mode !== after.mode && before.mode !== "off") kinds.add(before.mode);
+  return [...kinds];
 }
 
 /** Imported dynamically to keep this module free of a static cycle with the
  * sandbox layer (provider.ts imports this file for getSandboxMode()), the
  * same approach provider.ts already uses to reach its providers. */
-async function applySandboxSettings(): Promise<void> {
+async function applySandboxSettings(
+  before: SandboxSettingsView,
+  after: SandboxSettingsView,
+): Promise<void> {
+  // Order matters, and it is the opposite of the intuitive one. Stopping a
+  // container sandbox means attaching to it *through the engine that created
+  // it*; resetting the cache first sends those attach calls to the NEW
+  // engine, which has never heard of those containers. The stop 404s (and is
+  // swallowed), the row is still marked stopped, and the old container keeps
+  // running with nothing left that can find it — the boot-time orphan sweep
+  // only lists containers on the currently-configured engine. So: stop while
+  // the old engine is still cached, then reset.
+  const { stopAllSandboxes } = await import("./agent/sandbox-manager.ts");
+  for (const kind of invalidatedKinds(before, after)) {
+    await stopAllSandboxes(kind).catch(() => 0);
+  }
   const { resetEngineCache } = await import("./sandbox/container-provider.ts");
   resetEngineCache();
-  const { stopAllSandboxes } = await import("./agent/sandbox-manager.ts");
-  await stopAllSandboxes().catch(() => 0);
 }
 
 /** Test seam: drops the in-memory cache so a suite can assert the
  * env-and-defaults path without a database. */
 export function resetServerSettingsCache(): void {
   persisted = {};
+  loadFailed = false;
+}
+
+/** Test seam: simulates a failed settings read, for asserting the
+ * fail-closed behaviour without breaking the database. */
+export function __setLoadFailedForTest(value: boolean): void {
+  loadFailed = value;
+}
+
+let applyEnabled = true;
+
+/**
+ * Test seam: suppresses the live-sandbox teardown a settings change performs.
+ *
+ * That teardown is global by nature — it stops every running sandbox of the
+ * affected kind — and these suites share one Postgres and one container
+ * engine with suites running in parallel, so a persistence test that changes
+ * a value would otherwise stop the MCP e2e suite's live container mid-run.
+ * Only persistence-focused tests should use this; anything asserting the
+ * apply behaviour itself must leave it on.
+ */
+export function __setSandboxApplyForTest(value: boolean): void {
+  applyEnabled = value;
 }

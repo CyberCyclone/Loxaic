@@ -81,18 +81,45 @@ export type SandboxSettingsPatch = Partial<
   Pick<SandboxSettings, "mode" | "engine" | "customSocket" | "allowNetwork">
 >;
 
+/** Carries the server's error body so the UI can tell "you typed something
+ * invalid" apart from "an admin can't change this — it's pinned by an
+ * environment variable" (409, `envOverride: true`). */
+export class AdminSettingsError extends Error {
+  status: number;
+  envOverride: boolean;
+  constructor(message: string, status: number, envOverride: boolean) {
+    super(message);
+    this.status = status;
+    this.envOverride = envOverride;
+  }
+}
+
+async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAuthToken();
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${String(token)}`);
+  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string; envOverride?: boolean };
+    throw new AdminSettingsError(
+      body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`,
+      res.status,
+      body.envOverride === true,
+    );
+  }
+  return res.json() as Promise<T>;
+}
+
 export async function getSandboxSettings(): Promise<SandboxSettings> {
-  return (await authedFetch("/v1/admin/settings/sandbox")).json() as Promise<SandboxSettings>;
+  return adminFetch("/v1/admin/settings/sandbox");
 }
 
 export async function updateSandboxSettings(patch: SandboxSettingsPatch): Promise<SandboxSettings> {
-  return (
-    await authedFetch("/v1/admin/settings/sandbox", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    })
-  ).json() as Promise<SandboxSettings>;
+  return adminFetch("/v1/admin/settings/sandbox", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 }
 
 export type { ModelInfo, ModelPref } from "@shannon/types";

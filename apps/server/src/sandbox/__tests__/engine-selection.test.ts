@@ -50,9 +50,16 @@ describe("engine candidate selection", () => {
     expect(sockets()).toEqual(["/tmp/pinned.sock"]);
   });
 
-  it("labels the pinned socket by its path, so the failure message names it", () => {
-    process.env.CONTAINER_SOCKET = "/tmp/pinned.sock";
-    expect(__candidatesForTest()[0].label).toBe("/tmp/pinned.sock");
+  it("keeps the pinned socket PATH out of the label", () => {
+    // The label reaches available()'s failure `reason`, which the
+    // unauthenticated /v1/config forwards verbatim — a raw path there leaks
+    // the server's username and filesystem layout. The path is still used
+    // for the connection, and is exposed on the admin-only settings view.
+    process.env.CONTAINER_SOCKET = "/home/someone/.private/docker.sock";
+    const [candidate] = __candidatesForTest();
+    expect(candidate.socketPath).toBe("/home/someone/.private/docker.sock");
+    expect(candidate.label).toBe("custom socket");
+    expect(candidate.label).not.toContain("someone");
   });
 });
 

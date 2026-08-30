@@ -110,6 +110,22 @@ describe("stopAllSandboxes", () => {
     expect(stopped).toBe(0);
   });
 
+  it("does not touch host sandboxes when only container settings changed", async () => {
+    // The guard against real data loss: a host sandbox's stop() DELETES its
+    // working directory, so a container-only change (engine, socket, network
+    // toggle) sweeping globally would destroy other users' in-progress work.
+    // invalidatedKinds() narrows the sweep; this asserts the narrowing holds.
+    const handle = await getHostProvider().create(userId, {});
+    await handle.writeFile(path.join(handle.workdir, "work.txt"), "user's work");
+    const row = await insertRow(handle.ref);
+
+    await stopAllSandboxes("container");
+
+    const after = await db.query.sandboxes.findFirst({ where: eq(sandboxes.id, row.id) });
+    expect(after?.status).toBe("running");
+    await expect(handle.readFile(path.join(handle.workdir, "work.txt"))).resolves.toBe("user's work");
+  });
+
   it("is idempotent — a second sweep finds nothing left", async () => {
     await insertRow(path.join(root, "one"));
     await insertRow(path.join(root, "two"));

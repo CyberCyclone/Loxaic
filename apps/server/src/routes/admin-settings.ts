@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAdmin } from "../auth/middleware";
-import { getSandboxProvider } from "../sandbox/provider.ts";
+import { getSandboxStatus } from "../sandbox/status.ts";
 import { probeEngines } from "../sandbox/container-provider.ts";
 import { getSandboxSettings, SettingsError, updateSandboxSettings } from "../settings.ts";
 
@@ -43,16 +43,20 @@ export function adminSettingsRoutes(app: FastifyInstance) {
  * configured provider works at all. */
 async function sandboxView() {
   const settings = getSandboxSettings();
-  const provider = await getSandboxProvider();
-  const status = settings.mode === "off"
-    ? { ok: false, reason: "sandboxes are disabled (SANDBOX_MODE=off)" }
-    : await provider?.available() ?? { ok: false, reason: "no sandbox provider" };
-  // Only meaningful for container mode; probing engines in host mode would be
-  // noise on a machine that deliberately has none.
-  const engines = settings.mode === "container" ? await probeEngines() : [];
+  // Status comes from the same helper the public /v1/config uses, so the two
+  // can't drift — they previously disagreed about allowNetwork in host mode.
+  // Engines are probed concurrently with it: both hit sockets that may be
+  // down, and serializing them stacked their timeouts on every screen load.
+  // Probing is container-only — noise on a host-mode machine with no engine.
+  const [status, engines] = await Promise.all([
+    getSandboxStatus(),
+    settings.mode === "container" ? probeEngines() : Promise.resolve([]),
+  ]);
   return {
     ...settings,
-    available: status.ok,
+    // The effective value, matching /v1/config — host is always networked.
+    allowNetwork: status.allowNetwork,
+    available: status.available,
     ...(status.reason ? { reason: status.reason } : {}),
     engines,
   };

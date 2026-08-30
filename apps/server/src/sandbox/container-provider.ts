@@ -78,7 +78,11 @@ function candidates(): Candidate[] {
   // A CONTAINER_SOCKET pin surfaces from settings as engine "custom", so this
   // one branch covers both the env pin and an admin-chosen socket path.
   if (engine === "custom" && customSocket) {
-    return [{ label: customSocket, socketPath: customSocket }];
+    // Labelled, not pathed: this label ends up in available()'s failure
+    // `reason`, which the UNAUTHENTICATED /v1/config forwards verbatim — the
+    // raw path would leak the server's username and filesystem layout. The
+    // real path stays in the admin-only settings view.
+    return [{ label: "custom socket", socketPath: customSocket }];
   }
   // Colima and OrbStack both serve the Docker API, so they belong to the
   // "docker" pick; only the default socket and Colima's are well-known enough
@@ -94,6 +98,9 @@ function candidates(): Candidate[] {
 export const __candidatesForTest = candidates;
 
 let cached: { docker: Docker; label: string } | null = null;
+/** Bumped on every reset so a discovery that started under the old
+ * configuration can tell it is stale before publishing its result. */
+let engineGeneration = 0;
 
 /**
  * Forgets the discovered engine so the next operation rediscovers from
@@ -103,6 +110,7 @@ let cached: { docker: Docker; label: string } | null = null;
  */
 export function resetEngineCache(): void {
   cached = null;
+  engineGeneration++;
 }
 
 async function discover(): Promise<{ docker: Docker; label: string } | null> {
@@ -127,8 +135,13 @@ async function getDocker(): Promise<{ docker: Docker; label: string } | null> {
       cached = null; // Engine went away — fall through and rediscover.
     }
   }
+  const generation = engineGeneration;
   const found = await discover();
-  cached = found;
+  // A settings change during that discovery bumps the generation. Publishing
+  // a result found under the old configuration would restore precisely the
+  // stale engine resetEngineCache() had just cleared, and since the cache is
+  // only re-validated by a ping (which the old engine passes), it would stick.
+  if (generation === engineGeneration) cached = found;
   return found;
 }
 
