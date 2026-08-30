@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { auth } from "../auth";
+import { resolveSessionFromToken } from "../auth/middleware";
 import { findCommand, type ClientMessage, type ServerMessage } from "@shannon/types";
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
@@ -34,9 +34,7 @@ export function agentWsHandler(app: FastifyInstance) {
       return;
     }
 
-    const session = await auth.api.getSession({
-      headers: new Headers({ authorization: `Bearer ${token}` }),
-    });
+    const session = await resolveSessionFromToken(token);
     if (!session) {
       socket.close(4001, "Invalid session");
       return;
@@ -59,9 +57,7 @@ export function agentWsHandler(app: FastifyInstance) {
       }
 
       // See ws/chat.ts — re-validated per command, not just at connect.
-      const fresh = await auth.api.getSession({
-        headers: new Headers({ authorization: `Bearer ${token}` }),
-      });
+      const fresh = await resolveSessionFromToken(token);
       if (!fresh) {
         socket.close(4001, "Session expired");
         return;

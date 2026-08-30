@@ -189,14 +189,25 @@ screenshots showing that behaviour working. Writing those tests is the implement
   socket, and network toggle. Precedence is always **env > `server_settings` row >
   default**; an env-pinned field is rejected by the API with a `409` and rendered read-only
   in the GUI. Reads are sync against a cache loaded once at boot (`loadServerSettings()`),
-  because `getSandboxMode()` is sync by contract; before it loads, resolution is env +
-  defaults, i.e. exactly the pre-settings behaviour. Writes go through
-  `PATCH /v1/admin/settings/sandbox`, which is **admin-only** (`requireAdmin`) — host mode
-  and sandbox networking are deployment-wide security decisions, not per-user preferences.
-  `updateSandboxSettings()` must apply as well as persist: it calls `resetEngineCache()`
-  (the container provider only rediscovers when a ping *fails*, so a Docker→Podman switch
-  would otherwise keep using a live Docker forever) and `stopAllSandboxes()` (neither the
-  engine nor a container's `NetworkMode` can change under a running container).
+  because `getSandboxMode()` is sync by contract. A failed load **fails closed** (mode
+  resolves to `off`), because migrations only warn in non-strict mode and quietly falling
+  back to the permissive default would restart execution an admin had disabled. Writes go
+  through `PATCH /v1/admin/settings/sandbox`, which is **admin-only** (`requireAdmin`) —
+  host mode and sandbox networking are deployment-wide security decisions, not per-user
+  preferences, and **nothing may let a caller choose them per request**: `POST /v1/sandboxes`
+  once accepted a `provider` field in the body, which let any signed-in user get host
+  execution and bypass `mode: "off"` entirely. Derive the kind from `getSandboxMode()`.
+- `updateSandboxSettings()` must apply as well as persist, **in this order**: stop the
+  affected sandboxes *first*, then `resetEngineCache()`. Stopping a container means
+  attaching through the engine that created it, so resetting first sends those calls to the
+  new engine, which 404s, marks the row stopped anyway, and orphans a still-running
+  container the boot sweep can never find (it only lists the current engine's containers).
+  Scope the sweep with `invalidatedKinds()` — a host sandbox's `stop()` **deletes its
+  working directory**, so a container-only change must not sweep host sandboxes.
+- **Anything that authenticates must go through `apps/server/src/auth/middleware.ts`** —
+  `authenticate`/`requireAdmin` for routes, `resolveSessionFromToken` for WebSocket
+  handlers. Calling `auth.api.getSession` directly skips the ban re-check and leaves a
+  banned user holding live sockets (including a sandbox terminal) until the session expires.
 - Sandbox containers are created with **no network** (`NetworkMode: "none"`) unless an admin
   enables `allowNetwork` — everything in them is model-directed, so egress is an
   exfiltration path. Host sandboxes always have the host's network. `web_fetch` is

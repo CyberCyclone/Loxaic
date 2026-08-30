@@ -163,6 +163,12 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
 export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
   let stopped = 0;
 
+  // A creation already in flight captured the old settings, is not in
+  // `active` yet, and inserts its row after the query below — so without
+  // this it would survive the sweep and keep running under the engine or
+  // network mode the change was meant to retire.
+  if (pending.size > 0) await Promise.allSettled([...pending.values()]);
+
   for (const [conversationId, entry] of [...active.entries()]) {
     if (kind && entry.provider !== kind) continue;
     active.delete(conversationId);

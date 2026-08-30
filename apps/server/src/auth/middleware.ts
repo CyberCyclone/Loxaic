@@ -21,6 +21,24 @@ function isBanned(user: VerifiedSession["user"]): boolean {
 }
 
 /**
+ * Bearer token → session, or null when the token is invalid *or the user is
+ * banned*.
+ *
+ * For WebSocket handlers, which have no `FastifyReply` to write a status onto
+ * and close the socket with their own code instead. They previously called
+ * `auth.api.getSession` directly, which meant a banned user kept every live
+ * socket — including an interactive sandbox terminal — until the session
+ * expired on its own.
+ */
+export async function resolveSessionFromToken(token: string): Promise<VerifiedSession | null> {
+  const session = await auth.api.getSession({
+    headers: new Headers({ authorization: `Bearer ${token}` }),
+  });
+  if (!session || isBanned(session.user)) return null;
+  return session;
+}
+
+/**
  * Bearer token → verified, non-banned session; otherwise sends the response
  * and throws.
  *

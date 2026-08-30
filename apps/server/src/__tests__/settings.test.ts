@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { db, eq } from "@shannon/db";
 import { serverSettings } from "@shannon/db/schema";
 import {
+  __setLoadFailedForTest,
+  __setSandboxApplyForTest,
   getSandboxSettings,
   loadServerSettings,
   resetServerSettingsCache,
+  sandboxDisabledReason,
   SettingsError,
   updateSandboxSettings,
 } from "../settings.ts";
@@ -185,10 +188,15 @@ describe("updateSandboxSettings validation", () => {
 });
 
 describe("updateSandboxSettings persistence", () => {
+  // These assert the write path only. The apply path is global by nature —
+  // it stops every running sandbox of the affected kind — and these suites
+  // share a Postgres and a container engine with suites running in parallel,
+  // so a real change here would stop the MCP e2e suite's live container.
+  // Apply behaviour is asserted separately, below, without touching sandboxes.
+  beforeEach(() => { __setSandboxApplyForTest(false); });
+  afterEach(() => { __setSandboxApplyForTest(true); });
+
   it("writes the full resolved object and returns the new view", async () => {
-    // Persist the value it already resolves to: the write path and the
-    // returned view are the contract under test, and an unchanged result
-    // skips the global sandbox sweep that would disturb sibling suites.
     const view = await updateSandboxSettings({ mode: "container", allowNetwork: false });
 
     expect(view.mode).toBe("container");
@@ -216,5 +224,50 @@ describe("updateSandboxSettings persistence", () => {
     const view = await updateSandboxSettings({ engine: "custom", customSocket: "/tmp/somewhere.sock" });
     expect(view.engine).toBe("custom");
     expect(view.customSocket).toBe("/tmp/somewhere.sock");
+  });
+
+  it("serializes concurrent writes instead of losing one", async () => {
+    // Both patches are built from the in-memory `persisted`, so without
+    // serialization the later write's object still carries the earlier
+    // field's *old* value and silently reverts it.
+    await Promise.all([
+      updateSandboxSettings({ mode: "host" }),
+      updateSandboxSettings({ allowNetwork: true }),
+    ]);
+    const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    expect(row?.value).toMatchObject({ mode: "host", allowNetwork: true });
+  });
+});
+
+describe("fail-closed when settings can't be read", () => {
+  afterEach(() => { __setLoadFailedForTest(false); });
+
+  it("resolves mode to off rather than the permissive default", async () => {
+    // A persisted "off" that silently becomes "container" would restart agent
+    // execution an admin had deliberately disabled. Migrations only warn in
+    // non-strict mode, so a missing table reaches exactly this path.
+    await db.insert(serverSettings).values({ key: SANDBOX_KEY, value: { mode: "off" } });
+    await loadServerSettings();
+    expect(getSandboxSettings().mode).toBe("off");
+
+    resetServerSettingsCache();
+    __setLoadFailedForTest(true);
+    expect(getSandboxSettings().mode).toBe("off");
+    expect(sandboxDisabledReason()).toContain("could not be read");
+  });
+
+  it("still lets an explicit env pin win — it needs no database", () => {
+    __setLoadFailedForTest(true);
+    process.env.SANDBOX_MODE = "host";
+    expect(getSandboxSettings().mode).toBe("host");
+  });
+
+  it("names the right source when an admin disabled sandboxes via the API", async () => {
+    await db.insert(serverSettings).values({ key: SANDBOX_KEY, value: { mode: "off" } });
+    await loadServerSettings();
+    // Previously hardcoded "SANDBOX_MODE=off", which pointed the admin at an
+    // environment variable that isn't set.
+    expect(sandboxDisabledReason()).toContain("server settings");
+    expect(sandboxDisabledReason()).not.toContain("SANDBOX_MODE");
   });
 });
