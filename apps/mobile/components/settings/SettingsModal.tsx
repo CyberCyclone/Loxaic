@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { ChevronRight, Plug } from 'lucide-react-native';
+import { Boxes, ChevronRight, Plug } from 'lucide-react-native';
 import { setApiBaseUrl } from '@shannon/api-client';
 import {
   Modal,
@@ -167,6 +167,28 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </Text>
                   <Text size="2xs" className="text-muted-foreground">
                     Connect external tools for the agent
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable
+              testID="settings.nav.sandbox"
+              onPress={() => {
+                onClose();
+                router.push('/sandbox');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={Boxes} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    Agent Sandbox
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Where the agent runs tool calls
                   </Text>
                 </VStack>
               </HStack>

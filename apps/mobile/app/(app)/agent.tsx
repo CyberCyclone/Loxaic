@@ -1,12 +1,14 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
-import { MessagesSquare, PanelRight } from 'lucide-react-native';
+import { useRouter } from 'expo-router';
+import { MessagesSquare, PanelRight, TriangleAlert } from 'lucide-react-native';
 import { findCommand } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
+import { Text } from '@/components/ui/text';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
@@ -21,6 +23,7 @@ import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpOverrides } from '@/hooks/useMcpOverrides';
+import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -29,6 +32,8 @@ import { useToastHelper } from '@/hooks/useToastHelper';
 export default function AgentScreen() {
   const shell = useShell();
   const { token } = useSession();
+  const router = useRouter();
+  const { config } = useServerConfig();
   const breakpoint = useBreakpoint();
   const {
     runs,
@@ -165,6 +170,21 @@ export default function AgentScreen() {
             </HStack>
           }
         />
+        {config && !config.sandbox.available && (
+          <Pressable
+            testID="agent.sandbox.banner"
+            onPress={() => { router.push('/sandbox'); }}
+            className="flex-row items-center gap-2 border-b border-border bg-destructive/10 px-3 py-2 web:hover:bg-destructive/15"
+          >
+            <Icon as={TriangleAlert} size="xs" className="text-destructive" />
+            <Text size="xs" className="flex-1 text-destructive" numberOfLines={1}>
+              Agent tools are unavailable{config.sandbox.reason ? `: ${config.sandbox.reason}` : ''}
+            </Text>
+            <Text size="xs" className="text-destructive underline">
+              Fix
+            </Text>
+          </Pressable>
+        )}
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
