@@ -4,7 +4,7 @@
  * read-only view with no way to change anything — the authorization
  * boundary from apps/server/src/routes/admin-settings.ts made visible.
  */
-import { adminCreds, provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
+import { adminCreds, apiToken, provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { isVisible, waitForVisible } from '../helpers/selectors.ts';
@@ -55,12 +55,7 @@ describe('sandbox settings screen', () => {
     // boundary, and a regression that dropped it while leaving the button
     // hidden would pass every assertion above. Host mode is arbitrary
     // execution on the host, so this is the one worth proving directly.
-    const signIn = await fetch(`${BASE_URL}/api/auth/sign-in`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email: creds.email, password: creds.password }),
-    });
-    const { token } = (await signIn.json()) as { token: string };
+    const token = await apiToken(creds);
     const patch = await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },

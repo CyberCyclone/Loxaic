@@ -214,6 +214,51 @@ Because mode is server-wide state, every sandbox spec restores it to the default
 the API rather than the UI, so restoration still runs (and still works) if the test itself failed
 partway through a UI flow — see `resetSandboxSettings()` in `helpers/app.ts`.
 
+## Real-model task suite
+
+Everything above runs on `MOCK_INFERENCE`, which is exactly why it can't prove an agent can
+actually get real work done — it only ever replays a canned tool call. This suite is different:
+a real OpenAI-compatible endpoint drives the agent through a genuine multi-step coding task with
+no scripted tool sequence standing in for it.
+
+```bash
+E2E_REAL_MODEL=1 E2E_INFERENCE_URL=http://localhost:1234 pnpm --filter @shannon/e2e test:web:real-model
+```
+
+`E2E_INFERENCE_URL` points at any OpenAI-compatible endpoint — LM Studio, `llama.cpp` started
+with `--jinja` (see `docs/RUNTIME.md`), OpenRouter, etc. — the same thing `INFERENCE_BASE_URL`
+means everywhere else in this repo. Pick a model with real tool-calling support; a small local
+"coder" model (e.g. `qwen2.5-coder-7b-instruct`) is enough for the task described below.
+
+**Never part of `pnpm test`, and never run in CI.** It needs a real (often local, often
+GPU-bound) inference endpoint CI doesn't have, takes minutes rather than seconds, and a local
+model's output isn't deterministic the way the mock's is — it's a manual, on-demand suite you run
+before a release or when touching the tool loop, not a check that gates every push.
+
+### The task
+
+`fixtures/seeded-app/` is a minimal Vite + React + TypeScript app, seeded into the agent's
+sandbox by `standup.ts` (`E2E_SANDBOX_SEED_DIR`, consumed by `seedSandbox()` in
+`apps/server/src/sandbox/seed.ts`) instead of a bare empty working directory. `INSTRUCTIONS.md`
+tells the agent to `npm install`, then fix `src/App.tsx` — which is seeded in a state that
+**doesn't compile** (it references a `count`/`setCount` that were never declared) — and get
+`npm run build` passing. That's deliberate: a stub that already builds would make "the build
+passed" prove nothing about whether the agent did anything. The spec runs the agent in **auto**
+mode (no per-tool approval prompt — see `toolRequiresApproval()` in `packages/agent`, required
+for an autonomous multi-step task to finish unattended) and gives it the network access
+(`SANDBOX_ALLOW_NETWORK=1`, set automatically by `standup.ts` in this mode) that `npm install`
+needs and sandboxes don't have by default.
+
+### What "pass" means
+
+The spec waits for the agent run's own status to read "Done" (`agent.run.status`), then resolves
+the sandbox the run actually used (`GET /v1/sandboxes`) and runs `npm run build` against it
+**through the same sandbox exec API a client would use** — not by trusting the model's account of
+what it did, and not by scraping its wording for a specific phrase the way the mock-driven specs
+can (a real model's phrasing isn't deterministic). A non-zero exit fails the test with the
+build's real stdout/stderr and a file listing, so a failure says what actually went wrong rather
+than just "timed out".
+
 ## Screenshots
 
 `shot('name')` writes `artifacts/<platform>/<run-timestamp>/NN-name.png`, numbered in capture
@@ -231,6 +276,8 @@ PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end
 | `E2E_NO_STANDUP` | — | `1` skips stand-up entirely and assumes the stack is up. |
 | `E2E_SELF_CONTAINED` | — | `1` targets a packaged Electron build's own embedded stack instead of a server this harness spawns — see "Self-contained mode" under Electron. |
 | `E2E_FRESH_WEB` | — | `1` forces a rebuild of the Expo web export. Needed after any `apps/mobile` change — a stale export is reused otherwise (see `ensureWebExport()`), which silently tests old UI. |
+| `E2E_REAL_MODEL` | — | `1` runs the agent against a real inference endpoint instead of the mock — see "Real-model task suite". Requires `E2E_INFERENCE_URL`. |
+| `E2E_INFERENCE_URL` | — | The OpenAI-compatible endpoint `E2E_REAL_MODEL=1` talks to (e.g. `http://localhost:1234` for LM Studio). |
 | `E2E_HEADED` | — | `1` runs Chrome headed instead of headless. |
 | `E2E_LOG_LEVEL` | `warn` | WebdriverIO log level (`trace`…`error`). |
 | `E2E_IOS_DEVICE` | `iPhone 15` | Simulator to run the iOS suite on. |

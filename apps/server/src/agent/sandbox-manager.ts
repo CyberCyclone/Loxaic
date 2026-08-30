@@ -3,11 +3,27 @@ import { sandboxes } from "@shannon/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
+import { seedSandbox } from "../sandbox/seed.ts";
 
 /** How long a conversation's sandbox may sit unused before it's reaped. */
 const IDLE_TTL_MS = 30 * 60 * 1000;
 /** How often the reaper looks for idle sandboxes. */
 const REAP_INTERVAL_MS = 5 * 60 * 1000;
+
+let seedWarned = false;
+
+/** Seeding fires for every sandbox any user creates, purely because the env
+ * var is set — so it gets the same one-time visibility SANDBOX_MODE=host
+ * does, rather than silently reshaping every workspace if the variable ever
+ * leaks into a non-test configuration. */
+function warnSeedingOnce(dir: string): void {
+  if (seedWarned) return;
+  seedWarned = true;
+  console.warn(
+    `[sandbox] E2E_SANDBOX_SEED_DIR is set: every new sandbox is being pre-populated from ${dir}. ` +
+      "This is a test-harness hook and should not be set in a real deployment.",
+  );
+}
 
 /** rowId is null for ephemeral (incognito) sandboxes — no Postgres row. */
 interface Entry { rowId: string | null; provider: SandboxKind; ref: string; lastUsedAt: number }
@@ -102,6 +118,24 @@ async function createEntry(
   }
 
   const handle = await provider.create(userId, {});
+  // Test-only hook for the real-model e2e suite: seeds a fixture repo (an
+  // INSTRUCTIONS.md + a small app) into every freshly-created sandbox, so
+  // the agent has something to read and build against. Named E2E_-prefixed
+  // and read at call time like every other sandbox env var, so it's inert
+  // unless a harness explicitly sets it — see apps/e2e's real-model suite.
+  if (process.env.E2E_SANDBOX_SEED_DIR) {
+    warnSeedingOnce(process.env.E2E_SANDBOX_SEED_DIR);
+    try {
+      await seedSandbox(handle, process.env.E2E_SANDBOX_SEED_DIR);
+    } catch (err) {
+      // The handle exists but nothing tracks it yet — no row, not in
+      // `active` — and a container runs `tail -f /dev/null`, so it would
+      // never exit on its own. Left alone, a seed dir that fails repeatedly
+      // piles up orphans only the next boot sweep can reclaim.
+      await handle.stop().catch(() => undefined);
+      throw err;
+    }
+  }
   let rowId: string | null = null;
   if (!ephemeral) {
     const [row] = await db

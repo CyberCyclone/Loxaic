@@ -33,6 +33,7 @@ export default tseslint.config(
       "packages/db/drizzle/**", // generated migration SQL + snapshots, not hand-written source
       "apps/mobile/components/ui/**", // gluestack-ui's copy-paste output, not hand-authored app code
       "apps/e2e/artifacts/**", // screenshots + run state from local e2e runs
+      "apps/e2e/fixtures/**", // a standalone app the real-model e2e suite seeds into a sandbox and has the agent build — not part of this repo's own project graph
     ],
   },
 

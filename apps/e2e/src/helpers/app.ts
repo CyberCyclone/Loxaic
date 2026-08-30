@@ -5,7 +5,7 @@
  */
 import { browser } from '@wdio/globals';
 import { byTestId, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
-import { adminCreds, type Credentials } from './auth.ts';
+import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
 /** Text the mock inference provider echoes back for a plain chat turn. */
@@ -147,21 +147,10 @@ export async function setSandboxMode(mode: 'container' | 'host' | 'off'): Promis
  */
 export async function resetSandboxSettings(): Promise<void> {
   const creds = adminCreds();
-  const signIn = await fetch(`${BASE_URL}/api/auth/sign-in`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: creds.email, password: creds.password }),
-  });
   // Never silent: mode is server-wide, so a reset that quietly no-ops after a
   // spec switched to host leaves every later spec running agent tool calls
-  // unisolated on the host with nothing to indicate it.
-  if (!signIn.ok) {
-    throw new Error(
-      `[e2e] could not sign in as admin to reset sandbox settings (${String(signIn.status)}) — ` +
-        'the server may be left in a non-default sandbox mode.',
-    );
-  }
-  const { token } = (await signIn.json()) as { token: string };
+  // unisolated on the host with nothing to indicate it. apiToken() throws.
+  const token = await apiToken(creds);
   const res = await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },

@@ -9,12 +9,13 @@
  * already have `pnpm dev` or a sibling checkout's containers up, and starting
  * a second Postgres on 5432 just fails on a port collision.
  *
- * The readiness gate is `GET /health` reporting BOTH `database: "ok"` and
- * `inference: "mock"`. That single check proves more than it looks: /health
- * runs a real query (so the DB is up AND migrated), and the inference field
- * proves the server booted with MOCK_INFERENCE set — which is read once at
- * module load, so a server started without it can never be talked into mock
- * mode later.
+ * The readiness gate is `GET /health` reporting `database: "ok"` and
+ * `inference: "mock"` (or `"ok"` under E2E_REAL_MODEL — see below). That
+ * single check proves more than it looks: /health runs a real query (so the
+ * DB is up AND migrated), and the inference field is a genuine connectivity
+ * check against whichever endpoint the server booted with — mock or real —
+ * which is fixed at module load, so a server can never be talked into the
+ * other mode later.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -58,6 +59,15 @@ const DATABASE_URL =
  */
 export const ADMIN_FILE = path.join(RUN_DIR, 'admin.json');
 const SANDBOX_HOST_ROOT = path.join(RUN_DIR, 'sandboxes');
+/**
+ * Real-model mode: drives the agent with an actual inference endpoint
+ * instead of the mock, so it has to genuinely read instructions and write
+ * working code — see the "Real-model task suite" section of the README.
+ * Never inferred automatically; always opt-in, like SELF_CONTAINED.
+ */
+export const REAL_MODEL = process.env.E2E_REAL_MODEL === '1';
+const INFERENCE_URL = process.env.E2E_INFERENCE_URL;
+const SEED_DIR = path.resolve(E2E_DIR, 'fixtures/seeded-app');
 
 function writeAdminCreds(): { email: string; password: string } {
   const suffix = randomBytes(9).toString('hex');
@@ -182,20 +192,43 @@ async function ensureWebExport(): Promise<void> {
 }
 
 async function ensureServer(): Promise<void> {
+  if (REAL_MODEL && !INFERENCE_URL) {
+    throw new Error(
+      '[e2e:standup] E2E_REAL_MODEL=1 needs E2E_INFERENCE_URL — an OpenAI-compatible endpoint ' +
+        '(LM Studio, llama.cpp --jinja, OpenRouter, …). See the README\'s "Real-model task suite".',
+    );
+  }
+  // /health's inference field genuinely round-trips GET <base>/v1/models — see
+  // apps/server/src/index.ts — so this is a real connectivity check, not a flag echo.
+  const expectedInference = REAL_MODEL ? 'ok' : 'mock';
+
   const existing = await fetchHealth();
   if (existing) {
-    if (existing.services.inference === 'mock') {
+    // Real-model mode needs more of the server than /health can show:
+    // SANDBOX_ALLOW_NETWORK (for `npm install`) and E2E_SANDBOX_SEED_DIR (the
+    // fixture the task is defined by), neither of which is observable from
+    // outside. Reusing a server without them yields an agent staring at an
+    // empty workspace with no network, and the failure reads as the model
+    // being bad rather than the harness being misconfigured — so refuse.
+    if (REAL_MODEL) {
+      throw new Error(
+        `[e2e:standup] a server is already listening at ${BASE_URL}, and real-model mode cannot ` +
+          'reuse it: it needs SANDBOX_ALLOW_NETWORK and E2E_SANDBOX_SEED_DIR, which this harness ' +
+          'only sets on a server it starts itself. Stop it, or use a different E2E_PORT.',
+      );
+    }
+    if (existing.services.inference === expectedInference) {
       log(`reusing server already healthy at ${BASE_URL}`);
       return;
     }
     throw new Error(
       `[e2e:standup] something is already listening at ${BASE_URL} but reports ` +
-        `inference="${existing.services.inference}" (expected "mock"). Stop it, or point ` +
+        `inference="${existing.services.inference}" (expected "${expectedInference}"). Stop it, or point ` +
         `this run elsewhere with E2E_PORT / E2E_BASE_URL.`,
     );
   }
 
-  log(`starting server on port ${String(PORT)} with MOCK_INFERENCE=true`);
+  log(`starting server on port ${String(PORT)} with ${REAL_MODEL ? `INFERENCE_BASE_URL=${String(INFERENCE_URL)}` : 'MOCK_INFERENCE=true'}`);
   mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
   const { email: adminEmail } = writeAdminCreds();
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
@@ -204,7 +237,19 @@ async function ensureServer(): Promise<void> {
     detached: false,
     env: {
       ...process.env,
-      MOCK_INFERENCE: 'true',
+      // Explicit even/especially in the false branch: a MOCK_INFERENCE=true
+      // left over in the calling shell must not silently defeat the real
+      // connectivity check /health performs when REAL_MODEL is set.
+      MOCK_INFERENCE: REAL_MODEL ? '' : 'true',
+      ...(REAL_MODEL
+        ? {
+            INFERENCE_BASE_URL: INFERENCE_URL,
+            // The real-model suite's whole point is an agent that installs
+            // dependencies, which needs the network sandboxes lack by default.
+            SANDBOX_ALLOW_NETWORK: '1',
+            E2E_SANDBOX_SEED_DIR: SEED_DIR,
+          }
+        : {}),
       PORT: String(PORT),
       DATABASE_URL,
       BETTER_AUTH_SECRET:
@@ -221,10 +266,10 @@ async function ensureServer(): Promise<void> {
   writeFileSync(PID_FILE, String(child.pid ?? ''), 'utf8');
 
   await waitUntil(
-    `${BASE_URL}/health to report database=ok inference=mock`,
+    `${BASE_URL}/health to report database=ok inference=${expectedInference}`,
     async () => {
       const h = await fetchHealth();
-      return h?.services.database === 'ok' && h.services.inference === 'mock';
+      return h?.services.database === 'ok' && h.services.inference === expectedInference;
     },
     120_000,
   );
