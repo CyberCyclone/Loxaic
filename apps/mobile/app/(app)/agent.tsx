@@ -161,6 +161,7 @@ export default function AgentScreen() {
               )}
               {!wide && (
                 <Pressable
+                  testID="agent.threadList.toggle"
                   onPress={() => { setThreadListOpen(true); }}
                   className="rounded-sm p-1.5 web:hover:bg-muted/50"
                 >
