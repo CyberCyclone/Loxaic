@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  getSession as apiGetSession,
   signIn as apiSignIn,
   signUp as apiSignUp,
   type Session,
@@ -15,10 +16,14 @@ import { clearToken, loadToken, saveToken } from './auth';
 import { resolveEndpoint } from './endpoint';
 import { hydrateStorage } from './storage';
 
+type SessionUser = Session['user'];
+
 interface SessionState {
   /** Bootstrap (storage hydration + stored-token load) finished. */
   ready: boolean;
   token: string | null;
+  user: SessionUser | null;
+  isAdmin: boolean;
   signIn: (email: string, password: string) => Promise<Session>;
   signUp: (email: string, password: string, name?: string) => Promise<Session>;
   signOut: () => Promise<void>;
@@ -29,15 +34,42 @@ const SessionContext = createContext<SessionState | null>(null);
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [token, setToken] = useState<string | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
 
   useEffect(() => {
     const state = { cancelled: false };
     void (async () => {
       await hydrateStorage();
       await resolveEndpoint();
-      const stored = await loadToken();
+      let stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
+      let sessionUser: SessionUser | null = null;
+
+      if (stored) {
+        // getSession resolves null *only* on a 401 — a definitively dead
+        // token — and throws when the server can't be reached. Those must not
+        // be conflated: signing someone out because their self-hosted server
+        // was briefly down would be worse than carrying on with a token that
+        // is very probably still good.
+        try {
+          const info = await apiGetSession();
+          if (info) {
+            sessionUser = info.user;
+          } else {
+            // Dead token. It has to be cleared, not just left unused: the app
+            // gate in app/(app)/_layout.tsx keys on `token` alone, so keeping
+            // it drops the user into the authenticated shell where every
+            // request 401s and nothing ever signs them out.
+            await clearToken();
+            stored = null;
+          }
+        } catch {
+          // Server unreachable — no conclusion can be drawn about the token.
+        }
+      }
+
       if (!state.cancelled) {
         setToken(stored);
+        setUser(sessionUser);
         setReady(true);
       }
     })();
@@ -48,29 +80,32 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
 
   const signIn = useCallback(async (email: string, password: string) => {
     const session = await apiSignIn(email, password);
-    await saveToken(session.token);
+    await saveToken(session.token); // also sets the api-client's AUTH_TOKEN
     setToken(session.token);
+    setUser(session.user);
     return session;
   }, []);
 
   const signUp = useCallback(
     async (email: string, password: string, name?: string) => {
       const session = await apiSignUp(email, password, name);
-      await saveToken(session.token);
+      await saveToken(session.token); // also sets the api-client's AUTH_TOKEN
       setToken(session.token);
+      setUser(session.user);
       return session;
     },
     [],
   );
 
   const signOut = useCallback(async () => {
-    await clearToken();
+    await clearToken(); // also clears the api-client's AUTH_TOKEN
     setToken(null);
+    setUser(null);
   }, []);
 
   const value = useMemo(
-    () => ({ ready, token, signIn, signUp, signOut }),
-    [ready, token, signIn, signUp, signOut],
+    () => ({ ready, token, user, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
+    [ready, token, user, signIn, signUp, signOut],
   );
 
   return (
