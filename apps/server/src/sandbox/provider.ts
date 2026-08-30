@@ -5,6 +5,8 @@
  * alternative instead of a parallel code path.
  */
 
+import { getSandboxSettings } from "../settings.ts";
+
 export type SandboxKind = "container" | "host";
 export type SandboxMode = SandboxKind | "off";
 
@@ -76,13 +78,13 @@ export interface SandboxProvider {
   attach(ref: string): Promise<SandboxHandle>;
 }
 
-/** SANDBOX_MODE is read at call time (not cached at module load) so a
- * supervisor can set it in the child's env before the server's first sandbox
- * use without an import-order dependency. */
+/** Resolved at call time (never cached at module load) so a supervisor can
+ * set SANDBOX_MODE in the child's env before the server's first sandbox use
+ * without an import-order dependency, and so an admin's GUI change takes
+ * effect on the next tool call rather than needing a restart. Precedence is
+ * env > persisted > default — see ../settings.ts. */
 export function getSandboxMode(): SandboxMode {
-  const mode = process.env.SANDBOX_MODE;
-  if (mode === "host" || mode === "off") return mode;
-  return "container";
+  return getSandboxSettings().mode;
 }
 
 let hostModeWarned = false;

@@ -1,0 +1,220 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { db, eq } from "@shannon/db";
+import { serverSettings } from "@shannon/db/schema";
+import {
+  getSandboxSettings,
+  loadServerSettings,
+  resetServerSettingsCache,
+  SettingsError,
+  updateSandboxSettings,
+} from "../settings.ts";
+
+const SANDBOX_KEY = "sandbox";
+const ENV_KEYS = ["SANDBOX_MODE", "CONTAINER_SOCKET", "SANDBOX_ALLOW_NETWORK"] as const;
+
+/** Restores whatever the ambient environment had, so a developer running
+ * these with SANDBOX_MODE exported doesn't get a polluted process. */
+let saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
+
+beforeEach(() => {
+  saved = {};
+  for (const key of ENV_KEYS) {
+    saved[key] = process.env[key];
+    Reflect.deleteProperty(process.env, key);
+  }
+  resetServerSettingsCache();
+});
+
+afterEach(async () => {
+  for (const key of ENV_KEYS) {
+    const value = saved[key];
+    if (value === undefined) Reflect.deleteProperty(process.env, key);
+    else process.env[key] = value;
+  }
+  resetServerSettingsCache();
+  await db.delete(serverSettings).where(eq(serverSettings.key, SANDBOX_KEY));
+});
+
+describe("sandbox settings precedence", () => {
+  it("falls back to defaults with no env and nothing persisted", () => {
+    const s = getSandboxSettings();
+    expect(s.mode).toBe("container");
+    expect(s.engine).toBe("auto");
+    expect(s.customSocket).toBeNull();
+    expect(s.allowNetwork).toBe(false);
+    expect(s.envOverrides).toEqual({ mode: false, socket: false, allowNetwork: false });
+  });
+
+  it("uses persisted values when the environment says nothing", async () => {
+    await db.insert(serverSettings).values({
+      key: SANDBOX_KEY,
+      value: { mode: "host", engine: "podman", customSocket: null, allowNetwork: true },
+    });
+    await loadServerSettings();
+
+    const s = getSandboxSettings();
+    expect(s.mode).toBe("host");
+    expect(s.engine).toBe("podman");
+    expect(s.allowNetwork).toBe(true);
+    // Persisted is not "overridden" — the GUI must still let an admin edit it.
+    expect(s.envOverrides).toEqual({ mode: false, socket: false, allowNetwork: false });
+  });
+
+  it("lets the environment win over persisted values, per field", async () => {
+    await db.insert(serverSettings).values({
+      key: SANDBOX_KEY,
+      value: { mode: "host", engine: "podman", customSocket: null, allowNetwork: true },
+    });
+    await loadServerSettings();
+    process.env.SANDBOX_MODE = "off";
+
+    const s = getSandboxSettings();
+    expect(s.mode).toBe("off");
+    // Untouched by env, so the persisted value still stands.
+    expect(s.engine).toBe("podman");
+    expect(s.allowNetwork).toBe(true);
+    expect(s.envOverrides).toEqual({ mode: true, socket: false, allowNetwork: false });
+  });
+
+  it("treats CONTAINER_SOCKET as a custom-engine pin covering both socket fields", () => {
+    process.env.CONTAINER_SOCKET = "/tmp/custom.sock";
+    const s = getSandboxSettings();
+    expect(s.engine).toBe("custom");
+    expect(s.customSocket).toBe("/tmp/custom.sock");
+    expect(s.envOverrides.socket).toBe(true);
+  });
+
+  it('reads an empty env var as unset, not as a value ("FOO=" in a .env file)', () => {
+    process.env.SANDBOX_MODE = "";
+    process.env.CONTAINER_SOCKET = "";
+    const s = getSandboxSettings();
+    expect(s.mode).toBe("container");
+    expect(s.engine).toBe("auto");
+    expect(s.envOverrides).toEqual({ mode: false, socket: false, allowNetwork: false });
+  });
+
+  it("ignores an unrecognized SANDBOX_MODE rather than pinning it", async () => {
+    await db.insert(serverSettings).values({ key: SANDBOX_KEY, value: { mode: "host" } });
+    await loadServerSettings();
+    process.env.SANDBOX_MODE = "nonsense";
+
+    const s = getSandboxSettings();
+    expect(s.mode).toBe("host");
+    expect(s.envOverrides.mode).toBe(false);
+  });
+
+  it("parses the truthy spellings of SANDBOX_ALLOW_NETWORK", () => {
+    for (const value of ["1", "true", "TRUE", "yes"]) {
+      process.env.SANDBOX_ALLOW_NETWORK = value;
+      expect(getSandboxSettings().allowNetwork).toBe(true);
+    }
+    for (const value of ["0", "false", "no", "anything-else"]) {
+      process.env.SANDBOX_ALLOW_NETWORK = value;
+      expect(getSandboxSettings().allowNetwork).toBe(false);
+      // Still an override: the env said something, so the GUI can't edit it.
+      expect(getSandboxSettings().envOverrides.allowNetwork).toBe(true);
+    }
+  });
+
+  it("ignores junk in a persisted row instead of trusting it", async () => {
+    await db.insert(serverSettings).values({
+      key: SANDBOX_KEY,
+      value: { mode: "banana", engine: 7, allowNetwork: "yes-please" },
+    });
+    await loadServerSettings();
+
+    const s = getSandboxSettings();
+    expect(s.mode).toBe("container");
+    expect(s.engine).toBe("auto");
+    expect(s.allowNetwork).toBe(false);
+  });
+});
+
+describe("updateSandboxSettings validation", () => {
+  // Each case below must reject *before* persisting or applying, so none of
+  // them reach the sandbox-stopping path (which is global and would disturb
+  // the other suites sharing this database).
+  async function expectRejection(patch: unknown, code: "invalid" | "envOverride") {
+    await expect(updateSandboxSettings(patch)).rejects.toMatchObject({ name: "SettingsError", code });
+    const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    expect(row).toBeUndefined();
+  }
+
+  it("rejects a non-object body", async () => {
+    await expectRejection("mode=host", "invalid");
+  });
+
+  it("rejects an unknown mode", async () => {
+    await expectRejection({ mode: "sideways" }, "invalid");
+  });
+
+  it("rejects an unknown engine", async () => {
+    await expectRejection({ engine: "containerd" }, "invalid");
+  });
+
+  it("rejects a non-boolean allowNetwork", async () => {
+    await expectRejection({ allowNetwork: "true" }, "invalid");
+  });
+
+  it("ignores unknown keys rather than persisting them", async () => {
+    await updateSandboxSettings({ mode: "container", somethingElse: "ignored" });
+    const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    expect(row?.value).not.toHaveProperty("somethingElse");
+  });
+
+  it("rejects engine=custom with no socket, which would silently auto-discover", async () => {
+    await expectRejection({ engine: "custom" }, "invalid");
+  });
+
+  it("rejects a field pinned by the environment", async () => {
+    process.env.SANDBOX_MODE = "host";
+    await expectRejection({ mode: "container" }, "envOverride");
+  });
+
+  it("rejects an engine change while CONTAINER_SOCKET pins the socket", async () => {
+    process.env.CONTAINER_SOCKET = "/tmp/pinned.sock";
+    await expectRejection({ engine: "podman" }, "envOverride");
+  });
+
+  it("carries a human-readable message naming the variable", async () => {
+    process.env.SANDBOX_ALLOW_NETWORK = "0";
+    const err = await updateSandboxSettings({ allowNetwork: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SettingsError);
+    expect((err as SettingsError).message).toContain("SANDBOX_ALLOW_NETWORK");
+  });
+});
+
+describe("updateSandboxSettings persistence", () => {
+  it("writes the full resolved object and returns the new view", async () => {
+    // Persist the value it already resolves to: the write path and the
+    // returned view are the contract under test, and an unchanged result
+    // skips the global sandbox sweep that would disturb sibling suites.
+    const view = await updateSandboxSettings({ mode: "container", allowNetwork: false });
+
+    expect(view.mode).toBe("container");
+    expect(view.allowNetwork).toBe(false);
+
+    const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    // Every field is stored, not just the patched ones, so a later read
+    // doesn't depend on defaults drifting.
+    expect(row?.value).toEqual({
+      mode: "container",
+      engine: "auto",
+      customSocket: null,
+      allowNetwork: false,
+    });
+  });
+
+  it("upserts rather than duplicating the row", async () => {
+    await updateSandboxSettings({ mode: "container" });
+    await updateSandboxSettings({ mode: "container" });
+    const rows = await db.query.serverSettings.findMany({ where: eq(serverSettings.key, SANDBOX_KEY) });
+    expect(rows).toHaveLength(1);
+  });
+
+  it("accepts engine=custom when a socket comes with it", async () => {
+    const view = await updateSandboxSettings({ engine: "custom", customSocket: "/tmp/somewhere.sock" });
+    expect(view.engine).toBe("custom");
+    expect(view.customSocket).toBe("/tmp/somewhere.sock");
+  });
+});

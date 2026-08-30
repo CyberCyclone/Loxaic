@@ -34,10 +34,15 @@ export async function getHealth(): Promise<HealthResponse> {
   return res.json() as Promise<HealthResponse>;
 }
 
+export type SandboxMode = "container" | "host" | "off";
+export type SandboxEngine = "auto" | "docker" | "podman" | "custom";
+
 export interface ConfigResponse {
   sandbox: {
-    mode: "container" | "host" | "off";
+    mode: SandboxMode;
     available: boolean;
+    /** Whether sandboxes can reach the network. Always true in host mode. */
+    allowNetwork: boolean;
     reason?: string;
   };
 }
@@ -46,6 +51,48 @@ export async function getConfig(): Promise<ConfigResponse> {
   const res = await fetch(`${BASE_URL}/v1/config`);
   if (!res.ok) throw new Error(`GET /v1/config ${String(res.status)}`);
   return res.json() as Promise<ConfigResponse>;
+}
+
+// ── Admin: server-level sandbox settings ──────────────────
+
+export interface EngineProbe {
+  id: "docker" | "podman";
+  available: boolean;
+  socketPath?: string;
+  detectedAs?: "docker" | "podman";
+}
+
+export interface SandboxSettings {
+  mode: SandboxMode;
+  engine: SandboxEngine;
+  customSocket: string | null;
+  allowNetwork: boolean;
+  /** Fields pinned by an environment variable — render read-only; PATCHing
+   * one returns 409. */
+  envOverrides: { mode: boolean; socket: boolean; allowNetwork: boolean };
+  available: boolean;
+  reason?: string;
+  /** Which engines are installed/running, for greying out the picker. Empty
+   * outside container mode. */
+  engines: EngineProbe[];
+}
+
+export type SandboxSettingsPatch = Partial<
+  Pick<SandboxSettings, "mode" | "engine" | "customSocket" | "allowNetwork">
+>;
+
+export async function getSandboxSettings(): Promise<SandboxSettings> {
+  return (await authedFetch("/v1/admin/settings/sandbox")).json() as Promise<SandboxSettings>;
+}
+
+export async function updateSandboxSettings(patch: SandboxSettingsPatch): Promise<SandboxSettings> {
+  return (
+    await authedFetch("/v1/admin/settings/sandbox", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  ).json() as Promise<SandboxSettings>;
 }
 
 export type { ModelInfo, ModelPref } from "@shannon/types";

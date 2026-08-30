@@ -17,12 +17,18 @@ backend — are independent choices; pick what fits your hardware.
 
 The server talks to containers through [dockerode](https://github.com/apocas/dockerode),
 which speaks the **Docker Engine API** — not "Docker" specifically. Any engine
-that exposes that API works, and is now **auto-discovered**: the default
-socket is tried first, then common Podman locations (rootless on Linux, the
-`podman machine` socket on macOS/Windows) — re-probed live, so starting the
-engine after Shannon is already running needs no restart. Set
-`CONTAINER_SOCKET` in `.env` (see [`.env.example`](../.env.example)) only to
-pin a specific socket or skip discovery.
+that exposes that API works, and is **auto-discovered**: the default socket is
+tried first, then common Podman locations (rootless on Linux, the
+`podman machine` socket on macOS/Windows), then Colima's — re-probed live, so
+starting the engine after Shannon is already running needs no restart.
+
+An admin can also pick the engine explicitly in the app (**Settings → Agent
+Sandbox**): Docker and Podman are offered as choices, with whichever isn't
+installed greyed out, plus a Custom option that takes a socket path. That
+choice is stored server-side and applied without a restart. Setting
+`CONTAINER_SOCKET` in `.env` (see [`.env.example`](../.env.example)) pins the
+socket instead and makes the GUI control read-only — see
+[Where settings live](#where-settings-live) below.
 
 | Engine | Platforms | Socket | Notes |
 |---|---|---|---|
@@ -52,6 +58,37 @@ glob) actually run:
 `GET /v1/config` reports the current mode and whether it's actually usable
 right now (`{"sandbox":{"mode":"container","available":false,"reason":"…"}}`)
 — useful for a client to show *why* before a tool call fails mid-run.
+
+### Sandbox network access
+
+Sandbox containers get **no network** by default (`NetworkMode: none`):
+everything running in there was directed by the model, so an outbound
+connection is an exfiltration path. An agent that needs to install
+dependencies (`npm install`, `pip install`) needs it turned on — an admin can
+do that in **Settings → Agent Sandbox**, or a deployment can pin it with
+`SANDBOX_ALLOW_NETWORK=1`.
+
+Two things to know: it takes effect on the *next* sandbox (a container's
+network mode is fixed at creation, so changing the setting stops the running
+ones), and it does not apply to host mode, where sandboxes always have the
+host's own network. `web_fetch` is unaffected either way — it always runs on
+the server, behind an SSRF guard, never in the sandbox.
+
+### Where settings live
+
+Sandbox configuration resolves **environment variable > stored setting >
+default**:
+
+- **Stored** — what an admin sets in **Settings → Agent Sandbox**, saved in the
+  `server_settings` table and applied at runtime (no restart). Requires the
+  admin role; other users see a read-only status view.
+- **Environment** — `SANDBOX_MODE`, `CONTAINER_SOCKET`, `SANDBOX_ALLOW_NETWORK`
+  pin their field. A pinned field is rejected by the API (`409`) and shown as
+  "set by environment" in the GUI, so a Compose file, systemd unit, or the
+  desktop supervisor stays authoritative when it sets something explicitly.
+
+A deployment that sets none of these is fully configurable from the app; one
+that sets all of them ignores the GUI entirely. Both are supported.
 
 ## Postgres
 

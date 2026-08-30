@@ -184,8 +184,23 @@ screenshots showing that behaviour working. Writing those tests is the implement
   providers: `container-provider.ts` (dockerode; Docker, Podman, OrbStack, Colima — any
   Docker-Engine-API-compatible socket, auto-discovered) and `host-provider.ts` (no
   isolation, agent commands run directly on the host — an explicit `SANDBOX_MODE=host`
-  opt-in). Selected via `SANDBOX_MODE` (`container` default | `host` | `off`), read at
-  call time — see `docs/RUNTIME.md`.
+  opt-in). Selected via `getSandboxMode()`, resolved at call time — see `docs/RUNTIME.md`.
+- **Server-level settings** (`apps/server/src/settings.ts`) back the sandbox mode, engine,
+  socket, and network toggle. Precedence is always **env > `server_settings` row >
+  default**; an env-pinned field is rejected by the API with a `409` and rendered read-only
+  in the GUI. Reads are sync against a cache loaded once at boot (`loadServerSettings()`),
+  because `getSandboxMode()` is sync by contract; before it loads, resolution is env +
+  defaults, i.e. exactly the pre-settings behaviour. Writes go through
+  `PATCH /v1/admin/settings/sandbox`, which is **admin-only** (`requireAdmin`) — host mode
+  and sandbox networking are deployment-wide security decisions, not per-user preferences.
+  `updateSandboxSettings()` must apply as well as persist: it calls `resetEngineCache()`
+  (the container provider only rediscovers when a ping *fails*, so a Docker→Podman switch
+  would otherwise keep using a live Docker forever) and `stopAllSandboxes()` (neither the
+  engine nor a container's `NetworkMode` can change under a running container).
+- Sandbox containers are created with **no network** (`NetworkMode: "none"`) unless an admin
+  enables `allowNetwork` — everything in them is model-directed, so egress is an
+  exfiltration path. Host sandboxes always have the host's network. `web_fetch` is
+  unaffected: it always runs server-side behind the SSRF guard, never in the sandbox.
 - Sandboxes are per-conversation, lazily created on first tool use, and **survive socket
   close** (reconnecting mid-task keeps the working directory) — see
   `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
