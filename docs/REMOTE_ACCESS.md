@@ -102,8 +102,16 @@ persists under Electron's `userData` dir, so login is one-time.
 
 If `TSNET_TARGET` isn't set, or the sidecar doesn't come up within 5s, the
 main process falls back to probing `LAN_API_URL`/`PUBLIC_API_URL` directly
-(same candidates the native/web builds use) and finally `localhost:4000`.
-Mobile stays on the standalone Tailscale app — embedding on iOS/Android would
+(same candidates the native/web builds use), then — in dev — a running
+`pnpm dev` server on `localhost:4000`. If none of that resolves anything, the
+app is **self-contained**: it brings up its own embedded Postgres + server
+(default port `4100`) rather than falling back to a fixed URL — see
+[DEPLOY.md](DEPLOY.md#self-contained-app-desktop--headless) for the ports,
+data directory, and how a self-contained build and a dev server coexist on
+one host. `--remote=<url>` / `SHANNON_REMOTE_URL` skips all of this and
+connects to a server elsewhere, same as the mobile/web builds' Settings
+override. Mobile stays on the standalone Tailscale app — embedding on
+iOS/Android would
 need a native module wrapping gomobile-compiled `tsnet` with no RN binding
 currently available, and would mean giving up Expo Go for a custom
 EAS dev-client build.

@@ -36,12 +36,16 @@
       { "from": "resources/tsnet-proxy", "to": "tsnet-proxy" },
       { "from": "resources/server", "to": "server" }
     ],
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "mac": {
       "target": "dmg",
       "category": "public.app-category.developer-tools",
       "identity": null
     },
     "win": { "target": "nsis" },
-    "linux": { "target": "AppImage", "category": "Development" }
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Development"
+    }
   }
 }

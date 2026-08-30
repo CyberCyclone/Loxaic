@@ -12,10 +12,13 @@ reverse proxy).
 
 ## Layout
 
-- `apps/server` — Fastify API + WS (chat + agent tool loop) + routines scheduler + sandbox orchestrator
+- `apps/server` — Fastify API + WS (chat + agent tool loop) + routines scheduler + agent sandbox providers (`src/sandbox/`)
 - `apps/mobile` — the one frontend (Expo + expo-router + gluestack-ui v5), targets iOS/Android/Web
-- `apps/desktop` — Electron shell that loads `apps/mobile`'s web export; embeds a Tailscale sidecar
-- `packages/agent` — tool definitions, `AgentEvent` union, permission-mode logic (shared by server + client)
+- `apps/desktop` — the deployment artifact: an Electron GUI, a `--headless` entry (`src/headless.js`), and a
+  service supervisor (`src/supervisor/`) that brings up an embedded Postgres + the bundled server so the app
+  is self-contained with no Docker/Postgres install required; also embeds a Tailscale sidecar
+- `packages/agent` — tool definitions, permission-mode logic (shared by server + client); the wire event
+  union (`StreamEventKind`) lives in `packages/types` instead
 - `packages/api-client` — typed REST + WS client used by `apps/mobile`
 - `packages/db` — Drizzle schema + re-exported query operators
 - `packages/sync` — fork/conflict detection for the offline sync protocol
@@ -36,7 +39,11 @@ docker compose up --build         # db + server (serves API + web same-origin) +
 pnpm --filter @shannon/mobile web # Expo web dev server (localhost:8081)
 pnpm --filter @shannon/mobile ios # or android
 
-pnpm test        # turbo test — vitest (only apps/server has tests today)
+pnpm --filter @shannon/desktop dev         # self-contained desktop app, dev mode (embedded stack, Metro web build)
+pnpm --filter @shannon/desktop package     # prod build: mac dmg, linux AppImage + deb, windows nsis (untested)
+pnpm --filter @shannon/desktop package:dir # prod, unpacked — faster iteration, what the e2e suite drives
+
+pnpm test        # turbo test — vitest (only apps/server + apps/desktop have tests today)
 pnpm lint        # turbo lint — eslint (apps/server)
 pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
 ```
@@ -53,7 +60,8 @@ End-to-end suites are WebdriverIO, in `apps/e2e`, and run on demand (never as pa
 `pnpm test`). They stand the whole stack up themselves:
 
 ```bash
-pnpm --filter @shannon/e2e test:web   # see apps/e2e/README.md for setup + env vars
+pnpm --filter @shannon/e2e test:web        # see apps/e2e/README.md for setup + env vars
+E2E_SELF_CONTAINED=1 pnpm --filter @shannon/e2e test:electron  # against the packaged app's own embedded stack
 ```
 
 ## End-to-end tests
@@ -148,7 +156,8 @@ screenshots showing that behaviour working. Writing those tests is the implement
   non-allowlisted MCP tools ask; read-only builtins run free).
 - `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
   server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
-  policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below).
+  policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below). The wire
+  event union lives in `packages/types` (`StreamEventKind`), not here.
 - **"Allow always"**: an MCP tool patches its server's own per-tool policy
   (`PATCH /v1/mcp/servers/:id`, same allowlist the `/mcp` screen manages); a builtin patches
   the user's global allowlist instead — the `user_prefs.tool_allowlist` column, read by
@@ -156,16 +165,31 @@ screenshots showing that behaviour working. Writing those tests is the implement
   This is global and mode-independent (it clears `requiresApproval`, not the `isWrite` gate),
   so it also silently benefits agent's manual mode — planning mode is unaffected since it
   filters on `isWrite` regardless of approval policy.
+- Sandbox execution goes through `apps/server/src/sandbox/provider.ts`'s
+  `SandboxHandle`/`SandboxProvider` interface — never a raw `Docker.Container`. Two
+  providers: `container-provider.ts` (dockerode; Docker, Podman, OrbStack, Colima — any
+  Docker-Engine-API-compatible socket, auto-discovered) and `host-provider.ts` (no
+  isolation, agent commands run directly on the host — an explicit `SANDBOX_MODE=host`
+  opt-in). Selected via `SANDBOX_MODE` (`container` default | `host` | `off`), read at
+  call time — see `docs/RUNTIME.md`.
 - Sandboxes are per-conversation, lazily created on first tool use, and **survive socket
   close** (reconnecting mid-task keeps the working directory) — see
   `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
-  Ephemeral (incognito) conversations get a sandbox with **no Postgres row** — the container
-  is tracked only in-process — so a crashed server's leftovers are only findable by their
-  `shannon.sandbox` label; `sweepOrphanSandboxes()` does that sweep at boot, alongside the
-  stream log's own orphan recovery.
-- `web_fetch` runs on the **server**, not in the sandbox (`NetworkMode: none` — sandboxes
-  have no network). It has a real SSRF guard (DNS-resolves and rejects private/loopback/
-  link-local answers, follows redirects manually so every hop is re-checked).
+  A sandbox row (`sandboxes` table) records which provider it belongs to; a mode switch
+  mid-deployment makes old rows unusable rather than silently reattaching to the wrong kind.
+  Ephemeral (incognito) conversations get a sandbox with **no Postgres row** — it is tracked
+  only in-process — so a crashed server's leftover containers are only findable by their
+  `shannon.sandbox` label; `sweepOrphanSandboxes()` does that sweep at boot (container
+  provider only — host sandboxes are plain directories), alongside the stream log's own
+  orphan recovery.
+- `web_fetch` always runs on the **server**, never in the sandbox — container sandboxes
+  have no network (`NetworkMode: none`) and host-mode ones deliberately aren't trusted with
+  an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
+  private/loopback/link-local answers, follows redirects manually so every hop is
+  re-checked).
+- The container sandbox image (`shannon-sandbox`) builds itself automatically on first use
+  if missing — nothing needs to build it ahead of time (`ensureImage()` in
+  `container-provider.ts`).
 - Incognito conversations are tool-capable too. `loadEphemeralHistory` (`engine.ts`) rebuilds
   the OpenAI message list — including resolved tool_call/tool_result pairs, dangling calls
   stripped exactly like the Postgres loader — from the stream log's folded snapshots rather
@@ -210,12 +234,30 @@ screenshots showing that behaviour working. Writing those tests is the implement
   so unlike the mobile/web builds Electron can't assume same-origin. The main process
   resolves the real API URL and hands it to the renderer via a `contextBridge` preload
   script (`window.shannon.apiBaseUrl`) — see `apps/mobile/lib/endpoint.ts`.
+- **`"asar": false`** in `apps/desktop/package.json`'s electron-builder config, deliberately.
+  Electron patches `child_process.execFile` to transparently read out of `app.asar`, but not
+  `spawn` — and `embedded-postgres` `spawn`s `initdb`/`postgres` from paths its own package
+  exports (no custom-binary-dir option), while its postinstall also creates symlinks that
+  asar-packing would silently drop. The app's own source is tiny (a handful of files), so
+  nothing meaningful is lost by shipping unpacked.
+- **`SHANNON_LISTENING <port>`** is a stdout handshake line the bundled server prints once
+  `app.listen()` resolves (`apps/server/src/index.ts`) — the desktop supervisor
+  (`apps/desktop/src/supervisor/server.js`) greps for it via `readline` instead of polling
+  `/health`, mirroring the `tsnet-proxy` sidecar's own `LISTENING <addr>` handshake. Don't
+  remove or reformat that `console.log` without updating the supervisor.
+- **Release build vs `pnpm dev` never collide on one host, by construction**: the
+  self-contained app defaults to port `4100` (`SHANNON_PORT`) with an embedded Postgres on
+  an ephemeral localhost port, data under the platform user-data dir; the dev stack keeps
+  `4000`/`5432`/compose volumes. The packaged app never reads the repo's `.env` — its child
+  env is built entirely by the supervisor. See `docs/DEPLOY.md`'s ports/data-dir table.
 
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@shannon/*`; TypeScript strict.
 - Minimal changes; match existing file style; don't add deps without a reason.
 - Ports (dev): server 4000, inference 4002, ntfy 4003, Postgres 5432, Expo web 8081.
+  Self-contained desktop app (a separate deployment, coexists with dev on one host): server
+  4100 (`SHANNON_PORT`), Postgres on an ephemeral localhost port — see `docs/DEPLOY.md`.
 - **Semantic gluestack tokens only** for UI colors (`text-foreground`, `bg-primary`, etc.)
   — never numbered Tailwind colors (`gray-500`) or raw hex in className. `react-native-svg`
   can't resolve CSS custom properties, so SVG fills/strokes are the one exception: literal

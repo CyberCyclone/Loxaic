@@ -1,5 +1,12 @@
 # Handover — Open-Shannon
 
+> **Deploy story has moved on.** Since this was written, the desktop app became
+> self-contained (embedded Postgres, `--headless` mode, no Docker required to run it)
+> and Docker Compose became one of two supported deployments rather than the only one.
+> The Run matrix / Deploy sections below still work but describe the pre-pivot picture —
+> see [`docs/DEPLOY.md`](docs/DEPLOY.md) for the current story, and
+> [`AGENTS.md`](AGENTS.md) (the source of truth) for everything else.
+
 Self-hosted, multi-user AI platform: a Claude + Claude Code replacement running on your
 own hardware. All 9 build stages are complete. This document is the entry point for
 picking the project back up — architecture, run matrix, deploy story, and what to know

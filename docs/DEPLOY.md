@@ -1,12 +1,120 @@
 # Deploying the app
 
-The frontend is one universal Expo codebase (`apps/mobile`) targeting iOS,
-Android, Web, and (via the web export) Electron.
+Two ways to run Shannon — **self-contained** (one binary, brings its own
+Postgres; recommended) or **Docker Compose** (containers for everything; the
+dev workflow, and an alternative if you'd rather manage Postgres yourself).
+Both serve the same frontend: one universal Expo codebase (`apps/mobile`)
+targeting iOS, Android, Web, and (via the web export) Electron.
+
+## Self-contained app (desktop + headless)
+
+One distributable, two invocations:
+
+```bash
+cd apps/desktop
+pnpm dev         # dev: brings up the embedded stack, loads Metro's web build at localhost:8081
+pnpm package     # prod: full build — mac dmg, linux AppImage + deb, windows nsis (untested)
+pnpm package:dir # prod, unpacked (skips the installer step — faster iteration)
+```
+
+### Desktop (GUI)
+
+On launch, the main process resolves how to reach a server, in order:
+`--remote=<url>` / `SHANNON_REMOTE_URL` (connect to a server elsewhere, skip
+everything below) → the embedded-Tailscale proxy (`TSNET_TARGET`) → a
+LAN/tailnet candidate that answers `/health` → in dev, a running `pnpm dev`
+server on :4000 → otherwise it **brings up its own stack**: embedded Postgres
++ the bundled server, no Docker/Podman/dev server required. The renderer has
+no server at its own origin (`app://` in prod, `localhost:8081` in dev) so
+the resolved URL is handed to it via a `contextBridge` preload script — see
+[REMOTE_ACCESS.md](REMOTE_ACCESS.md#electron-desktop-app) for the
+embedded-Tailscale sidecar.
+
+### Headless (no window)
+
+For server installs — a Proxmox VM/LXC, a bare Linux box, anything you'd
+rather not put a display on. Two equivalent ways to invoke it:
+
+- **Convenience, on a machine with a display**: `Open-Shannon --headless`.
+  The GUI binary re-execs itself as plain Node running `headless.js` before
+  touching Electron/Chromium at all — best-effort, since a truly
+  display-less machine may not let the GUI binary get that far.
+- **The real headless path, for systemd**: set `ELECTRON_RUN_AS_NODE=1` and
+  invoke `headless.js` inside the packaged app directly. This never
+  initialises Chromium, so it needs no display and no `xvfb`, ever.
+
+```ini
+# /etc/systemd/system/open-shannon.service
+[Unit]
+Description=Open Shannon
+After=network.target
+
+[Service]
+Environment=ELECTRON_RUN_AS_NODE=1
+ExecStart=/opt/open-shannon/open-shannon /opt/open-shannon/resources/app/src/headless.js \
+  --data-dir=/var/lib/open-shannon --port=4100
+Restart=on-failure
+User=shannon
+
+[Install]
+WantedBy=multi-user.target
+```
+
+For the AppImage, extract it first — `./Open-Shannon.AppImage --appimage-extract`
+— and point `ExecStart` at `squashfs-root/open-shannon` and
+`squashfs-root/resources/app/src/headless.js`. The `.deb` build gives a
+stable install path (`/opt/Open-Shannon` by default) without that extraction
+step, which is why the unit above assumes one.
+
+Flags: `--port` (default 4100, or `$SHANNON_PORT`), `--host` (default
+`0.0.0.0`), `--data-dir` (default the platform user-data dir, or
+`$SHANNON_DATA_DIR`), `--inference-url`, `--mock-inference`, `--help`. The
+GUI's `--shannon-port`/`--shannon-data-dir` names are accepted too, so one
+set of flags works with either entry point.
+
+The GUI and the headless server share the same data directory by default (an
+account created in one signs in from the other) — a machine can move between
+"desktop app you look at" and "background service" without a migration step.
+`Ctrl-C`/`SIGTERM` drains the server and shuts Postgres down cleanly before
+exiting; a `systemctl restart` (or replacing the binary — see Upgrading
+below) reuses the existing database.
+
+### Ports and data
+
+| | Server port | Postgres | Data directory |
+|---|---|---|---|
+| **Self-contained** (GUI or headless) | `4100` default — `SHANNON_PORT` / `--shannon-port` | embedded, ephemeral localhost port chosen at startup | platform user-data dir — `SHANNON_DATA_DIR` / `--shannon-data-dir` |
+| **Dev** (`pnpm dev` + Compose) | `4000` | Compose, `localhost:5432` | Compose volume |
+
+A self-contained release build and a dev checkout run **simultaneously on the
+same host with zero collisions** — different ports, different Postgres,
+separate data. Neither needs the other stopped; quitting either leaves the
+other untouched.
+
+### Upgrading
+
+Replace the binary/`.app`/AppImage with the new version. The data directory
+(embedded Postgres + generated secrets) is untouched, and migrations apply
+automatically on next start — a failed migration is a **fatal boot error**
+in this mode (`MIGRATIONS_STRICT=1`), not a silent skip, so a broken upgrade
+can't leave the app quietly running against a stale schema. No separate
+"run migrations" step.
+
+## Docker Compose (alternative / dev)
+
+The stack from `docker-compose.yml` — Postgres, the server, optionally
+inference — is unchanged, and is still the dev workflow
+(`pnpm dev` + `docker compose up db redis`, or the whole stack via
+`docker compose up --build`). See [RUNTIME.md](RUNTIME.md) for the
+container-engine and inference matrices, and [`.env.example`](../.env.example)
+for every variable either deployment reads.
 
 ## Website — served by the Shannon server
 
 The Fastify server serves the Expo web export on the **same origin as the
 API** — no CORS, no mixed content, one URL for everything (LAN or tailnet).
+This is true for both deployment shapes above; the self-contained app just
+does the build-and-serve step for you.
 
 ```bash
 # 1. Build the web app
@@ -16,9 +124,9 @@ pnpm --filter @shannon/mobile export:web
 pnpm --filter @shannon/server dev
 ```
 
-Then open `http://<lan-ip>:4000` on your network, or
-`https://<machine>.<tailnet>.ts.net` from anywhere on your tailnet
-(see [REMOTE_ACCESS.md](REMOTE_ACCESS.md)).
+Then open `http://<lan-ip>:4000` on your network (`:4100` for a
+self-contained build), or `https://<machine>.<tailnet>.ts.net` from anywhere
+on your tailnet (see [REMOTE_ACCESS.md](REMOTE_ACCESS.md)).
 
 Override the build location with `WEB_DIST_DIR` if you deploy the export
 somewhere else. Without a build present, the server runs API-only.
@@ -97,72 +205,3 @@ anywhere; at home it auto-picks the faster LAN connection.
 4. Platform default (`localhost:4000`, Android emulator `10.0.2.2:4000`)
 
 Web builds skip probing: they're same-origin with the API.
-
-## Electron
-
-```bash
-cd apps/desktop
-pnpm dev       # dev: loads Metro's web build at localhost:8081
-pnpm package   # prod: export:web + cross-compile the tsnet sidecar + electron-builder
-```
-
-Dev loads `http://localhost:8081` directly (run `pnpm --filter @shannon/mobile web`
-alongside it). The packaged build serves the static `export:web` output through
-the `app://` scheme via electron-serve, with SPA fallback — never `file://`
-(expo-router's client-side routing needs the History API, and every asset
-path is absolute, both of which break under `file://`).
-
-There is no server at either origin, so unlike the mobile/web builds Electron
-can't assume same-origin: its main process resolves the API base URL itself
-(embedded-Tailscale proxy → LAN/tailnet probe → `localhost:4000`) and hands
-it to the renderer via a `contextBridge` preload script. See
-[REMOTE_ACCESS.md](REMOTE_ACCESS.md#electron-desktop-app) for the
-embedded-Tailscale sidecar.
-
-### Self-contained headless server
-
-The same distributable runs with no window for server installs — a Proxmox
-VM/LXC, a bare Linux box, anything you'd rather not put a display on. Two
-equivalent ways to invoke it:
-
-- **Convenience, on a machine with a display**: `Open-Shannon --headless`.
-  The GUI binary re-execs itself as plain Node running `headless.js` before
-  touching Electron/Chromium at all — best-effort, since a truly
-  display-less machine may not let the GUI binary get that far.
-- **The real headless path, for systemd**: set `ELECTRON_RUN_AS_NODE=1` and
-  invoke `headless.js` inside the packaged app directly. This never
-  initialises Chromium, so it needs no display and no `xvfb`, ever.
-
-```ini
-# /etc/systemd/system/open-shannon.service
-[Unit]
-Description=Open Shannon
-After=network.target
-
-[Service]
-Environment=ELECTRON_RUN_AS_NODE=1
-ExecStart=/opt/open-shannon/open-shannon /opt/open-shannon/resources/app/src/headless.js \
-  --data-dir=/var/lib/open-shannon --port=4100
-Restart=on-failure
-User=shannon
-
-[Install]
-WantedBy=multi-user.target
-```
-
-(For an AppImage, extract it first — `./Open-Shannon.AppImage --appimage-extract`
-— and point `ExecStart` at `squashfs-root/open-shannon` and
-`squashfs-root/resources/app/src/headless.js`; a `.deb`/`.rpm` target with a
-stable install path is tracked for a later pass.)
-
-Flags: `--port` (default 4100, or `$SHANNON_PORT`), `--host` (default
-`0.0.0.0`), `--data-dir` (default the platform user-data dir, or
-`$SHANNON_DATA_DIR`), `--inference-url`, `--mock-inference`, `--help`. The
-GUI's `--shannon-port`/`--shannon-data-dir` names are accepted too, so one
-set of flags works with either entry point.
-
-The GUI and the headless server share the same data directory by default (an
-account created in one signs in from the other) — a machine can move between
-"desktop app you look at" and "background service" without a migration step.
-`Ctrl-C`/`SIGTERM` drains the server and shuts Postgres down cleanly before
-exiting; a `systemctl restart` reuses the existing database.
