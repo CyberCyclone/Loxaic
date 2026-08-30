@@ -10,6 +10,11 @@ export const user = pgTable("user", {
   image: text("image"),
   createdAt: timestamp("created_at").notNull(),
   updatedAt: timestamp("updated_at").notNull(),
+  // Better-auth admin plugin fields — see apps/server/src/auth/index.ts.
+  role: text("role"),
+  banned: boolean("banned").default(false),
+  banReason: text("ban_reason"),
+  banExpires: timestamp("ban_expires"),
 });
 
 export const session = pgTable("session", {
@@ -21,6 +26,8 @@ export const session = pgTable("session", {
   ipAddress: text("ip_address"),
   userAgent: text("user_agent"),
   userId: text("user_id").notNull().references(() => user.id),
+  // Better-auth admin plugin field (set while an admin impersonates a user).
+  impersonatedBy: text("impersonated_by"),
 });
 
 export const account = pgTable("account", {

@@ -57,7 +57,16 @@ export async function getModels(): Promise<import("@shannon/types").ModelInfo[]>
 // ── Auth ──────────────────────────────────────────────────
 export interface Session {
   token: string;
-  user: { id: string; email: string; name: string; emailVerified: boolean; image: string | null; createdAt: string; updatedAt: string };
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    emailVerified: boolean;
+    image: string | null;
+    createdAt: string;
+    updatedAt: string;
+    role?: string | null;
+  };
   redirect?: boolean;
 }
 
@@ -83,13 +92,24 @@ export async function signIn(email: string, password: string): Promise<Session> 
   return res.json() as Promise<Session>;
 }
 
-export async function getSession(): Promise<Session | null> {
+/** Shape of `GET /api/auth/session` — distinct from the sign-in/sign-up
+ * response (`Session`, above): better-auth's getSession returns the session
+ * row alongside the user, not the raw token. */
+export interface SessionInfo {
+  session: { id: string; expiresAt: string; token: string };
+  user: Session["user"];
+}
+
+export async function getSession(): Promise<SessionInfo | null> {
+  const headers = new Headers();
+  if (AUTH_TOKEN) headers.set("Authorization", `Bearer ${AUTH_TOKEN}`);
   const res = await fetch(`${BASE_URL}/api/auth/session`, {
     credentials: "include",
+    headers,
   });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`Session fetch failed: ${String(res.status)}`);
-  return res.json() as Promise<Session>;
+  return res.json() as Promise<SessionInfo>;
 }
 
 export async function getAuthToken(): Promise<string | null> {

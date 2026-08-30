@@ -129,8 +129,15 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Never import from `drizzle-orm` directly.** `packages/db` re-exports every operator
   (`eq`, `and`, `desc`, etc.) and the `db` instance — import from `@shannon/db`. Two
   drizzle-orm instances in the dependency tree cause type errors.
-- **No `users` table.** better-auth auto-creates `user`/`session`/`account`/`verification`
-  on first request. App tables reference better-auth's `user.id`, which is `text`, not `uuid`.
+- **No `users` table** — the table is `user` (singular), owned by Drizzle like any other
+  table (`packages/db/src/schema.ts`), not auto-created by better-auth: it's passed
+  explicitly to `drizzleAdapter(db, { schema: { user, session, account, verification } })`
+  in `apps/server/src/auth/index.ts`, and its columns (including the admin plugin's `role`/
+  `banned`/`banReason`/`banExpires`) go through the normal migration flow. App tables
+  reference `user.id`, which is `text`, not `uuid`. The first user to sign up (or any email
+  listed in `ADMIN_EMAILS`) gets `role: "admin"` via a `databaseHooks.user.create.before`
+  hook — an existing deployment's already-registered user does not retroactively become
+  admin; use `ADMIN_EMAILS` or `UPDATE "user" SET role='admin'` to promote one.
 - **Postgres/postgres.js returns `SUM()`/`AVG()` over `integer` columns as strings**
   (bigint/numeric precision preservation). Cast to `::float8` in SQL, not `::int` (avoids a
   32-bit overflow ceiling on lifetime token sums). Columns typed `real` parse natively.

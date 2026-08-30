@@ -20,3 +20,30 @@ export async function authenticate(
   }
   return session.user.id;
 }
+
+/** Like {@link authenticate}, but also requires the session user to hold the
+ * "admin" role (better-auth admin plugin) — used to gate server-level
+ * settings (e.g. sandbox engine/mode) that affect every user. */
+export async function requireAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<string> {
+  const header = request.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    reply.code(401).send({ error: "Missing authorization header" });
+    throw new Error("Unauthorized");
+  }
+  const token = header.slice(7);
+  const session = await auth.api.getSession({
+    headers: new Headers({ authorization: `Bearer ${token}` }),
+  });
+  if (!session) {
+    reply.code(401).send({ error: "Invalid session" });
+    throw new Error("Unauthorized");
+  }
+  if (session.user.role !== "admin") {
+    reply.code(403).send({ error: "Admin access required" });
+    throw new Error("Forbidden");
+  }
+  return session.user.id;
+}
