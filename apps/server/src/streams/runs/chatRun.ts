@@ -7,6 +7,7 @@ import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { runToolLoop } from "./engine.ts";
+import { getSandboxMode } from "../../sandbox/provider.ts";
 
 /**
  * Chat is fully tool-capable: the same engine, builtins, and MCP tools as the
@@ -15,13 +16,19 @@ import { runToolLoop } from "./engine.ts";
  * always runs with manual-mode semantics (no mode selector): write builtins
  * and non-allowlisted MCP tools ask, read-only builtins run freely.
  */
-const CHAT_SYSTEM_PROMPT = [
-  "You are Shannon, a helpful AI assistant. Answer directly from your own knowledge when that is all a question needs.",
-  "You also have tools: an isolated Linux sandbox (working directory /home/shannon/repo — an empty scratch workspace,",
-  "not a checked-out project) for running commands and working with files, and possibly external tools from the",
-  "user's connected services. Use a tool when it genuinely helps — live or verifiable information, running code,",
-  "reading or writing files — and skip tools otherwise. Before calling a tool, state in one short sentence why.",
-].join(" ");
+/** Built at call time (not a module-load const): SANDBOX_MODE shapes what's
+ * true to tell the model about where its tools actually run. */
+function chatSystemPrompt(): string {
+  const workspace = getSandboxMode() === "host"
+    ? "a scratch working directory on the host machine"
+    : "an isolated Linux sandbox (working directory /home/shannon/repo — an empty scratch workspace, not a checked-out project)";
+  return [
+    "You are Shannon, a helpful AI assistant. Answer directly from your own knowledge when that is all a question needs.",
+    `You also have tools: ${workspace} for running commands and working with files, and possibly external tools from the`,
+    "user's connected services. Use a tool when it genuinely helps — live or verifiable information, running code,",
+    "reading or writing files — and skip tools otherwise. Before calling a tool, state in one short sentence why.",
+  ].join(" ");
+}
 
 export interface StartChatRunResult {
   streamId: string;
@@ -118,7 +125,7 @@ export async function startChatRun(input: {
     userMsgId,
     model,
     mode: "manual",
-    basePrompt: CHAT_SYSTEM_PROMPT,
+    basePrompt: chatSystemPrompt(),
     incognito,
     abort,
     producer,

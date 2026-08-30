@@ -34,6 +34,20 @@ export async function getHealth(): Promise<HealthResponse> {
   return res.json() as Promise<HealthResponse>;
 }
 
+export interface ConfigResponse {
+  sandbox: {
+    mode: "container" | "host" | "off";
+    available: boolean;
+    reason?: string;
+  };
+}
+
+export async function getConfig(): Promise<ConfigResponse> {
+  const res = await fetch(`${BASE_URL}/v1/config`);
+  if (!res.ok) throw new Error(`GET /v1/config ${String(res.status)}`);
+  return res.json() as Promise<ConfigResponse>;
+}
+
 export type { ModelInfo, ModelPref } from "@shannon/types";
 
 export async function getModels(): Promise<import("@shannon/types").ModelInfo[]> {

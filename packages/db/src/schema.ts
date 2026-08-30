@@ -153,6 +153,8 @@ export const sandboxes = pgTable("sandboxes", {
   ownerId: text("owner_id").notNull().references(() => user.id),
   conversationId: uuid("conversation_id"),
   containerId: text("container_id").notNull(),
+  /** "container" (dockerode ref) or "host" (a host directory path). */
+  provider: text("provider").notNull().default("container"),
   image: text("image").notNull(),
   status: text("status").notNull().default("creating"),
   repoUrl: text("repo_url"),

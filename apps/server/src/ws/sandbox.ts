@@ -3,7 +3,7 @@ import { and, eq } from "@shannon/db";
 import { db } from "@shannon/db";
 import { sandboxes } from "@shannon/db/schema";
 import { auth } from "../auth";
-import { getContainer } from "../sandbox/orchestrator";
+import { getProviderByKind } from "../sandbox/provider.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -51,21 +51,19 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       return;
     }
 
-    const container = getContainer(sandbox.containerId);
+    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const handle = await provider.attach(sandbox.containerId);
+    if (!handle.openTerminal) {
+      socket.close(4400, "Terminal not supported for this sandbox");
+      return;
+    }
+    const terminal = await handle.openTerminal();
 
-    const exec = await container.exec({
-      Cmd: ["bash"],
-      AttachStdin: true,
-      AttachStdout: true,
-      AttachStderr: true,
-      Tty: true,
+    terminal.onData((data) => {
+      socket.send(JSON.stringify({ type: "terminal.output", data }));
     });
-
-    const stream = await exec.start({ hijack: true, stdin: true });
-
-    stream.on("data", (chunk: Buffer) => {
-      const str = chunk.toString();
-      socket.send(JSON.stringify({ type: "terminal.output", data: str }));
+    terminal.onClose(() => {
+      socket.close();
     });
 
     socket.on("message", (raw: Buffer) => {
@@ -76,12 +74,12 @@ export function sandboxTerminalWs(app: FastifyInstance) {
         return;
       }
       if (msg.type === "terminal.input") {
-        stream.write(Buffer.from(msg.data + "\n"));
+        terminal.write(msg.data + "\n");
       }
     });
 
     socket.on("close", () => {
-      stream.end();
+      terminal.close();
     });
 
     socket.resume();

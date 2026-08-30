@@ -391,13 +391,16 @@ async function runOneToolCall(
   // builtin names come from TOOLS, so the ToolName narrowing is sound.
   const builtinName = resolved.name as ToolName;
 
-  let container = null;
+  let handle = null;
   if (toolNeedsSandbox(builtinName)) {
     try {
       // Incognito conversations get a sandbox with no Postgres bookkeeping
       // row — the boot-time orphan sweep covers a crashed process instead.
-      container = await getConversationSandbox(userId, convId, { ephemeral: incognito });
+      handle = await getConversationSandbox(userId, convId, { ephemeral: incognito });
     } catch (err) {
+      // The underlying error (from the container provider) already names
+      // what was tried and how to fix it — see container-provider.ts's
+      // requireDocker().
       const output = `Could not start a sandbox: ${(err as Error).message}`;
       producer.emit({
         kind: "tool.result",
@@ -411,7 +414,7 @@ async function runOneToolCall(
     }
   }
 
-  const result: ToolResult = await executeTool(container, builtinName, args);
+  const result: ToolResult = await executeTool(handle, builtinName, args);
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",

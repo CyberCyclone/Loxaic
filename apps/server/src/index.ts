@@ -21,6 +21,7 @@ import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manage
 import { closeDb } from "@shannon/db";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
+import { configRoutes } from "./routes/config";
 import { mcpRoutes } from "./routes/mcp";
 import { prefsRoutes } from "./routes/prefs";
 import { startMcpReaper } from "./mcp/client-manager";
@@ -96,6 +97,7 @@ syncRoutes(app);
 sandboxRoutes(app);
 routineRoutes(app);
 modelRoutes(app);
+configRoutes(app);
 mcpRoutes(app);
 prefsRoutes(app);
 

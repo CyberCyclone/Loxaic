@@ -6,7 +6,7 @@
 //   resources/server/drizzle/    migrations copy for MIGRATIONS_DIR
 // Run via `pnpm --filter @shannon/desktop build:server`.
 import { execFileSync } from "node:child_process";
-import { cpSync, rmSync, existsSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,7 +45,17 @@ for (const extra of ["src", "apps", "tsconfig.json", "tsup.config.ts", "vitest.c
 const drizzleSrc = path.join(repoRoot, "packages/db/drizzle");
 cpSync(drizzleSrc, path.join(outDir, "drizzle"), { recursive: true });
 
-for (const required of ["dist/index.js", "node_modules/fastify", "drizzle/meta/_journal.json"]) {
+// Lets a packaged install (which has no repo checkout) auto-build the agent
+// sandbox image on first use — see SANDBOX_BUILD_CONTEXT in
+// container-provider.ts. Podman/Docker still need to be installed
+// separately; this only ships the recipe.
+mkdirSync(path.join(outDir, "sandbox"), { recursive: true });
+cpSync(
+  path.join(repoRoot, "infra/docker/sandbox.Dockerfile"),
+  path.join(outDir, "sandbox/sandbox.Dockerfile"),
+);
+
+for (const required of ["dist/index.js", "node_modules/fastify", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }
