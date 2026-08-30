@@ -34,7 +34,7 @@ export function RunHeader({ title, state, mode, iteration }: RunHeaderProps) {
       </Text>
       <HStack space="xs" className="items-center rounded-full bg-muted px-2 py-1">
         <Box className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[state]}`} />
-        <Text size="xs" className="text-muted-foreground">
+        <Text testID="agent.run.status" size="xs" className="text-muted-foreground">
           {STATE_LABEL[state]}
           {state === 'running' && iteration ? ` · ${String(iteration.n)}/${String(iteration.max)}` : ''}
         </Text>

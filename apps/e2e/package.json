@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test:web": "wdio run ./wdio.web.ts",
+    "test:web:real-model": "wdio run ./wdio.web.real-model.ts",
     "test:electron": "wdio run ./wdio.electron.ts",
     "test:ios": "wdio run ./wdio.ios.ts",
     "test:android": "wdio run ./wdio.android.ts",

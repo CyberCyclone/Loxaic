@@ -3,6 +3,7 @@ import { sandboxes } from "@shannon/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
+import { seedSandbox } from "../sandbox/seed.ts";
 
 /** How long a conversation's sandbox may sit unused before it's reaped. */
 const IDLE_TTL_MS = 30 * 60 * 1000;
@@ -102,6 +103,14 @@ async function createEntry(
   }
 
   const handle = await provider.create(userId, {});
+  // Test-only hook for the real-model e2e suite: seeds a fixture repo (an
+  // INSTRUCTIONS.md + a small app) into every freshly-created sandbox, so
+  // the agent has something to read and build against. Named E2E_-prefixed
+  // and read at call time like every other sandbox env var, so it's inert
+  // unless a harness explicitly sets it — see apps/e2e's real-model suite.
+  if (process.env.E2E_SANDBOX_SEED_DIR) {
+    await seedSandbox(handle, process.env.E2E_SANDBOX_SEED_DIR);
+  }
   let rowId: string | null = null;
   if (!ephemeral) {
     const [row] = await db
