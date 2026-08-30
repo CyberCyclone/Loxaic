@@ -94,3 +94,25 @@ export async function provisionAdmin(): Promise<Credentials> {
   }
   return creds;
 }
+
+/**
+ * Signs in over the API and returns the bearer token, for the assertions that
+ * have to talk to the server directly rather than through the UI — proving a
+ * route rejects a non-admin, or reading a sandbox's real state.
+ *
+ * Shared because this sign-in → `{token}` round-trip had grown four separate
+ * copies, each with slightly different error handling (one silently ignored a
+ * failure entirely).
+ */
+export async function apiToken(creds: Pick<Credentials, 'email' | 'password'>): Promise<string> {
+  const res = await fetch(`${BASE_URL}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: creds.email, password: creds.password }),
+  });
+  if (!res.ok) {
+    throw new Error(`API sign-in failed for ${creds.email} (${String(res.status)}): ${await res.text()}`);
+  }
+  const { token } = (await res.json()) as { token: string };
+  return token;
+}

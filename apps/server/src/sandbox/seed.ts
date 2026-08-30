@@ -9,6 +9,15 @@ async function collectFiles(dir: string, base = dir): Promise<string[]> {
     const abs = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...(await collectFiles(abs, base)));
     else if (entry.isFile()) files.push(path.relative(base, abs));
+    else {
+      // Anything else — most plausibly a symlink — would otherwise vanish
+      // from the seeded sandbox with no error, leaving the agent to fail
+      // against a fixture that silently isn't what the directory looked
+      // like. Refuse rather than half-copy.
+      throw new Error(
+        `seedSandbox: ${abs} is neither a regular file nor a directory (symlinks are not supported)`,
+      );
+    }
   }
   return files;
 }
@@ -28,7 +37,16 @@ async function collectFiles(dir: string, base = dir): Promise<string[]> {
 export async function seedSandbox(handle: SandboxHandle, sourceDir: string): Promise<void> {
   const relPaths = await collectFiles(sourceDir);
   for (const rel of relPaths) {
-    const content = await readFile(path.join(sourceDir, rel), "utf8");
+    // SandboxHandle.writeFile takes a string, so anything that doesn't
+    // survive a UTF-8 round-trip (an image, a font, a compiled binary) would
+    // be written back subtly mangled with no error at all. Refuse instead:
+    // silent corruption inside a sandbox is far harder to diagnose than a
+    // failed seed, and lifting this needs a Buffer-capable writeFile.
+    const bytes = await readFile(path.join(sourceDir, rel));
+    const content = bytes.toString("utf8");
+    if (!Buffer.from(content, "utf8").equals(bytes)) {
+      throw new Error(`seedSandbox: ${rel} is not valid UTF-8 (binary files are not supported)`);
+    }
     // The sandbox side is always POSIX (a Linux container, or a host path
     // this codebase already treats as POSIX elsewhere) regardless of the
     // OS running the harness — normalize separators explicitly rather than

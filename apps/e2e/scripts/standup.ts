@@ -204,6 +204,19 @@ async function ensureServer(): Promise<void> {
 
   const existing = await fetchHealth();
   if (existing) {
+    // Real-model mode needs more of the server than /health can show:
+    // SANDBOX_ALLOW_NETWORK (for `npm install`) and E2E_SANDBOX_SEED_DIR (the
+    // fixture the task is defined by), neither of which is observable from
+    // outside. Reusing a server without them yields an agent staring at an
+    // empty workspace with no network, and the failure reads as the model
+    // being bad rather than the harness being misconfigured — so refuse.
+    if (REAL_MODEL) {
+      throw new Error(
+        `[e2e:standup] a server is already listening at ${BASE_URL}, and real-model mode cannot ` +
+          'reuse it: it needs SANDBOX_ALLOW_NETWORK and E2E_SANDBOX_SEED_DIR, which this harness ' +
+          'only sets on a server it starts itself. Stop it, or use a different E2E_PORT.',
+      );
+    }
     if (existing.services.inference === expectedInference) {
       log(`reusing server already healthy at ${BASE_URL}`);
       return;

@@ -21,7 +21,7 @@
  * correctly. Polling the API sidesteps that class of flake entirely — the
  * browser is only touched to kick the run off and to grab evidence after.
  */
-import { uniqueCreds } from '../../helpers/auth.ts';
+import { apiToken, uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { tap } from '../../helpers/selectors.ts';
 import { goToSurface, sendMessage, signUp } from '../../helpers/app.ts';
@@ -33,25 +33,30 @@ const PROMPT = 'Read INSTRUCTIONS.md in your working directory and complete the 
 const RUN_TIMEOUT_MS = 25 * 60_000;
 const POLL_INTERVAL_MS = 10_000;
 
-interface SandboxRow { id: string; createdAt: string }
+interface SandboxRow { id: string; createdAt: string; provider: string; containerId: string }
 
-async function apiToken(email: string, password: string): Promise<string> {
-  const res = await fetch(`${BASE_URL}/api/auth/sign-in`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new Error(`sign-in for API access failed (${String(res.status)}): ${await res.text()}`);
-  const { token } = (await res.json()) as { token: string };
-  return token;
+/**
+ * Where the seeded fixture lives inside a given sandbox.
+ *
+ * Not hardcoded, because the two providers differ and their exec defaults
+ * differ too: a container's workdir is `/home/shannon/repo` while its exec
+ * defaults to the parent, and a host sandbox's workdir is `<dir>/repo` while
+ * its exec defaults to that same repo dir. Hardcoding the container path made
+ * every poll fail with `cd: no such file or directory` under host mode — and
+ * report it as a failing build. For host sandboxes `containerId` *is* the
+ * sandbox directory, so the path is derivable from the row either way.
+ */
+function workdirFor(row: SandboxRow): string {
+  return row.provider === 'host' ? `${row.containerId}/repo` : '/home/shannon/repo';
 }
 
 /** This account is fresh (uniqueCreds()), so its first sandbox is the run's. */
-async function waitForSandbox(token: string, deadline: number): Promise<string> {
+async function waitForSandbox(token: string, deadline: number): Promise<SandboxRow> {
   for (;;) {
     const res = await fetch(`${BASE_URL}/v1/sandboxes`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`GET /v1/sandboxes failed (${String(res.status)}): ${await res.text()}`);
     const sandboxes = (await res.json()) as SandboxRow[];
-    if (sandboxes.length > 0) return sandboxes[0].id;
+    if (sandboxes.length > 0) return sandboxes[0];
     if (Date.now() > deadline) {
       throw new Error('agent run created no sandbox before the deadline — did it ever call a tool?');
     }
@@ -63,14 +68,22 @@ interface ExecResult { exitCode: number; stdout: string; stderr: string }
 
 /** Retries the build until it passes or the deadline hits — a real model may
  * still be mid-edit the first few times this is tried. */
-async function waitForBuild(token: string, sandboxId: string, deadline: number): Promise<ExecResult> {
+async function waitForBuild(token: string, sandbox: SandboxRow, deadline: number): Promise<ExecResult> {
   let last: ExecResult = { exitCode: -1, stdout: '', stderr: 'never attempted' };
   for (;;) {
-    const res = await fetch(`${BASE_URL}/v1/sandboxes/${sandboxId}/exec`, {
+    const res = await fetch(`${BASE_URL}/v1/sandboxes/${sandbox.id}/exec`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ command: 'cd /home/shannon/repo && npm run build' }),
+      body: JSON.stringify({ command: 'npm run build', workdir: workdirFor(sandbox) }),
     });
+    // The route answers a failed exec with a non-2xx and `{ error }` — no
+    // exitCode. Parsing that as an ExecResult made every poll compare
+    // `undefined === 0`, so a dead sandbox or a transient socket error spun
+    // for the full 25 minutes and then reported `exited undefined` with the
+    // real error discarded. Fail fast and keep the message.
+    if (!res.ok) {
+      throw new Error(`exec failed (${String(res.status)}): ${await res.text()}`);
+    }
     last = (await res.json()) as ExecResult;
     if (last.exitCode === 0) return last;
     if (Date.now() > deadline) return last;
@@ -95,15 +108,15 @@ describe('real-model task: build the seeded app', () => {
     await sendMessage(PROMPT);
     await shot('real-model-run-started');
 
-    const token = await apiToken(creds.email, creds.password);
+    const token = await apiToken(creds);
     const deadline = Date.now() + RUN_TIMEOUT_MS;
-    const sandboxId = await waitForSandbox(token, deadline);
-    const build = await waitForBuild(token, sandboxId, deadline);
+    const sandbox = await waitForSandbox(token, deadline);
+    const build = await waitForBuild(token, sandbox, deadline);
 
     if (build.exitCode !== 0) {
       // The fallback the plan calls for: even without a clean build, show
       // what's actually in the workdir rather than just failing blind.
-      const treeRes = await fetch(`${BASE_URL}/v1/sandboxes/${sandboxId}/files`, {
+      const treeRes = await fetch(`${BASE_URL}/v1/sandboxes/${sandbox.id}/files`, {
         headers: { authorization: `Bearer ${token}` },
       });
       const tree: unknown = await treeRes.json().catch(() => null);
