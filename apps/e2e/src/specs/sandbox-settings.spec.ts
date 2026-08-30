@@ -5,6 +5,7 @@
  * boundary from apps/server/src/routes/admin-settings.ts made visible.
  */
 import { adminCreds, provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
+import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { isVisible, waitForVisible } from '../helpers/selectors.ts';
 import { openSandboxSettings, resetSandboxSettings, setSandboxMode, signIn, signOut, signUp } from '../helpers/app.ts';
@@ -40,12 +41,33 @@ describe('sandbox settings screen', () => {
 
   it('a non-admin sees a read-only view with no pickers', async () => {
     await signOut();
-    await signUp(uniqueCreds());
+    const creds = uniqueCreds();
+    await signUp(creds);
     await openSandboxSettings();
 
     await waitForVisible('sandbox.readOnly.notice');
     const hasPicker = await isVisible('sandbox.mode.container');
     if (hasPicker) throw new Error('non-admin should not see the mode picker');
     await shot('sandbox-settings-nonadmin');
+
+    // The server has to refuse it too, not just the UI hide it. Hiding a
+    // button is presentation; `requireAdmin` on the route is the actual
+    // boundary, and a regression that dropped it while leaving the button
+    // hidden would pass every assertion above. Host mode is arbitrary
+    // execution on the host, so this is the one worth proving directly.
+    const signIn = await fetch(`${BASE_URL}/api/auth/sign-in`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: creds.email, password: creds.password }),
+    });
+    const { token } = (await signIn.json()) as { token: string };
+    const patch = await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ mode: 'host' }),
+    });
+    if (patch.status !== 403) {
+      throw new Error(`non-admin PATCH should be 403, got ${String(patch.status)}`);
+    }
   });
 });

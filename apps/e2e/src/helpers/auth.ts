@@ -6,7 +6,8 @@
  * checkout needs no manual seeding. better-auth is configured without email
  * verification, so a signed-up user is immediately usable.
  */
-import { BASE_URL, E2E_ADMIN_EMAIL } from '../../scripts/standup.ts';
+import { existsSync, readFileSync } from 'node:fs';
+import { ADMIN_FILE, BASE_URL } from '../../scripts/standup.ts';
 
 export interface Credentials {
   email: string;
@@ -54,15 +55,42 @@ export async function provisionUser(creds: Credentials = uniqueCreds()): Promise
  * server must already grant admin to this email itself.
  */
 export function adminCreds(): Credentials {
-  return { email: E2E_ADMIN_EMAIL, password: 'Password123!', name: 'E2E Admin' };
+  if (!existsSync(ADMIN_FILE)) {
+    throw new Error(
+      `[e2e] no admin credentials at ${ADMIN_FILE}. They are generated per run by ` +
+        'scripts/standup.ts, so the sandbox specs need a stack this harness started ' +
+        '(a plain `pnpm dev` server has no ADMIN_EMAILS and cannot grant the role).',
+    );
+  }
+  const { email, password } = JSON.parse(readFileSync(ADMIN_FILE, 'utf8')) as {
+    email: string;
+    password: string;
+  };
+  return { email, password, name: 'E2E Admin' };
 }
 
 export async function provisionAdmin(): Promise<Credentials> {
   const creds = adminCreds();
-  await fetch(`${BASE_URL}/api/auth/sign-up`, {
+  // Sign in first: within one run several specs provision the same account,
+  // and the credentials survive in artifacts/.run for the `standup` +
+  // E2E_NO_STANDUP workflow. Only create it when it genuinely isn't there.
+  const signIn = await fetch(`${BASE_URL}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: creds.email, password: creds.password }),
+  });
+  if (signIn.ok) return creds;
+
+  const res = await fetch(`${BASE_URL}/api/auth/sign-up`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(creds),
-  }); // Failure here almost always means the account already exists — signIn (by the caller) is the real check.
+  });
+  // Surfaced rather than deferred: letting a real failure (password policy,
+  // wrong BASE_URL, network blip) fall through to the caller's signIn turns a
+  // clear sign-up error into an opaque "invalid credentials" one.
+  if (!res.ok) {
+    throw new Error(`admin sign-up failed (${String(res.status)}): ${await res.text()}`);
+  }
   return creds;
 }

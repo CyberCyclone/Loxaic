@@ -11,6 +11,9 @@ import { goToSurface, openSandboxSettings, resetSandboxSettings, setSandboxMode,
 describe('sandbox degraded UX', () => {
   before(async () => {
     await provisionAdmin();
+    // See sandbox-bash.spec.ts: the persisted mode outlives the process, so
+    // start from a known one rather than trusting the previous run's cleanup.
+    await resetSandboxSettings();
     await signIn(adminCreds());
   });
 

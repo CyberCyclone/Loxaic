@@ -99,6 +99,23 @@ export async function goToSurface(surface: 'chat' | 'agent' | 'routines' | 'stat
   await waitForVisible('composer.input');
 }
 
+/**
+ * Starts a new agent run, on any layout.
+ *
+ * The thread list is pinned open only at >=1024px; narrower, it is an overlay
+ * behind a toggle — so tapping its "new" button directly works on a desktop
+ * browser and times out on a phone. Mirrors openSidebar()'s approach of
+ * deciding from what is actually on screen rather than from a breakpoint the
+ * spec would have to know.
+ */
+export async function startNewAgentRun(): Promise<void> {
+  if (!(await byTestId('threadList.newChat').isDisplayed().catch(() => false))) {
+    await tap('agent.threadList.toggle');
+    await waitForVisible('threadList.newChat');
+  }
+  await tap('threadList.newChat');
+}
+
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and
  * non-admin sessions alike — the screen itself branches on role. */
 export async function openSandboxSettings(): Promise<void> {
@@ -135,11 +152,24 @@ export async function resetSandboxSettings(): Promise<void> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email: creds.email, password: creds.password }),
   });
-  if (!signIn.ok) return; // Nothing to reset if the admin account was never provisioned.
+  // Never silent: mode is server-wide, so a reset that quietly no-ops after a
+  // spec switched to host leaves every later spec running agent tool calls
+  // unisolated on the host with nothing to indicate it.
+  if (!signIn.ok) {
+    throw new Error(
+      `[e2e] could not sign in as admin to reset sandbox settings (${String(signIn.status)}) — ` +
+        'the server may be left in a non-default sandbox mode.',
+    );
+  }
   const { token } = (await signIn.json()) as { token: string };
-  await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
+  const res = await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
     body: JSON.stringify({ mode: 'container', engine: 'auto', allowNetwork: false }),
   });
+  if (!res.ok) {
+    throw new Error(
+      `[e2e] sandbox settings reset failed (${String(res.status)}): ${await res.text()}`,
+    );
+  }
 }

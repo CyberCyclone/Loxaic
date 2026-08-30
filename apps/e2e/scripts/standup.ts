@@ -17,6 +17,7 @@
  * mode later.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import path from 'node:path';
@@ -39,12 +40,35 @@ const DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/shannon';
 /**
  * Sandbox specs need an admin session, and "first user ever" is unreliable
- * against a DB standup reuses across runs — this is the fixed email granted
- * admin via ADMIN_EMAILS on the server this file spawns. See
- * helpers/auth.ts's provisionAdmin().
+ * against a DB stand-up reuses across runs — so one account is granted admin
+ * via ADMIN_EMAILS on the server this file spawns.
+ *
+ * Generated fresh per run rather than hardcoded. `DATABASE_URL` defaults to
+ * the same database `pnpm dev` uses, `ensurePostgres()` deliberately reuses
+ * an already-running one, and nothing deletes the row afterwards — so a
+ * fixed address and a committed password would leave every developer's dev
+ * database holding a guessable *admin* account, on a project whose whole
+ * premise is being reachable remotely. Random credentials make a leftover
+ * row inert instead.
+ *
+ * Written to a file rather than kept in memory because the processes that
+ * need it are not the same one: wdio workers are forked separately, and the
+ * documented `standup` + `E2E_NO_STANDUP=1` workflow runs stand-up in a
+ * different process entirely. See helpers/auth.ts's adminCreds().
  */
-export const E2E_ADMIN_EMAIL = 'e2e-admin@shannon.test';
+export const ADMIN_FILE = path.join(RUN_DIR, 'admin.json');
 const SANDBOX_HOST_ROOT = path.join(RUN_DIR, 'sandboxes');
+
+function writeAdminCreds(): { email: string; password: string } {
+  const suffix = randomBytes(9).toString('hex');
+  const creds = {
+    email: `e2e-admin-${suffix}@shannon.test`,
+    password: `Pw-${randomBytes(18).toString('base64url')}`,
+  };
+  mkdirSync(RUN_DIR, { recursive: true });
+  writeFileSync(ADMIN_FILE, JSON.stringify(creds), 'utf8');
+  return creds;
+}
 
 /** Kept so onComplete can stop exactly the server onPrepare started. */
 let spawnedServer: ChildProcess | null = null;
@@ -173,6 +197,7 @@ async function ensureServer(): Promise<void> {
 
   log(`starting server on port ${String(PORT)} with MOCK_INFERENCE=true`);
   mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
+  const { email: adminEmail } = writeAdminCreds();
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
@@ -187,7 +212,7 @@ async function ensureServer(): Promise<void> {
       // Sandbox specs sign in as this email to get the admin role (see
       // provisionAdmin()) and switch mode live through the settings API —
       // host mode then needs somewhere disposable to write, hence the root.
-      ADMIN_EMAILS: E2E_ADMIN_EMAIL,
+      ADMIN_EMAILS: adminEmail,
       SANDBOX_HOST_ROOT,
     },
   });
@@ -235,6 +260,12 @@ export async function teardown(): Promise<void> {
     }
   };
 
+  // Only a run that started a server owns that server's state. Everything
+  // below is gated on that for the same reason the kill above is: the host
+  // sandbox root is a fixed per-checkout path, so a run that merely *reused*
+  // someone else's server would otherwise delete the working directory out
+  // from under a live host-mode sandbox that server is still serving.
+  const owned = spawnedServer?.pid !== undefined;
   if (spawnedServer?.pid !== undefined) {
     stop(spawnedServer.pid);
     spawnedServer = null;
@@ -243,7 +274,10 @@ export async function teardown(): Promise<void> {
     if (Number.isFinite(pid) && pid > 0) stop(pid);
   }
   rmSync(PID_FILE, { force: true });
-  rmSync(SANDBOX_HOST_ROOT, { recursive: true, force: true });
+  if (owned) {
+    rmSync(SANDBOX_HOST_ROOT, { recursive: true, force: true });
+    rmSync(ADMIN_FILE, { force: true });
+  }
   // Postgres is deliberately left running: it is slow to start, holds no
   // per-run state worth clearing, and is very often not ours to stop.
   await Promise.resolve();

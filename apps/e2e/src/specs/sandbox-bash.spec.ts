@@ -20,11 +20,17 @@ import {
   sendMessage,
   setSandboxMode,
   signIn,
+  startNewAgentRun,
 } from '../helpers/app.ts';
 
 describe('sandbox bash parity', () => {
   before(async () => {
     await provisionAdmin();
+    // Mode now lives in the database, so it survives the process. A previous
+    // run killed mid-flight (Ctrl-C, CI timeout) never runs its after() hook
+    // and leaves the row on whatever it had set — this test would then start
+    // against an inherited mode instead of the container default it assumes.
+    await resetSandboxSettings();
     await signIn(adminCreds());
   });
 
@@ -55,7 +61,7 @@ describe('sandbox bash parity', () => {
     // resolveEntry() in sandbox-manager.ts) — a NEW conversation is what
     // actually exercises the newly-selected provider.
     await goToSurface('agent');
-    await tap('threadList.newChat');
+    await startNewAgentRun();
     await tap('agent.mode.manual');
     await sendMessage(BASH_PROMPT);
 
