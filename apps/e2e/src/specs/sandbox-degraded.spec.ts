@@ -24,7 +24,13 @@ describe('sandbox degraded UX', () => {
 
     await goToSurface('agent');
     await waitForVisible('agent.sandbox.banner');
-    await waitForTextIn('agent.sandbox.banner', 'off');
+    // Assert the banner carries the server's *reason*, not just that it
+    // rendered. Deliberately not matching on "off": that only ever passed
+    // because the mode name happened to appear inside the old hardcoded
+    // "(SANDBOX_MODE=off)" string, so it silently coupled this test to a
+    // message that — for a sandbox disabled through the GUI, as here —
+    // was pointing admins at an environment variable nobody had set.
+    await waitForTextIn('agent.sandbox.banner', 'disabled');
     await shot('sandbox-degraded-banner');
 
     // The banner is itself the fix path — tapping it routes back to settings.
