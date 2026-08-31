@@ -67,6 +67,19 @@ export async function readAsDataUri(ref: string, mime: string): Promise<string> 
 export const MAX_HISTORY_IMAGE_BYTES = 32 * 1024 * 1024;
 
 /**
+ * Token-equivalent of a single document at {@link MAX_EXTRACTED_BYTES} — the
+ * most any one document can cost, measured the same way
+ * {@link selectAffordableAttachments} prices one. This is what
+ * MAX_HISTORY_DOCUMENT_TOKENS is derived from, rather than a second
+ * independent number: the two drifting apart is exactly what happened before
+ * this comment existed — MAX_HISTORY_DOCUMENT_TOKENS was a flat 24,000 while
+ * a single capped document already priced at ~65,536, so a user's very first
+ * attachment could exceed the *entire* history budget on its own and get
+ * silently dropped from the turn that just sent it.
+ */
+const MAX_SINGLE_DOCUMENT_TOKENS = estimateTokens("history", "x".repeat(MAX_EXTRACTED_BYTES));
+
+/**
  * Ceiling on the *tokens* of document text one prompt may carry, summed across
  * every replayed turn.
  *
@@ -79,8 +92,16 @@ export const MAX_HISTORY_IMAGE_BYTES = 32 * 1024 * 1024;
  * window. Spending one budget for both would let a few large documents
  * silently price out the history, or let images consume a text allowance that
  * was never about them.
+ *
+ * Sized as a multiple of {@link MAX_SINGLE_DOCUMENT_TOKENS}, not a flat
+ * number, so it can never again fall below what one document at the cap
+ * costs — mirroring MAX_HISTORY_IMAGE_BYTES's own property that a single
+ * image at its per-upload cap always has room. The walk in
+ * selectAffordableAttachments is newest-first, so this guarantees the
+ * document just sent always survives even when the whole allowance is spent,
+ * with the remainder going to whatever else fits from earlier turns.
  */
-export const MAX_HISTORY_DOCUMENT_TOKENS = 24_000;
+export const MAX_HISTORY_DOCUMENT_TOKENS = MAX_SINGLE_DOCUMENT_TOKENS * 3;
 
 /**
  * Which refs across a whole history fit their class's budget, chosen
@@ -120,12 +141,18 @@ export async function selectAffordableAttachments(turns: AttachmentRef[][]): Pro
       // Documents are measured by what they'll actually cost the window, not
       // by the size of the file they came from — a 20 MB PDF may extract to a
       // page of text, and a 40 KB CSV may not.
-      let bytes: number;
+      let rawBytes: number;
       try {
-        ({ size: bytes } = await stat(attachmentTextPath(a.ref)));
+        ({ size: rawBytes } = await stat(attachmentTextPath(a.ref)));
       } catch {
         continue;
       }
+      // Only the first MAX_EXTRACTED_BYTES of the cached extraction ever
+      // reaches the prompt (attachmentContentParts truncates the rest) —
+      // budgeting against the full on-disk cache would wildly overestimate
+      // cost now that a document's sidecar can be larger than what's
+      // actually sent (see MAX_CACHED_EXTRACTION_BYTES).
+      const bytes = Math.min(rawBytes, MAX_EXTRACTED_BYTES);
       const cost = estimateTokens("history", "x".repeat(bytes));
       if (cost > documentTokens) continue;
       documentTokens -= cost;
@@ -173,6 +200,26 @@ function unavailableNote(a: AttachmentRef, reason: string): string {
   return `[attached file ${JSON.stringify(a.name ?? "file")} ${reason}]`;
 }
 
+/** UTF-8 safe truncation: slice on a character boundary, not a byte one, so a
+ * cut multi-byte sequence can't become a stray replacement character at the
+ * boundary. Deliberately not shared with extract.ts's own truncation helper —
+ * these are two small helpers with two different constants, and sharing one
+ * would create a circular import (storage.ts already imports
+ * `readExtractedText` from extract.ts). */
+function truncateForPrompt(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  const buf = Buffer.from(text, "utf8").subarray(0, maxBytes);
+  return new TextDecoder("utf-8").decode(buf).replace(/�$/, "");
+}
+
+/** Given a document whose extracted text overflowed the prompt budget, and
+ * the FULL cached text (not the prompt-truncated copy), returns a path to
+ * report in the truncation note — typically because the caller wrote the
+ * full text somewhere the model can page through it — or null when there's
+ * nowhere to put it. Never throws; a failure here must degrade to the
+ * pathless note, not fail the run. */
+export type AttachmentOverflowHandler = (a: AttachmentRef, fullText: string) => Promise<string | null>;
+
 /**
  * A user message's attachments + text as OpenAI content parts, attachments
  * first — the same order the blocks are stored in. A file missing from disk
@@ -193,6 +240,7 @@ export async function attachmentContentParts(
   atts: AttachmentRef[],
   text: string,
   allowed?: ReadonlySet<string>,
+  onOverflow?: AttachmentOverflowHandler,
 ): Promise<ContentPart[]> {
   const parts: ContentPart[] = [];
   const seen = new Set<string>();
@@ -225,20 +273,28 @@ export async function attachmentContentParts(
       parts.push({ type: "text", text: unavailableNote(a, "could not be read") });
       continue;
     }
+    const forPrompt = truncateForPrompt(extracted, MAX_EXTRACTED_BYTES);
+    const overflowed = forPrompt.length !== extracted.length;
+    const sandboxPath = overflowed && onOverflow ? await onOverflow(a, extracted) : null;
     parts.push({
       type: "text",
-      text: wrapDocument(a.name ?? "file", a.mime, extracted, truncationNote(extracted)),
+      text: wrapDocument(a.name ?? "file", a.mime, forPrompt, truncationNote(overflowed, sandboxPath)),
     });
   }
   if (text) parts.push({ type: "text", text });
   return parts;
 }
 
-/** Says so, in the prompt, when extraction hit its ceiling — the model should
- * know it is looking at a prefix rather than assume it has the whole file. */
-function truncationNote(text: string): string | undefined {
-  if (Buffer.byteLength(text, "utf8") < MAX_EXTRACTED_BYTES) return undefined;
-  return `[truncated at ${String(MAX_EXTRACTED_BYTES)} bytes — this is the start of the file, not all of it]`;
+/** Says so, in the prompt, when extraction hit its ceiling — the model
+ * should know it is looking at a prefix rather than assume it has the whole
+ * file. When `sandboxPath` is given, names it so the model can read the rest
+ * instead of guessing at it. */
+function truncationNote(overflowed: boolean, sandboxPath: string | null): string | undefined {
+  if (!overflowed) return undefined;
+  const base = `[truncated at ${String(MAX_EXTRACTED_BYTES)} bytes — this is the start of the file, not all of it.`;
+  return sandboxPath
+    ? `${base} Full text is at ${sandboxPath} — use grep to find a section, then fs_read with offset/limit to read it.]`
+    : `${base}]`;
 }
 
 /** Bytes of the head {@link sniffMime} needs — 12 for WEBP's RIFF/WEBP pair,

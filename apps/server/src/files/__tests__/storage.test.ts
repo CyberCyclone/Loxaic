@@ -1,12 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
+import { MAX_EXTRACTED_BYTES } from "@shannon/types";
 import {
   MAX_HISTORY_IMAGE_BYTES,
   attachmentContentParts,
   attachmentPath,
+  attachmentTextPath,
   isValidRef,
   readAsDataUri,
   selectAffordableAttachments,
@@ -132,6 +134,79 @@ describe("readAsDataUri / attachmentContentParts", () => {
   });
 });
 
+describe("attachmentContentParts — document truncation and overflow handling", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-doc-truncation-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
+  });
+
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeExtraction(bytes: number): { ref: string; text: string } {
+    const ref = uuid();
+    const text = "x".repeat(bytes);
+    writeFileSync(attachmentTextPath(ref), text, "utf8");
+    return { ref, text };
+  }
+
+  it("truncates a document's text to MAX_EXTRACTED_BYTES before wrapping it", async () => {
+    const { ref } = writeExtraction(MAX_EXTRACTED_BYTES + 1000);
+    const parts = await attachmentContentParts([{ ref, mime: "application/pdf", name: "big.pdf" }], "");
+    expect(parts).toHaveLength(1);
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.type).toBe("text");
+    // The body between the markers must be capped at MAX_EXTRACTED_BYTES,
+    // not the full on-disk cache.
+    expect(Buffer.byteLength(part.text, "utf8")).toBeLessThan(MAX_EXTRACTED_BYTES + 1000);
+    expect(part.text).toContain("truncated at");
+  });
+
+  it("does not truncate and never calls onOverflow when the text fits", async () => {
+    const { ref, text } = writeExtraction(100);
+    const onOverflow = vi.fn();
+    const parts = await attachmentContentParts(
+      [{ ref, mime: "application/pdf", name: "small.pdf" }],
+      "",
+      undefined,
+      onOverflow,
+    );
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.text).toContain(text);
+    expect(part.text).not.toContain("truncated at");
+    expect(onOverflow).toHaveBeenCalledTimes(0);
+  });
+
+  it("calls onOverflow with the FULL untruncated text and includes its returned path in the note", async () => {
+    const { ref, text } = writeExtraction(MAX_EXTRACTED_BYTES + 5000);
+    const onOverflow = vi.fn().mockResolvedValue("./attachments/abc-big.pdf.txt");
+    const parts = await attachmentContentParts(
+      [{ ref, mime: "application/pdf", name: "big.pdf" }],
+      "",
+      undefined,
+      onOverflow,
+    );
+    expect(onOverflow).toHaveBeenCalledTimes(1);
+    const [, fullTextArg] = onOverflow.mock.calls[0] as [unknown, string];
+    expect(fullTextArg.length).toBe(text.length);
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.text).toContain("./attachments/abc-big.pdf.txt");
+  });
+
+  it("when overflowed with no onOverflow given, the note has no path", async () => {
+    const { ref } = writeExtraction(MAX_EXTRACTED_BYTES + 5000);
+    const parts = await attachmentContentParts([{ ref, mime: "application/pdf", name: "big.pdf" }], "");
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.text).toContain("truncated at");
+    expect(part.text).not.toContain("Full text is at");
+  });
+});
+
 /**
  * The per-prompt image budget. Without it, HISTORY_LIMIT (50) multiplies the
  * per-send caps: a thread of image-bearing turns makes every later send
@@ -202,6 +277,85 @@ describe("selectAffordableImages", () => {
   it("leaves an unreadable ref out, to degrade downstream as [image unavailable]", async () => {
     const allowed = await selectAffordableAttachments([[{ ref: uuid(), mime: "image/png" }]]);
     expect(allowed.size).toBe(0);
+  });
+});
+
+/**
+ * Two document-budget fixes, covered together because the second only shows
+ * up correctly once the first is in place.
+ *
+ * (1) selectAffordableAttachments used to stat the full cached sidecar
+ * directly. Now that extraction caches up to MAX_CACHED_EXTRACTION_BYTES
+ * (4 MB) instead of MAX_EXTRACTED_BYTES (256 KB), budgeting against the raw
+ * file size would wildly overestimate a document's prompt cost. The fix caps
+ * the byte count fed to estimateTokens at MAX_EXTRACTED_BYTES, since that's
+ * all attachmentContentParts ever actually sends.
+ *
+ * (2) MAX_HISTORY_DOCUMENT_TOKENS was a flat 24,000 — smaller than a single
+ * document at MAX_EXTRACTED_BYTES already costs (~65,536 est. tokens). Fix
+ * (1) alone would have made that worse, not better: capping the measurement
+ * at the per-document ceiling doesn't help when the *whole-history* budget is
+ * already below that ceiling — every document at or near the cap would still
+ * be excluded, including the one from the turn that just sent it. Both fixes
+ * together are what makes "a single document at the cap always survives"
+ * true, mirroring MAX_HISTORY_IMAGE_BYTES's own property for images. The
+ * budget is now MAX_SINGLE_DOCUMENT_TOKENS * 3, so it takes several
+ * max-sized documents across a history — not one — to start losing anything,
+ * and the walk being newest-first means what gets dropped is always the
+ * oldest one.
+ */
+describe("selectAffordableAttachments — documents", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-doc-budget-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
+  });
+
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeExtraction(bytes: number): string {
+    const ref = uuid();
+    writeFileSync(attachmentTextPath(ref), "x".repeat(bytes), "utf8");
+    return ref;
+  }
+
+  it("admits a single document even when its cached sidecar is far larger than MAX_EXTRACTED_BYTES", async () => {
+    // Well beyond MAX_EXTRACTED_BYTES (256 KB) but under MAX_CACHED_EXTRACTION_BYTES
+    // (4 MB) — exactly the shape a large document's sidecar can now take.
+    // Its *measured* cost is capped at one document's worth, which the budget
+    // is sized to always clear on its own — this is the regression guard for
+    // both fixes at once: an uncapped measurement here would exceed the
+    // budget by roughly 16x, and a budget still sized at the old flat 24,000
+    // would reject this even after capping.
+    const ref = writeExtraction(MAX_EXTRACTED_BYTES * 4);
+    const allowed = await selectAffordableAttachments([[{ ref, mime: "application/pdf" }]]);
+    expect(allowed.has(ref)).toBe(true);
+  });
+
+  it("admits a small document unaffected by the cap either way", async () => {
+    const ref = writeExtraction(1000);
+    const allowed = await selectAffordableAttachments([[{ ref, mime: "application/pdf" }]]);
+    expect(allowed.has(ref)).toBe(true);
+  });
+
+  it("drops the oldest document once several turns' worth exceed the whole-history budget", async () => {
+    // Four documents each at the per-document cap cost roughly 4x
+    // MAX_SINGLE_DOCUMENT_TOKENS, comfortably over the 3x budget — so exactly
+    // one must be dropped, and the newest-first walk means it's the oldest.
+    const refs = [writeExtraction(MAX_EXTRACTED_BYTES), writeExtraction(MAX_EXTRACTED_BYTES),
+      writeExtraction(MAX_EXTRACTED_BYTES), writeExtraction(MAX_EXTRACTED_BYTES)];
+    const allowed = await selectAffordableAttachments(
+      refs.map((ref) => [{ ref, mime: "application/pdf" }]),
+    );
+    expect(allowed.has(refs[0])).toBe(false);
+    expect(allowed.has(refs[1])).toBe(true);
+    expect(allowed.has(refs[2])).toBe(true);
+    expect(allowed.has(refs[3])).toBe(true);
   });
 });
 

@@ -5,7 +5,7 @@ import path from "node:path";
 import { v4 as uuid } from "uuid";
 import { and, db, eq, inArray } from "@shannon/db";
 import { sandboxes, user } from "@shannon/db/schema";
-import { stopAllSandboxes } from "../sandbox-manager.ts";
+import { attachActiveSandbox, getConversationSandbox, hasActiveSandbox, stopAllSandboxes } from "../sandbox-manager.ts";
 import { getHostProvider } from "../../sandbox/host-provider.ts";
 
 /**
@@ -137,5 +137,41 @@ describe("stopAllSandboxes", () => {
       where: and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running")),
     });
     expect(remaining).toHaveLength(0);
+  });
+});
+
+/**
+ * hasActiveSandbox/attachActiveSandbox never create a sandbox — see their own
+ * doc comments in sandbox-manager.ts. These cases share this file's host-only
+ * scoping rationale (see the file-level comment above): a real sandbox here
+ * is created via getConversationSandbox, which is the only way to populate
+ * sandbox-manager's module-private `active` map that these two functions
+ * read from.
+ */
+describe("hasActiveSandbox / attachActiveSandbox", () => {
+  it("is false for a conversation id this process has never seen — no false positives", () => {
+    expect(hasActiveSandbox(`unknown-${uuid()}`)).toBe(false);
+  });
+
+  it("becomes true once a real sandbox is live, and attachActiveSandbox reattaches to it", async () => {
+    const conversationId = uuid();
+    const prevMode = process.env.SANDBOX_MODE;
+    process.env.SANDBOX_MODE = "host";
+    try {
+      expect(hasActiveSandbox(conversationId)).toBe(false);
+
+      const handle = await getConversationSandbox(userId, conversationId);
+      expect(hasActiveSandbox(conversationId)).toBe(true);
+
+      const attached = await attachActiveSandbox(conversationId);
+      expect(attached).not.toBeNull();
+      const probePath = path.join(handle.workdir, "probe.txt");
+      await attached?.writeFile(probePath, "hello from attachActiveSandbox");
+      await expect(handle.readFile(probePath)).resolves.toBe("hello from attachActiveSandbox");
+    } finally {
+      await stopAllSandboxes("host");
+      if (prevMode === undefined) delete process.env.SANDBOX_MODE;
+      else process.env.SANDBOX_MODE = prevMode;
+    }
   });
 });

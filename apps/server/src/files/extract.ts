@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import {
   attachmentClass,
-  MAX_EXTRACTED_BYTES,
+  MAX_CACHED_EXTRACTION_BYTES,
   MAX_PDF_PAGES,
 } from "@shannon/types";
 import { stripControl } from "../mcp/sanitize.ts";
@@ -97,10 +97,13 @@ export async function readExtractedText(ref: string): Promise<string | null> {
 }
 
 /** UTF-8 safe truncation: slice on a character boundary, not a byte one, so a
- * cut multi-byte sequence can't become a replacement character. */
+ * cut multi-byte sequence can't become a replacement character. Caps the
+ * cached sidecar at MAX_CACHED_EXTRACTION_BYTES — distinct from, and much
+ * larger than, MAX_EXTRACTED_BYTES, which bounds what enters the prompt (see
+ * storage.ts's own truncateForPrompt). */
 function capped(text: string): string {
-  if (Buffer.byteLength(text, "utf8") <= MAX_EXTRACTED_BYTES) return text;
-  const buf = Buffer.from(text, "utf8").subarray(0, MAX_EXTRACTED_BYTES);
+  if (Buffer.byteLength(text, "utf8") <= MAX_CACHED_EXTRACTION_BYTES) return text;
+  const buf = Buffer.from(text, "utf8").subarray(0, MAX_CACHED_EXTRACTION_BYTES);
   return new TextDecoder("utf-8").decode(buf).replace(/�$/, "");
 }
 

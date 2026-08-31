@@ -58,6 +58,29 @@ export async function getConversationSandbox(
   return entryProvider.attach(entry.ref);
 }
 
+/** True when this process already has a live sandbox for this conversation.
+ * Never creates one — callers that must not spin up a container just because
+ * they might want to write to it (e.g. attachment overflow handling) check
+ * this first. */
+export function hasActiveSandbox(conversationId: string): boolean {
+  return active.has(conversationId);
+}
+
+/**
+ * Reattaches to a conversation's sandbox iff one is already active in this
+ * process — see {@link hasActiveSandbox}. Returns null rather than creating
+ * anything when there isn't one. A stopped/idle-reaped sandbox counts as "not
+ * active" even though its Postgres row and directory may still exist,
+ * because reviving it here would be an implicit side effect of something
+ * that looks like a read.
+ */
+export async function attachActiveSandbox(conversationId: string): Promise<SandboxHandle | null> {
+  const entry = active.get(conversationId);
+  if (!entry) return null;
+  const provider = await getProviderByKind(entry.provider);
+  return provider.attach(entry.ref);
+}
+
 async function resolveEntry(
   currentProvider: SandboxProvider,
   userId: string,

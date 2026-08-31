@@ -65,6 +65,14 @@ export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
  * window, so the binding constraint is the window, not the disk. */
 export const MAX_EXTRACTED_BYTES = 256 * 1024;
 
+/** Ceiling on the cached `<ref>.txt` sidecar written at extraction time —
+ * distinct from MAX_EXTRACTED_BYTES, which bounds what enters the *prompt*.
+ * This is a disk/sandbox-paging ceiling: it exists so a big document still
+ * has something for the agent to grep/fs_read through after the prompt-facing
+ * copy has been truncated, without letting one attachment's cache grow
+ * unbounded. Comfortably above MAX_EXTRACTED_BYTES; not meant to be tight. */
+export const MAX_CACHED_EXTRACTION_BYTES = 4 * 1024 * 1024;
+
 /** Pages `pdftotext` is allowed to walk. Bounds extraction time on a
  * pathological PDF independently of the byte cap. */
 export const MAX_PDF_PAGES = 200;

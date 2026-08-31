@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { and, db, eq, gt } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
-import type { AttachmentRef, ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
+import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@shannon/types";
 import {
   countImageParts,
   streamCompletion,
@@ -15,7 +15,7 @@ import { invalidateBackendModels, listBackendModels, resolveWindow } from "../..
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
-import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
+import { attachActiveSandbox, getConversationSandbox, hasActiveSandbox } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -579,7 +579,12 @@ export async function loadHistory(
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {
-        out.push({ role: "user", content: await attachmentContentParts(atts, text, affordable) });
+        out.push({
+          role: "user",
+          content: await attachmentContentParts(atts, text, affordable, (a, fullText) =>
+            writeOverflowToSandbox(conversationId, a, fullText),
+          ),
+        });
       } else if (text) {
         out.push({ role: "user", content: text });
       }
@@ -625,6 +630,44 @@ function textOf(blocks: ContentBlock[]): string {
     .map((b) => (b as { text: string }).text)
     .join("\n")
     .trim();
+}
+
+/**
+ * Writes a truncated document's full extracted text into the conversation's
+ * sandbox, if one is already running — see hasActiveSandbox/attachActiveSandbox
+ * for why this never creates one. Both chat and agent share this tool loop
+ * and can each have a sandbox, so the gate is "is one already live", not
+ * which surface this run is.
+ *
+ * Uses writeFileBinary, not writeFile: the container provider's writeFile
+ * passes its payload as a bash argv element, which a multi-megabyte document
+ * (now that extraction caches up to MAX_CACHED_EXTRACTION_BYTES) would blow
+ * past ARG_MAX on. writeFileBinary streams over stdin instead.
+ */
+async function writeOverflowToSandbox(
+  convId: string,
+  a: AttachmentRef,
+  fullText: string,
+): Promise<string | null> {
+  if (!hasActiveSandbox(convId)) return null;
+  try {
+    const handle = await attachActiveSandbox(convId);
+    if (!handle) return null;
+    // This file's content is the extracted text, not the original bytes — a
+    // PDF's overflow file is plain text, not a PDF. Stripping the original
+    // extension before appending ".txt" keeps that honest (report.pdf ->
+    // report.txt) and, as a side effect, avoids a doubled extension for a
+    // source that was already named "*.txt".
+    const baseName = sanitizeFilename(a.name ?? "file").replace(/\.[^./]+$/, "");
+    const relPath = `attachments/${a.ref.slice(0, 8)}-${baseName}.txt`;
+    await handle.writeFileBinary(`${handle.workdir}/${relPath}`, Buffer.from(fullText, "utf8"));
+    return `./${relPath}`;
+  } catch {
+    // Writing the overflow is a nicety, not a requirement — a failure here
+    // (sandbox mid-stop, disk full) must degrade to the pathless note, never
+    // fail the run.
+    return null;
+  }
 }
 
 /**
@@ -713,7 +756,12 @@ export async function loadEphemeralHistory(
   for (const item of replayed) {
     if (item.kind === "msgs") out.push(...item.msgs);
     else if (item.kind === "user") {
-      out.push({ role: "user", content: await attachmentContentParts(item.atts, item.text, affordable) });
+      out.push({
+        role: "user",
+        content: await attachmentContentParts(item.atts, item.text, affordable, (a, fullText) =>
+          writeOverflowToSandbox(conversationId, a, fullText),
+        ),
+      });
     }
   }
   const truncated = out.length > HISTORY_LIMIT;

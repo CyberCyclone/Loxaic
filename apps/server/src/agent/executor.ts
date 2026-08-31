@@ -48,6 +48,11 @@ function requireString(args: Record<string, unknown>, key: string): string {
   return v;
 }
 
+function positiveIntOrDefault(value: unknown, fallback: number): number {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
 export async function executeTool(
   handle: SandboxHandle | null,
   tool: ToolName,
@@ -80,10 +85,45 @@ export async function executeTool(
 
 // ── Filesystem ────────────────────────────────────────────
 
+const DEFAULT_READ_LIMIT = 2000;
+
 async function runFsRead(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
   const path = resolvePath(handle, args.path);
-  const content = await handle.readFile(path);
-  return { ok: true, output: content === "" ? "(empty file)" : content };
+  const offset = positiveIntOrDefault(args.offset, 1);
+  const limit = positiveIntOrDefault(args.limit, DEFAULT_READ_LIMIT);
+  const end = offset + limit - 1;
+
+  // One awk pass does two jobs: print the requested line range, numbered, to
+  // stdout, and the file's total line count to stderr, from its END block —
+  // which runs only after awk has scanned to EOF regardless of which lines
+  // matched the range, so the total is always accurate. One exec instead of
+  // a separate `wc -l` round trip. Range selection happens inside the
+  // sandbox specifically so only the (small) requested slice has to cross
+  // MAX_OUTPUT_BYTES, not the whole file — a naive "read everything, slice
+  // in JS" approach would silently fail to page past that cap.
+  const res = await handle.exec([
+    "bash", "-c",
+    'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
+    "_", String(offset), String(end), path,
+  ]);
+  if (res.exitCode !== 0) {
+    throw new Error(res.stderr.trim() || `read failed (exit ${String(res.exitCode)})`);
+  }
+
+  const total = Number.parseInt(res.stderr.trim(), 10) || 0;
+  if (total === 0) return { ok: true, output: "(empty file)" };
+  if (offset > total) {
+    return {
+      ok: true,
+      output: `(offset ${String(offset)} is past the end of the file — it has ${String(total)} line(s))`,
+    };
+  }
+  const shown = Math.min(end, total);
+  const footer =
+    shown < total
+      ? `\n… ${String(total - shown)} more line(s). Call again with offset=${String(shown + 1)} to continue.`
+      : "";
+  return { ok: true, output: res.stdout + footer };
 }
 
 /** Reads a file, returning null when it doesn't exist (rather than throwing). */
