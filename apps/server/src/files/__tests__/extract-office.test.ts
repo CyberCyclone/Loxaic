@@ -8,6 +8,7 @@ import { db, eq } from "@shannon/db";
 import { user } from "@shannon/db/schema";
 import { extractText, readExtractedText, stopAllExtractionSandboxes } from "../extract.ts";
 import { attachmentPath } from "../storage.ts";
+import { sandboxImageReady } from "../../sandbox/__tests__/docker-available.ts";
 
 /**
  * Office extraction against a **real sandbox container** — there is no useful
@@ -38,7 +39,10 @@ const userId = `test-office-extract-${uuid()}`;
 const dir = mkdtempSync(path.join(tmpdir(), "shannon-office-test-"));
 const prevUploadsDir = process.env.UPLOADS_DIR;
 
+const dockerReady = await sandboxImageReady();
+
 beforeAll(async () => {
+  if (!dockerReady) return;
   process.env.UPLOADS_DIR = dir;
   await db.insert(user).values({
     id: userId,
@@ -51,6 +55,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
+  if (!dockerReady) return;
   await stopAllExtractionSandboxes().catch(() => undefined);
   await db.delete(user).where(eq(user.id, userId));
   if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
@@ -65,7 +70,7 @@ function stage(fixture: string): string {
   return ref;
 }
 
-describe("office extraction in a real sandbox", () => {
+describe.skipIf(!dockerReady)("office extraction in a real sandbox", () => {
   it("extracts a .docx", async () => {
     const ref = stage("sample.docx");
     const result = await extractText({ ref, mime: DOCX, filename: "sample.docx", userId });
