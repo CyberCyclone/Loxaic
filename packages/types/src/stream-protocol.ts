@@ -113,6 +113,11 @@ const EXTENSION_MIMES: Record<string, string> = {
   sh: "text/plain", bash: "text/plain", zsh: "text/plain", sql: "text/plain",
   toml: "text/plain", ini: "text/plain", cfg: "text/plain", conf: "text/plain",
   env: "text/plain", diff: "text/plain", patch: "text/plain",
+  // Extensionless dotfiles: ".gitignore".split(".") yields "gitignore",
+  // so these key the same way any other extension does.
+  gitignore: "text/plain", gitattributes: "text/plain", dockerignore: "text/plain",
+  editorconfig: "text/plain", npmrc: "text/plain", nvmrc: "text/plain",
+  bashrc: "text/plain", zshrc: "text/plain", profile: "text/plain",
 };
 
 /**
@@ -150,9 +155,15 @@ export function sanitizeFilename(raw: unknown): string {
   const cleaned = base
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-    .replace(/^\.+/, "")
     .trim();
-  if (!cleaned) return "file";
+  // A leading dot is kept: the path split above already removed every
+  // directory component, so stripping it was never the traversal defence — it
+  // just mangled dotfiles. It also broke them outright, because the upload
+  // route resolves the mime from this name and `.env` arriving as `env` looks
+  // extensionless to resolveAttachmentMime, which then 415s a file the client
+  // had already accepted. A name that is *only* dots has nothing left to be a
+  // filename, so it falls back.
+  if (!cleaned || /^\.+$/.test(cleaned)) return "file";
   return cleaned.length > MAX_FILENAME_LENGTH ? cleaned.slice(0, MAX_FILENAME_LENGTH) : cleaned;
 }
 

@@ -336,7 +336,18 @@ async function applySandboxSettings(
   // only lists containers on the currently-configured engine. So: stop while
   // the old engine is still cached, then reset.
   const { stopAllSandboxes } = await import("./agent/sandbox-manager.ts");
-  for (const kind of invalidatedKinds(before, after)) {
+  // The extraction pool (files/extract.ts) is a *second*, independent set of
+  // live sandboxes that stopAllSandboxes knows nothing about — it only walks
+  // the conversation ones. Left out, an engine change strands pooled
+  // containers on the old engine where the boot sweep can never find them
+  // (it lists only the configured engine's), a host→container switch leaks
+  // per-user directories holding uploaded documents, and a switch to "off"
+  // leaves extraction quietly working against a still-live sandbox. It has no
+  // per-kind bookkeeping, so any invalidation stops all of it.
+  const { stopAllExtractionSandboxes } = await import("./files/extract.ts");
+  const kinds = invalidatedKinds(before, after);
+  if (kinds.length > 0) await stopAllExtractionSandboxes().catch(() => 0);
+  for (const kind of kinds) {
     await stopAllSandboxes(kind).catch(() => 0);
   }
   const { resetEngineCache } = await import("./sandbox/container-provider.ts");

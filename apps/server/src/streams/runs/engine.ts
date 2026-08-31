@@ -20,7 +20,13 @@ import { invalidateBackendModels, listBackendModels, resolveWindow } from "../..
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
-import { attachActiveSandbox, getConversationSandbox, hasActiveSandbox } from "../../agent/sandbox-manager.ts";
+import {
+  attachActiveSandbox,
+  getConversationSandbox,
+  hasActiveSandbox,
+  hasOverflowWrite,
+  markOverflowWritten,
+} from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -691,7 +697,16 @@ async function writeOverflowToSandbox(
     // source that was already named "*.txt".
     const baseName = sanitizeFilename(a.name ?? "file").replace(/\.[^./]+$/, "");
     const relPath = `attachments/${a.ref.slice(0, 8)}-${baseName}.txt`;
+    // Written once per (sandbox, ref), not once per turn. loadHistory runs
+    // before every model call, so without this a conversation carrying one
+    // overflowing document would base64 and re-stream its whole cached text
+    // (up to MAX_CACHED_EXTRACTION_BYTES, ~5.3 MB on the wire) into the
+    // container on every single turn, for the life of the conversation. The
+    // content is immutable — keyed on a.ref, and the sidecar never changes —
+    // so re-writing it can only ever reproduce the same bytes.
+    if (hasOverflowWrite(handle.ref, a.ref)) return `./${relPath}`;
     await handle.writeFileBinary(`${handle.workdir}/${relPath}`, Buffer.from(fullText, "utf8"));
+    markOverflowWritten(handle.ref, a.ref);
     return `./${relPath}`;
   } catch {
     // Writing the overflow is a nicety, not a requirement — a failure here

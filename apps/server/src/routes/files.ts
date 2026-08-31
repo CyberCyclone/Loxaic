@@ -241,5 +241,12 @@ function contentDisposition(mime: string, filename: string): string {
   const kind = attachmentClass(mime) === "image" ? "inline" : "attachment";
   if (!filename) return kind;
   const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replaceAll('"', "");
-  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+  // sanitizeFilename caps by slicing UTF-16 code units, so a name whose cut
+  // lands inside an astral-plane character (emoji, CJK extensions, musical
+  // symbols) ends in a lone surrogate — and encodeURIComponent throws URIError
+  // on those, which would 500 every download of that attachment forever.
+  // Dropping an unpaired surrogate is the only lossy step and it only ever
+  // removes half a character that was already destroyed by the cut.
+  const encodable = filename.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(encodable)}`;
 }

@@ -277,13 +277,26 @@ screenshots showing that behaviour working. Writing those tests is the implement
   characters stripped, length-capped) and read back from the DB row everywhere downstream: the
   model's prompt, the UI chip, and the `Content-Disposition` header. The client's copy is never
   trusted for any of the three.
-- **Parsing runs inside the sandbox and nowhere else.** Text formats
+- **Parsing runs inside a sandbox, never in the server process.** Text formats
   (`TEXT_MIMES`) are just UTF-8 bytes, decoded in-process — no parser, so they work with
   `SANDBOX_MODE=off`. PDF (`DOCUMENT_MIMES`) needs a real parser over a file the server did not
   author; `files/extract.ts` runs it in a pooled per-user sandbox via argv-safe `pdftotext`, and
   the upload route **rejects document mimes outright when no sandbox is configured**, with a
   415 naming why. Extraction reads and never executes — no macro, embedded script, or PDF
   JavaScript runs, and the container has no network to reach regardless.
+- **`SANDBOX_MODE=host` runs that parser on the host, as the server's own user** — allowed
+  deliberately (a `pdftotext` subprocess is strictly less exposure than the `bash` tool that
+  mode already grants) but materially weaker than the container path, which has
+  `NetworkMode: none`, a separate uid, and the memory/CPU/pids limits the host provider ignores
+  entirely. Deployments that care about the difference should run container mode. Extraction
+  scratch files go under **`handle.root`**, never an absolute `/tmp` path: on the host provider
+  that would be the real, shared host `/tmp`, briefly exposing one user's document bytes to
+  anything else on the machine.
+- **The extraction pool is a second set of live sandboxes**, independent of the conversation
+  ones in `agent/sandbox-manager.ts`. `applySandboxSettings` has to stop *both* — before
+  `resetEngineCache()`, per the ordering rule below — or an engine change strands pooled
+  containers where the boot sweep can never find them, and a host→container switch leaks
+  per-user directories still holding uploaded documents.
 - **Extraction is cached at a different, larger ceiling than what reaches the prompt.**
   `MAX_CACHED_EXTRACTION_BYTES` (4 MB) bounds the `<ref>.txt` sidecar written at upload time;
   `MAX_EXTRACTED_BYTES` (256 KB) is the separate, smaller cap `attachmentContentParts` truncates

@@ -685,7 +685,7 @@ export {
   BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
-  attachmentClass, resolveAttachmentMime, sanitizeFilename,
+  attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
 } from "@shannon/types";
 
 /** True if the send was actually written to the socket — false (never

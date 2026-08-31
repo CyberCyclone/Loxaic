@@ -37,7 +37,14 @@ export function userQuotaBytes(): number {
  */
 export async function usedAttachmentBytes(userId: string): Promise<number> {
   const [row] = await db
-    .select({ used: sql<number>`coalesce(sum(${attachments.sizeBytes}), 0)::float8` })
+    .select({
+      // The cached extraction is real disk this user owns — the same disk the
+      // sweep below deletes. Counting only the original under-reports a text
+      // attachment by roughly 2x, so a nominal 100 MB quota would hold ~200 MB
+      // and ATTACHMENT_USER_QUOTA_BYTES would not mean what an admin sizing a
+      // disk assumes. This is also what the extract_bytes column is for.
+      used: sql<number>`coalesce(sum(${attachments.sizeBytes} + coalesce(${attachments.extractBytes}, 0)), 0)::float8`,
+    })
     .from(attachments)
     .where(eq(attachments.ownerId, userId));
   // An aggregate with no GROUP BY always returns exactly one row, and the

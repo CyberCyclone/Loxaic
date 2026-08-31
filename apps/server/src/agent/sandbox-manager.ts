@@ -25,6 +25,38 @@ function warnSeedingOnce(dir: string): void {
   );
 }
 
+
+/**
+ * sandbox ref → attachment refs whose overflow file has already been written
+ * into it (see writeOverflowToSandbox in streams/runs/engine.ts).
+ *
+ * Lives here, with the rest of a sandbox's lifecycle state, rather than beside
+ * its only caller: putting it in engine.ts meant engine importing this module
+ * *and* this module importing engine, and that cycle is a real hazard under
+ * ESM, not just untidy.
+ *
+ * Keyed by the sandbox's own ref rather than the conversation id, so a
+ * conversation whose sandbox is reaped and recreated writes into the new one
+ * instead of assuming the old one's contents carried over.
+ */
+const overflowWrites = new Map<string, Set<string>>();
+
+export function hasOverflowWrite(sandboxRef: string, attachmentRef: string): boolean {
+  return overflowWrites.get(sandboxRef)?.has(attachmentRef) ?? false;
+}
+
+export function markOverflowWritten(sandboxRef: string, attachmentRef: string): void {
+  const seen = overflowWrites.get(sandboxRef);
+  if (seen) seen.add(attachmentRef);
+  else overflowWrites.set(sandboxRef, new Set([attachmentRef]));
+}
+
+/** Drops a stopped sandbox's memo, so a later sandbox for the same
+ * conversation re-writes rather than trusting a previous one's state. */
+function forgetOverflowWrites(sandboxRef: string): void {
+  overflowWrites.delete(sandboxRef);
+}
+
 /** rowId is null for ephemeral (incognito) sandboxes — no Postgres row. */
 interface Entry { rowId: string | null; provider: SandboxKind; ref: string; lastUsedAt: number }
 
@@ -98,6 +130,7 @@ async function resolveEntry(
     // Either vanished (crash, engine restart, manual `docker rm`), or the
     // mode changed since it was created — either way it's no longer usable.
     active.delete(conversationId);
+    forgetOverflowWrites(cached.ref);
     if (cached.rowId) await markStopped(cached.rowId);
   }
 
@@ -198,6 +231,7 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
     const provider = await getProviderByKind(entry.provider);
     const handle = await provider.attach(entry.ref);
     await handle.stop().catch(() => undefined);
+    forgetOverflowWrites(entry.ref);
     if (entry.rowId) await markStopped(entry.rowId);
     reaped++;
   }

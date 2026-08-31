@@ -145,6 +145,14 @@ export async function selectAffordableAttachments(turns: AttachmentRef[][]): Pro
       try {
         ({ size: rawBytes } = await stat(attachmentTextPath(a.ref)));
       } catch {
+        // No sidecar means extraction failed or never ran — the file is
+        // unreadable, which is a different thing from unaffordable. Admitting
+        // it lets attachmentContentParts reach its own "could not be read"
+        // branch; leaving it out would describe it to the model as dropped for
+        // budget reasons, and the model would sensibly suggest trimming the
+        // conversation, which cannot possibly help. It costs no budget because
+        // there is no text to spend any on.
+        allowed.add(a.ref);
         continue;
       }
       // Only the first MAX_EXTRACTED_BYTES of the cached extraction ever

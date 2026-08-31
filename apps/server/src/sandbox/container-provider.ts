@@ -27,6 +27,10 @@ const DEFAULT_LIMITS = {
   PidsLimit: 100,
 };
 const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
+/** Ceiling on one binary write into a container. Generous — a multi-megabyte
+ * document over a local socket is fast — but finite, because the caller is an
+ * HTTP request handler. */
+const BINARY_WRITE_TIMEOUT_MS = 120_000;
 
 let imageTag: string | null = null;
 
@@ -259,13 +263,33 @@ async function writeBinaryToContainer(
   const modem = container.modem as DemuxCapableModem;
   modem.demuxStream(stream, new CappedSink(), err);
 
+  // Every listener is registered *before* the write starts. Registering the
+  // finish handlers after `await`ing the write is a real race: for a small
+  // payload the exec can complete and the stream emit end/close before control
+  // returns, so a listener attached afterwards waits for an event that already
+  // fired and never settles. The timeout is the second half — a stalled socket
+  // (dead daemon, paused container) would otherwise hang this forever, and the
+  // awaited caller is the upload route, so it would hold an HTTP request and a
+  // pooled sandbox open with no error ever surfacing. execInContainer bounds
+  // itself the same way.
   await new Promise<void>((resolve, reject) => {
-    stream.on("error", reject);
-    stream.end(data.toString("base64"), () => { resolve(); });
+    let settled = false;
+    const finish = (err2?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err2) reject(err2);
+      else resolve();
+    };
+    const timer = setTimeout(
+      () => { finish(new Error(`binary write timed out after ${String(BINARY_WRITE_TIMEOUT_MS)}ms`)); },
+      BINARY_WRITE_TIMEOUT_MS,
+    );
+    stream.on("error", (e: Error) => { finish(e); });
+    stream.on("end", () => { finish(); });
+    stream.on("close", () => { finish(); });
+    stream.end(data.toString("base64"));
   });
-  // Wait for the process itself, not just the write: `end()` resolving only
-  // means the bytes left this side.
-  await new Promise<void>((resolve) => stream.on("end", resolve).on("close", resolve));
 
   const info = await exec.inspect();
   if (info.ExitCode !== 0) {

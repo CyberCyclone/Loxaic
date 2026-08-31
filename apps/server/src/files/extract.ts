@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { readFile, unlink, writeFile } from "node:fs/promises";
 import {
   attachmentClass,
@@ -115,9 +116,45 @@ function capped(text: string): string {
  * tells the model nothing the text doesn't.
  */
 async function extractPlainText(input: ExtractInput): Promise<string> {
-  const text = await readFile(attachmentPath(input.ref), "utf8");
+  const text = await readTextCapped(attachmentPath(input.ref));
   if (input.mime === "text/html") return htmlToText(text);
   return text;
+}
+
+/**
+ * Read at most {@link MAX_CACHED_EXTRACTION_BYTES} of a file as UTF-8.
+ *
+ * Deliberately streamed rather than `readFile(path, "utf8")`. That pulls the
+ * whole upload into one string — up to MAX_DOCUMENT_BYTES, so ~25 MB, or ~50 MB
+ * of heap as UTF-16 — and every later step (htmlToText's passes, the cap) then
+ * copies it again, all inside the upload handler with no concurrency limit. A
+ * handful of simultaneous large uploads is otherwise a cheap way for any
+ * signed-in user to exhaust the heap. Everything past the cap is discarded
+ * anyway, so there is no reason to have read it.
+ *
+ * `stream: true` on the decoder keeps a multi-byte character split across a
+ * chunk boundary intact.
+ */
+async function readTextCapped(filePath: string): Promise<string> {
+  const decoder = new TextDecoder("utf-8");
+  let out = "";
+  let bytes = 0;
+  const stream = createReadStream(filePath);
+  try {
+    for await (const chunk of stream) {
+      const buf = chunk as Buffer;
+      const room = MAX_CACHED_EXTRACTION_BYTES - bytes;
+      if (buf.length >= room) {
+        out += decoder.decode(buf.subarray(0, room), { stream: true });
+        break;
+      }
+      out += decoder.decode(buf, { stream: true });
+      bytes += buf.length;
+    }
+  } finally {
+    stream.destroy();
+  }
+  return out + decoder.decode();
 }
 
 /**
@@ -193,7 +230,14 @@ function htmlToText(html: string): string {
  */
 async function extractViaSandbox(input: ExtractInput): Promise<string> {
   const handle = await getExtractionSandbox(input.userId);
-  const inPath = `/tmp/extract/${randomUUID()}`;
+  // Under `handle.root`, never an absolute /tmp path. The two providers give
+  // that very different meanings and only one of them is isolated: for the
+  // container provider /tmp is the container's own, but for the host provider
+  // it would be the *real host* /tmp — world-readable, shared by every user on
+  // the box, so one person's document bytes would be briefly readable by
+  // anything else running there. `root` is the per-sandbox directory in host
+  // mode and /home/shannon in container mode, which is correct for both.
+  const inPath = `${handle.root}/.extract/${randomUUID()}`;
   try {
     await handle.writeFileBinary(inPath, await readFile(attachmentPath(input.ref)));
     const res = await handle.exec(commandFor(input.mime, inPath), {

@@ -6,8 +6,9 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import {
   uploadAttachment,
   MAX_ATTACHMENTS,
-  MAX_ATTACHMENT_BYTES,
   ATTACHMENT_MIMES,
+  attachmentClass,
+  maxBytesForMime,
   resolveAttachmentMime,
   type AttachmentRef,
   type UploadedAttachment,
@@ -111,10 +112,21 @@ export function useComposerAttachments() {
         const blob = await readAsBlob(uri, mime).catch((e: unknown) => {
           throw new Error(`reading image: ${(e as Error).message}`);
         });
-        if (blob.size > MAX_ATTACHMENT_BYTES) {
+        // Per class, not the image cap for everything: documents are allowed
+        // MAX_DOCUMENT_BYTES (25 MB) and maxBytesForMime is what the server
+        // actually enforces. Applying the 10 MB image ceiling here stripped
+        // perfectly valid PDFs and CSVs client-side — and told the user their
+        // "image" was too large.
+        const limit = maxBytesForMime(mime);
+        if (blob.size > limit) {
           release(localUri);
           setItems((prev) => prev.filter((i) => i.localUri !== localUri));
-          showToast('That image is over 10 MB even after resizing');
+          const mb = String(Math.round(limit / (1024 * 1024)));
+          showToast(
+            attachmentClass(mime) === 'image'
+              ? `That image is over ${mb} MB even after resizing`
+              : `That file is over ${mb} MB`,
+          );
           return;
         }
         uploaded = await uploadAttachment(blob, name).catch((e: unknown) => {

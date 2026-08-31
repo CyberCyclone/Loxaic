@@ -118,7 +118,15 @@ async function runFsRead(handle: SandboxHandle, args: Record<string, unknown>): 
       output: `(offset ${String(offset)} is past the end of the file — it has ${String(total)} line(s))`,
     };
   }
-  const shown = Math.min(end, total);
+  // What actually came back, not what was asked for. exec caps stdout at
+  // MAX_OUTPUT_BYTES, which a long-lined file reaches well before `limit`
+  // lines — so trusting `end` here would tell the model nothing was omitted
+  // (when the range was fully requested) or point it past lines that were
+  // never printed (when it wasn't). Both silently lose content, which is the
+  // exact failure this offset/limit design exists to prevent. The output is
+  // line-numbered, so the last number printed is the truth.
+  const lastPrinted = /(?:^|\n)(\d+)\t[^\n]*$/.exec(res.stdout.replace(/\n$/, ""));
+  const shown = lastPrinted ? Number(lastPrinted[1]) : Math.min(end, total);
   const footer =
     shown < total
       ? `\n… ${String(total - shown)} more line(s). Call again with offset=${String(shown + 1)} to continue.`
