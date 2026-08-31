@@ -19,6 +19,11 @@ describe('nativeAttachmentFile', () => {
     const dataUri = 'data:image/jpeg;base64,AAAA';
     expect(nativeAttachmentFile(dataUri, 'image/jpeg').uri).toBe(dataUri);
   });
+
+  it('uses a supplied name verbatim, overriding the mime-based default', () => {
+    const result = nativeAttachmentFile('file:///tmp/doc.csv', 'text/csv', 'budget.csv');
+    expect(result).toEqual({ uri: 'file:///tmp/doc.csv', name: 'budget.csv', type: 'text/csv' });
+  });
 });
 
 describe('attachmentFileName', () => {

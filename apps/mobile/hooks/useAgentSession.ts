@@ -402,7 +402,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         pendingModelRef.current = model;
         const newRun: Conversation = {
           id: localId,
-          title: text.slice(0, 40) || 'Image',
+          title: text.slice(0, 40) || (attachments?.[0]?.name ?? 'Attachment'),
           kind: 'agent',
           time: 'now',
           model,

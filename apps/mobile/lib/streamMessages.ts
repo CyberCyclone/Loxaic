@@ -42,7 +42,7 @@ export function extractCompaction(blocks: ContentBlock[]): CompactionStats | und
  * the field as absent, and the render sites all guard on truthiness. */
 export function extractAttachments(blocks: ContentBlock[]): Message['attachments'] {
   const atts = blocks.filter((b) => b.kind === 'attachment');
-  return atts.length > 0 ? atts.map((a) => ({ ref: a.ref, mime: a.mime })) : undefined;
+  return atts.length > 0 ? atts.map((a) => ({ ref: a.ref, mime: a.mime, ...(a.name ? { name: a.name } : {}) })) : undefined;
 }
 
 export function extractField(blocks: ContentBlock[], kind: 'text' | 'thinking'): string {

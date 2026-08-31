@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import {
   uploadAttachment,
   MAX_ATTACHMENTS,
   MAX_ATTACHMENT_BYTES,
   ATTACHMENT_MIMES,
+  resolveAttachmentMime,
   type AttachmentRef,
   type UploadedAttachment,
 } from '@shannon/api-client';
@@ -22,6 +24,13 @@ export interface PendingAttachment {
   localUri: string;
   mime: string;
   ref?: string;
+  /** Display filename — absent for a camera photo, present for everything
+   * else. Once upload succeeds, the server's own sanitized name replaces
+   * whatever local guess was used to start the upload. */
+  name?: string;
+  /** Bytes, for the file chip's label — optional since a native image pick
+   * may not report one before upload finishes. */
+  size?: number;
   status: 'uploading' | 'ready' | 'error';
   error?: string;
 }
@@ -38,7 +47,8 @@ async function readAsBlob(uri: string, mime: string): Promise<Blob> {
 
 /** Resizes/converts a picked asset so it satisfies the server's accepted
  * mimes and the max-edge cap. GIFs are left alone — resizing would strip
- * the animation, and the size cap below still applies to them. */
+ * the animation, and the size cap below still applies to them. Images only
+ * — documents never reach this function, see `addDocuments`/`pickDocument`. */
 async function normalize(asset: ImagePicker.ImagePickerAsset): Promise<{ uri: string; mime: string }> {
   const mime = asset.mimeType;
   if (mime === 'image/gif') return { uri: asset.uri, mime };
@@ -92,7 +102,7 @@ export function useComposerAttachments() {
   // every one of them for the life of the page.
   useEffect(() => releaseAll, [releaseAll]);
 
-  const upload = useCallback(async (localUri: string, uri: string, mime: string) => {
+  const upload = useCallback(async (localUri: string, uri: string, mime: string, name?: string) => {
     try {
       let uploaded: UploadedAttachment;
       if (Platform.OS === 'web') {
@@ -107,7 +117,7 @@ export function useComposerAttachments() {
           showToast('That image is over 10 MB even after resizing');
           return;
         }
-        uploaded = await uploadAttachment(blob).catch((e: unknown) => {
+        uploaded = await uploadAttachment(blob, name).catch((e: unknown) => {
           throw new Error(`uploading (${String(blob.size)} bytes): ${(e as Error).message}`);
         });
       } else {
@@ -119,12 +129,14 @@ export function useComposerAttachments() {
         // hook was hitting, with no request ever reaching the server). The
         // 10 MB pre-check is skipped here — normalize() already resizes to
         // MAX_EDGE, and the server enforces the real cap regardless.
-        uploaded = await uploadAttachment(nativeAttachmentFile(uri, mime)).catch((e: unknown) => {
+        uploaded = await uploadAttachment(nativeAttachmentFile(uri, mime, name)).catch((e: unknown) => {
           throw new Error(`uploading: ${(e as Error).message}`);
         });
       }
       setItems((prev) =>
-        prev.map((i) => (i.localUri === localUri ? { ...i, ref: uploaded.ref, mime: uploaded.mime, status: 'ready' } : i)),
+        prev.map((i) =>
+          i.localUri === localUri ? { ...i, ref: uploaded.ref, mime: uploaded.mime, name: uploaded.name, status: 'ready' } : i,
+        ),
       );
     } catch (err) {
       const message = (err as Error).message;
@@ -134,7 +146,7 @@ export function useComposerAttachments() {
       // Long enough to actually read a backend/runtime error message, not
       // just a short confirmation — same duration as the chat/agent error
       // toasts in useChatSession/useAgentSession.
-      showToast(`Couldn't attach that image: ${message}`, 6000);
+      showToast(`Couldn't attach that file: ${message}`, 6000);
     }
   }, [showToast, release]);
 
@@ -146,7 +158,7 @@ export function useComposerAttachments() {
           return [...prev, { localUri: asset.uri, mime: asset.mimeType ?? 'image/jpeg', status: 'uploading' }];
         });
         const { uri, mime } = await normalize(asset);
-        void upload(asset.uri, uri, mime);
+        void upload(asset.uri, uri, mime, asset.fileName ?? undefined);
       }
     },
     [upload],
@@ -154,7 +166,7 @@ export function useComposerAttachments() {
 
   const pickFromLibrary = useCallback(async () => {
     if (items.length >= MAX_ATTACHMENTS) {
-      showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} images`);
+      showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} files`);
       return;
     }
     // No permission request on iOS: PHPickerViewController (what
@@ -177,6 +189,35 @@ export function useComposerAttachments() {
     if (!result.canceled) await addAssets(result.assets);
   }, [items.length, addAssets, showToast]);
 
+  /** Native-only: documents picked via expo-document-picker. Never touches
+   * normalize() — that function assumes an ImagePicker asset shape (width/
+   * height) that documents don't have. The mime resolved here is only for
+   * the pending item's label/icon before the upload completes; it is NOT a
+   * security boundary — the server re-derives and re-verifies independently. */
+  const pickDocument = useCallback(async () => {
+    if (items.length >= MAX_ATTACHMENTS) {
+      showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} files`);
+      return;
+    }
+    const result = await DocumentPicker.getDocumentAsync({
+      // '*/*' rather than an explicit mime list: DocumentPicker's own filtering
+      // is coarse (it can't distinguish "text/plain" from "text/x-something"
+      // the way the server's extension fallback can), and the server is the
+      // real gate — resolveAttachmentMime + verifyStoredBytes decide what's
+      // actually accepted, same as the web file input already does.
+      type: '*/*',
+      multiple: true,
+      copyToCacheDirectory: true,
+    });
+    if (result.canceled) return;
+    const slots = MAX_ATTACHMENTS - items.length;
+    for (const asset of result.assets.slice(0, slots)) {
+      const mime = resolveAttachmentMime(asset.mimeType ?? undefined, asset.name) ?? asset.mimeType ?? 'application/octet-stream';
+      setItems((prev) => [...prev, { localUri: asset.uri, mime, name: asset.name, size: asset.size ?? undefined, status: 'uploading' }]);
+      void upload(asset.uri, asset.uri, mime, asset.name);
+    }
+  }, [items.length, upload, showToast]);
+
   /** Web-only counterpart of addAssets: takes browser Files straight from
    * AttachButton.web.tsx's file input rather than an ImagePicker asset, so
    * there's no width/height to resize against — the server's own size and
@@ -189,18 +230,19 @@ export function useComposerAttachments() {
       let slots = MAX_ATTACHMENTS - items.length;
       for (const file of files) {
         if (slots <= 0) {
-          showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} images`);
+          showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} files`);
           break;
         }
-        if (!(ATTACHMENT_MIMES as readonly string[]).includes(file.type)) {
-          showToast('Only JPEG, PNG, WebP, and GIF images are supported');
+        const resolved = resolveAttachmentMime(file.type || undefined, file.name);
+        if (!resolved) {
+          showToast("That file type isn't supported");
           continue;
         }
         slots -= 1;
         const localUri = URL.createObjectURL(file);
         objectUrls.current.add(localUri);
-        setItems((prev) => [...prev, { localUri, mime: file.type, status: 'uploading' }]);
-        void upload(localUri, localUri, file.type);
+        setItems((prev) => [...prev, { localUri, mime: resolved, name: file.name, size: file.size, status: 'uploading' }]);
+        void upload(localUri, localUri, resolved, file.name);
       }
     },
     [items.length, upload, showToast],
@@ -208,7 +250,7 @@ export function useComposerAttachments() {
 
   const takePhoto = useCallback(async () => {
     if (items.length >= MAX_ATTACHMENTS) {
-      showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} images`);
+      showToast(`You can attach up to ${String(MAX_ATTACHMENTS)} files`);
       return;
     }
     const perm = await ImagePicker.requestCameraPermissionsAsync();
@@ -234,10 +276,20 @@ export function useComposerAttachments() {
     () =>
       items
         .filter((i): i is PendingAttachment & { ref: string } => i.status === 'ready' && !!i.ref)
-        .map((i) => ({ ref: i.ref, mime: i.mime })),
+        .map((i) => ({ ref: i.ref, mime: i.mime, ...(i.name ? { name: i.name } : {}) })),
     [items],
   );
   const uploading = items.some((i) => i.status === 'uploading');
 
-  return { items, pickFromLibrary, takePhoto, addWebFiles, remove, reset, readyAttachments, uploading };
+  return {
+    items,
+    pickFromLibrary,
+    takePhoto,
+    pickDocument,
+    addWebFiles,
+    remove,
+    reset,
+    readyAttachments,
+    uploading,
+  };
 }

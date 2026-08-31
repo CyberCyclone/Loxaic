@@ -26,7 +26,16 @@ export function attachmentFileName(mime: string): string {
  * ever reaching the server. That was a real, shipped bug here (see the
  * accompanying test) until this function replaced the inline Blob-building
  * on the native branch of `upload()`.
+ *
+ * `name`, when given, is a real picked filename (e.g. a document from
+ * `expo-document-picker`) and is used verbatim. Camera/library image picks
+ * have no real filename to offer, so omitting it keeps the mime-based
+ * `attachment.<ext>` fallback.
  */
-export function nativeAttachmentFile(uri: string, mime: string): { uri: string; name: string; type: string } {
-  return { uri, name: attachmentFileName(mime), type: mime };
+export function nativeAttachmentFile(
+  uri: string,
+  mime: string,
+  name?: string,
+): { uri: string; name: string; type: string } {
+  return { uri, name: name ?? attachmentFileName(mime), type: mime };
 }
