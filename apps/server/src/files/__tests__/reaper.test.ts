@@ -5,7 +5,7 @@ import path from "node:path";
 import { v4 as uuid } from "uuid";
 import { db, eq, inArray, sql } from "@shannon/db";
 import { attachments, messages, user } from "@shannon/db/schema";
-import { attachmentPath } from "../storage.ts";
+import { attachmentPath, attachmentTextPath } from "../storage.ts";
 import { sweepOrphanAttachments, usedAttachmentBytes } from "../reaper.ts";
 
 /**
@@ -90,6 +90,18 @@ describe("sweepOrphanAttachments", () => {
     expect(existsSync(attachmentPath(orphan))).toBe(false);
     const rows = await db.select().from(attachments).where(eq(attachments.id, orphan));
     expect(rows).toEqual([]);
+  });
+
+  it("also removes the cached .txt extraction sidecar, not just the original upload", async () => {
+    const orphan = await seed({ agedHours: 48 });
+    writeFileSync(attachmentTextPath(orphan), "cached extracted text", "utf8");
+    expect(existsSync(attachmentTextPath(orphan))).toBe(true);
+
+    const reaped = await sweepOrphanAttachments([owner]);
+
+    expect(reaped).toBe(1);
+    expect(existsSync(attachmentPath(orphan))).toBe(false);
+    expect(existsSync(attachmentTextPath(orphan))).toBe(false);
   });
 
   it("keeps an aged upload that a message still references", async () => {

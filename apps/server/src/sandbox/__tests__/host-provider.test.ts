@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getHostProvider } from "../host-provider.ts";
@@ -64,6 +64,14 @@ describe("host provider", () => {
     const filePath = path.join(handle.workdir, "nested/dir/notes.txt");
     await handle.writeFile(filePath, "hello from the test\n");
     await expect(handle.readFile(filePath)).resolves.toBe("hello from the test\n");
+  });
+
+  it("writeFileBinary writes the exact bytes given", async () => {
+    const handle = await getHostProvider().create("user-1", {});
+    const filePath = path.join(handle.workdir, "binary/data.bin");
+    const payload = Buffer.from("hello binary", "utf8");
+    await handle.writeFileBinary(filePath, payload);
+    expect(readFileSync(filePath)).toEqual(payload);
   });
 
   it("lists a file tree up to the depth limit", async () => {

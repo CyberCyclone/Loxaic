@@ -30,6 +30,14 @@ const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
  * in a screenshot, and small enough to be an unremarkable git blob. */
 export const IMAGE_FIXTURE = path.join(E2E_DIR, 'fixtures/images/red-square.png');
 
+/** A small real CSV — its header line is asserted verbatim in the model's
+ * mock echo, proving the server's actual extracted text (not just a chip)
+ * reached the prompt. */
+export const CSV_FIXTURE = path.join(E2E_DIR, 'fixtures/documents/budget.csv');
+
+/** A small plain-text file with a distinctive phrase asserted the same way. */
+export const TEXT_FIXTURE = path.join(E2E_DIR, 'fixtures/documents/notes.txt');
+
 /**
  * What the mock provider prepends when a turn carried images — the proof the
  * attachment survived upload, the wire, and prompt assembly, rather than just
@@ -55,6 +63,43 @@ export async function attachImage(fixture: string = IMAGE_FIXTURE): Promise<void
   }
   // Every branch converges here: the preview chip appearing is what "attached"
   // actually means, whichever route got us there.
+  await waitForVisible('composer.attachment.preview');
+}
+
+/** What the mock provider prepends when a turn carried documents — the
+ * server-side analog of mockImageAck, and the same reasoning: it only fires
+ * when the assembled prompt genuinely contained a provenance-wrapped
+ * <attached-file> text part, proving upload → extraction → history loader →
+ * content parts all held, not just that a chip rendered locally. */
+export function mockDocumentAck(count: number): string {
+  return `Received ${String(count)} document(s).`;
+}
+
+/**
+ * Attaches one document to the composer, leaving it pending. Reuses exactly
+ * the image path's mechanism on web/Electron — the file input's accept list
+ * was widened to cover documents, so no new selector is needed there. Native
+ * document picking goes through a different OS surface entirely (the system
+ * Files app via expo-document-picker, opened by the composer.attach.file
+ * actionsheet item) which has no accessibility path comparable to the photo
+ * picker's — that native gap is deliberately out of e2e scope, same
+ * treatment as the camera path, and is why this function only implements
+ * the web/electron branch and throws clearly on ios/android rather than
+ * silently no-op-ing.
+ */
+export async function attachDocument(fixture: string): Promise<void> {
+  switch (platform()) {
+    case 'web':
+    case 'electron':
+      await attachViaFileInput(fixture);
+      break;
+    case 'ios':
+    case 'android':
+      throw new Error(
+        'attachDocument is not implemented for native — the system Files picker has no stable ' +
+          'accessibility path; composer.attach.file is verified by hand, matching composer.attach.camera.',
+      );
+  }
   await waitForVisible('composer.attachment.preview');
 }
 

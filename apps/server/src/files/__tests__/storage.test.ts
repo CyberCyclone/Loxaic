@@ -9,10 +9,12 @@ import {
   attachmentContentParts,
   attachmentPath,
   attachmentTextPath,
+  isDecodableText,
   isValidRef,
   readAsDataUri,
   selectAffordableAttachments,
   sniffMime,
+  verifyStoredBytes,
 } from "../storage.ts";
 
 describe("isValidRef", () => {
@@ -377,5 +379,89 @@ describe("sniffMime", () => {
     // sniffable — verifyStoredBytes decides those by decoding instead.
     expect(sniffMime(Buffer.from("name,total\n"))).toBeNull();
     expect(sniffMime(Buffer.from("# heading"))).toBeNull();
+  });
+});
+
+/**
+ * The fail-closed gate the upload route uses to confirm a file's bytes
+ * actually match its declared class — images/PDF by magic bytes, text by
+ * UTF-8-decodability. Real temp files, same pattern as the rest of this
+ * file's suites.
+ */
+describe("isDecodableText / verifyStoredBytes", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-verify-bytes-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
+  });
+
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeTemp(name: string, data: Buffer | string): string {
+    const filePath = path.join(dir, name);
+    writeFileSync(filePath, data);
+    return filePath;
+  }
+
+  describe("isDecodableText", () => {
+    it("accepts valid multi-byte UTF-8", async () => {
+      const filePath = writeTemp("multibyte.txt", Buffer.from("héllo wörld 日本語", "utf8"));
+      await expect(isDecodableText(filePath)).resolves.toBe(true);
+    });
+
+    it("rejects a file containing a NUL byte, even amid otherwise valid UTF-8", async () => {
+      const filePath = writeTemp(
+        "nul.txt",
+        Buffer.concat([Buffer.from("before", "utf8"), Buffer.from([0x00]), Buffer.from("after", "utf8")]),
+      );
+      await expect(isDecodableText(filePath)).resolves.toBe(false);
+    });
+
+    it("rejects an invalid UTF-8 byte sequence", async () => {
+      // A lone continuation/leading byte with nothing completing a valid
+      // sequence — TextDecoder({ fatal: true }) throws on this.
+      const filePath = writeTemp("invalid-utf8.bin", Buffer.from([0xc0]));
+      await expect(isDecodableText(filePath)).resolves.toBe(false);
+    });
+  });
+
+  describe("verifyStoredBytes", () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const pdfBytes = Buffer.from("%PDF-1.4\n%âãÏÓ\n");
+
+    it("accepts a real PNG's magic bytes declared as image/png", async () => {
+      const filePath = writeTemp("real.png", pngBytes);
+      await expect(verifyStoredBytes(filePath, "image/png")).resolves.toBe(true);
+    });
+
+    it("rejects the same PNG bytes declared under a mismatched mime", async () => {
+      const filePath = writeTemp("mismatched.jpg", pngBytes);
+      await expect(verifyStoredBytes(filePath, "image/jpeg")).resolves.toBe(false);
+    });
+
+    it("accepts a real PDF header declared as application/pdf", async () => {
+      const filePath = writeTemp("real.pdf", pdfBytes);
+      await expect(verifyStoredBytes(filePath, "application/pdf")).resolves.toBe(true);
+    });
+
+    it("accepts valid UTF-8 text declared as text/plain", async () => {
+      const filePath = writeTemp("real.txt", Buffer.from("just some ordinary text", "utf8"));
+      await expect(verifyStoredBytes(filePath, "text/plain")).resolves.toBe(true);
+    });
+
+    it("rejects a NUL-containing file declared as text/plain", async () => {
+      const filePath = writeTemp("binary.txt", Buffer.concat([Buffer.from("abc"), Buffer.from([0x00]), Buffer.from("def")]));
+      await expect(verifyStoredBytes(filePath, "text/plain")).resolves.toBe(false);
+    });
+
+    it("fails closed for an unrecognized mime, rather than silently returning true", async () => {
+      const filePath = writeTemp("unknown.bin", Buffer.from("whatever bytes"));
+      await expect(verifyStoredBytes(filePath, "application/x-bogus-unknown")).resolves.toBe(false);
+    });
   });
 });
