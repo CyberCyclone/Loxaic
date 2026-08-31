@@ -247,7 +247,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**
   (`attachments` table — `{id, owner_id, mime, size_bytes, created_at}`). `UPLOADS_DIR`
   unset falls back to `<cwd>/uploads`, which in a checkout means `apps/server/uploads` —
-  **inside the working tree, and gitignored for exactly that reason**. Docker compose and
+  **inside the working tree, and gitignored for exactly that reason** (#65). Docker compose and
   the desktop supervisor both set it explicitly (the supervisor puts it under `dataDir`
   beside the Postgres data, never in the installed bundle, which an update would replace).
 - **Client-supplied refs are validated at exactly one chokepoint**, `assertAttachmentsOwned`
@@ -275,14 +275,15 @@ screenshots showing that behaviour working. Writing those tests is the implement
   grace period, which covers both the picked-then-abandoned image and **every incognito
   attachment**: an incognito run writes no message rows, so nothing ever references its
   images, yet the upload row already records who uploaded them. The default grace matches
-  `STREAM_TTL_SECONDS`' own 24h.
+  `STREAM_TTL_SECONDS`' own 24h, so the sweep **bounds** that trace to the grace window
+  rather than preventing it (#64).
 - **`?token=` on `/v1/files/:ref` is a full session token in a URL.** It exists because
   `<img>` can't set headers (same precedent as `/ws/chat?token=`), and the header is
   preferred when present. Fastify's default logger would write it to stdout on every
   thumbnail, so `logging.ts`'s `redactUrl` is installed as the `req` serializer — **any new
   route taking a credential in the query string must use a parameter name that module
-  already knows.** It is still in the DOM as an `<img src>`; scoping it to a short-lived
-  per-file token is the outstanding hardening.
+  already knows.** Redaction covers the log only — the token is also live in the DOM as an
+  `<img>` src for as long as a thread with images is open (#63).
 
 ### MCP servers
 
