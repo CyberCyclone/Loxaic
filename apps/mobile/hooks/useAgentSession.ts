@@ -13,12 +13,13 @@ import {
   getMessages,
   updateConversation,
   type ServerMessage,
+  type AttachmentRef,
   type StreamSnapshot,
   type PermissionMode,
   type Todo,
 } from '@shannon/api-client';
 import type { Conversation, Message, ChangedFile } from '@/lib/types';
-import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from '@/lib/streamMessages';
+import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
@@ -93,9 +94,30 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     [setStreamingByConv],
   );
 
+  // Runs whose history has been fetched (or is in flight). The mount-time
+  // load below only ever covered the single most recent run, so selecting any
+  // older one left it permanently empty — nothing else backfills it
+  // (stream.subscribe replays live runs, not cold history).
+  const loadedConvIdsRef = useRef<Set<string>>(new Set());
+
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
+    // Optimistic local ids (created before the server assigns a real
+    // one — see handleSend below) aren't fetchable: the server has never
+    // heard of them, and the id gets swapped for the real one as soon as
+    // turn.started arrives, no fetch required.
+    if (!id || !isServerConvId(id) || loadedConvIdsRef.current.has(id)) return;
+    loadedConvIdsRef.current.add(id);
+    getMessages(id)
+      .then(({ messages: rows }) => {
+        const msgs = reconstructMessages(rows);
+        if (msgs.length === 0) return;
+        // Only fill a run that is still empty: one already streaming (or
+        // already populated by this same fetch) must not be clobbered.
+        setRuns((prev) => prev.map((r) => (r.id === id && r.msgs.length === 0 ? { ...r, msgs } : r)));
+      })
+      .catch(() => undefined);
   }, []);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
@@ -141,7 +163,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     if (!token || loadingRef.current) return;
     loadingRef.current = true;
     getConversations()
-      .then(async (convs) => {
+      .then((convs) => {
         const agentConvs = convs.filter((c) => c.kind === 'agent');
         if (agentConvs.length === 0) return;
         const apiRuns: Conversation[] = agentConvs.map((c) => ({
@@ -159,17 +181,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           return [...fresh, ...prev];
         });
 
-        const latest = agentConvs[0];
-        setActiveId(latest.id);
-        try {
-          const { messages: rows } = await getMessages(latest.id);
-          const msgs = reconstructMessages(rows);
-          if (msgs.length > 0) {
-            setRuns((prev) => prev.map((r) => (r.id === latest.id ? { ...r, msgs } : r)));
-          }
-        } catch {
-          // Non-fatal: run list still loaded, just no history preview yet.
-        }
+        // History for this run — and any other the user selects — is fetched
+        // lazily by setActiveId.
+        setActiveId(agentConvs[0].id);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -373,31 +387,40 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   }, [token, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
-    (text: string, model: string, incognito?: boolean) => {
+    (text: string, model: string, incognito?: boolean, attachments?: AttachmentRef[]) => {
       if (!wsRef.current) return;
 
       const convId = activeIdRef.current;
       const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
+      // The optimistic bubble keeps the full refs so it can render a thumbnail
+      // immediately; the wire only needs the ids.
+      const refs = attachments?.map((a) => a.ref);
       if (!convId) {
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
         const newRun: Conversation = {
           id: localId,
-          title: text.slice(0, 40),
+          title: text.slice(0, 40) || 'Image',
           kind: 'agent',
           time: 'now',
           model,
           location: 'server',
-          msgs: [{ id: localMsgId, role: 'user', text }],
+          msgs: [{ id: localMsgId, role: 'user', text, attachments }],
         };
         setRuns((prev) => [newRun, ...prev]);
         setActiveId(localId);
-        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, incognito);
+        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, incognito, refs);
       } else {
-        setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: [...r.msgs, { id: localMsgId, role: 'user', text }] } : r)));
-        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, incognito);
+        setRuns((prev) =>
+          prev.map((r) =>
+            r.id === convId
+              ? { ...r, msgs: [...r.msgs, { id: localMsgId, role: 'user', text, attachments }] }
+              : r,
+          ),
+        );
+        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, incognito, refs);
       }
     },
     [mode, setActiveId],

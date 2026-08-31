@@ -314,6 +314,37 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   return res;
 }
 
+// ── Attachments ───────────────────────────────────────────
+export type { AttachmentRef } from "@shannon/types";
+
+export interface UploadedAttachment { ref: string; mime: string; size_bytes: number }
+
+/** Upload one image. `file` is a web File/Blob, or a React Native picker
+ * asset shape ({uri, name, type}) — both work as a FormData entry. */
+export async function uploadAttachment(
+  file: Blob | { uri: string; name: string; type: string },
+): Promise<UploadedAttachment> {
+  const token = await getAuthToken();
+  const form = new FormData();
+  // RN's FormData accepts {uri,name,type} directly; the DOM lib's types don't
+  // know that shape, hence the cast — this is the standard RN upload pattern.
+  form.append("file", file instanceof Blob ? file : (file as unknown as Blob));
+  const res = await fetch(`${BASE_URL}/v1/files`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${String(token)}` },
+    body: form,
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string } & Partial<UploadedAttachment>;
+  if (!res.ok || !body.ref) throw new Error(body.error ?? `Upload failed: ${String(res.status)}`);
+  return body as UploadedAttachment;
+}
+
+/** URL an <img>/Image component can load directly — the token rides in the
+ * query string since image requests can't carry an Authorization header. */
+export function attachmentUrl(ref: string, token: string): string {
+  return `${BASE_URL}/v1/files/${ref}?token=${encodeURIComponent(token)}`;
+}
+
 export async function getRoutines(): Promise<Routine[]> {
   return (await authedFetch("/v1/routines")).json() as Promise<Routine[]>;
 }
@@ -613,7 +644,7 @@ export type {
   SlashCommand,
 } from "@shannon/types";
 import type { ServerMessage } from "@shannon/types";
-export { BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand } from "@shannon/types";
+export { BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand, MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES } from "@shannon/types";
 
 /** True if the send was actually written to the socket — false (never
  * throws) if the connection isn't open, so callers can decide whether to
@@ -652,6 +683,7 @@ export function sendChatMessage(
   conversationId?: string,
   parentId?: string,
   incognito?: boolean,
+  attachments?: string[],
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -660,6 +692,7 @@ export function sendChatMessage(
     conversation_id: conversationId,
     parent_id: parentId,
     incognito,
+    attachments,
   });
 }
 
@@ -671,6 +704,7 @@ export function sendAgentMessage(
   parentId?: string,
   model?: string,
   incognito?: boolean,
+  attachments?: string[],
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -680,6 +714,7 @@ export function sendAgentMessage(
     parent_id: parentId,
     model: model ?? "default",
     incognito,
+    attachments,
   });
 }
 

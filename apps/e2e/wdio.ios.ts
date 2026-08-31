@@ -11,7 +11,13 @@
  * the cleartext-traffic opt-in Android does.
  */
 import { standup, teardown } from './scripts/standup.ts';
-import { iosAppPath, requireAppiumDrivers, resetIosSimulatorKeychain } from './scripts/native.ts';
+import {
+  iosAppPath,
+  requireAppiumDrivers,
+  resetIosSimulatorKeychain,
+  seedIosPhoto,
+} from './scripts/native.ts';
+import { IMAGE_FIXTURE } from './src/helpers/attachments.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
 process.env.E2E_PLATFORM = 'ios';
@@ -48,6 +54,9 @@ export const config: WebdriverIO.Config = {
     // token would auto-sign the app in and break the sign-up spec. See
     // resetIosSimulatorKeychain for the full story.
     resetIosSimulatorKeychain(IOS_DEVICE, process.env.E2E_IOS_VERSION);
+    // The attachments spec picks the first photo out of PHPicker, so the
+    // library has to have one. Cheap and idempotent enough to always do.
+    seedIosPhoto(IOS_DEVICE, IMAGE_FIXTURE, process.env.E2E_IOS_VERSION);
   },
 
   onComplete: async function onComplete() {

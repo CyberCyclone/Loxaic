@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps, type Ref } from 'react';
 import { Platform, TextInput, type TextInputKeyPressEvent } from 'react-native';
 import { ArrowUp, Square, ChevronDown, CircleDot, EyeOff } from 'lucide-react-native';
-import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand } from '@shannon/api-client';
+import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand, type AttachmentRef } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -13,11 +13,14 @@ import { Icon } from '@/components/ui/icon';
 import { Popover, PopoverBackdrop, PopoverContent, PopoverBody } from '@/components/ui/popover';
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import { CommandPalette } from './CommandPalette';
+import { AttachmentPreview } from './AttachmentPreview';
+import { AttachButton } from './AttachButton';
 import type { ContextView } from '@/hooks/useContextUsage';
+import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { ContextRing } from './ContextRing';
 
 interface ComposerProps {
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments?: AttachmentRef[]) => void;
   onStop?: () => void;
   streaming?: boolean;
   modelName: string;
@@ -63,6 +66,16 @@ export function Composer({
   const [selectedCmdIndex, setSelectedCmdIndex] = useState(0);
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false);
   const textareaInputRef = useRef<TextInput>(null);
+  const {
+    items: attachments,
+    pickFromLibrary,
+    takePhoto,
+    addWebFiles,
+    remove: removeAttachment,
+    reset: resetAttachments,
+    readyAttachments,
+    uploading: attachmentsUploading,
+  } = useComposerAttachments();
 
   // What's typed after "/", or null when it isn't shaped like a command at
   // all — see commandQuery: the palette closes the instant a space lands.
@@ -98,7 +111,7 @@ export function Composer({
 
   const send = () => {
     const trimmed = text.trim();
-    if (!trimmed || streaming) return;
+    if ((!trimmed && readyAttachments.length === 0) || streaming || attachmentsUploading) return;
     const parsed = parseCommand(trimmed);
     const cmd = parsed ? findCommand(parsed.name) : undefined;
     if (parsed && cmd?.surfaces.includes(surface)) {
@@ -110,9 +123,10 @@ export function Composer({
     // Shaped like "/word ..." but not a real command (or not offered on this
     // surface) — sent as ordinary text. People do start messages with a
     // slash, and the palette never claimed this input for them.
-    onSend(trimmed);
+    onSend(trimmed, readyAttachments.length > 0 ? readyAttachments : undefined);
     setText('');
     setInputHeight(20);
+    resetAttachments();
   };
 
   const onKeyPress = (e: TextInputKeyPressEvent) => {
@@ -158,6 +172,7 @@ export function Composer({
   return (
     <Box className="border-t border-border bg-background p-3">
       <VStack space="sm" className="mx-auto w-full max-w-[820px]">
+        <AttachmentPreview items={attachments} onRemove={removeAttachment} />
         <Box className="relative">
           {paletteOpen && (
             <CommandPalette
@@ -186,6 +201,15 @@ export function Composer({
         </Box>
 
         <HStack space="sm" className="items-center">
+          {/* Attach: camera/library actionsheet on native, a real file
+              input on web (AttachButton.web.tsx) — see its own comment for
+              why the web path isn't expo-image-picker's shim. */}
+          <AttachButton
+            onTakePhoto={() => { void takePhoto(); }}
+            onPickFromLibrary={() => { void pickFromLibrary(); }}
+            onFilesSelected={addWebFiles}
+          />
+
           {/* Model selector — opens the model modal (search, live list, thinking chips).
               Long backend model ids (e.g. "google/gemma-4-26b-a4b-qat") must not push
               the context ring or send button off screen, so this is the only element
@@ -290,7 +314,7 @@ export function Composer({
               size="sm"
               className="rounded-full bg-primary px-3"
               onPress={send}
-              isDisabled={!text.trim()}
+              isDisabled={(!text.trim() && readyAttachments.length === 0) || attachmentsUploading}
             >
               <ButtonIcon as={ArrowUp} className="text-primary-foreground" />
             </Button>

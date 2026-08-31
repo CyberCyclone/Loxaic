@@ -12,6 +12,15 @@ import { fileURLToPath } from 'node:url';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/**
+ * Ceiling on the device-seeding calls below. Both shell out to daemons that
+ * can wedge (a stuck simulator `assetsd` makes `simctl addmedia` hang
+ * indefinitely rather than fail), and a hang inside onPrepare is far worse
+ * than a loud failure: the suite would sit there until the CI job's own
+ * timeout with nothing to point at.
+ */
+const SEED_TIMEOUT_MS = 60_000;
+
 export const APPIUM_HOME = path.join(E2E_DIR, '.appium');
 export const MOBILE_DIR = path.resolve(E2E_DIR, '../mobile');
 
@@ -77,6 +86,27 @@ export function adbReverseRemove(port: number): void {
   }
 }
 
+/**
+ * Puts an image into the emulator's photo library so the system picker has
+ * something to select.
+ *
+ * `adb push` alone is not enough: the picker reads MediaStore, not the
+ * filesystem, and a pushed file is invisible until the media scanner indexes
+ * it. The broadcast is what makes it appear. Re-pushing the same path on a
+ * later run just overwrites and re-indexes, so this is safe to repeat.
+ */
+export function seedAndroidPhoto(file: string): void {
+  if (!existsSync(file)) throw new Error(`No such image fixture: ${file}`);
+  const remote = `/sdcard/Pictures/${path.basename(file)}`;
+  const adb = adbPath();
+  execFileSync(adb, ['push', file, remote], { stdio: 'ignore', timeout: SEED_TIMEOUT_MS });
+  execFileSync(
+    adb,
+    ['shell', 'am', 'broadcast', '-a', 'android.intent.action.MEDIA_SCANNER_SCAN_FILE', '-d', `file://${remote}`],
+    { stdio: 'ignore', timeout: SEED_TIMEOUT_MS },
+  );
+}
+
 export function androidApkPath(): string {
   const apk = path.join(
     MOBILE_DIR,
@@ -94,16 +124,11 @@ export function androidApkPath(): string {
 }
 
 /**
- * Boots the target simulator (Appium would anyway) and resets its keychain.
- *
- * Unlike Android — where uninstalling the app wipes its SecureStore data —
- * the iOS keychain survives app reinstalls, so a previous run's session token
- * auto-signs the app in and the suite's sign-up spec never sees a login
- * screen. Without this, the iOS suite passes once per simulator and then
- * fails on every re-run. The keychain on a dedicated test simulator holds
- * nothing worth keeping.
+ * Resolves a simulator by name, booting it if it isn't already (Appium would
+ * anyway) and returning its udid. Both `simctl` calls below need a booted
+ * device, so the find-and-boot lives here rather than in either of them.
  */
-export function resetIosSimulatorKeychain(deviceName: string, osVersion?: string): void {
+function bootedIosDevice(deviceName: string, osVersion?: string): string {
   const listJson = execFileSync('xcrun', ['simctl', 'list', 'devices', 'available', '-j'], {
     encoding: 'utf8',
   });
@@ -125,7 +150,58 @@ export function resetIosSimulatorKeychain(deviceName: string, osVersion?: string
     execFileSync('xcrun', ['simctl', 'boot', device.udid], { stdio: 'ignore' });
     execFileSync('xcrun', ['simctl', 'bootstatus', device.udid, '-b'], { stdio: 'ignore' });
   }
-  execFileSync('xcrun', ['simctl', 'keychain', device.udid, 'reset'], { stdio: 'ignore' });
+  return device.udid;
+}
+
+/**
+ * Boots the target simulator (Appium would anyway) and resets its keychain.
+ *
+ * Unlike Android — where uninstalling the app wipes its SecureStore data —
+ * the iOS keychain survives app reinstalls, so a previous run's session token
+ * auto-signs the app in and the suite's sign-up spec never sees a login
+ * screen. Without this, the iOS suite passes once per simulator and then
+ * fails on every re-run. The keychain on a dedicated test simulator holds
+ * nothing worth keeping.
+ */
+export function resetIosSimulatorKeychain(deviceName: string, osVersion?: string): void {
+  const udid = bootedIosDevice(deviceName, osVersion);
+  execFileSync('xcrun', ['simctl', 'keychain', udid, 'reset'], { stdio: 'ignore' });
+}
+
+/**
+ * Puts an image into the simulator's photo library, so PHPicker has something
+ * to select. `simctl addmedia` is the supported way in — it imports through
+ * Photos itself rather than writing files the picker would never see, which
+ * is the iOS counterpart of Android's media-scanner problem.
+ *
+ * Adding the same file again creates a duplicate rather than replacing it.
+ * Harmless: the spec only ever picks the first cell, and these simulators are
+ * disposable, but it does mean the library grows one entry per run.
+ *
+ * Known failure mode: on some machines `addmedia` hangs forever instead of
+ * returning, which appears to be a wedged simulator Photos daemon rather than
+ * anything about the file. `simctl shutdown <udid>` (or erasing that
+ * simulator) clears it; the timeout below turns the hang into a message that
+ * says so.
+ */
+export function seedIosPhoto(deviceName: string, file: string, osVersion?: string): void {
+  if (!existsSync(file)) throw new Error(`No such image fixture: ${file}`);
+  const udid = bootedIosDevice(deviceName, osVersion);
+  try {
+    execFileSync('xcrun', ['simctl', 'addmedia', udid, file], {
+      stdio: 'ignore',
+      timeout: SEED_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if ((err as { signal?: string }).signal === 'SIGTERM') {
+      throw new Error(
+        `xcrun simctl addmedia hung on simulator ${udid} (>${String(SEED_TIMEOUT_MS / 1000)}s). ` +
+          `Its Photos daemon is likely wedged — try: xcrun simctl shutdown ${udid}, ` +
+          `or erase that simulator, then re-run.`,
+      );
+    }
+    throw err;
+  }
 }
 
 export function iosAppPath(): string {

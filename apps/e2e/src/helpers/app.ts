@@ -100,20 +100,57 @@ export async function goToSurface(surface: 'chat' | 'agent' | 'routines' | 'stat
 }
 
 /**
- * Starts a new agent run, on any layout.
+ * Reveals the thread list, on any layout.
  *
- * The thread list is pinned open only at >=1024px; narrower, it is an overlay
- * behind a toggle — so tapping its "new" button directly works on a desktop
+ * It is pinned open only at >=1024px; narrower, it is an overlay behind a
+ * per-surface toggle — so reaching into it directly works on a desktop
  * browser and times out on a phone. Mirrors openSidebar()'s approach of
  * deciding from what is actually on screen rather than from a breakpoint the
  * spec would have to know.
  */
-export async function startNewAgentRun(): Promise<void> {
-  if (!(await byTestId('threadList.newChat').isDisplayed().catch(() => false))) {
-    await tap('agent.threadList.toggle');
-    await waitForVisible('threadList.newChat');
-  }
+export async function openThreadList(surface: 'chat' | 'agent' = 'chat'): Promise<void> {
+  if (await byTestId('threadList.newChat').isDisplayed().catch(() => false)) return;
+  await tap(`${surface}.threadList.toggle`);
+  await waitForVisible('threadList.newChat');
+}
+
+/** Starts a new thread on the given surface, on any layout. */
+export async function startNewThread(surface: 'chat' | 'agent' = 'chat'): Promise<void> {
+  await openThreadList(surface);
   await tap('threadList.newChat');
+}
+
+/** Back-compat alias — the agent specs read better with the surface in the name. */
+export async function startNewAgentRun(): Promise<void> {
+  await startNewThread('agent');
+}
+
+/**
+ * Selects an existing thread by its server conversation id.
+ *
+ * By id, not by list position: the id is the list's own React key, so this
+ * survives reordering (the list is most-recent-first, and sending anything
+ * reorders it) in a way an index never could.
+ */
+export async function selectThread(
+  conversationId: string,
+  surface: 'chat' | 'agent' = 'chat',
+): Promise<void> {
+  await openThreadList(surface);
+  await tap(`threadList.item.${conversationId}`);
+}
+
+/** The signed-in user's conversations, newest first — straight from the API,
+ * for specs that need a real conversation id to select or assert against. */
+export async function listConversations(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<{ id: string; title: string }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing conversations failed (${String(res.status)})`);
+  return (await res.json()) as { id: string; title: string }[];
 }
 
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and

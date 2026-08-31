@@ -39,23 +39,15 @@ export async function resolveSessionFromToken(token: string): Promise<VerifiedSe
 }
 
 /**
- * Bearer token → verified, non-banned session; otherwise sends the response
- * and throws.
+ * Token → verified, non-banned session; otherwise sends the response and
+ * throws.
  *
- * Both entry points below share this so the parts that must stay identical —
- * token parsing, session lookup, ban enforcement — can't drift apart as one
- * of them gains a check the other doesn't.
+ * Every HTTP entry point below funnels through this, so the parts that must
+ * stay identical — session lookup, ban enforcement, status codes — can't
+ * drift apart as one of them gains a check the others don't. Only *where the
+ * token comes from* is allowed to differ.
  */
-async function resolveSession(
-  request: FastifyRequest,
-  reply: FastifyReply,
-): Promise<VerifiedSession> {
-  const header = request.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
-    reply.code(401).send({ error: "Missing authorization header" });
-    throw new Error("Unauthorized");
-  }
-  const token = header.slice(7);
+async function verifyToken(token: string, reply: FastifyReply): Promise<VerifiedSession> {
   const session = await auth.api.getSession({
     headers: new Headers({ authorization: `Bearer ${token}` }),
   });
@@ -70,11 +62,48 @@ async function resolveSession(
   return session;
 }
 
+async function resolveSession(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<VerifiedSession> {
+  const header = request.headers.authorization;
+  if (!header?.startsWith("Bearer ")) {
+    reply.code(401).send({ error: "Missing authorization header" });
+    throw new Error("Unauthorized");
+  }
+  return await verifyToken(header.slice(7), reply);
+}
+
 export async function authenticate(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<string> {
   const session = await resolveSession(request, reply);
+  return session.user.id;
+}
+
+/**
+ * Like {@link authenticate}, but also accepts `?token=` — for URLs loaded by
+ * `<img>`/`Image`, which can't set an Authorization header. Same precedent as
+ * the WS routes' `/ws/chat?token=`.
+ *
+ * The header is still preferred when present; the query parameter is a
+ * fallback, not an override, so a page that *can* set a header never has its
+ * auth downgraded to one that leaks into logs and referrers.
+ */
+export async function authenticateHeaderOrQuery(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<string> {
+  const header = request.headers.authorization;
+  const token = header?.startsWith("Bearer ")
+    ? header.slice(7)
+    : (request.query as { token?: string }).token;
+  if (!token) {
+    reply.code(401).send({ error: "Missing authorization" });
+    throw new Error("Unauthorized");
+  }
+  const session = await verifyToken(token, reply);
   return session.user.id;
 }
 

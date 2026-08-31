@@ -107,6 +107,16 @@ export const messages = pgTable(
   ],
 );
 
+// ── Attachments (uploaded images; bytes live on disk under UPLOADS_DIR) ──
+export const attachments = pgTable("attachments", {
+  /** The public "ref" handed to clients and stored in message content blocks. */
+  id: uuid("id").primaryKey().defaultRandom(),
+  ownerId: text("owner_id").notNull().references(() => user.id),
+  mime: text("mime").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // ── Sync Ops ──
 export const syncOps = pgTable("sync_ops", {
   seq: serial("seq").primaryKey(),

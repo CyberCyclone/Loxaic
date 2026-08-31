@@ -7,6 +7,42 @@ export type PermissionMode = "planning" | "manual" | "auto";
 
 export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
+/** An uploaded image attached to a user message. `ref` is the id returned by
+ * `POST /v1/files`; `mime` is advisory for rendering (the server's DB row is
+ * the authority). */
+export interface AttachmentRef { ref: string; mime: string }
+
+/** Shared client/server limits for image attachments — one source so the
+ * composer's caps and the upload route's rejections can't drift apart. */
+export const MAX_ATTACHMENTS = 4;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const ATTACHMENT_MIMES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
+
+/**
+ * The "is this send well-formed" gate shared word-for-word by `chat.send`
+ * and `agent.send` — pure so it's testable without a live socket. An
+ * image-only message is valid (empty text is only an error when nothing is
+ * attached either); returns the error string to send back, or null to
+ * proceed.
+ */
+export function validateSendAttachments(content: unknown, attachments: unknown): string | null {
+  const atts: unknown = attachments ?? [];
+  if (!Array.isArray(atts) || atts.length > MAX_ATTACHMENTS) {
+    return `Attach at most ${String(MAX_ATTACHMENTS)} images`;
+  }
+  // Elements too, not just the array. TypeScript's `string[]` on the wire type
+  // is a claim about a JSON payload, not a fact, and the downstream ref check
+  // is a regex — `RegExp.test` stringifies, so `[["<uuid>"]]` would otherwise
+  // read as a valid uuid and reach a uuid-typed query.
+  if (!atts.every((a: unknown) => typeof a === "string")) {
+    return `Attach at most ${String(MAX_ATTACHMENTS)} images`;
+  }
+  if (typeof content !== "string" || (!content.trim() && atts.length === 0)) {
+    return "Content required";
+  }
+  return null;
+}
+
 /**
  * What a turn's prompt was made of. Attribution has to happen server-side:
  * the agent ships its tool schemas in `body.tools`, which never appears in
@@ -90,6 +126,8 @@ export type StreamEventKind =
       model?: string;
       /** User messages arrive already-complete and carry their full text here. */
       text?: string;
+      /** User messages only — images ride here the same way `text` does. */
+      attachments?: AttachmentRef[];
     }
   | { kind: "text.delta"; message_id: string; text: string }
   | { kind: "thinking.delta"; message_id: string; text: string }
@@ -125,6 +163,8 @@ export interface StreamSnapshotMessage {
   model?: string;
   text: string;
   thinking: string;
+  /** Present on user messages that carried images (folded from `message.start`). */
+  attachments?: AttachmentRef[];
   /** Present on summary messages once their compaction event has landed. */
   compaction?: CompactionStats;
   tool_calls: {
@@ -187,6 +227,8 @@ export type ClientMessage =
       conversation_id?: string;
       parent_id?: string;
       incognito?: boolean;
+      /** Refs from `POST /v1/files`. The server re-validates ownership. */
+      attachments?: string[];
     }
   | {
       type: "agent.send";
@@ -196,6 +238,8 @@ export type ClientMessage =
       conversation_id?: string;
       parent_id?: string;
       incognito?: boolean;
+      /** Refs from `POST /v1/files`. The server re-validates ownership. */
+      attachments?: string[];
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

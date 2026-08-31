@@ -9,6 +9,17 @@ import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 
+/** Every conversation id the server hands out (Postgres row or ephemeral
+ * `uuid()`) is a real UUID. The client's own optimistic placeholders
+ * (`c<timestamp>` for chat, `pending-<random>` for agent) deliberately are
+ * not, so a real REST call — like the lazy per-thread history fetch — can
+ * tell the two apart before a `turn.started` reply ever arrives to swap the
+ * placeholder for its real id. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function isServerConvId(id: string): boolean {
+  return UUID_RE.test(id);
+}
+
 /** Author types the client renders as a message row. Shared by both
  * surfaces — chat and agent build Message[] from the exact same stream
  * protocol now that chat is tool-capable too. */
@@ -25,6 +36,13 @@ export function extractCompaction(blocks: ContentBlock[]): CompactionStats | und
   const { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
     block;
   return { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
+}
+
+/** Undefined rather than an empty array when there are none: `Message` treats
+ * the field as absent, and the render sites all guard on truthiness. */
+export function extractAttachments(blocks: ContentBlock[]): Message['attachments'] {
+  const atts = blocks.filter((b) => b.kind === 'attachment');
+  return atts.length > 0 ? atts.map((a) => ({ ref: a.ref, mime: a.mime })) : undefined;
 }
 
 export function extractField(blocks: ContentBlock[], kind: 'text' | 'thinking'): string {
@@ -87,7 +105,12 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
     const blocks = row.content;
 
     if (row.authorType === 'user') {
-      const msg: Message = { id: row.id, role: 'user', text: extractField(blocks, 'text') };
+      const msg: Message = {
+        id: row.id,
+        role: 'user',
+        text: extractField(blocks, 'text'),
+        attachments: extractAttachments(blocks),
+      };
       out.push(msg);
       byId.set(row.id, msg);
       continue;
@@ -176,6 +199,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
     error: sm.status === 'error',
     stopped: sm.status === 'cancelled',
     compaction: role === 'summary' ? sm.compaction : undefined,
+    attachments: role === 'user' ? sm.attachments : undefined,
   };
 }
 
@@ -196,7 +220,13 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
       if (msgs.some((m) => m.id === event.message_id)) return msgs;
       return [
         ...msgs,
-        { id: event.message_id, role: roleOf(event.author_type) ?? 'assistant', model: event.model, text: event.text ?? '' },
+        {
+          id: event.message_id,
+          role: roleOf(event.author_type) ?? 'assistant',
+          model: event.model,
+          text: event.text ?? '',
+          attachments: event.attachments,
+        },
       ];
     }
     case 'text.delta':

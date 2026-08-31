@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { findCommand, type ClientMessage, type ServerMessage } from "@shannon/types";
+import { findCommand, validateSendAttachments, type ClientMessage, type ServerMessage } from "@shannon/types";
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
@@ -66,8 +66,9 @@ export function agentWsHandler(app: FastifyInstance) {
 
       try {
         if (msg.type === "agent.send") {
-          if (typeof msg.content !== "string" || !msg.content.trim()) {
-            safeSend({ type: "error", error: "Content required" });
+          const sendError = validateSendAttachments(msg.content, msg.attachments);
+          if (sendError) {
+            safeSend({ type: "error", error: sendError });
             return;
           }
           const result = await startAgentRun({
@@ -78,6 +79,7 @@ export function agentWsHandler(app: FastifyInstance) {
             conversationId: msg.conversation_id,
             parentId: msg.parent_id,
             incognito: msg.incognito,
+            attachments: msg.attachments ?? [],
           });
           safeSend({
             type: "turn.started",

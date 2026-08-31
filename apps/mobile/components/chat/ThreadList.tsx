@@ -77,6 +77,7 @@ export function ThreadList({
         contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 8 }}
         renderItem={({ item }) => (
           <Pressable
+            testID={`threadList.item.${item.id}`}
             onPress={() => { onSelect(item.id); }}
             onLongPress={() => { setActionsFor(item); }}
             className={`mb-1 rounded-md p-2.5 ${

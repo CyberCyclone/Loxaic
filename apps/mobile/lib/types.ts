@@ -17,8 +17,8 @@ export type ThemePref = 'light' | 'dark' | 'system'
 export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
 export type { ModelInfo } from '@shannon/api-client'
-export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand } from '@shannon/api-client'
-import type { ContextBreakdown, CompactionStats } from '@shannon/api-client'
+export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand, AttachmentRef } from '@shannon/api-client'
+import type { ContextBreakdown, CompactionStats, AttachmentRef } from '@shannon/api-client'
 
 export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
 
@@ -74,6 +74,10 @@ export interface Message {
   /** Present only on role: 'summary' — what a /compact did. Absent while the
    * summary is still streaming (its own `compaction` event hasn't landed yet). */
   compaction?: CompactionStats
+  /** User messages only. `ref` is absent for the brief window between an
+   * optimistic send and the server's own message.start — `localUri` covers
+   * rendering during that gap. */
+  attachments?: (Partial<AttachmentRef> & { localUri?: string; mime: string })[]
 }
 
 export interface Conversation {

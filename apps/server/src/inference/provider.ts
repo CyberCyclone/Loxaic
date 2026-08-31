@@ -10,11 +10,45 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+/** OpenAI-style content part. Images are sent as data URIs — llama.cpp
+ * (with --mmproj) and LM Studio both accept them on /v1/chat/completions. */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export type ChatMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | ContentPart[] }
   | { role: "assistant"; content: string | null; tool_calls?: ToolCall[] }
   | { role: "tool"; content: string; tool_call_id: string; name?: string };
+
+/** The text of a message whose content may be a part array. Image parts
+ * contribute nothing — callers that need to know images exist count them
+ * separately. */
+export function textOfContent(content: string | ContentPart[] | null | undefined): string {
+  if (typeof content === "string") return content;
+  if (!content) return "";
+  return content
+    .filter((p): p is Extract<ContentPart, { type: "text" }> => p.type === "text")
+    .map((p) => p.text)
+    .join("\n");
+}
+
+export function countImageParts(content: string | ContentPart[] | null | undefined): number {
+  if (!Array.isArray(content)) return 0;
+  return content.filter((p) => p.type === "image_url").length;
+}
+
+/**
+ * Maps a backend's rejection of image input to a friendly, actionable message.
+ * llama.cpp without --mmprj and text-only LM Studio models both name the
+ * problem in their error text. Returns null when the error doesn't look
+ * image-related — callers only consult this when the prompt carried images.
+ */
+export function visionErrorMessage(raw: string): string | null {
+  if (!/image|multimodal|mmproj|vision|mtmd/i.test(raw)) return null;
+  return "This model can't see images. Your message and image were saved — switch to a vision model (one loaded with --mmproj) and ask again.";
+}
 
 /** JSON-Schema tool definition sent to the model. */
 export interface OpenAiTool {
@@ -119,7 +153,8 @@ async function* mockStream(
   const currentTurn = messages.slice(lastUserIndex + 1);
   const alreadyRanTools = currentTurn.some((m) => m.role === "tool");
   const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
-  const prompt = typeof lastUser?.content === "string" ? lastUser.content : "";
+  const prompt = textOfContent(lastUser?.content);
+  const imageCount = countImageParts(lastUser?.content);
 
   const trigger = alreadyRanTools
     ? undefined
@@ -150,9 +185,12 @@ async function* mockStream(
     });
   } else {
     const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
+    // Acknowledging image parts explicitly makes the full attachment pipeline
+    // provable end-to-end without a vision GGUF.
+    const imageNote = imageCount > 0 ? `Received ${String(imageCount)} image(s). ` : "";
     fullText = lastTool
       ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
-      : `[Mock] Echo: ${prompt || "Hello"}`;
+      : `[Mock] ${imageNote}Echo: ${prompt || "Hello"}`;
     yield* emit(fullText);
   }
 

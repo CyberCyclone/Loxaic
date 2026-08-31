@@ -32,6 +32,13 @@
             "usesCleartextTraffic": true
           }
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Shannon uses your photo library to attach images to a message.",
+          "cameraPermission": "Shannon uses your camera to attach a photo to a message."
+        }
       ]
     ],
     "extra": {

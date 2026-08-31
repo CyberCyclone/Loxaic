@@ -93,6 +93,13 @@ screenshots showing that behaviour working. Writing those tests is the implement
   them external, so they run under Node's native TypeScript support in production, which
   follows real ESM resolution rules (dev's `tsx` loader is more forgiving and won't catch
   a missing extension).
+- **`expo-image-picker` is native-only.** Its web implementation creates a transient hidden
+  `<input type="file">` at click time and clicks it programmatically — no stable element to
+  attach a `testID` to, and nothing for e2e to drive. The composer's attach control is split
+  per-platform instead (`components/composer/AttachButton.tsx` / `.web.tsx`, same convention as
+  `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actionsheet over
+  `expo-image-picker`, web renders a real, persistent `<input type="file">`
+  (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly.
 
 ### testIDs and e2e selectors
 
@@ -234,6 +241,49 @@ screenshots showing that behaviour working. Writing those tests is the implement
   the OpenAI message list — including resolved tool_call/tool_result pairs, dangling calls
   stripped exactly like the Postgres loader — from the stream log's folded snapshots rather
   than a DB query, since incognito writes nothing conversation-scoped to Postgres.
+
+### Image attachments
+
+- **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**
+  (`attachments` table — `{id, owner_id, mime, size_bytes, created_at}`). `UPLOADS_DIR`
+  unset falls back to `<cwd>/uploads`, which in a checkout means `apps/server/uploads` —
+  **inside the working tree, and gitignored for exactly that reason** (#65). Docker compose and
+  the desktop supervisor both set it explicitly (the supervisor puts it under `dataDir`
+  beside the Postgres data, never in the installed bundle, which an update would replace).
+- **Client-supplied refs are validated at exactly one chokepoint**, `assertAttachmentsOwned`
+  (`streams/authz.ts`), and it must run **before** any conversation/message write. It returns
+  the mime from the DB row — the client's copy is advisory and is discarded — de-duplicates
+  repeated refs (the same ref four times is one image, not a 4× prompt), and renders unknown
+  and not-yours as the same `NotFoundError`.
+- **`isValidRef` takes `unknown` and type-guards, deliberately.** `RegExp.test` stringifies,
+  so a `string`-typed parameter is not a guard: `test(["<uuid>"])` coerces the single-element
+  array back to the uuid and returns true. Anything arriving off a socket is a claim, not a
+  fact — `validateSendAttachments` type-checks elements for the same reason.
+- **Nothing is served with a caller-influenced content type.** Upload allowlists
+  `ATTACHMENT_MIMES` then confirms it against the file's magic bytes (`sniffImageMime`), and
+  the serve route adds `nosniff`, `Content-Disposition: inline`, and
+  `Content-Security-Policy: default-src 'none'; sandbox`. **SVG is absent from the allowlist
+  on purpose** — this endpoint is same-origin with the web app, so adding it would be
+  same-origin stored XSS; the CSP is the second line if it ever is.
+- **Prompt assembly has a byte budget.** `MAX_HISTORY_IMAGE_BYTES` caps the images one
+  prompt may carry across all replayed turns, spent **newest-first** by
+  `selectAffordableImages` — the per-send caps bound one message but not a 50-turn history,
+  and images are deliberately excluded from the context tally so they can never trigger
+  truncation on their own. Over-budget refs degrade to a text marker, like a missing file.
+- **The orphan sweep (`files/reaper.ts`) is the only reclaim path there is** — no DELETE
+  route, no cascade from message deletion. It collects uploads no message references after a
+  grace period, which covers both the picked-then-abandoned image and **every incognito
+  attachment**: an incognito run writes no message rows, so nothing ever references its
+  images, yet the upload row already records who uploaded them. The default grace matches
+  `STREAM_TTL_SECONDS`' own 24h, so the sweep **bounds** that trace to the grace window
+  rather than preventing it (#64).
+- **`?token=` on `/v1/files/:ref` is a full session token in a URL.** It exists because
+  `<img>` can't set headers (same precedent as `/ws/chat?token=`), and the header is
+  preferred when present. Fastify's default logger would write it to stdout on every
+  thumbnail, so `logging.ts`'s `redactUrl` is installed as the `req` serializer — **any new
+  route taking a credential in the query string must use a parameter name that module
+  already knows.** Redaction covers the log only — the token is also live in the DOM as an
+  `<img>` src for as long as a thread with images is open (#63).
 
 ### MCP servers
 

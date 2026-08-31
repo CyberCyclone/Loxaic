@@ -1,10 +1,13 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
+import { MAX_ATTACHMENT_BYTES } from "@shannon/types";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { redactUrl } from "./logging";
 import { runMigrations } from "./db/migrate";
 import { initStreamBroker } from "./streams/index";
 import { recoverOrphanedStreams } from "./streams/recovery";
@@ -25,10 +28,29 @@ import { configRoutes } from "./routes/config";
 import { mcpRoutes } from "./routes/mcp";
 import { prefsRoutes } from "./routes/prefs";
 import { adminSettingsRoutes } from "./routes/admin-settings";
+import { fileRoutes } from "./routes/files";
 import { loadServerSettings } from "./settings";
 import { startMcpReaper } from "./mcp/client-manager";
+import { startAttachmentReaper, sweepOrphanAttachments } from "./files/reaper";
 
-const app = Fastify({ logger: true });
+const app = Fastify({
+  logger: {
+    serializers: {
+      // Fastify's default serializer logs `req.url` verbatim, which would put
+      // the `?token=` on /ws/chat and /v1/files/:ref into stdout in the clear.
+      // Same fields as the default, minus the credential — see logging.ts.
+      req(request) {
+        return {
+          method: request.method,
+          url: redactUrl(request.url),
+          host: request.host,
+          remoteAddress: request.ip,
+          remotePort: request.socket.remotePort,
+        };
+      },
+    },
+  },
+});
 
 // ── Run DB migrations before registering routes ──────────
 // MIGRATIONS_STRICT=1 (set by the desktop supervisor) turns a failed
@@ -58,6 +80,21 @@ await recoverOrphanedStreams();
 
 await app.register(cors, { origin: true, credentials: true });
 await app.register(websocket);
+await app.register(multipart, {
+  limits: {
+    fileSize: MAX_ATTACHMENT_BYTES,
+    files: 1,
+    // Busboy's own defaults are `fields: Infinity` at 1 MB each and
+    // `parts: 1000`, all buffered into `body` before `request.file()` returns
+    // — so an authenticated POST carrying no file at all could pin ~1 GB of
+    // heap. The upload route reads no form fields, so these can be tight;
+    // `parts` counts fields plus files, hence 2 for one file and one slot of
+    // slack.
+    fields: 1,
+    fieldSize: 1024,
+    parts: 2,
+  },
+});
 
 // ── Health ────────────────────────────────────────────────
 app.get("/health", async () => {
@@ -108,6 +145,7 @@ configRoutes(app);
 mcpRoutes(app);
 prefsRoutes(app);
 adminSettingsRoutes(app);
+fileRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
 chatWsHandler(app);
@@ -173,6 +211,7 @@ const HOST = process.env.HOST ?? "0.0.0.0";
 
 let reaperTimer: NodeJS.Timeout | null = null;
 let mcpReaperTimer: NodeJS.Timeout | null = null;
+let attachmentReaperTimer: NodeJS.Timeout | null = null;
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
@@ -196,6 +235,12 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
     .catch(() => { /* best-effort sweep */ });
   mcpReaperTimer = startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
+  // Uploads that no message references — a picked-then-abandoned image, and
+  // every incognito attachment, neither of which has any other reclaim path.
+  sweepOrphanAttachments()
+    .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned attachment(s)`); })
+    .catch(() => { /* best-effort sweep */ });
+  attachmentReaperTimer = startAttachmentReaper((n) => { app.log.info(`Swept ${String(n)} orphaned attachment(s)`); });
 });
 
 // ── Graceful shutdown ─────────────────────────────────────
@@ -210,6 +255,7 @@ async function shutdown(signal: string) {
     stopRoutineScheduler();
     if (reaperTimer) clearInterval(reaperTimer);
     if (mcpReaperTimer) clearInterval(mcpReaperTimer);
+    if (attachmentReaperTimer) clearInterval(attachmentReaperTimer);
     await app.close();
     await closeDb();
   } catch (e) {
