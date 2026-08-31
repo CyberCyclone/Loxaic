@@ -38,6 +38,16 @@ describe("validateSendAttachments", () => {
     expect(validateSendAttachments("hi", "not-an-array")).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} images`);
   });
 
+  // The array can hold anything JSON can express. The downstream ref check is
+  // a regex, and `RegExp.test` stringifies — so a nested array of a valid
+  // uuid would read as that uuid and reach a uuid-typed query.
+  it.each([[[["ref-1"]]], [[null]], [[42]], [[{}]], [["ok", 7]]])(
+    "rejects the non-string element in %j",
+    (atts) => {
+      expect(validateSendAttachments("hi", atts)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} images`);
+    },
+  );
+
   it(`accepts exactly ${String(MAX_ATTACHMENTS)} attachments`, () => {
     const atCap = Array.from({ length: MAX_ATTACHMENTS }, (_, i) => `ref-${String(i)}`);
     expect(validateSendAttachments("hi", atCap)).toBeNull();

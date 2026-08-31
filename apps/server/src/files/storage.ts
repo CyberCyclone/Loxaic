@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AttachmentRef } from "@shannon/types";
 import type { ContentPart } from "../inference/provider.ts";
@@ -21,8 +21,15 @@ export function uploadsDir(): string {
   return dir;
 }
 
-export function isValidRef(ref: string): boolean {
-  return UUID_RE.test(ref);
+/**
+ * Takes `unknown` deliberately. `RegExp.test` stringifies its argument, so a
+ * `string`-typed parameter is not the guard it looks like: `test(["<uuid>"])`
+ * coerces the single-element array to the uuid and returns true. Callers
+ * validating a value that came off the wire (where TypeScript's `string[]` is
+ * a claim, not a fact) would then hand an array to a uuid-typed query.
+ */
+export function isValidRef(ref: unknown): ref is string {
+  return typeof ref === "string" && UUID_RE.test(ref);
 }
 
 /** Files are named by their uuid ref alone — the mime lives in the DB row. */
@@ -38,13 +45,73 @@ export async function readAsDataUri(ref: string, mime: string): Promise<string> 
 }
 
 /**
+ * Ceiling on the raw image bytes one prompt may carry, summed across every
+ * replayed turn. The per-upload caps (10 MB × 4 per message) bound a single
+ * send but not a conversation: HISTORY_LIMIT is 50, so without this a user
+ * could build a thread whose every subsequent turn re-reads and base64s a
+ * gigabyte off disk into one JSON body — heap exhaustion on demand, repeatable
+ * for the cost of one WebSocket frame. Base64 inflates this by ~4/3 on the
+ * wire, so 32 MiB here is ~43 MB of request body.
+ */
+export const MAX_HISTORY_IMAGE_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Which refs across a whole history fit in {@link MAX_HISTORY_IMAGE_BYTES},
+ * chosen newest-first.
+ *
+ * `turns` is oldest-first (the order the prompt is assembled in), and the
+ * walk is deliberately backwards: the images the user just sent are the ones
+ * the model is being asked about, so a budget spent oldest-first would starve
+ * exactly the turn that matters. A ref that doesn't fit is skipped rather than
+ * ending the walk, so one big old image can't hide several small newer ones.
+ * Unreadable files are left out here and degrade to "[image unavailable]"
+ * downstream, same as before.
+ */
+export async function selectAffordableImages(turns: AttachmentRef[][]): Promise<Set<string>> {
+  const allowed = new Set<string>();
+  let remaining = MAX_HISTORY_IMAGE_BYTES;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    for (const a of turns[i]) {
+      if (allowed.has(a.ref)) continue;
+      let size: number;
+      try {
+        ({ size } = await stat(attachmentPath(a.ref)));
+      } catch {
+        continue;
+      }
+      if (size > remaining) continue;
+      remaining -= size;
+      allowed.add(a.ref);
+    }
+  }
+  return allowed;
+}
+
+/**
  * A user message's attachments + text as OpenAI content parts, images first —
  * the same order the blocks are stored in. A file missing from disk (pruned
  * volume, restored DB) degrades to a text marker rather than failing the run.
+ *
+ * `allowed`, when given, is the budget verdict from
+ * {@link selectAffordableImages}; a ref outside it becomes a text marker
+ * instead of being read. Repeated refs within one message are collapsed to a
+ * single part — the same image twice tells the model nothing, and older rows
+ * (written before the send path de-duplicated) can carry up to four copies.
  */
-export async function attachmentContentParts(atts: AttachmentRef[], text: string): Promise<ContentPart[]> {
+export async function attachmentContentParts(
+  atts: AttachmentRef[],
+  text: string,
+  allowed?: ReadonlySet<string>,
+): Promise<ContentPart[]> {
   const parts: ContentPart[] = [];
+  const seen = new Set<string>();
   for (const a of atts) {
+    if (seen.has(a.ref)) continue;
+    seen.add(a.ref);
+    if (allowed && !allowed.has(a.ref)) {
+      parts.push({ type: "text", text: "[image omitted: over this prompt's image budget]" });
+      continue;
+    }
     try {
       parts.push({ type: "image_url", image_url: { url: await readAsDataUri(a.ref, a.mime) } });
     } catch {

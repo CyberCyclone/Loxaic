@@ -58,16 +58,26 @@ export async function assertParentInConversation(conversationId: string, parentI
  */
 export async function assertAttachmentsOwned(userId: string, refs: string[]): Promise<AttachmentRef[]> {
   if (refs.length === 0) return [];
+  // Cap the raw input, before de-duplication: an over-long array is malformed
+  // however many distinct refs it happens to contain.
   if (refs.length > MAX_ATTACHMENTS) throw new NotFoundError();
   // A malformed ref must fail the same way as a missing one — and must never
-  // reach the uuid-typed query, where Postgres would error instead.
+  // reach the uuid-typed query, where Postgres would error instead. isValidRef
+  // type-guards as well as pattern-matches, so a non-string element that TS
+  // can't see (this array came off a socket) is rejected here too.
   if (!refs.every(isValidRef)) throw new NotFoundError();
+  // The same ref four times is not four images — it is one image charged four
+  // times. It would persist as four attachment blocks, emit four times in
+  // message.start, and rebuild into four identical image parts on every future
+  // replay, forever: a 4x prompt amplification off a single upload. Collapse to
+  // first occurrence, which also preserves display order.
+  const unique = [...new Set(refs)];
   const rows = await db
     .select({ id: attachments.id, ownerId: attachments.ownerId, mime: attachments.mime })
     .from(attachments)
-    .where(inArray(attachments.id, refs));
+    .where(inArray(attachments.id, unique));
   const byId = new Map(rows.filter((r) => r.ownerId === userId).map((r) => [r.id, r]));
-  return refs.map((ref) => {
+  return unique.map((ref) => {
     const row = byId.get(ref);
     if (!row) throw new NotFoundError();
     return { ref, mime: row.mime };

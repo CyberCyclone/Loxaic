@@ -10,7 +10,7 @@ import {
   type ToolCall,
   type CompletionResult,
 } from "../../inference/provider.ts";
-import { attachmentContentParts } from "../../files/storage.ts";
+import { attachmentContentParts, selectAffordableImages } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
@@ -557,9 +557,19 @@ export async function loadHistory(
     }
   }
 
+  // Which images this prompt can afford, decided over the whole replay before
+  // any of it is read off disk — see selectAffordableImages. Skipping the walk
+  // when the thread has no images at all keeps the common case free of stats.
+  const complete = ordered.filter((row) => row.status === "complete");
+  const imageTurns = complete
+    .filter((row) => row.authorType === "user")
+    .map((row) => attachmentsOf((row.content ?? []) as ContentBlock[]));
+  const affordable = imageTurns.some((t) => t.length > 0)
+    ? await selectAffordableImages(imageTurns)
+    : undefined;
+
   const out: ChatMessage[] = [];
-  for (const row of ordered) {
-    if (row.status !== "complete") continue;
+  for (const row of complete) {
     const blocks = (row.content ?? []) as ContentBlock[];
 
     if (row.authorType === "user") {
@@ -568,7 +578,7 @@ export async function loadHistory(
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {
-        out.push({ role: "user", content: await attachmentContentParts(atts, text) });
+        out.push({ role: "user", content: await attachmentContentParts(atts, text, affordable) });
       } else if (text) {
         out.push({ role: "user", content: text });
       }
@@ -632,10 +642,17 @@ export async function loadEphemeralHistory(
   const broker = getStreamBroker();
   const runIds = (await broker.driver.listConvStreams(conversationId)).slice(-HISTORY_LIMIT);
 
-  // Snapshot messages become either a summary marker or a batch of prompt
-  // messages (an assistant turn and its tool results travel together, so the
-  // cutoff below can never separate a call from its result).
-  const items: ({ kind: "summary"; text: string } | { kind: "msgs"; msgs: ChatMessage[] })[] = [];
+  // Snapshot messages become a summary marker, a batch of prompt messages (an
+  // assistant turn and its tool results travel together, so the cutoff below
+  // can never separate a call from its result), or — for a user turn carrying
+  // images — an unresolved "user" item. That one stays unresolved until the
+  // cutoff is known: resolving it means reading images off disk, and the image
+  // budget has to be spent over the turns actually replayed, newest-first.
+  type Item =
+    | { kind: "summary"; text: string }
+    | { kind: "msgs"; msgs: ChatMessage[] }
+    | { kind: "user"; atts: AttachmentRef[]; text: string };
+  const items: Item[] = [];
   for (const runId of runIds) {
     const records = await broker.readFrom(runId, 0);
     const snapshot = broker.foldSnapshot(records);
@@ -649,10 +666,7 @@ export async function loadEphemeralHistory(
         // Incognito writes nothing to Postgres, so message.start's attachment
         // list is the only record that this turn carried images at all.
         if (m.attachments?.length) {
-          items.push({
-            kind: "msgs",
-            msgs: [{ role: "user", content: await attachmentContentParts(m.attachments, m.text) }],
-          });
+          items.push({ kind: "user", atts: m.attachments, text: m.text });
         } else if (m.text) {
           items.push({ kind: "msgs", msgs: [{ role: "user", content: m.text }] });
         }
@@ -687,9 +701,18 @@ export async function loadEphemeralHistory(
   const summaryText =
     lastSummaryIdx >= 0 ? (items[lastSummaryIdx] as { kind: "summary"; text: string }).text : null;
 
+  const replayed = items.slice(lastSummaryIdx + 1);
+  const imageTurns = replayed
+    .filter((i): i is Extract<Item, { kind: "user" }> => i.kind === "user")
+    .map((i) => i.atts);
+  const affordable = imageTurns.length > 0 ? await selectAffordableImages(imageTurns) : undefined;
+
   const out: ChatMessage[] = [];
-  for (const item of items.slice(lastSummaryIdx + 1)) {
+  for (const item of replayed) {
     if (item.kind === "msgs") out.push(...item.msgs);
+    else if (item.kind === "user") {
+      out.push({ role: "user", content: await attachmentContentParts(item.atts, item.text, affordable) });
+    }
   }
   const truncated = out.length > HISTORY_LIMIT;
   const capped = out.slice(-HISTORY_LIMIT);

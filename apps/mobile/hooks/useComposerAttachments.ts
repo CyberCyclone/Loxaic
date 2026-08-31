@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
@@ -8,8 +8,10 @@ import {
   MAX_ATTACHMENT_BYTES,
   ATTACHMENT_MIMES,
   type AttachmentRef,
+  type UploadedAttachment,
 } from '@shannon/api-client';
 import { useToastHelper } from './useToastHelper';
+import { nativeAttachmentFile } from '@/lib/attachmentUpload';
 
 /** Longest edge an attached image is allowed to keep — larger originals are
  * downscaled client-side before upload. */
@@ -24,11 +26,10 @@ export interface PendingAttachment {
   error?: string;
 }
 
-/** Fetches a local/blob URI into a Blob carrying exactly `mime` as its type
- * — the one thing that has to be right for the server's multipart mime
- * check, and not something `fetch`'s own type-sniffing can be trusted for
- * with a local file:// URI. Works identically on native (RN's fetch/Blob
- * support file:// and content:// URIs) and web. */
+/** Web only (see `upload` below) — fetches a blob: URI into a Blob carrying
+ * exactly `mime` as its type, which has to be right for the server's
+ * multipart mime check and isn't something `fetch`'s own type-sniffing can
+ * be trusted for. */
 async function readAsBlob(uri: string, mime: string): Promise<Blob> {
   const res = await fetch(uri);
   const raw = await res.blob();
@@ -53,32 +54,89 @@ async function normalize(asset: ImagePicker.ImagePickerAsset): Promise<{ uri: st
     ctx = asset.width >= asset.height ? ctx.resize({ width: MAX_EDGE }) : ctx.resize({ height: MAX_EDGE });
   }
   const rendered = await ctx.renderAsync();
-  const saved = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: 0.85 });
-  return { uri: saved.uri, mime: 'image/jpeg' };
+  // base64: true rather than re-reading saved.uri off disk afterward — that
+  // second read is a `fetch()` of the manipulator's own cache file, and it
+  // was observed failing with "Network request failed" on-device (iOS,
+  // Expo Go), plausibly the same memory pressure that also intermittently
+  // kills and relaunches Expo Go around a large camera photo. A data URI
+  // comes back in the same call, no disk round-trip to go stale.
+  const saved = await rendered.saveAsync({ format: SaveFormat.JPEG, compress: 0.85, base64: true });
+  if (!saved.base64) throw new Error('Image processing did not return image data');
+  return { uri: `data:image/jpeg;base64,${saved.base64}`, mime: 'image/jpeg' };
 }
 
 export function useComposerAttachments() {
   const [items, setItems] = useState<PendingAttachment[]>([]);
   const { showToast } = useToastHelper();
 
+  /** Object URLs minted by addWebFiles, which are the only local URIs here
+   * that own anything — a blob: URL pins its File's bytes in memory until it
+   * is revoked, and nothing revokes it on navigation. Kept in a ref rather
+   * than derived from `items` so remove()/reset() can release without taking
+   * `items` as a dependency and changing identity on every render. Native
+   * URIs are file:// paths and never land in this set, so the web-only
+   * revokeObjectURL is never reached off web. */
+  const objectUrls = useRef<Set<string>>(new Set());
+
+  const release = useCallback((localUri: string) => {
+    if (!objectUrls.current.delete(localUri)) return;
+    URL.revokeObjectURL(localUri);
+  }, []);
+
+  const releaseAll = useCallback(() => {
+    for (const uri of objectUrls.current) URL.revokeObjectURL(uri);
+    objectUrls.current.clear();
+  }, []);
+
+  // Unmounting the composer with images still pending would otherwise leak
+  // every one of them for the life of the page.
+  useEffect(() => releaseAll, [releaseAll]);
+
   const upload = useCallback(async (localUri: string, uri: string, mime: string) => {
     try {
-      const blob = await readAsBlob(uri, mime);
-      if (blob.size > MAX_ATTACHMENT_BYTES) {
-        setItems((prev) => prev.filter((i) => i.localUri !== localUri));
-        showToast('That image is over 10 MB even after resizing');
-        return;
+      let uploaded: UploadedAttachment;
+      if (Platform.OS === 'web') {
+        // Web: a real Blob via fetch(uri).blob() is the standard, reliable
+        // path — browsers stream a Blob through FormData/fetch natively.
+        const blob = await readAsBlob(uri, mime).catch((e: unknown) => {
+          throw new Error(`reading image: ${(e as Error).message}`);
+        });
+        if (blob.size > MAX_ATTACHMENT_BYTES) {
+          release(localUri);
+          setItems((prev) => prev.filter((i) => i.localUri !== localUri));
+          showToast('That image is over 10 MB even after resizing');
+          return;
+        }
+        uploaded = await uploadAttachment(blob).catch((e: unknown) => {
+          throw new Error(`uploading (${String(blob.size)} bytes): ${(e as Error).message}`);
+        });
+      } else {
+        // Native: hand the {uri, name, type} shape straight to FormData —
+        // RN's own networking module streams the file (or decodes a data:
+        // URI) directly. Building a Blob via fetch(uri).blob() first and
+        // uploading *that* is the well-documented unreliable RN path (fails
+        // client-side with the same generic "Network request failed" this
+        // hook was hitting, with no request ever reaching the server). The
+        // 10 MB pre-check is skipped here — normalize() already resizes to
+        // MAX_EDGE, and the server enforces the real cap regardless.
+        uploaded = await uploadAttachment(nativeAttachmentFile(uri, mime)).catch((e: unknown) => {
+          throw new Error(`uploading: ${(e as Error).message}`);
+        });
       }
-      const uploaded = await uploadAttachment(blob);
       setItems((prev) =>
         prev.map((i) => (i.localUri === localUri ? { ...i, ref: uploaded.ref, mime: uploaded.mime, status: 'ready' } : i)),
       );
     } catch (err) {
+      const message = (err as Error).message;
       setItems((prev) =>
-        prev.map((i) => (i.localUri === localUri ? { ...i, status: 'error', error: (err as Error).message } : i)),
+        prev.map((i) => (i.localUri === localUri ? { ...i, status: 'error', error: message } : i)),
       );
+      // Long enough to actually read a backend/runtime error message, not
+      // just a short confirmation — same duration as the chat/agent error
+      // toasts in useChatSession/useAgentSession.
+      showToast(`Couldn't attach that image: ${message}`, 6000);
     }
-  }, [showToast]);
+  }, [showToast, release]);
 
   const addAssets = useCallback(
     async (assets: ImagePicker.ImagePickerAsset[]) => {
@@ -140,6 +198,7 @@ export function useComposerAttachments() {
         }
         slots -= 1;
         const localUri = URL.createObjectURL(file);
+        objectUrls.current.add(localUri);
         setItems((prev) => [...prev, { localUri, mime: file.type, status: 'uploading' }]);
         void upload(localUri, localUri, file.type);
       }
@@ -162,10 +221,14 @@ export function useComposerAttachments() {
   }, [items.length, addAssets, showToast]);
 
   const remove = useCallback((localUri: string) => {
+    release(localUri);
     setItems((prev) => prev.filter((i) => i.localUri !== localUri));
-  }, []);
+  }, [release]);
 
-  const reset = useCallback(() => { setItems([]); }, []);
+  const reset = useCallback(() => {
+    releaseAll();
+    setItems([]);
+  }, [releaseAll]);
 
   const readyAttachments: AttachmentRef[] = useMemo(
     () =>

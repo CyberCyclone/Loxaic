@@ -79,4 +79,30 @@ describe("assertAttachmentsOwned", () => {
     const foreign = await newAttachment(userB);
     await expect(assertAttachmentsOwned(userA, [owned, foreign])).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  // One ref repeated is one image, not four. Left un-collapsed it persisted as
+  // four attachment blocks, emitted four times on message.start, and rebuilt
+  // into four identical image parts on every future replay — a 4x prompt
+  // amplification bought with a single upload.
+  it("collapses a repeated ref to one entry, keeping first-occurrence order", async () => {
+    const a = await newAttachment(userA, "image/png");
+    const b = await newAttachment(userA, "image/jpeg");
+    await expect(assertAttachmentsOwned(userA, [a, b, a, a])).resolves.toEqual([
+      { ref: a, mime: "image/png" },
+      { ref: b, mime: "image/jpeg" },
+    ]);
+  });
+
+  it("still caps on the raw list length, so duplicates can't smuggle in an over-long array", async () => {
+    const ref = await newAttachment(userA);
+    const overCap = Array.from({ length: MAX_ATTACHMENTS + 1 }, () => ref);
+    await expect(assertAttachmentsOwned(userA, overCap)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("rejects a non-string element without letting it coerce past the ref check", async () => {
+    // `refs: string[]` is a claim about a JSON payload; RegExp.test would
+    // stringify a single-element array straight back into a valid uuid.
+    const smuggled = [[await newAttachment(userA)]] as unknown as string[];
+    await expect(assertAttachmentsOwned(userA, smuggled)).rejects.toBeInstanceOf(NotFoundError);
+  });
 });

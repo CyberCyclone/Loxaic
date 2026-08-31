@@ -26,8 +26,15 @@ export const ATTACHMENT_MIMES = ["image/jpeg", "image/png", "image/webp", "image
  * proceed.
  */
 export function validateSendAttachments(content: unknown, attachments: unknown): string | null {
-  const atts = attachments ?? [];
+  const atts: unknown = attachments ?? [];
   if (!Array.isArray(atts) || atts.length > MAX_ATTACHMENTS) {
+    return `Attach at most ${String(MAX_ATTACHMENTS)} images`;
+  }
+  // Elements too, not just the array. TypeScript's `string[]` on the wire type
+  // is a claim about a JSON payload, not a fact, and the downstream ref check
+  // is a regex — `RegExp.test` stringifies, so `[["<uuid>"]]` would otherwise
+  // read as a valid uuid and reach a uuid-typed query.
+  if (!atts.every((a: unknown) => typeof a === "string")) {
     return `Attach at most ${String(MAX_ATTACHMENTS)} images`;
   }
   if (typeof content !== "string" || (!content.trim() && atts.length === 0)) {

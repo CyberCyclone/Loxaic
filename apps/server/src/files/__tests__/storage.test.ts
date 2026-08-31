@@ -3,7 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { attachmentContentParts, attachmentPath, isValidRef, readAsDataUri, sniffImageMime } from "../storage.ts";
+import {
+  MAX_HISTORY_IMAGE_BYTES,
+  attachmentContentParts,
+  attachmentPath,
+  isValidRef,
+  readAsDataUri,
+  selectAffordableImages,
+  sniffImageMime,
+} from "../storage.ts";
 
 describe("isValidRef", () => {
   it("accepts a well-formed uuid", () => {
@@ -16,6 +24,23 @@ describe("isValidRef", () => {
       expect(isValidRef(ref)).toBe(false);
     },
   );
+
+  // `RegExp.test` stringifies its argument, so a single-element array of a
+  // valid uuid coerces straight back to that uuid and would otherwise pass —
+  // and `refs: string[]` off a socket is a claim, not a fact. Without the
+  // typeof guard this reached the uuid-typed query and surfaced a raw
+  // Postgres error to the client.
+  it.each([
+    [[uuid()]],
+    [[[uuid()]]],
+    [{ toString: () => uuid() }],
+    [null],
+    [undefined],
+    [42],
+    [{}],
+  ])("rejects the non-string value %j rather than coercing it", (ref) => {
+    expect(isValidRef(ref)).toBe(false);
+  });
 });
 
 describe("attachmentPath", () => {
@@ -75,6 +100,108 @@ describe("readAsDataUri / attachmentContentParts", () => {
     const parts = await attachmentContentParts([{ ref, mime: "image/png" }], "");
     expect(parts).toHaveLength(1);
     expect(parts[0].type).toBe("image_url");
+  });
+
+  it("collapses a repeated ref to one part — the same image twice costs 2x for nothing", async () => {
+    const ref = uuid();
+    writeFileSync(attachmentPath(ref), Buffer.from("dup"));
+    const parts = await attachmentContentParts(
+      [{ ref, mime: "image/png" }, { ref, mime: "image/png" }, { ref, mime: "image/png" }],
+      "",
+    );
+    expect(parts).toHaveLength(1);
+  });
+
+  it("replaces a ref outside the budget with a marker instead of reading it", async () => {
+    const kept = uuid();
+    const dropped = uuid();
+    writeFileSync(attachmentPath(kept), Buffer.from("keep"));
+    writeFileSync(attachmentPath(dropped), Buffer.from("drop"));
+
+    const parts = await attachmentContentParts(
+      [{ ref: dropped, mime: "image/png" }, { ref: kept, mime: "image/png" }],
+      "hi",
+      new Set([kept]),
+    );
+
+    expect(parts).toEqual([
+      { type: "text", text: "[image omitted: over this prompt's image budget]" },
+      { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from("keep").toString("base64")}` } },
+      { type: "text", text: "hi" },
+    ]);
+  });
+});
+
+/**
+ * The per-prompt image budget. Without it, HISTORY_LIMIT (50) multiplies the
+ * per-send caps: a thread of image-bearing turns makes every later send
+ * re-read and base64 the lot into one JSON body, which is heap exhaustion on
+ * demand for the price of one WebSocket frame.
+ */
+describe("selectAffordableImages", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-budget-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
+  });
+
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function write(bytes: number): string {
+    const ref = uuid();
+    writeFileSync(attachmentPath(ref), Buffer.alloc(bytes, 1));
+    return ref;
+  }
+
+  it("admits everything when the whole history fits", async () => {
+    const a = write(16);
+    const b = write(16);
+    const allowed = await selectAffordableImages([
+      [{ ref: a, mime: "image/png" }],
+      [{ ref: b, mime: "image/png" }],
+    ]);
+    expect(allowed).toEqual(new Set([a, b]));
+  });
+
+  it("spends the budget newest-first, so the turn being asked about survives", async () => {
+    const oldRef = write(MAX_HISTORY_IMAGE_BYTES);
+    const newRef = write(MAX_HISTORY_IMAGE_BYTES);
+    // Oldest-first input, mirroring prompt assembly order.
+    const allowed = await selectAffordableImages([
+      [{ ref: oldRef, mime: "image/png" }],
+      [{ ref: newRef, mime: "image/png" }],
+    ]);
+    expect(allowed.has(newRef)).toBe(true);
+    expect(allowed.has(oldRef)).toBe(false);
+  });
+
+  it("skips an oversized image rather than ending the walk, so smaller older ones still fit", async () => {
+    const small = write(32);
+    const huge = write(MAX_HISTORY_IMAGE_BYTES + 1);
+    const allowed = await selectAffordableImages([
+      [{ ref: small, mime: "image/png" }],
+      [{ ref: huge, mime: "image/png" }],
+    ]);
+    expect(allowed).toEqual(new Set([small]));
+  });
+
+  it("charges a repeated ref once", async () => {
+    const ref = write(MAX_HISTORY_IMAGE_BYTES);
+    const allowed = await selectAffordableImages([
+      [{ ref, mime: "image/png" }],
+      [{ ref, mime: "image/png" }],
+    ]);
+    expect(allowed).toEqual(new Set([ref]));
+  });
+
+  it("leaves an unreadable ref out, to degrade downstream as [image unavailable]", async () => {
+    const allowed = await selectAffordableImages([[{ ref: uuid(), mime: "image/png" }]]);
+    expect(allowed.size).toBe(0);
   });
 });
 

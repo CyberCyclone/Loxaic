@@ -136,6 +136,13 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
     BETTER_AUTH_SECRET: secrets.betterAuthSecret,
     BETTER_AUTH_URL: `http://localhost:${port}`,
     SHANNON_DATA_DIR: dataDir,
+    // Without this, storage.ts falls back to <cwd>/uploads — and cwd here is
+    // serverDir, i.e. inside the installed app bundle. Attachments would be
+    // written next to the shipped code, wiped by every update while their DB
+    // rows survive (degrading to "[image unavailable]"), and on macOS would
+    // break the bundle's code signature. Same treatment as the Postgres data
+    // dir: user data belongs under dataDir.
+    UPLOADS_DIR: path.join(dataDir, "uploads"),
   };
   for (const key of PASSTHROUGH_ENV) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
