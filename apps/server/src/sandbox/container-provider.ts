@@ -1,6 +1,7 @@
 import Docker from "dockerode";
 import { pack } from "tar-fs";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -27,8 +28,41 @@ const DEFAULT_LIMITS = {
 };
 const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
 
+let imageTag: string | null = null;
+
+/**
+ * The sandbox image name, tagged with a hash of the Dockerfile that defines it.
+ *
+ * The tag is content-derived on purpose. `ensureImage` builds only when the
+ * image is *absent*, so with a fixed tag any change to sandbox.Dockerfile —
+ * adding `poppler-utils` for PDF extraction, say — would never reach a
+ * deployment that had already built once. The tool needing it would then fail
+ * at runtime with a bare exit 127, which is close to undiagnosable from the
+ * outside. Hashing the Dockerfile into the tag makes a changed Dockerfile a
+ * different image, so the rebuild happens by itself, exactly once.
+ *
+ * SANDBOX_IMAGE still overrides for anyone supplying their own prebuilt image;
+ * they are then responsible for its contents.
+ */
 function sandboxImage(): string {
-  return process.env.SANDBOX_IMAGE ?? "shannon-sandbox";
+  if (process.env.SANDBOX_IMAGE) return process.env.SANDBOX_IMAGE;
+  if (imageTag) return imageTag;
+  let digest = "base";
+  try {
+    const dockerfile = readFileSync(path.join(buildContextDir(), "sandbox.Dockerfile"));
+    digest = createHash("sha256").update(dockerfile).digest("hex").slice(0, 12);
+  } catch {
+    // No Dockerfile reachable — nothing can be built here anyway, and
+    // ensureImage reports that far more clearly than a throw from a name.
+  }
+  imageTag = `shannon-sandbox:${digest}`;
+  return imageTag;
+}
+
+/** Test seam: the tag is memoized, so a suite that rewrites the Dockerfile
+ * needs a way to forget it. */
+export function resetSandboxImageTag(): void {
+  imageTag = null;
 }
 
 /**
@@ -193,6 +227,52 @@ interface DemuxCapableModem {
   demuxStream(stream: NodeJS.ReadableStream, stdout: NodeJS.WritableStream, stderr: NodeJS.WritableStream): void;
 }
 
+/**
+ * Stream bytes into a file in the container.
+ *
+ * Deliberately not built on {@link execInContainer} the way `writeFile` is:
+ * that passes the payload as an *argv argument*, and argv is capped (ARG_MAX,
+ * ~2 MB on Linux once the environment is counted). A 25 MB PDF would fail
+ * there — and fail as a confusing "argument list too long" from bash, not as
+ * anything that names the real limit. So the payload goes over hijacked stdin
+ * instead, which has no such cap; only the destination path is an argument.
+ *
+ * base64 rather than raw bytes because the hijacked stream is the same one
+ * Docker frames stdout/stderr onto, and a raw binary payload containing
+ * frame-header-shaped bytes is asking for trouble. The ~4/3 inflation is
+ * bounded by MAX_DOCUMENT_BYTES.
+ */
+async function writeBinaryToContainer(
+  container: Docker.Container,
+  filePath: string,
+  data: Buffer,
+): Promise<void> {
+  const exec = await container.exec({
+    Cmd: ["bash", "-c", 'mkdir -p "$(dirname "$1")" && base64 -d > "$1"', "_", filePath],
+    AttachStdin: true,
+    AttachStdout: true,
+    AttachStderr: true,
+  });
+  const stream = await exec.start({ hijack: true, stdin: true });
+
+  const err = new CappedSink();
+  const modem = container.modem as DemuxCapableModem;
+  modem.demuxStream(stream, new CappedSink(), err);
+
+  await new Promise<void>((resolve, reject) => {
+    stream.on("error", reject);
+    stream.end(data.toString("base64"), () => { resolve(); });
+  });
+  // Wait for the process itself, not just the write: `end()` resolving only
+  // means the bytes left this side.
+  await new Promise<void>((resolve) => stream.on("end", resolve).on("close", resolve));
+
+  const info = await exec.inspect();
+  if (info.ExitCode !== 0) {
+    throw new Error(err.text().trim() || `binary write failed (exit ${String(info.ExitCode ?? -1)})`);
+  }
+}
+
 async function execInContainer(
   container: Docker.Container,
   command: string[],
@@ -275,6 +355,8 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       ]);
       if (exitCode !== 0) throw new Error(stderr.trim() || `write failed (exit ${String(exitCode)})`);
     },
+
+    writeFileBinary: (filePath, data) => writeBinaryToContainer(container, filePath, data),
 
     async fileTree(treePath = "/home/shannon") {
       const { stdout } = await execInContainer(container, [

@@ -107,13 +107,27 @@ export const messages = pgTable(
   ],
 );
 
-// ── Attachments (uploaded images; bytes live on disk under UPLOADS_DIR) ──
+// ── Attachments (uploaded files; bytes live on disk under UPLOADS_DIR, with
+// a document's extracted text cached beside them as `<ref>.txt`) ──
 export const attachments = pgTable("attachments", {
   /** The public "ref" handed to clients and stored in message content blocks. */
   id: uuid("id").primaryKey().defaultRandom(),
   ownerId: text("owner_id").notNull().references(() => user.id),
   mime: text("mime").notNull(),
   sizeBytes: integer("size_bytes").notNull(),
+  /** As picked, sanitized (basename only, no control chars, length-capped).
+   * The model is told this name, the UI labels the chip with it, and the serve
+   * route puts it in Content-Disposition. Defaulted rather than nullable so
+   * every read site has a string; rows predating documents get "". */
+  filename: text("filename").default("").notNull(),
+  /** Text-extraction outcome: "none" for images (nothing to extract), "ok",
+   * "failed" (parser error/timeout — the file is still stored), or
+   * "unsupported". Never blocks the upload; it drives what the prompt and the
+   * chip say. */
+  extractStatus: text("extract_status").default("none").notNull(),
+  /** Bytes of the cached `<ref>.txt`, so the prompt budget can be spent
+   * without stat-ing every attachment in a long history. */
+  extractBytes: integer("extract_bytes").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

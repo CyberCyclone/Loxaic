@@ -34,6 +34,9 @@ function makeFakeHandle() {
     async writeFile(path, content) {
       files.set(path, content);
     },
+    async writeFileBinary(path, data) {
+      files.set(path, data.toString("utf8"));
+    },
     async fileTree() {
       return [];
     },
@@ -94,6 +97,7 @@ describe("resolvePath", () => {
       exec: async () => EXEC_OK,
       readFile: async () => "",
       writeFile: async () => {},
+      writeFileBinary: async () => {},
       fileTree: async () => [],
       isRunning: async () => true,
       stop: async () => {},

@@ -28,14 +28,14 @@ describe("validateSendAttachments", () => {
 
   it(`rejects more than ${String(MAX_ATTACHMENTS)} attachments, checked before the content check`, () => {
     const tooMany = Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) => `ref-${String(i)}`);
-    expect(validateSendAttachments("hi", tooMany)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} images`);
+    expect(validateSendAttachments("hi", tooMany)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} files`);
     // Bad content AND over-cap attachments — the cap error wins, since it's
     // checked first (matches the production guard's order).
-    expect(validateSendAttachments("", tooMany)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} images`);
+    expect(validateSendAttachments("", tooMany)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} files`);
   });
 
   it("rejects a non-array attachments value", () => {
-    expect(validateSendAttachments("hi", "not-an-array")).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} images`);
+    expect(validateSendAttachments("hi", "not-an-array")).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} files`);
   });
 
   // The array can hold anything JSON can express. The downstream ref check is
@@ -44,7 +44,7 @@ describe("validateSendAttachments", () => {
   it.each([[[["ref-1"]]], [[null]], [[42]], [[{}]], [["ok", 7]]])(
     "rejects the non-string element in %j",
     (atts) => {
-      expect(validateSendAttachments("hi", atts)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} images`);
+      expect(validateSendAttachments("hi", atts)).toBe(`Attach at most ${String(MAX_ATTACHMENTS)} files`);
     },
   );
 

@@ -2,6 +2,7 @@ import { unlink } from "node:fs/promises";
 import { db, eq, sql } from "@shannon/db";
 import { attachments } from "@shannon/db/schema";
 import { attachmentPath } from "./storage.ts";
+import { removeExtractedText } from "./extract.ts";
 
 /** How often the sweep runs once started. */
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -96,6 +97,8 @@ export async function sweepOrphanAttachments(ownerIds?: string[]): Promise<numbe
     // by row, which the next sweep also can't see. Logged by the caller via
     // the count, not retried — losing one file is not worth blocking the rest.
     await unlink(attachmentPath(row.id)).catch(() => undefined);
+    // The cached extraction must not outlive the file it describes.
+    await removeExtractedText(row.id);
     reaped++;
   }
   return reaped;

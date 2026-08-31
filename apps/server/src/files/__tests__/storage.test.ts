@@ -9,8 +9,8 @@ import {
   attachmentPath,
   isValidRef,
   readAsDataUri,
-  selectAffordableImages,
-  sniffImageMime,
+  selectAffordableAttachments,
+  sniffMime,
 } from "../storage.ts";
 
 describe("isValidRef", () => {
@@ -161,7 +161,7 @@ describe("selectAffordableImages", () => {
   it("admits everything when the whole history fits", async () => {
     const a = write(16);
     const b = write(16);
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref: a, mime: "image/png" }],
       [{ ref: b, mime: "image/png" }],
     ]);
@@ -172,7 +172,7 @@ describe("selectAffordableImages", () => {
     const oldRef = write(MAX_HISTORY_IMAGE_BYTES);
     const newRef = write(MAX_HISTORY_IMAGE_BYTES);
     // Oldest-first input, mirroring prompt assembly order.
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref: oldRef, mime: "image/png" }],
       [{ ref: newRef, mime: "image/png" }],
     ]);
@@ -183,7 +183,7 @@ describe("selectAffordableImages", () => {
   it("skips an oversized image rather than ending the walk, so smaller older ones still fit", async () => {
     const small = write(32);
     const huge = write(MAX_HISTORY_IMAGE_BYTES + 1);
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref: small, mime: "image/png" }],
       [{ ref: huge, mime: "image/png" }],
     ]);
@@ -192,7 +192,7 @@ describe("selectAffordableImages", () => {
 
   it("charges a repeated ref once", async () => {
     const ref = write(MAX_HISTORY_IMAGE_BYTES);
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref, mime: "image/png" }],
       [{ ref, mime: "image/png" }],
     ]);
@@ -200,21 +200,28 @@ describe("selectAffordableImages", () => {
   });
 
   it("leaves an unreadable ref out, to degrade downstream as [image unavailable]", async () => {
-    const allowed = await selectAffordableImages([[{ ref: uuid(), mime: "image/png" }]]);
+    const allowed = await selectAffordableAttachments([[{ ref: uuid(), mime: "image/png" }]]);
     expect(allowed.size).toBe(0);
   });
 });
 
-describe("sniffImageMime", () => {
+describe("sniffMime", () => {
   it("recognizes JPEG, PNG, GIF, and WebP magic bytes", () => {
-    expect(sniffImageMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
-    expect(sniffImageMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("image/png");
-    expect(sniffImageMime(Buffer.from("GIF89a"))).toBe("image/gif");
-    expect(sniffImageMime(Buffer.concat([Buffer.from("RIFF____"), Buffer.from("WEBP")]))).toBe("image/webp");
+    expect(sniffMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
+    expect(sniffMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("image/png");
+    expect(sniffMime(Buffer.from("GIF89a"))).toBe("image/gif");
+    expect(sniffMime(Buffer.concat([Buffer.from("RIFF____"), Buffer.from("WEBP")]))).toBe("image/webp");
   });
 
-  it("returns null for content that isn't one of the four supported formats", () => {
-    expect(sniffImageMime(Buffer.from("<svg></svg>"))).toBeNull();
-    expect(sniffImageMime(Buffer.from("%PDF-1.4"))).toBeNull();
+  it("recognizes a PDF header", () => {
+    expect(sniffMime(Buffer.from("%PDF-1.4"))).toBe("application/pdf");
+  });
+
+  it("returns null for anything without a recognized signature", () => {
+    expect(sniffMime(Buffer.from("<svg></svg>"))).toBeNull();
+    // Text formats have no magic bytes at all, so they are deliberately not
+    // sniffable — verifyStoredBytes decides those by decoding instead.
+    expect(sniffMime(Buffer.from("name,total\n"))).toBeNull();
+    expect(sniffMime(Buffer.from("# heading"))).toBeNull();
   });
 });

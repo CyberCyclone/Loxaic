@@ -78,6 +78,13 @@
       "when": 1788125595926,
       "tag": "0010_dazzling_lady_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788164190313,
+      "tag": "0011_fancy_shooting_star",
+      "breakpoints": true
     }
   ]
 }

@@ -27,7 +27,7 @@ export type ContentBlock =
   | { kind: "thinking"; text: string }
   | { kind: "tool_call"; call_id: string; tool: string; args: unknown }
   | { kind: "tool_result"; call_id: string; output: string; diff?: FileDiff[] }
-  | { kind: "attachment"; ref: string; mime: string }
+  | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can
    * render the compaction card with its stats — the stream isn't the only
    * path to this data. */

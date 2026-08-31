@@ -115,6 +115,11 @@ function makeHandle(sandboxDir: string): SandboxHandle {
       await writeFile(filePath, content, "utf8");
     },
 
+    async writeFileBinary(filePath, data) {
+      await mkdir(path.dirname(filePath), { recursive: true });
+      await writeFile(filePath, data);
+    },
+
     async fileTree(treePath = sandboxDir) {
       const out: FileNode[] = [];
       await walk(treePath, treePath, 1, out);

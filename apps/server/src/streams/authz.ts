@@ -52,8 +52,8 @@ export async function assertParentInConversation(conversationId: string, parentI
 
 /**
  * Validates every attachment ref on an incoming send before the run writes
- * anything. Returns the refs with their authoritative mimes (the client's
- * copy is advisory only). Unknown ref and someone else's ref are the same
+ * anything. Returns the refs with their authoritative mimes and filenames
+ * (the client's copies are advisory only). Unknown ref and someone else's ref are the same
  * NotFoundError — same no-oracle rule as conversations.
  */
 export async function assertAttachmentsOwned(userId: string, refs: string[]): Promise<AttachmentRef[]> {
@@ -73,13 +73,22 @@ export async function assertAttachmentsOwned(userId: string, refs: string[]): Pr
   // first occurrence, which also preserves display order.
   const unique = [...new Set(refs)];
   const rows = await db
-    .select({ id: attachments.id, ownerId: attachments.ownerId, mime: attachments.mime })
+    .select({
+      id: attachments.id,
+      ownerId: attachments.ownerId,
+      mime: attachments.mime,
+      filename: attachments.filename,
+    })
     .from(attachments)
     .where(inArray(attachments.id, unique));
   const byId = new Map(rows.filter((r) => r.ownerId === userId).map((r) => [r.id, r]));
   return unique.map((ref) => {
     const row = byId.get(ref);
     if (!row) throw new NotFoundError();
-    return { ref, mime: row.mime };
+    // Both mime and name come from the row, never the client's copy — the
+    // name is going into a prompt and a Content-Disposition header, so its
+    // provenance matters as much as the mime's. Empty for rows predating
+    // documents, and omitted rather than sent as "".
+    return { ref, mime: row.mime, ...(row.filename ? { name: row.filename } : {}) };
   });
 }

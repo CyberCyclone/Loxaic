@@ -10,7 +10,7 @@ import {
   type ToolCall,
   type CompletionResult,
 } from "../../inference/provider.ts";
-import { attachmentContentParts, selectAffordableImages } from "../../files/storage.ts";
+import { attachmentContentParts, selectAffordableAttachments } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
@@ -557,15 +557,16 @@ export async function loadHistory(
     }
   }
 
-  // Which images this prompt can afford, decided over the whole replay before
-  // any of it is read off disk — see selectAffordableImages. Skipping the walk
-  // when the thread has no images at all keeps the common case free of stats.
+  // Which attachments this prompt can afford, decided over the whole replay
+  // before any of it is read off disk — see selectAffordableAttachments.
+  // Skipping the walk when the thread has none keeps the common case free of
+  // stats.
   const complete = ordered.filter((row) => row.status === "complete");
-  const imageTurns = complete
+  const attachmentTurns = complete
     .filter((row) => row.authorType === "user")
     .map((row) => attachmentsOf((row.content ?? []) as ContentBlock[]));
-  const affordable = imageTurns.some((t) => t.length > 0)
-    ? await selectAffordableImages(imageTurns)
+  const affordable = attachmentTurns.some((t) => t.length > 0)
+    ? await selectAffordableAttachments(attachmentTurns)
     : undefined;
 
   const out: ChatMessage[] = [];
@@ -615,7 +616,7 @@ export async function loadHistory(
 function attachmentsOf(blocks: ContentBlock[]): AttachmentRef[] {
   return blocks
     .filter((b): b is Extract<ContentBlock, { kind: "attachment" }> => b.kind === "attachment")
-    .map((b) => ({ ref: b.ref, mime: b.mime }));
+    .map((b) => ({ ref: b.ref, mime: b.mime, ...(b.name === undefined ? {} : { name: b.name }) }));
 }
 
 function textOf(blocks: ContentBlock[]): string {
@@ -702,10 +703,11 @@ export async function loadEphemeralHistory(
     lastSummaryIdx >= 0 ? (items[lastSummaryIdx] as { kind: "summary"; text: string }).text : null;
 
   const replayed = items.slice(lastSummaryIdx + 1);
-  const imageTurns = replayed
+  const attachmentTurns = replayed
     .filter((i): i is Extract<Item, { kind: "user" }> => i.kind === "user")
     .map((i) => i.atts);
-  const affordable = imageTurns.length > 0 ? await selectAffordableImages(imageTurns) : undefined;
+  const affordable =
+    attachmentTurns.length > 0 ? await selectAffordableAttachments(attachmentTurns) : undefined;
 
   const out: ChatMessage[] = [];
   for (const item of replayed) {
