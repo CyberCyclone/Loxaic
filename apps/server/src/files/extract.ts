@@ -230,6 +230,7 @@ function htmlToText(html: string): string {
  */
 async function extractViaSandbox(input: ExtractInput): Promise<string> {
   const handle = await getExtractionSandbox(input.userId);
+  const format = sandboxFormat(input.mime);
   // Under `handle.root`, never an absolute /tmp path. The two providers give
   // that very different meanings and only one of them is isolated: for the
   // container provider /tmp is the container's own, but for the host provider
@@ -237,35 +238,114 @@ async function extractViaSandbox(input: ExtractInput): Promise<string> {
   // the box, so one person's document bytes would be briefly readable by
   // anything else running there. `root` is the per-sandbox directory in host
   // mode and /home/shannon in container mode, which is correct for both.
-  const inPath = `${handle.root}/.extract/${randomUUID()}`;
+  const base = `${handle.root}/.extract/${randomUUID()}`;
+  // The extension is load-bearing, not decoration: openpyxl refuses to open a
+  // file whose name doesn't end in a spreadsheet extension, regardless of its
+  // contents ("does not support .in file format"). Several of these libraries
+  // dispatch on extension, so the sandbox copy is named for its format. The
+  // extension comes from our own table, never from the user's filename.
+  const inPath = `${base}.${format}`;
+  const outPath = `${base}.out`;
   try {
     await handle.writeFileBinary(inPath, await readFile(attachmentPath(input.ref)));
-    const res = await handle.exec(commandFor(input.mime, inPath), {
-      timeoutMs: EXTRACT_TIMEOUT_MS,
-    });
+    // The extractor's output goes to a file, not stdout. exec caps what it
+    // will read back at MAX_OUTPUT_BYTES (256 KB) — far below what a long
+    // document legitimately extracts to — so taking stdout directly would
+    // silently truncate mid-document AND splice the exec layer's own
+    // "[output truncated]" notice into the text we then cache as if it were
+    // the document's. `$0` is the redirect target and `"$@"` the argv, so
+    // neither the path nor the command is ever spliced into the script text.
+    const res = await handle.exec(
+      ["bash", "-c", '"$@" > "$0"', outPath, ...commandFor(format, inPath)],
+      { timeoutMs: EXTRACT_TIMEOUT_MS },
+    );
     if (res.timedOut) throw new Error(`extractor timed out after ${String(EXTRACT_TIMEOUT_MS)}ms`);
     if (res.exitCode !== 0) {
       throw new Error(res.stderr.trim() || `extractor exited ${String(res.exitCode)}`);
     }
-    return res.stdout;
+    return await readSandboxText(handle, outPath);
   } finally {
     // The container is pooled, so leftovers would accumulate across uploads.
-    await handle.exec(["rm", "-f", "--", inPath]).catch(() => undefined);
+    await handle.exec(["rm", "-f", "--", inPath, outPath]).catch(() => undefined);
   }
+}
+
+/** Raw bytes per read-back chunk. base64 inflates by 4/3, so 180 KB encodes to
+ * ~240 KB — comfortably inside exec's 256 KB ceiling with room for framing. */
+const READ_CHUNK_BYTES = 180 * 1024;
+
+/**
+ * Read an extraction back out of the sandbox, in chunks that each fit exec's
+ * output cap.
+ *
+ * base64 rather than raw text because exec hands back an already-decoded
+ * string: a chunk boundary landing mid-UTF-8-sequence would corrupt that
+ * character on every large document. Encoding keeps each chunk ASCII and
+ * defers decoding until the whole buffer is reassembled.
+ */
+async function readSandboxText(handle: SandboxHandle, filePath: string): Promise<string> {
+  const chunks: Buffer[] = [];
+  let offset = 0;
+  for (;;) {
+    const res = await handle.exec([
+      "bash", "-c",
+      'tail -c +"$2" -- "$1" | head -c "$3" | base64 -w0',
+      "_", filePath, String(offset + 1), String(READ_CHUNK_BYTES),
+    ]);
+    if (res.exitCode !== 0) {
+      throw new Error(res.stderr.trim() || `reading extraction failed (exit ${String(res.exitCode)})`);
+    }
+    // Would mean the chunk arithmetic above drifted past the cap — better to
+    // fail loudly than to concatenate a silently clipped chunk.
+    if (res.truncated) throw new Error("extraction read-back exceeded the exec output cap");
+    const encoded = res.stdout.trim();
+    if (!encoded) break;
+    const buf = Buffer.from(encoded, "base64");
+    if (buf.length === 0) break;
+    chunks.push(buf);
+    offset += buf.length;
+    if (buf.length < READ_CHUNK_BYTES) break;
+    if (offset >= MAX_CACHED_EXTRACTION_BYTES) break;
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** The extractor argv for a mime. Every element is a literal or a path this
  * module minted; nothing here interpolates user input. */
-function commandFor(mime: string, inPath: string): string[] {
-  switch (mime) {
-    case "application/pdf":
-      // `-l` bounds pages independently of the byte cap, so a PDF with a
-      // pathological page count can't monopolise the container. `-` writes to
-      // stdout, which the exec layer already caps.
-      return ["pdftotext", "-layout", "-l", String(MAX_PDF_PAGES), "--", inPath, "-"];
-    default:
-      throw new Error(`no extractor for ${mime}`);
+/** Office/ebook mimes to the short format name `shannon-extract` dispatches
+ * on. Kept here rather than in the script so an unknown mime fails on this
+ * side, before a container is ever touched. */
+const SANDBOX_FORMATS: Record<string, string> = {
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/vnd.oasis.opendocument.text": "odt",
+  "application/rtf": "rtf",
+  "text/rtf": "rtf",
+  "application/epub+zip": "epub",
+};
+
+/** The short format name for a mime — also the extension the sandbox copy is
+ * given (see extractViaSandbox). Throws for anything unmapped, so an unknown
+ * mime fails before a container is ever touched. */
+function sandboxFormat(mime: string): string {
+  if (mime === "application/pdf") return "pdf";
+  const format = SANDBOX_FORMATS[mime];
+  if (!format) throw new Error(`no extractor for ${mime}`);
+  return format;
+}
+
+function commandFor(format: string, inPath: string): string[] {
+  if (format === "pdf") {
+    // `-l` bounds pages independently of the byte cap, so a PDF with a
+    // pathological page count can't monopolise the container. `-` writes to
+    // stdout, which the caller redirects to a file.
+    return ["pdftotext", "-layout", "-l", String(MAX_PDF_PAGES), "--", inPath, "-"];
   }
+  // shannon-extract is baked into the sandbox image (infra/docker/sandbox/
+  // extract.py) and runs the decompression-bomb guard itself, before it opens
+  // anything — see that file for why the guard lives on that side.
+  return ["shannon-extract", format, inPath];
 }
 
 // ── Pooled extraction sandboxes ───────────────────────────

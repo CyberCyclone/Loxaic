@@ -38,8 +38,24 @@ export const TEXT_MIMES = [
 
 /** Formats needing a real parser run over a file the server did not author.
  * Extraction happens inside the sandbox container, so these are rejected at
- * upload when no sandbox is configured. PR 2 adds the Office formats here. */
-export const DOCUMENT_MIMES = ["application/pdf"] as const;
+ * upload when no sandbox is configured.
+ *
+ * Everything here except PDF and RTF is a zip container, which is why the
+ * in-sandbox extractor runs a decompression-bomb guard before reading one.
+ * All of them are text-only: images embedded in a document are not read. */
+export const DOCUMENT_MIMES = [
+  "application/pdf",
+  // Office Open XML (.docx/.xlsx/.pptx)
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  // OpenDocument (.odt)
+  "application/vnd.oasis.opendocument.text",
+  // Rich Text and EPUB
+  "application/rtf",
+  "text/rtf",
+  "application/epub+zip",
+] as const;
 
 export const ATTACHMENT_MIMES = [...IMAGE_MIMES, ...TEXT_MIMES, ...DOCUMENT_MIMES] as const;
 
@@ -102,6 +118,12 @@ const EXTENSION_MIMES: Record<string, string> = {
   xml: "text/xml", html: "text/html", htm: "text/html",
   yaml: "text/yaml", yml: "text/yaml",
   pdf: "application/pdf",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  rtf: "application/rtf",
+  epub: "application/epub+zip",
   jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
   webp: "image/webp", gif: "image/gif",
   // Source files. All plain text to us — the extension only has to get them

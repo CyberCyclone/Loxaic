@@ -279,11 +279,33 @@ screenshots showing that behaviour working. Writing those tests is the implement
   trusted for any of the three.
 - **Parsing runs inside a sandbox, never in the server process.** Text formats
   (`TEXT_MIMES`) are just UTF-8 bytes, decoded in-process — no parser, so they work with
-  `SANDBOX_MODE=off`. PDF (`DOCUMENT_MIMES`) needs a real parser over a file the server did not
-  author; `files/extract.ts` runs it in a pooled per-user sandbox via argv-safe `pdftotext`, and
-  the upload route **rejects document mimes outright when no sandbox is configured**, with a
-  415 naming why. Extraction reads and never executes — no macro, embedded script, or PDF
-  JavaScript runs, and the container has no network to reach regardless.
+  `SANDBOX_MODE=off`. Everything in `DOCUMENT_MIMES` (PDF, DOCX/XLSX/PPTX, ODT, RTF, EPUB)
+  needs a real parser over a file the server did not author; `files/extract.ts` runs it in a
+  pooled per-user sandbox — argv-safe `pdftotext` for PDF, the `shannon-extract` script baked
+  into the image (`infra/docker/sandbox/extract.py`) for the rest — and the upload route
+  **rejects document mimes outright when no sandbox is configured**, with a 415 naming why.
+  Extraction reads and never executes: no macro, embedded script, or PDF JavaScript runs, and
+  the container has no network to reach regardless.
+- **Every document format except PDF and RTF is a zip container, so `extract.py` runs a
+  decompression-bomb guard before opening one** — entry count, total declared uncompressed
+  size, and per-entry compression ratio, all read from the central directory so nothing is
+  inflated to reject it. The container's memory limit would eventually stop a bomb anyway, but
+  as an OOM kill after burning the whole timeout; this fails in milliseconds with a reason.
+  **Deliberately not markitdown**, which was the original plan: it takes `magika` (and so
+  onnxruntime, numpy, pandas) as a *base* dependency — measured at 326 MB / 30 packages versus
+  63 MB / 20 for the individual libraries — and ships no extras for ODT, RTF, or EPUB, so it
+  would have cost 5× the image for fewer formats.
+- **The sandbox copy of an upload is named for its format** (`<uuid>.xlsx`, not `<uuid>.in`).
+  Several of these libraries dispatch on the *filename*, not the content: openpyxl flatly
+  refuses a file that doesn't end in a spreadsheet extension, so a valid .xlsx silently
+  extracted to `failed` until this was fixed. The extension comes from our own mime table,
+  never from the user's filename.
+- **A sandbox extractor writes to a file, and the result is read back in chunks** — never
+  straight off stdout. `exec` caps what it returns at `MAX_OUTPUT_BYTES` (256 KB), well below
+  what a long document legitimately extracts to, so reading stdout truncated mid-document *and*
+  spliced the exec layer's own `[output truncated]` notice into the text cached as the
+  document's. Chunks are base64'd because `exec` hands back an already-decoded string, and a
+  chunk boundary landing mid-UTF-8-sequence would corrupt that character on every large file.
 - **`SANDBOX_MODE=host` runs that parser on the host, as the server's own user** — allowed
   deliberately (a `pdftotext` subprocess is strictly less exposure than the `bash` tool that
   mode already grants) but materially weaker than the container path, which has

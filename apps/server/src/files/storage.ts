@@ -368,8 +368,39 @@ export async function verifyStoredBytes(filePath: string, mime: string): Promise
   try {
     const head = Buffer.alloc(SNIFF_HEAD_BYTES);
     const { bytesRead } = await fh.read(head, 0, SNIFF_HEAD_BYTES, 0);
-    return sniffMime(head.subarray(0, bytesRead)) === mime;
+    const actual = head.subarray(0, bytesRead);
+    return cls === "document" ? documentBytesMatch(mime, actual) : sniffMime(actual) === mime;
   } finally {
     await fh.close();
   }
+}
+
+/** `PK\x03\x04` — a zip local file header. */
+function isZipHeader(head: Buffer): boolean {
+  return head.length >= 4 && head.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+}
+
+/**
+ * Whether a document's first bytes are consistent with its declared mime.
+ *
+ * PDF and RTF have signatures of their own. The rest — DOCX, XLSX, PPTX, ODT,
+ * EPUB — are all zip containers and are **indistinguishable from one another
+ * at the header**: telling them apart means reading the archive's index, which
+ * is exactly the parsing this module keeps out of the server process. So the
+ * check for those is "is this genuinely a zip", which is what stops a renamed
+ * binary or a text file from ever reaching an extractor.
+ *
+ * Proving a file is specifically a .docx rather than some other zip is left to
+ * the extractor, in the sandbox, where being wrong costs a `failed` status and
+ * nothing else. That is a deliberately weaker guarantee than the images get,
+ * and it is the right place for the difference: the strong guarantee images
+ * need is because they are *served back* to a browser, and a document never is
+ * inline — the serve route forces `attachment` for everything but images.
+ */
+function documentBytesMatch(mime: string, head: Buffer): boolean {
+  if (mime === "application/pdf") return sniffMime(head) === "application/pdf";
+  if (mime === "application/rtf" || mime === "text/rtf") {
+    return head.length >= 5 && head.subarray(0, 5).toString("latin1") === "{\\rtf";
+  }
+  return isZipHeader(head);
 }

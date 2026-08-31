@@ -463,5 +463,44 @@ describe("isDecodableText / verifyStoredBytes", () => {
       const filePath = writeTemp("unknown.bin", Buffer.from("whatever bytes"));
       await expect(verifyStoredBytes(filePath, "application/x-bogus-unknown")).resolves.toBe(false);
     });
+
+    // Office/ebook formats are all zip containers and are indistinguishable
+    // from each other at the header, so the check for those is "is this
+    // genuinely a zip" — enough to stop a renamed binary from reaching an
+    // extractor, with the extractor itself (in the sandbox) as the real test
+    // of whether it is the specific format claimed.
+    const zipHeader = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00]);
+    const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+    it.each([
+      DOCX,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.oasis.opendocument.text",
+      "application/epub+zip",
+    ])("accepts a zip header declared as %s", async (mime) => {
+      const filePath = writeTemp(`zip-${mime.replace(/\W/g, "")}.bin`, zipHeader);
+      await expect(verifyStoredBytes(filePath, mime)).resolves.toBe(true);
+    });
+
+    it("rejects a non-zip file declared as a zip-container document type", async () => {
+      const filePath = writeTemp("renamed.docx", Buffer.from("MZ\x90\x00 not a zip at all"));
+      await expect(verifyStoredBytes(filePath, DOCX)).resolves.toBe(false);
+    });
+
+    it.each(["application/rtf", "text/rtf"])("accepts an RTF header declared as %s", async (mime) => {
+      const filePath = writeTemp(`real-${mime.replace(/\W/g, "")}.rtf`, Buffer.from(String.raw`{\rtf1\ansi hello}`));
+      await expect(verifyStoredBytes(filePath, mime)).resolves.toBe(true);
+    });
+
+    it("rejects plain text declared as RTF — it has no {\\rtf header", async () => {
+      const filePath = writeTemp("fake.rtf", Buffer.from("not really rtf at all"));
+      await expect(verifyStoredBytes(filePath, "application/rtf")).resolves.toBe(false);
+    });
+
+    it("rejects a zip declared as a PDF — a zip is not every document type", async () => {
+      const filePath = writeTemp("zip-as-pdf.pdf", zipHeader);
+      await expect(verifyStoredBytes(filePath, "application/pdf")).resolves.toBe(false);
+    });
   });
 });
