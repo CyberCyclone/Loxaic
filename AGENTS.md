@@ -242,41 +242,99 @@ screenshots showing that behaviour working. Writing those tests is the implement
   stripped exactly like the Postgres loader — from the stream log's folded snapshots rather
   than a DB query, since incognito writes nothing conversation-scoped to Postgres.
 
-### Image attachments
+### File attachments
 
 - **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**
-  (`attachments` table — `{id, owner_id, mime, size_bytes, created_at}`). `UPLOADS_DIR`
-  unset falls back to `<cwd>/uploads`, which in a checkout means `apps/server/uploads` —
-  **inside the working tree, and gitignored for exactly that reason** (#65). Docker compose and
-  the desktop supervisor both set it explicitly (the supervisor puts it under `dataDir`
-  beside the Postgres data, never in the installed bundle, which an update would replace).
+  (`attachments` table — `{id, owner_id, mime, size_bytes, filename, extract_status,
+  extract_bytes, created_at}`). `UPLOADS_DIR` unset falls back to `<cwd>/uploads`, which in a
+  checkout means `apps/server/uploads` — **inside the working tree, and gitignored for exactly
+  that reason** (#65). Docker compose and the desktop supervisor both set it explicitly (the
+  supervisor puts it under `dataDir` beside the Postgres data, never in the installed bundle,
+  which an update would replace). A document's extracted text is cached beside the original as
+  `<ref>.txt` — see extraction, below.
 - **Client-supplied refs are validated at exactly one chokepoint**, `assertAttachmentsOwned`
   (`streams/authz.ts`), and it must run **before** any conversation/message write. It returns
-  the mime from the DB row — the client's copy is advisory and is discarded — de-duplicates
-  repeated refs (the same ref four times is one image, not a 4× prompt), and renders unknown
-  and not-yours as the same `NotFoundError`.
+  the mime **and filename** from the DB row — the client's copies are advisory and are
+  discarded — de-duplicates repeated refs (the same ref four times is one attachment, not a 4×
+  prompt), and renders unknown and not-yours as the same `NotFoundError`. `name` is omitted
+  entirely (not sent as `""`) for a row predating documents.
 - **`isValidRef` takes `unknown` and type-guards, deliberately.** `RegExp.test` stringifies,
   so a `string`-typed parameter is not a guard: `test(["<uuid>"])` coerces the single-element
   array back to the uuid and returns true. Anything arriving off a socket is a claim, not a
   fact — `validateSendAttachments` type-checks elements for the same reason.
-- **Nothing is served with a caller-influenced content type.** Upload allowlists
-  `ATTACHMENT_MIMES` then confirms it against the file's magic bytes (`sniffImageMime`), and
-  the serve route adds `nosniff`, `Content-Disposition: inline`, and
-  `Content-Security-Policy: default-src 'none'; sandbox`. **SVG is absent from the allowlist
-  on purpose** — this endpoint is same-origin with the web app, so adding it would be
-  same-origin stored XSS; the CSP is the second line if it ever is.
-- **Prompt assembly has a byte budget.** `MAX_HISTORY_IMAGE_BYTES` caps the images one
-  prompt may carry across all replayed turns, spent **newest-first** by
-  `selectAffordableImages` — the per-send caps bound one message but not a 50-turn history,
-  and images are deliberately excluded from the context tally so they can never trigger
-  truncation on their own. Over-budget refs degrade to a text marker, like a missing file.
+- **Nothing is served with a caller-influenced content type**, and disposition now splits by
+  class. Upload allowlists a mime (`IMAGE_MIMES`/`TEXT_MIMES`/`DOCUMENT_MIMES`, or an
+  extension fallback via `resolveAttachmentMime` for browsers that report `""`), then
+  `verifyStoredBytes` confirms it against the actual bytes — magic bytes for images/PDF
+  (`sniffMime`), a streamed fatal-mode UTF-8 decode with no NUL byte for text — and the serve
+  route adds `nosniff` and `Content-Security-Policy: default-src 'none'; sandbox` regardless of
+  class. **Only images get `Content-Disposition: inline`; everything else is forced to
+  `attachment`.** This split is load-bearing, not cosmetic: `text/html` and `text/xml` are
+  extractable text mimes, and this endpoint is same-origin with the web app, so serving either
+  `inline` would be same-origin stored XSS the day someone reaches for it. **SVG stays absent
+  from every mime list for the same reason.**
+- **Filenames are sanitized once, at upload** (`sanitizeFilename` — basename only, control
+  characters stripped, length-capped) and read back from the DB row everywhere downstream: the
+  model's prompt, the UI chip, and the `Content-Disposition` header. The client's copy is never
+  trusted for any of the three.
+- **Parsing runs inside the sandbox and nowhere else.** Text formats
+  (`TEXT_MIMES`) are just UTF-8 bytes, decoded in-process — no parser, so they work with
+  `SANDBOX_MODE=off`. PDF (`DOCUMENT_MIMES`) needs a real parser over a file the server did not
+  author; `files/extract.ts` runs it in a pooled per-user sandbox via argv-safe `pdftotext`, and
+  the upload route **rejects document mimes outright when no sandbox is configured**, with a
+  415 naming why. Extraction reads and never executes — no macro, embedded script, or PDF
+  JavaScript runs, and the container has no network to reach regardless.
+- **Extraction is cached at a different, larger ceiling than what reaches the prompt.**
+  `MAX_CACHED_EXTRACTION_BYTES` (4 MB) bounds the `<ref>.txt` sidecar written at upload time;
+  `MAX_EXTRACTED_BYTES` (256 KB) is the separate, smaller cap `attachmentContentParts` truncates
+  to before a document's text enters a prompt. Collapsing these into one constant was a real
+  bug here: caching at the smaller number would leave nothing for sandbox paging (below) to
+  ever page through.
+- **Document text enters the prompt wrapped in `<attached-file>` provenance markers**
+  (`storage.ts`'s `wrapDocument`, modelled on `mcp/sanitize.ts`'s `wrapResult`) — a literal
+  closing marker inside the body is neutralized with a zero-width space so the content can't
+  escape its own wrapper, and a sibling system-prompt addendum tells the model the content is
+  untrusted. A user's own upload still gets this treatment: they may not have written it.
+- **Two independent prompt budgets, spent newest-first, never shared.** `MAX_HISTORY_IMAGE_BYTES`
+  bounds images by raw bytes (their prompt cost is backend-specific patch embeddings, which is
+  why `context.ts` refuses to tally them at all). `MAX_HISTORY_DOCUMENT_TOKENS` bounds documents
+  by estimated tokens (they *are* tallied, via `textOfContent`) and is **derived from**, not
+  independent of, the token-cost of one document at `MAX_EXTRACTED_BYTES` — it was once a flat
+  number smaller than that single-document cost, meaning a user's very first attachment could
+  exceed the whole budget and vanish from the turn that sent it. `selectAffordableAttachments`
+  also caps a document's *measured* size at `MAX_EXTRACTED_BYTES` before estimating, since
+  that's the ceiling on what actually reaches the prompt regardless of how large the cache is.
+- **A truncated document can be paged through the sandbox, but only if one is already live.**
+  When a document overflows `MAX_EXTRACTED_BYTES` and the conversation already has an active
+  sandbox, `engine.ts`'s `writeOverflowToSandbox` writes the *full* cached text to
+  `<sandbox>/attachments/<ref-prefix>-<name>.txt` and the truncation note names the path. The
+  gate is "is a sandbox already active in this process" — `hasActiveSandbox`/
+  `attachActiveSandbox` in `sandbox-manager.ts` — **never** "which surface", because chat and
+  agent share one tool loop and either can have a sandbox; it must never *create* one, since an
+  overflowing document is not sufficient reason to spin up a container. Uses `writeFileBinary`,
+  not `writeFile` — the container provider's `writeFile` passes its payload as a bash argv
+  element, capped by `ARG_MAX`, which a multi-megabyte document routinely exceeds.
+- **`fs_read` pages by line via `offset`/`limit`, executed inside the sandbox, not read-then-sliced
+  in JS.** The container provider's `readFile` is `cat` through `execInContainer`, itself capped
+  at `MAX_OUTPUT_BYTES` (256 KB) — reading a large file fully before slicing in JS would hit that
+  cap first and silently fail to page past it. Implemented as one `awk` pass that prints the
+  requested range (numbered) to stdout and the total line count to stderr from its `END` block,
+  so only the small requested slice needs to cross the output cap.
+- **The sandbox image tag is a hash of `sandbox.Dockerfile`, not a fixed name.**
+  `ensureImage()` only builds when the image is *absent*, so a fixed tag would mean a Dockerfile
+  change (e.g. adding `poppler-utils` for `pdftotext`) never reaches a deployment that already
+  built once — every PDF would then fail with a bare, undiagnosable exit 127. Confirmed this
+  exact failure mode directly before the content-hash fix went in.
 - **The orphan sweep (`files/reaper.ts`) is the only reclaim path there is** — no DELETE
   route, no cascade from message deletion. It collects uploads no message references after a
-  grace period, which covers both the picked-then-abandoned image and **every incognito
+  grace period, which covers both the picked-then-abandoned upload and **every incognito
   attachment**: an incognito run writes no message rows, so nothing ever references its
-  images, yet the upload row already records who uploaded them. The default grace matches
+  attachments, yet the upload row already records who uploaded them. The default grace matches
   `STREAM_TTL_SECONDS`' own 24h, so the sweep **bounds** that trace to the grace window
-  rather than preventing it (#64).
+  rather than preventing it (#64). It also removes a document's `<ref>.txt` sidecar alongside
+  the original — **the sweep's SQL keys on `block->>'kind' = 'attachment'`, so a future new
+  block kind (rather than discriminating on mime within this one) would silently stop
+  protecting those files from deletion.**
 - **`?token=` on `/v1/files/:ref` is a full session token in a URL.** It exists because
   `<img>` can't set headers (same precedent as `/ws/chat?token=`), and the header is
   preferred when present. Fastify's default logger would write it to stdout on every
