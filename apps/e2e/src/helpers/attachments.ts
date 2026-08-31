@@ -131,18 +131,56 @@ async function attachViaIosPicker(): Promise<void> {
   if (await add.isDisplayed().catch(() => false)) await add.click();
 }
 
+/** Smallest edge, in px, a node has to have to be a photo-grid cell rather
+ * than a header control. The grid is 3 columns on a phone, so a cell is
+ * roughly a third of the screen width. */
+const MIN_GRID_CELL_PX = 200;
+
+/**
+ * The first photo in the system picker's grid, or null if the grid hasn't
+ * rendered yet.
+ *
+ * Selected by **geometry**, which needs justifying: Android 16's picker
+ * (`com.google.android.photopicker`) is a Jetpack Compose surface, and every
+ * grid cell comes through the accessibility tree as a bare
+ * `android.view.View` with an empty resource-id, content-desc, and text.
+ * There is nothing semantic to match on at all — the `icon_thumbnail`-style
+ * ids this helper used to look for belong to the *older*
+ * `com.google.android.providers.media.module` picker and no longer exist on a
+ * modern device, which is why it timed out rather than mismatching.
+ *
+ * So: the cells are the large, square, clickable views; the header controls
+ * are small or oblong. That is a positional heuristic of exactly the kind
+ * AGENTS.md forbids — for markup we own. This is Google's, and it is already
+ * the sanctioned exception documented at the top of this file.
+ */
+async function firstGridCell(): Promise<WebdriverIO.Element | null> {
+  const nodes = $$('android=new UiSelector().className("android.view.View").clickable(true)');
+  for await (const node of nodes) {
+    const size = await node.getSize().catch(() => null);
+    if (!size || size.width < MIN_GRID_CELL_PX) continue;
+    // Square-ish: a thumbnail cell, not a wide banner or a pill-shaped chip.
+    if (Math.abs(size.width - size.height) > size.width * 0.2) continue;
+    return node;
+  }
+  return null;
+}
+
 async function attachViaAndroidPicker(): Promise<void> {
   await tap('composer.attach');
   await tap('composer.attach.library');
-  // The system photo picker labels each thumbnail with its date/description
-  // via content-desc; matching on the resource-id of the grid item is the
-  // stabler of the two, and is the same across the photo picker and the
-  // older ACTION_GET_CONTENT documents UI.
-  const firstPhoto = $(
-    'android=new UiSelector().resourceIdMatches(".*(icon_thumbnail|thumbnail|preview_image).*").instance(0)',
-  );
-  await firstPhoto.waitForDisplayed({ timeout: 30_000 });
-  await firstPhoto.click();
+
+  await browser.waitUntil(async () => (await firstGridCell()) !== null, {
+    timeout: 30_000,
+    timeoutMsg:
+      'no photo-grid cell appeared in the Android system picker — is a photo seeded into the ' +
+      'device library? (see seedAndroidPhoto in scripts/native.ts)',
+  });
+  const cell = await firstGridCell();
+  await cell?.click();
+
+  // Multi-select pickers need an explicit confirm; single-select dismisses
+  // itself. Buttons still expose their label, unlike the grid cells.
   const done = $('android=new UiSelector().textMatches("(?i)(add|done|select)")');
   if (await done.isDisplayed().catch(() => false)) await done.click();
 }

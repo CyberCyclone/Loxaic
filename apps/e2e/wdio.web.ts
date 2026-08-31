@@ -15,6 +15,10 @@ process.env.E2E_PLATFORM = 'web';
 
 export const config: WebdriverIO.Config = {
   ...sharedConfig,
+  // The shared glob covers the cross-platform specs; specs/browser holds the
+  // ones needing a driveable `<input type="file">`, which only this target and
+  // Electron have (see specs/browser/document-attachments.spec.ts).
+  specs: ['./src/specs/*.spec.ts', './src/specs/browser/*.spec.ts'],
   baseUrl: BASE_URL,
   capabilities: [
     {

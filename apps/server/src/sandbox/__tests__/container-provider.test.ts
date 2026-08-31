@@ -5,6 +5,7 @@ import { db, eq } from "@shannon/db";
 import { sandboxes, user } from "@shannon/db/schema";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
 import type { SandboxHandle } from "../provider.ts";
+import { sandboxImageReady } from "./docker-available.ts";
 
 /**
  * Real-Docker proof that writeFileBinary actually routes around ARG_MAX.
@@ -26,9 +27,12 @@ import type { SandboxHandle } from "../provider.ts";
  */
 const userId = `test-container-binary-${uuid()}`;
 const conversationId = randomUUID();
-let handle: SandboxHandle;
+let handle: SandboxHandle | undefined;
+
+const dockerReady = await sandboxImageReady();
 
 beforeAll(async () => {
+  if (!dockerReady) return;
   await db.insert(user).values({
     id: userId,
     name: "Container Binary Test",
@@ -41,13 +45,20 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await handle.stop().catch(() => undefined);
+  if (!dockerReady) return;
+  // Optional-chained: if beforeAll failed before assigning, this must not
+  // throw a second, noisier error that buries the real one.
+  await handle?.stop().catch(() => undefined);
   await db.delete(sandboxes).where(eq(sandboxes.conversationId, conversationId));
   await db.delete(user).where(eq(user.id, userId));
 }, 30_000);
 
-describe("container provider — writeFileBinary", () => {
+describe.skipIf(!dockerReady)("container provider — writeFileBinary", () => {
   it("streams a payload larger than ARG_MAX correctly", async () => {
+    // The describe is skipped when there is no sandbox, so this holds whenever
+    // the body runs — narrowing for the type checker rather than asserting
+    // with `!`, which would hide a genuinely missing handle.
+    if (!handle) throw new Error("no sandbox handle — beforeAll did not run");
     const size = 3 * 1024 * 1024; // 3 MB — comfortably past bash's ~2 MB ARG_MAX-with-environment ceiling
     const payload = Buffer.alloc(size);
     // A distinctive pattern, not all-zero, so a truncated-to-zero-length or

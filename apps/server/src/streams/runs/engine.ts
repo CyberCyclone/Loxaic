@@ -3,6 +3,7 @@ import { and, db, eq, gt } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
 import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@shannon/types";
 import {
+  countDocumentParts,
   countImageParts,
   streamCompletion,
   visionErrorMessage,
@@ -10,7 +11,11 @@ import {
   type ToolCall,
   type CompletionResult,
 } from "../../inference/provider.ts";
-import { attachmentContentParts, selectAffordableAttachments } from "../../files/storage.ts";
+import {
+  attachmentContentParts,
+  DOCUMENT_SYSTEM_ADDENDUM,
+  selectAffordableAttachments,
+} from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
@@ -44,6 +49,28 @@ function isAborted(controller: AbortController): boolean {
 const SUMMARY_LOOKBACK = 20;
 
 /**
+ * The run's system prompt: the surface's base prompt, plus whichever
+ * untrusted-content addenda this turn actually needs.
+ *
+ * Pure and exported so the addenda can be asserted directly — the same reason
+ * `stripImagesForCompaction` is extracted in compactRun.ts. Driving a whole
+ * run through the mock cannot show what the system prompt contained, and that
+ * blind spot is exactly how DOCUMENT_SYSTEM_ADDENDUM came to be defined,
+ * documented in AGENTS.md as the document path's prompt-injection defence,
+ * and never once appended to a prompt.
+ */
+export function assembleSystemPrompt(
+  basePrompt: string | null,
+  toolAddendum: string | null,
+  hasDocuments: boolean,
+): string | null {
+  const parts = [basePrompt, toolAddendum, hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null].filter(
+    (p): p is string => typeof p === "string" && p.length > 0,
+  );
+  return parts.length ? parts.join("\n\n") : null;
+}
+
+/**
  * The shared tool loop behind both surfaces. The starter (startChatRun /
  * startAgentRun) has already created the conversation, persisted the user
  * message, opened the producer, and registered the run; this drives the
@@ -71,12 +98,16 @@ export async function runToolLoop(ctx: {
 
   try {
     const toolset = await buildToolset(userId, { mode, conversationId: convId });
-    const promptParts = [ctx.basePrompt, toolset.systemPromptAddendum].filter(
-      (p): p is string => typeof p === "string" && p.length > 0,
-    );
-    const systemPrompt = promptParts.length ? promptParts.join("\n\n") : null;
     const tools = toolset.openAiTools;
+    // History is loaded before the system prompt is assembled, because whether
+    // this turn carries a document decides whether the document addendum goes
+    // in — the same pairing MCP has, where wrapResult's markers are only
+    // meaningful alongside an addendum saying what they mean.
     const history = incognito ? await loadEphemeralHistory(convId) : await loadHistory(convId);
+    const hasDocuments = history.messages.some(
+      (m) => m.role === "user" && countDocumentParts(m.content) > 0,
+    );
+    const systemPrompt = assembleSystemPrompt(ctx.basePrompt, toolset.systemPromptAddendum, hasDocuments);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.

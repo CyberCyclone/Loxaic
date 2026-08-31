@@ -121,16 +121,58 @@ async function extractPlainText(input: ExtractInput): Promise<string> {
 }
 
 /**
- * Regex tag-stripping, matching `web_fetch`'s own treatment of HTML — script
- * and style contents dropped, tags removed, entities decoded. Not a parser,
+ * Drop every `<tag>…</tag>` pair for one element name, by scanning rather than
+ * matching.
+ *
+ * The obvious regex — `/<script\b[^>]*>[\s\S]*?<\/script>/gi` — backtracks
+ * quadratically. Its lazy `[\s\S]*?` rescans to end-of-input from every
+ * candidate start, so input with many unclosed `<script` prefixes degrades
+ * catastrophically: measured on this branch at 2.6s for 137 KB, 10.7s for
+ * 273 KB, and 43.9s for 547 KB. `text/html` is a TEXT_MIME, so it is decoded
+ * *in this process* on the server's only thread, inside the upload handler —
+ * a single authenticated upload well under MAX_DOCUMENT_BYTES could block
+ * every other request for minutes. This scan is linear and allocation-light
+ * by comparison.
+ */
+function stripElement(html: string, tag: string): string {
+  const open = `<${tag}`;
+  const close = `</${tag}`;
+  const lower = html.toLowerCase();
+  let out = "";
+  let cursor = 0;
+  for (;;) {
+    const start = lower.indexOf(open, cursor);
+    if (start === -1) break;
+    // `<scriptable>` is not `<script>` — the next char must end the tag name.
+    const afterAt = start + open.length;
+    if (afterAt < lower.length && /[a-z0-9]/.test(lower.slice(afterAt, afterAt + 1))) {
+      out += html.slice(cursor, afterAt);
+      cursor = afterAt;
+      continue;
+    }
+    out += html.slice(cursor, start);
+    const closeAt = lower.indexOf(close, start);
+    // Unclosed: everything from here on is inside the element, so drop it.
+    if (closeAt === -1) return out;
+    const closeEnd = html.indexOf(">", closeAt);
+    cursor = closeEnd === -1 ? html.length : closeEnd + 1;
+  }
+  return out + html.slice(cursor);
+}
+
+/**
+ * Tag-stripping, matching `web_fetch`'s own treatment of HTML — script and
+ * style contents dropped, tags removed, entities decoded. Not a parser,
  * deliberately: an HTML parser over untrusted input is exactly the kind of
  * thing this module keeps out of the server process.
+ *
+ * The remaining regexes are all single-pass with no nested quantifier, so
+ * none of them backtracks the way the script/style pair did (see
+ * {@link stripElement}).
  */
 function htmlToText(html: string): string {
-  return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
+  return stripElement(stripElement(html, "script"), "style")
+    .replace(/<[^>]*>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
