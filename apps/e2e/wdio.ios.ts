@@ -50,13 +50,21 @@ export const config: WebdriverIO.Config = {
 
   onPrepare: async function onPrepare() {
     await standup();
-    // The iOS keychain outlives app reinstalls — a previous run's session
-    // token would auto-sign the app in and break the sign-up spec. See
-    // resetIosSimulatorKeychain for the full story.
-    resetIosSimulatorKeychain(IOS_DEVICE, process.env.E2E_IOS_VERSION);
     // The attachments spec picks the first photo out of PHPicker, so the
     // library has to have one. Cheap and idempotent enough to always do.
     seedIosPhoto(IOS_DEVICE, IMAGE_FIXTURE, process.env.E2E_IOS_VERSION);
+  },
+
+  // Per **session**, not per run. onPrepare fires once for the whole suite, so
+  // resetting there only cleans up before the first spec file: the moment that
+  // spec signs up, every spec after it starts already signed in and dies
+  // waiting for a login screen that will never come. Every spec here begins by
+  // signing up, so the reset has to happen for each of them.
+  //
+  // The iOS keychain outlives app reinstalls, which is why uninstalling isn't
+  // enough on its own — see resetIosSimulatorKeychain for the full story.
+  beforeSession: function beforeSession() {
+    resetIosSimulatorKeychain(IOS_DEVICE, process.env.E2E_IOS_VERSION);
   },
 
   onComplete: async function onComplete() {
