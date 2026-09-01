@@ -160,18 +160,32 @@ Plain text, Markdown, CSV, JSON, HTML, and source-code attachments always
 work — they're just UTF-8 bytes, decoded on the server with no parser
 involved, so they need nothing extra beyond a running server.
 
-**PDF needs a container sandbox.** Extracting a PDF's text runs
-`pdftotext` inside the same `shannon-sandbox` image agent tool calls use, never
-on the server itself — so `SANDBOX_MODE` must be `container` or `host` (see
-[Container engine](#container-engine-agent-sandboxes) above). With
-`SANDBOX_MODE=off`, PDF uploads are rejected at the API with a message saying
-so; every text format above still works regardless of the sandbox setting.
+**PDF and Office formats need a container sandbox.** DOCX, XLSX, PPTX, ODT,
+RTF, EPUB, and PDF are all extracted inside the same `shannon-sandbox` image
+agent tool calls use, never on the server itself — so `SANDBOX_MODE` must be
+`container`, with an engine actually reachable (see
+[Container engine](#container-engine-agent-sandboxes) above).
+
+**`host` does not count for this.** It runs tools directly on the machine, so a
+parser reading an untrusted document there is reading it on the server, with the
+host's own filesystem and network and none of the container's limits. Under
+`host` or `off`, those uploads are rejected outright rather than stored as files
+nothing can safely read, and the app shows a modal explaining why. Every text
+format above still works regardless of the sandbox setting.
+
+Nothing extra needs installing for this: the extraction tooling is baked into
+the sandbox image, which builds itself on first use. The image tag is derived
+from a hash of its build inputs, so changing the Dockerfile or the extraction
+script rebuilds it automatically rather than leaving an already-built host on
+a stale image.
 
 The extracted text is what actually reaches the model — inlined as plain
 text, the same way an OpenAI-compatible backend has no other way to accept a
-document. There's no rendering step and no `mmproj` equivalent for documents:
-a scanned/image-only PDF with no extractable text layer will extract to
-nothing useful, the same limitation `pdftotext` itself has.
+document. Extraction is **text only**, matching what Claude does with the same
+formats: images embedded in a document are not read or interpreted. There's no
+rendering step and no `mmproj` equivalent for documents, so a scanned or
+image-only PDF with no text layer — or a DOCX that is one big screenshot —
+extracts to nothing useful, the same limitation the underlying tools have.
 
 ## Putting it together
 

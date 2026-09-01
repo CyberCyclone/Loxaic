@@ -9,6 +9,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --break-system-packages ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
+# Office/ebook text extraction for attachments (see sandbox/extract.py).
+#
+# Deliberately the individual format libraries rather than Microsoft's
+# markitdown, which is the obvious choice and was the original plan: markitdown
+# takes magika (and so onnxruntime, numpy, pandas) as a *base* dependency,
+# measured at 326 MB across 30 packages versus 63 MB across 20 here — and it
+# ships no extras for ODT, RTF, or EPUB, so it would have covered fewer of the
+# formats while costing 5x the image. Every one of these is text-extraction
+# only; none of them execute macros or embedded scripts.
+RUN pip3 install --break-system-packages --no-cache-dir \
+    mammoth \
+    openpyxl \
+    python-pptx \
+    odfpy \
+    striprtf \
+    ebooklib \
+    beautifulsoup4
+
+COPY sandbox/extract.py /usr/local/bin/shannon-extract
+RUN chmod 0755 /usr/local/bin/shannon-extract
+
 RUN useradd -m -s /bin/bash shannon
 USER shannon
 WORKDIR /home/shannon

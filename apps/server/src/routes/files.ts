@@ -16,7 +16,7 @@ import { authenticate, authenticateHeaderOrQuery } from "../auth/middleware";
 import { attachmentPath, attachmentTextPath, isValidRef, verifyStoredBytes } from "../files/storage";
 import { usedAttachmentBytes, userQuotaBytes } from "../files/reaper";
 import { extractText } from "../files/extract";
-import { getSandboxMode } from "../sandbox/provider";
+import { getSandboxStatus } from "../sandbox/status";
 
 export function fileRoutes(app: FastifyInstance) {
   // Upload one file. The client parallelizes for multi-attachment messages.
@@ -41,16 +41,32 @@ export function fileRoutes(app: FastifyInstance) {
     }
     const cls = attachmentClass(mime);
 
-    // Parser-needing formats are extracted inside the sandbox container and
-    // nowhere else, so with no sandbox configured there is no safe way to read
-    // one. Resolved at call time, per the settings contract in AGENTS.md.
-    if (cls === "document" && getSandboxMode() === "off") {
-      reply.code(415);
-      return {
-        error:
-          "PDF attachments need the sandbox enabled — they're read inside a container, never on the server. " +
-          "Ask your admin to turn it on, or attach a text file instead.",
-      };
+    // Parser-needing formats are read inside a **container** and nowhere else,
+    // so without one there is no safe way to read this file and it is rejected
+    // rather than stored unreadable.
+    //
+    // The gate is "a container is actually available right now", not merely
+    // "some provider is configured". Host mode does not count: it has none of
+    // the container's protections — no network isolation, no uid separation,
+    // and the host provider ignores the resource limits entirely — so running
+    // a PDF or Office parser there is running it on the server itself.
+    // Resolved at call time, per the settings contract in AGENTS.md.
+    if (cls === "document") {
+      const sandbox = await getSandboxStatus();
+      if (sandbox.mode !== "container" || !sandbox.available) {
+        reply.code(415);
+        return {
+          // A code as well as prose: the client renders a specific explanation
+          // for this case, and string-matching an error message for that would
+          // break the moment the wording changed.
+          code: "sandbox_required",
+          error:
+            "This file type can't be read safely without a container sandbox, so it wasn't uploaded. " +
+            (sandbox.mode === "host"
+              ? "This server is in host mode, which runs tools directly on the machine rather than in a container."
+              : (sandbox.reason ?? "No container sandbox is available on this server.")),
+        };
+      }
     }
 
     // Cheap pre-check so a user already at their ceiling doesn't get to write

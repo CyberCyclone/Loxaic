@@ -1,6 +1,6 @@
 import Docker from "dockerode";
 import { pack } from "tar-fs";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -53,10 +53,24 @@ function sandboxImage(): string {
   if (imageTag) return imageTag;
   let digest = "base";
   try {
-    const dockerfile = readFileSync(path.join(buildContextDir(), "sandbox.Dockerfile"));
-    digest = createHash("sha256").update(dockerfile).digest("hex").slice(0, 12);
+    const context = buildContextDir();
+    const hash = createHash("sha256");
+    hash.update(readFileSync(path.join(context, "sandbox.Dockerfile")));
+    // Everything the Dockerfile COPYs lives under sandbox/, and has to be in
+    // the digest for the same reason the Dockerfile itself does: editing
+    // extract.py without touching the Dockerfile would otherwise leave every
+    // already-built deployment running the old script forever. Hashing the
+    // whole directory rather than parsing COPY lines keeps that true for
+    // anything added later. Sorted so the digest doesn't depend on readdir
+    // order.
+    const dir = path.join(context, "sandbox");
+    for (const name of readdirSync(dir).sort()) {
+      hash.update(name);
+      hash.update(readFileSync(path.join(dir, name)));
+    }
+    digest = hash.digest("hex").slice(0, 12);
   } catch {
-    // No Dockerfile reachable — nothing can be built here anyway, and
+    // No build context reachable — nothing can be built here anyway, and
     // ensureImage reports that far more clearly than a throw from a name.
   }
   imageTag = `shannon-sandbox:${digest}`;

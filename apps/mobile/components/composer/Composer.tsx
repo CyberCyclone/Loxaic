@@ -15,6 +15,7 @@ import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import { CommandPalette } from './CommandPalette';
 import { AttachmentPreview } from './AttachmentPreview';
 import { AttachButton } from './AttachButton';
+import { AttachmentRejectedModal } from './AttachmentRejectedModal';
 import type { ContextView } from '@/hooks/useContextUsage';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { ContextRing } from './ContextRing';
@@ -76,6 +77,8 @@ export function Composer({
     reset: resetAttachments,
     readyAttachments,
     uploading: attachmentsUploading,
+    rejection: attachmentRejection,
+    dismissRejection,
   } = useComposerAttachments();
 
   // What's typed after "/", or null when it isn't shaped like a command at
@@ -211,6 +214,7 @@ export function Composer({
             onPickDocument={() => { void pickDocument(); }}
             onFilesSelected={addWebFiles}
           />
+          <AttachmentRejectedModal rejection={attachmentRejection} onClose={dismissRejection} />
 
           {/* Model selector — opens the model modal (search, live list, thinking chips).
               Long backend model ids (e.g. "google/gemma-4-26b-a4b-qat") must not push
