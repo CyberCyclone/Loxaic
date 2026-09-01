@@ -163,10 +163,15 @@ involved, so they need nothing extra beyond a running server.
 **PDF and Office formats need a container sandbox.** DOCX, XLSX, PPTX, ODT,
 RTF, EPUB, and PDF are all extracted inside the same `shannon-sandbox` image
 agent tool calls use, never on the server itself — so `SANDBOX_MODE` must be
-`container` or `host` (see
-[Container engine](#container-engine-agent-sandboxes) above). With
-`SANDBOX_MODE=off`, those uploads are rejected at the API with a message saying
-so; every text format above still works regardless of the sandbox setting.
+`container`, with an engine actually reachable (see
+[Container engine](#container-engine-agent-sandboxes) above).
+
+**`host` does not count for this.** It runs tools directly on the machine, so a
+parser reading an untrusted document there is reading it on the server, with the
+host's own filesystem and network and none of the container's limits. Under
+`host` or `off`, those uploads are rejected outright rather than stored as files
+nothing can safely read, and the app shows a modal explaining why. Every text
+format above still works regardless of the sandbox setting.
 
 Nothing extra needs installing for this: the extraction tooling is baked into
 the sandbox image, which builds itself on first use. The image tag is derived

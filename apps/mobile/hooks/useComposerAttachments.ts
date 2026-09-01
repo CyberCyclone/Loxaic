@@ -14,6 +14,8 @@ import {
   type UploadedAttachment,
 } from '@shannon/api-client';
 import { useToastHelper } from './useToastHelper';
+import { useServerConfig } from './useServerConfig';
+import type { AttachmentRejection } from '@/components/composer/AttachmentRejectedModal';
 import { nativeAttachmentFile } from '@/lib/attachmentUpload';
 
 /** Longest edge an attached image is allowed to keep — larger originals are
@@ -78,7 +80,36 @@ async function normalize(asset: ImagePicker.ImagePickerAsset): Promise<{ uri: st
 
 export function useComposerAttachments() {
   const [items, setItems] = useState<PendingAttachment[]>([]);
+  const [rejection, setRejection] = useState<AttachmentRejection | null>(null);
   const { showToast } = useToastHelper();
+  // Public sandbox status, shared with the agent screen's degraded banner
+  // rather than polled again here.
+  const { config } = useServerConfig();
+
+  /**
+   * Whether a document can be read at all on this server.
+   *
+   * Parser-needing formats are only ever extracted inside a **container** —
+   * host mode has none of its protections, so it does not count. Checked here
+   * as well as on the server so a 25 MB PDF isn't uploaded just to be
+   * refused; the server's own check stays the authority.
+   */
+  const canReadDocuments =
+    config?.sandbox.mode === "container" && config.sandbox.available;
+
+  const rejectDocument = useCallback(
+    (filename: string) => {
+      setRejection({
+        filename,
+        reason:
+          config?.sandbox.mode === "host"
+            ? "This server runs tools directly on the machine rather than in a container, and these files are only ever parsed inside one."
+            : (config?.sandbox.reason ??
+              "No container sandbox is available on this server, and these files are only ever parsed inside one."),
+      });
+    },
+    [config],
+  );
 
   /** Object URLs minted by addWebFiles, which are the only local URIs here
    * that own anything — a blob: URL pins its File's bytes in memory until it
@@ -225,10 +256,14 @@ export function useComposerAttachments() {
     const slots = MAX_ATTACHMENTS - items.length;
     for (const asset of result.assets.slice(0, slots)) {
       const mime = resolveAttachmentMime(asset.mimeType ?? undefined, asset.name) ?? asset.mimeType ?? 'application/octet-stream';
+      if (attachmentClass(mime) === 'document' && !canReadDocuments) {
+        rejectDocument(asset.name);
+        continue;
+      }
       setItems((prev) => [...prev, { localUri: asset.uri, mime, name: asset.name, size: asset.size ?? undefined, status: 'uploading' }]);
       void upload(asset.uri, asset.uri, mime, asset.name);
     }
-  }, [items.length, upload, showToast]);
+  }, [items.length, upload, showToast, canReadDocuments, rejectDocument]);
 
   /** Web-only counterpart of addAssets: takes browser Files straight from
    * AttachButton.web.tsx's file input rather than an ImagePicker asset, so
@@ -250,6 +285,10 @@ export function useComposerAttachments() {
           showToast("That file type isn't supported");
           continue;
         }
+        if (attachmentClass(resolved) === 'document' && !canReadDocuments) {
+          rejectDocument(file.name);
+          continue;
+        }
         slots -= 1;
         const localUri = URL.createObjectURL(file);
         objectUrls.current.add(localUri);
@@ -257,7 +296,7 @@ export function useComposerAttachments() {
         void upload(localUri, localUri, resolved, file.name);
       }
     },
-    [items.length, upload, showToast],
+    [items.length, upload, showToast, canReadDocuments, rejectDocument],
   );
 
   const takePhoto = useCallback(async () => {
@@ -303,5 +342,7 @@ export function useComposerAttachments() {
     reset,
     readyAttachments,
     uploading,
+    rejection,
+    dismissRejection: () => { setRejection(null); },
   };
 }

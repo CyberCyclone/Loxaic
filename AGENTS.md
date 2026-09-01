@@ -306,14 +306,16 @@ screenshots showing that behaviour working. Writing those tests is the implement
   spliced the exec layer's own `[output truncated]` notice into the text cached as the
   document's. Chunks are base64'd because `exec` hands back an already-decoded string, and a
   chunk boundary landing mid-UTF-8-sequence would corrupt that character on every large file.
-- **`SANDBOX_MODE=host` runs that parser on the host, as the server's own user** — allowed
-  deliberately (a `pdftotext` subprocess is strictly less exposure than the `bash` tool that
-  mode already grants) but materially weaker than the container path, which has
-  `NetworkMode: none`, a separate uid, and the memory/CPU/pids limits the host provider ignores
-  entirely. Deployments that care about the difference should run container mode. Extraction
-  scratch files go under **`handle.root`**, never an absolute `/tmp` path: on the host provider
-  that would be the real, shared host `/tmp`, briefly exposing one user's document bytes to
-  anything else on the machine.
+- **Documents need a *container*, and host mode does not count.** The upload gate is
+  `mode === "container" && available`, not "some provider is configured": host mode has none of
+  the container's protections — no `NetworkMode: none`, no uid separation, and the host provider
+  ignores the resource limits entirely — so parsing an untrusted PDF there is parsing it on the
+  server. Without a container the upload is **rejected** (415, `code: "sandbox_required"`) rather
+  than stored as a file nothing can read, and the client renders that as a modal explaining why.
+  Text formats are unaffected and still work with no sandbox at all. Extraction scratch files go
+  under **`handle.root`**, never an absolute `/tmp` path: on the host provider that would be the
+  real, shared host `/tmp`, briefly exposing one user's document bytes to anything else on the
+  machine.
 - **The extraction pool is a second set of live sandboxes**, independent of the conversation
   ones in `agent/sandbox-manager.ts`. `applySandboxSettings` has to stop *both* — before
   `resetEngineCache()`, per the ordering rule below — or an engine change strands pooled

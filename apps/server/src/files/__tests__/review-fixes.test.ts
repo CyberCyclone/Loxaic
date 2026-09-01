@@ -85,3 +85,39 @@ describe("readTextCapped (via extractText)", () => {
 function stripLoneSurrogates(s: string): string {
   return s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
 }
+
+describe("document uploads require a container, not merely a provider", () => {
+  it("host mode does not count as sandboxed", async () => {
+    // The gate used to be `mode === "off"`, which let host mode through — so a
+    // PDF parser ran on the server's own filesystem, with the host's network,
+    // and none of the container's uid separation or resource limits. Host mode
+    // is now treated as unsandboxed for documents; the client shows a rejection
+    // modal rather than uploading a file nothing can safely read.
+    const prev = process.env.SANDBOX_MODE;
+    process.env.SANDBOX_MODE = "host";
+    try {
+      const { getSandboxStatus } = await import("../../sandbox/status.ts");
+      const status = await getSandboxStatus();
+      expect(status.mode).toBe("host");
+      // The route's condition, asserted directly: available on its own is not
+      // enough, the mode has to be "container".
+      expect(status.mode === "container" && status.available).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.SANDBOX_MODE;
+      else process.env.SANDBOX_MODE = prev;
+    }
+  });
+
+  it("off does not count either", async () => {
+    const prev = process.env.SANDBOX_MODE;
+    process.env.SANDBOX_MODE = "off";
+    try {
+      const { getSandboxStatus } = await import("../../sandbox/status.ts");
+      const status = await getSandboxStatus();
+      expect(status.mode === "container" && status.available).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.SANDBOX_MODE;
+      else process.env.SANDBOX_MODE = prev;
+    }
+  });
+});
