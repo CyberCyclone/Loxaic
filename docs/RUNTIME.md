@@ -154,6 +154,25 @@ and add the flag to `command`:
 Any llama.cpp-supported VLM works (Qwen2.5-VL, Gemma 3, LLaVA, etc.) as long
 as the `mmproj` file matches the main model's release.
 
+## Document attachments
+
+Plain text, Markdown, CSV, JSON, HTML, and source-code attachments always
+work — they're just UTF-8 bytes, decoded on the server with no parser
+involved, so they need nothing extra beyond a running server.
+
+**PDF needs a container sandbox.** Extracting a PDF's text runs
+`pdftotext` inside the same `shannon-sandbox` image agent tool calls use, never
+on the server itself — so `SANDBOX_MODE` must be `container` or `host` (see
+[Container engine](#container-engine-agent-sandboxes) above). With
+`SANDBOX_MODE=off`, PDF uploads are rejected at the API with a message saying
+so; every text format above still works regardless of the sandbox setting.
+
+The extracted text is what actually reaches the model — inlined as plain
+text, the same way an OpenAI-compatible backend has no other way to accept a
+document. There's no rendering step and no `mmproj` equivalent for documents:
+a scanned/image-only PDF with no extractable text layer will extract to
+nothing useful, the same limitation `pdftotext` itself has.
+
 ## Putting it together
 
 ```bash

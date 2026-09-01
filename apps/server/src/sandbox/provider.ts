@@ -51,6 +51,11 @@ export interface SandboxHandle {
   exec(command: string[], options?: ExecOptions): Promise<ExecResult>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
+  /** Binary counterpart of {@link writeFile}, for bytes that aren't text —
+   * an uploaded PDF on its way to an in-sandbox extractor. Separate rather
+   * than an overload because the transports genuinely differ: the container
+   * provider cannot pass megabytes as an exec argument. */
+  writeFileBinary(path: string, data: Buffer): Promise<void>;
   fileTree(path?: string): Promise<FileNode[]>;
   /** Absent when the provider has no interactive-terminal support. */
   openTerminal?(): Promise<TerminalSession>;

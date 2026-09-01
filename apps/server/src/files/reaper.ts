@@ -2,6 +2,7 @@ import { unlink } from "node:fs/promises";
 import { db, eq, sql } from "@shannon/db";
 import { attachments } from "@shannon/db/schema";
 import { attachmentPath } from "./storage.ts";
+import { removeExtractedText } from "./extract.ts";
 
 /** How often the sweep runs once started. */
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
@@ -36,7 +37,14 @@ export function userQuotaBytes(): number {
  */
 export async function usedAttachmentBytes(userId: string): Promise<number> {
   const [row] = await db
-    .select({ used: sql<number>`coalesce(sum(${attachments.sizeBytes}), 0)::float8` })
+    .select({
+      // The cached extraction is real disk this user owns — the same disk the
+      // sweep below deletes. Counting only the original under-reports a text
+      // attachment by roughly 2x, so a nominal 100 MB quota would hold ~200 MB
+      // and ATTACHMENT_USER_QUOTA_BYTES would not mean what an admin sizing a
+      // disk assumes. This is also what the extract_bytes column is for.
+      used: sql<number>`coalesce(sum(${attachments.sizeBytes} + coalesce(${attachments.extractBytes}, 0)), 0)::float8`,
+    })
     .from(attachments)
     .where(eq(attachments.ownerId, userId));
   // An aggregate with no GROUP BY always returns exactly one row, and the
@@ -96,6 +104,8 @@ export async function sweepOrphanAttachments(ownerIds?: string[]): Promise<numbe
     // by row, which the next sweep also can't see. Logged by the caller via
     // the count, not retried — losing one file is not worth blocking the rest.
     await unlink(attachmentPath(row.id)).catch(() => undefined);
+    // The cached extraction must not outlive the file it describes.
+    await removeExtractedText(row.id);
     reaped++;
   }
   return reaped;

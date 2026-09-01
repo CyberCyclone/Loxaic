@@ -34,6 +34,16 @@ export function textOfContent(content: string | ContentPart[] | null | undefined
     .join("\n");
 }
 
+/** How many `<attached-file>` wrappers a user turn carries. Counts the real
+ * provenance marker prompt assembly emits, so a positive count is proof the
+ * document actually reached the prompt — not merely that one was uploaded. */
+export function countDocumentParts(content: string | ContentPart[] | null | undefined): number {
+  if (!Array.isArray(content)) return 0;
+  return content.filter(
+    (p) => p.type === "text" && p.text.includes("<attached-file name="),
+  ).length;
+}
+
 export function countImageParts(content: string | ContentPart[] | null | undefined): number {
   if (!Array.isArray(content)) return 0;
   return content.filter((p) => p.type === "image_url").length;
@@ -155,6 +165,7 @@ async function* mockStream(
   const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
   const prompt = textOfContent(lastUser?.content);
   const imageCount = countImageParts(lastUser?.content);
+  const documentCount = countDocumentParts(lastUser?.content);
 
   const trigger = alreadyRanTools
     ? undefined
@@ -185,12 +196,16 @@ async function* mockStream(
     });
   } else {
     const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
-    // Acknowledging image parts explicitly makes the full attachment pipeline
-    // provable end-to-end without a vision GGUF.
+    // Acknowledging attachment parts explicitly makes the full pipeline
+    // provable end-to-end without a vision GGUF — and, for documents, without
+    // a real model that could only be taken at its word. The mock counts what
+    // is actually in the assembled prompt, so these notes are evidence that
+    // upload → ownership → blocks → history loader → content parts all held.
     const imageNote = imageCount > 0 ? `Received ${String(imageCount)} image(s). ` : "";
+    const documentNote = documentCount > 0 ? `Received ${String(documentCount)} document(s). ` : "";
     fullText = lastTool
       ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
-      : `[Mock] ${imageNote}Echo: ${prompt || "Hello"}`;
+      : `[Mock] ${imageNote}${documentNote}Echo: ${prompt || "Hello"}`;
     yield* emit(fullText);
   }
 

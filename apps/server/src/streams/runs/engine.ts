@@ -1,8 +1,9 @@
 import { v4 as uuid } from "uuid";
 import { and, db, eq, gt } from "@shannon/db";
 import { conversations, messages, usageRecords } from "@shannon/db/schema";
-import type { AttachmentRef, ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
+import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@shannon/types";
 import {
+  countDocumentParts,
   countImageParts,
   streamCompletion,
   visionErrorMessage,
@@ -10,12 +11,22 @@ import {
   type ToolCall,
   type CompletionResult,
 } from "../../inference/provider.ts";
-import { attachmentContentParts, selectAffordableImages } from "../../files/storage.ts";
+import {
+  attachmentContentParts,
+  DOCUMENT_SYSTEM_ADDENDUM,
+  selectAffordableAttachments,
+} from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import type { PermissionMode, ToolName } from "@shannon/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
-import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
+import {
+  attachActiveSandbox,
+  getConversationSandbox,
+  hasActiveSandbox,
+  hasOverflowWrite,
+  markOverflowWritten,
+} from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -42,6 +53,28 @@ function isAborted(controller: AbortController): boolean {
 /** See loadEphemeralHistory's SUMMARY_LOOKBACK — skip cards are
  * `summary`-authored but textless, and must never act as a compaction cutoff. */
 const SUMMARY_LOOKBACK = 20;
+
+/**
+ * The run's system prompt: the surface's base prompt, plus whichever
+ * untrusted-content addenda this turn actually needs.
+ *
+ * Pure and exported so the addenda can be asserted directly — the same reason
+ * `stripImagesForCompaction` is extracted in compactRun.ts. Driving a whole
+ * run through the mock cannot show what the system prompt contained, and that
+ * blind spot is exactly how DOCUMENT_SYSTEM_ADDENDUM came to be defined,
+ * documented in AGENTS.md as the document path's prompt-injection defence,
+ * and never once appended to a prompt.
+ */
+export function assembleSystemPrompt(
+  basePrompt: string | null,
+  toolAddendum: string | null,
+  hasDocuments: boolean,
+): string | null {
+  const parts = [basePrompt, toolAddendum, hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null].filter(
+    (p): p is string => typeof p === "string" && p.length > 0,
+  );
+  return parts.length ? parts.join("\n\n") : null;
+}
 
 /**
  * The shared tool loop behind both surfaces. The starter (startChatRun /
@@ -71,12 +104,16 @@ export async function runToolLoop(ctx: {
 
   try {
     const toolset = await buildToolset(userId, { mode, conversationId: convId });
-    const promptParts = [ctx.basePrompt, toolset.systemPromptAddendum].filter(
-      (p): p is string => typeof p === "string" && p.length > 0,
-    );
-    const systemPrompt = promptParts.length ? promptParts.join("\n\n") : null;
     const tools = toolset.openAiTools;
+    // History is loaded before the system prompt is assembled, because whether
+    // this turn carries a document decides whether the document addendum goes
+    // in — the same pairing MCP has, where wrapResult's markers are only
+    // meaningful alongside an addendum saying what they mean.
     const history = incognito ? await loadEphemeralHistory(convId) : await loadHistory(convId);
+    const hasDocuments = history.messages.some(
+      (m) => m.role === "user" && countDocumentParts(m.content) > 0,
+    );
+    const systemPrompt = assembleSystemPrompt(ctx.basePrompt, toolset.systemPromptAddendum, hasDocuments);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
@@ -557,15 +594,16 @@ export async function loadHistory(
     }
   }
 
-  // Which images this prompt can afford, decided over the whole replay before
-  // any of it is read off disk — see selectAffordableImages. Skipping the walk
-  // when the thread has no images at all keeps the common case free of stats.
+  // Which attachments this prompt can afford, decided over the whole replay
+  // before any of it is read off disk — see selectAffordableAttachments.
+  // Skipping the walk when the thread has none keeps the common case free of
+  // stats.
   const complete = ordered.filter((row) => row.status === "complete");
-  const imageTurns = complete
+  const attachmentTurns = complete
     .filter((row) => row.authorType === "user")
     .map((row) => attachmentsOf((row.content ?? []) as ContentBlock[]));
-  const affordable = imageTurns.some((t) => t.length > 0)
-    ? await selectAffordableImages(imageTurns)
+  const affordable = attachmentTurns.some((t) => t.length > 0)
+    ? await selectAffordableAttachments(attachmentTurns)
     : undefined;
 
   const out: ChatMessage[] = [];
@@ -578,7 +616,12 @@ export async function loadHistory(
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {
-        out.push({ role: "user", content: await attachmentContentParts(atts, text, affordable) });
+        out.push({
+          role: "user",
+          content: await attachmentContentParts(atts, text, affordable, (a, fullText) =>
+            writeOverflowToSandbox(conversationId, a, fullText),
+          ),
+        });
       } else if (text) {
         out.push({ role: "user", content: text });
       }
@@ -615,7 +658,7 @@ export async function loadHistory(
 function attachmentsOf(blocks: ContentBlock[]): AttachmentRef[] {
   return blocks
     .filter((b): b is Extract<ContentBlock, { kind: "attachment" }> => b.kind === "attachment")
-    .map((b) => ({ ref: b.ref, mime: b.mime }));
+    .map((b) => ({ ref: b.ref, mime: b.mime, ...(b.name === undefined ? {} : { name: b.name }) }));
 }
 
 function textOf(blocks: ContentBlock[]): string {
@@ -624,6 +667,53 @@ function textOf(blocks: ContentBlock[]): string {
     .map((b) => (b as { text: string }).text)
     .join("\n")
     .trim();
+}
+
+/**
+ * Writes a truncated document's full extracted text into the conversation's
+ * sandbox, if one is already running — see hasActiveSandbox/attachActiveSandbox
+ * for why this never creates one. Both chat and agent share this tool loop
+ * and can each have a sandbox, so the gate is "is one already live", not
+ * which surface this run is.
+ *
+ * Uses writeFileBinary, not writeFile: the container provider's writeFile
+ * passes its payload as a bash argv element, which a multi-megabyte document
+ * (now that extraction caches up to MAX_CACHED_EXTRACTION_BYTES) would blow
+ * past ARG_MAX on. writeFileBinary streams over stdin instead.
+ */
+async function writeOverflowToSandbox(
+  convId: string,
+  a: AttachmentRef,
+  fullText: string,
+): Promise<string | null> {
+  if (!hasActiveSandbox(convId)) return null;
+  try {
+    const handle = await attachActiveSandbox(convId);
+    if (!handle) return null;
+    // This file's content is the extracted text, not the original bytes — a
+    // PDF's overflow file is plain text, not a PDF. Stripping the original
+    // extension before appending ".txt" keeps that honest (report.pdf ->
+    // report.txt) and, as a side effect, avoids a doubled extension for a
+    // source that was already named "*.txt".
+    const baseName = sanitizeFilename(a.name ?? "file").replace(/\.[^./]+$/, "");
+    const relPath = `attachments/${a.ref.slice(0, 8)}-${baseName}.txt`;
+    // Written once per (sandbox, ref), not once per turn. loadHistory runs
+    // before every model call, so without this a conversation carrying one
+    // overflowing document would base64 and re-stream its whole cached text
+    // (up to MAX_CACHED_EXTRACTION_BYTES, ~5.3 MB on the wire) into the
+    // container on every single turn, for the life of the conversation. The
+    // content is immutable — keyed on a.ref, and the sidecar never changes —
+    // so re-writing it can only ever reproduce the same bytes.
+    if (hasOverflowWrite(handle.ref, a.ref)) return `./${relPath}`;
+    await handle.writeFileBinary(`${handle.workdir}/${relPath}`, Buffer.from(fullText, "utf8"));
+    markOverflowWritten(handle.ref, a.ref);
+    return `./${relPath}`;
+  } catch {
+    // Writing the overflow is a nicety, not a requirement — a failure here
+    // (sandbox mid-stop, disk full) must degrade to the pathless note, never
+    // fail the run.
+    return null;
+  }
 }
 
 /**
@@ -702,16 +792,22 @@ export async function loadEphemeralHistory(
     lastSummaryIdx >= 0 ? (items[lastSummaryIdx] as { kind: "summary"; text: string }).text : null;
 
   const replayed = items.slice(lastSummaryIdx + 1);
-  const imageTurns = replayed
+  const attachmentTurns = replayed
     .filter((i): i is Extract<Item, { kind: "user" }> => i.kind === "user")
     .map((i) => i.atts);
-  const affordable = imageTurns.length > 0 ? await selectAffordableImages(imageTurns) : undefined;
+  const affordable =
+    attachmentTurns.length > 0 ? await selectAffordableAttachments(attachmentTurns) : undefined;
 
   const out: ChatMessage[] = [];
   for (const item of replayed) {
     if (item.kind === "msgs") out.push(...item.msgs);
     else if (item.kind === "user") {
-      out.push({ role: "user", content: await attachmentContentParts(item.atts, item.text, affordable) });
+      out.push({
+        role: "user",
+        content: await attachmentContentParts(item.atts, item.text, affordable, (a, fullText) =>
+          writeOverflowToSandbox(conversationId, a, fullText),
+        ),
+      });
     }
   }
   const truncated = out.length > HISTORY_LIMIT;

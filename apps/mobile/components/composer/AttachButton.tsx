@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Camera, Image as ImageIcon, Plus } from 'lucide-react-native';
+import { Camera, FileText, Image as ImageIcon, Plus } from 'lucide-react-native';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import {
@@ -18,6 +18,8 @@ export interface AttachButtonProps {
   onTakePhoto: () => void;
   /** Native only: opens the OS photo library picker. */
   onPickFromLibrary: () => void;
+  /** Native only: opens the OS document picker. */
+  onPickDocument: () => void;
   /** Web only (see AttachButton.web.tsx): files chosen from the file input. */
   onFilesSelected: (files: File[]) => void;
 }
@@ -28,7 +30,7 @@ export interface AttachButtonProps {
  * `<input type="file">` directly — expo-image-picker's web shim creates a
  * transient hidden input at click time with nothing stable to select.
  */
-export function AttachButton({ onTakePhoto, onPickFromLibrary }: AttachButtonProps) {
+export function AttachButton({ onTakePhoto, onPickFromLibrary, onPickDocument }: AttachButtonProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -65,6 +67,16 @@ export function AttachButton({ onTakePhoto, onPickFromLibrary }: AttachButtonPro
           >
             <ActionsheetIcon as={ImageIcon} />
             <ActionsheetItemText>Photo library</ActionsheetItemText>
+          </ActionsheetItem>
+          <ActionsheetItem
+            testID="composer.attach.file"
+            onPress={() => {
+              setOpen(false);
+              onPickDocument();
+            }}
+          >
+            <ActionsheetIcon as={FileText} />
+            <ActionsheetItemText>Files</ActionsheetItemText>
           </ActionsheetItem>
         </ActionsheetContent>
       </Actionsheet>

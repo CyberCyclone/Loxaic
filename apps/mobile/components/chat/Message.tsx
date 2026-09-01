@@ -1,6 +1,7 @@
 import { memo, useState } from 'react';
 import { AlertCircle, Copy, GitFork, Square } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
+import { attachmentClass, attachmentUrl } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -14,6 +15,7 @@ import { LiveElapsed } from './LiveElapsed';
 import { CompactionCard } from './CompactionCard';
 import { AttachmentThumbs } from './AttachmentThumbs';
 import { ImageViewer } from '@/components/viewer/ImageViewer';
+import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import type { Message as MessageType } from '@/lib/types';
 
@@ -31,6 +33,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
   // conditionally, and a summary card renders no attachments anyway.
   const { token } = useSession();
   const [viewerUri, setViewerUri] = useState<string | null>(null);
+  const [previewAtt, setPreviewAtt] = useState<NonNullable<MessageType['attachments']>[number] | null>(null);
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -69,7 +72,17 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
             {msg.thinking && <ThinkingBlock text={msg.thinking} live={liveThinking} since={elapsedSince} />}
             {msg.tools?.map((tool, i) => <ToolCallCard key={i} tool={tool} />)}
             {isUser && !!msg.attachments?.length && (
-              <AttachmentThumbs attachments={msg.attachments} token={token} onPress={setViewerUri} />
+              <AttachmentThumbs
+                attachments={msg.attachments}
+                token={token}
+                onPress={(att) => {
+                  if (attachmentClass(att.mime) === 'image') {
+                    setViewerUri(att.localUri ?? (att.ref && token ? attachmentUrl(att.ref, token) : undefined) ?? null);
+                  } else {
+                    setPreviewAtt(att);
+                  }
+                }}
+              />
             )}
             {msg.error ? (
               <HStack space="xs" className="items-start">
@@ -157,6 +170,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
         </HStack>
       </Box>
       {isUser && <ImageViewer uri={viewerUri} onClose={() => { setViewerUri(null); }} />}
+      {isUser && <DocumentPreview attachment={previewAtt} onClose={() => { setPreviewAtt(null); }} />}
     </>
   );
 }

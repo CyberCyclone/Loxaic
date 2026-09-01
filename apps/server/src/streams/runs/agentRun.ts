@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { db } from "@shannon/db";
 import { conversations, messages } from "@shannon/db/schema";
-import type { ContentBlock } from "@shannon/types";
+import type { AttachmentRef, ContentBlock } from "@shannon/types";
 import type { PermissionMode } from "@shannon/agent";
 import {
   assertAttachmentsOwned,
@@ -78,7 +78,7 @@ export async function startAgentRun(input: {
   } else {
     const [conv] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: content.slice(0, 80) || "Image", kind: "agent" })
+      .values({ ownerId: userId, title: conversationTitle(content, atts), kind: "agent" })
       .returning();
     convId = conv.id;
   }
@@ -97,7 +97,12 @@ export async function startAgentRun(input: {
     origin: "server",
     lamport: Date.now(),
     content: [
-      ...atts.map((a): ContentBlock => ({ kind: "attachment", ref: a.ref, mime: a.mime })),
+      ...atts.map((a): ContentBlock => ({
+        kind: "attachment",
+        ref: a.ref,
+        mime: a.mime,
+        ...(a.name === undefined ? {} : { name: a.name }),
+      })),
       { kind: "text", text: content },
     ] as ContentBlock[],
     status: "complete",
@@ -141,4 +146,14 @@ export async function startAgentRun(input: {
   });
 
   return { streamId, conversationId: convId, userMessageId: userMsgId, incognito: false };
+}
+
+/** Title for a conversation opened by this message. An attachment-only send
+ * has no text to name it after, so the first file's own name is used — far
+ * more useful in the thread list than a literal "Image", and the only label
+ * the user would recognize. */
+function conversationTitle(content: string, atts: AttachmentRef[]): string {
+  const text = content.slice(0, 80).trim();
+  if (text) return text;
+  return atts[0]?.name ?? "Attachment";
 }

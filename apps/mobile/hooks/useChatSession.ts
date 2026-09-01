@@ -419,7 +419,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         pendingModelRef.current = model;
         const newConv: Conversation = {
           id: localId,
-          title: text.slice(0, 40) || 'Image',
+          title: text.slice(0, 40) || (attachments?.[0]?.name ?? 'Attachment'),
           kind: 'chat',
           time: 'now',
           model,

@@ -1,29 +1,56 @@
 import type { FastifyInstance } from "fastify";
 import { createReadStream, createWriteStream } from "node:fs";
-import { open, stat, unlink } from "node:fs/promises";
+import { readFile, stat, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { db, eq } from "@shannon/db";
 import { attachments } from "@shannon/db/schema";
-import { ATTACHMENT_MIMES } from "@shannon/types";
+import {
+  attachmentClass,
+  maxBytesForMime,
+  resolveAttachmentMime,
+  sanitizeFilename,
+  MAX_DOCUMENT_BYTES,
+} from "@shannon/types";
 import { authenticate, authenticateHeaderOrQuery } from "../auth/middleware";
-import { attachmentPath, isValidRef, sniffImageMime } from "../files/storage";
+import { attachmentPath, attachmentTextPath, isValidRef, verifyStoredBytes } from "../files/storage";
 import { usedAttachmentBytes, userQuotaBytes } from "../files/reaper";
+import { extractText } from "../files/extract";
+import { getSandboxMode } from "../sandbox/provider";
 
 export function fileRoutes(app: FastifyInstance) {
-  // Upload one image. The client parallelizes for multi-image messages.
+  // Upload one file. The client parallelizes for multi-attachment messages.
   app.post("/v1/files", async (request, reply) => {
     const userId = await authenticate(request, reply);
 
     const file = await request.file();
     if (!file) {
       reply.code(400);
-      return { error: "Attach an image file to upload" };
+      return { error: "Attach a file to upload" };
     }
-    const mime = file.mimetype.toLowerCase();
-    if (!(ATTACHMENT_MIMES as readonly string[]).includes(mime)) {
+
+    // The picker's declared type wins when it's usable; the extension is the
+    // fallback, because browsers report "" for .md/.ts/.csv and a strict mime
+    // allowlist alone would silently reject exactly the source files a coding
+    // assistant is most likely to be handed.
+    const filename = sanitizeFilename(file.filename);
+    const mime = resolveAttachmentMime(file.mimetype, filename);
+    if (!mime) {
       reply.code(415);
-      return { error: "Only JPEG, PNG, WebP, and GIF images are supported" };
+      return { error: "That file type isn't supported — images, text, code, CSV, JSON, and PDF are" };
+    }
+    const cls = attachmentClass(mime);
+
+    // Parser-needing formats are extracted inside the sandbox container and
+    // nowhere else, so with no sandbox configured there is no safe way to read
+    // one. Resolved at call time, per the settings contract in AGENTS.md.
+    if (cls === "document" && getSandboxMode() === "off") {
+      reply.code(415);
+      return {
+        error:
+          "PDF attachments need the sandbox enabled — they're read inside a container, never on the server. " +
+          "Ask your admin to turn it on, or attach a text file instead.",
+      };
     }
 
     // Cheap pre-check so a user already at their ceiling doesn't get to write
@@ -54,43 +81,78 @@ export function fileRoutes(app: FastifyInstance) {
       throw err;
     }
 
+    // @fastify/multipart's limit is the largest any class may be; the
+    // per-class cap is checked below, once the real size is known.
     if (file.file.truncated) {
       await cleanup();
       reply.code(413);
-      return { error: "Image is larger than 10 MB — resize it and try again" };
+      return { error: `File is larger than ${String(MAX_DOCUMENT_BYTES / (1024 * 1024))} MB` };
     }
 
-    // The declared mime got the file this far; the bytes have the final say.
-    const fh = await open(dest, "r");
-    const head = Buffer.alloc(12);
-    await fh.read(head, 0, 12, 0);
-    await fh.close();
-    if (sniffImageMime(head) !== mime) {
+    if (!(await verifyStoredBytes(dest, mime))) {
       await cleanup();
       reply.code(415);
-      return { error: "File contents don't match an image of the declared type" };
+      return {
+        error:
+          cls === "text"
+            ? "That file isn't readable as text — it looks like binary data"
+            : "File contents don't match the declared type",
+      };
     }
 
     const { size } = await stat(dest);
+    const classMax = maxBytesForMime(mime);
+    if (size > classMax) {
+      await cleanup();
+      reply.code(413);
+      const mb = String(classMax / (1024 * 1024));
+      return {
+        error:
+          cls === "image"
+            ? `Image is larger than ${mb} MB — resize it and try again`
+            : `File is larger than ${mb} MB`,
+      };
+    }
     if (usedBefore + size > quota) {
       await cleanup();
       reply.code(413);
-      return { error: "That image would put you over your storage limit" };
+      return { error: "That file would put you over your storage limit" };
     }
 
+    // Extraction never fails an upload: a parser error leaves the file stored
+    // with extract_status "failed", the chip warns, and the prompt says so.
+    // Losing the user's file because a PDF was malformed would be worse than
+    // any of that.
+    const extracted = await extractText({ ref, mime, filename, userId });
+
     try {
-      await db.insert(attachments).values({ id: ref, ownerId: userId, mime, sizeBytes: size });
+      await db.insert(attachments).values({
+        id: ref,
+        ownerId: userId,
+        mime,
+        sizeBytes: size,
+        filename,
+        extractStatus: extracted.status,
+        extractBytes: extracted.bytes,
+      });
     } catch (err) {
       // Same reasoning as the pipeline catch: without a row the file is
       // unreachable by every reclaim path there is.
       await cleanup();
+      await unlink(attachmentTextPath(ref)).catch(() => undefined);
       throw err;
     }
-    return { ref, mime, size_bytes: size };
+    return {
+      ref,
+      mime,
+      size_bytes: size,
+      name: filename,
+      extract_status: extracted.status,
+    };
   });
 
-  // Serve an image to its owner. Accepts `?token=` because <img> tags can't
-  // set headers. Wrong owner and nonexistent are the same 404 — no existence
+  // Serve a file to its owner. Accepts `?token=` because <img> tags can't set
+  // headers. Wrong owner and nonexistent are the same 404 — no existence
   // oracle, matching streams/authz.ts.
   app.get<{ Params: { ref: string } }>("/v1/files/:ref", async (request, reply) => {
     const userId = await authenticateHeaderOrQuery(request, reply);
@@ -109,19 +171,82 @@ export function fileRoutes(app: FastifyInstance) {
       // Refs are immutable once written, so let clients cache hard — but
       // privately: the URL carries a token and must never land in a shared cache.
       .header("Cache-Control", "private, max-age=31536000, immutable")
-      // `row.mime` can only be one of ATTACHMENT_MIMES (allowlisted on upload,
-      // then confirmed against the file's magic bytes), so nothing served here
-      // is script today. These three are the second line behind that single
-      // control: this endpoint is same-origin with the web app, so the day
-      // someone adds "image/svg+xml" to the allowlist — a one-line diff, and
-      // the obvious next request — it would otherwise become stored XSS with
-      // full access to the session. nosniff stops content-type guessing,
-      // `inline` without a filename keeps <img> working while pinning the
-      // disposition, and the CSP neutralizes scripts in any document-ish type
-      // that ever slips through.
+      // `row.mime` is allowlisted on upload and then confirmed against the
+      // bytes themselves, so nothing served here is what it doesn't claim to
+      // be. These headers are the second line behind that single control,
+      // because this endpoint is same-origin with the web app.
+      //
+      // The disposition split is load-bearing and is why "image/svg+xml" must
+      // stay out of IMAGE_MIMES: only images are served `inline`, because only
+      // they need to render in an <img>. Everything else — text/html and
+      // text/xml above all, which a browser would happily execute in a
+      // same-origin document — is forced to `attachment`, so it downloads
+      // instead of rendering. nosniff stops content-type guessing and the CSP
+      // neutralizes scripts in anything that ever slips through both.
       .header("X-Content-Type-Options", "nosniff")
-      .header("Content-Disposition", "inline")
+      .header("Content-Disposition", contentDisposition(row.mime, row.filename))
       .header("Content-Security-Policy", "default-src 'none'; sandbox");
     return reply.send(createReadStream(attachmentPath(ref)));
   });
+
+  // The cached extraction — exactly the text the model was given. Backs the
+  // client's preview, which is deliberately a preview and not a download: it
+  // shows the user what the model actually sees, which for a PDF is not the
+  // same thing as the file.
+  app.get<{ Params: { ref: string } }>("/v1/files/:ref/text", async (request, reply) => {
+    const userId = await authenticateHeaderOrQuery(request, reply);
+    const { ref } = request.params;
+    if (!isValidRef(ref)) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    const row = await db.query.attachments.findFirst({ where: eq(attachments.id, ref) });
+    if (row?.ownerId !== userId) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    if (row.extractStatus !== "ok") {
+      reply.code(409);
+      return { error: "No extracted text for this attachment", status: row.extractStatus };
+    }
+    let text: string;
+    try {
+      text = await readFile(attachmentTextPath(ref), "utf8");
+    } catch {
+      // The row says "ok" but the sidecar is gone — a pruned volume or a
+      // restored DB. Same shape as the missing-file degradation in prompt
+      // assembly rather than a 500.
+      reply.code(409);
+      return { error: "No extracted text for this attachment", status: "failed" };
+    }
+    reply
+      .header("Cache-Control", "private, max-age=31536000, immutable")
+      .header("X-Content-Type-Options", "nosniff")
+      .header("Content-Security-Policy", "default-src 'none'; sandbox");
+    return { ref, name: row.filename, mime: row.mime, text };
+  });
+}
+
+/**
+ * `Content-Disposition` for one attachment.
+ *
+ * Only images render inline (see the serve route's comment); everything else
+ * downloads. The filename is emitted twice on purpose: a quoted ASCII fallback
+ * for old clients and RFC 5987 `filename*` for the real, possibly non-ASCII
+ * name. `sanitizeFilename` has already removed control characters and path
+ * separators at upload; the quote-stripping here is belt-and-braces so a name
+ * can never close the quoted string and inject a header parameter.
+ */
+function contentDisposition(mime: string, filename: string): string {
+  const kind = attachmentClass(mime) === "image" ? "inline" : "attachment";
+  if (!filename) return kind;
+  const ascii = filename.replace(/[^\x20-\x7e]/g, "_").replaceAll('"', "");
+  // sanitizeFilename caps by slicing UTF-16 code units, so a name whose cut
+  // lands inside an astral-plane character (emoji, CJK extensions, musical
+  // symbols) ends in a lone surrogate — and encodeURIComponent throws URIError
+  // on those, which would 500 every download of that attachment forever.
+  // Dropping an unpaired surrogate is the only lossy step and it only ever
+  // removes half a character that was already destroyed by the cut.
+  const encodable = filename.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(encodable)}`;
 }

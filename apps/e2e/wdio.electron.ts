@@ -94,7 +94,7 @@ export const config: WebdriverIO.Config = {
   ...sharedConfig,
   // The shared glob covers the cross-platform specs; this adds the ones that
   // only make sense for a desktop build.
-  specs: ['./src/specs/*.spec.ts', './src/specs/electron/*.spec.ts'],
+  specs: ['./src/specs/*.spec.ts', './src/specs/browser/*.spec.ts', './src/specs/electron/*.spec.ts'],
   services: ['electron'],
   capabilities: [
     {

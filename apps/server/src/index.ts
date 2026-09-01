@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
-import { MAX_ATTACHMENT_BYTES } from "@shannon/types";
+import { MAX_UPLOAD_BYTES } from "@shannon/types";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -32,6 +32,7 @@ import { fileRoutes } from "./routes/files";
 import { loadServerSettings } from "./settings";
 import { startMcpReaper } from "./mcp/client-manager";
 import { startAttachmentReaper, sweepOrphanAttachments } from "./files/reaper";
+import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
 
 const app = Fastify({
   logger: {
@@ -82,7 +83,9 @@ await app.register(cors, { origin: true, credentials: true });
 await app.register(websocket);
 await app.register(multipart, {
   limits: {
-    fileSize: MAX_ATTACHMENT_BYTES,
+    // The largest any class may be; the per-class cap (images 10 MB,
+    // documents 25 MB) is enforced in the route once the real size is known.
+    fileSize: MAX_UPLOAD_BYTES,
     files: 1,
     // Busboy's own defaults are `fields: Infinity` at 1 MB each and
     // `parts: 1000`, all buffered into `body` before `request.file()` returns
@@ -212,6 +215,7 @@ const HOST = process.env.HOST ?? "0.0.0.0";
 let reaperTimer: NodeJS.Timeout | null = null;
 let mcpReaperTimer: NodeJS.Timeout | null = null;
 let attachmentReaperTimer: NodeJS.Timeout | null = null;
+let extractionReaperTimer: NodeJS.Timeout | null = null;
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
@@ -241,6 +245,7 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned attachment(s)`); })
     .catch(() => { /* best-effort sweep */ });
   attachmentReaperTimer = startAttachmentReaper((n) => { app.log.info(`Swept ${String(n)} orphaned attachment(s)`); });
+  extractionReaperTimer = startExtractionReaper((n) => { app.log.info(`Stopped ${String(n)} idle extraction sandbox(es)`); });
 });
 
 // ── Graceful shutdown ─────────────────────────────────────
@@ -256,6 +261,8 @@ async function shutdown(signal: string) {
     if (reaperTimer) clearInterval(reaperTimer);
     if (mcpReaperTimer) clearInterval(mcpReaperTimer);
     if (attachmentReaperTimer) clearInterval(attachmentReaperTimer);
+    if (extractionReaperTimer) clearInterval(extractionReaperTimer);
+    await stopAllExtractionSandboxes().catch(() => undefined);
     await app.close();
     await closeDb();
   } catch (e) {

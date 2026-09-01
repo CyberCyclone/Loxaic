@@ -317,18 +317,36 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 // ── Attachments ───────────────────────────────────────────
 export type { AttachmentRef } from "@shannon/types";
 
-export interface UploadedAttachment { ref: string; mime: string; size_bytes: number }
+export interface UploadedAttachment {
+  ref: string;
+  mime: string;
+  size_bytes: number;
+  name: string;
+  extract_status: "none" | "ok" | "failed" | "unsupported";
+}
 
-/** Upload one image. `file` is a web File/Blob, or a React Native picker
- * asset shape ({uri, name, type}) — both work as a FormData entry. */
+/** Upload one file — image or document. `file` is a web File/Blob, or a React
+ * Native picker asset shape ({uri, name, type}); both work as a FormData
+ * entry. `filename`, when given, names the multipart part explicitly — needed
+ * when `file` is a plain Blob (a Blob carries no name of its own; a File
+ * would, but the web upload path here works from a re-wrapped Blob, not the
+ * original File, so the name has to be threaded through separately). */
 export async function uploadAttachment(
   file: Blob | { uri: string; name: string; type: string },
+  filename?: string,
 ): Promise<UploadedAttachment> {
   const token = await getAuthToken();
   const form = new FormData();
   // RN's FormData accepts {uri,name,type} directly; the DOM lib's types don't
   // know that shape, hence the cast — this is the standard RN upload pattern.
-  form.append("file", file instanceof Blob ? file : (file as unknown as Blob));
+  // The RN shape already carries its own `name`, so `filename` only matters
+  // for the Blob branch — FormData.append's 3rd argument is exactly the web
+  // mechanism for naming a Blob part.
+  if (file instanceof Blob) {
+    form.append("file", file, filename);
+  } else {
+    form.append("file", file as unknown as Blob);
+  }
   const res = await fetch(`${BASE_URL}/v1/files`, {
     method: "POST",
     headers: { Authorization: `Bearer ${String(token)}` },
@@ -339,10 +357,29 @@ export async function uploadAttachment(
   return body as UploadedAttachment;
 }
 
-/** URL an <img>/Image component can load directly — the token rides in the
- * query string since image requests can't carry an Authorization header. */
+/** URL an <img>/Image component, or a plain download link, can load directly
+ * — the token rides in the query string since these requests can't carry an
+ * Authorization header. Works for any attachment class; the server decides
+ * inline vs attachment disposition based on mime. */
 export function attachmentUrl(ref: string, token: string): string {
   return `${BASE_URL}/v1/files/${ref}?token=${encodeURIComponent(token)}`;
+}
+
+/** Fetches a document's cached extraction — exactly the text the model was
+ * given, which for a PDF is not the same thing as the file itself. Used by
+ * the document preview modal. Throws with the server's own message on
+ * anything other than 200 (e.g. 409 when extraction isn't "ok" — an image,
+ * or a document whose extraction failed). */
+export async function getAttachmentText(
+  ref: string,
+): Promise<{ ref: string; name: string; mime: string; text: string }> {
+  const token = await getAuthToken();
+  const res = await fetch(`${BASE_URL}/v1/files/${ref}/text`, {
+    headers: { Authorization: `Bearer ${String(token)}` },
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string } & Record<string, unknown>;
+  if (!res.ok) throw new Error(body.error ?? `Fetching attachment text failed: ${String(res.status)}`);
+  return body as { ref: string; name: string; mime: string; text: string };
 }
 
 export async function getRoutines(): Promise<Routine[]> {
@@ -644,7 +681,12 @@ export type {
   SlashCommand,
 } from "@shannon/types";
 import type { ServerMessage } from "@shannon/types";
-export { BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand, MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES } from "@shannon/types";
+export {
+  BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand,
+  MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
+  IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
+  attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
+} from "@shannon/types";
 
 /** True if the send was actually written to the socket — false (never
  * throws) if the connection isn't open, so callers can decide whether to

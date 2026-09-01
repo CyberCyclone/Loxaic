@@ -1,16 +1,20 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
+import { MAX_EXTRACTED_BYTES } from "@shannon/types";
 import {
   MAX_HISTORY_IMAGE_BYTES,
   attachmentContentParts,
   attachmentPath,
+  attachmentTextPath,
+  isDecodableText,
   isValidRef,
   readAsDataUri,
-  selectAffordableImages,
-  sniffImageMime,
+  selectAffordableAttachments,
+  sniffMime,
+  verifyStoredBytes,
 } from "../storage.ts";
 
 describe("isValidRef", () => {
@@ -132,6 +136,79 @@ describe("readAsDataUri / attachmentContentParts", () => {
   });
 });
 
+describe("attachmentContentParts — document truncation and overflow handling", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-doc-truncation-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
+  });
+
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeExtraction(bytes: number): { ref: string; text: string } {
+    const ref = uuid();
+    const text = "x".repeat(bytes);
+    writeFileSync(attachmentTextPath(ref), text, "utf8");
+    return { ref, text };
+  }
+
+  it("truncates a document's text to MAX_EXTRACTED_BYTES before wrapping it", async () => {
+    const { ref } = writeExtraction(MAX_EXTRACTED_BYTES + 1000);
+    const parts = await attachmentContentParts([{ ref, mime: "application/pdf", name: "big.pdf" }], "");
+    expect(parts).toHaveLength(1);
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.type).toBe("text");
+    // The body between the markers must be capped at MAX_EXTRACTED_BYTES,
+    // not the full on-disk cache.
+    expect(Buffer.byteLength(part.text, "utf8")).toBeLessThan(MAX_EXTRACTED_BYTES + 1000);
+    expect(part.text).toContain("truncated at");
+  });
+
+  it("does not truncate and never calls onOverflow when the text fits", async () => {
+    const { ref, text } = writeExtraction(100);
+    const onOverflow = vi.fn();
+    const parts = await attachmentContentParts(
+      [{ ref, mime: "application/pdf", name: "small.pdf" }],
+      "",
+      undefined,
+      onOverflow,
+    );
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.text).toContain(text);
+    expect(part.text).not.toContain("truncated at");
+    expect(onOverflow).toHaveBeenCalledTimes(0);
+  });
+
+  it("calls onOverflow with the FULL untruncated text and includes its returned path in the note", async () => {
+    const { ref, text } = writeExtraction(MAX_EXTRACTED_BYTES + 5000);
+    const onOverflow = vi.fn().mockResolvedValue("./attachments/abc-big.pdf.txt");
+    const parts = await attachmentContentParts(
+      [{ ref, mime: "application/pdf", name: "big.pdf" }],
+      "",
+      undefined,
+      onOverflow,
+    );
+    expect(onOverflow).toHaveBeenCalledTimes(1);
+    const [, fullTextArg] = onOverflow.mock.calls[0] as [unknown, string];
+    expect(fullTextArg.length).toBe(text.length);
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.text).toContain("./attachments/abc-big.pdf.txt");
+  });
+
+  it("when overflowed with no onOverflow given, the note has no path", async () => {
+    const { ref } = writeExtraction(MAX_EXTRACTED_BYTES + 5000);
+    const parts = await attachmentContentParts([{ ref, mime: "application/pdf", name: "big.pdf" }], "");
+    const part = parts[0] as { type: "text"; text: string };
+    expect(part.text).toContain("truncated at");
+    expect(part.text).not.toContain("Full text is at");
+  });
+});
+
 /**
  * The per-prompt image budget. Without it, HISTORY_LIMIT (50) multiplies the
  * per-send caps: a thread of image-bearing turns makes every later send
@@ -161,7 +238,7 @@ describe("selectAffordableImages", () => {
   it("admits everything when the whole history fits", async () => {
     const a = write(16);
     const b = write(16);
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref: a, mime: "image/png" }],
       [{ ref: b, mime: "image/png" }],
     ]);
@@ -172,7 +249,7 @@ describe("selectAffordableImages", () => {
     const oldRef = write(MAX_HISTORY_IMAGE_BYTES);
     const newRef = write(MAX_HISTORY_IMAGE_BYTES);
     // Oldest-first input, mirroring prompt assembly order.
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref: oldRef, mime: "image/png" }],
       [{ ref: newRef, mime: "image/png" }],
     ]);
@@ -183,7 +260,7 @@ describe("selectAffordableImages", () => {
   it("skips an oversized image rather than ending the walk, so smaller older ones still fit", async () => {
     const small = write(32);
     const huge = write(MAX_HISTORY_IMAGE_BYTES + 1);
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref: small, mime: "image/png" }],
       [{ ref: huge, mime: "image/png" }],
     ]);
@@ -192,7 +269,7 @@ describe("selectAffordableImages", () => {
 
   it("charges a repeated ref once", async () => {
     const ref = write(MAX_HISTORY_IMAGE_BYTES);
-    const allowed = await selectAffordableImages([
+    const allowed = await selectAffordableAttachments([
       [{ ref, mime: "image/png" }],
       [{ ref, mime: "image/png" }],
     ]);
@@ -200,21 +277,191 @@ describe("selectAffordableImages", () => {
   });
 
   it("leaves an unreadable ref out, to degrade downstream as [image unavailable]", async () => {
-    const allowed = await selectAffordableImages([[{ ref: uuid(), mime: "image/png" }]]);
+    const allowed = await selectAffordableAttachments([[{ ref: uuid(), mime: "image/png" }]]);
     expect(allowed.size).toBe(0);
   });
 });
 
-describe("sniffImageMime", () => {
-  it("recognizes JPEG, PNG, GIF, and WebP magic bytes", () => {
-    expect(sniffImageMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
-    expect(sniffImageMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("image/png");
-    expect(sniffImageMime(Buffer.from("GIF89a"))).toBe("image/gif");
-    expect(sniffImageMime(Buffer.concat([Buffer.from("RIFF____"), Buffer.from("WEBP")]))).toBe("image/webp");
+/**
+ * Two document-budget fixes, covered together because the second only shows
+ * up correctly once the first is in place.
+ *
+ * (1) selectAffordableAttachments used to stat the full cached sidecar
+ * directly. Now that extraction caches up to MAX_CACHED_EXTRACTION_BYTES
+ * (4 MB) instead of MAX_EXTRACTED_BYTES (256 KB), budgeting against the raw
+ * file size would wildly overestimate a document's prompt cost. The fix caps
+ * the byte count fed to estimateTokens at MAX_EXTRACTED_BYTES, since that's
+ * all attachmentContentParts ever actually sends.
+ *
+ * (2) MAX_HISTORY_DOCUMENT_TOKENS was a flat 24,000 — smaller than a single
+ * document at MAX_EXTRACTED_BYTES already costs (~65,536 est. tokens). Fix
+ * (1) alone would have made that worse, not better: capping the measurement
+ * at the per-document ceiling doesn't help when the *whole-history* budget is
+ * already below that ceiling — every document at or near the cap would still
+ * be excluded, including the one from the turn that just sent it. Both fixes
+ * together are what makes "a single document at the cap always survives"
+ * true, mirroring MAX_HISTORY_IMAGE_BYTES's own property for images. The
+ * budget is now MAX_SINGLE_DOCUMENT_TOKENS * 3, so it takes several
+ * max-sized documents across a history — not one — to start losing anything,
+ * and the walk being newest-first means what gets dropped is always the
+ * oldest one.
+ */
+describe("selectAffordableAttachments — documents", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-doc-budget-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
   });
 
-  it("returns null for content that isn't one of the four supported formats", () => {
-    expect(sniffImageMime(Buffer.from("<svg></svg>"))).toBeNull();
-    expect(sniffImageMime(Buffer.from("%PDF-1.4"))).toBeNull();
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeExtraction(bytes: number): string {
+    const ref = uuid();
+    writeFileSync(attachmentTextPath(ref), "x".repeat(bytes), "utf8");
+    return ref;
+  }
+
+  it("admits a single document even when its cached sidecar is far larger than MAX_EXTRACTED_BYTES", async () => {
+    // Well beyond MAX_EXTRACTED_BYTES (256 KB) but under MAX_CACHED_EXTRACTION_BYTES
+    // (4 MB) — exactly the shape a large document's sidecar can now take.
+    // Its *measured* cost is capped at one document's worth, which the budget
+    // is sized to always clear on its own — this is the regression guard for
+    // both fixes at once: an uncapped measurement here would exceed the
+    // budget by roughly 16x, and a budget still sized at the old flat 24,000
+    // would reject this even after capping.
+    const ref = writeExtraction(MAX_EXTRACTED_BYTES * 4);
+    const allowed = await selectAffordableAttachments([[{ ref, mime: "application/pdf" }]]);
+    expect(allowed.has(ref)).toBe(true);
+  });
+
+  it("admits a small document unaffected by the cap either way", async () => {
+    const ref = writeExtraction(1000);
+    const allowed = await selectAffordableAttachments([[{ ref, mime: "application/pdf" }]]);
+    expect(allowed.has(ref)).toBe(true);
+  });
+
+  it("drops the oldest document once several turns' worth exceed the whole-history budget", async () => {
+    // Four documents each at the per-document cap cost roughly 4x
+    // MAX_SINGLE_DOCUMENT_TOKENS, comfortably over the 3x budget — so exactly
+    // one must be dropped, and the newest-first walk means it's the oldest.
+    const refs = [writeExtraction(MAX_EXTRACTED_BYTES), writeExtraction(MAX_EXTRACTED_BYTES),
+      writeExtraction(MAX_EXTRACTED_BYTES), writeExtraction(MAX_EXTRACTED_BYTES)];
+    const allowed = await selectAffordableAttachments(
+      refs.map((ref) => [{ ref, mime: "application/pdf" }]),
+    );
+    expect(allowed.has(refs[0])).toBe(false);
+    expect(allowed.has(refs[1])).toBe(true);
+    expect(allowed.has(refs[2])).toBe(true);
+    expect(allowed.has(refs[3])).toBe(true);
+  });
+});
+
+describe("sniffMime", () => {
+  it("recognizes JPEG, PNG, GIF, and WebP magic bytes", () => {
+    expect(sniffMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0]))).toBe("image/jpeg");
+    expect(sniffMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe("image/png");
+    expect(sniffMime(Buffer.from("GIF89a"))).toBe("image/gif");
+    expect(sniffMime(Buffer.concat([Buffer.from("RIFF____"), Buffer.from("WEBP")]))).toBe("image/webp");
+  });
+
+  it("recognizes a PDF header", () => {
+    expect(sniffMime(Buffer.from("%PDF-1.4"))).toBe("application/pdf");
+  });
+
+  it("returns null for anything without a recognized signature", () => {
+    expect(sniffMime(Buffer.from("<svg></svg>"))).toBeNull();
+    // Text formats have no magic bytes at all, so they are deliberately not
+    // sniffable — verifyStoredBytes decides those by decoding instead.
+    expect(sniffMime(Buffer.from("name,total\n"))).toBeNull();
+    expect(sniffMime(Buffer.from("# heading"))).toBeNull();
+  });
+});
+
+/**
+ * The fail-closed gate the upload route uses to confirm a file's bytes
+ * actually match its declared class — images/PDF by magic bytes, text by
+ * UTF-8-decodability. Real temp files, same pattern as the rest of this
+ * file's suites.
+ */
+describe("isDecodableText / verifyStoredBytes", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "shannon-verify-bytes-test-"));
+  const prevUploadsDir = process.env.UPLOADS_DIR;
+
+  beforeAll(() => {
+    process.env.UPLOADS_DIR = dir;
+  });
+
+  afterAll(() => {
+    if (prevUploadsDir === undefined) delete process.env.UPLOADS_DIR;
+    else process.env.UPLOADS_DIR = prevUploadsDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeTemp(name: string, data: Buffer | string): string {
+    const filePath = path.join(dir, name);
+    writeFileSync(filePath, data);
+    return filePath;
+  }
+
+  describe("isDecodableText", () => {
+    it("accepts valid multi-byte UTF-8", async () => {
+      const filePath = writeTemp("multibyte.txt", Buffer.from("héllo wörld 日本語", "utf8"));
+      await expect(isDecodableText(filePath)).resolves.toBe(true);
+    });
+
+    it("rejects a file containing a NUL byte, even amid otherwise valid UTF-8", async () => {
+      const filePath = writeTemp(
+        "nul.txt",
+        Buffer.concat([Buffer.from("before", "utf8"), Buffer.from([0x00]), Buffer.from("after", "utf8")]),
+      );
+      await expect(isDecodableText(filePath)).resolves.toBe(false);
+    });
+
+    it("rejects an invalid UTF-8 byte sequence", async () => {
+      // A lone continuation/leading byte with nothing completing a valid
+      // sequence — TextDecoder({ fatal: true }) throws on this.
+      const filePath = writeTemp("invalid-utf8.bin", Buffer.from([0xc0]));
+      await expect(isDecodableText(filePath)).resolves.toBe(false);
+    });
+  });
+
+  describe("verifyStoredBytes", () => {
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const pdfBytes = Buffer.from("%PDF-1.4\n%âãÏÓ\n");
+
+    it("accepts a real PNG's magic bytes declared as image/png", async () => {
+      const filePath = writeTemp("real.png", pngBytes);
+      await expect(verifyStoredBytes(filePath, "image/png")).resolves.toBe(true);
+    });
+
+    it("rejects the same PNG bytes declared under a mismatched mime", async () => {
+      const filePath = writeTemp("mismatched.jpg", pngBytes);
+      await expect(verifyStoredBytes(filePath, "image/jpeg")).resolves.toBe(false);
+    });
+
+    it("accepts a real PDF header declared as application/pdf", async () => {
+      const filePath = writeTemp("real.pdf", pdfBytes);
+      await expect(verifyStoredBytes(filePath, "application/pdf")).resolves.toBe(true);
+    });
+
+    it("accepts valid UTF-8 text declared as text/plain", async () => {
+      const filePath = writeTemp("real.txt", Buffer.from("just some ordinary text", "utf8"));
+      await expect(verifyStoredBytes(filePath, "text/plain")).resolves.toBe(true);
+    });
+
+    it("rejects a NUL-containing file declared as text/plain", async () => {
+      const filePath = writeTemp("binary.txt", Buffer.concat([Buffer.from("abc"), Buffer.from([0x00]), Buffer.from("def")]));
+      await expect(verifyStoredBytes(filePath, "text/plain")).resolves.toBe(false);
+    });
+
+    it("fails closed for an unrecognized mime, rather than silently returning true", async () => {
+      const filePath = writeTemp("unknown.bin", Buffer.from("whatever bytes"));
+      await expect(verifyStoredBytes(filePath, "application/x-bogus-unknown")).resolves.toBe(false);
+    });
   });
 });

@@ -21,10 +21,18 @@ export interface ToolDef {
 export const TOOLS: ToolDef[] = [
   {
     name: "fs_read",
-    description: "Read a UTF-8 text file. Relative paths resolve against the repo working directory.",
+    description:
+      "Read a UTF-8 text file. Relative paths resolve against the repo working directory. " +
+      "For a large file, pass offset/limit to page through it rather than reading it all at " +
+      "once — the response says how many lines the file has and, if there's more, what offset " +
+      "to pass next.",
     parameters: {
       type: "object",
-      properties: { path: { type: "string", description: "File path to read" } },
+      properties: {
+        path: { type: "string", description: "File path to read" },
+        offset: { type: "integer", description: "1-indexed line number to start from (default 1)" },
+        limit: { type: "integer", description: "Maximum number of lines to return (default 2000)" },
+      },
       required: ["path"],
     },
     requiresApproval: false,

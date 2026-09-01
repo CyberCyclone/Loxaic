@@ -70,6 +70,7 @@ export function Composer({
     items: attachments,
     pickFromLibrary,
     takePhoto,
+    pickDocument,
     addWebFiles,
     remove: removeAttachment,
     reset: resetAttachments,
@@ -207,6 +208,7 @@ export function Composer({
           <AttachButton
             onTakePhoto={() => { void takePhoto(); }}
             onPickFromLibrary={() => { void pickFromLibrary(); }}
+            onPickDocument={() => { void pickDocument(); }}
             onFilesSelected={addWebFiles}
           />
 

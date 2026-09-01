@@ -34,6 +34,9 @@ function makeFakeHandle() {
     async writeFile(path, content) {
       files.set(path, content);
     },
+    async writeFileBinary(path, data) {
+      files.set(path, data.toString("utf8"));
+    },
     async fileTree() {
       return [];
     },
@@ -94,6 +97,7 @@ describe("resolvePath", () => {
       exec: async () => EXEC_OK,
       readFile: async () => "",
       writeFile: async () => {},
+      writeFileBinary: async () => {},
       fileTree: async () => [],
       isRunning: async () => true,
       stop: async () => {},
@@ -105,24 +109,84 @@ describe("resolvePath", () => {
 
 describe("executeTool — filesystem", () => {
   it("fs_read returns file contents", async () => {
-    const { handle, files } = makeFakeHandle();
-    files.set("/home/shannon/repo/a.txt", "hello");
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "1\thello\n2\tworld\n", stderr: "2", exitCode: 0, truncated: false, timedOut: false });
     const result = await executeTool(handle, "fs_read", { path: "a.txt" });
-    expect(result).toEqual({ ok: true, output: "hello" });
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("1\thello\n2\tworld\n");
   });
 
   it("fs_read reports an empty file distinctly", async () => {
-    const { handle, files } = makeFakeHandle();
-    files.set("/home/shannon/repo/empty.txt", "");
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "", stderr: "0", exitCode: 0, truncated: false, timedOut: false });
     const result = await executeTool(handle, "fs_read", { path: "empty.txt" });
     expect(result).toEqual({ ok: true, output: "(empty file)" });
   });
 
   it("fs_read on a missing file surfaces the error, not a crash", async () => {
-    const { handle } = makeFakeHandle();
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec({
+      stdout: "",
+      stderr: 'awk: cannot open "missing.txt" (No such file or directory)',
+      exitCode: 2,
+      truncated: false,
+      timedOut: false,
+    });
     const result = await executeTool(handle, "fs_read", { path: "missing.txt" });
     expect(result.ok).toBe(false);
-    expect(result.output).toContain("no such file");
+    expect(result.output).toContain("No such file or directory");
+  });
+
+  it("fs_read computes end = offset + limit - 1 and passes it through argv", async () => {
+    const { handle, execCalls, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "10\tx\n", stderr: "20", exitCode: 0, truncated: false, timedOut: false });
+    await executeTool(handle, "fs_read", { path: "a.txt", offset: 10, limit: 5 });
+    expect(execCalls[0].command).toEqual([
+      "bash", "-c",
+      'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
+      "_", "10", "14", "/home/shannon/repo/a.txt",
+    ]);
+  });
+
+  it("fs_read appends a continue-from footer when there are more lines than shown", async () => {
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "1\ta\n2\tb\n", stderr: "50", exitCode: 0, truncated: false, timedOut: false });
+    const result = await executeTool(handle, "fs_read", { path: "a.txt", offset: 1, limit: 2 });
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("48 more line(s)");
+    expect(result.output).toContain("offset=3");
+  });
+
+  it("fs_read reports a past-the-end offset without stdout or a more-lines footer", async () => {
+    const { handle, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "", stderr: "5", exitCode: 0, truncated: false, timedOut: false });
+    const result = await executeTool(handle, "fs_read", { path: "a.txt", offset: 100 });
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("(offset 100 is past the end of the file — it has 5 line(s))");
+    expect(result.output).not.toContain("more line(s)");
+  });
+
+  it("fs_read falls back to defaults for invalid offset/limit", async () => {
+    const { handle, execCalls, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "", stderr: "0", exitCode: 0, truncated: false, timedOut: false });
+    await executeTool(handle, "fs_read", { path: "a.txt", offset: 0, limit: -5 });
+    // offset defaults to 1, limit defaults to 2000 → end = 2000.
+    expect(execCalls[0].command).toEqual([
+      "bash", "-c",
+      'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
+      "_", "1", "2000", "/home/shannon/repo/a.txt",
+    ]);
+  });
+
+  it("fs_read falls back to defaults for a non-numeric or omitted offset/limit", async () => {
+    const { handle, execCalls, setNextExec } = makeFakeHandle();
+    setNextExec({ stdout: "", stderr: "0", exitCode: 0, truncated: false, timedOut: false });
+    await executeTool(handle, "fs_read", { path: "a.txt", offset: "not-a-number" });
+    expect(execCalls[0].command).toEqual([
+      "bash", "-c",
+      'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
+      "_", "1", "2000", "/home/shannon/repo/a.txt",
+    ]);
   });
 
   it("fs_write creates a file and reports oldContent: null in the diff", async () => {

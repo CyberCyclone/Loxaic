@@ -1,7 +1,10 @@
 import { Image } from 'expo-image';
-import { X, TriangleAlert } from 'lucide-react-native';
+import { X, TriangleAlert, FileText } from 'lucide-react-native';
+import { attachmentClass } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
+import { VStack } from '@/components/ui/vstack';
+import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
@@ -25,7 +28,16 @@ export function AttachmentPreview({ items, onRemove }: AttachmentPreviewProps) {
           testID="composer.attachment.preview"
           className="relative h-16 w-16 overflow-hidden rounded-md border border-border bg-muted"
         >
-          <Image source={{ uri: item.localUri }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
+          {attachmentClass(item.mime) === 'image' ? (
+            <Image source={{ uri: item.localUri }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
+          ) : (
+            <VStack className="h-full w-full items-center justify-center gap-0.5 p-1">
+              <Icon as={FileText} size="sm" className="text-muted-foreground" />
+              <Text size="2xs" numberOfLines={1} className="w-full text-center text-muted-foreground">
+                {item.name ?? 'File'}
+              </Text>
+            </VStack>
+          )}
           {item.status === 'uploading' && (
             <Box className="absolute inset-0 items-center justify-center bg-background/60">
               <Spinner size="small" />

@@ -7,35 +7,184 @@ export type PermissionMode = "planning" | "manual" | "auto";
 
 export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
-/** An uploaded image attached to a user message. `ref` is the id returned by
- * `POST /v1/files`; `mime` is advisory for rendering (the server's DB row is
- * the authority). */
-export interface AttachmentRef { ref: string; mime: string }
+/** An uploaded file attached to a user message. `ref` is the id returned by
+ * `POST /v1/files`; `mime` and `name` are advisory for rendering (the server's
+ * DB row is the authority for both). */
+export interface AttachmentRef { ref: string; mime: string; name?: string }
 
-/** Shared client/server limits for image attachments — one source so the
- * composer's caps and the upload route's rejections can't drift apart. */
+/** Shared client/server limits for attachments — one source so the composer's
+ * caps and the upload route's rejections can't drift apart, and so no platform
+ * can end up with a cap of its own. */
 export const MAX_ATTACHMENTS = 4;
+
+/** Images. Sniffable by magic bytes, sent to the model as `image_url` parts. */
+export const IMAGE_MIMES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
+
+/** Text-ish formats: no parser, so no sandbox. These are read straight off
+ * disk, validated as UTF-8, and inlined — which is why they stay available
+ * when SANDBOX_MODE is "off" and DOCUMENT_MIMES do not. */
+export const TEXT_MIMES = [
+  "text/plain",
+  "text/markdown",
+  "text/csv",
+  "text/tab-separated-values",
+  "text/html",
+  "text/xml",
+  "application/xml",
+  "text/yaml",
+  "application/yaml",
+  "application/json",
+] as const;
+
+/** Formats needing a real parser run over a file the server did not author.
+ * Extraction happens inside the sandbox container, so these are rejected at
+ * upload when no sandbox is configured. PR 2 adds the Office formats here. */
+export const DOCUMENT_MIMES = ["application/pdf"] as const;
+
+export const ATTACHMENT_MIMES = [...IMAGE_MIMES, ...TEXT_MIMES, ...DOCUMENT_MIMES] as const;
+
+export type AttachmentClass = "image" | "text" | "document";
+
+/** Which pipeline a mime takes. Returns null for anything not allowlisted —
+ * callers treat that as "reject", never as a default class. */
+export function attachmentClass(mime: string): AttachmentClass | null {
+  const m = mime.toLowerCase();
+  if ((IMAGE_MIMES as readonly string[]).includes(m)) return "image";
+  if ((TEXT_MIMES as readonly string[]).includes(m)) return "text";
+  if ((DOCUMENT_MIMES as readonly string[]).includes(m)) return "document";
+  return null;
+}
+
+/** Images keep their own 10 MB cap; documents may be larger because what
+ * bounds their prompt cost is MAX_EXTRACTED_BYTES, not the upload size. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const ATTACHMENT_MIMES = ["image/jpeg", "image/png", "image/webp", "image/gif"] as const;
+export const MAX_DOCUMENT_BYTES = 25 * 1024 * 1024;
+
+/** Ceiling on one attachment's extracted text. Deliberately far below what a
+ * hosted assistant would allow: this text is inlined into a local model's
+ * window, so the binding constraint is the window, not the disk. */
+export const MAX_EXTRACTED_BYTES = 256 * 1024;
+
+/** Ceiling on the cached `<ref>.txt` sidecar written at extraction time —
+ * distinct from MAX_EXTRACTED_BYTES, which bounds what enters the *prompt*.
+ * This is a disk/sandbox-paging ceiling: it exists so a big document still
+ * has something for the agent to grep/fs_read through after the prompt-facing
+ * copy has been truncated, without letting one attachment's cache grow
+ * unbounded. Comfortably above MAX_EXTRACTED_BYTES; not meant to be tight. */
+export const MAX_CACHED_EXTRACTION_BYTES = 4 * 1024 * 1024;
+
+/** Pages `pdftotext` is allowed to walk. Bounds extraction time on a
+ * pathological PDF independently of the byte cap. */
+export const MAX_PDF_PAGES = 200;
+
+/** The largest upload the route will accept, across all classes — what
+ * @fastify/multipart's `limits.fileSize` is set to. Per-class caps are checked
+ * after the bytes land, once the real size is known. */
+export const MAX_UPLOAD_BYTES = Math.max(MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES);
+
+/** Per-class upload ceiling, for the size check after the bytes land. */
+export function maxBytesForMime(mime: string): number {
+  return attachmentClass(mime) === "image" ? MAX_ATTACHMENT_BYTES : MAX_DOCUMENT_BYTES;
+}
+
+/**
+ * Browsers report `File.type` as "" for plenty of text formats — .md, .ts,
+ * .yml, often .csv — so a strict mime allowlist alone would silently reject
+ * exactly the source files a coding assistant is most likely to be handed.
+ * Shared so the composer and the upload route agree on what an extension
+ * means; the server still confirms the bytes independently.
+ */
+const EXTENSION_MIMES: Record<string, string> = {
+  txt: "text/plain", text: "text/plain", log: "text/plain",
+  md: "text/markdown", markdown: "text/markdown",
+  csv: "text/csv", tsv: "text/tab-separated-values",
+  json: "application/json", jsonl: "application/json",
+  xml: "text/xml", html: "text/html", htm: "text/html",
+  yaml: "text/yaml", yml: "text/yaml",
+  pdf: "application/pdf",
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+  webp: "image/webp", gif: "image/gif",
+  // Source files. All plain text to us — the extension only has to get them
+  // past the allowlist; nothing downstream cares which language it is.
+  ts: "text/plain", tsx: "text/plain", js: "text/plain", jsx: "text/plain",
+  py: "text/plain", rb: "text/plain", go: "text/plain", rs: "text/plain",
+  java: "text/plain", c: "text/plain", h: "text/plain", cpp: "text/plain",
+  cs: "text/plain", php: "text/plain", swift: "text/plain", kt: "text/plain",
+  sh: "text/plain", bash: "text/plain", zsh: "text/plain", sql: "text/plain",
+  toml: "text/plain", ini: "text/plain", cfg: "text/plain", conf: "text/plain",
+  env: "text/plain", diff: "text/plain", patch: "text/plain",
+  // Extensionless dotfiles: ".gitignore".split(".") yields "gitignore",
+  // so these key the same way any other extension does.
+  gitignore: "text/plain", gitattributes: "text/plain", dockerignore: "text/plain",
+  editorconfig: "text/plain", npmrc: "text/plain", nvmrc: "text/plain",
+  bashrc: "text/plain", zshrc: "text/plain", profile: "text/plain",
+};
+
+/**
+ * Best-effort mime for a picked file. A usable declared type always wins; the
+ * extension is only consulted when the picker gave us nothing (or a generic
+ * octet-stream). Returns null when neither yields an allowlisted mime, which
+ * callers must treat as "reject".
+ */
+export function resolveAttachmentMime(declared: string | undefined, filename: string): string | null {
+  const d = declared?.toLowerCase().trim();
+  if (d && d !== "application/octet-stream" && attachmentClass(d)) return d;
+  const ext = filename.toLowerCase().split(".").pop();
+  if (!ext || ext === filename.toLowerCase()) return null;
+  const byExt = EXTENSION_MIMES[ext];
+  return byExt && attachmentClass(byExt) ? byExt : null;
+}
+
+/** Longest filename kept. Long enough for any real name, short enough that a
+ * pathological one can't dominate the prompt or a response header. */
+export const MAX_FILENAME_LENGTH = 200;
+
+/**
+ * A filename safe to put in a `Content-Disposition` header, a prompt, and the
+ * UI. Everything the client sends is a claim: this keeps the basename only
+ * (so no path component can survive), drops control characters — which in a
+ * header would be response splitting, and in a prompt would be an escape
+ * attempt — and caps the length. Never returns "", so a caller always has
+ * something to render.
+ */
+export function sanitizeFilename(raw: unknown): string {
+  if (typeof raw !== "string") return "file";
+  // Both separators, so a Windows-style path can't smuggle a component past a
+  // POSIX-only split.
+  const base = raw.split(/[/\\]/).pop() ?? "";
+  const cleaned = base
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .trim();
+  // A leading dot is kept: the path split above already removed every
+  // directory component, so stripping it was never the traversal defence — it
+  // just mangled dotfiles. It also broke them outright, because the upload
+  // route resolves the mime from this name and `.env` arriving as `env` looks
+  // extensionless to resolveAttachmentMime, which then 415s a file the client
+  // had already accepted. A name that is *only* dots has nothing left to be a
+  // filename, so it falls back.
+  if (!cleaned || /^\.+$/.test(cleaned)) return "file";
+  return cleaned.length > MAX_FILENAME_LENGTH ? cleaned.slice(0, MAX_FILENAME_LENGTH) : cleaned;
+}
 
 /**
  * The "is this send well-formed" gate shared word-for-word by `chat.send`
  * and `agent.send` — pure so it's testable without a live socket. An
- * image-only message is valid (empty text is only an error when nothing is
- * attached either); returns the error string to send back, or null to
+ * attachment-only message is valid (empty text is only an error when nothing
+ * is attached either); returns the error string to send back, or null to
  * proceed.
  */
 export function validateSendAttachments(content: unknown, attachments: unknown): string | null {
   const atts: unknown = attachments ?? [];
   if (!Array.isArray(atts) || atts.length > MAX_ATTACHMENTS) {
-    return `Attach at most ${String(MAX_ATTACHMENTS)} images`;
+    return `Attach at most ${String(MAX_ATTACHMENTS)} files`;
   }
   // Elements too, not just the array. TypeScript's `string[]` on the wire type
   // is a claim about a JSON payload, not a fact, and the downstream ref check
   // is a regex — `RegExp.test` stringifies, so `[["<uuid>"]]` would otherwise
   // read as a valid uuid and reach a uuid-typed query.
   if (!atts.every((a: unknown) => typeof a === "string")) {
-    return `Attach at most ${String(MAX_ATTACHMENTS)} images`;
+    return `Attach at most ${String(MAX_ATTACHMENTS)} files`;
   }
   if (typeof content !== "string" || (!content.trim() && atts.length === 0)) {
     return "Content required";

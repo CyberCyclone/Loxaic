@@ -26,7 +26,7 @@ export function AttachButton({ onFilesSelected }: AttachButtonProps) {
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        accept="image/*,.pdf,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.html,.htm,.xml,.yaml,.yml,.ts,.tsx,.js,.jsx,.py,.rb,.go,.rs,.java,.c,.h,.cpp,.cs,.php,.swift,.kt,.sh,.bash,.zsh,.sql,.toml,.ini,.cfg,.conf,.env,.diff,.patch,.log,.gitignore,.gitattributes,.dockerignore,.editorconfig,.npmrc,.nvmrc,.bashrc,.zshrc,.profile"
         multiple
         data-testid="composer.attach.input"
         style={{ display: 'none' }}

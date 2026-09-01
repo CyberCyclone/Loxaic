@@ -23,6 +23,13 @@ describe("assertAttachmentsOwned", () => {
     return id;
   }
 
+  async function newAttachmentWithFilename(ownerId: string, filename: string, mime = "text/plain"): Promise<string> {
+    const id = uuid();
+    await db.insert(attachments).values({ id, ownerId, mime, sizeBytes: 42, filename });
+    attIds.push(id);
+    return id;
+  }
+
   beforeAll(async () => {
     await db.insert(user).values([
       { id: userA, name: "Test A", email: `${userA}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() },
@@ -44,6 +51,20 @@ describe("assertAttachmentsOwned", () => {
   it("resolves an owned ref, returning the DB's mime rather than trusting the caller's claim", async () => {
     const ref = await newAttachment(userA, "image/webp");
     expect(await assertAttachmentsOwned(userA, [ref])).toEqual([{ ref, mime: "image/webp" }]);
+  });
+
+  it("resolves an owned ref, returning the DB's filename as `name`, not the caller's claim", async () => {
+    const ref = await newAttachmentWithFilename(userA, "real-name.csv");
+    const result = await assertAttachmentsOwned(userA, [ref]);
+    expect(result[0]).toEqual({ ref, mime: "text/plain", name: "real-name.csv" });
+  });
+
+  it("omits `name` entirely for a row predating documents (empty filename default)", async () => {
+    // Simulates an attachment from before documents existed — an old image
+    // row whose filename column is still its "" default.
+    const ref = await newAttachment(userA, "image/png");
+    const result = await assertAttachmentsOwned(userA, [ref]);
+    expect(result[0]).not.toHaveProperty("name");
   });
 
   it("resolves multiple owned refs in the caller's given order, not DB order", async () => {
