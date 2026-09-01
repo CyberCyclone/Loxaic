@@ -93,10 +93,12 @@ function containsTextSelector(text: string): string {
  * only thing left to look for.
  */
 export async function expectTextAbsent(text: string): Promise<void> {
-  const matches = [...(await $$(containsTextSelector(text)))];
-  const visible = await Promise.all(matches.map((el) => el.isDisplayed().catch(() => false)));
-  if (visible.some(Boolean)) {
-    throw new Error(`expected no visible element containing "${text}", but one was rendered`);
+  // Iterated with `for await`, the same way firstGridCell() consumes `$$` —
+  // the chainable array is not awaited directly.
+  for await (const el of $$(containsTextSelector(text))) {
+    if (await el.isDisplayed().catch(() => false)) {
+      throw new Error(`expected no visible element containing "${text}", but one was rendered`);
+    }
   }
 }
 
