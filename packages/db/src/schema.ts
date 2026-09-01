@@ -266,6 +266,34 @@ export const mcpServers = pgTable(
   (t) => [uniqueIndex("mcp_servers_owner_slug_idx").on(t.ownerId, t.slug)],
 );
 
+/**
+ * One row per server instance sharing this database. The set of rows *is* the
+ * cluster: identity lives in the database, so pointing an instance at a
+ * different database makes it part of a different cluster by construction,
+ * with nothing to reconcile.
+ *
+ * `id` is the desktop install's stable `instanceId` (config.json), not a
+ * generated key — a Solo→Host switch must update this machine's row rather
+ * than register the same machine twice.
+ *
+ * `name` is user-chosen at onboarding (defaulting to the machine's hostname).
+ * It is the label shown against every model in the picker, so it is how a user
+ * tells "the model on the GPU box" from "the model on the laptop".
+ */
+export const hosts = pgTable("hosts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  advertiseUrl: text("advertise_url").notNull(),
+  /** Where this host's own inference backend listens. Phase 4 fans out over
+   * these; today it records what the single host is using. */
+  inferenceBaseUrl: text("inference_base_url"),
+  version: text("version"),
+  /** Refreshed while the instance is alive. A stale heartbeat is what marks a
+   * host (and its models) as gone without deleting its conversations. */
+  lastHeartbeatAt: timestamp("last_heartbeat_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 /** Server-level (not per-user) configuration set through the admin GUI, e.g.
  * the agent sandbox's mode/engine/network. Key-value so a new setting group
  * costs a row rather than a migration. Environment variables always take

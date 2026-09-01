@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { loadOrCreateSecrets } from "./secrets.js";
+import { advertiseUrlFor, bindHostFor } from "./config.js";
 import { freePort } from "./ports.js";
 import { startPostgres } from "./postgres.js";
 import { startServer } from "./server.js";
@@ -18,7 +19,24 @@ const PASSTHROUGH_ENV = [
   "SANDBOX_IMAGE",
   "SANDBOX_ALLOW_NETWORK",
   "NTFY_URL",
+  // A host serves users on other machines, so both of these stop being
+  // deployment trivia: TRUSTED_ORIGINS decides whose browser better-auth will
+  // talk to, and ADMIN_EMAILS decides who administers the host rather than
+  // whoever happened to sign up first.
+  "TRUSTED_ORIGINS",
+  "ADMIN_EMAILS",
 ];
+
+/**
+ * Full connection URL for an external database. The config file holds the URL
+ * without a password (safe to read and show); the password lives in
+ * secrets.json beside the auth secret, and is injected here.
+ */
+function externalDatabaseUrl(db, secrets) {
+  const url = new URL(db.url);
+  if (secrets.externalDbPassword) url.password = secrets.externalDbPassword;
+  return url.toString();
+}
 
 async function isHealthyShannon(baseUrl) {
   try {
@@ -78,13 +96,26 @@ async function waitForHealth(baseUrl) {
 
 /**
  * Bring up the embedded stack: Postgres (ephemeral localhost port, data under
- * dataDir) and the bundled server (default port 4100). The whole child env is
- * built here — the packaged app never reads a repo .env.
+ * dataDir — or an external database, in which case none is started) and the
+ * bundled server. The whole child env is built here — the packaged app never
+ * reads a repo .env.
+ *
+ * `instance` is the resolved config.json for this install (mode, instanceId,
+ * host name, database choice). It is what turns a Solo stack into a Host one:
+ * the bind address, the advertised URL that `BETTER_AUTH_URL` is derived
+ * from, and the `SHANNON_HOSTING` gate all come from it. Omitted, the stack
+ * behaves exactly as a loopback single-user install.
  *
  * Returns { apiBaseUrl, port, stop } — stop() tears down server-then-Postgres
  * in order, so the server can drain against a live database.
  */
-export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log = console.log }) {
+export async function startStack({
+  dataDir,
+  port = 4100,
+  host,
+  log = console.log,
+  instance = null,
+}) {
   const { serverDir, migrationsDir, webDistDir } = resolveRuntimePaths();
   const entry = path.join(serverDir, "dist/index.js");
   if (!existsSync(entry)) {
@@ -95,6 +126,15 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
 
   mkdirSync(dataDir, { recursive: true });
   const secrets = loadOrCreateSecrets(dataDir);
+
+  const hostConfig = instance?.host ?? null;
+  const hosting = instance?.mode === "host";
+  const bindHost = host ?? (hostConfig ? bindHostFor(hostConfig) : "0.0.0.0");
+  // What other machines dial. Solo resolves to loopback, so the same code
+  // path serves both modes without a second branch.
+  const advertiseUrl = hostConfig
+    ? advertiseUrlFor({ ...hostConfig, port })
+    : `http://localhost:${String(port)}`;
 
   // A previous app crash leaves both children running (they don't die with
   // the parent). The postgres side adopts via postmaster.pid; the server side
@@ -114,8 +154,18 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
   }
   await reapRecordedServer(serverPidFile, log);
 
-  const pgPort = await freePort();
-  const pg = await startPostgres({ dataDir, port: pgPort, password: secrets.pgPassword, log });
+  // An external database means no embedded Postgres at all — not one started
+  // and ignored. `pg` stays null and every later reference is guarded, so a
+  // stop() never tries to shut down a server that was never ours.
+  const externalDb = hostConfig?.db?.kind === "external" ? hostConfig.db : null;
+  let pg = null;
+  if (externalDb) {
+    log(`[stack] using external database (no embedded Postgres)`);
+  } else {
+    const pgPort = await freePort();
+    pg = await startPostgres({ dataDir, port: pgPort, password: secrets.pgPassword, log });
+  }
+  const databaseUrl = externalDb ? externalDatabaseUrl(externalDb, secrets) : pg.url;
 
   const env = {
     // Deliberately not `...process.env`: the stack's config is fully explicit.
@@ -123,8 +173,8 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
     HOME: process.env.HOME ?? "",
     NODE_ENV: "production",
     PORT: String(port),
-    HOST: host,
-    DATABASE_URL: pg.url,
+    HOST: bindHost,
+    DATABASE_URL: databaseUrl,
     STREAM_BACKEND: "memory",
     WEB_DIST_DIR: webDistDir,
     MIGRATIONS_DIR: migrationsDir,
@@ -134,7 +184,10 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
     // build-server.mjs ships a copy of infra/docker/sandbox.Dockerfile here.
     SANDBOX_BUILD_CONTEXT: path.join(serverDir, "sandbox"),
     BETTER_AUTH_SECRET: secrets.betterAuthSecret,
-    BETTER_AUTH_URL: `http://localhost:${port}`,
+    // Derived from the advertised URL, not pinned to loopback: better-auth
+    // builds its callback URLs and cookie domain from this, so a host serving
+    // LAN clients while claiming to be localhost rejects every one of them.
+    BETTER_AUTH_URL: advertiseUrl,
     SHANNON_DATA_DIR: dataDir,
     // Without this, storage.ts falls back to <cwd>/uploads — and cwd here is
     // serverDir, i.e. inside the installed app bundle. Attachments would be
@@ -144,6 +197,20 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
     // dir: user data belongs under dataDir.
     UPLOADS_DIR: path.join(dataDir, "uploads"),
   };
+  if (instance) {
+    // This machine's identity in the `hosts` table. Stable across mode
+    // changes, so a Solo→Host switch updates one row rather than registering
+    // the same machine twice.
+    env.SHANNON_INSTANCE_ID = instance.instanceId;
+    env.SHANNON_ADVERTISE_URL = advertiseUrl;
+    if (hostConfig?.name) env.SHANNON_HOST_NAME = hostConfig.name;
+  }
+  if (hosting) {
+    // Hosting for other users requires container isolation. The server
+    // refuses to boot without it — see apps/server/src/index.ts. Enforcing it
+    // there rather than here means a hand-started server can't skip the gate.
+    env.SHANNON_HOSTING = "1";
+  }
   for (const key of PASSTHROUGH_ENV) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
@@ -152,7 +219,7 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
   try {
     server = await startServer({ entry, cwd: serverDir, env, log });
   } catch (err) {
-    await pg.stop().catch(() => undefined);
+    await pg?.stop().catch(() => undefined);
     throw err;
   }
   if (server.child.pid) writeFileSync(serverPidFile, String(server.child.pid));
@@ -162,10 +229,13 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
     await waitForHealth(apiBaseUrl);
   } catch (err) {
     await server.stop();
-    await pg.stop().catch(() => undefined);
+    await pg?.stop().catch(() => undefined);
     throw err;
   }
-  log(`[stack] up at ${apiBaseUrl} (postgres :${pg.port}, data ${dataDir})`);
+  log(
+    `[stack] up at ${apiBaseUrl} (${pg ? `postgres :${String(pg.port)}` : "external database"}, ` +
+      `data ${dataDir}${hosting ? `, hosting as "${String(hostConfig?.name)}"` : ""})`,
+  );
 
   let stopped = false;
   return {
@@ -175,7 +245,7 @@ export async function startStack({ dataDir, port = 4100, host = "0.0.0.0", log =
       if (stopped) return;
       stopped = true;
       await server.stop();
-      await pg.stop().catch(() => undefined);
+      await pg?.stop().catch(() => undefined);
       rmSync(serverPidFile, { force: true });
       log("[stack] stopped");
     },
