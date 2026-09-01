@@ -23,6 +23,29 @@ describe("filename handling", () => {
     expect(resolveAttachmentMime(undefined, sanitizeFilename(".gitignore"))).toBe("text/plain");
   });
 
+  it("decodes a percent-encoded name from the Android document picker", () => {
+    // Real upload from a phone: expo-document-picker returns the name off the
+    // content:// URI already encoded, and it went straight into the chip, the
+    // prompt, and Content-Disposition looking like this.
+    expect(
+      sanitizeFilename("SESSION%202%20Accountability%20BIBLE%20DISCOVERY%20%26%20DISCUSSION%20QUESTIONS.docx"),
+    ).toBe("SESSION 2 Accountability BIBLE DISCOVERY & DISCUSSION QUESTIONS.docx");
+    expect(sanitizeFilename("caf%C3%A9%20menu.pdf")).toBe("café menu.pdf");
+  });
+
+  it("decodes before splitting, so an encoded separator can't survive", () => {
+    // The ordering is the security property: decoding after the split would
+    // turn %2F back into a separator the split had already removed.
+    expect(sanitizeFilename("%2E%2E%2F%2E%2E%2Fetc%2Fpasswd")).toBe("passwd");
+    expect(sanitizeFilename("%2Fabs%2Fsecret.txt")).toBe("secret.txt");
+  });
+
+  it("keeps a name containing a stray % rather than throwing on it", () => {
+    // decodeURIComponent rejects this; a failed decode must fall back to the
+    // original instead of losing the name.
+    expect(sanitizeFilename("100% done.pdf")).toBe("100% done.pdf");
+  });
+
   it("still strips every path component", () => {
     expect(sanitizeFilename("../../etc/passwd")).toBe("passwd");
     expect(sanitizeFilename("/abs/x.txt")).toBe("x.txt");

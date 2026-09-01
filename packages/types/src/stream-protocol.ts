@@ -171,9 +171,26 @@ export const MAX_FILENAME_LENGTH = 200;
  */
 export function sanitizeFilename(raw: unknown): string {
   if (typeof raw !== "string") return "file";
+  // Decode *before* splitting, and that order is load-bearing: a name
+  // containing %2F decodes to a separator, and decoding after the split would
+  // reintroduce one that the split had already removed. Android's document
+  // picker returns percent-encoded names off the content:// URI — a real
+  // upload arrived as
+  // "SESSION%202%20Accountability%20BIBLE%20DISCOVERY%20%26%20DISCUSSION%20QUESTIONS.docx"
+  // which is what the user then saw on the chip, what the model was told the
+  // file was called, and what went into Content-Disposition.
+  //
+  // decodeURIComponent throws on a stray "%" (a legitimate "100% done.pdf"),
+  // so a failed decode keeps the original rather than rejecting the name.
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Not percent-encoded, or not validly so — the raw name is the best we have.
+  }
   // Both separators, so a Windows-style path can't smuggle a component past a
   // POSIX-only split.
-  const base = raw.split(/[/\\]/).pop() ?? "";
+  const base = decoded.split(/[/\\]/).pop() ?? "";
   const cleaned = base
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
