@@ -119,16 +119,62 @@ async function attachViaFileInput(fixture: string): Promise<void> {
 async function attachViaIosPicker(): Promise<void> {
   await tap('composer.attach');
   await tap('composer.attach.library');
-  // PHPicker presents out-of-process; its grid cells are exposed as images
-  // whose label starts with "Photo". Waiting on the first cell rather than
-  // tapping blind also absorbs the sheet's present animation.
-  const firstPhoto = $('-ios predicate string:type == "XCUIElementTypeImage" AND name BEGINSWITH "Photo"');
-  await firstPhoto.waitForDisplayed({ timeout: 30_000 });
-  await firstPhoto.click();
-  // Multi-select pickers need an explicit confirm; single-select dismisses
-  // itself. Only tap Add if it actually rendered.
-  const add = $('~Add');
-  if (await add.isDisplayed().catch(() => false)) await add.click();
+
+  // Modern PHPicker opens on a "Private Access to Photos" onboarding banner
+  // that sits over the grid. It has to be dismissed before any cell can be
+  // reached, and it only appears the first time for a given app install — so
+  // this is conditional rather than assumed.
+  const close = $('~Close');
+  if (await close.isDisplayed().catch(() => false)) {
+    await close.click();
+    await browser.pause(500);
+  }
+
+  // The grid cells are XCUIElementTypeImage named "PXGGridLayout-Info" — not
+  // the "Photo…"-labelled images this used to look for, which no longer exist
+  // and are why it timed out rather than mismatching.
+  //
+  // Waited on with waitForExist, not waitForDisplayed: XCUITest reports these
+  // cells `visible="false"` even while they are plainly on screen and
+  // tappable, so waiting for "displayed" would never return. Confirmed by
+  // dumping the live hierarchy — a 3-column grid of 133x133 cells, every one
+  // of them visible="false".
+  const firstPhoto = $('-ios predicate string:type == "XCUIElementTypeImage" AND name == "PXGGridLayout-Info"');
+  await firstPhoto.waitForExist({ timeout: 30_000 });
+
+  // Tapped by coordinate rather than `.click()`. XCUITest gates element clicks
+  // on its own visibility calculation, which reports these cells not visible —
+  // so a plain click is accepted and then quietly does nothing, leaving the
+  // picker open with no selection (confirmed: the server saw no upload at all).
+  // The cell's geometry is still reported correctly, so a pointer action at its
+  // centre lands where the user's finger would.
+  const { x, y } = await firstPhoto.getLocation();
+  const { width, height } = await firstPhoto.getSize();
+  await browser.performActions([
+    {
+      type: 'pointer',
+      id: 'finger1',
+      parameters: { pointerType: 'touch' },
+      actions: [
+        { type: 'pointerMove', duration: 0, x: Math.round(x + width / 2), y: Math.round(y + height / 2) },
+        { type: 'pointerDown', button: 0 },
+        { type: 'pause', duration: 100 },
+        { type: 'pointerUp', button: 0 },
+      ],
+    },
+  ]);
+  await browser.releaseActions();
+  await browser.pause(500);
+
+  // Multi-select needs an explicit confirm; single-select dismisses itself.
+  // "Add" on older iOS, "Done" on newer — try whichever actually rendered.
+  for (const selector of ['~Add', '~Done']) {
+    const confirm = $(selector);
+    if (await confirm.isDisplayed().catch(() => false)) {
+      await confirm.click();
+      break;
+    }
+  }
 }
 
 /** Smallest edge, in px, a node has to have to be a photo-grid cell rather
