@@ -10,6 +10,7 @@ import "./cwd-guard.js";
 import os from "node:os";
 import { startStack } from "./supervisor/index.js";
 import { defaultDataDir } from "./supervisor/paths.js";
+import { buildConfig, loadConfig, saveConfig } from "./supervisor/config.js";
 
 const HELP = `Usage: open-shannon-headless [options]
 
@@ -19,12 +20,19 @@ window, for server installs.
 Options:
   --port <n>          Server port (default: 4100, or $SHANNON_PORT).
                        --shannon-port also accepted (same flag the GUI uses).
-  --host <addr>        Bind address (default: 0.0.0.0)
+  --host <addr>        Bind address (default: from config.json, else 0.0.0.0)
   --data-dir <path>    Data directory (default: platform user-data dir, or
                        $SHANNON_DATA_DIR). --shannon-data-dir also accepted.
+  --as-host            Configure this install as a Host (serves other users)
+                       and persist it, then start. Requires a container engine.
+  --host-name <name>   Name shown against this host's models (default: hostname)
   --inference-url <u>  Inference backend base URL (sets INFERENCE_BASE_URL)
   --mock-inference     Use the mock inference provider (sets MOCK_INFERENCE=true)
   --help               Show this help and exit
+
+Instance mode is read from <data-dir>/config.json — the same file the desktop
+app writes — so a machine set up through the GUI restarts headless unchanged.
+Headless *client* mode (joining someone else's host) is not supported yet.
 `;
 
 /**
@@ -69,10 +77,47 @@ async function main() {
   if (hasFlag("mock-inference")) process.env.MOCK_INFERENCE = "true";
 
   const dataDir = getFlag("data-dir", "shannon-data-dir") ?? process.env.SHANNON_DATA_DIR ?? defaultDataDir();
-  const port = Number(getFlag("port", "shannon-port") ?? process.env.SHANNON_PORT ?? 4100);
-  const host = getFlag("host") ?? "0.0.0.0";
 
-  const stack = await startStack({ dataDir, port, host, log: (line) => { console.log(line); } });
+  // Headless client mode ("like OpenCode") is a later feature — #73 defers it
+  // explicitly. Say so rather than silently starting a *host*, which is what
+  // ignoring the flag would do: the opposite of what was asked for, on a
+  // machine the user meant to keep stateless.
+  if (hasFlag("client") || getFlag("client")) {
+    console.error(
+      "Headless client mode isn't supported yet — a headless instance always hosts.\n" +
+        "Use the desktop app to join a host, or run this instance with --host.",
+    );
+    process.exit(2);
+  }
+
+  // The instance config the GUI wrote (shared dataDir, so a machine set up
+  // through the app can be restarted headless without reconfiguring it).
+  // `--host` forces host mode for a machine that has never seen the GUI.
+  let instance = loadConfig(dataDir);
+  if (hasFlag("host-mode") || hasFlag("as-host")) {
+    instance = buildConfig({ mode: "host", host: { name: getFlag("host-name") } }, instance);
+    saveConfig(dataDir, instance);
+  }
+  if (instance?.mode === "client") {
+    console.error(
+      `This install is configured as a client of ${String(instance.client.hostUrl)}.\n` +
+        "Headless client mode isn't supported yet — run --as-host to convert it, or use the desktop app.",
+    );
+    process.exit(2);
+  }
+
+  const port = Number(
+    getFlag("port", "shannon-port") ?? process.env.SHANNON_PORT ?? instance?.host?.port ?? 4100,
+  );
+  const host = getFlag("host") ?? undefined;
+
+  const stack = await startStack({
+    dataDir,
+    port,
+    host,
+    log: (line) => { console.log(line); },
+    instance,
+  });
 
   console.log("Open Shannon is running:");
   for (const url of listAddresses(stack.port)) console.log(`  ${url}`);
