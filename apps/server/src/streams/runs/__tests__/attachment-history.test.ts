@@ -7,8 +7,8 @@ import { db, eq } from "@shannon/db";
 import { attachments, conversations, messages, user } from "@shannon/db/schema";
 import type { ContentBlock } from "@shannon/types";
 import { attachmentPath } from "../../../files/storage.ts";
-import { getStreamBroker, initStreamBroker } from "../../index.ts";
-import { loadEphemeralHistory, loadHistory } from "../engine.ts";
+import { initStreamBroker } from "../../index.ts";
+import { loadHistory } from "../engine.ts";
 
 /**
  * Integration test against the real dev Postgres (same pattern as
@@ -133,52 +133,5 @@ describe("attachment content in history loaders", () => {
 
     const history = await loadHistory(convId);
     expect(history.messages).toEqual([{ role: "user", content: "just text" }]);
-  });
-
-  it("loadEphemeralHistory (incognito) turns a message.start's attachments into an image_url part too", async () => {
-    // Incognito writes nothing to Postgres — the attachment row (for the
-    // bytes/mime) is the only DB row this case needs; the message itself
-    // lives only in the stream log.
-    const convId = uuid();
-    const att = await newAttachment("incognito png");
-    const broker = getStreamBroker();
-    await broker.driver.putEphemeralConv({
-      id: convId,
-      ownerId: userId,
-      title: "incognito attach test",
-      kind: "chat",
-      createdAt: Date.now(),
-    });
-
-    const streamId = uuid();
-    const userMsgId = uuid();
-    const producer = await broker.openProducer({
-      streamId,
-      conversationId: convId,
-      userId,
-      surface: "chat",
-      incognito: true,
-    });
-    producer.emit({
-      kind: "message.start",
-      message_id: userMsgId,
-      author_type: "user",
-      parent_id: null,
-      text: "what is this",
-      attachments: [att],
-    });
-    producer.emit({ kind: "message.end", message_id: userMsgId, status: "complete" });
-    await producer.end("complete");
-
-    const history = await loadEphemeralHistory(convId);
-    expect(history.messages).toEqual([
-      {
-        role: "user",
-        content: [
-          { type: "image_url", image_url: { url: `data:image/png;base64,${Buffer.from("incognito png").toString("base64")}` } },
-          { type: "text", text: "what is this" },
-        ],
-      },
-    ]);
   });
 });

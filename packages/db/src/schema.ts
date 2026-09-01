@@ -163,8 +163,7 @@ export const usageRecords = pgTable("usage_records", {
   promptTps: real("prompt_tps"),
   predictedTps: real("predicted_tps"),
   /** What this turn's prompt was made of — see ContextBreakdown in
-   * @shannon/types. Nullable: rows predating this column have none, and no
-   * row is written at all for an incognito turn. */
+   * @shannon/types. Nullable: rows predating this column have none. */
   contextBreakdown: jsonb("context_breakdown"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });

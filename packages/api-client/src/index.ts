@@ -724,7 +724,6 @@ export function sendChatMessage(
   model?: string,
   conversationId?: string,
   parentId?: string,
-  incognito?: boolean,
   attachments?: string[],
 ): boolean {
   return trySend(ws, {
@@ -733,7 +732,6 @@ export function sendChatMessage(
     model: model ?? "default",
     conversation_id: conversationId,
     parent_id: parentId,
-    incognito,
     attachments,
   });
 }
@@ -745,7 +743,6 @@ export function sendAgentMessage(
   convId?: string,
   parentId?: string,
   model?: string,
-  incognito?: boolean,
   attachments?: string[],
 ): boolean {
   return trySend(ws, {
@@ -755,7 +752,6 @@ export function sendAgentMessage(
     conversation_id: convId,
     parent_id: parentId,
     model: model ?? "default",
-    incognito,
     attachments,
   });
 }

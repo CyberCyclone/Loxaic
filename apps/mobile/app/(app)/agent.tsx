@@ -206,7 +206,7 @@ export default function AgentScreen() {
               />
               <ModeSelector mode={mode} onChange={handleModeChange} />
               <Composer
-                onSend={(text, attachments) => { handleSend(text, selectedModel, undefined, attachments); }}
+                onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
                 onStop={handleStop}
                 streaming={busy}
                 modelName={selectedModel ? getName(selectedModel) : 'Select model'}

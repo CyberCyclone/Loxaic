@@ -84,7 +84,6 @@ export function chatWsHandler(app: FastifyInstance) {
             model: msg.model ?? "default",
             conversationId: msg.conversation_id,
             parentId: msg.parent_id,
-            incognito: msg.incognito,
             attachments: msg.attachments ?? [],
           });
           safeSend({
@@ -92,7 +91,6 @@ export function chatWsHandler(app: FastifyInstance) {
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
-            incognito: result.incognito,
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {
@@ -123,7 +121,6 @@ export function chatWsHandler(app: FastifyInstance) {
             // No user message exists for a command — the summary message is
             // the run's root, and the client only uses this for correlation.
             user_message_id: result.summaryMessageId,
-            incognito: result.incognito,
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "stream.subscribe") {

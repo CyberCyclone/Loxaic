@@ -4,7 +4,7 @@ import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@shannon/db";
 import { conversations, mcpServers, messages, sandboxes, usageRecords, user } from "@shannon/db/schema";
 import type { ContentBlock } from "@shannon/types";
-import { getStreamBroker, initStreamBroker } from "../../streams/index.ts";
+import { initStreamBroker } from "../../streams/index.ts";
 import { getRun } from "../../streams/registry.ts";
 import { startAgentRun } from "../../streams/runs/agentRun.ts";
 import { startChatRun } from "../../streams/runs/chatRun.ts";
@@ -19,7 +19,7 @@ import Docker from "dockerode";
  * approval gate → dispatch → wrapped result persisted as ContentBlocks. Chat
  * is tool-capable too now, so every case below runs through both starters
  * except where a case is specific to one surface (planning mode is
- * agent-only; incognito is chat-only today).
+ * agent-only).
  */
 
 const userId = `test-mcp-e2e-${uuid()}`;
@@ -67,19 +67,13 @@ async function runTurn(
   content: string,
   mode: PermissionMode,
   approve: boolean | null,
-  opts: { surface?: Surface; conversationId?: string; incognito?: boolean } = {},
+  opts: { surface?: Surface; conversationId?: string } = {},
 ) {
   const surface = opts.surface ?? "agent";
   const { streamId, conversationId } =
     surface === "agent"
       ? await startAgentRun({ userId, content, model: "mock", mode, conversationId: opts.conversationId })
-      : await startChatRun({
-          userId,
-          content,
-          model: "mock",
-          conversationId: opts.conversationId,
-          incognito: opts.incognito,
-        });
+      : await startChatRun({ userId, content, model: "mock", conversationId: opts.conversationId });
   if (!convIds.includes(conversationId)) convIds.push(conversationId);
 
   let sawApproval = false;
@@ -112,39 +106,6 @@ async function runTurn(
     toolCalls: blocks.filter((b): b is Extract<ContentBlock, { kind: "tool_call" }> => b.kind === "tool_call"),
     toolResults: blocks.filter((b): b is Extract<ContentBlock, { kind: "tool_result" }> => b.kind === "tool_result"),
   };
-}
-
-/** Incognito's counterpart: no Postgres row ever exists, so read back from
- * the stream log's folded snapshot instead. */
-async function runIncognitoChatTurn(content: string, conversationId: string | undefined, approve: boolean | null) {
-  const { streamId, conversationId: convId } = await startChatRun({
-    userId,
-    content,
-    model: "mock",
-    conversationId,
-    incognito: !conversationId, // only the first turn creates the ephemeral conv
-  });
-
-  let sawApproval = false;
-  if (approve !== null) {
-    await waitFor(() => {
-      const run = getRun(streamId);
-      if (!run) return true;
-      const entry = run.approvals.entries().next();
-      if (!entry.done) {
-        sawApproval = true;
-        entry.value[1](approve);
-        return true;
-      }
-      return null;
-    });
-  }
-  await waitFor(() => (getRun(streamId) ? null : true));
-
-  const broker = getStreamBroker();
-  const records = await broker.readFrom(streamId, 0);
-  const snapshot = broker.foldSnapshot(records);
-  return { conversationId: convId, sawApproval, snapshot };
 }
 
 beforeAll(async () => {
@@ -286,54 +247,3 @@ describe("MCP end-to-end through the chat loop", () => {
   }, 30_000);
 });
 
-describe("Incognito chat with tools", () => {
-  it("offers and runs tools with zero Postgres writes, and rebuilds history from the stream log", async () => {
-    const first = await runIncognitoChatTurn("please use mcp echo", undefined, true);
-    expect(first.sawApproval).toBe(true);
-    const firstCall = first.snapshot.messages.flatMap((m) => m.tool_calls).find((c) => c.tool === "mockmcp__echo");
-    expect(firstCall?.output).toContain("echo: hello from mcp");
-
-    // Zero rows anywhere conversation-scoped — the whole point of incognito.
-    const msgRows = await db.query.messages.findMany({ where: eq(messages.conversationId, first.conversationId) });
-    const usageRows = await db.query.usageRecords.findMany({
-      where: eq(usageRecords.conversationId, first.conversationId),
-    });
-    expect(msgRows).toHaveLength(0);
-    expect(usageRows).toHaveLength(0);
-
-    // The precise claim — loadEphemeralHistory rebuilds the resolved
-    // call+result from the stream log as a replayable pair — called directly
-    // rather than inferred from a second turn's response (the mock model
-    // only ever looks at its own turn, so it can't prove this indirectly).
-    const { loadEphemeralHistory } = await import("../../streams/runs/engine.ts");
-    const history = await loadEphemeralHistory(first.conversationId);
-    // Asserted field-by-field rather than against one literal: the call id is
-    // generated, and matching it with expect.any() would put `any` values
-    // into the expected object.
-    const [userMsg, assistantMsg, toolMsg, closingMsg] = history.messages;
-    expect(history.messages).toHaveLength(4);
-    expect(userMsg).toEqual({ role: "user", content: "please use mcp echo" });
-
-    expect(assistantMsg.role).toBe("assistant");
-    expect(assistantMsg.content).toBe("[Mock] I'll use the mockmcp__echo tool.");
-    const calls = assistantMsg.role === "assistant" ? (assistantMsg.tool_calls ?? []) : [];
-    expect(calls).toHaveLength(1);
-    expect(calls[0].function).toEqual({
-      name: "mockmcp__echo",
-      arguments: JSON.stringify({ text: "hello from mcp" }),
-    });
-
-    // The pairing is the point: the tool message must carry the same call_id
-    // the assistant's call announced, or a real backend rejects the list.
-    expect(toolMsg.role).toBe("tool");
-    expect(toolMsg.role === "tool" ? toolMsg.tool_call_id : null).toBe(calls[0].id);
-    expect(toolMsg.content).toContain("echo: hello from mcp");
-    expect(closingMsg.role).toBe("assistant");
-    expect(closingMsg.content).toContain("echo: hello from mcp");
-
-    // A second turn on the same ephemeral conversation must actually
-    // complete (not error) using that replayed history as its prompt.
-    const second = await runIncognitoChatTurn("thanks", first.conversationId, null);
-    expect(second.snapshot.messages.some((m) => m.status === "error")).toBe(false);
-  }, 30_000);
-});

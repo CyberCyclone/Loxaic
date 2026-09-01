@@ -11,7 +11,7 @@
  */
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { expectTextAbsent, tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   MOCK_TOOL_DONE,
   TOOL_PROMPT,
@@ -44,6 +44,14 @@ describe('smoke', () => {
     const prompt = 'hello shannon';
     await sendAndAwaitReply(prompt, mockEcho(prompt));
     await shot('chat-mock-response');
+  });
+
+  it('offers no incognito toggle in the composer', async () => {
+    // #74 removed incognito entirely. The composer is the only place it was
+    // ever offered, so its absence here is the user-visible proof — and the
+    // regression guard against the toggle coming back without its server side.
+    await expectTextAbsent('Incognito');
+    await shot('composer-no-incognito');
   });
 
   it('runs an agent tool call once approved', async () => {

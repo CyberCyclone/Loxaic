@@ -10,7 +10,7 @@ import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
-import { loadEphemeralHistory, loadHistory, HISTORY_LIMIT } from "./engine.ts";
+import { loadHistory, HISTORY_LIMIT } from "./engine.ts";
 
 /**
  * `/compact`: summarise the conversation into a `summary` message and continue
@@ -80,7 +80,7 @@ export function stripImagesForCompaction(messages: ChatMessage[]): ChatMessage[]
 export function computeCompactionStats(input: {
   messagesCompacted: number;
   /** prompt + completion of the conversation's newest usage record, or null
-   * when there is none to read (cold thread, incognito). */
+   * when there is none to read (cold thread). */
   lastTurnTokens: number | null;
   /** The compact call's own reported usage. */
   promptTokens: number;
@@ -113,7 +113,6 @@ export interface StartCompactRunResult {
   streamId: string;
   conversationId: string;
   summaryMessageId: string;
-  incognito: boolean;
 }
 
 export async function startCompactRun(input: {
@@ -127,8 +126,7 @@ export async function startCompactRun(input: {
   const guidance = input.args?.trim();
   const broker = getStreamBroker();
 
-  const access = await assertConversationAccess(userId, convId);
-  const incognito = access.incognito;
+  await assertConversationAccess(userId, convId);
 
   if (getRunByConversation(convId)) {
     throw new Error("A response is already in progress for this conversation");
@@ -137,21 +135,21 @@ export async function startCompactRun(input: {
   // Both surfaces now share one loader (tool turns included), so what gets
   // compacted is exactly what the next prompt would have replayed — starting
   // at any previous summary, which is what makes repeat compaction correct,
-  // not cumulative. Incognito history lives only in the stream log.
-  const history = incognito ? await loadEphemeralHistory(convId) : await loadHistory(convId);
+  // not cumulative.
+  const history = await loadHistory(convId);
   const historyLimit = HISTORY_LIMIT;
   const hasSummary = !!history.summaryText;
   const count = history.messages.length;
 
   // ── No-op guard: refuse without calling the model ─────────
-  // The card still lands in the transcript (and, non-incognito, in Postgres)
-  // so it survives a reload and reads the same on every device — but it
-  // costs zero tokens to produce.
+  // The card still lands in the transcript (and in Postgres) so it survives a
+  // reload and reads the same on every device — but it costs zero tokens to
+  // produce.
   const skipped: CompactionStats["skipped"] | null =
     hasSummary && count === 0 ? "already_compacted" : count < 2 ? "too_short" : null;
 
   const summaryMsgId = uuid();
-  const parentId = incognito ? null : await currentLeafId(convId);
+  const parentId = await currentLeafId(convId);
 
   if (skipped) {
     const stats: CompactionStats = {
@@ -162,55 +160,47 @@ export async function startCompactRun(input: {
       before_estimated: false,
       skipped,
     };
-    if (!incognito) {
-      await db.insert(messages).values({
-        id: summaryMsgId,
-        conversationId: convId,
-        parentId,
-        authorType: "summary",
-        origin: "server",
-        lamport: Date.now(),
-        // No text block, deliberately: a textless summary row is what marks a
-        // skip card, and the history loaders rely on that to never treat one
-        // as a compaction cutoff.
-        content: [{ kind: "compaction", ...stats }] as ContentBlock[],
-        status: "complete",
-        createdAt: new Date(),
-      });
-    } else {
-      await broker.driver.touchEphemeralConv(convId);
-    }
-
-    const streamId = uuid();
-    const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface, incognito });
-    announceNewRun(convId, streamId);
-    producer.emit({ kind: "message.start", message_id: summaryMsgId, author_type: "summary", parent_id: parentId });
-    producer.emit({ kind: "compaction", message_id: summaryMsgId, ...stats });
-    producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete" });
-    await producer.end("complete");
-    return { streamId, conversationId: convId, summaryMessageId: summaryMsgId, incognito };
-  }
-
-  // ── Real compaction ───────────────────────────────────────
-  if (!incognito) {
     await db.insert(messages).values({
       id: summaryMsgId,
       conversationId: convId,
       parentId,
       authorType: "summary",
       origin: "server",
-      model,
       lamport: Date.now(),
-      content: [{ kind: "text", text: "" }],
-      status: "streaming",
+      // No text block, deliberately: a textless summary row is what marks a
+      // skip card, and the history loader relies on that to never treat one
+      // as a compaction cutoff.
+      content: [{ kind: "compaction", ...stats }] as ContentBlock[],
+      status: "complete",
       createdAt: new Date(),
     });
-  } else {
-    await broker.driver.touchEphemeralConv(convId);
+
+    const streamId = uuid();
+    const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface });
+    announceNewRun(convId, streamId);
+    producer.emit({ kind: "message.start", message_id: summaryMsgId, author_type: "summary", parent_id: parentId });
+    producer.emit({ kind: "compaction", message_id: summaryMsgId, ...stats });
+    producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete" });
+    await producer.end("complete");
+    return { streamId, conversationId: convId, summaryMessageId: summaryMsgId };
   }
 
+  // ── Real compaction ───────────────────────────────────────
+  await db.insert(messages).values({
+    id: summaryMsgId,
+    conversationId: convId,
+    parentId,
+    authorType: "summary",
+    origin: "server",
+    model,
+    lamport: Date.now(),
+    content: [{ kind: "text", text: "" }],
+    status: "streaming",
+    createdAt: new Date(),
+  });
+
   const streamId = uuid();
-  const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface, incognito });
+  const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface });
   producer.emit({
     kind: "message.start",
     message_id: summaryMsgId,
@@ -240,7 +230,6 @@ export async function startCompactRun(input: {
     userId,
     summaryMsgId,
     model,
-    incognito,
     abort,
     producer,
     promptMessages,
@@ -250,7 +239,7 @@ export async function startCompactRun(input: {
     historyLimit,
   });
 
-  return { streamId, conversationId: convId, summaryMessageId: summaryMsgId, incognito };
+  return { streamId, conversationId: convId, summaryMessageId: summaryMsgId };
 }
 
 /** The newest usage record is what the next prompt would have replayed — and
@@ -284,7 +273,6 @@ async function runCompactGeneration(ctx: {
   userId: string;
   summaryMsgId: string;
   model: string;
-  incognito: boolean;
   abort: AbortController;
   producer: StreamProducer;
   promptMessages: ChatMessage[];
@@ -293,7 +281,7 @@ async function runCompactGeneration(ctx: {
   messagesCompacted: number;
   historyLimit: number;
 }): Promise<void> {
-  const { streamId, convId, userId, summaryMsgId, model, incognito, abort, producer } = ctx;
+  const { streamId, convId, userId, summaryMsgId, model, abort, producer } = ctx;
   let summaryText = "";
 
   // Same shape as chatRun: the pre-generation window read is the model's max
@@ -316,7 +304,7 @@ async function runCompactGeneration(ctx: {
 
     // Read before generating: the compact call is about to write its own
     // usage record, which must not become its own "before".
-    const before = incognito ? null : await lastTurnTokens(convId);
+    const before = await lastTurnTokens(convId);
 
     let doneResult: CompletionResult | null = null;
     for await (const event of streamCompletion(model, ctx.promptMessages, { signal: abort.signal })) {
@@ -370,41 +358,39 @@ async function runCompactGeneration(ctx: {
         }
       : undefined;
 
-    if (!incognito) {
-      await db
-        .update(messages)
-        .set({
-          content: [
-            { kind: "text", text: summaryText },
-            { kind: "compaction", ...stats },
-          ] as ContentBlock[],
-          status: "complete",
-        })
-        .where(eq(messages.id, summaryMsgId));
-      await db
-        .update(conversations)
-        .set({ activeLeafId: summaryMsgId, updatedAt: new Date() })
-        .where(eq(conversations.id, convId));
-      if (doneResult && (doneResult.usage.total_tokens > 0 || doneResult.timings)) {
-        await db.insert(usageRecords).values({
-          id: uuid(),
-          userId,
-          conversationId: convId,
-          messageId: summaryMsgId,
-          model,
-          origin: "server",
-          inputTokens: doneResult.usage.prompt_tokens,
-          cachedTokens: doneResult.timings?.cache_n ?? 0,
-          outputTokens: doneResult.usage.completion_tokens,
-          ttftMs: doneResult.ttftMs,
-          promptMs: doneResult.timings?.prompt_ms ?? null,
-          predictMs: doneResult.timings?.predicted_ms ?? null,
-          totalMs: doneResult.totalMs,
-          promptTps: doneResult.promptTps,
-          predictedTps: doneResult.genTps,
-          contextBreakdown: postBreakdown,
-        });
-      }
+    await db
+      .update(messages)
+      .set({
+        content: [
+          { kind: "text", text: summaryText },
+          { kind: "compaction", ...stats },
+        ] as ContentBlock[],
+        status: "complete",
+      })
+      .where(eq(messages.id, summaryMsgId));
+    await db
+      .update(conversations)
+      .set({ activeLeafId: summaryMsgId, updatedAt: new Date() })
+      .where(eq(conversations.id, convId));
+    if (doneResult && (doneResult.usage.total_tokens > 0 || doneResult.timings)) {
+      await db.insert(usageRecords).values({
+        id: uuid(),
+        userId,
+        conversationId: convId,
+        messageId: summaryMsgId,
+        model,
+        origin: "server",
+        inputTokens: doneResult.usage.prompt_tokens,
+        cachedTokens: doneResult.timings?.cache_n ?? 0,
+        outputTokens: doneResult.usage.completion_tokens,
+        ttftMs: doneResult.ttftMs,
+        promptMs: doneResult.timings?.prompt_ms ?? null,
+        predictMs: doneResult.timings?.predicted_ms ?? null,
+        totalMs: doneResult.totalMs,
+        promptTps: doneResult.promptTps,
+        predictedTps: doneResult.genTps,
+        contextBreakdown: postBreakdown,
+      });
     }
 
     producer.emit({ kind: "compaction", message_id: summaryMsgId, ...stats });
@@ -418,13 +404,11 @@ async function runCompactGeneration(ctx: {
     // A partial summary must never be mistaken for a compaction point, so it
     // is persisted with a non-complete status — which the loaders' summary
     // lookup already excludes.
-    if (!incognito) {
-      await db
-        .update(messages)
-        .set({ content: [{ kind: "text", text: summaryText }], status })
-        .where(eq(messages.id, summaryMsgId))
-        .catch(() => undefined);
-    }
+    await db
+      .update(messages)
+      .set({ content: [{ kind: "text", text: summaryText }], status })
+      .where(eq(messages.id, summaryMsgId))
+      .catch(() => undefined);
 
     const eventError = isAbort ? undefined : errorMessage;
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status, error: eventError });

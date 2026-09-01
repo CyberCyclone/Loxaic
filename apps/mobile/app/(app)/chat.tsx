@@ -58,12 +58,6 @@ export default function ChatScreen() {
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
-  const [pendingIncognito, setPendingIncognito] = useState(false);
-
-  // Incognito is fixed once a conversation exists server-side; the toggle only
-  // applies to a not-yet-started chat.
-  const incognito = activeConv ? !!activeConv.incognito : pendingIncognito;
-  const incognitoLocked = !!activeConv;
 
   const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
   const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
@@ -104,12 +98,10 @@ export default function ChatScreen() {
       activeId={activeId}
       onSelect={(id) => {
         setActiveId(id);
-        setPendingIncognito(false);
         setThreadListOpen(false);
       }}
       onNewChat={() => {
         handleNewChat();
-        setPendingIncognito(false);
         setThreadListOpen(false);
       }}
       onFork={handleFork}
@@ -125,7 +117,6 @@ export default function ChatScreen() {
       <VStack className="h-full flex-1">
         <MainHeader
           title={activeConv?.title ?? 'Chat'}
-          subtitle={activeConv?.incognito ? 'Incognito · not saved' : undefined}
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
             breakpoint !== 'wide' ? (
@@ -152,18 +143,15 @@ export default function ChatScreen() {
             model={selectedModel ? getName(selectedModel) : undefined}
           />
         ) : (
-          <PromptSuggestions onPick={(text) => { handleSend(text, selectedModel, incognito); }} />
+          <PromptSuggestions onPick={(text) => { handleSend(text, selectedModel); }} />
         )}
         <Composer
-          onSend={(text, attachments) => { handleSend(text, selectedModel, incognito, attachments); }}
+          onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
           onStop={handleStop}
           streaming={streaming}
           modelName={selectedModel ? getName(selectedModel) : 'Select model'}
           context={context}
           onOpenModelModal={() => { setModelModalOpen(true); }}
-          incognito={incognito}
-          onToggleIncognito={() => { setPendingIncognito((v) => !v); }}
-          incognitoLocked={incognitoLocked}
           surface="chat"
           onRunCommand={handleRunCommand}
         />

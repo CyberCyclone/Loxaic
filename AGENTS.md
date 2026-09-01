@@ -170,7 +170,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
 ### Tool loop (Chat and Agent both)
 
 - **Chat and Agent share one tool loop** — `apps/server/src/streams/runs/engine.ts`'s
-  `runToolLoop`, parameterized by surface, base prompt, and `incognito`. The two starters
+  `runToolLoop`, parameterized by surface and base prompt. The two starters
   (`chatRun.ts`, `agentRun.ts`) only differ in conversation setup and which system prompt
   they pass in; `agentRun.ts` additionally exposes planning/manual/auto modes. **Chat has no
   mode selector** — it always runs manual-mode approval semantics (write builtins and
@@ -224,11 +224,10 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
   A sandbox row (`sandboxes` table) records which provider it belongs to; a mode switch
   mid-deployment makes old rows unusable rather than silently reattaching to the wrong kind.
-  Ephemeral (incognito) conversations get a sandbox with **no Postgres row** — it is tracked
-  only in-process — so a crashed server's leftover containers are only findable by their
-  `shannon.sandbox` label; `sweepOrphanSandboxes()` does that sweep at boot (container
-  provider only — host sandboxes are plain directories), alongside the stream log's own
-  orphan recovery.
+  A crash between `provider.create` and the row insert leaves a container no row claims, so
+  it is only findable by its `shannon.sandbox` label; `sweepOrphanSandboxes()` does that
+  sweep at boot (container provider only — host sandboxes are plain directories), alongside
+  the stream log's own orphan recovery.
 - `web_fetch` always runs on the **server**, never in the sandbox — container sandboxes
   have no network (`NetworkMode: none`) and host-mode ones deliberately aren't trusted with
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
@@ -237,10 +236,6 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - The container sandbox image (`shannon-sandbox`) builds itself automatically on first use
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
-- Incognito conversations are tool-capable too. `loadEphemeralHistory` (`engine.ts`) rebuilds
-  the OpenAI message list — including resolved tool_call/tool_result pairs, dangling calls
-  stripped exactly like the Postgres loader — from the stream log's folded snapshots rather
-  than a DB query, since incognito writes nothing conversation-scoped to Postgres.
 
 ### File attachments
 
@@ -364,11 +359,9 @@ screenshots showing that behaviour working. Writing those tests is the implement
   exact failure mode directly before the content-hash fix went in.
 - **The orphan sweep (`files/reaper.ts`) is the only reclaim path there is** — no DELETE
   route, no cascade from message deletion. It collects uploads no message references after a
-  grace period, which covers both the picked-then-abandoned upload and **every incognito
-  attachment**: an incognito run writes no message rows, so nothing ever references its
-  attachments, yet the upload row already records who uploaded them. The default grace matches
-  `STREAM_TTL_SECONDS`' own 24h, so the sweep **bounds** that trace to the grace window
-  rather than preventing it (#64). It also removes a document's `<ref>.txt` sidecar alongside
+  grace period — the picked-then-abandoned upload, whose row already records who uploaded it
+  even though nothing references the bytes. The default grace matches `STREAM_TTL_SECONDS`'
+  own 24h. It also removes a document's `<ref>.txt` sidecar alongside
   the original — **the sweep's SQL keys on `block->>'kind' = 'attachment'`, so a future new
   block kind (rather than discriminating on mime within this one) would silently stop
   protecting those files from deletion.**

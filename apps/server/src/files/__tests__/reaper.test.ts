@@ -12,12 +12,9 @@ import { sweepOrphanAttachments, usedAttachmentBytes } from "../reaper.ts";
  * Integration test against the real dev Postgres, for the only reclaim path
  * attachments have.
  *
- * Two things accumulate without it. An image the user picks and never sends is
- * uploaded, rowed, and then referenced by nothing. And every incognito
- * attachment is in the same position permanently: an incognito run writes no
- * conversation-scoped rows, so nothing ever references the image, yet
- * `POST /v1/files` has already recorded who uploaded it — a durable trace of a
- * conversation that was supposed to leave none.
+ * Without it, an image the user picks and never sends accumulates forever: it
+ * is uploaded, rowed, and then referenced by nothing, while `POST /v1/files`
+ * has already recorded who uploaded it.
  *
  * The sweep is scoped to this test's own users; unscoped is what production
  * runs, and collecting other rows out of a shared dev database would be a
@@ -123,19 +120,6 @@ describe("sweepOrphanAttachments", () => {
     expect(existsSync(attachmentPath(fresh))).toBe(true);
     const rows = await db.select().from(attachments).where(eq(attachments.id, fresh));
     expect(rows).toHaveLength(1);
-  });
-
-  it("collects an aged incognito attachment — nothing references it, which is the whole point", async () => {
-    // An incognito send writes no message row at all, so its attachment looks
-    // exactly like an abandoned upload. That is the intended outcome: without
-    // this the image and its uploader survive the ephemeral conversation.
-    const incognito = await seed({ agedHours: 48 });
-
-    const reaped = await sweepOrphanAttachments([owner]);
-
-    expect(reaped).toBe(1);
-    const rows = await db.select().from(attachments).where(eq(attachments.id, incognito));
-    expect(rows).toEqual([]);
   });
 
   it("is a no-op when there is nothing to collect", async () => {

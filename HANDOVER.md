@@ -59,12 +59,9 @@ reconnects with `stream.subscribe {conversation_id, cursors}` and gets one folde
 `stream.sync` snapshot (everything so far) followed by live `stream.event`s — no lost
 messages on a dropped connection, no reconcile-polling. `packages/types/src/
 stream-protocol.ts` is the shared wire protocol for both surfaces. Real `stream.stop`
-(the model actually stops generating, not just the socket closing). Signed-in users can
-start an **incognito** conversation (`chat.send {incognito:true}`) that is never written
-to Postgres — it lives only in the stream backend with a 24h idle TTL and is lost if the
-server restarts in memory mode. Every WS command is authorized through one chokepoint
-(`streams/authz.ts`) so a user can never touch another user's conversation, including an
-incognito one, even by id.
+(the model actually stops generating, not just the socket closing). Every WS command is
+authorized through one chokepoint (`streams/authz.ts`) so a user can never touch another
+user's conversation, even by id.
 
 **Offline-first sync groundwork** exists (`packages/sync` detects conversation forks;
 messages carry `origin: "server" | "device"` and a Lamport clock) but device-side local

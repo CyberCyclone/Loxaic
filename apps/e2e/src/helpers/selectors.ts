@@ -85,6 +85,22 @@ function containsTextSelector(text: string): string {
 }
 
 /**
+ * Asserts `text` appears nowhere on the current screen — the same
+ * cross-platform text lookup as `waitForTextIn`, inverted.
+ *
+ * A text probe rather than a testID one, deliberately: proving a control is
+ * *gone* means there is no testID left to select, so its rendered label is the
+ * only thing left to look for.
+ */
+export async function expectTextAbsent(text: string): Promise<void> {
+  const matches = [...(await $$(containsTextSelector(text)))];
+  const visible = await Promise.all(matches.map((el) => el.isDisplayed().catch(() => false)));
+  if (visible.some(Boolean)) {
+    throw new Error(`expected no visible element containing "${text}", but one was rendered`);
+  }
+}
+
+/**
  * Waits for `text` to appear inside the element identified by `containerId`.
  *
  * Never indexes into the message list to find a reply: the list is inverted

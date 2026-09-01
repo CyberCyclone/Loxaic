@@ -2,15 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@shannon/db";
 import { conversations, user } from "@shannon/db/schema";
-import { getStreamBroker, initStreamBroker } from "../index.ts";
+import { initStreamBroker } from "../index.ts";
 import { assertConversationAccess, assertParentInConversation, NotFoundError } from "../authz.ts";
 
 /**
  * Integration test against the real dev Postgres (same DATABASE_URL the
  * server itself uses) plus a fresh in-memory stream broker — exercises the
  * one chokepoint every WS command authorizes through: owner / non-owner /
- * nonexistent, for both a real (Postgres) conversation and an ephemeral
- * (incognito) one. Cleans up everything it inserts.
+ * nonexistent. Cleans up everything it inserts.
  */
 describe("assertConversationAccess", () => {
   const userA = `test-authz-a-${uuid()}`;
@@ -35,7 +34,7 @@ describe("assertConversationAccess", () => {
 
   it("grants the owner access to their own conversation", async () => {
     const grant = await assertConversationAccess(userA, ownedConvId);
-    expect(grant).toEqual({ conversationId: ownedConvId, incognito: false });
+    expect(grant).toEqual({ conversationId: ownedConvId });
   });
 
   it("throws NotFoundError for a non-owner, not a permissions-specific error", async () => {
@@ -52,25 +51,6 @@ describe("assertConversationAccess", () => {
       assertConversationAccess(userB, ownedConvId).catch((e: unknown) => (e instanceof Error ? e.message : String(e))),
     ]);
     expect(msgNonexistent).toBe(msgNonOwner);
-  });
-
-  describe("ephemeral (incognito) conversations", () => {
-    let econvId: string;
-
-    beforeAll(async () => {
-      const broker = getStreamBroker();
-      econvId = uuid();
-      await broker.driver.putEphemeralConv({ id: econvId, ownerId: userA, title: "incognito test", kind: "chat", createdAt: Date.now() });
-    });
-
-    it("grants the owner access via the ephemeral registry, with incognito: true", async () => {
-      const grant = await assertConversationAccess(userA, econvId);
-      expect(grant).toEqual({ conversationId: econvId, incognito: true });
-    });
-
-    it("throws NotFoundError for a non-owner of an ephemeral conversation", async () => {
-      await expect(assertConversationAccess(userB, econvId)).rejects.toBeInstanceOf(NotFoundError);
-    });
   });
 });
 

@@ -78,7 +78,6 @@ export function agentWsHandler(app: FastifyInstance) {
             mode: (msg.mode ?? "manual"),
             conversationId: msg.conversation_id,
             parentId: msg.parent_id,
-            incognito: msg.incognito,
             attachments: msg.attachments ?? [],
           });
           safeSend({
@@ -86,7 +85,6 @@ export function agentWsHandler(app: FastifyInstance) {
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
-            incognito: result.incognito,
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {
@@ -113,7 +111,6 @@ export function agentWsHandler(app: FastifyInstance) {
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.summaryMessageId,
-            incognito: result.incognito,
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "stream.subscribe") {

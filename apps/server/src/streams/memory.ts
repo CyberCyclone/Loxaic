@@ -1,5 +1,5 @@
 import type { StreamEventKind } from "@shannon/types";
-import type { EphemeralConv, StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
+import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
 interface Entry { meta: StreamMeta; records: StreamRecord[] }
 
@@ -13,7 +13,6 @@ interface Entry { meta: StreamMeta; records: StreamRecord[] }
  */
 export class MemoryStreamLogDriver implements StreamLogDriver {
   private streams = new Map<string, Entry>();
-  private ephemeralConvs = new Map<string, EphemeralConv>();
   private convStreams = new Map<string, string[]>();
   private sweepTimer: ReturnType<typeof setInterval>;
 
@@ -26,12 +25,6 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
     const cutoff = Date.now() - this.ttlSeconds * 1000;
     for (const [id, entry] of this.streams) {
       if (entry.meta.status !== "active" && entry.meta.updatedAt < cutoff) this.streams.delete(id);
-    }
-    for (const [id, conv] of this.ephemeralConvs) {
-      if (conv.createdAt < cutoff) {
-        this.ephemeralConvs.delete(id);
-        this.convStreams.delete(id);
-      }
     }
   }
 
@@ -90,21 +83,6 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
 
   deleteStream(streamId: string): Promise<void> {
     this.streams.delete(streamId);
-    return Promise.resolve();
-  }
-
-  putEphemeralConv(conv: EphemeralConv): Promise<void> {
-    this.ephemeralConvs.set(conv.id, conv);
-    return Promise.resolve();
-  }
-
-  getEphemeralConv(id: string): Promise<EphemeralConv | null> {
-    return Promise.resolve(this.ephemeralConvs.get(id) ?? null);
-  }
-
-  touchEphemeralConv(id: string): Promise<void> {
-    const conv = this.ephemeralConvs.get(id);
-    if (conv) conv.createdAt = Date.now();
     return Promise.resolve();
   }
 

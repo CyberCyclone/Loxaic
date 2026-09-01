@@ -38,7 +38,6 @@ export interface StartChatRunResult {
   streamId: string;
   conversationId: string;
   userMessageId: string;
-  incognito: boolean;
 }
 
 export async function startChatRun(input: {
@@ -47,7 +46,6 @@ export async function startChatRun(input: {
   model: string;
   conversationId?: string;
   parentId?: string;
-  incognito?: boolean;
   /** Attachment refs from POST /v1/files, in display order. */
   attachments?: string[];
 }): Promise<StartChatRunResult> {
@@ -59,24 +57,12 @@ export async function startChatRun(input: {
   const atts = input.attachments?.length ? await assertAttachmentsOwned(userId, input.attachments) : [];
 
   let convId = input.conversationId;
-  let incognito = false;
 
   if (convId) {
-    const access = await assertConversationAccess(userId, convId);
-    incognito = access.incognito;
-    if (input.parentId && !incognito) {
+    await assertConversationAccess(userId, convId);
+    if (input.parentId) {
       await assertParentInConversation(convId, input.parentId);
     }
-  } else if (input.incognito) {
-    convId = uuid();
-    await broker.driver.putEphemeralConv({
-      id: convId,
-      ownerId: userId,
-      title: conversationTitle(content, atts),
-      kind: "chat",
-      createdAt: Date.now(),
-    });
-    incognito = true;
   } else {
     const [conv] = await db
       .insert(conversations)
@@ -90,30 +76,26 @@ export async function startChatRun(input: {
   }
 
   const userMsgId = uuid();
-  if (!incognito) {
-    await db.insert(messages).values({
-      id: userMsgId,
-      conversationId: convId,
-      parentId: input.parentId ?? null,
-      authorType: "user",
-      authorUserId: userId,
-      origin: "server",
-      lamport: Date.now(),
-      content: [
-        ...atts.map((a): ContentBlock => ({
-          kind: "attachment",
-          ref: a.ref,
-          mime: a.mime,
-          ...(a.name === undefined ? {} : { name: a.name }),
-        })),
-        { kind: "text", text: content },
-      ] as ContentBlock[],
-      status: "complete",
-      createdAt: new Date(),
-    });
-  } else {
-    await broker.driver.touchEphemeralConv(convId);
-  }
+  await db.insert(messages).values({
+    id: userMsgId,
+    conversationId: convId,
+    parentId: input.parentId ?? null,
+    authorType: "user",
+    authorUserId: userId,
+    origin: "server",
+    lamport: Date.now(),
+    content: [
+      ...atts.map((a): ContentBlock => ({
+        kind: "attachment",
+        ref: a.ref,
+        mime: a.mime,
+        ...(a.name === undefined ? {} : { name: a.name }),
+      })),
+      { kind: "text", text: content },
+    ] as ContentBlock[],
+    status: "complete",
+    createdAt: new Date(),
+  });
 
   const streamId = uuid();
   const producer = await broker.openProducer({
@@ -121,7 +103,6 @@ export async function startChatRun(input: {
     conversationId: convId,
     userId,
     surface: "chat",
-    incognito,
   });
 
   producer.emit({
@@ -148,12 +129,11 @@ export async function startChatRun(input: {
     model,
     mode: "manual",
     basePrompt: chatSystemPrompt(),
-    incognito,
     abort,
     producer,
   });
 
-  return { streamId, conversationId: convId, userMessageId: userMsgId, incognito };
+  return { streamId, conversationId: convId, userMessageId: userMsgId };
 }
 
 /** Title for a conversation opened by this message. An attachment-only send

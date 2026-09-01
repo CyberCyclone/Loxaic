@@ -12,7 +12,7 @@ let broker: StreamBroker | null = null;
  * Called once at boot, after migrations and before routes/WS handlers are
  * registered. `STREAM_BACKEND=redis` with an unreachable Redis fails loudly
  * here — there is no silent fallback to the memory driver, since that would
- * silently drop the durability guarantee incognito conversations depend on.
+ * silently drop the durability guarantee stream resume depends on.
  */
 export async function initStreamBroker(): Promise<StreamBroker> {
   const backend = process.env.STREAM_BACKEND ?? "memory";
@@ -38,4 +38,4 @@ export function getStreamBroker(): StreamBroker {
 }
 
 export type { StreamProducer, StreamProducerMeta } from "./broker.ts";
-export type { EphemeralConv, StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
+export type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";

@@ -22,7 +22,6 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId: freshId("conv"),
         userId: "u1",
         surface: "chat",
-        incognito: false,
         createdAt: Date.now(),
       });
       const r1 = await driver.append(streamId, [{ kind: "text.delta", message_id: "m1", text: "a" }]);
@@ -41,7 +40,6 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId: freshId("conv"),
         userId: "u1",
         surface: "chat",
-        incognito: false,
         createdAt: Date.now(),
       });
       await driver.append(streamId, [
@@ -63,7 +61,6 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId,
         userId: "u1",
         surface: "chat",
-        incognito: false,
         createdAt: Date.now(),
       });
       await driver.append(streamId, [{ kind: "text.delta", message_id: "m1", text: "a" }]);
@@ -91,7 +88,6 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId: freshId("conv"),
         userId: "u1",
         surface: "chat",
-        incognito: false,
         createdAt: Date.now(),
       });
       await driver.finalize(streamId, "error");
@@ -106,7 +102,6 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId: freshId("conv"),
         userId: "u1",
         surface: "chat",
-        incognito: false,
         createdAt: Date.now(),
       });
       await driver.append(streamId, [{ kind: "text.delta", message_id: "m1", text: "a" }]);
@@ -115,13 +110,9 @@ function driverContract(label: string, driver: StreamLogDriver) {
       expect(await driver.readFrom(streamId, 0)).toEqual([]);
     });
 
-    it("ephemeral conv registry round-trips and listConvStreams tracks run ids in creation order", async () => {
-      const convId = freshId("econv");
-      expect(await driver.getEphemeralConv(convId)).toBeNull();
-
-      await driver.putEphemeralConv({ id: convId, ownerId: "u1", title: "hi", kind: "chat", createdAt: Date.now() });
-      const conv = await driver.getEphemeralConv(convId);
-      expect(conv?.ownerId).toBe("u1");
+    it("listConvStreams tracks a conversation's run ids in creation order", async () => {
+      const convId = freshId("conv");
+      expect(await driver.listConvStreams(convId)).toEqual([]);
 
       const run1 = freshId("run");
       const run2 = freshId("run");
@@ -130,7 +121,6 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId: convId,
         userId: "u1",
         surface: "chat",
-        incognito: true,
         createdAt: Date.now(),
       });
       await driver.createStream({
@@ -138,12 +128,10 @@ function driverContract(label: string, driver: StreamLogDriver) {
         conversationId: convId,
         userId: "u1",
         surface: "chat",
-        incognito: true,
         createdAt: Date.now(),
       });
 
       expect(await driver.listConvStreams(convId)).toEqual([run1, run2]);
-      await expect(driver.touchEphemeralConv(convId)).resolves.not.toThrow();
     });
   });
 }

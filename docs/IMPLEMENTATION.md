@@ -86,7 +86,7 @@ Claude desktop app + Claude Code + LM Studio, running on the owner's hardware.
 - **Chat (server model)**: client → WS `chat.send` → server → llama.cpp
   `/v1/chat/completions` (streaming) → durable `StreamLog` (§2 streaming architecture,
   2026-08-25 entry in §12) → WS `stream.sync`/`stream.event` → persisted as message tree
-  nodes (skipped entirely for incognito conversations).
+  nodes.
 - **Chat (device model)**: client runs llama.rn/sidecar locally, writes nodes to local SQLite;
   pushed to server via sync on reconnect.
 - **Agent run**: server harness loop → tool calls execute in a sandbox container (or a mounted
@@ -487,17 +487,17 @@ attempt, fall back to **NativeWind v4 + Tailwind v3** (D6) and record the decisi
   into `provider.ts`), run-scoped tool approvals (any device on the account can approve),
   per-command session re-validation, boot-time orphan recovery for crashed streams
   (`streams/recovery.ts` + a Postgres sweep for stuck `status='streaming'` rows). Added
-  **incognito conversations** (signed-in users; `chat.send {incognito:true}` — zero
-  Postgres writes for conversations/messages/usage_records, lives only in the stream
-  backend with a 24h idle TTL, lost on server restart in memory mode; composer toggle in
-  `apps/mobile/components/composer/Composer.tsx`). Added a single authz chokepoint
-  (`streams/authz.ts` `assertConversationAccess`) checked on every WS command — PG and
-  ephemeral ownership resolved in parallel to avoid an existence-timing side channel — so a
-  user can never read, stop, or approve another user's conversation even with its id.
+  **incognito conversations** (**since removed — see #74**; signed-in users;
+  `chat.send {incognito:true}` — zero Postgres writes for
+  conversations/messages/usage_records, lives only in the stream backend with a 24h idle
+  TTL). Added a single authz chokepoint (`streams/authz.ts` `assertConversationAccess`)
+  checked on every WS command, so a user can never read, stop, or approve another user's
+  conversation even with its id.
   New indexes: `messages(conversation_id, created_at)`, `messages(conversation_id,
   lamport)`. Live verification (real server, real Postgres, real inference, two throwaway
   accounts) confirmed the full cross-user isolation matrix, real `stream.stop` cancellation,
-  the incognito zero-row-write assertion, and orphan recovery after an unplanned mid-stream
+  the zero-row-write assertion for incognito (as it then was), and orphan recovery after an
+  unplanned mid-stream
   restart (no rows ever stuck at `status='streaming'`). That pass also caught a real gap:
   a second device already viewing a conversation never learned about a brand-new run
   started from a different device, since `stream.subscribe` only synced streams that

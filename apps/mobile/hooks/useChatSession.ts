@@ -227,14 +227,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         if (localId && localId !== realId) {
           setConversations((prev) =>
             prev.some((c) => c.id === localId)
-              ? prev.map((c) => (c.id === localId ? { ...c, id: realId, incognito: event.incognito } : c))
+              ? prev.map((c) => (c.id === localId ? { ...c, id: realId } : c))
               : prev,
           );
-        } else if (event.incognito) {
-          setConversations((prev) => prev.map((c) => (c.id === realId ? { ...c, incognito: true } : c)));
         }
         setActiveId(realId);
-        if (modelForPatch && !event.incognito) {
+        if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
       } else if (event.type === 'stream.sync') {
@@ -406,7 +404,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   }, [token, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
-    (text: string, model: string, incognito?: boolean, attachments?: AttachmentRef[]) => {
+    (text: string, model: string, attachments?: AttachmentRef[]) => {
       if (!wsRef.current) return;
       const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
@@ -428,7 +426,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        sendChatMessage(wsRef.current, text, model, undefined, undefined, incognito, refs);
+        sendChatMessage(wsRef.current, text, model, undefined, undefined, refs);
       } else {
         const id = activeIdRef.current;
         setConversations((prev) =>
@@ -438,7 +436,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
               : c,
           ),
         );
-        sendChatMessage(wsRef.current, text, model, id, undefined, incognito, refs);
+        sendChatMessage(wsRef.current, text, model, id, undefined, refs);
       }
     },
     [setActiveId],
@@ -549,11 +547,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   );
 
   const setConversationModel = useCallback((id: string, modelId: string) => {
-    setConversations((prev) => {
-      const conv = prev.find((c) => c.id === id);
-      if (!conv?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
-      return prev.map((c) => (c.id === id ? { ...c, model: modelId } : c));
-    });
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, model: modelId } : c)));
   }, []);
 
   const activeConv = conversations.find((c) => c.id === activeId) ?? null;

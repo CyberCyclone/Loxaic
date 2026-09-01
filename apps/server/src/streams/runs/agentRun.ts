@@ -41,7 +41,6 @@ export interface StartAgentRunResult {
   streamId: string;
   conversationId: string;
   userMessageId: string;
-  incognito: boolean;
 }
 
 export async function startAgentRun(input: {
@@ -51,18 +50,9 @@ export async function startAgentRun(input: {
   mode: PermissionMode;
   conversationId?: string;
   parentId?: string;
-  incognito?: boolean;
   /** Attachment refs from POST /v1/files, in display order. */
   attachments?: string[];
 }): Promise<StartAgentRunResult> {
-  if (input.incognito) {
-    // Fast-follow: incognito chat is supported end-to-end; incognito agent
-    // runs need the sandbox lifecycle to skip Postgres too, which is a
-    // bigger bite (see plan). Reject explicitly rather than silently
-    // dropping the user's stated intent.
-    throw new Error("Incognito isn't supported for agent runs yet");
-  }
-
   const { userId, content, model, mode } = input;
   const broker = getStreamBroker();
 
@@ -72,8 +62,7 @@ export async function startAgentRun(input: {
 
   let convId = input.conversationId;
   if (convId) {
-    const access = await assertConversationAccess(userId, convId);
-    if (access.incognito) throw new Error("Incognito isn't supported for agent runs yet");
+    await assertConversationAccess(userId, convId);
     if (input.parentId) await assertParentInConversation(convId, input.parentId);
   } else {
     const [conv] = await db
@@ -115,7 +104,6 @@ export async function startAgentRun(input: {
     conversationId: convId,
     userId,
     surface: "agent",
-    incognito: false,
   });
 
   producer.emit({
@@ -140,12 +128,11 @@ export async function startAgentRun(input: {
     model,
     mode,
     basePrompt: mode === "planning" ? planningSystemPrompt() : baseSystemPrompt(),
-    incognito: false,
     abort,
     producer,
   });
 
-  return { streamId, conversationId: convId, userMessageId: userMsgId, incognito: false };
+  return { streamId, conversationId: convId, userMessageId: userMsgId };
 }
 
 /** Title for a conversation opened by this message. An attachment-only send

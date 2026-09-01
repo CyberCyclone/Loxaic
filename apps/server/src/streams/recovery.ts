@@ -25,10 +25,6 @@ export async function recoverOrphanedStreams(): Promise<void> {
   const orphaned = await broker.driver.listOrphaned();
 
   for (const meta of orphaned) {
-    if (meta.incognito) {
-      await broker.driver.finalize(meta.streamId, "error");
-      continue;
-    }
     try {
       const records = await broker.readFrom(meta.streamId, 0);
       const snapshot = broker.foldSnapshot(records);
