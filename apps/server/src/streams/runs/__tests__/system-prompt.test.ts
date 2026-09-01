@@ -32,6 +32,17 @@ describe("assembleSystemPrompt", () => {
     expect(prompt).toContain(DOCUMENT_SYSTEM_ADDENDUM);
   });
 
+  it("tells the model the attached file is inline, not a path it can open", () => {
+    // A marker carries a filename, so without this the model infers there is a
+    // file to open and spends a tool call on fs_read before falling back to the
+    // inline text. Seen with a real .docx on a real model.
+    expect(DOCUMENT_SYSTEM_ADDENDUM).toMatch(/not in your\s+workspace/i);
+    expect(DOCUMENT_SYSTEM_ADDENDUM).toMatch(/fs_read/);
+    // …but the overflow path really does put a readable file in the workspace,
+    // so the instruction must not forbid that too.
+    expect(DOCUMENT_SYSTEM_ADDENDUM).toMatch(/exception/i);
+  });
+
   it("tells the model the contents are untrusted and not to be followed", () => {
     // The wording is the whole point of the addendum — an addendum that no
     // longer says this would pass the presence checks above while defending
