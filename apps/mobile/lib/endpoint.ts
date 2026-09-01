@@ -27,8 +27,45 @@ import { getItem } from './storage';
  * way to learn it.
  */
 
-/** The bridge apps/desktop/src/preload.cjs exposes; absent on every other platform. */
-type ElectronWindow = Window & { shannon?: { platform: 'electron'; apiBaseUrl: string | null } };
+/** Everything the desktop main process can be asked to do, plus the launch
+ * URL. See apps/desktop/src/preload.cjs — absent on every other platform. */
+export interface InstanceState {
+  mode: 'solo' | 'host' | 'client' | null;
+  apiBaseUrl: string | null;
+  needsOnboarding: boolean;
+  defaultHostName: string;
+  defaultPort: number;
+  lanAddress: string | null;
+  error?: string;
+}
+
+export interface ShannonBridge {
+  platform: 'electron';
+  apiBaseUrl: string | null;
+  instance: {
+    getState: () => Promise<InstanceState>;
+    setMode: (config: unknown) => Promise<InstanceState>;
+    probeEngine: () => Promise<{ ok: boolean; engine?: string; reason?: string }>;
+    probeHost: (url: string) => Promise<{
+      ok: boolean;
+      url?: string;
+      reason?: string;
+      cluster?: { id: string; name: string };
+      hosts?: { id: string; name: string; online: boolean }[];
+    }>;
+    testDb: (input: { url: string; password?: string }) => Promise<{ ok: boolean; url?: string; reason?: string }>;
+    detach: () => Promise<InstanceState>;
+    onStackState: (cb: (state: InstanceState) => void) => () => void;
+  };
+}
+
+type ElectronWindow = Window & { shannon?: ShannonBridge };
+
+/** The desktop bridge, or null on web/native. */
+export function electronBridge(): ShannonBridge | null {
+  if (typeof window === 'undefined') return null;
+  return (window as ElectronWindow).shannon ?? null;
+}
 
 const PROBE_TIMEOUT_MS = 1500;
 
@@ -116,4 +153,49 @@ export async function resolveEndpoint(force = false): Promise<string> {
 /** Currently resolved endpoint, if resolution has run. */
 export function currentEndpoint(): string | null {
   return resolved;
+}
+
+type EndpointListener = (url: string | null) => void;
+const listeners = new Set<EndpointListener>();
+
+/**
+ * Point the app at `url` now, and tell everything holding a socket.
+ *
+ * This is the seam that makes an endpoint change take effect without an app
+ * restart. Writing storage alone was never enough: the api-client keeps its
+ * own base URL and the chat/agent sockets are opened from a URL captured when
+ * their effect last ran, so both have to be told.
+ *
+ * `null` clears the resolution — the caller has removed the override and the
+ * next `resolveEndpoint()` should start over.
+ */
+export function setEndpoint(url: string | null): void {
+  resolved = url;
+  if (url) setApiBaseUrl(url);
+  for (const listener of listeners) listener(url);
+}
+
+/** Subscribe to endpoint changes. Returns an unsubscribe function. */
+export function onEndpointChange(listener: EndpointListener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/**
+ * Keeps the renderer following the desktop main process. A mode switch or a
+ * detach changes where the API lives, and the app must follow it in place —
+ * the alternative is telling the user to restart, for a change they made
+ * inside the app.
+ *
+ * No-op off Electron.
+ */
+export function subscribeToDesktopEndpoint(): () => void {
+  const bridge = electronBridge();
+  if (!bridge) return () => undefined;
+  return bridge.instance.onStackState((state) => {
+    // A Settings override outranks the bridge (it always has), so a user who
+    // pinned an endpoint keeps it across a mode change they didn't make.
+    if (getItem('shannon-endpoint')) return;
+    setEndpoint(state.apiBaseUrl);
+  });
 }

@@ -151,6 +151,12 @@ export function ModelModal({
                         : ''}
                       {item.model.price > 0 ? ` · $${item.model.price.toFixed(2)}/1M` : ' · local'}
                       {item.model.loaded ? ' · loaded' : ''}
+                      {/* Which machine serves this model. Null on an instance
+                          with no registered host identity (a dev server), so
+                          nothing is shown rather than a made-up name. With one
+                          host this is already how a user names the machine
+                          they're talking to; #78 makes the list longer. */}
+                      {item.model.host_name ? ` · ${item.model.host_name}` : ''}
                     </Text>
                   </VStack>
                   {item.model.id === selectedModel && <Icon as={Check} size="sm" className="text-primary" />}

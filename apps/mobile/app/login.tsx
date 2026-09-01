@@ -13,7 +13,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { useSession } from '@/lib/session';
 
 export default function LoginScreen() {
-  const { token, signIn, signUp } = useSession();
+  const { token, needsOnboarding, signIn, signUp } = useSession();
   const router = useRouter();
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
   const [email, setEmail] = useState('');
@@ -23,6 +23,7 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  if (needsOnboarding) return <Redirect href="/onboarding" />;
   if (token) return <Redirect href="/" />;
 
   const submit = async () => {

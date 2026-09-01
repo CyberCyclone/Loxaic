@@ -18,6 +18,7 @@ import {
   type PermissionMode,
   type Todo,
 } from '@shannon/api-client';
+import { useEndpoint } from './useEndpoint';
 import type { Conversation, Message, ChangedFile } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
@@ -34,6 +35,10 @@ interface StreamState { streamId: string; loadingModel: boolean; responseStarted
 const RESYNC_COOLDOWN_MS = 500;
 
 export function useAgentSession(token: string | null, onStreamEnd?: () => void) {
+  // Re-run the socket effect when the API endpoint changes, so a desktop
+  // mode switch or a Settings change reconnects to the new host instead of
+  // silently holding the old one until the app restarts.
+  const endpoint = useEndpoint();
   const [runs, setRuns] = useState<Conversation[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [mode, setModeState] = useState<PermissionMode>('manual');
@@ -384,7 +389,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       appStateSub.remove();
       wsRef.current?.close();
     };
-  }, [token, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {

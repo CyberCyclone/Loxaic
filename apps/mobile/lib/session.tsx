@@ -13,7 +13,7 @@ import {
   type Session,
 } from '@shannon/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
-import { resolveEndpoint } from './endpoint';
+import { electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
 import { hydrateStorage } from './storage';
 
 type SessionUser = Session['user'];
@@ -23,6 +23,9 @@ interface SessionState {
   ready: boolean;
   token: string | null;
   user: SessionUser | null;
+  /** Desktop only: this install has no stored instance mode, so there is no
+   * server to sign in to yet. Routes to /onboarding ahead of the auth gate. */
+  needsOnboarding: boolean;
   isAdmin: boolean;
   signIn: (email: string, password: string) => Promise<Session>;
   signUp: (email: string, password: string, name?: string) => Promise<Session>;
@@ -36,10 +39,36 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
 
+  // Desktop only: an install with no stored mode has nothing to sign in to
+  // yet, and the endpoint follows the main process from here on.
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
+  useEffect(() => subscribeToDesktopEndpoint(), []);
+
   useEffect(() => {
     const state = { cancelled: false };
     void (async () => {
       await hydrateStorage();
+
+      // Ask the desktop main process first. Its answer decides whether there
+      // is a server to resolve at all — an unconfigured install has none, and
+      // probing for one would just stall the splash before landing nowhere.
+      const bridge = electronBridge();
+      if (bridge) {
+        try {
+          const instance = await bridge.instance.getState();
+          if (instance.needsOnboarding) {
+            if (!state.cancelled) {
+              setNeedsOnboarding(true);
+              setReady(true);
+            }
+            return;
+          }
+        } catch {
+          // An older shell without the bridge methods — fall through and
+          // resolve the endpoint the way every other platform does.
+        }
+      }
+
       await resolveEndpoint();
       let stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
       let sessionUser: SessionUser | null = null;
@@ -104,8 +133,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ ready, token, user, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
-    [ready, token, user, signIn, signUp, signOut],
+    () => ({ ready, token, user, needsOnboarding, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
+    [ready, token, user, needsOnboarding, signIn, signUp, signOut],
   );
 
   return (
