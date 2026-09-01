@@ -50,6 +50,11 @@ describe('smoke', () => {
     // #74 removed incognito entirely. The composer is the only place it was
     // ever offered, so its absence here is the user-visible proof — and the
     // regression guard against the toggle coming back without its server side.
+    //
+    // The composer is waited for first, deliberately: an absence assertion on
+    // its own passes just as happily against a blank screen, so without this
+    // it would go green on a build that never rendered the composer at all.
+    await waitForVisible('composer.input');
     await expectTextAbsent('Incognito');
     await shot('composer-no-incognito');
   });
