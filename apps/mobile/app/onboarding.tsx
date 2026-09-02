@@ -84,7 +84,12 @@ export default function OnboardingScreen() {
   // Nothing to configure off the desktop app: the endpoint is same-origin on
   // web, and native picks it up from its build config or Settings.
   if (!bridge) return <Redirect href="/login" />;
-  if (state && !state.needsOnboarding && step === 'choose' && !error) return <Redirect href="/" />;
+
+  // Deliberately no "already configured, go away" redirect. Reaching this
+  // screen is always intentional — either a gate sent an unconfigured install
+  // here, or the user asked to change modes — and redirecting on a stored
+  // config would make switching modes after setup impossible, which is
+  // exactly what Settings needs to offer.
 
   const chooseHost = async () => {
     setStep('host');

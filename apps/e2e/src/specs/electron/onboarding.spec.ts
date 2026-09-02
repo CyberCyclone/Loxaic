@@ -27,6 +27,25 @@ interface InstanceState {
   defaultHostName: string;
 }
 
+/**
+ * Returns the app to a genuine first run: drop the stored config and ask the
+ * main process to forget its stack.
+ *
+ * Per-test rather than once in a hook, because these tests each *configure*
+ * the instance — proving the chooser appears on a first run means getting
+ * back to one first.
+ */
+async function returnToOnboarding(): Promise<void> {
+  rmSync(path.join(selfContainedDataDir ?? '', 'config.json'), { force: true });
+  await browser.execute(async () => {
+    const bridge = (window as unknown as {
+      shannon?: { instance?: { detach: () => Promise<unknown> } };
+    }).shannon;
+    await bridge?.instance?.detach();
+  });
+  await browser.url('app://-/onboarding');
+}
+
 async function instanceState(): Promise<InstanceState | null> {
   return browser.execute(async () => {
     const bridge = (window as unknown as {
@@ -60,17 +79,9 @@ describe('electron onboarding', () => {
   });
 
   it('shows the mode chooser on a genuine first run, and starts a stack from it', async () => {
-    // Delete the seeded config and re-ask: absence is the first-run signal, so
-    // the next resolve has nothing to start and must land on onboarding.
-    rmSync(path.join(selfContainedDataDir ?? '', 'config.json'), { force: true });
-    await browser.execute(async () => {
-      const bridge = (window as unknown as {
-        shannon?: { instance?: { detach: () => Promise<unknown> } };
-      }).shannon;
-      await bridge?.instance?.detach();
-    });
-
-    await browser.url('app://-/onboarding');
+    // Absence of the config is the first-run signal, so the next resolve has
+    // nothing to start and must land on onboarding.
+    await returnToOnboarding();
     await waitForVisible('onboarding.mode.solo');
     await waitForVisible('onboarding.mode.host');
     await waitForVisible('onboarding.mode.client');
@@ -98,12 +109,21 @@ describe('electron onboarding', () => {
   it('names the host it is about to join before committing to it', async () => {
     // The join step probes /v1/cluster so the screen can say what the user is
     // connecting to rather than echoing back the URL they typed.
+    //
+    // Probed against the live Solo stack the previous test started — a real
+    // server, so this exercises the /v1/cluster read rather than the error
+    // path. Navigating here deliberately does *not* detach: the screen stays
+    // reachable on a configured install precisely so modes can be changed
+    // after setup.
+    const running = await instanceState();
+    const hostUrl = running?.apiBaseUrl ?? '';
+    expect(hostUrl).toBeTruthy();
+
     await browser.url('app://-/onboarding');
     await waitForVisible('onboarding.mode.client');
     await tap('onboarding.mode.client');
 
-    const state = await instanceState();
-    await typeInto('onboarding.client.url', state?.apiBaseUrl ?? '');
+    await typeInto('onboarding.client.url', hostUrl);
     await tap('onboarding.client.check');
     await waitForVisible('onboarding.client.found');
     await shot('onboarding-client-probe');
