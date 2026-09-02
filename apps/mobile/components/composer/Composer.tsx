@@ -31,6 +31,11 @@ interface ComposerProps {
   /** Which screen this composer belongs to — filters the slash palette and
    * is implied server-side by which socket a command rides on. */
   surface: 'chat' | 'agent';
+  /** Set when the conversation can be read but not written to — offline, in
+   * this phase. The composer becomes an explanation rather than an input: a
+   * disabled textarea with no reason reads as a bug, and a send would be
+   * dropped anyway. */
+  readOnlyReason?: string | null;
   /** Send() routes a recognized "/name ..." here instead of onSend. */
   onRunCommand: (name: string, args: string) => void;
   /** Seeds the input from OUTSIDE this component's subtree — the agent
@@ -50,6 +55,7 @@ export function Composer({
   context,
   onOpenModelModal,
   surface,
+  readOnlyReason = null,
   onRunCommand,
   commandSeed,
 }: ComposerProps) {
@@ -168,6 +174,17 @@ export function Composer({
   return (
     <Box className="border-t border-border bg-background p-3">
       <VStack space="sm" className="mx-auto w-full max-w-[820px]">
+        {readOnlyReason ? (
+          <Box
+            testID="composer.readOnly"
+            className="rounded-md border border-border bg-muted px-3 py-3"
+          >
+            <Text size="sm" className="text-muted-foreground">
+              {readOnlyReason}
+            </Text>
+          </Box>
+        ) : (
+          <>
         <AttachmentPreview items={attachments} onRemove={removeAttachment} />
         <Box className="relative">
           {paletteOpen && (
@@ -299,6 +316,8 @@ export function Composer({
             </Button>
           )}
         </HStack>
+          </>
+        )}
       </VStack>
     </Box>
   );

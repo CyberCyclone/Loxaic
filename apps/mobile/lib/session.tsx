@@ -14,6 +14,7 @@ import {
 } from '@shannon/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
 import { electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
+import { setConnectionState } from './connection';
 import { hydrateStorage } from './storage';
 
 type SessionUser = Session['user'];
@@ -82,6 +83,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         try {
           const info = await apiGetSession();
           if (info) {
+            setConnectionState('online');
             sessionUser = info.user;
           } else {
             // Dead token. It has to be cleared, not just left unused: the app
@@ -92,7 +94,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
             stored = null;
           }
         } catch {
-          // Server unreachable — no conclusion can be drawn about the token.
+          // Server unreachable — no conclusion can be drawn about the token,
+          // but this *is* the earliest reliable signal that the host is down,
+          // and it is what puts the app into its offline state before a single
+          // screen renders.
+          setConnectionState('offline');
         }
       }
 

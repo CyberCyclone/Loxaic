@@ -19,9 +19,11 @@ import {
   type AttachmentRef,
 } from '@shannon/api-client';
 import { useEndpoint } from './useEndpoint';
+import { isOffline, setConnectionState } from '@/lib/connection';
+import { readCachedConversations, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
+import { useSession } from '@/lib/session';
 import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
-import { CONVERSATIONS } from '@/lib/fixtures/conversations';
 import { useToastHelper } from './useToastHelper';
 
 export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
@@ -53,7 +55,25 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   // mode switch or a Settings change reconnects to the new host instead of
   // silently holding the old one until the app restarts.
   const endpoint = useEndpoint();
-  const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
+  const { user } = useSession();
+
+  /** Where this user's cache lives. Null until both parts are known — caching
+   * under a guessed scope would leak one user's threads to the next. */
+  const cacheScope = useCallback(() => {
+    if (!endpoint || !user?.id) return null;
+    return { endpoint, userId: user.id };
+  }, [endpoint, user?.id]);
+
+  // The history loader is a stable callback (it must not re-create per render
+  // — `loadedConvIdsRef` dedupes against it), so it reads the scope through a
+  // ref rather than closing over one that would go stale.
+  const cacheScopeRef = useRef(cacheScope());
+  useEffect(() => { cacheScopeRef.current = cacheScope(); }, [cacheScope]);
+  // Empty, not demo fixtures. Seeding them meant a signed-in user always saw
+  // fake threads ("Debug WebSocket reconnect" and friends) mixed into their
+  // real ones, permanently — and made an unreachable server indistinguishable
+  // from a populated account.
+  const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   // Keyed by conversation, unlike the agent surface's flat pendingApproval
@@ -138,15 +158,27 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     loadedConvIdsRef.current.add(id);
     getMessages(id)
       .then(({ messages: rows }) => {
+        setConnectionState('online');
         const msgs = reconstructMessages(rows);
         if (msgs.length === 0) return;
         // Only fill a thread that is still empty: one already streaming (or
         // already populated by this same fetch) must not be clobbered.
-        setConversations((prev) =>
-          prev.map((c) => (c.id === id && c.msgs.length === 0 ? { ...c, msgs } : c)),
-        );
+        setConversations((prev) => {
+          const next = prev.map((c) => (c.id === id && c.msgs.length === 0 ? { ...c, msgs } : c));
+          // Cache the thread as it now stands, so it can be read back offline.
+          const scope = cacheScopeRef.current;
+          const conv = next.find((c) => c.id === id);
+          if (scope && conv) writeCachedConversation(scope.endpoint, scope.userId, conv);
+          return next;
+        });
       })
-      .catch(() => undefined);
+      .catch(() => {
+        // A history fetch that fails is the clearest signal the host is gone —
+        // the cached copy is already on screen, so mark it and let the banner
+        // explain rather than leaving a half-loaded thread looking live.
+        loadedConvIdsRef.current.delete(id);
+        setConnectionState('offline');
+      });
   }, []);
 
   /** Renames the pending optimistic user bubble (if any) to its real
@@ -163,13 +195,32 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     );
   }, []);
 
-  // Load real conversations + latest thread's history on mount / token change.
+  // Cached conversations first, then the server's list.
+  //
+  // The cache renders immediately so an unreachable host shows the user their
+  // threads instead of an empty sidebar; the fetch then replaces it wholesale.
+  // A failure is no longer swallowed: it marks the app offline, which is what
+  // the banner and the disabled composer key on. Previously this
+  // `.catch(() => undefined)` meant a dead server looked identical to a fresh
+  // account with nothing in it.
   useEffect(() => {
     if (!token || loadingRef.current) return;
     loadingRef.current = true;
+
+    const scope = cacheScope();
+    if (scope) {
+      const cached = readCachedConversations(scope.endpoint, scope.userId);
+      if (cached.length > 0) {
+        setConversations((prev) => {
+          const existing = new Set(prev.map((c) => c.id));
+          return [...cached.filter((c) => !existing.has(c.id)), ...prev];
+        });
+      }
+    }
+
     getConversations()
       .then((convs) => {
-        if (convs.length === 0) return;
+        setConnectionState('online');
         const apiConversations: Conversation[] = convs.map((c) => ({
           id: c.id,
           title: c.title,
@@ -180,20 +231,21 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           msgs: [],
         }));
         setConversations((prev) => {
-          const existing = new Set(prev.map((c) => c.id));
-          const fresh = apiConversations.filter((c) => !existing.has(c.id));
-          return [...fresh, ...prev];
+          const byId = new Map(prev.map((c) => [c.id, c]));
+          // Keep any cached messages already on screen; the server's row is
+          // authoritative for everything else.
+          return apiConversations.map((c) => ({ ...c, msgs: byId.get(c.id)?.msgs ?? [] }));
         });
-
-        // History for this thread — and any other the user switches to — is
-        // fetched lazily by setActiveId.
-        setActiveId(convs[0].id);
+        if (scope) writeCachedList(scope.endpoint, scope.userId, apiConversations);
+        if (convs.length > 0) setActiveId(convs[0].id);
       })
-      .catch(() => undefined)
+      .catch(() => {
+        setConnectionState('offline');
+      })
       .finally(() => {
         loadingRef.current = false;
       });
-  }, [token, setActiveId]);
+  }, [token, setActiveId, cacheScope]);
 
   // Live streaming socket. A dropped connection no longer needs a reconcile
   // poll: every event carries a monotonic per-stream `seq`, so reconnecting
@@ -367,10 +419,16 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       const ws = createChatSocket(token, onEvent);
       ws.onopen = () => {
         attempt = 0;
+        setConnectionState('online');
         resubscribeKnown();
       };
       ws.onclose = () => {
         if (cancelled) return;
+        // The first drop is "reconnecting"; once retries have been failing
+        // for a while it is honestly just offline. Distinguishing them keeps
+        // the banner from flapping on a momentary blip while still telling
+        // the truth when the host is actually gone.
+        setConnectionState(attempt >= 2 ? 'offline' : 'reconnecting');
         // The stream state itself is preserved (see StreamState comment) —
         // only the connection needs re-establishing.
         attempt += 1;
@@ -411,6 +469,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {
       if (!wsRef.current) return;
+      // A send while the socket is down used to paint an optimistic bubble and
+      // then vanish: trySend returned false and nothing looked at it, so the
+      // message appeared sent and never got a reply. Refuse up front and say
+      // so, rather than lying and then losing it.
+      if (isOffline()) {
+        showToast('Not connected — your message was not sent');
+        return;
+      }
       const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
       // The optimistic bubble keeps the full refs so it can render a thumbnail
@@ -431,7 +497,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        sendChatMessage(wsRef.current, text, model, undefined, undefined, refs);
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs)) {
+          setConnectionState('reconnecting');
+          showToast('Not connected — your message was not sent');
+        }
       } else {
         const id = activeIdRef.current;
         setConversations((prev) =>
@@ -441,10 +510,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
               : c,
           ),
         );
-        sendChatMessage(wsRef.current, text, model, id, undefined, refs);
+        if (!sendChatMessage(wsRef.current, text, model, id, undefined, refs)) {
+          setConnectionState('reconnecting');
+          showToast('Not connected — your message was not sent');
+        }
       }
     },
-    [setActiveId],
+    [setActiveId, showToast],
   );
 
   const handleStop = useCallback(() => {

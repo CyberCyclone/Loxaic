@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { MessagesSquare } from 'lucide-react-native';
 import { findCommand } from '@shannon/api-client';
+import { OfflineBanner } from '@/components/shell/OfflineBanner';
+import { useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -25,6 +27,7 @@ import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
 export default function ChatScreen() {
+  const connection = useConnection();
   const shell = useShell();
   const { token } = useSession();
   const breakpoint = useBreakpoint();
@@ -126,6 +129,7 @@ export default function ChatScreen() {
                 className="rounded-sm p-1.5 web:hover:bg-muted/50"
               >
                 <Icon as={MessagesSquare} size="sm" className="text-foreground" />
+        <OfflineBanner />
               </Pressable>
             ) : undefined
           }
@@ -154,6 +158,11 @@ export default function ChatScreen() {
           onOpenModelModal={() => { setModelModalOpen(true); }}
           surface="chat"
           onRunCommand={handleRunCommand}
+          readOnlyReason={
+            connection === 'online'
+              ? null
+              : "You're offline. This is your saved copy of the conversation — sending will work again once your server is reachable."
+          }
         />
         </KeyboardAvoidingView>
       </VStack>

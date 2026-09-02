@@ -19,6 +19,7 @@ import {
   type Todo,
 } from '@shannon/api-client';
 import { useEndpoint } from './useEndpoint';
+import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
@@ -363,10 +364,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       const ws = createAgentSocket(token, onEvent);
       ws.onopen = () => {
         attempt = 0;
+        setConnectionState('online');
         resubscribeKnown();
       };
       ws.onclose = () => {
         if (cancelled) return;
+        // The first drop is "reconnecting"; once retries have been failing
+        // for a while it is honestly just offline. Distinguishing them keeps
+        // the banner from flapping on a momentary blip while still telling
+        // the truth when the host is actually gone.
+        setConnectionState(attempt >= 2 ? 'offline' : 'reconnecting');
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
