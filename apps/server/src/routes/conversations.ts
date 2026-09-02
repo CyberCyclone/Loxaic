@@ -60,7 +60,7 @@ export function conversationRoutes(app: FastifyInstance) {
 
     return rows.map((row) => ({
       ...row,
-      role: (row.ownerId === userId ? "owner" : (sharedRoles.get(row.id) ?? "viewer")) as ConversationRole,
+      role: row.ownerId === userId ? "owner" : (sharedRoles.get(row.id) ?? "viewer"),
     }));
   });
 

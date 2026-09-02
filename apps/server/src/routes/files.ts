@@ -3,8 +3,9 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { readFile, stat, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
-import { db, eq } from "@shannon/db";
+import { db, eq, sql } from "@shannon/db";
 import { attachments } from "@shannon/db/schema";
+import { resolveAccess } from "../streams/authz.ts";
 import {
   attachmentClass,
   maxBytesForMime,
@@ -17,6 +18,39 @@ import { attachmentPath, attachmentTextPath, isValidRef, verifyStoredBytes } fro
 import { usedAttachmentBytes, userQuotaBytes } from "../files/reaper";
 import { extractText } from "../files/extract";
 import { getSandboxStatus } from "../sandbox/status";
+
+/**
+ * May this user read this attachment?
+ *
+ * Their own upload, always. Otherwise: the ref has to appear in a message of
+ * a conversation they can see. That second clause is what makes sharing
+ * actually work — a shared thread is full of the *owner's* uploads, and a
+ * viewer who can read the messages but gets a 404 for every image in them has
+ * been shown half a conversation.
+ *
+ * Deliberately scoped to conversations the caller can access rather than "any
+ * message anywhere": pasting a ref into your own conversation must not grant
+ * you someone else's file. The jsonb predicate matches the reaper's
+ * (`block->>'kind' = 'attachment'`) — if a future block kind carries refs,
+ * both have to learn about it together.
+ */
+async function mayReadAttachment(userId: string, ref: string, ownerId: string): Promise<boolean> {
+  if (ownerId === userId) return true;
+
+  const rows = await db.execute(sql`
+    SELECT DISTINCT m.conversation_id AS "conversationId"
+    FROM messages m, jsonb_array_elements(m.content) AS block
+    WHERE jsonb_typeof(m.content) = 'array'
+      AND block->>'kind' = 'attachment'
+      AND block->>'ref' = ${ref}
+      AND m.deleted_at IS NULL
+    LIMIT 20
+  `);
+  for (const row of rows as unknown as { conversationId: string }[]) {
+    if (await resolveAccess(userId, row.conversationId)) return true;
+  }
+  return false;
+}
 
 export function fileRoutes(app: FastifyInstance) {
   // Upload one file. The client parallelizes for multi-attachment messages.
@@ -167,9 +201,10 @@ export function fileRoutes(app: FastifyInstance) {
     };
   });
 
-  // Serve a file to its owner. Accepts `?token=` because <img> tags can't set
-  // headers. Wrong owner and nonexistent are the same 404 — no existence
-  // oracle, matching streams/authz.ts.
+  // Serve a file to anyone entitled to see it — its uploader, or a member
+  // of a conversation it appears in. Accepts `?token=` because <img> tags
+  // can't set headers. Not-entitled and nonexistent are the same 404 — no
+  // existence oracle, matching streams/authz.ts.
   app.get<{ Params: { ref: string } }>("/v1/files/:ref", async (request, reply) => {
     const userId = await authenticateHeaderOrQuery(request, reply);
     const { ref } = request.params;
@@ -178,7 +213,7 @@ export function fileRoutes(app: FastifyInstance) {
       return { error: "Not found" };
     }
     const row = await db.query.attachments.findFirst({ where: eq(attachments.id, ref) });
-    if (row?.ownerId !== userId) {
+    if (!row || !(await mayReadAttachment(userId, ref, row.ownerId))) {
       reply.code(404);
       return { error: "Not found" };
     }
