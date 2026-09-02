@@ -173,6 +173,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           model: c.modelPref?.model ?? '',
           location: 'server' as const,
           msgs: [],
+          role: c.role ?? 'owner',
         }));
         setConversations((prev) => {
           const existing = new Set(prev.map((c) => c.id));
