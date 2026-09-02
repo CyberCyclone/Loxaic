@@ -48,6 +48,29 @@ export async function tap(id: string): Promise<void> {
   await el.click();
 }
 
+/**
+ * Long-press, which is how the thread list exposes its row actions on every
+ * platform — web's hover-only actions have no touch fallback, so the app uses
+ * long-press → actionsheet everywhere.
+ *
+ * Uses WebdriverIO's own action builder rather than a hand-written
+ * `performActions` payload: the raw protocol wants an element *reference*
+ * as its origin, and handing it a WDIO element object is an "invalid
+ * argument". The builder does that serialization itself.
+ */
+export async function longPress(id: string, durationMs = 800): Promise<void> {
+  const el = byTestId(id);
+  await el.waitForDisplayed();
+  const pointerType = platform() === 'android' || platform() === 'ios' ? 'touch' : 'mouse';
+  await browser
+    .action('pointer', { parameters: { pointerType } })
+    .move({ origin: el })
+    .down()
+    .pause(durationMs)
+    .up()
+    .perform();
+}
+
 export async function typeInto(id: string, text: string): Promise<void> {
   const el = byTestId(id);
   await el.waitForDisplayed();
