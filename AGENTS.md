@@ -237,6 +237,39 @@ screenshots showing that behaviour working. Writing those tests is the implement
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
 
+### Offline cache and connection state
+
+- **`lib/connection.ts` is the only source of "can we reach the server".** Fed by the socket
+  lifecycle and by the session bootstrap's existing unreachable-vs-401 split — deliberately not
+  a network-reachability check, because a phone with full signal and a switched-off host is
+  offline for our purposes and NetInfo would say otherwise. The first drop reads as
+  `reconnecting` and only becomes `offline` after retries keep failing, so the banner doesn't
+  flap on a blip.
+- **The cache is a read-only display snapshot, and explicitly not `packages/sync`.** That
+  op-log/LWW design was for device-side *editing*, was never wired into the client, and stays
+  unused. Nothing here merges or replays: a successful fetch replaces an entry wholesale,
+  because a merged cache would invent a state the server never had. If offline *sending* is
+  ever built, that is when the op-log becomes the right tool.
+- **Cache keys are dynamic** (endpoint, user, conversation), so they cannot join `storage.ts`'s
+  static `KNOWN_KEYS`. `KNOWN_PREFIXES` exists for exactly this: a key that is neither listed
+  nor prefixed is written and then silently never read back on native.
+- **Scoped per endpoint *and* per user**, and the user id is **remembered locally** — it comes
+  only from the server, so without that the cache cannot be scoped at precisely the moment it
+  matters. Remembered on *every* path that establishes a session; wiring it only into the
+  bootstrap misses sign-up, which sets the user from its own response.
+- **Conversations are cached when they settle, not on a timer.** A debounce loses the write if
+  the app reloads or quits inside the window — which is the moment that matters. Conversations
+  still streaming are skipped, which avoids a write per token without needing one.
+- **Starting offline must also *open* a thread.** `setActiveId` used to run only on the
+  conversation fetch's success path, so an offline start filled the sidebar and opened nothing.
+- **Session tokens are endpoint-scoped** (`shannon-session-token:<origin>`), with a one-time
+  migration of the old flat key. Unscoped, switching hosts presented the previous host's token,
+  got a 401, and cleared it — so returning meant signing in again.
+- **The offline e2e spec is Electron-only, and that is a property of the product**: the web
+  build is served *by the host being simulated as dead*, so cutting the network takes the page
+  down with it. Only a locally-loaded client (Electron's `app://`, or a native bundle) can
+  outlive its server, which is what an offline cache is for.
+
 ### File attachments
 
 - **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**
