@@ -155,7 +155,6 @@ export default function AgentScreen() {
                   className="flex-row items-center gap-1 rounded-sm p-1.5 web:hover:bg-muted/50"
                 >
                   <Icon as={PanelRight} size="sm" className="text-foreground" />
-        <OfflineBanner />
                   {changedFiles.length > 0 && (
                     <Badge variant="destructive">
                       <BadgeText className="text-2xs normal-case">{changedFiles.length}</BadgeText>
@@ -190,6 +189,7 @@ export default function AgentScreen() {
             </Text>
           </Pressable>
         )}
+        <OfflineBanner />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

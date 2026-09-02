@@ -129,11 +129,11 @@ export default function ChatScreen() {
                 className="rounded-sm p-1.5 web:hover:bg-muted/50"
               >
                 <Icon as={MessagesSquare} size="sm" className="text-foreground" />
-        <OfflineBanner />
               </Pressable>
             ) : undefined
           }
         />
+        <OfflineBanner />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

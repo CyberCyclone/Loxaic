@@ -136,6 +136,26 @@ export function writeCachedList(
 }
 
 /**
+ * Remember which user this endpoint was last signed in as.
+ *
+ * The cache is scoped per user, but the user id comes from the server — so
+ * when the server is unreachable, which is exactly when the cache matters,
+ * there is nothing to scope by. Storing it locally closes that circle. It
+ * lives under the endpoint's own cache prefix, so detaching clears it along
+ * with everything else it belongs to.
+ *
+ * Not a credential and not a claim: it only selects which local snapshot to
+ * show. Every request still carries the real token, and the server decides.
+ */
+export function rememberUserId(endpoint: string, userId: string): void {
+  setJson(`${PREFIX}${endpoint.replace(/\/+$/, '')}|user`, userId);
+}
+
+export function lastUserId(endpoint: string): string | null {
+  return getJson<string | null>(`${PREFIX}${endpoint.replace(/\/+$/, '')}|user`, null);
+}
+
+/**
  * Drop everything cached for one endpoint — every user of it.
  *
  * What detach calls. Scoped to the endpoint on purpose: someone who leaves

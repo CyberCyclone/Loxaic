@@ -13,8 +13,9 @@ import {
   type Session,
 } from '@shannon/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
-import { electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
+import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
 import { setConnectionState } from './connection';
+import { rememberUserId } from './message-cache';
 import { hydrateStorage } from './storage';
 
 type SessionUser = Session['user'];
@@ -34,6 +35,20 @@ interface SessionState {
 }
 
 const SessionContext = createContext<SessionState | null>(null);
+
+/**
+ * Remember who this endpoint is signed in as, for offline cache scoping.
+ *
+ * Called from *every* path that establishes a session — bootstrap, sign-in,
+ * and sign-up alike. Wiring it only into the bootstrap looked sufficient and
+ * wasn't: a fresh sign-up sets the user from its own response and never goes
+ * through that branch, so the very first session on a machine remembered
+ * nothing and its cache was unreadable offline.
+ */
+function rememberSessionUser(userId: string): void {
+  const endpoint = currentEndpoint();
+  if (endpoint) rememberUserId(endpoint, userId);
+}
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -85,6 +100,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           if (info) {
             setConnectionState('online');
             sessionUser = info.user;
+            // Remembered so the cache can still be scoped when the server is
+            // unreachable — see message-cache's rememberUserId.
+            rememberSessionUser(info.user.id);
           } else {
             // Dead token. It has to be cleared, not just left unused: the app
             // gate in app/(app)/_layout.tsx keys on `token` alone, so keeping
@@ -118,6 +136,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await saveToken(session.token); // also sets the api-client's AUTH_TOKEN
     setToken(session.token);
     setUser(session.user);
+    rememberSessionUser(session.user.id);
     return session;
   }, []);
 
@@ -127,6 +146,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       await saveToken(session.token); // also sets the api-client's AUTH_TOKEN
       setToken(session.token);
       setUser(session.user);
+      rememberSessionUser(session.user.id);
       return session;
     },
     [],

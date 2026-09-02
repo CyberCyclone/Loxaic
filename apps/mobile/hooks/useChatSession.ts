@@ -20,7 +20,7 @@ import {
 } from '@shannon/api-client';
 import { useEndpoint } from './useEndpoint';
 import { isOffline, setConnectionState } from '@/lib/connection';
-import { readCachedConversations, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
+import { lastUserId, readCachedConversations, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
 import { useSession } from '@/lib/session';
 import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
@@ -60,8 +60,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   /** Where this user's cache lives. Null until both parts are known — caching
    * under a guessed scope would leak one user's threads to the next. */
   const cacheScope = useCallback(() => {
-    if (!endpoint || !user?.id) return null;
-    return { endpoint, userId: user.id };
+    if (!endpoint) return null;
+    // Falls back to the remembered id: offline, the session bootstrap can't
+    // reach the server, so `user` is null — and that is precisely when the
+    // cache needs to be readable.
+    const userId = user?.id ?? lastUserId(endpoint);
+    if (!userId) return null;
+    return { endpoint, userId };
   }, [endpoint, user?.id]);
 
   // The history loader is a stable callback (it must not re-create per render
@@ -215,6 +220,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           const existing = new Set(prev.map((c) => c.id));
           return [...cached.filter((c) => !existing.has(c.id)), ...prev];
         });
+        // Open the newest cached thread straight away. Selecting a
+        // conversation was previously only done on the fetch's success path,
+        // so an offline start left the list populated but nothing open — the
+        // message view never mounted and the user saw an empty pane where
+        // their conversation should be.
+        if (!activeIdRef.current) setActiveId(cached[0].id);
       }
     }
 
@@ -246,6 +257,34 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         loadingRef.current = false;
       });
   }, [token, setActiveId, cacheScope]);
+
+  /**
+   * Keep the cache in step with what is on screen.
+   *
+   * The list fetch alone is not enough: a conversation created *during* this
+   * session — the common case, since you have to talk to it to have anything
+   * worth caching — would only be written when the list is next fetched,
+   * which may be after the server has already gone away.
+   *
+   * Written when a conversation *settles* rather than on a timer. A debounce
+   * looked simpler but loses the write outright if the app reloads or quits
+   * inside the window, which is exactly the moment that matters ("I closed it
+   * right after reading the reply"). Skipping conversations that are still
+   * streaming avoids a write per token without needing one.
+   */
+  const cachedCountsRef = useRef<Record<string, number>>({});
+  useEffect(() => {
+    const scope = cacheScope();
+    if (!scope) return;
+    for (const conversation of conversations) {
+      if (!isServerConvId(conversation.id)) continue;
+      if (conversation.msgs.length === 0) continue;
+      if (streamingByConv[conversation.id]) continue;
+      if (cachedCountsRef.current[conversation.id] === conversation.msgs.length) continue;
+      cachedCountsRef.current[conversation.id] = conversation.msgs.length;
+      writeCachedConversation(scope.endpoint, scope.userId, conversation);
+    }
+  }, [conversations, streamingByConv, cacheScope]);
 
   // Live streaming socket. A dropped connection no longer needs a reconcile
   // poll: every event carries a monotonic per-stream `seq`, so reconnecting
