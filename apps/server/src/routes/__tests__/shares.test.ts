@@ -16,6 +16,28 @@ import { conversationShares, conversations, user } from "@shannon/db/schema";
  * is to test what a *given* user is allowed to do, and standing up
  * better-auth sessions per case would test better-auth instead.
  */
+interface ShareRow {
+  userId: string;
+  role: string;
+  createdBy: string;
+  name: string;
+  email: string;
+}
+
+/** `inject`'s json() is `any`; read it through a shape instead so the tests
+ * type-check as strictly as the code they exercise. */
+function sharesOf(res: { json: () => unknown }): ShareRow[] {
+  return (res.json() as { shares: ShareRow[] }).shares;
+}
+
+function usersOf(res: { json: () => unknown }): { id: string }[] {
+  return (res.json() as { users: { id: string }[] }).users;
+}
+
+function adminRowsOf(res: { json: () => unknown }): { id: string; shareCount: number }[] {
+  return res.json() as { id: string; shareCount: number }[];
+}
+
 const currentUser = { id: "" };
 
 vi.mock("../../auth/middleware", () => ({
@@ -86,8 +108,8 @@ describe("PUT /v1/conversations/:id/shares", () => {
       payload: { user_id: guest, role: "editor" },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json().shares).toHaveLength(1);
-    expect(res.json().shares[0]).toMatchObject({ userId: guest, role: "editor" });
+    expect(sharesOf(res)).toHaveLength(1);
+    expect(sharesOf(res)[0]).toMatchObject({ userId: guest, role: "editor" });
   });
 
   it("404s for a non-owner — the same answer as a conversation that isn't there", async () => {
@@ -134,8 +156,8 @@ describe("PUT /v1/conversations/:id/shares", () => {
       url: `/v1/conversations/${convId}/shares`,
       payload: { user_id: guest, role: "editor" },
     });
-    expect(res.json().shares).toHaveLength(1);
-    expect(res.json().shares[0].role).toBe("editor");
+    expect(sharesOf(res)).toHaveLength(1);
+    expect(sharesOf(res)[0].role).toBe("editor");
   });
 
   it("rejects an unknown role by falling back to viewer, never by trusting it", async () => {
@@ -147,7 +169,7 @@ describe("PUT /v1/conversations/:id/shares", () => {
     });
     // "owner" is not a grantable role: ownership lives on the conversation,
     // not in this table, so it must degrade rather than escalate.
-    expect(res.json().shares[0].role).toBe("viewer");
+    expect(sharesOf(res)[0].role).toBe("viewer");
   });
 
   it("refuses to share a conversation with its own owner", async () => {
@@ -183,7 +205,7 @@ describe("DELETE /v1/conversations/:id/shares/:userId", () => {
       url: `/v1/conversations/${convId}/shares/${guest}`,
     });
     expect(ok.statusCode).toBe(200);
-    expect(ok.json().shares).toHaveLength(0);
+    expect(sharesOf(ok)).toHaveLength(0);
   });
 });
 
@@ -191,7 +213,7 @@ describe("GET /v1/users/search", () => {
   it("returns nothing for a query too short to be a real lookup", async () => {
     as(owner);
     const res = await app.inject({ method: "GET", url: "/v1/users/search?q=a" });
-    expect(res.json().users).toEqual([]);
+    expect(usersOf(res)).toEqual([]);
   });
 
   it("never returns the caller themselves", async () => {
@@ -200,7 +222,7 @@ describe("GET /v1/users/search", () => {
       method: "GET",
       url: `/v1/users/search?q=${encodeURIComponent("test-shares-")}`,
     });
-    const ids = (res.json().users as { id: string }[]).map((u) => u.id);
+    const ids = usersOf(res).map((u) => u.id);
     expect(ids).not.toContain(owner);
   });
 
@@ -209,7 +231,7 @@ describe("GET /v1/users/search", () => {
     // "[object Object]" and quietly return whatever matched.
     as(owner);
     const res = await app.inject({ method: "GET", url: "/v1/users/search?q[]=aa&q[]=bb" });
-    expect(res.json().users).toEqual([]);
+    expect(usersOf(res)).toEqual([]);
   });
 });
 
@@ -231,7 +253,7 @@ describe("admin conversation routes", () => {
     as(admin);
     const res = await app.inject({ method: "GET", url: "/v1/admin/conversations" });
     expect(res.statusCode).toBe(200);
-    const row = (res.json() as { id: string; shareCount: number }[]).find((r) => r.id === convId);
+    const row = adminRowsOf(res).find((r) => r.id === convId);
     expect(row?.shareCount).toBe(1);
   });
 
@@ -242,7 +264,7 @@ describe("admin conversation routes", () => {
       url: `/v1/admin/conversations/${convId}/shares`,
       payload: { user_id: stranger, role: "editor" },
     });
-    expect(granted.json().shares[0]).toMatchObject({ userId: stranger, role: "editor" });
+    expect(sharesOf(granted)[0]).toMatchObject({ userId: stranger, role: "editor" });
 
     const ownerAttempt = await app.inject({
       method: "PATCH",
@@ -256,7 +278,7 @@ describe("admin conversation routes", () => {
       url: `/v1/admin/conversations/${convId}/shares`,
       payload: { user_id: stranger, revoke: true },
     });
-    expect(revoked.json().shares).toHaveLength(0);
+    expect(sharesOf(revoked)).toHaveLength(0);
   });
 
   it("records the admin as the grantor, so the row says who did it", async () => {
@@ -266,6 +288,6 @@ describe("admin conversation routes", () => {
       url: `/v1/admin/conversations/${convId}/shares`,
       payload: { user_id: guest, role: "viewer" },
     });
-    expect(res.json().shares[0].createdBy).toBe(admin);
+    expect(sharesOf(res)[0].createdBy).toBe(admin);
   });
 });
