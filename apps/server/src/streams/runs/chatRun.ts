@@ -59,7 +59,9 @@ export async function startChatRun(input: {
   let convId = input.conversationId;
 
   if (convId) {
-    await assertConversationAccess(userId, convId);
+    // Sending is an editor action: a viewer may watch this conversation
+    // stream but must not put words in it.
+    await assertConversationAccess(userId, convId, "editor");
     if (input.parentId) {
       await assertParentInConversation(convId, input.parentId);
     }

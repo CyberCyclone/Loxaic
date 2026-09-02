@@ -46,12 +46,22 @@ export function isConversationBusy(conversationId: string): boolean {
   return runByConversation.has(conversationId);
 }
 
-/** Finds the run (owned by `userId`) with a pending approval for `callId`.
- * Approve/deny only carry a call_id, not a stream_id — this both locates
- * the run and enforces that a user can only resolve their own approvals. */
-export function findRunByApprovalCallId(userId: string, callId: string): RunHandle | undefined {
+/**
+ * Finds any run with a pending approval for `callId`.
+ *
+ * Approve/deny carry only a call_id, so this locates the run; it does **not**
+ * authorize. Callers must check the caller's role on `handle.conversationId`
+ * — see ws/chat.ts's `mayActOnRun`.
+ *
+ * Locating and authorizing used to be the same step (`handle.userId ===
+ * userId`), which stopped working once a conversation could have editors
+ * besides its owner: the run's starter is not the set of people entitled to
+ * answer its approvals. Keeping them separate makes the authorization
+ * explicit at the call site rather than implied by a lookup.
+ */
+export function findRunByApprovalCallId(callId: string): RunHandle | undefined {
   for (const handle of runsByStreamId.values()) {
-    if (handle.userId === userId && handle.approvals.has(callId)) return handle;
+    if (handle.approvals.has(callId)) return handle;
   }
   return undefined;
 }

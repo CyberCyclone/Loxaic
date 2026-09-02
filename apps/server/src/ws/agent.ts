@@ -4,7 +4,7 @@ import { findCommand, validateSendAttachments, type ClientMessage, type ServerMe
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
-import { NotFoundError } from "../streams/authz.ts";
+import { NotFoundError, atLeast, resolveAccess } from "../streams/authz.ts";
 import { findRunByApprovalCallId, getRun } from "../streams/registry.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
@@ -20,6 +20,23 @@ interface WsConnection {
   send(data: string): void;
   on(event: "message", listener: (data: Buffer) => void): void;
   on(event: "close", listener: () => void): void;
+}
+
+/**
+ * May this user act on this run — stop it, or answer its tool approvals?
+ *
+ * Editor or better on the run's *conversation*, not "did you start it". A
+ * conversation shared for editing has more than one legitimate participant,
+ * and the run's starter may well have gone offline mid-run (runs deliberately
+ * outlive the socket that began them). A viewer must never reach either path.
+ *
+ * Returns false rather than throwing: both callers deliberately no-op on
+ * refusal, so an unauthorized stop is indistinguishable from a stop for a
+ * stream that never existed.
+ */
+async function mayActOnRun(userId: string, conversationId: string): Promise<boolean> {
+  const grant = await resolveAccess(userId, conversationId);
+  return !!grant && atLeast(grant.role, "editor");
 }
 
 export function agentWsHandler(app: FastifyInstance) {
@@ -117,15 +134,15 @@ export function agentWsHandler(app: FastifyInstance) {
           await delivery.handleSubscribe(msg.conversation_id, msg.cursors);
         } else if (msg.type === "stream.stop") {
           const run = getRun(msg.stream_id);
-          if (run?.userId === userId) run.abort.abort();
+          if (run && (await mayActOnRun(userId, run.conversationId))) run.abort.abort();
         } else if (msg.type === "agent.mode") {
           // Modes are carried explicitly on every agent.send; this is just a
           // UI-preference echo, not durable server state.
           safeSend({ type: "agent.mode_changed", mode: msg.mode });
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
-          const run = findRunByApprovalCallId(userId, msg.call_id);
+          const run = findRunByApprovalCallId(msg.call_id);
           const resolve = run?.approvals.get(msg.call_id);
-          if (run && resolve) {
+          if (run && resolve && (await mayActOnRun(userId, run.conversationId))) {
             run.approvals.delete(msg.call_id);
             resolve(msg.type === "agent.approve");
           }
