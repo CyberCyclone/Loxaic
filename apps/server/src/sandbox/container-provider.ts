@@ -583,6 +583,23 @@ export function getContainerProvider(): SandboxProvider {
           PidsLimit: config.limits?.pids ?? DEFAULT_LIMITS.PidsLimit,
           AutoRemove: true,
           NetworkMode: allowNetwork ? "bridge" : "none",
+          // Everything below runs model-directed commands, so the container
+          // gets no capability it cannot demonstrate a need for.
+          //
+          // The image already runs as a non-root user (`USER shannon`,
+          // uid 1001), which is the single biggest control here and predates
+          // this change. These add the two things that non-root alone does
+          // not give you:
+          //
+          // - `CapDrop: ALL` — even as uid 1001 the container starts with a
+          //   default capability set (CHOWN, SETUID, NET_RAW, …). Nothing the
+          //   sandbox does — bash, file edits, git clone, the extractors —
+          //   needs any of them.
+          // - `no-new-privileges` — stops a setuid binary inside the image
+          //   from ever raising privileges, which is what makes dropping the
+          //   capabilities durable rather than a starting position.
+          CapDrop: ["ALL"],
+          SecurityOpt: ["no-new-privileges"],
         },
         Labels: {
           "shannon.user": userId,

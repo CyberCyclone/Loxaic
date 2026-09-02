@@ -135,6 +135,40 @@ async function resolveEntry(
   return creation;
 }
 
+/**
+ * How many sandboxes one user may hold at once.
+ *
+ * Env-backed with a default rather than a `server_settings` field: it is a
+ * capacity guard rather than a security posture (the isolation itself is not
+ * negotiable), and the sandbox settings row is deliberately about mode,
+ * engine, and network. Read at call time, like every other sandbox env var.
+ */
+const DEFAULT_MAX_SANDBOXES_PER_USER = 5;
+
+function maxSandboxesPerUser(): number {
+  const raw = Number(process.env.SANDBOX_MAX_PER_USER);
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAX_SANDBOXES_PER_USER;
+}
+
+export class SandboxLimitError extends Error {
+  constructor(limit: number) {
+    super(
+      `You already have ${String(limit)} sandboxes running, which is the per-user limit. ` +
+        `Close a conversation that is using one, or wait for an idle sandbox to be reaped.`,
+    );
+    this.name = "SandboxLimitError";
+  }
+}
+
+async function assertUnderUserLimit(userId: string): Promise<void> {
+  const limit = maxSandboxesPerUser();
+  const rows = await db
+    .select({ id: sandboxes.id })
+    .from(sandboxes)
+    .where(and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running")));
+  if (rows.length >= limit) throw new SandboxLimitError(limit);
+}
+
 async function createEntry(
   provider: SandboxProvider,
   userId: string,
@@ -160,6 +194,19 @@ async function createEntry(
     }
     await markStopped(existing.id);
   }
+
+  // Per-user ceiling on live sandboxes.
+  //
+  // Container limits are per *container* — memory, CPU, pids — so one user
+  // with a conversation per tab could hold N times all of them and starve
+  // everyone else on a shared host. The `shannon.user` label existed for
+  // bookkeeping; this is what turns it into a budget.
+  //
+  // Counted from the `sandboxes` table rather than the in-process map,
+  // because the map is per process and the limit is about the machine. Rows
+  // are marked stopped by every teardown path, and the boot sweep reconciles
+  // what a crash left behind.
+  await assertUnderUserLimit(userId);
 
   const handle = await provider.create(userId, {});
   // Test-only hook for the real-model e2e suite: seeds a fixture repo (an
