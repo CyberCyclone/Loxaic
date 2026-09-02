@@ -53,15 +53,38 @@ export async function tap(id: string): Promise<void> {
  * platform — web's hover-only actions have no touch fallback, so the app uses
  * long-press → actionsheet everywhere.
  *
- * Uses WebdriverIO's own action builder rather than a hand-written
- * `performActions` payload: the raw protocol wants an element *reference*
- * as its origin, and handing it a WDIO element object is an "invalid
- * argument". The builder does that serialization itself.
+ * Three implementations, because one does not work everywhere:
+ *
+ * - **iOS** needs XCUITest's own `mobile: touchAndHold`. A W3C pointer
+ *   sequence is delivered, but XCUITest does not synthesise the long-press
+ *   recogniser from it, so the actionsheet never opens and the failure looks
+ *   like a missing element rather than an ignored gesture.
+ * - **Android** works with the W3C sequence via WebdriverIO's action builder.
+ * - **Web/Electron** have no gesture at all: a WebDriver click is
+ *   instantaneous, so react-native-web's responder never reaches its
+ *   long-press delay. The press is held open with a mouse pointer sequence.
+ *
+ * The builder is used rather than a hand-written `performActions` payload —
+ * the raw protocol wants an element *reference* as its origin and rejects a
+ * WDIO element object with "invalid argument".
  */
 export async function longPress(id: string, durationMs = 800): Promise<void> {
   const el = byTestId(id);
   await el.waitForDisplayed();
-  const pointerType = platform() === 'android' || platform() === 'ios' ? 'touch' : 'mouse';
+
+  if (platform() === 'ios') {
+    // Seconds, and deliberately generous: at 0.8s the hold was delivered but
+    // React Native's responder still resolved it as a tap (the row selected,
+    // no actionsheet). XCUITest's synthesized hold needs comfortably longer
+    // than RN's own 500ms threshold to be recognised as a long press.
+    await browser.execute('mobile: touchAndHold', {
+      elementId: await el.elementId,
+      duration: Math.max(2, durationMs / 1000),
+    });
+    return;
+  }
+
+  const pointerType = platform() === 'android' ? 'touch' : 'mouse';
   await browser
     .action('pointer', { parameters: { pointerType } })
     .move({ origin: el })
