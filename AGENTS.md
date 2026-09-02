@@ -215,6 +215,26 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `authenticate`/`requireAdmin` for routes, `resolveSessionFromToken` for WebSocket
   handlers. Calling `auth.api.getSession` directly skips the ban re-check and leaves a
   banned user holding live sockets (including a sandbox terminal) until the session expires.
+- **Sandbox containers run with no capabilities and no route back to any.** The image already
+  runs as a non-root user (`USER shannon`, uid 1001) — that predates the hardening and is the
+  largest control — but non-root does *not* imply capability-free: a container starts with a
+  default set (CHOWN, SETUID, NET_RAW, …) whatever its uid. So `CapDrop: ["ALL"]` plus
+  `no-new-privileges`, the latter being what makes the drop durable rather than a starting
+  position a setuid binary could climb out of. Asserted from *inside* a real container
+  (`sandbox/__tests__/hardening.test.ts`: `CapEff` is exactly 0, `NoNewPrivs` is 1) rather than
+  by reading back the HostConfig we just sent, which would only prove we passed what we passed.
+- **`ReadonlyRootfs` is deliberately not set.** It breaks the workdir and `/tmp`, so it needs
+  tmpfs replacements whose pages count against the same 512MB cgroup — turning a large clone or
+  extraction into an OOM kill. And it adds almost nothing: every system directory is already
+  unwritable to uid 1001. Revisit only alongside a memory-limit change, not on its own.
+- **Per-user sandbox cap** (`SANDBOX_MAX_PER_USER`, default 5). Container limits are per
+  *container*, so one user with a conversation per tab could hold N times all of them and
+  starve a shared host — the `shannon.user` label was bookkeeping until this made it a budget.
+  Counted from the `sandboxes` table, not the in-process map: the map is per process and the
+  limit is about the machine.
+- **The extraction pool inherits all of the above by construction** — it creates through the
+  same `provider.create`. Keep it that way: a second creation path is a second place to forget
+  a flag.
 - Sandbox containers are created with **no network** (`NetworkMode: "none"`) unless an admin
   enables `allowNetwork` — everything in them is model-directed, so egress is an
   exfiltration path. Host sandboxes always have the host's network. `web_fetch` is
