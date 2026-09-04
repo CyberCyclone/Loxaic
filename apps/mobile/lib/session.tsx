@@ -15,7 +15,7 @@ import {
 import { clearToken, loadToken, saveToken } from './auth';
 import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
 import { setConnectionState } from './connection';
-import { rememberUserId } from './message-cache';
+import { clearCacheForEndpoint, rememberUserId } from './message-cache';
 import { hydrateStorage } from './storage';
 
 type SessionUser = Session['user'];
@@ -153,7 +153,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   );
 
   const signOut = useCallback(async () => {
+    // Sign-out is the moment a user expects their content to stop being
+    // reachable on this device — and the cache is plaintext conversation
+    // bodies in localStorage on web/Electron. Clearing it was wired only into
+    // Electron detach, which looked deliberate and wasn't: detach is a
+    // desktop-only path, sign-out is the universal one. The remembered user
+    // id goes with it (same prefix) — keeping it would leave a stale record of
+    // the last account used on the machine, scoping data that no longer exists.
+    const endpoint = currentEndpoint();
     await clearToken(); // also clears the api-client's AUTH_TOKEN
+    if (endpoint) clearCacheForEndpoint(endpoint);
     setToken(null);
     setUser(null);
   }, []);

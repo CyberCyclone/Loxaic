@@ -18,7 +18,7 @@
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { isVisible, waitForVisible, waitForTextIn } from '../../helpers/selectors.ts';
-import { mockEcho, sendAndAwaitReply, signUp } from '../../helpers/app.ts';
+import { mockEcho, sendAndAwaitReply, signUp, startNewThread } from '../../helpers/app.ts';
 
 /** Cuts the renderer's network, the way a host going away looks to the app. */
 async function goOffline(): Promise<void> {
@@ -32,11 +32,17 @@ async function goOnline(): Promise<void> {
 describe('offline', () => {
   const creds = uniqueCreds();
   const prompt = 'something worth keeping';
+  const secondPrompt = 'a second thread, more recent';
 
   before(async () => {
     await signUp(creds);
-    // A conversation with real content, so there is something to cache.
+    // Two conversations, not one. With a single conversation the spec could
+    // not tell whether the cache was working or whether the history fetch had
+    // merely repaired the one thread it happened to open — which is exactly
+    // how a bug that emptied every *other* cached thread got past it.
     await sendAndAwaitReply(prompt, mockEcho(prompt));
+    await startNewThread('chat');
+    await sendAndAwaitReply(secondPrompt, mockEcho(secondPrompt));
   });
 
   after(async () => {
@@ -62,15 +68,26 @@ describe('offline', () => {
     await shot('offline-banner');
   });
 
-  it('shows the cached thread, read-only', async () => {
+  it('opens the most recent cached thread, read-only', async () => {
     // The cache's job: an unreachable host must not empty the screen. The
-    // reply is still there to read, from local storage rather than the server
-    // — and the composer is an explanation rather than an input, because a
-    // send now would be dropped.
-    await waitForTextIn('chat.messageList', mockEcho(prompt));
+    // *newest* thread is the one that opens — ordering by the conversation's
+    // own recency, not by when the cache happened to write it — and the
+    // composer is an explanation rather than an input, because a send now
+    // would be dropped.
+    await waitForTextIn('chat.messageList', mockEcho(secondPrompt));
     await waitForVisible('composer.readOnly');
     expect(await isVisible('composer.input')).toBe(false);
     await shot('offline-cached-thread');
+  });
+
+  it('still holds the other thread’s messages, not just the open one', async () => {
+    // The write-path bug this guards: the list fetch used to overwrite every
+    // cached thread with an empty message list, so only the thread the user
+    // last opened survived. Switching to the older thread offline must show
+    // its reply from the cache.
+    await $(`//*[contains(text(), ${JSON.stringify(prompt)})]`).click();
+    await waitForTextIn('chat.messageList', mockEcho(prompt));
+    await shot('offline-other-cached-thread');
   });
 
   it('recovers when the server comes back', async () => {

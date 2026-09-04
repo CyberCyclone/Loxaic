@@ -39,7 +39,8 @@ interface CachedConversation {
 }
 
 interface CacheIndex {
-  /** conversationId → last write, so eviction needs no key scan. */
+  /** conversationId → recency (the conversation's own updatedAt, or the write
+   * clock as a fallback), so eviction can rank without a key scan. */
   entries: Record<string, number>;
 }
 
@@ -58,6 +59,21 @@ function convKey(scope: string, conversationId: string): string {
 }
 
 /**
+ * When a conversation was last active, for ordering and eviction.
+ *
+ * The conversation's own `updatedAt`, never the cache's write clock. `at`
+ * records when *we* wrote the row, and the caller writes the server's list
+ * newest-first — so keying on `at` made the newest thread the earliest write,
+ * i.e. the first evicted, and could invert the sidebar (and auto-open the
+ * oldest thread) whenever the write loop crossed a millisecond boundary. The
+ * write clock is kept only as a fallback for a row that never carried one.
+ */
+function recency(entry: { meta: { updatedAt?: string }; at: number }): number {
+  const ts = entry.meta.updatedAt ? Date.parse(entry.meta.updatedAt) : NaN;
+  return Number.isFinite(ts) ? ts : entry.at;
+}
+
+/**
  * Everything cached for this scope, newest first — what the sidebar renders
  * before (or instead of) a successful fetch.
  */
@@ -67,7 +83,7 @@ export function readCachedConversations(endpoint: string, userId: string): Conve
   return Object.keys(index.entries)
     .map((id) => getJson<CachedConversation | null>(convKey(scope, id), null))
     .filter((entry): entry is CachedConversation => !!entry)
-    .sort((a, b) => b.at - a.at)
+    .sort((a, b) => recency(b) - recency(a))
     .map((entry) => ({ ...entry.meta, msgs: entry.msgs }));
 }
 
@@ -96,7 +112,9 @@ export function writeCachedConversation(
 
   const key = indexKey(scope);
   const index = getJson<CacheIndex>(key, { entries: {} });
-  index.entries[conversation.id] = at;
+  // The index holds each conversation's recency (see `recency`), so eviction
+  // can rank without reading every row back.
+  index.entries[conversation.id] = recency({ meta, at });
 
   const ids = Object.keys(index.entries);
   if (ids.length > MAX_CONVERSATIONS) {
@@ -153,6 +171,23 @@ export function rememberUserId(endpoint: string, userId: string): void {
 
 export function lastUserId(endpoint: string): string | null {
   return getJson<string | null>(`${PREFIX}${endpoint.replace(/\/+$/, '')}|user`, null);
+}
+
+/**
+ * Forget one conversation — what a local delete calls.
+ *
+ * Without it, a thread the user deleted came straight back from the cache on
+ * the next offline start, full history and all, possibly as the auto-opened
+ * one; the only other pruning path (`writeCachedList`) needs a *successful*
+ * list fetch, which is exactly what offline doesn't have.
+ */
+export function removeCachedConversation(endpoint: string, userId: string, conversationId: string): void {
+  const scope = scopeOf(endpoint, userId);
+  removeItem(convKey(scope, conversationId));
+  const key = indexKey(scope);
+  const index = getJson<CacheIndex>(key, { entries: {} });
+  index.entries = Object.fromEntries(Object.entries(index.entries).filter(([id]) => id !== conversationId));
+  setJson(key, index);
 }
 
 /**

@@ -2,6 +2,29 @@ let BASE_URL = "http://localhost:4000";
 let AUTH_TOKEN: string | null = null;
 
 /** Point the client at a different server (LAN IP, tailnet HTTPS URL, …). */
+/**
+ * An HTTP response the server actually sent, as opposed to a request that
+ * never got one. Callers deciding "is the server down?" must branch on this:
+ * `fetch` rejects with a TypeError when the host is unreachable, but a 404 for
+ * a deleted row or a 500 for one bad query is a *reachable* server saying no,
+ * and flipping an app into offline mode over it locks the user out of a
+ * perfectly healthy host.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** True when the failure was the network, not the server's answer. */
+export function isUnreachableError(err: unknown): boolean {
+  return !(err instanceof ApiError);
+}
+
 export function setApiBaseUrl(url: string) {
   BASE_URL = url.replace(/\/+$/, "");
 }
@@ -219,7 +242,7 @@ export async function getConversations(): Promise<Conversation[]> {
   const res = await fetch(`${BASE_URL}/v1/conversations`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
-  if (!res.ok) throw new Error(`Conversations failed: ${String(res.status)}`);
+  if (!res.ok) throw new ApiError(`Conversations failed: ${String(res.status)}`, res.status);
   return res.json() as Promise<Conversation[]>;
 }
 
@@ -279,7 +302,7 @@ export async function getMessages(
   const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
-  if (!res.ok) throw new Error(`Messages failed: ${String(res.status)}`);
+  if (!res.ok) throw new ApiError(`Messages failed: ${String(res.status)}`, res.status);
   return res.json() as Promise<{ messages: ApiMessage[]; forks: unknown }>;
 }
 
@@ -310,7 +333,7 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
-  if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`);
+  if (!res.ok) throw new ApiError(`${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
   return res;
 }
 

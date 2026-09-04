@@ -28,12 +28,14 @@ const {
   writeCachedConversation,
   writeCachedList,
   clearCacheForEndpoint,
+  removeCachedConversation,
 } = await import('./message-cache');
+const mod = await import('./message-cache');
 
 const ENDPOINT = 'http://host:4100';
 const USER = 'user-1';
 
-function conv(id: string, msgCount = 1) {
+function conv(id: string, msgCount = 1, updatedAt?: string) {
   return {
     id,
     title: `thread ${id}`,
@@ -41,6 +43,7 @@ function conv(id: string, msgCount = 1) {
     time: 'now',
     model: 'm',
     location: 'server' as const,
+    ...(updatedAt ? { updatedAt } : {}),
     msgs: Array.from({ length: msgCount }, (_, i) => ({
       id: `${id}-m${String(i)}`,
       role: 'user' as const,
@@ -91,12 +94,44 @@ describe('message cache', () => {
     expect(cached.msgs.at(-1)?.text).toBe('message 149');
   });
 
-  it('evicts the least recently written past the conversation cap', () => {
-    for (let i = 0; i < 55; i++) writeCachedConversation(ENDPOINT, USER, conv(`c${String(i)}`));
+  it('evicts the least recently *active* past the cap — not the earliest written', () => {
+    // Written the way the real caller writes: the server's list, newest
+    // first. The previous test wrote ascending, which is the opposite order,
+    // and so passed while the real code evicted the ten newest threads.
+    const day = 86_400_000;
+    const list = Array.from({ length: 55 }, (_, i) =>
+      conv(`c${String(i)}`, 1, new Date(Date.now() - i * day).toISOString()),
+    ); // c0 newest … c54 oldest, in that order
+    writeCachedList(ENDPOINT, USER, list);
     const cached = readCachedConversations(ENDPOINT, USER);
     expect(cached).toHaveLength(50);
-    expect(cached.map((c) => c.id)).not.toContain('c0');
-    expect(cached.map((c) => c.id)).toContain('c54');
+    expect(cached.map((c) => c.id)).toContain('c0');
+    expect(cached.map((c) => c.id)).not.toContain('c54');
+  });
+
+  it('orders by the conversation’s own recency, not the cache’s write clock', () => {
+    // Written oldest-first so a write-clock sort would invert the sidebar and
+    // auto-open the oldest thread.
+    const old = conv('old', 1, '2024-01-01T00:00:00.000Z');
+    const recent = conv('recent', 1, '2025-06-01T00:00:00.000Z');
+    writeCachedConversation(ENDPOINT, USER, old);
+    writeCachedConversation(ENDPOINT, USER, recent);
+    expect(readCachedConversations(ENDPOINT, USER).map((c) => c.id)).toEqual(['recent', 'old']);
+  });
+
+  it('forgets one conversation on removal, index and row together', () => {
+    writeCachedList(ENDPOINT, USER, [conv('a'), conv('b')]);
+    removeCachedConversation(ENDPOINT, USER, 'a');
+    expect(readCachedConversations(ENDPOINT, USER).map((c) => c.id)).toEqual(['b']);
+    expect([...store.keys()].filter((k) => k.includes('|c|a'))).toEqual([]);
+  });
+
+  it('clearing an endpoint also drops the remembered user id under it', () => {
+    const { rememberUserId, lastUserId } = mod;
+    rememberUserId(ENDPOINT, USER);
+    expect(lastUserId(ENDPOINT)).toBe(USER);
+    clearCacheForEndpoint(ENDPOINT);
+    expect(lastUserId(ENDPOINT)).toBeNull();
   });
 
   it('drops conversations the server no longer lists', () => {

@@ -259,7 +259,34 @@ screenshots showing that behaviour working. Writing those tests is the implement
   bootstrap misses sign-up, which sets the user from its own response.
 - **Conversations are cached when they settle, not on a timer.** A debounce loses the write if
   the app reloads or quits inside the window — which is the moment that matters. Conversations
-  still streaming are skipped, which avoids a write per token without needing one.
+  still streaming are skipped, which avoids a write per token without needing one. The
+  dirty-check is a cheap identity (message count, title, model, last message id and length) —
+  keying on message count alone missed every rename and model change.
+- **The cache is written from the *merged* list, never from the raw server list.** The server's
+  rows arrive with `msgs: []`; writing them straight to the cache emptied every cached thread on
+  each online start. And a thread populated *from the cache* must still yield to the server's
+  history — only a thread filled by a live run is protected from the history fetch (`fromCacheRef`).
+- **Ordering and eviction key on the conversation's own `updatedAt`, not the cache's write
+  clock.** The caller writes newest-first, so a write-clock key made the newest thread the
+  earliest write — the first evicted — and could invert the sidebar across a millisecond
+  boundary. The unit test writes newest-first for exactly this reason; an ascending fixture passed
+  while the real path evicted the wrong threads.
+- **Only a request that never got an answer means offline.** `isUnreachableError` — a 404 or
+  500 is a reachable server saying no, and flipping to offline over one locked the user out of
+  sending on a healthy host with nothing to recover it. `ApiError` carries the status for this.
+- **The foreground-resume socket close is intentional and must not read as a drop.** Without
+  the `intentionalClose` flag, every app switch on a phone flashed the offline banner and refused
+  sends for a second on a healthy server.
+- **A refused send rolls back its optimistic bubble.** Otherwise the settle-cache wrote a message
+  that was never sent into the user's "saved copy" and replayed it on every offline start.
+- **Deleting a conversation removes it from the cache** (`removeCachedConversation`) — the only
+  other pruning path needs a successful list fetch, which offline is precisely the absence of.
+- **Sign-out clears the cache for that endpoint.** Plaintext conversation bodies in
+  `localStorage` outliving sign-out is a disclosure, not a convenience; the remembered user id
+  goes with it.
+- **`secureKey` is injective.** Native SecureStore keys allow only `[A-Za-z0-9._-]`, and the first
+  encoding collapsed every other byte to `_` — so `http://box:4100` and `http://box/4100` shared a
+  slot and one host's token was *presented to* the other. Each disallowed byte is now `_` + hex.
 - **Starting offline must also *open* a thread.** `setActiveId` used to run only on the
   conversation fetch's success path, so an offline start filled the sidebar and opened nothing.
 - **Session tokens are endpoint-scoped** (`shannon-session-token:<origin>`), with a one-time

@@ -97,9 +97,21 @@ async function migrateLegacyNative(key: string): Promise<string | null> {
  * SecureStore keys allow only [A-Za-z0-9._-], and an endpoint carries `:` and
  * `/`. Encode rather than hash, so the key stays greppable when debugging a
  * device — nothing secret is in the endpoint.
+ *
+ * Encoded *injectively*. The first version replaced every disallowed byte with
+ * `_`, which is many-to-one: `http://box:4100` and `http://box/4100` collapsed
+ * onto one slot, so host A's bearer token was loaded and *presented to* host B
+ * — the inverse of what endpoint-scoping exists for, and worse than the bug it
+ * fixed. Each disallowed byte becomes `_` + its two-hex-digit code, which is
+ * reversible and still readable.
+ *
+ * Changing this changes every existing native key, so installs that stored a
+ * token under the old scheme are signed out once. The legacy flat-key
+ * migration can't help them (their key wasn't the legacy one). That is a
+ * deliberate one-time cost against a credential going to the wrong server.
  */
 function secureKey(key: string): string {
-  return key.replace(/[^A-Za-z0-9._-]/g, '_');
+  return key.replace(/[^A-Za-z0-9._-]/g, (c) => `_${c.charCodeAt(0).toString(16).padStart(2, '0')}`);
 }
 
 /** Clears this endpoint's token (or a named one, for detach). */

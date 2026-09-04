@@ -207,6 +207,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     let cancelled = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let attempt = 0;
+    let intentionalClose = false;
 
     const resubscribeKnown = () => {
       const ws = wsRef.current;
@@ -369,6 +370,13 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       };
       ws.onclose = () => {
         if (cancelled) return;
+        // Deliberate foreground-resume close (below) is not a drop — see the
+        // identical handling in useChatSession.
+        if (intentionalClose) {
+          intentionalClose = false;
+          reconnectTimer = setTimeout(connect, 0);
+          return;
+        }
         // The first drop is "reconnecting"; once retries have been failing
         // for a while it is honestly just offline. Distinguishing them keeps
         // the banner from flapping on a momentary blip while still telling
@@ -385,6 +393,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     let appState: AppStateStatus = AppState.currentState;
     const appStateSub = AppState.addEventListener('change', (next) => {
       if (/inactive|background/.test(appState) && next === 'active') {
+        intentionalClose = true;
         wsRef.current?.close();
       }
       appState = next;

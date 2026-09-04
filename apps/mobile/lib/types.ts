@@ -88,8 +88,11 @@ export interface Conversation {
   model: string
   location: MessageLocation
   msgs: Message[]
-  /** Lives only in the server's stream log, never Postgres — absent from
-   * GET /v1/conversations and gone on app restart. */
+  /** Server-side last-activity timestamp (ISO). The offline cache sorts and
+   * evicts on this rather than on when it happened to write a row — the two
+   * disagree, and the second one is meaningless to a user. Absent on a
+   * locally-created conversation until the server has listed it. */
+  updatedAt?: string
 }
 
 export interface Routine {
