@@ -9,8 +9,8 @@ import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 
-/** Every conversation id the server hands out (Postgres row or ephemeral
- * `uuid()`) is a real UUID. The client's own optimistic placeholders
+/** Every conversation id the server hands out is a Postgres row id, and so a
+ * real UUID. The client's own optimistic placeholders
  * (`c<timestamp>` for chat, `pending-<random>` for agent) deliberately are
  * not, so a real REST call — like the lazy per-thread history fetch — can
  * tell the two apart before a `turn.started` reply ever arrives to swap the

@@ -66,6 +66,20 @@ export function agentWsHandler(app: FastifyInstance) {
 
       try {
         if (msg.type === "agent.send") {
+          // Incognito was removed in #74, but a native build installed before
+          // that still has the toggle. Refuse rather than silently persist: a
+          // user who turned Incognito on and got a Postgres row for it has been
+          // told the opposite of what happened. Checked as `=== true`, not
+          // `"incognito" in msg` — every pre-#74 client sends the key with
+          // `false` on ordinary sends, so a presence check would reject all of
+          // them.
+          if ((msg as { incognito?: unknown }).incognito === true) {
+            safeSend({
+              type: "error",
+              error: "Incognito chat is no longer available — please update your app.",
+            });
+            return;
+          }
           const sendError = validateSendAttachments(msg.content, msg.attachments);
           if (sendError) {
             safeSend({ type: "error", error: sendError });
