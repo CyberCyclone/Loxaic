@@ -231,7 +231,19 @@ screenshots showing that behaviour working. Writing those tests is the implement
   *container*, so one user with a conversation per tab could hold N times all of them and
   starve a shared host — the `shannon.user` label was bookkeeping until this made it a budget.
   Counted from the `sandboxes` table, not the in-process map: the map is per process and the
-  limit is about the machine.
+  limit is about the machine. Three things keep the count honest: **both creation paths**
+  (`createEntry` and `POST /v1/sandboxes`) call `assertUnderUserLimit` — a cap honoured by one
+  of two is not a cap; the check **reserves a slot** in-process until the row exists, because
+  check-then-create with no transaction let concurrent tool calls overshoot; and before
+  refusing it **reconciles dead rows** — a daemon restart leaves every row `running` with no
+  container behind it, and counting those meant a permanent lockout. Liveness is asked per row
+  (`attach().isRunning()`), never diffed against a container listing: an empty listing cannot
+  say whether the engine is down or every container is gone, and a throw leaves the row alone
+  rather than marking it stopped on no evidence.
+- **The boot sweep runs in both directions**: containers no row claims are stopped, and
+  `running` rows whose container is gone are marked stopped. The second direction is not gated
+  on the listing being non-empty — after a daemon restart it *is* empty, and that is exactly
+  the case to reconcile.
 - **The extraction pool inherits all of the above by construction** — it creates through the
   same `provider.create`. Keep it that way: a second creation path is a second place to forget
   a flag.
