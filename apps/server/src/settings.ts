@@ -243,6 +243,18 @@ function validate(input: unknown): SandboxSettingsPatch {
       throw new SettingsError("mode must be one of container, host, off", "invalid");
     }
     if (env.mode) throw new SettingsError("mode is pinned by the SANDBOX_MODE environment variable", "envOverride");
+    // The hosting invariant has two paths that can change the mode — boot and
+    // this write — and hostingBlockedReason() guards only the first. Without
+    // this, an admin on a live Host could switch to "host" and run every other
+    // user's commands unisolated on the machine immediately, or to "off" and
+    // brick the next boot. Same shape as the envOverride refusal: the field is
+    // pinned, here by what this instance is rather than by its environment.
+    if (isHosting() && raw.mode !== "container") {
+      throw new SettingsError(
+        `this instance hosts for other users, so only the container sandbox is permitted (got "${raw.mode}")`,
+        "invalid",
+      );
+    }
     patch.mode = raw.mode;
   }
 

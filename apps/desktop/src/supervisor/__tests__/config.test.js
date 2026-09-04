@@ -79,6 +79,23 @@ describe("buildConfig", () => {
     expect(bindHostFor(config.host)).toBe("127.0.0.1");
   });
 
+  it("does not let solo inherit a previous host's advertiseUrl", () => {
+    // Solo forces a loopback bind, but advertiseUrl outranks the bind when
+    // deriving BETTER_AUTH_URL — so an inherited external address would point
+    // sign-in at somewhere nothing is listening, and registerHost would keep
+    // publishing that dead address into the cluster.
+    const host = buildConfig({ mode: "host", host: { advertiseUrl: "https://gpu-box.tail.ts.net" } });
+    expect(host.host.advertiseUrl).toBe("https://gpu-box.tail.ts.net");
+    const solo = buildConfig({ mode: "solo" }, host);
+    expect(solo.host.advertiseUrl).toBeUndefined();
+  });
+
+  it("still lets a host keep its previous advertiseUrl when the new input omits one", () => {
+    const first = buildConfig({ mode: "host", host: { advertiseUrl: "https://gpu-box.tail.ts.net" } });
+    const second = buildConfig({ mode: "host" }, first);
+    expect(second.host.advertiseUrl).toBe("https://gpu-box.tail.ts.net");
+  });
+
   it("binds a host to all interfaces", () => {
     expect(bindHostFor(buildConfig({ mode: "host" }).host)).toBe("0.0.0.0");
   });

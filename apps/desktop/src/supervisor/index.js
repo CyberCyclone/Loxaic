@@ -109,6 +109,17 @@ async function waitForHealth(baseUrl) {
  * Returns { apiBaseUrl, port, stop } — stop() tears down server-then-Postgres
  * in order, so the server can drain against a live database.
  */
+/** The desktop app's own version, from its package.json — the packaged app
+ * runs under Electron, not pnpm, so npm_package_version is never set. */
+function desktopVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function startStack({
   dataDir,
   port = 4100,
@@ -144,7 +155,15 @@ export async function startStack({
   // never a pid we didn't write ourselves.
   const serverPidFile = path.join(dataDir, "server.pid");
   const orphanBaseUrl = `http://localhost:${port}`;
-  if (await isHealthyShannon(orphanBaseUrl)) {
+  // Adoption is only safe when the leftover is configured the way this start
+  // would configure it. Before instance modes existed that was always true;
+  // now the process env *is* the mode — SHANNON_HOSTING, the bind, the
+  // advertised URL BETTER_AUTH_URL derives from — and a healthy leftover Solo
+  // server adopted during a Solo→Host switch would leave the user told they
+  // are hosting while nothing about the running process changed, with a no-op
+  // stop() so the next switch couldn't clean it up either. With an instance
+  // config in hand, a leftover is reaped and replaced rather than trusted.
+  if (!instance && (await isHealthyShannon(orphanBaseUrl))) {
     log(`[stack] adopting running server at ${orphanBaseUrl} (left over from a previous run)`);
     return {
       apiBaseUrl: orphanBaseUrl,
@@ -172,6 +191,9 @@ export async function startStack({
     PATH: process.env.PATH ?? "",
     HOME: process.env.HOME ?? "",
     NODE_ENV: "production",
+    // The bundled server records this in the hosts table. npm_package_version
+    // only exists under `pnpm dev`; the packaged app has to say so itself.
+    SHANNON_VERSION: desktopVersion(),
     PORT: String(port),
     HOST: bindHost,
     DATABASE_URL: databaseUrl,

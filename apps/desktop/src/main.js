@@ -250,11 +250,23 @@ async function runGui() {
     if (previous) await previous.stop().catch(() => undefined);
 
     saveConfig(dataDir(), config);
-    const started = await startForConfig(config);
-    startupError = null;
-    stack = started.stack;
-    apiBaseUrl = started.apiBaseUrl;
-    instanceMode = started.mode;
+    try {
+      const started = await startForConfig(config);
+      startupError = null;
+      stack = started.stack;
+      apiBaseUrl = started.apiBaseUrl;
+      instanceMode = started.mode;
+    } catch (err) {
+      // The most likely failure here is the one that most needs explaining:
+      // hostingBlockedReason() refusing to start a Host with no container
+      // engine. Before this the throw skipped every line above, so the error
+      // was never recorded and the renderer never heard — it just landed back
+      // on onboarding with no reason attached and the "install Docker"
+      // message lost.
+      startupError = err instanceof Error ? err.message : String(err);
+      pushStackState();
+      throw err;
+    }
     pushStackState();
     return stackState();
   }

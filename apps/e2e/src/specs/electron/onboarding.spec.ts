@@ -17,7 +17,7 @@ import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { SELF_CONTAINED, selfContainedDataDir } from '../../../scripts/electron-env.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { tap, typeInto, waitForVisible } from '../../helpers/selectors.ts';
+import { isVisible, tap, typeInto, waitForVisible } from '../../helpers/selectors.ts';
 
 /** State the main process reports; the same shape preload.cjs exposes. */
 interface InstanceState {
@@ -103,6 +103,14 @@ describe('electron onboarding', () => {
       return res.ok;
     }, state?.apiBaseUrl ?? '');
     expect(health).toBe(true);
+
+    // The part a getState() assertion cannot see: the app has to actually
+    // *leave* onboarding. The session's needsOnboarding flag used to latch
+    // true and never clear, so the layout bounced straight back here after
+    // every mode choice — a first-run install that could never reach the app.
+    // A fresh Solo stack has no account yet, so leaving means landing on login.
+    await waitForVisible('login.submit', 30_000);
+    expect(await isVisible('onboarding.mode.solo')).toBe(false);
     await shot('onboarding-solo-started');
   });
 

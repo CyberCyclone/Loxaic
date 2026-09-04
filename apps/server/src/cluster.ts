@@ -79,6 +79,23 @@ export async function ensureCluster(): Promise<ClusterIdentity> {
 }
 
 /**
+ * The cluster identity if one exists, without minting. For request paths that
+ * must not write — `ensureCluster` is called at boot, so by the time any
+ * request arrives this is a cache hit or a single read; an unauthenticated
+ * route should never be the thing that drives an insert.
+ */
+export async function getCluster(): Promise<ClusterIdentity | null> {
+  if (cached) return cached;
+  const existing = await db.query.serverSettings.findFirst({
+    where: eq(serverSettings.key, CLUSTER_KEY),
+  });
+  const stored = existing?.value as Partial<ClusterIdentity> | undefined;
+  if (!stored?.id) return null;
+  cached = { id: stored.id, name: stored.name ?? "Shannon" };
+  return cached;
+}
+
+/**
  * Registers this instance in `hosts` and starts its heartbeat.
  *
  * Keyed on `SHANNON_INSTANCE_ID` — the desktop install's stable id, carried
@@ -96,13 +113,18 @@ export async function registerHost(): Promise<string | null> {
   const name = process.env.SHANNON_HOST_NAME ?? "Shannon Host";
   const advertiseUrl = process.env.SHANNON_ADVERTISE_URL ?? `http://localhost:${process.env.PORT ?? "4000"}`;
   const inferenceBaseUrl = process.env.INFERENCE_BASE_URL ?? null;
+  // SHANNON_VERSION is what the desktop supervisor passes; npm_package_version
+  // is what `pnpm dev` sets. Neither reaching here used to mean the column was
+  // always null — and the upsert never refreshed it, so even a value that did
+  // arrive was frozen at first registration.
+  const version = process.env.SHANNON_VERSION ?? process.env.npm_package_version ?? null;
 
   await db
     .insert(hosts)
-    .values({ id, name, advertiseUrl, inferenceBaseUrl, version: process.env.npm_package_version ?? null })
+    .values({ id, name, advertiseUrl, inferenceBaseUrl, version })
     .onConflictDoUpdate({
       target: hosts.id,
-      set: { name, advertiseUrl, inferenceBaseUrl, lastHeartbeatAt: new Date() },
+      set: { name, advertiseUrl, inferenceBaseUrl, version, lastHeartbeatAt: new Date() },
     });
 
   selfHostId = id;
