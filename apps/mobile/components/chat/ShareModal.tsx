@@ -47,6 +47,10 @@ export function ShareModal({
   useEffect(() => {
     if (!open || !conversationId) return;
     setError(null);
+    // Clear before fetching: otherwise the previous conversation's guest list
+    // shows under this one's title until the request resolves — with live
+    // Revoke buttons that would act on the wrong conversation.
+    setShares([]);
     getShares(conversationId).then(setShares, (err: unknown) => {
       setError(err instanceof Error ? err.message : String(err));
     });

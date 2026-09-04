@@ -152,16 +152,22 @@ export function ThreadList({
                   <ActionsheetItemText>Share…</ActionsheetItemText>
                 </ActionsheetItem>
               )}
-              <ActionsheetItem
-                onPress={() => {
-                  setRenameText(actionsFor.title);
-                  setRenaming(actionsFor);
-                  setActionsFor(null);
-                }}
-              >
-                <ActionsheetIcon as={Pencil} />
-                <ActionsheetItemText>Rename</ActionsheetItemText>
-              </ActionsheetItem>
+              {/* Rename and Delete are owner actions, like Share. The server
+                  refuses both for anyone else, so offering them to a guest
+                  only produced a local change that silently reverted on the
+                  next load. */}
+              {isOwner(actionsFor) && (
+                <ActionsheetItem
+                  onPress={() => {
+                    setRenameText(actionsFor.title);
+                    setRenaming(actionsFor);
+                    setActionsFor(null);
+                  }}
+                >
+                  <ActionsheetIcon as={Pencil} />
+                  <ActionsheetItemText>Rename</ActionsheetItemText>
+                </ActionsheetItem>
+              )}
               <ActionsheetItem
                 onPress={() => {
                   setActionsFor(null);
@@ -170,15 +176,17 @@ export function ThreadList({
                 <ActionsheetIcon as={Download} />
                 <ActionsheetItemText>Export as Markdown</ActionsheetItemText>
               </ActionsheetItem>
-              <ActionsheetItem
-                onPress={() => {
-                  onDelete(actionsFor.id);
-                  setActionsFor(null);
-                }}
-              >
-                <ActionsheetIcon as={Trash2} className="text-destructive" />
-                <ActionsheetItemText className="text-destructive">Delete</ActionsheetItemText>
-              </ActionsheetItem>
+              {isOwner(actionsFor) && (
+                <ActionsheetItem
+                  onPress={() => {
+                    onDelete(actionsFor.id);
+                    setActionsFor(null);
+                  }}
+                >
+                  <ActionsheetIcon as={Trash2} className="text-destructive" />
+                  <ActionsheetItemText className="text-destructive">Delete</ActionsheetItemText>
+                </ActionsheetItem>
+              )}
             </>
           )}
         </ActionsheetContent>

@@ -5,7 +5,7 @@ import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { NotFoundError, atLeast, resolveAccess } from "../streams/authz.ts";
-import { findRunByApprovalCallId, getRun } from "../streams/registry.ts";
+import { findRunsByApprovalCallId, getRun } from "../streams/registry.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -140,11 +140,17 @@ export function agentWsHandler(app: FastifyInstance) {
           // UI-preference echo, not durable server state.
           safeSend({ type: "agent.mode_changed", mode: msg.mode });
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
-          const run = findRunByApprovalCallId(msg.call_id);
-          const resolve = run?.approvals.get(msg.call_id);
-          if (run && resolve && (await mayActOnRun(userId, run.conversationId))) {
-            run.approvals.delete(msg.call_id);
-            resolve(msg.type === "agent.approve");
+          // Several runs can hold the same model-supplied call_id (see the
+          // registry). Answer the first one this user is allowed to act on,
+          // not the first one found.
+          for (const run of findRunsByApprovalCallId(msg.call_id)) {
+            if (!(await mayActOnRun(userId, run.conversationId))) continue;
+            const resolve = run.approvals.get(msg.call_id);
+            if (resolve) {
+              run.approvals.delete(msg.call_id);
+              resolve(msg.type === "agent.approve");
+            }
+            break;
           }
           // Silently no-op otherwise — unknown/foreign/already-resolved
           // call_id, same "no existence oracle" rule as stream.stop.

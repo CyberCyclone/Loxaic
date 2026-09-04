@@ -47,21 +47,24 @@ export function isConversationBusy(conversationId: string): boolean {
 }
 
 /**
- * Finds any run with a pending approval for `callId`.
+ * Every run with a pending approval for `callId`.
  *
- * Approve/deny carry only a call_id, so this locates the run; it does **not**
- * authorize. Callers must check the caller's role on `handle.conversationId`
- * — see ws/chat.ts's `mayActOnRun`.
+ * Approve/deny carry only a call_id, so this locates; it does **not**
+ * authorize — callers check the caller's role on each `conversationId` (see
+ * ws/chat.ts's `mayActOnRun`) and act on the one that passes.
  *
- * Locating and authorizing used to be the same step (`handle.userId ===
- * userId`), which stopped working once a conversation could have editors
- * besides its owner: the run's starter is not the set of people entitled to
- * answer its approvals. Keeping them separate makes the authorization
- * explicit at the call site rather than implied by a lookup.
+ * Plural, deliberately. `call_id` is *model*-supplied and only unique within
+ * one response: chat templates routinely emit `call_0`, `call_1`, and the
+ * local fallback is `call_<index>_<ms>`, which two runs starting in the same
+ * millisecond share. Returning the first match let an approval land on a
+ * different run that happened to hold the same id — and, across two users,
+ * silently swallow the legitimate one. Handing back all candidates lets the
+ * caller pick the run they are actually allowed to answer for.
  */
-export function findRunByApprovalCallId(callId: string): RunHandle | undefined {
+export function findRunsByApprovalCallId(callId: string): RunHandle[] {
+  const out: RunHandle[] = [];
   for (const handle of runsByStreamId.values()) {
-    if (handle.approvals.has(callId)) return handle;
+    if (handle.approvals.has(callId)) out.push(handle);
   }
-  return undefined;
+  return out;
 }

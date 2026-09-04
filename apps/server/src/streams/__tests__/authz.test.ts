@@ -104,6 +104,26 @@ describe("assertConversationAccess", () => {
     });
   });
 
+  describe("deleted conversations", () => {
+    it("revokes every share, and the owner's own access, on soft delete", async () => {
+      // Share rows outlive the delete, so without this a guest holding the id
+      // could still read, stream, and (as an editor) send into a thread the
+      // owner deleted to take it back.
+      await db
+        .insert(conversationShares)
+        .values({ conversationId: ownedConvId, userId: userB, role: "editor", createdBy: userA });
+      await db.update(conversations).set({ deletedAt: new Date() }).where(eq(conversations.id, ownedConvId));
+      try {
+        await expect(assertConversationAccess(userB, ownedConvId)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(assertConversationAccess(userA, ownedConvId)).rejects.toBeInstanceOf(NotFoundError);
+        await expect(assertConversationAccess(adminId, ownedConvId)).rejects.toBeInstanceOf(NotFoundError);
+      } finally {
+        await db.update(conversations).set({ deletedAt: null }).where(eq(conversations.id, ownedConvId));
+        await db.delete(conversationShares).where(eq(conversationShares.conversationId, ownedConvId));
+      }
+    });
+  });
+
   describe("admin access", () => {
     it("lets an admin see any conversation, as a viewer", async () => {
       const grant = await assertConversationAccess(adminId, ownedConvId);

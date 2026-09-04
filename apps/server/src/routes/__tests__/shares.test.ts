@@ -226,6 +226,19 @@ describe("GET /v1/users/search", () => {
     expect(ids).not.toContain(owner);
   });
 
+  it("treats % and _ as literal characters, not wildcards", async () => {
+    // `%@` is two characters, so it clears the length guard — and unescaped
+    // it becomes the pattern `%@%`, which matches every email on the
+    // deployment and turns this back into the directory the route says it
+    // isn't. Nobody in the fixture has a literal `%@` in their name or email,
+    // so an escaped prefix match must return nothing.
+    as(owner);
+    const res = await app.inject({ method: "GET", url: `/v1/users/search?q=${encodeURIComponent("%@")}` });
+    expect(usersOf(res)).toEqual([]);
+    const underscore = await app.inject({ method: "GET", url: `/v1/users/search?q=${encodeURIComponent("__")}` });
+    expect(usersOf(underscore)).toEqual([]);
+  });
+
   it("does not stringify an array query into a search term", async () => {
     // `?q[]=a&q[]=b` arrives as an array; String()-ing it would search for
     // "[object Object]" and quietly return whatever matched.
@@ -279,6 +292,16 @@ describe("admin conversation routes", () => {
       payload: { user_id: stranger, revoke: true },
     });
     expect(sharesOf(revoked)).toHaveLength(0);
+  });
+
+  it("404s an admin grant to a user that does not exist, rather than 500ing on the FK", async () => {
+    as(admin);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/admin/conversations/${convId}/shares`,
+      payload: { user_id: `nobody-${uuid()}`, role: "viewer" },
+    });
+    expect(res.statusCode).toBe(404);
   });
 
   it("records the admin as the grantor, so the row says who did it", async () => {

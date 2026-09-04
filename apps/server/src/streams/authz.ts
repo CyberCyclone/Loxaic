@@ -75,9 +75,14 @@ export async function resolveAccess(
 ): Promise<AccessGrant | null> {
   const row = await db.query.conversations.findFirst({
     where: eq(conversations.id, conversationId),
-    columns: { id: true, ownerId: true },
+    columns: { id: true, ownerId: true, deletedAt: true },
   });
-  if (!row) return null;
+  // A soft-deleted conversation is absent for access purposes. The list
+  // endpoint already hides it, but share rows outlive the delete, so without
+  // this a guest who kept the id could still read the thread, stream it, pull
+  // its attachments, and — as an editor — keep sending into it. "Delete" has
+  // to mean revoke, for the owner too.
+  if (!row || row.deletedAt) return null;
   if (row.ownerId === userId) return { conversationId, role: "owner", viaAdmin: false };
 
   const share = await db.query.conversationShares.findFirst({

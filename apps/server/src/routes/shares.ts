@@ -137,10 +137,16 @@ export function shareRoutes(app: FastifyInstance) {
     const raw = (request.query as { q?: unknown }).q;
     const q = typeof raw === "string" ? raw.trim() : "";
     if (q.length < 2) return { users: [] };
+    // `%` and `_` are ILIKE wildcards. Parameterization keeps them out of the
+    // SQL, but not out of the *pattern*: `q="%@"` is two characters, clears the
+    // length guard, and matches every email on the deployment — walk `%a%`,
+    // `%b%`, … and the "not a directory" guarantee above is gone. Escape them
+    // so the prefix match is a prefix match.
+    const like = `${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     const rows = await db
       .select({ id: user.id, name: user.name, email: user.email })
       .from(user)
-      .where(and(ne(user.id, userId), or(ilike(user.name, `${q}%`), ilike(user.email, `${q}%`))))
+      .where(and(ne(user.id, userId), or(ilike(user.name, like), ilike(user.email, like))))
       .limit(10);
     return { users: rows };
   });
@@ -224,6 +230,19 @@ export function adminConversationRoutes(app: FastifyInstance) {
       if (targetId === conv.ownerId) {
         reply.code(400);
         return { error: "That user owns this conversation" };
+      }
+      // Same guard the owner-facing PUT has. Without it an unknown id (a
+      // removed account, a typo) lands on the FK and surfaces as a 500
+      // carrying raw database text, where the sibling route gives a clean 404.
+      if (body.revoke !== true) {
+        const target = await db.query.user.findFirst({
+          where: eq(user.id, targetId),
+          columns: { id: true },
+        });
+        if (!target) {
+          reply.code(404);
+          return { error: "Not found" };
+        }
       }
 
       if (body.revoke === true) {

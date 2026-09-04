@@ -5,7 +5,6 @@ import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
 import { db, eq, sql } from "@shannon/db";
 import { attachments } from "@shannon/db/schema";
-import { resolveAccess } from "../streams/authz.ts";
 import {
   attachmentClass,
   maxBytesForMime,
@@ -37,19 +36,40 @@ import { getSandboxStatus } from "../sandbox/status";
 async function mayReadAttachment(userId: string, ref: string, ownerId: string): Promise<boolean> {
   if (ownerId === userId) return true;
 
+  // One query, with the access rule inside it. The previous shape paged 20
+  // candidate conversation ids out and called resolveAccess on each — and
+  // `LIMIT 20` with no ORDER BY samples an *arbitrary* 20, so an image the
+  // owner had re-sent across more than that many threads could be denied to a
+  // viewer whose shared thread wasn't in the sample. Non-deterministically,
+  // between requests. Expressing "a conversation the caller can see" in SQL
+  // removes the sampling and collapses up to 20 sequential round-trips per
+  // <img> into one.
+  //
+  // Mirrors resolveAccess: owner, or an explicit share, or admin — and never a
+  // soft-deleted conversation. The jsonb predicate matches the reaper's.
   const rows = await db.execute(sql`
-    SELECT DISTINCT m.conversation_id AS "conversationId"
-    FROM messages m, jsonb_array_elements(m.content) AS block
+    SELECT 1
+    FROM messages m
+    JOIN conversations c ON c.id = m.conversation_id
+    CROSS JOIN LATERAL jsonb_array_elements(m.content) AS block
     WHERE jsonb_typeof(m.content) = 'array'
       AND block->>'kind' = 'attachment'
       AND block->>'ref' = ${ref}
       AND m.deleted_at IS NULL
-    LIMIT 20
+      AND c.deleted_at IS NULL
+      AND (
+        c.owner_id = ${userId}
+        OR EXISTS (
+          SELECT 1 FROM conversation_shares s
+          WHERE s.conversation_id = c.id AND s.user_id = ${userId}
+        )
+        OR EXISTS (
+          SELECT 1 FROM "user" u WHERE u.id = ${userId} AND u.role = 'admin'
+        )
+      )
+    LIMIT 1
   `);
-  for (const row of rows as unknown as { conversationId: string }[]) {
-    if (await resolveAccess(userId, row.conversationId)) return true;
-  }
-  return false;
+  return (rows as unknown as unknown[]).length > 0;
 }
 
 export function fileRoutes(app: FastifyInstance) {
