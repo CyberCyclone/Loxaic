@@ -380,7 +380,7 @@ export interface StreamSnapshot {
 }
 
 export type ServerMessage =
-  | { type: "turn.started"; stream_id: string; conversation_id: string; user_message_id: string; incognito: boolean }
+  | { type: "turn.started"; stream_id: string; conversation_id: string; user_message_id: string }
   | {
       type: "conv.streams";
       conversation_id: string;
@@ -414,7 +414,6 @@ export type ClientMessage =
       model?: string;
       conversation_id?: string;
       parent_id?: string;
-      incognito?: boolean;
       /** Refs from `POST /v1/files`. The server re-validates ownership. */
       attachments?: string[];
     }
@@ -425,7 +424,6 @@ export type ClientMessage =
       mode?: PermissionMode;
       conversation_id?: string;
       parent_id?: string;
-      incognito?: boolean;
       /** Refs from `POST /v1/files`. The server re-validates ownership. */
       attachments?: string[];
     }

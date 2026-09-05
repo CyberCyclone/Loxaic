@@ -28,8 +28,8 @@ import { attachmentPath, attachmentTextPath } from "./storage.ts";
  *
  * Everything runs once, at upload, and the result is cached beside the
  * original as `<ref>.txt`. That is what keeps prompt assembly synchronous and
- * sandbox-free, so chat, agent and incognito behave identically and a 40-turn
- * history replay re-extracts nothing.
+ * sandbox-free, so chat and agent behave identically and a 40-turn history
+ * replay re-extracts nothing.
  */
 
 /** How long an extraction sandbox may sit unused before it is stopped. */

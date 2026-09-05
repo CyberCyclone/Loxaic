@@ -57,8 +57,7 @@ function forgetOverflowWrites(sandboxRef: string): void {
   overflowWrites.delete(sandboxRef);
 }
 
-/** rowId is null for ephemeral (incognito) sandboxes — no Postgres row. */
-interface Entry { rowId: string | null; provider: SandboxKind; ref: string; lastUsedAt: number }
+interface Entry { rowId: string; provider: SandboxKind; ref: string; lastUsedAt: number }
 
 /** conversationId → live sandbox. */
 const active = new Map<string, Entry>();
@@ -69,22 +68,15 @@ const pending = new Map<string, Promise<Entry>>();
  * Returns the conversation's sandbox handle, creating it on first use.
  * Sandboxes deliberately outlive the WebSocket: a client that reconnects
  * mid-task keeps its working directory.
- *
- * `ephemeral` (incognito conversations) skips the sandboxes bookkeeping row —
- * nothing conversation-scoped touches Postgres. The sandbox then survives
- * only as long as this process knows about it: the idle reaper stops it as
- * usual, and a crashed process's leftovers are caught by the boot-time
- * orphan sweep instead of DB recovery.
  */
 export async function getConversationSandbox(
   userId: string,
   conversationId: string,
-  opts?: { ephemeral?: boolean },
 ): Promise<SandboxHandle> {
   const provider = await getSandboxProvider();
   if (!provider) throw new Error("sandboxes are disabled (SANDBOX_MODE=off)");
 
-  const entry = await resolveEntry(provider, userId, conversationId, opts?.ephemeral === true);
+  const entry = await resolveEntry(provider, userId, conversationId);
   entry.lastUsedAt = Date.now();
   const entryProvider = entry.provider === provider.kind ? provider : await getProviderByKind(entry.provider);
   return entryProvider.attach(entry.ref);
@@ -117,7 +109,6 @@ async function resolveEntry(
   currentProvider: SandboxProvider,
   userId: string,
   conversationId: string,
-  ephemeral: boolean,
 ): Promise<Entry> {
   const cached = active.get(conversationId);
   if (cached) {
@@ -131,13 +122,13 @@ async function resolveEntry(
     // mode changed since it was created — either way it's no longer usable.
     active.delete(conversationId);
     forgetOverflowWrites(cached.ref);
-    if (cached.rowId) await markStopped(cached.rowId);
+    await markStopped(cached.rowId);
   }
 
   const inFlight = pending.get(conversationId);
   if (inFlight) return inFlight;
 
-  const creation = createEntry(currentProvider, userId, conversationId, ephemeral).finally(() => {
+  const creation = createEntry(currentProvider, userId, conversationId).finally(() => {
     pending.delete(conversationId);
   });
   pending.set(conversationId, creation);
@@ -148,29 +139,26 @@ async function createEntry(
   provider: SandboxProvider,
   userId: string,
   conversationId: string,
-  ephemeral: boolean,
 ): Promise<Entry> {
-  if (!ephemeral) {
-    // A previous process may have left a usable sandbox recorded in the DB —
-    // but only if it was created under the *same* provider kind as the one
-    // active now; a row left over from a prior SANDBOX_MODE is dead weight.
-    const existing = await db.query.sandboxes.findFirst({
-      where: and(
-        eq(sandboxes.conversationId, conversationId),
-        eq(sandboxes.ownerId, userId),
-        eq(sandboxes.status, "running"),
-        eq(sandboxes.provider, provider.kind),
-      ),
-    });
-    if (existing) {
-      const handle = await provider.attach(existing.containerId);
-      if (await handle.isRunning()) {
-        const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
-        active.set(conversationId, entry);
-        return entry;
-      }
-      await markStopped(existing.id);
+  // A previous process may have left a usable sandbox recorded in the DB —
+  // but only if it was created under the *same* provider kind as the one
+  // active now; a row left over from a prior SANDBOX_MODE is dead weight.
+  const existing = await db.query.sandboxes.findFirst({
+    where: and(
+      eq(sandboxes.conversationId, conversationId),
+      eq(sandboxes.ownerId, userId),
+      eq(sandboxes.status, "running"),
+      eq(sandboxes.provider, provider.kind),
+    ),
+  });
+  if (existing) {
+    const handle = await provider.attach(existing.containerId);
+    if (await handle.isRunning()) {
+      const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
+      active.set(conversationId, entry);
+      return entry;
     }
+    await markStopped(existing.id);
   }
 
   const handle = await provider.create(userId, {});
@@ -192,24 +180,20 @@ async function createEntry(
       throw err;
     }
   }
-  let rowId: string | null = null;
-  if (!ephemeral) {
-    const [row] = await db
-      .insert(sandboxes)
-      .values({
-        ownerId: userId,
-        conversationId,
-        containerId: handle.ref,
-        provider: provider.kind,
-        image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
-        status: "running",
-        limits: { memory: 512, cpu: 1 },
-      })
-      .returning();
-    rowId = row.id;
-  }
+  const [row] = await db
+    .insert(sandboxes)
+    .values({
+      ownerId: userId,
+      conversationId,
+      containerId: handle.ref,
+      provider: provider.kind,
+      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
+      status: "running",
+      limits: { memory: 512, cpu: 1 },
+    })
+    .returning();
 
-  const entry: Entry = { rowId, provider: provider.kind, ref: handle.ref, lastUsedAt: Date.now() };
+  const entry: Entry = { rowId: row.id, provider: provider.kind, ref: handle.ref, lastUsedAt: Date.now() };
   active.set(conversationId, entry);
   return entry;
 }
@@ -232,7 +216,7 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
     const handle = await provider.attach(entry.ref);
     await handle.stop().catch(() => undefined);
     forgetOverflowWrites(entry.ref);
-    if (entry.rowId) await markStopped(entry.rowId);
+    await markStopped(entry.rowId);
     reaped++;
   }
   return reaped;
@@ -266,7 +250,7 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
     const provider = await getProviderByKind(entry.provider);
     const handle = await provider.attach(entry.ref).catch(() => null);
     await handle?.stop().catch(() => undefined);
-    if (entry.rowId) await markStopped(entry.rowId);
+    await markStopped(entry.rowId);
     stopped++;
   }
 
@@ -292,10 +276,10 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
 }
 
 /**
- * Boot-time counterpart of the DB recovery path, for sandboxes with no row:
- * an ephemeral (incognito) sandbox left behind by a crashed process is
- * unreachable — no DB row, no in-memory entry — so stop any labeled sandbox
- * container this process doesn't know about and the DB doesn't claim.
+ * Boot-time counterpart of the DB recovery path, for containers the DB has
+ * lost track of: a crash between `provider.create` and the row insert (or a
+ * failed seed) leaves a running container no row claims and no in-memory
+ * entry knows about, so stop any labeled sandbox container that is unclaimed.
  * Mirrors the stream log's boot-time orphan recovery.
  *
  * Container provider only: host-mode sandboxes are plain directories with no

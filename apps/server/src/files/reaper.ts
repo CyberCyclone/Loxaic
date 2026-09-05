@@ -57,18 +57,15 @@ export async function usedAttachmentBytes(userId: string): Promise<number> {
  * Deletes uploads that no message references and that are past the grace
  * period, rows and bytes together. Returns how many were collected.
  *
- * Two things accumulate forever without this. The obvious one is the image a
- * user picks and then never sends — uploaded, row written, never referenced.
- * The other is every incognito attachment: an incognito run deliberately
- * writes no conversation-scoped rows to Postgres, but `POST /v1/files` has
- * already recorded `{id, owner_id, mime, size_bytes, created_at}` and left the
- * bytes on disk, so the image outlives the ephemeral conversation and stays
- * durably attributable to whoever uploaded it. Neither has any other reclaim
- * path: there is no DELETE route and no cascade from message deletion.
+ * Uploads accumulate forever without this: the image a user picks and then
+ * never sends is uploaded, its row written, and never referenced, while
+ * `POST /v1/files` has already recorded
+ * `{id, owner_id, mime, size_bytes, created_at}` and left the bytes on disk.
+ * There is no other reclaim path: no DELETE route, no cascade from message
+ * deletion.
  *
- * The default grace matches STREAM_TTL_SECONDS' own 24h default, so a live
- * incognito conversation's images survive as long as the conversation itself
- * can. An image collected out from under a still-open thread degrades to
+ * The default grace matches STREAM_TTL_SECONDS' own 24h default. An image
+ * collected out from under a still-open thread degrades to
  * "[image unavailable]" rather than failing the run.
  *
  * The referenced-ref set is materialized once per sweep rather than probed per

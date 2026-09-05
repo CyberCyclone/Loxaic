@@ -252,7 +252,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         pendingModelRef.current = null;
         setRuns((prev) => {
           if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
-            return prev.map((r) => (r.id === localId ? { ...r, id: realId, incognito: event.incognito } : r));
+            return prev.map((r) => (r.id === localId ? { ...r, id: realId } : r));
           }
           if (prev.some((r) => r.id === realId)) return prev;
           return [
@@ -261,7 +261,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           ];
         });
         setActiveId(realId);
-        if (modelForPatch && !event.incognito) {
+        if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
       } else if (event.type === 'stream.sync') {
@@ -387,7 +387,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   }, [token, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
-    (text: string, model: string, incognito?: boolean, attachments?: AttachmentRef[]) => {
+    (text: string, model: string, attachments?: AttachmentRef[]) => {
       if (!wsRef.current) return;
 
       const convId = activeIdRef.current;
@@ -411,7 +411,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         };
         setRuns((prev) => [newRun, ...prev]);
         setActiveId(localId);
-        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, incognito, refs);
+        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, refs);
       } else {
         setRuns((prev) =>
           prev.map((r) =>
@@ -420,7 +420,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
               : r,
           ),
         );
-        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, incognito, refs);
+        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, refs);
       }
     },
     [mode, setActiveId],
@@ -489,11 +489,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   }, []);
 
   const setRunModel = useCallback((id: string, modelId: string) => {
-    setRuns((prev) => {
-      const run = prev.find((r) => r.id === id);
-      if (!run?.incognito) updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
-      return prev.map((r) => (r.id === id ? { ...r, model: modelId } : r));
-    });
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
+    setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, model: modelId } : r)));
   }, []);
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;

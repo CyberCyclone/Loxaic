@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ComponentProps, type Ref } from 'react';
 import { Platform, TextInput, type TextInputKeyPressEvent } from 'react-native';
-import { ArrowUp, Square, ChevronDown, CircleDot, EyeOff } from 'lucide-react-native';
+import { ArrowUp, Square, ChevronDown, CircleDot } from 'lucide-react-native';
 import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand, type AttachmentRef } from '@shannon/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -28,11 +28,6 @@ interface ComposerProps {
   /** Null until a conversation exists — the indicator hides entirely. */
   context?: ContextView | null;
   onOpenModelModal: () => void;
-  /** Incognito: this turn's conversation is never written to Postgres. */
-  incognito?: boolean;
-  onToggleIncognito?: () => void;
-  /** Once a conversation has sent its first message, incognito is fixed server-side. */
-  incognitoLocked?: boolean;
   /** Which screen this composer belongs to — filters the slash palette and
    * is implied server-side by which socket a command rides on. */
   surface: 'chat' | 'agent';
@@ -54,9 +49,6 @@ export function Composer({
   modelName,
   context,
   onOpenModelModal,
-  incognito = false,
-  onToggleIncognito,
-  incognitoLocked = false,
   surface,
   onRunCommand,
   commandSeed,
@@ -237,25 +229,6 @@ export function Composer({
             </Text>
             <Icon as={ChevronDown} size="2xs" className="shrink-0 text-muted-foreground" />
           </Pressable>
-
-          {onToggleIncognito && (
-            <Pressable
-              onPress={incognitoLocked ? undefined : onToggleIncognito}
-              className={`flex-row items-center gap-1 rounded-md border px-2 py-1.5 ${
-                incognito ? 'border-primary bg-primary/10' : 'border-border bg-muted'
-              }`}
-              style={incognitoLocked ? { opacity: 0.7 } : undefined}
-            >
-              <Icon
-                as={EyeOff}
-                size="2xs"
-                className={incognito ? 'text-primary' : 'text-muted-foreground'}
-              />
-              <Text size="xs" className={incognito ? 'font-medium text-primary' : 'text-muted-foreground'}>
-                Incognito
-              </Text>
-            </Pressable>
-          )}
 
           <Box className="flex-1" />
 

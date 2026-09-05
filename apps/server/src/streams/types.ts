@@ -7,19 +7,10 @@ export interface StreamMeta {
   conversationId: string;
   userId: string;
   surface: "chat" | "agent";
-  incognito: boolean;
   status: StreamStatus;
   lastSeq: number;
   createdAt: number;
   updatedAt: number;
-}
-
-export interface EphemeralConv {
-  id: string;
-  ownerId: string;
-  title: string;
-  kind: "chat";
-  createdAt: number;
 }
 
 /**
@@ -42,12 +33,6 @@ export interface StreamLogDriver {
   listOrphaned(): Promise<StreamMeta[]>;
   deleteStream(streamId: string): Promise<void>;
 
-  // Incognito conversation registry — these conversations never touch Postgres.
-  putEphemeralConv(conv: EphemeralConv): Promise<void>;
-  getEphemeralConv(id: string): Promise<EphemeralConv | null>;
-  /** Refresh the idle TTL on activity (send, subscribe). */
-  touchEphemeralConv(id: string): Promise<void>;
-  /** All run ids for a conversation, oldest → newest — used to rebuild
-   * incognito history (there's no Postgres row to query instead). */
+  /** All run ids for a conversation, oldest → newest. */
   listConvStreams(conversationId: string): Promise<string[]>;
 }

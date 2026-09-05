@@ -2,7 +2,6 @@ import { db, eq, inArray } from "@shannon/db";
 import { attachments, conversations, messages } from "@shannon/db/schema";
 import type { AttachmentRef } from "@shannon/types";
 import { MAX_ATTACHMENTS } from "@shannon/types";
-import { getStreamBroker } from "./index.ts";
 import { isValidRef } from "../files/storage.ts";
 
 /** Thrown for both "doesn't exist" and "exists but isn't yours" — the two
@@ -15,33 +14,27 @@ export class NotFoundError extends Error {
   }
 }
 
-export interface AccessGrant { conversationId: string; incognito: boolean }
+export interface AccessGrant { conversationId: string }
 
 /**
  * Single authz chokepoint for every conversation-scoped WS command
  * (chat.send/agent.send with a conversation_id, stream.subscribe, and via
- * stream meta's userId: stream.stop/agent.approve/agent.deny). Resolves via
- * Postgres first, then the ephemeral (incognito) registry — always checking
- * both, even once one has already matched, so response timing doesn't leak
- * which of "not found" vs "found but not yours" actually happened.
+ * stream meta's userId: stream.stop/agent.approve/agent.deny). "Doesn't
+ * exist" and "exists but isn't yours" resolve identically (NotFoundError),
+ * from the same single query — no oracle either way.
  */
 export async function assertConversationAccess(userId: string, conversationId: string): Promise<AccessGrant> {
-  const [row, econv] = await Promise.all([
-    db.query.conversations.findFirst({
-      where: eq(conversations.id, conversationId),
-      columns: { id: true, ownerId: true },
-    }),
-    getStreamBroker().driver.getEphemeralConv(conversationId),
-  ]);
-  if (row?.ownerId === userId) return { conversationId, incognito: false };
-  if (econv?.ownerId === userId) return { conversationId, incognito: true };
+  const row = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+    columns: { id: true, ownerId: true },
+  });
+  if (row?.ownerId === userId) return { conversationId };
   throw new NotFoundError();
 }
 
 /** Guards against a client-supplied parent_id pointing at a message in a
  * different conversation — messages carry no FK, so this is otherwise
- * silently accepted. Only meaningful for non-incognito parents (incognito
- * message ids are never Postgres rows). */
+ * silently accepted. */
 export async function assertParentInConversation(conversationId: string, parentId: string): Promise<void> {
   const row = await db.query.messages.findFirst({
     where: eq(messages.id, parentId),

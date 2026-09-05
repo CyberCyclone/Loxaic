@@ -28,7 +28,6 @@ import {
   markOverflowWritten,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
-import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 
@@ -50,8 +49,8 @@ function isAborted(controller: AbortController): boolean {
   return controller.signal.aborted;
 }
 
-/** See loadEphemeralHistory's SUMMARY_LOOKBACK — skip cards are
- * `summary`-authored but textless, and must never act as a compaction cutoff. */
+/** Skip cards are `summary`-authored but textless, and must never act as a
+ * compaction cutoff — hence a bounded lookback rather than "the newest". */
 const SUMMARY_LOOKBACK = 20;
 
 /**
@@ -81,10 +80,6 @@ export function assembleSystemPrompt(
  * startAgentRun) has already created the conversation, persisted the user
  * message, opened the producer, and registered the run; this drives the
  * model ↔ tool round-trips until the model answers without calling a tool.
- *
- * `incognito` runs write nothing conversation-scoped to Postgres — message
- * rows, activeLeafId, and usage records are all skipped; the stream log is
- * the only record.
  */
 export async function runToolLoop(ctx: {
   streamId: string;
@@ -96,11 +91,10 @@ export async function runToolLoop(ctx: {
   /** Surface-appropriate system prompt, or null for none. The engine appends
    * the MCP untrusted-content addendum when MCP tools are offered. */
   basePrompt: string | null;
-  incognito: boolean;
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
-  const { streamId, convId, userId, model, mode, incognito, abort, producer } = ctx;
+  const { streamId, convId, userId, model, mode, abort, producer } = ctx;
 
   try {
     const toolset = await buildToolset(userId, { mode, conversationId: convId });
@@ -109,7 +103,7 @@ export async function runToolLoop(ctx: {
     // this turn carries a document decides whether the document addendum goes
     // in — the same pairing MCP has, where wrapResult's markers are only
     // meaningful alongside an addendum saying what they mean.
-    const history = incognito ? await loadEphemeralHistory(convId) : await loadHistory(convId);
+    const history = await loadHistory(convId);
     const hasDocuments = history.messages.some(
       (m) => m.role === "user" && countDocumentParts(m.content) > 0,
     );
@@ -140,20 +134,18 @@ export async function runToolLoop(ctx: {
 
       const assistantMsgId = uuid();
       lastAssistantId = assistantMsgId;
-      if (!incognito) {
-        await db.insert(messages).values({
-          id: assistantMsgId,
-          conversationId: convId,
-          parentId,
-          authorType: "assistant",
-          origin: "server",
-          model,
-          lamport: Date.now(),
-          content: [] as ContentBlock[],
-          status: "streaming",
-          createdAt: new Date(),
-        });
-      }
+      await db.insert(messages).values({
+        id: assistantMsgId,
+        conversationId: convId,
+        parentId,
+        authorType: "assistant",
+        origin: "server",
+        model,
+        lamport: Date.now(),
+        content: [] as ContentBlock[],
+        status: "streaming",
+        createdAt: new Date(),
+      });
       producer.emit({
         kind: "message.start",
         message_id: assistantMsgId,
@@ -210,22 +202,20 @@ export async function runToolLoop(ctx: {
           } else {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
-            if (!incognito) {
-              await recordUsage({
-                runId: streamId,
-                userId,
-                convId,
-                messageId: assistantMsgId,
-                model,
-                result: event.result,
-                context: apportion(
-                  tally,
-                  event.result.usage.prompt_tokens,
-                  event.result.usage.completion_tokens,
-                  breakdownMeta,
-                ),
-              });
-            }
+            await recordUsage({
+              runId: streamId,
+              userId,
+              convId,
+              messageId: assistantMsgId,
+              model,
+              result: event.result,
+              context: apportion(
+                tally,
+                event.result.usage.prompt_tokens,
+                event.result.usage.completion_tokens,
+                breakdownMeta,
+              ),
+            });
           }
         }
       } catch (err) {
@@ -239,9 +229,7 @@ export async function runToolLoop(ctx: {
         const blocks: ContentBlock[] = [];
         if (thinking) blocks.push({ kind: "thinking", text: thinking });
         if (text) blocks.push({ kind: "text", text });
-        if (!incognito) {
-          await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
-        }
+        await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
         const eventError = isAbort ? undefined : errorMessage;
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
         await producer.end(status, { error: eventError }).catch(() => undefined);
@@ -267,21 +255,17 @@ export async function runToolLoop(ctx: {
           args: safeParseArgs(call.function.arguments),
         });
       }
-      if (!incognito) {
-        await db
-          .update(messages)
-          .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
-          .where(eq(messages.id, assistantMsgId));
-      }
+      await db
+        .update(messages)
+        .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
+        .where(eq(messages.id, assistantMsgId));
 
       if (toolCalls.length === 0) {
         finished = true;
-        if (!incognito) {
-          await db
-            .update(conversations)
-            .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
-            .where(eq(conversations.id, convId));
-        }
+        await db
+          .update(conversations)
+          .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
+          .where(eq(conversations.id, convId));
         // A window read before a JIT load is the model's max, not what the
         // backend allocated. Re-read it now that loading is done.
         if (jitLoaded) {
@@ -319,7 +303,7 @@ export async function runToolLoop(ctx: {
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
       for (const call of toolCalls) {
-        const outcome = await runOneToolCall({ streamId, convId, userId, mode, incognito, toolset, producer, assistantMsgId }, call);
+        const outcome = await runOneToolCall({ streamId, convId, userId, mode, toolset, producer, assistantMsgId }, call);
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
@@ -336,19 +320,17 @@ export async function runToolLoop(ctx: {
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete" });
 
       const toolMsgId = uuid();
-      if (!incognito) {
-        await db.insert(messages).values({
-          id: toolMsgId,
-          conversationId: convId,
-          parentId: assistantMsgId,
-          authorType: "tool",
-          origin: "server",
-          lamport: Date.now(),
-          content: resultBlocks,
-          status: "complete",
-          createdAt: new Date(),
-        });
-      }
+      await db.insert(messages).values({
+        id: toolMsgId,
+        conversationId: convId,
+        parentId: assistantMsgId,
+        authorType: "tool",
+        origin: "server",
+        lamport: Date.now(),
+        content: resultBlocks,
+        status: "complete",
+        createdAt: new Date(),
+      });
       parentId = toolMsgId;
 
       if (isAborted(abort)) {
@@ -357,19 +339,17 @@ export async function runToolLoop(ctx: {
         // stay. What stops here is the *run continuing to another
         // iteration*, so the stream itself ends cancelled without touching
         // an already-finished message.
-        if (!incognito) {
-          await db
-            .update(conversations)
-            .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
-            .where(eq(conversations.id, convId));
-        }
+        await db
+          .update(conversations)
+          .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
+          .where(eq(conversations.id, convId));
         await producer.end("cancelled");
         return;
       }
     }
 
     if (!finished) {
-      if (lastAssistantId && !incognito) {
+      if (lastAssistantId) {
         await db
           .update(conversations)
           .set({ activeLeafId: lastAssistantId, updatedAt: new Date() })
@@ -386,10 +366,10 @@ export async function runToolLoop(ctx: {
 
 /** Approval gate + execution for a single model-requested tool call. */
 async function runOneToolCall(
-  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; incognito: boolean; toolset: Toolset; producer: StreamProducer; assistantMsgId: string },
+  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; toolset: Toolset; producer: StreamProducer; assistantMsgId: string },
   call: ToolCall,
 ): Promise<{ output: string; diff?: { path: string; oldContent: string | null; newContent: string | null }[] }> {
-  const { convId, userId, mode, incognito, toolset, producer, assistantMsgId } = ctx;
+  const { convId, userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
   const args = safeParseArgs(call.function.arguments);
 
@@ -446,9 +426,7 @@ async function runOneToolCall(
   let handle = null;
   if (toolNeedsSandbox(builtinName)) {
     try {
-      // Incognito conversations get a sandbox with no Postgres bookkeeping
-      // row — the boot-time orphan sweep covers a crashed process instead.
-      handle = await getConversationSandbox(userId, convId, { ephemeral: incognito });
+      handle = await getConversationSandbox(userId, convId);
     } catch (err) {
       // The underlying error (from the container provider) already names
       // what was tried and how to fix it — see container-provider.ts's
@@ -716,104 +694,3 @@ async function writeOverflowToSandbox(
   }
 }
 
-/**
- * Incognito counterpart of loadHistory: rebuilt from the stream log's folded
- * snapshots — there's no Postgres row to query, since none was ever written.
- * Tool turns replay too: the fold attaches each tool.result onto its call, so
- * a call with an `output` is resolved and a call without one is dangling and
- * stripped, mirroring the Postgres loader exactly. The newest summary (a
- * compact run's message) lives in the same log; only what came after it is
- * replayed — same cutoff rule as the Postgres path, and skip cards are
- * textless so they never act as a cutoff.
- */
-export async function loadEphemeralHistory(
-  conversationId: string,
-): Promise<{ messages: ChatMessage[]; truncated: boolean; summaryText: string | null }> {
-  const broker = getStreamBroker();
-  const runIds = (await broker.driver.listConvStreams(conversationId)).slice(-HISTORY_LIMIT);
-
-  // Snapshot messages become a summary marker, a batch of prompt messages (an
-  // assistant turn and its tool results travel together, so the cutoff below
-  // can never separate a call from its result), or — for a user turn carrying
-  // images — an unresolved "user" item. That one stays unresolved until the
-  // cutoff is known: resolving it means reading images off disk, and the image
-  // budget has to be spent over the turns actually replayed, newest-first.
-  type Item =
-    | { kind: "summary"; text: string }
-    | { kind: "msgs"; msgs: ChatMessage[] }
-    | { kind: "user"; atts: AttachmentRef[]; text: string };
-  const items: Item[] = [];
-  for (const runId of runIds) {
-    const records = await broker.readFrom(runId, 0);
-    const snapshot = broker.foldSnapshot(records);
-    for (const m of snapshot.messages) {
-      if (m.status !== "complete") continue;
-      if (m.author_type === "summary") {
-        if (m.text) items.push({ kind: "summary", text: m.text });
-        continue;
-      }
-      if (m.author_type === "user") {
-        // Incognito writes nothing to Postgres, so message.start's attachment
-        // list is the only record that this turn carried images at all.
-        if (m.attachments?.length) {
-          items.push({ kind: "user", atts: m.attachments, text: m.text });
-        } else if (m.text) {
-          items.push({ kind: "msgs", msgs: [{ role: "user", content: m.text }] });
-        }
-        continue;
-      }
-      if (m.author_type === "assistant") {
-        // Type-predicate filter, so `output` narrows to string for the tool
-        // messages below rather than needing a non-null assertion.
-        const resolved = m.tool_calls.filter(
-          (t): t is typeof t & { output: string } => t.output !== undefined,
-        );
-        const calls: ToolCall[] = resolved.map((t) => ({
-          id: t.call_id,
-          type: "function" as const,
-          function: { name: t.tool, arguments: JSON.stringify(t.args) },
-        }));
-        if (!m.text && calls.length === 0) continue;
-        items.push({
-          kind: "msgs",
-          msgs: [
-            { role: "assistant", content: m.text || null, ...(calls.length ? { tool_calls: calls } : {}) },
-            ...resolved.map((t) => ({ role: "tool" as const, tool_call_id: t.call_id, content: t.output })),
-          ],
-        });
-      }
-      // author_type "tool" snapshot messages carry nothing to replay: the
-      // fold already attached their results onto the assistant's calls.
-    }
-  }
-
-  const lastSummaryIdx = items.map((i) => i.kind).lastIndexOf("summary");
-  const summaryText =
-    lastSummaryIdx >= 0 ? (items[lastSummaryIdx] as { kind: "summary"; text: string }).text : null;
-
-  const replayed = items.slice(lastSummaryIdx + 1);
-  const attachmentTurns = replayed
-    .filter((i): i is Extract<Item, { kind: "user" }> => i.kind === "user")
-    .map((i) => i.atts);
-  const affordable =
-    attachmentTurns.length > 0 ? await selectAffordableAttachments(attachmentTurns) : undefined;
-
-  const out: ChatMessage[] = [];
-  for (const item of replayed) {
-    if (item.kind === "msgs") out.push(...item.msgs);
-    else if (item.kind === "user") {
-      out.push({
-        role: "user",
-        content: await attachmentContentParts(item.atts, item.text, affordable, (a, fullText) =>
-          writeOverflowToSandbox(conversationId, a, fullText),
-        ),
-      });
-    }
-  }
-  const truncated = out.length > HISTORY_LIMIT;
-  const capped = out.slice(-HISTORY_LIMIT);
-  // A head cut can behead an assistant-with-calls, leaving its tool messages
-  // orphaned at the front — drop those or the backend rejects the list.
-  while (capped.length && capped[0].role === "tool") capped.shift();
-  return { messages: capped, truncated, summaryText };
-}

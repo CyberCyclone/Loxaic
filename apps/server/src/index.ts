@@ -74,7 +74,7 @@ await loadServerSettings();
 // Deliberately NOT wrapped in try/catch: STREAM_BACKEND=redis with an
 // unreachable Redis must fail the boot loudly, not silently fall back to
 // the memory driver (which would silently drop the durability guarantee
-// incognito conversations depend on).
+// stream resume depends on).
 await initStreamBroker();
 app.log.info(`Stream backend: ${process.env.STREAM_BACKEND ?? "memory"}`);
 await recoverOrphanedStreams();
@@ -233,14 +233,14 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
   reaperTimer = startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
-  // Ephemeral (incognito) sandboxes have no DB row; a crashed process's
-  // leftovers are only findable by their container label.
+  // A crashed process's leftover sandbox containers outlive their DB rows;
+  // the label sweep is what finds them.
   sweepOrphanSandboxes()
     .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
     .catch(() => { /* best-effort sweep */ });
   mcpReaperTimer = startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
-  // Uploads that no message references — a picked-then-abandoned image, and
-  // every incognito attachment, neither of which has any other reclaim path.
+  // Uploads that no message references — a picked-then-abandoned image has no
+  // other reclaim path.
   sweepOrphanAttachments()
     .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned attachment(s)`); })
     .catch(() => { /* best-effort sweep */ });
