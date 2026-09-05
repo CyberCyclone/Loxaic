@@ -54,6 +54,14 @@ export interface ModelInfo {
    * instead of quietly reporting a wrong denominator as fact. */
   context_source: "loaded" | "max" | "trained" | "default";
   location: "server" | "device" | "remote";
+  /** Which host in the cluster serves this model, and the name that host's
+   * owner chose for it. Null when the instance has no registered identity (a
+   * dev server, a Compose deployment) — the picker then shows no host label
+   * rather than inventing one. With one host it is already how a user names
+   * the machine they are talking to; phase 4 (#78) only makes the list
+   * longer. */
+  host_id: string | null;
+  host_name: string | null;
   price: number;
   loaded: boolean;
 }

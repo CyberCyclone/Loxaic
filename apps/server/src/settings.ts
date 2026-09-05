@@ -73,6 +73,45 @@ export class SettingsError extends Error {
 }
 
 let persisted: Partial<SandboxSettings> = {};
+/**
+ * True when this server is hosting for other users (the desktop supervisor
+ * sets `SHANNON_HOSTING=1` for Host mode).
+ *
+ * Read at call time, never at module load, matching every other env reader
+ * here — the supervisor builds its child env late.
+ */
+export function isHosting(): boolean {
+  return process.env.SHANNON_HOSTING === "1";
+}
+
+/**
+ * Hosting for other users requires **container** sandbox isolation.
+ *
+ * Host mode (`SANDBOX_MODE=host`) runs model-directed commands directly on
+ * the machine with the host's own filesystem and network; `off` disables
+ * tools but leaves no isolation story for a future switch. Neither is
+ * defensible once someone else's chats execute here, so a hosting server
+ * refuses to start rather than serving strangers from an unisolated box.
+ *
+ * Returns the reason it must not start, or null when it may. Solo installs
+ * keep the full off/host/container flexibility — the requirement lands on
+ * exactly the deployments that carry other people's work.
+ */
+export function hostingBlockedReason(): string | null {
+  if (!isHosting()) return null;
+  // Read through getSandboxSettings() rather than provider.ts's
+  // getSandboxMode(): that module imports this one, and this is the same
+  // resolved value it would return.
+  const { mode } = getSandboxSettings();
+  if (mode === "container") return null;
+  return (
+    `Host mode requires the container sandbox, but SANDBOX_MODE resolves to "${mode}". ` +
+    `Hosting runs other users' agent commands on this machine, and neither "host" ` +
+    `(no isolation) nor "off" is safe for that. Install Docker or Podman and set the ` +
+    `sandbox mode to "container", or run this instance in Solo mode.`
+  );
+}
+
 /** Set when loadServerSettings() couldn't read the row — see there. */
 let loadFailed = false;
 
@@ -204,6 +243,18 @@ function validate(input: unknown): SandboxSettingsPatch {
       throw new SettingsError("mode must be one of container, host, off", "invalid");
     }
     if (env.mode) throw new SettingsError("mode is pinned by the SANDBOX_MODE environment variable", "envOverride");
+    // The hosting invariant has two paths that can change the mode — boot and
+    // this write — and hostingBlockedReason() guards only the first. Without
+    // this, an admin on a live Host could switch to "host" and run every other
+    // user's commands unisolated on the machine immediately, or to "off" and
+    // brick the next boot. Same shape as the envOverride refusal: the field is
+    // pinned, here by what this instance is rather than by its environment.
+    if (isHosting() && raw.mode !== "container") {
+      throw new SettingsError(
+        `this instance hosts for other users, so only the container sandbox is permitted (got "${raw.mode}")`,
+        "invalid",
+      );
+    }
     patch.mode = raw.mode;
   }
 

@@ -74,6 +74,30 @@ ones), and it does not apply to host mode, where sandboxes always have the
 host's own network. `web_fetch` is unaffected either way — it always runs on
 the server, behind an SSRF guard, never in the sandbox.
 
+### Hosting for others requires a container engine
+
+The desktop app runs in one of three modes, chosen at first launch and stored
+in `<dataDir>/config.json`:
+
+| Mode | What it is | Container engine |
+|---|---|---|
+| **Solo** | The self-contained app for one person on one machine | Not required — `SANDBOX_MODE` stays fully flexible (`off`/`host`/`container`) |
+| **Host** | The same stack, exposed so other people sign in and use its models | **Required.** The server refuses to boot otherwise |
+| **Client** | No local stack; joins a host by URL | Not applicable |
+
+The Host requirement is enforced in three places, so it can't be sidestepped:
+onboarding won't complete without a reachable engine, a server started with
+`SHANNON_HOSTING=1` and a non-container sandbox mode **fails its boot** with a
+named error, and `PATCH /v1/admin/settings/sandbox` refuses to switch away
+while hosting.
+
+The reason is narrow and worth stating plainly: hosting means running *other
+people's* model-directed commands on your machine. `host` mode has no
+isolation at all (it says so itself — commands run directly on the host, with
+its filesystem and network), and `off` leaves no isolation story for a later
+switch. Neither is defensible once the work isn't yours. A Solo install is
+your own machine running your own commands, so it keeps the choice.
+
 ### Where settings live
 
 Sandbox configuration resolves **environment variable > stored setting >

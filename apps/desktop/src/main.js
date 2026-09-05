@@ -29,12 +29,21 @@ if (process.argv.includes("--headless")) {
 }
 
 async function runGui() {
-  const { app, BrowserWindow, dialog, shell } = await import("electron");
+  const { app, BrowserWindow, ipcMain, shell } = await import("electron");
   const { createInterface } = await import("node:readline");
-  const { existsSync } = await import("node:fs");
+  const { existsSync, rmSync } = await import("node:fs");
   const { default: serve } = await import("electron-serve");
   const { startStack } = await import("./supervisor/index.js");
   const { defaultDataDir } = await import("./supervisor/paths.js");
+  const {
+    DEFAULT_HOST_PORT,
+    buildConfig,
+    defaultHostName,
+    firstLanAddress,
+    configPath,
+    loadConfig,
+    saveConfig,
+  } = await import("./supervisor/config.js");
 
   const isDev = !app.isPackaged;
 
@@ -150,41 +159,183 @@ async function runGui() {
    * from, so — unlike the mobile/web builds, which can assume same-origin —
    * Electron must always supply this explicitly.
    *
-   * Client-only modes come first (they mean "connect to a Shannon somewhere
-   * else"): --remote=<url> / SHANNON_REMOTE_URL → embedded-Tailscale local
-   * proxy (TSNET_TARGET) → first LAN/tailnet candidate that answers /health →
-   * in dev, a running dev server on :4000 (so `pnpm dev` workflows are
-   * untouched). Otherwise the app is self-contained: the supervisor brings up
-   * embedded Postgres + the bundled server (default port 4100). A Settings
-   * override in the renderer still wins over all of this once the app loads.
+   * **Environment and flags still win over the stored mode.** `--remote` /
+   * `SHANNON_REMOTE_URL` / `TSNET_TARGET` / the LAN+tailnet probes / a dev
+   * server on :4000 are all "someone told this launch exactly where to point",
+   * and they keep working untouched — the e2e harness and every scripted
+   * workflow depend on them. Only when none of them applies does config.json
+   * decide, and only when *that* is absent does the app open onboarding.
    */
   async function resolveApi() {
     const remote = getFlag("remote") ?? process.env.SHANNON_REMOTE_URL;
-    if (remote) return { apiBaseUrl: remote, stack: null };
+    if (remote) return { apiBaseUrl: remote, stack: null, mode: "client" };
 
     const viaTsnet = await startTsnetProxy(process.env.TSNET_TARGET);
-    if (viaTsnet) return { apiBaseUrl: viaTsnet, stack: null };
+    if (viaTsnet) return { apiBaseUrl: viaTsnet, stack: null, mode: "client" };
 
     const candidates = [process.env.EXPO_PUBLIC_LAN_API_URL, process.env.EXPO_PUBLIC_API_URL].filter(Boolean);
     const results = await Promise.all(candidates.map(probeHealth));
     const winner = candidates.find((_, i) => results[i]);
-    if (winner) return { apiBaseUrl: winner, stack: null };
+    if (winner) return { apiBaseUrl: winner, stack: null, mode: "client" };
 
     if (isDev && await probeHealth("http://localhost:4000")) {
-      return { apiBaseUrl: "http://localhost:4000", stack: null };
+      return { apiBaseUrl: "http://localhost:4000", stack: null, mode: "client" };
     }
 
-    const stack = await startStack({
-      dataDir: getFlag("shannon-data-dir") ?? process.env.SHANNON_DATA_DIR ?? defaultDataDir(),
-      port: Number(getFlag("shannon-port") ?? process.env.SHANNON_PORT ?? 4100),
+    // Stored instance mode. Absent = this install has never been configured,
+    // which is the *only* first-run signal there is: the window opens on
+    // onboarding with no stack started, rather than silently self-hosting.
+    const config = loadConfig(dataDir());
+    if (!config) return { apiBaseUrl: null, stack: null, mode: null };
+    return startForConfig(config);
+  }
+
+  /** Brings up whatever the stored config asks for. */
+  async function startForConfig(config) {
+    if (config.mode === "client") {
+      return { apiBaseUrl: config.client.hostUrl, stack: null, mode: "client" };
+    }
+    const started = await startStack({
+      dataDir: dataDir(),
+      port: Number(getFlag("shannon-port") ?? process.env.SHANNON_PORT ?? config.host?.port ?? DEFAULT_HOST_PORT),
       log: (line) => { console.log(`[shannon] ${line}`); },
+      instance: config,
     });
-    return { apiBaseUrl: stack.apiBaseUrl, stack };
+    return { apiBaseUrl: started.apiBaseUrl, stack: started, mode: config.mode };
+  }
+
+  function dataDir() {
+    return getFlag("shannon-data-dir") ?? process.env.SHANNON_DATA_DIR ?? defaultDataDir();
   }
 
   let mainWindow = null;
   let stack = null;
   let apiBaseUrl = null;
+  let instanceMode = null;
+  let startupError = null;
+
+  /** Everything the renderer needs to decide what to show. */
+  function stackState() {
+    return {
+      mode: instanceMode,
+      apiBaseUrl,
+      // The one thing onboarding keys on: no stored config means show the
+      // mode chooser rather than the app.
+      needsOnboarding: instanceMode === null,
+      defaultHostName: defaultHostName(),
+      defaultPort: DEFAULT_HOST_PORT,
+      lanAddress: firstLanAddress(),
+      ...(startupError ? { error: startupError } : {}),
+    };
+  }
+
+  function pushStackState() {
+    mainWindow?.webContents.send("shannon:stackState", stackState());
+  }
+
+  /**
+   * Tears the current stack down and brings up whatever `config` asks for,
+   * then tells the renderer where to point.
+   *
+   * Stop-before-start is not optional: both stacks would bind the same port,
+   * and the embedded Postgres holds a data directory that only one server may
+   * own. The renderer follows via the pushed state rather than an app
+   * restart — `endpoint.ts` re-resolves on the event.
+   */
+  async function applyConfig(config) {
+    const previous = stack;
+    stack = null;
+    apiBaseUrl = null;
+    instanceMode = null;
+    if (previous) await previous.stop().catch(() => undefined);
+
+    saveConfig(dataDir(), config);
+    try {
+      const started = await startForConfig(config);
+      startupError = null;
+      stack = started.stack;
+      apiBaseUrl = started.apiBaseUrl;
+      instanceMode = started.mode;
+    } catch (err) {
+      // The most likely failure here is the one that most needs explaining:
+      // hostingBlockedReason() refusing to start a Host with no container
+      // engine. Before this the throw skipped every line above, so the error
+      // was never recorded and the renderer never heard — it just landed back
+      // on onboarding with no reason attached and the "install Docker"
+      // message lost.
+      startupError = err instanceof Error ? err.message : String(err);
+      pushStackState();
+      throw err;
+    }
+    pushStackState();
+    return stackState();
+  }
+
+  /**
+   * The app's first IPC surface. Everything here is main-process-only work the
+   * renderer cannot do for itself: reading and writing the instance config,
+   * probing for a container engine, and starting or stopping the embedded
+   * stack. Nothing here takes a path or a command from the renderer.
+   */
+  function registerIpc() {
+    ipcMain.handle("shannon:getState", () => stackState());
+
+    ipcMain.handle("shannon:setMode", async (_event, input) => {
+      const config = buildConfig(input ?? {}, loadConfig(dataDir()));
+      return applyConfig(config);
+    });
+
+    // Is a container engine reachable? Host mode requires one — the server
+    // refuses to boot otherwise — so onboarding checks before committing the
+    // user to a mode that would fail at startup.
+    ipcMain.handle("shannon:probeEngine", async () => {
+      const { probeContainerEngine } = await import("./supervisor/engine-probe.js");
+      return probeContainerEngine();
+    });
+
+    // Does this URL serve a Shannon? Returns the cluster so the join screen can
+    // name what the user is about to connect to instead of echoing their URL.
+    ipcMain.handle("shannon:probeHost", async (_event, url) => {
+      if (typeof url !== "string" || !url.trim()) return { ok: false, reason: "No URL given" };
+      const base = url.trim().replace(/\/+$/, "");
+      try {
+        const health = await fetch(`${base}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+        if (!health.ok) return { ok: false, reason: `Server answered ${String(health.status)}` };
+        const res = await fetch(`${base}/v1/cluster`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+        if (!res.ok) return { ok: true, url: base };
+        const body = await res.json();
+        return { ok: true, url: base, cluster: body.cluster, hosts: body.hosts };
+      } catch (err) {
+        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+    });
+
+    // Validates external-database credentials before they are committed, so a
+    // typo surfaces on the form rather than as a failed boot.
+    ipcMain.handle("shannon:testDb", async (_event, input) => {
+      const { testDatabase } = await import("./supervisor/db-test.js");
+      return testDatabase(input ?? {}, dataDir());
+    });
+
+    // Leave the current host: forget the stored config and return to
+    // onboarding. Deliberately does NOT delete the data directory — a Host
+    // that detaches keeps its own database.
+    ipcMain.handle("shannon:detach", async () => {
+      const previous = stack;
+      stack = null;
+      apiBaseUrl = null;
+      instanceMode = null;
+      if (previous) await previous.stop().catch(() => undefined);
+      // Removing the config *is* the detach: absence is the first-run signal,
+      // so the next resolve lands on onboarding. The instanceId is lost with
+      // it, which is correct — re-joining later is a fresh registration, and
+      // keeping a stale id would let this machine claim a host row in a
+      // cluster it has left.
+      rmSync(configPath(dataDir()), { force: true });
+      pushStackState();
+      return stackState();
+    });
+  }
 
   async function createWindow() {
     mainWindow = new BrowserWindow({
@@ -199,7 +350,10 @@ async function runGui() {
         nodeIntegration: false,
         contextIsolation: true,
         sandbox: true,
-        additionalArguments: [`--shannon-api-base-url=${encodeURIComponent(apiBaseUrl)}`],
+        // Empty when the app opens on onboarding: there is no server yet.
+        // The renderer treats that as "ask the user", and gets the real URL
+        // over shannon:stackState once a mode is chosen.
+        additionalArguments: [`--shannon-api-base-url=${encodeURIComponent(apiBaseUrl ?? "")}`],
       },
     });
 
@@ -213,21 +367,29 @@ async function runGui() {
   }
 
   app.whenReady().then(async () => {
+    registerIpc();
     try {
-      ({ apiBaseUrl, stack } = await resolveApi());
+      ({ apiBaseUrl, stack, mode: instanceMode } = await resolveApi());
     } catch (err) {
-      dialog.showErrorBox(
-        "Open Shannon failed to start",
-        err instanceof Error ? err.message : String(err),
-      );
-      app.exit(1);
-      return;
+      // A configured install that cannot start (an unreachable external
+      // database, a Host with no container engine) must still open its
+      // window: the error is actionable from onboarding, and exiting would
+      // leave the user with no way to change the setting that broke it.
+      console.error(`[shannon] ${err instanceof Error ? err.message : String(err)}`);
+      startupError = err instanceof Error ? err.message : String(err);
+      apiBaseUrl = null;
+      stack = null;
+      instanceMode = null;
     }
-    console.log(`[shannon] API base URL: ${apiBaseUrl}`);
+    console.log(`[shannon] API base URL: ${apiBaseUrl ?? "(none — onboarding)"}`);
     await createWindow();
+    // The renderer subscribes after it loads, so the first state is pushed
+    // rather than assumed: a window that opened before the stack resolved
+    // would otherwise sit on stale props.
+    pushStackState();
   });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
-  app.on("activate", () => { if (!mainWindow && apiBaseUrl) createWindow(); });
+  app.on("activate", () => { if (!mainWindow) createWindow(); });
 
   // Quit must wait for the embedded stack: the server needs to drain against a
   // live database, and Postgres needs a clean shutdown — a fire-and-forget

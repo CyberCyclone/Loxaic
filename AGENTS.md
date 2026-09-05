@@ -404,6 +404,39 @@ screenshots showing that behaviour working. Writing those tests is the implement
 
 ### Electron
 
+- **Instance mode lives in `<dataDir>/config.json`** (`supervisor/config.js`), read by both
+  `main.js` and `headless.js` — they already share `defaultDataDir()`, so a machine set up
+  through the GUI restarts headless unchanged. **Absence of that file is the only first-run
+  signal there is**: no config means the window opens on onboarding and *no stack starts*.
+  Anything that creates a data dir without a config (the self-contained e2e harness, a
+  packaging script) must seed one or it will land on onboarding.
+- **Env and flags still outrank the stored mode.** `--remote` / `SHANNON_REMOTE_URL` /
+  `TSNET_TARGET` / the `EXPO_PUBLIC_*` probes / a dev server on `:4000` are all "this launch
+  was told exactly where to point", and they are checked before config.json. The e2e suites
+  and every scripted workflow depend on that ordering — don't reverse it.
+- **Three modes.** `solo` (this machine only, loopback, any `SANDBOX_MODE`), `host` (serves
+  others, **container sandbox required**), `client` (no local stack). Solo is forced to
+  loopback in `buildConfig` regardless of what the caller asks for — a solo instance
+  listening on the LAN would be a host that never registered as one.
+- **`instanceId` is stable across mode changes.** It is this machine's primary key in the
+  `hosts` table, so regenerating it on a Solo→Host switch registers the same machine twice.
+  Detach deliberately drops it — re-joining is a fresh registration, and a stale id would let
+  the machine claim a host row in a cluster it has left.
+- **`BETTER_AUTH_URL` is derived from the advertised URL, never pinned to loopback.**
+  better-auth builds its callback URLs and cookie domain from it, so a host serving LAN
+  clients while claiming `localhost` rejects every one of them. `TRUSTED_ORIGINS` and
+  `ADMIN_EMAILS` pass through for the same reason: on a host they stop being deployment
+  trivia and decide who can connect and who administers it.
+- **Database credentials never go in config.json** — it is read by the renderer and safe to
+  log. An external database's password lives in `secrets.json` (0600) beside the auth secret,
+  and the supervisor injects it into the URL at spawn time.
+- **The IPC contract is the app's only one** (`shannon:getState/setMode/probeEngine/
+  probeHost/testDb/detach`, plus a pushed `shannon:stackState`). Every channel is a fixed
+  name and none takes a path or command from the renderer. The `stackState` listener is
+  wrapped in `preload.cjs` so the renderer never receives Electron's `IpcRendererEvent`,
+  which carries a live `sender` handle back into the main process.
+- **A mode switch stops the old stack before starting the new one.** Both bind the same port,
+  and the embedded Postgres data directory has exactly one legitimate owner.
 - Never `loadFile()`/`file://` for the packaged build — expo-router's client-side routing
   needs the History API and every asset path is absolute (`/_expo/...`), both of which
   break under `file://`. Use `electron-serve`'s `app://` scheme (already wired in
