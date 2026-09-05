@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "scheme": "loxaic",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.loxaic.app"
