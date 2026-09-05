@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, isVisible, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
@@ -57,6 +57,25 @@ export async function openSidebar(): Promise<void> {
   );
 }
 
+/**
+ * Waits for the authenticated shell to be usable.
+ *
+ * Not simply `composer.input`: a user whose only conversation is shared
+ * read-only gets `composer.readOnly` in its place, so keying on the input
+ * alone would hang for exactly the user the sharing spec signs in. Either
+ * element means the app is past login and has rendered a conversation.
+ */
+export async function waitForComposerReady(timeout = 20_000): Promise<void> {
+  await browser.waitUntil(
+    async () => (await isVisible('composer.input')) || (await isVisible('composer.readOnly')),
+    {
+      timeout,
+      interval: 300,
+      timeoutMsg: `neither composer.input nor composer.readOnly appeared within ${String(timeout)}ms`,
+    },
+  );
+}
+
 export async function signUp(creds: Credentials): Promise<void> {
   await waitForVisible('login.submit');
   await tap('login.toggleMode'); // sign-in is the default mode
@@ -65,7 +84,7 @@ export async function signUp(creds: Credentials): Promise<void> {
   await typeInto('login.email', creds.email);
   await typeInto('login.password', creds.password);
   await tap('login.submit');
-  await waitForVisible('composer.input');
+  await waitForComposerReady();
 }
 
 export async function signIn(creds: Credentials): Promise<void> {
@@ -73,7 +92,7 @@ export async function signIn(creds: Credentials): Promise<void> {
   await typeInto('login.email', creds.email);
   await typeInto('login.password', creds.password);
   await tap('login.submit');
-  await waitForVisible('composer.input');
+  await waitForComposerReady();
 }
 
 export async function signOut(): Promise<void> {

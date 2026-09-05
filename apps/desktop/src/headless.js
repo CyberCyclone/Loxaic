@@ -85,7 +85,7 @@ async function main() {
   if (hasFlag("client") || getFlag("client")) {
     console.error(
       "Headless client mode isn't supported yet — a headless instance always hosts.\n" +
-        "Use the desktop app to join a host, or run this instance with --host.",
+        "Use the desktop app to join a host, or run this instance with --as-host.",
     );
     process.exit(2);
   }

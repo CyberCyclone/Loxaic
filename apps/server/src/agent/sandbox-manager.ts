@@ -1,5 +1,5 @@
 import { and, db, eq } from "@shannon/db";
-import { sandboxes } from "@shannon/db/schema";
+import { conversations, sandboxes } from "@shannon/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
@@ -245,10 +245,16 @@ async function createEntry(
   // A previous process may have left a usable sandbox recorded in the DB —
   // but only if it was created under the *same* provider kind as the one
   // active now; a row left over from a prior SANDBOX_MODE is dead weight.
+  //
+  // Looked up by conversation alone, not by who is asking. A shared
+  // conversation has several legitimate participants, and filtering on the
+  // caller meant an editor's first tool call after a restart created a
+  // *second* container for the same conversation — the first still running,
+  // no longer in `active`, and invisible to the orphan sweep because a row
+  // still claimed it.
   const existing = await db.query.sandboxes.findFirst({
     where: and(
       eq(sandboxes.conversationId, conversationId),
-      eq(sandboxes.ownerId, userId),
       eq(sandboxes.status, "running"),
       eq(sandboxes.provider, provider.kind),
     ),
@@ -306,10 +312,21 @@ async function createEntryReserved(
       throw err;
     }
   }
+  // The row's owner is the *conversation's* owner, never whoever triggered
+  // the tool call. Every sandbox route — terminal, exec, file read/write —
+  // authorizes on `sandboxes.ownerId`, and terminal access is arbitrary code
+  // execution rather than participation in a chat. Recording the sender here
+  // meant a shared editor who happened to trigger the first tool call took
+  // ownership of the sandbox and the terminal with it, while the real owner
+  // was 404'd out of their own conversation's sandbox.
+  const conversation = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+    columns: { ownerId: true },
+  });
   const [row] = await db
     .insert(sandboxes)
     .values({
-      ownerId: userId,
+      ownerId: conversation?.ownerId ?? userId,
       conversationId,
       containerId: handle.ref,
       provider: provider.kind,

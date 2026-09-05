@@ -215,38 +215,6 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `authenticate`/`requireAdmin` for routes, `resolveSessionFromToken` for WebSocket
   handlers. Calling `auth.api.getSession` directly skips the ban re-check and leaves a
   banned user holding live sockets (including a sandbox terminal) until the session expires.
-- **Sandbox containers run with no capabilities and no route back to any.** The image already
-  runs as a non-root user (`USER shannon`, uid 1001) — that predates the hardening and is the
-  largest control — but non-root does *not* imply capability-free: a container starts with a
-  default set (CHOWN, SETUID, NET_RAW, …) whatever its uid. So `CapDrop: ["ALL"]` plus
-  `no-new-privileges`, the latter being what makes the drop durable rather than a starting
-  position a setuid binary could climb out of. Asserted from *inside* a real container
-  (`sandbox/__tests__/hardening.test.ts`: `CapEff` is exactly 0, `NoNewPrivs` is 1) rather than
-  by reading back the HostConfig we just sent, which would only prove we passed what we passed.
-- **`ReadonlyRootfs` is deliberately not set.** It breaks the workdir and `/tmp`, so it needs
-  tmpfs replacements whose pages count against the same 512MB cgroup — turning a large clone or
-  extraction into an OOM kill. And it adds almost nothing: every system directory is already
-  unwritable to uid 1001. Revisit only alongside a memory-limit change, not on its own.
-- **Per-user sandbox cap** (`SANDBOX_MAX_PER_USER`, default 5). Container limits are per
-  *container*, so one user with a conversation per tab could hold N times all of them and
-  starve a shared host — the `shannon.user` label was bookkeeping until this made it a budget.
-  Counted from the `sandboxes` table, not the in-process map: the map is per process and the
-  limit is about the machine. Three things keep the count honest: **both creation paths**
-  (`createEntry` and `POST /v1/sandboxes`) call `assertUnderUserLimit` — a cap honoured by one
-  of two is not a cap; the check **reserves a slot** in-process until the row exists, because
-  check-then-create with no transaction let concurrent tool calls overshoot; and before
-  refusing it **reconciles dead rows** — a daemon restart leaves every row `running` with no
-  container behind it, and counting those meant a permanent lockout. Liveness is asked per row
-  (`attach().isRunning()`), never diffed against a container listing: an empty listing cannot
-  say whether the engine is down or every container is gone, and a throw leaves the row alone
-  rather than marking it stopped on no evidence.
-- **The boot sweep runs in both directions**: containers no row claims are stopped, and
-  `running` rows whose container is gone are marked stopped. The second direction is not gated
-  on the listing being non-empty — after a daemon restart it *is* empty, and that is exactly
-  the case to reconcile.
-- **The extraction pool inherits all of the above by construction** — it creates through the
-  same `provider.create`. Keep it that way: a second creation path is a second place to forget
-  a flag.
 - Sandbox containers are created with **no network** (`NetworkMode: "none"`) unless an admin
   enables `allowNetwork` — everything in them is model-directed, so egress is an
   exfiltration path. Host sandboxes always have the host's network. `web_fetch` is
@@ -268,6 +236,40 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - The container sandbox image (`shannon-sandbox`) builds itself automatically on first use
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
+
+### Conversation sharing and roles
+
+- **One ordered role, resolved in one place.** `viewer < editor < owner`
+  (`streams/authz.ts`). `resolveAccess` resolves **owner → explicit share → admin**, and
+  `assertConversationAccess(userId, convId, minimum)` is the WS chokepoint. Ownership lives on
+  `conversations.ownerId` and is deliberately *not* a row in `conversation_shares` — two
+  sources of truth for the same fact eventually disagree, and "owner" is therefore not a
+  grantable role (a share payload asking for it degrades to viewer rather than escalating).
+- **Admin resolves to `viewer`, never higher**, with `viaAdmin: true` on the grant. An admin
+  can see any conversation; seeing is not acting. An admin who needs to participate shares it
+  to themselves, and `conversation_shares.createdBy` records that they did. A real share
+  always beats the admin fallback, so a genuinely-granted admin editor isn't demoted by their
+  own admin status.
+- **Not-found, not-shared, and shared-too-low all raise the same `NotFoundError`.** Never
+  branch on which it was — the route tests assert the responses are byte-identical.
+- **`stop` and `approve` authorize on the conversation, not the run's starter.**
+  `run.userId === userId` used to be both the lookup and the authorization; that breaks as
+  soon as a conversation has editors besides its owner, and runs deliberately outlive the
+  socket that began them. `findRunByApprovalCallId` now only *locates* — `mayActOnRun` in the
+  WS handlers is what authorizes. Both paths still no-op silently on refusal.
+- **Revoking takes effect on the revoked user's next command**, not instantly: their live
+  socket keeps the stream it is already tapped into until it re-subscribes. Every command
+  re-authorizes, so nothing new reaches them, but this is not an emergency kill switch.
+- **REST goes through `hasRole`**, not inlined ownership predicates. Reading a thread needs
+  viewer; model/MCP prefs and delete stay owner-only. **Sandbox routes stay owner-only** —
+  terminal access is arbitrary code execution, not participation in a chat.
+- **Attachment reads extend to "appears in a conversation you can see"**, scoped to
+  conversations the caller can access — otherwise a shared thread renders its messages and
+  404s every image in them. The jsonb predicate matches the reaper's (`block->>'kind' =
+  'attachment'`); a future ref-carrying block kind has to teach both.
+- **e2e login waits for either `composer.input` or `composer.readOnly`.** A viewer's composer
+  is replaced by an explanation, so waiting on the input alone hangs for exactly the user the
+  sharing spec signs in.
 
 ### File attachments
 

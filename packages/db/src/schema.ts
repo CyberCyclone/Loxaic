@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, integer, bigint, real, jsonb, boolean, serial, index, primaryKey, uniqueIndex } from "drizzle-orm/pg-core";
 import { relations } from "drizzle-orm";
 
 // ── Better-Auth (auto-managed, needed for adapter schema) ──
@@ -79,6 +79,43 @@ export const conversations = pgTable("conversations", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at"),
 });
+
+/**
+ * Who besides the owner may see a conversation, and what they may do in it.
+ *
+ * Ownership stays on `conversations.ownerId` and is deliberately *not*
+ * represented here: an owner row would be a second source of truth for the
+ * same fact, and the two would eventually disagree. Absence of a row means no
+ * access — the table only ever grants.
+ *
+ * Roles are ordered (viewer < editor < owner). `viewer` reads and streams;
+ * `editor` also sends, stops runs, and answers tool approvals. Anything that
+ * reconfigures the conversation — sharing, renaming, deleting, model and MCP
+ * preferences — stays with the owner, as does the sandbox terminal, which is
+ * arbitrary code execution rather than participation in a chat.
+ */
+export const conversationShares = pgTable(
+  "conversation_shares",
+  {
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["viewer", "editor"] }).notNull().default("viewer"),
+    /** Who granted it. Kept for the admin view: "shared by the owner" and
+     * "shared by an admin" are different facts an admin needs to tell apart. */
+    createdBy: text("created_by").notNull().references(() => user.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.conversationId, t.userId] }),
+    // Every sidebar load asks "which conversations are shared with me", so
+    // that lookup gets its own index rather than scanning by conversation.
+    index("conversation_shares_user_idx").on(t.userId),
+  ],
+);
 
 // ── Messages (tree via parent_id) ──
 export const messages = pgTable(
