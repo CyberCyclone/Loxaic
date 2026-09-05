@@ -59,6 +59,27 @@ glob) actually run:
 right now (`{"sandbox":{"mode":"container","available":false,"reason":"…"}}`)
 — useful for a client to show *why* before a tool call fails mid-run.
 
+### What a sandbox can and can't do
+
+Agent tool calls run in a container that is deliberately unprivileged:
+
+| | |
+|---|---|
+| **User** | non-root (`shannon`, uid 1001) — cannot write the image's own `/usr/bin`, `/etc`, `/lib` |
+| **Capabilities** | none at all (`CapDrop: ALL`), and `no-new-privileges` so none can be regained |
+| **Network** | none, unless an admin enables it (see below) |
+| **Memory / CPU / pids** | 512 MB, 1 CPU, 100 processes |
+| **Per user** | 5 concurrent sandboxes (`SANDBOX_MAX_PER_USER`) |
+
+The root filesystem is deliberately *not* read-only: it would need tmpfs mounts for the working
+directory and `/tmp`, whose pages count against the same memory limit, so a large repository
+clone or document extraction would be killed rather than isolated — and every system directory
+is already unwritable to a non-root user, so it would buy very little.
+
+The per-user cap exists because every other limit is per *container*: without it, one person
+with many open conversations could hold several times the whole budget on a shared host. Raise
+it with `SANDBOX_MAX_PER_USER` if your host is comfortably provisioned.
+
 ### Sandbox network access
 
 Sandbox containers get **no network** by default (`NetworkMode: none`):

@@ -4,6 +4,7 @@ import { db } from "@shannon/db";
 import { sandboxes } from "@shannon/db/schema";
 import { authenticate } from "../auth/middleware";
 import { resolvePath } from "../agent/executor.ts";
+import { assertUnderUserLimit, releaseSandboxSlot, SandboxLimitError } from "../agent/sandbox-manager.ts";
 import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
 import type { SandboxKind } from "../sandbox/provider.ts";
 import { sandboxDisabledReason } from "../settings.ts";
@@ -53,25 +54,42 @@ export function sandboxRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "repo_url is not supported with provider=host" });
     }
 
-    const provider = await getProviderByKind(kind);
-    const handle = await provider.create(userId, { repoUrl: repo_url, branch, token });
+    // The same per-user cap the tool loop enforces. This is a second creation
+    // path, and a cap honoured by only one of two is not a cap: a user could
+    // loop this endpoint into unbounded containers — and, because rows made
+    // here are never in the in-process map the idle reaper walks, lock
+    // *themselves* out of agent sandboxes with a message promising a reap
+    // that would never come.
+    try {
+      await assertUnderUserLimit(userId);
+    } catch (err) {
+      if (err instanceof SandboxLimitError) return reply.code(429).send({ error: err.message });
+      throw err;
+    }
 
-    const [row] = await db
-      .insert(sandboxes)
-      .values({
-        ownerId: userId,
-        conversationId: conversation_id ?? null,
-        containerId: handle.ref,
-        provider: kind,
-        image: kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
-        status: "running",
-        repoUrl: repo_url ?? null,
-        branch: branch ?? null,
-        limits: { memory: 512, cpu: 1 },
-      })
-      .returning();
+    try {
+      const provider = await getProviderByKind(kind);
+      const handle = await provider.create(userId, { repoUrl: repo_url, branch, token });
 
-    return row;
+      const [row] = await db
+        .insert(sandboxes)
+        .values({
+          ownerId: userId,
+          conversationId: conversation_id ?? null,
+          containerId: handle.ref,
+          provider: kind,
+          image: kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
+          status: "running",
+          repoUrl: repo_url ?? null,
+          branch: branch ?? null,
+          limits: { memory: 512, cpu: 1 },
+        })
+        .returning();
+
+      return row;
+    } finally {
+      releaseSandboxSlot(userId);
+    }
   });
 
   app.delete<{ Params: { id: string } }>("/v1/sandboxes/:id", async (request, reply) => {

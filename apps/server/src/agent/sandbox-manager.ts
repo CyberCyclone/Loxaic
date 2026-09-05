@@ -135,6 +135,108 @@ async function resolveEntry(
   return creation;
 }
 
+/**
+ * How many sandboxes one user may hold at once.
+ *
+ * Env-backed with a default rather than a `server_settings` field: it is a
+ * capacity guard rather than a security posture (the isolation itself is not
+ * negotiable), and the sandbox settings row is deliberately about mode,
+ * engine, and network. Read at call time, like every other sandbox env var.
+ */
+const DEFAULT_MAX_SANDBOXES_PER_USER = 5;
+
+function maxSandboxesPerUser(): number {
+  const raw = Number(process.env.SANDBOX_MAX_PER_USER);
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAX_SANDBOXES_PER_USER;
+}
+
+export class SandboxLimitError extends Error {
+  constructor(limit: number) {
+    super(
+      `You already have ${String(limit)} sandboxes running, which is the per-user limit. ` +
+        `Close a conversation that is using one, or wait for an idle sandbox to be reaped.`,
+    );
+    this.name = "SandboxLimitError";
+  }
+}
+
+/**
+ * Sandboxes this process is *about to* create, per user, counted alongside the
+ * rows. The check is check-then-create with no transaction, and `pending`
+ * de-duplicates per conversation only — so a user at 4 who fires tool calls in
+ * three conversations at once had all three pass the check before any row
+ * existed and landed at 7. A reservation taken before `provider.create` and
+ * released after the insert (or on failure) closes that within a process.
+ */
+const inFlight = new Map<string, number>();
+
+export function releaseSandboxSlot(userId: string): void {
+  const n = (inFlight.get(userId) ?? 0) - 1;
+  if (n <= 0) inFlight.delete(userId);
+  else inFlight.set(userId, n);
+}
+
+/**
+ * Refuses when the user is at their cap; otherwise reserves a slot the caller
+ * must release with `releaseSandboxSlot` once the row exists (or creation
+ * fails). Exported because `POST /v1/sandboxes` is a second creation path and
+ * a cap that only one of two paths honours is not a cap.
+ *
+ * Before refusing, the counted rows are reconciled against reality. A row can
+ * say `running` when its container is long gone — a Docker daemon restart
+ * takes every AutoRemove container with it, and nothing else marks those rows:
+ * the boot sweep stops containers *no row claims* (the other direction), the
+ * idle reaper walks the in-process map (empty after a restart), and
+ * `createEntry` reconciles exactly one conversation's row. Counting them meant
+ * "wait for an idle sandbox to be reaped" — a wait that would never end.
+ */
+export async function assertUnderUserLimit(userId: string): Promise<void> {
+  const limit = maxSandboxesPerUser();
+  const reserved = inFlight.get(userId) ?? 0;
+  let rows = await runningRowsFor(userId);
+  if (rows.length + reserved >= limit) {
+    await markDeadRowsStopped(rows);
+    rows = await runningRowsFor(userId);
+  }
+  if (rows.length + reserved >= limit) throw new SandboxLimitError(limit);
+  inFlight.set(userId, reserved + 1);
+}
+
+async function runningRowsFor(userId: string) {
+  return db
+    .select({ id: sandboxes.id, containerId: sandboxes.containerId, provider: sandboxes.provider })
+    .from(sandboxes)
+    .where(and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running")));
+}
+
+/**
+ * Marks `running` rows whose sandbox no longer exists as stopped.
+ *
+ * Liveness is asked of the provider that owns each row, per row, rather than
+ * diffed against a container listing: a listing that comes back empty cannot
+ * say whether the engine is down or every container is gone, and those need
+ * opposite handling. `attach().isRunning()` returning false is a definite
+ * answer; a throw means the engine could not be reached, and the row is left
+ * alone rather than marked stopped on no evidence.
+ */
+async function markDeadRowsStopped(
+  rows: { id: string; containerId: string; provider: string }[],
+): Promise<number> {
+  let marked = 0;
+  for (const row of rows) {
+    try {
+      const provider = await getProviderByKind(row.provider as SandboxKind);
+      const handle = await provider.attach(row.containerId);
+      if (await handle.isRunning()) continue;
+    } catch {
+      continue;
+    }
+    await markStopped(row.id);
+    marked++;
+  }
+  return marked;
+}
+
 async function createEntry(
   provider: SandboxProvider,
   userId: string,
@@ -167,6 +269,30 @@ async function createEntry(
     await markStopped(existing.id);
   }
 
+  // Per-user ceiling on live sandboxes.
+  //
+  // Container limits are per *container* — memory, CPU, pids — so one user
+  // with a conversation per tab could hold N times all of them and starve
+  // everyone else on a shared host. The `shannon.user` label existed for
+  // bookkeeping; this is what turns it into a budget.
+  //
+  // Counted from the `sandboxes` table rather than the in-process map,
+  // because the map is per process and the limit is about the machine. Rows
+  // are marked stopped by every teardown path, and the boot sweep reconciles
+  // what a crash left behind.
+  await assertUnderUserLimit(userId);
+  try {
+    return await createEntryReserved(provider, userId, conversationId);
+  } finally {
+    releaseSandboxSlot(userId);
+  }
+}
+
+async function createEntryReserved(
+  provider: SandboxProvider,
+  userId: string,
+  conversationId: string,
+): Promise<Entry> {
   const handle = await provider.create(userId, {});
   // Test-only hook for the real-model e2e suite: seeds a fixture repo (an
   // INSTRUCTIONS.md + a small app) into every freshly-created sandbox, so
@@ -303,14 +429,24 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
  * process to stop, and the identifying label only exists on containers.
  */
 export async function sweepOrphanSandboxes(): Promise<number> {
+  const rows = await db.query.sandboxes
+    .findMany({
+      where: eq(sandboxes.status, "running"),
+      columns: { id: true, containerId: true, provider: true },
+    })
+    .catch(() => []);
+
+  // Direction two: rows whose container is gone. Not gated on the container
+  // listing being non-empty — after a daemon restart the listing *is* empty
+  // and every row is stale, which is exactly the case to reconcile. The
+  // per-row liveness check leaves rows alone when the engine is unreachable.
+  await markDeadRowsStopped(rows.filter((r) => r.provider === "container"));
+
+  // Direction one: containers no row claims.
   const ids = await listSandboxContainers();
   if (ids.length === 0) return 0;
-
   const known = new Set<string>();
   for (const entry of active.values()) known.add(entry.ref);
-  const rows = await db.query.sandboxes
-    .findMany({ where: eq(sandboxes.status, "running"), columns: { containerId: true } })
-    .catch(() => []);
   for (const row of rows) known.add(row.containerId);
 
   const provider = await getProviderByKind("container");
