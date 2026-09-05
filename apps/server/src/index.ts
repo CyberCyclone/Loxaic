@@ -30,7 +30,8 @@ import { mcpRoutes } from "./routes/mcp";
 import { prefsRoutes } from "./routes/prefs";
 import { adminSettingsRoutes } from "./routes/admin-settings";
 import { fileRoutes } from "./routes/files";
-import { loadServerSettings } from "./settings";
+import { hostingBlockedReason, loadServerSettings } from "./settings";
+import { ensureCluster, registerHost } from "./cluster";
 import { startMcpReaper } from "./mcp/client-manager";
 import { startAttachmentReaper, sweepOrphanAttachments } from "./files/reaper";
 import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
@@ -70,6 +71,22 @@ try {
 // After migrations (the table must exist) and before any route or sandbox
 // operation can read them. Env vars still win over anything stored here.
 await loadServerSettings();
+
+// ── Hosting gate ──────────────────────────────────────────
+// A Host serves other users' chats and agent runs, which is only defensible
+// with container isolation. Fail the boot rather than start unisolated —
+// enforced here, not in the desktop supervisor, so a hand-started server
+// cannot skip it. Solo/dev installs (no SHANNON_HOSTING) are unaffected.
+const hostingBlocked = hostingBlockedReason();
+if (hostingBlocked) throw new Error(hostingBlocked);
+
+// ── Cluster identity ──────────────────────────────────────
+// The cluster is the set of instances sharing this database; its id is minted
+// here on first boot. Registration is a no-op without SHANNON_INSTANCE_ID
+// (a dev server or a Compose deployment has no durable per-machine identity).
+await ensureCluster();
+const registeredHostId = await registerHost();
+if (registeredHostId) app.log.info(`Registered host ${registeredHostId}`);
 
 // ── Stream log ────────────────────────────────────────────
 // Deliberately NOT wrapped in try/catch: STREAM_BACKEND=redis with an

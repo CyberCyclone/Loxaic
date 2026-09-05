@@ -1,5 +1,6 @@
 // Runs in the renderer's isolated world (contextIsolation: true). Exposes
-// only a plain-data bridge — no Node/Electron APIs reach the page itself.
+// only a plain-data bridge plus a fixed set of main-process calls — no
+// Node/Electron APIs reach the page itself.
 // CommonJS (.cjs) rather than the package's default ESM: Electron loads
 // preload scripts in a context that does not support `import` regardless of
 // the surrounding package.json's "type", and .cjs is the one extension Node
@@ -9,7 +10,9 @@
 // window is created and handed in via webPreferences.additionalArguments,
 // since the renderer is a static web build with no server at the app://
 // origin it loads from — it has no other way to learn where the real API is.
-const { contextBridge } = require("electron");
+// It is empty when the app opens on onboarding: there is no server yet, and
+// the real URL arrives over `onStackState` once a mode is chosen.
+const { contextBridge, ipcRenderer } = require("electron");
 
 function readArg(name) {
   const prefix = `--${name}=`;
@@ -17,7 +20,36 @@ function readArg(name) {
   return arg ? decodeURIComponent(arg.slice(prefix.length)) : null;
 }
 
+const launchApiBaseUrl = readArg("shannon-api-base-url") || null;
+
 contextBridge.exposeInMainWorld("shannon", {
   platform: "electron",
-  apiBaseUrl: readArg("shannon-api-base-url"),
+  apiBaseUrl: launchApiBaseUrl,
+
+  /**
+   * Instance-mode control. Every method is a fixed channel with no path,
+   * command, or file argument — the renderer asks the main process to do one
+   * of a handful of named things, and cannot ask it to do anything else.
+   */
+  instance: {
+    getState: () => ipcRenderer.invoke("shannon:getState"),
+    setMode: (config) => ipcRenderer.invoke("shannon:setMode", config),
+    probeEngine: () => ipcRenderer.invoke("shannon:probeEngine"),
+    probeHost: (url) => ipcRenderer.invoke("shannon:probeHost", url),
+    testDb: (input) => ipcRenderer.invoke("shannon:testDb", input),
+    detach: () => ipcRenderer.invoke("shannon:detach"),
+
+    /**
+     * Fires whenever the stack changes — a mode switch, a detach, or the
+     * initial resolve completing after the window opened. Returns an
+     * unsubscribe function; the listener is wrapped so the renderer never
+     * receives Electron's IpcRendererEvent (which carries `sender`, i.e. a
+     * live handle back into the main process).
+     */
+    onStackState: (callback) => {
+      const listener = (_event, state) => { callback(state); };
+      ipcRenderer.on("shannon:stackState", listener);
+      return () => { ipcRenderer.off("shannon:stackState", listener); };
+    },
+  },
 });

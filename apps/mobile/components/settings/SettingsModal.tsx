@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Boxes, ChevronRight, Plug } from 'lucide-react-native';
-import { setApiBaseUrl } from '@shannon/api-client';
 import {
   Modal,
   ModalBackdrop,
@@ -22,7 +21,8 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
-import { setItem } from '@/lib/storage';
+import { removeItem, setItem } from '@/lib/storage';
+import { resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
 
@@ -52,9 +52,29 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
   const save = () => {
     setSettings(draft);
-    if (draft.endpoint) {
-      setItem('shannon-endpoint', draft.endpoint);
-      setApiBaseUrl(draft.endpoint);
+    const endpoint = draft.endpoint.trim();
+    if (endpoint) {
+      setItem('shannon-endpoint', endpoint);
+      // setEndpoint, not setApiBaseUrl: the api-client's base URL is only half
+      // of it. endpoint.ts caches the resolution and the chat/agent sockets
+      // hold a URL captured when their effect last ran, so both have to be
+      // told or the change appears to work and then silently doesn't.
+      setEndpoint(endpoint);
+    } else {
+      // Clearing the field has to actually clear the override. It previously
+      // fell through this branch entirely, so an endpoint could be set from
+      // the UI but never unset from it — the only way back was reinstalling.
+      removeItem('shannon-endpoint');
+      setEndpoint(null);
+      // resolveEndpoint assigns the resolved value directly and never fires
+      // the listeners the chat/agent sockets subscribe to — only setEndpoint
+      // does. Without routing the result back through it, REST moves to the
+      // new server while both sockets stay connected to the old one until an
+      // app restart: a split-brain where the socket keeps streaming to a host
+      // the user thinks they left.
+      void resolveEndpoint(true).then((resolved) => {
+        if (resolved) setEndpoint(resolved);
+      });
     }
     setDirty(false);
     showToast('Settings saved');

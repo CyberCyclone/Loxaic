@@ -26,6 +26,17 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
     for (const [id, entry] of this.streams) {
       if (entry.meta.status !== "active" && entry.meta.updatedAt < cutoff) this.streams.delete(id);
     }
+    // Prune the per-conversation run index in the same pass. It only ever
+    // grew: createStream pushes on every run and nothing removed from it, so
+    // a long-lived process (the packaged desktop app runs this driver for
+    // days) accumulated an ever-longer list of ids whose streams were already
+    // swept above. Drop the swept ids, and the conversation's entry once it
+    // has none left.
+    for (const [convId, ids] of this.convStreams) {
+      const live = ids.filter((id) => this.streams.has(id));
+      if (live.length === 0) this.convStreams.delete(convId);
+      else if (live.length !== ids.length) this.convStreams.set(convId, live);
+    }
   }
 
   createStream(meta: Omit<StreamMeta, "lastSeq" | "status" | "updatedAt">): Promise<StreamMeta> {

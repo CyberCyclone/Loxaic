@@ -1,6 +1,6 @@
 {
-  "id": "d48b3779-2847-4a54-85dd-32c0a20d06f6",
-  "prevId": "28c02d1b-095a-4a16-889f-f4cd6c79d0fd",
+  "id": "c47e8948-6234-4234-a8df-4011e8bad67a",
+  "prevId": "d48b3779-2847-4a54-85dd-32c0a20d06f6",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -184,6 +184,115 @@
         }
       },
       "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.conversation_shares": {
+      "name": "conversation_shares",
+      "schema": "",
+      "columns": {
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'viewer'"
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "conversation_shares_user_idx": {
+          "name": "conversation_shares_user_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversation_shares_conversation_id_conversations_id_fk": {
+          "name": "conversation_shares_conversation_id_conversations_id_fk",
+          "tableFrom": "conversation_shares",
+          "tableTo": "conversations",
+          "columnsFrom": [
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "conversation_shares_user_id_user_id_fk": {
+          "name": "conversation_shares_user_id_user_id_fk",
+          "tableFrom": "conversation_shares",
+          "tableTo": "user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "conversation_shares_created_by_user_id_fk": {
+          "name": "conversation_shares_created_by_user_id_fk",
+          "tableFrom": "conversation_shares",
+          "tableTo": "user",
+          "columnsFrom": [
+            "created_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "conversation_shares_conversation_id_user_id_pk": {
+          "name": "conversation_shares_conversation_id_user_id_pk",
+          "columns": [
+            "conversation_id",
+            "user_id"
+          ]
+        }
+      },
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},

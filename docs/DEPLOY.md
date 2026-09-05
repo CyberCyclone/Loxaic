@@ -19,14 +19,31 @@ pnpm package:dir # prod, unpacked (skips the installer step — faster iteration
 
 ### Desktop (GUI)
 
-On launch, the main process resolves how to reach a server, in order:
+**First launch asks what this machine should be**, and the answer is stored in
+`<dataDir>/config.json`:
+
+- **Just this machine (Solo)** — the self-contained stack for you alone:
+  embedded Postgres + the bundled server on loopback. No Docker/Podman needed.
+- **Host for others** — the same stack, bound to your network so other people
+  sign in and use its models. You give it a **name**, which is what appears
+  against its models in everyone's model picker. Requires Docker or Podman:
+  hosting runs other people's agent commands, and the server refuses to start
+  without container isolation (see [RUNTIME.md](RUNTIME.md)).
+- **Connect to a host** — no local stack at all; the app points at a Shannon
+  running elsewhere.
+
+You can change modes later from Settings without restarting the app, and a
+Host can use an external PostgreSQL instead of the embedded one.
+
+On launch the main process resolves how to reach a server, in order:
 `--remote=<url>` / `SHANNON_REMOTE_URL` (connect to a server elsewhere, skip
 everything below) → the embedded-Tailscale proxy (`TSNET_TARGET`) → a
 LAN/tailnet candidate that answers `/health` → in dev, a running `pnpm dev`
-server on :4000 → otherwise it **brings up its own stack**: embedded Postgres
-+ the bundled server, no Docker/Podman/dev server required. The renderer has
-no server at its own origin (`app://` in prod, `localhost:8081` in dev) so
-the resolved URL is handed to it via a `contextBridge` preload script — see
+server on :4000 → **the stored instance mode** → otherwise, first-run
+onboarding. Those environment overrides deliberately outrank the stored mode,
+so a scripted or test launch always wins. The renderer has no server at its
+own origin (`app://` in prod, `localhost:8081` in dev) so the resolved URL is
+handed to it via a `contextBridge` preload script — see
 [REMOTE_ACCESS.md](REMOTE_ACCESS.md#electron-desktop-app) for the
 embedded-Tailscale sidecar.
 
@@ -59,6 +76,14 @@ User=shannon
 [Install]
 WantedBy=multi-user.target
 ```
+
+A headless instance reads the same `config.json` the GUI writes, so a machine
+set up through the app can be moved to a systemd unit without reconfiguring
+it. On a box that has never seen the GUI, add `--as-host` (with an optional
+`--host-name`) to configure and start it as a Host in one step. Headless
+**client** mode — joining someone else's host with no window — is not built
+yet; the flag exits with a message rather than silently starting a host
+instead.
 
 For the AppImage, extract it first — `./Open-Shannon.AppImage --appimage-extract`
 — and point `ExecStart` at `squashfs-root/open-shannon` and

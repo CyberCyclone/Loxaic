@@ -18,6 +18,7 @@ import {
   type ServerMessage,
   type AttachmentRef,
 } from '@shannon/api-client';
+import { useEndpoint } from './useEndpoint';
 import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { CONVERSATIONS } from '@/lib/fixtures/conversations';
@@ -48,6 +49,10 @@ interface StreamState { streamId: string; loadingModel: boolean; responseStarted
 const RESYNC_COOLDOWN_MS = 500;
 
 export function useChatSession(token: string | null, onStreamEnd?: () => void) {
+  // Re-run the socket effect when the API endpoint changes, so a desktop
+  // mode switch or a Settings change reconnects to the new host instead of
+  // silently holding the old one until the app restarts.
+  const endpoint = useEndpoint();
   const [conversations, setConversations] = useState<Conversation[]>(CONVERSATIONS);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
@@ -402,7 +407,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       appStateSub.remove();
       wsRef.current?.close();
     };
-  }, [token, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
+  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {

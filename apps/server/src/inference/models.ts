@@ -1,4 +1,5 @@
 import type { ModelInfo } from "@shannon/types";
+import { selfHost } from "../cluster.ts";
 
 // Read at call time, not module load — see provider.ts.
 const BASE_URL = () => process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
@@ -19,6 +20,8 @@ const MOCK_MODELS: ModelInfo[] = [
     loaded_context_tokens: 4096,
     context_source: "loaded",
     location: "server",
+    host_id: null,
+    host_name: null,
     price: 0,
     loaded: true,
   },
@@ -32,6 +35,8 @@ const MOCK_MODELS: ModelInfo[] = [
     loaded_context_tokens: null,
     context_source: "max",
     location: "server",
+    host_id: null,
+    host_name: null,
     price: 0,
     loaded: false,
   },
@@ -102,6 +107,8 @@ async function listViaLmStudioNative(): Promise<ModelInfo[]> {
         loaded_context_tokens: loaded,
         context_source: loaded != null ? "loaded" : m.max_context_length ? "max" : "default",
         location: "server",
+        host_id: null,
+        host_name: null,
         price: 0,
         loaded: m.state === "loaded",
       };
@@ -149,6 +156,8 @@ async function listViaOpenAiCompat(): Promise<ModelInfo[]> {
       loaded_context_tokens: loadedCtx,
       context_source: loadedCtx != null ? "loaded" : trained != null ? "trained" : "default",
       location: "server",
+      host_id: null,
+      host_name: null,
       price: 0,
       loaded: loadedCtx != null,
     };
@@ -193,6 +202,12 @@ export async function listBackendModels(): Promise<ModelInfo[]> {
       // Backend unreachable — cache the empty result so we don't hammer it.
     }
   }
+
+  // Stamp every model with the host serving it. Done once here rather than in
+  // each backend branch: the label is a property of *this instance*, not of
+  // how its backend happens to report models.
+  const host = await selfHost().catch(() => null);
+  if (host) models = models.map((m) => ({ ...m, host_id: host.id, host_name: host.name }));
 
   cache = { at: Date.now(), models };
   return models;
