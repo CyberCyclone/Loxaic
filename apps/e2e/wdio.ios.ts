@@ -23,7 +23,7 @@ import { sharedConfig } from './wdio.shared.ts';
 process.env.E2E_PLATFORM = 'ios';
 requireAppiumDrivers();
 
-const IOS_DEVICE = process.env.E2E_IOS_DEVICE ?? 'iPhone 15';
+const IOS_DEVICE = process.env.E2E_IOS_DEVICE ?? 'iPhone 17';
 
 export const config: WebdriverIO.Config = {
   ...sharedConfig,

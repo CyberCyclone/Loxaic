@@ -10,7 +10,7 @@
     "test": "turbo test"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.13.0"
   },
   "packageManager": "pnpm@10.4.1",
   "pnpm": {

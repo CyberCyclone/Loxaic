@@ -131,7 +131,7 @@ app launches and sits on a blank white screen with no visible error, because the
 happens during session bootstrap before anything renders. Match `-destination` to a
 simulator that exists for your Xcode's iOS runtime (`xcrun simctl list devices available`).
 
-Point `E2E_IOS_DEVICE` at a simulator name (default `iPhone 15`) and `E2E_IOS_APP` at a `.app`
+Point `E2E_IOS_DEVICE` at a simulator name (default `iPhone 17`) and `E2E_IOS_APP` at a `.app`
 bundle if yours is somewhere other than the default derived-data path.
 
 No port forwarding is needed: the simulator shares the host's loopback, so the app's own
@@ -327,7 +327,7 @@ PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end
 | `E2E_INFERENCE_URL` | — | The OpenAI-compatible endpoint `E2E_REAL_MODEL=1` talks to (e.g. `http://localhost:1234` for LM Studio). |
 | `E2E_HEADED` | — | `1` runs Chrome headed instead of headless. |
 | `E2E_LOG_LEVEL` | `warn` | WebdriverIO log level (`trace`…`error`). |
-| `E2E_IOS_DEVICE` | `iPhone 15` | Simulator to run the iOS suite on. |
+| `E2E_IOS_DEVICE` | `iPhone 17` | Simulator to run the iOS suite on. |
 | `E2E_IOS_VERSION` | — | Pin a simulator iOS version (e.g. `18.6`). |
 | `E2E_IOS_APP` | — | Path to a built `.app` bundle, if not in the default location. |
 | `E2E_ANDROID_AVD` | — | AVD to boot; otherwise uses the running emulator/device. |

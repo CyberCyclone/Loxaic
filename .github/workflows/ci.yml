@@ -17,7 +17,7 @@ jobs:
           version: 10.4.1
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22 # Expo SDK 57 needs >= 22.13; the `22` alias resolves to the latest 22.x
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint

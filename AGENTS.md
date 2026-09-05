@@ -100,6 +100,34 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actionsheet over
   `expo-image-picker`, web renders a real, persistent `<input type="file">`
   (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly.
+- **Expo SDK 57 / New Architecture only.** `newArchEnabled` is no longer a valid `app.json`
+  key (SDK 55 removed the legacy architecture), `expo prebuild` now wipes `ios/`/`android/`
+  before regenerating (pass `--no-clean` to keep them), and `runtimeVersion.policy:
+  "sdkVersion"` means each SDK bump starts a fresh EAS Update runtime — clients on the old
+  build simply stop receiving updates. Upgrade with `npx expo install expo@^NN --fix` run
+  *inside* `apps/mobile`, then `npx expo install --check` and `npx expo-doctor@latest`.
+- **TypeScript is deliberately held at 5.9** via `expo.install.exclude` in
+  `apps/mobile/package.json`: every other workspace package is `^5.7` and the shared eslint
+  config's TS 6 support is unverified. Bump it workspace-wide in its own PR, not as a side
+  effect of an SDK upgrade.
+- **Never add a dependency with a required `nativewind` peer.** UniWind is the styling engine
+  and `nativewind` is not installed; pnpm satisfies such a peer by materialising a second
+  `react`/`react-native` island, and any hook reached through it binds to the wrong React
+  ("Invalid hook call" / "Cannot read property 'useState' of null" on device). `@legendapp/
+  motion` did exactly this and forced a React-singleton `resolveRequest` shim in
+  `metro.config.js`; both are gone. Overlays animate with react-native-reanimated
+  `entering`/`exiting` layout animations instead (`components/ui/modal`, `menu`, `popover`,
+  and `actionsheet/animated.tsx`, which is also what `select/select-actionsheet.tsx` uses).
+  If a second React ever reappears, `ls node_modules/.pnpm | grep '^react@'` finds it — fix
+  the dependency, don't re-add the shim.
+- **`babel-preset-expo` must stay a declared devDependency** even though `expo` depends on
+  it: under pnpm it is only hoisted to `node_modules/.pnpm/node_modules`, which Babel can't
+  resolve from `apps/mobile`. It injects `react-native-worklets/plugin` itself, so that plugin
+  is intentionally absent from `babel.config.js` — listing it twice breaks reanimated.
+- **`expo/fetch` is `globalThis.fetch` on native since SDK 56.** If native uploads (the RN
+  `{uri, name, type}` FormData part in `packages/api-client`) ever fail with "Network request
+  failed", `EXPO_PUBLIC_USE_RN_FETCH=1` restores React Native's fetch — it is inlined at bundle
+  time, so it has to be set in the shell that runs `xcodebuild`/`gradlew`, not just `.env`.
 
 ### testIDs and e2e selectors
 
