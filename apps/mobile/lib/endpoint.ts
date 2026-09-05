@@ -1,13 +1,13 @@
 import { Platform } from 'react-native';
-import { setApiBaseUrl } from '@shannon/api-client';
+import { setApiBaseUrl } from '@loxaic/api-client';
 import { getItem } from './storage';
 
 /**
  * Endpoint resolution for native apps (Expo / Electron shell).
  *
  * Candidates, in order of preference:
- *   1. Settings override (`shannon-endpoint`) — always wins, no probing.
- *   2. Electron bridge (`window.shannon.apiBaseUrl`) — see below.
+ *   1. Settings override (`loxaic-endpoint`) — always wins, no probing.
+ *   2. Electron bridge (`window.loxaic.apiBaseUrl`) — see below.
  *   3. LAN URL (EXPO_PUBLIC_LAN_API_URL) — fastest when at home.
  *   4. Public/tailnet URL (EXPO_PUBLIC_API_URL) — works anywhere on the tailnet.
  *   5. Platform dev default (localhost / 10.0.2.2).
@@ -39,7 +39,7 @@ export interface InstanceState {
   error?: string;
 }
 
-export interface ShannonBridge {
+export interface LoxaicBridge {
   platform: 'electron';
   apiBaseUrl: string | null;
   instance: {
@@ -59,12 +59,12 @@ export interface ShannonBridge {
   };
 }
 
-type ElectronWindow = Window & { shannon?: ShannonBridge };
+type ElectronWindow = Window & { loxaic?: LoxaicBridge };
 
 /** The desktop bridge, or null on web/native. */
-export function electronBridge(): ShannonBridge | null {
+export function electronBridge(): LoxaicBridge | null {
   if (typeof window === 'undefined') return null;
-  return (window as ElectronWindow).shannon ?? null;
+  return (window as ElectronWindow).loxaic ?? null;
 }
 
 const PROBE_TIMEOUT_MS = 1500;
@@ -94,14 +94,14 @@ let resolved: string | null = null;
 export async function resolveEndpoint(force = false): Promise<string> {
   if (resolved && !force) return resolved;
 
-  const override = getItem('shannon-endpoint');
+  const override = getItem('loxaic-endpoint');
   if (override) {
     resolved = override;
     setApiBaseUrl(override);
     return override;
   }
 
-  const electronUrl = typeof window !== 'undefined' ? (window as ElectronWindow).shannon?.apiBaseUrl : null;
+  const electronUrl = typeof window !== 'undefined' ? (window as ElectronWindow).loxaic?.apiBaseUrl : null;
   if (electronUrl) {
     resolved = electronUrl;
     setApiBaseUrl(electronUrl);
@@ -195,7 +195,7 @@ export function subscribeToDesktopEndpoint(): () => void {
   return bridge.instance.onStackState((state) => {
     // A Settings override outranks the bridge (it always has), so a user who
     // pinned an endpoint keeps it across a mode change they didn't make.
-    if (getItem('shannon-endpoint')) return;
+    if (getItem('loxaic-endpoint')) return;
     setEndpoint(state.apiBaseUrl);
   });
 }

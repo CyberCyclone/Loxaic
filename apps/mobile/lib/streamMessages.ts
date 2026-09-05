@@ -3,8 +3,8 @@ import type {
   StreamSnapshot,
   StreamSnapshotMessage,
   ApiMessage,
-} from '@shannon/api-client';
-import type { CompactionStats, ContentBlock, FileDiff } from '@shannon/types';
+} from '@loxaic/api-client';
+import type { CompactionStats, ContentBlock, FileDiff } from '@loxaic/types';
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';

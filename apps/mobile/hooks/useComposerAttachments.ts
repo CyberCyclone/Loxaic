@@ -12,7 +12,7 @@ import {
   resolveAttachmentMime,
   type AttachmentRef,
   type UploadedAttachment,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
 import { useServerConfig } from './useServerConfig';
 import type { AttachmentRejection } from '@/components/composer/AttachmentRejectedModal';

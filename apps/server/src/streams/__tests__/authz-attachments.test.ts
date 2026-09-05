@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
-import { attachments, user } from "@shannon/db/schema";
-import { MAX_ATTACHMENTS } from "@shannon/types";
+import { db, eq } from "@loxaic/db";
+import { attachments, user } from "@loxaic/db/schema";
+import { MAX_ATTACHMENTS } from "@loxaic/types";
 import { assertAttachmentsOwned, NotFoundError } from "../authz.ts";
 
 /**

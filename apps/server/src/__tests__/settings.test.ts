@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { db, eq } from "@shannon/db";
-import { serverSettings } from "@shannon/db/schema";
+import { db, eq } from "@loxaic/db";
+import { serverSettings } from "@loxaic/db/schema";
 import {
   __setLoadFailedForTest,
   __setSandboxApplyForTest,
@@ -174,8 +174,8 @@ describe("updateSandboxSettings validation", () => {
     // the mode changes. Without it an admin on a live Host could switch to
     // "host" and run every other user's commands unisolated immediately, or
     // to "off" and brick the next boot.
-    const prev = process.env.SHANNON_HOSTING;
-    process.env.SHANNON_HOSTING = "1";
+    const prev = process.env.LOXAIC_HOSTING;
+    process.env.LOXAIC_HOSTING = "1";
     try {
       await expect(updateSandboxSettings({ mode: "host" })).rejects.toMatchObject({
         name: "SettingsError",
@@ -190,8 +190,8 @@ describe("updateSandboxSettings validation", () => {
       // Container stays permitted — the gate pins the value, it doesn't freeze the field.
       await expect(updateSandboxSettings({ mode: "container" })).resolves.toBeDefined();
     } finally {
-      if (prev === undefined) delete process.env.SHANNON_HOSTING;
-      else process.env.SHANNON_HOSTING = prev;
+      if (prev === undefined) delete process.env.LOXAIC_HOSTING;
+      else process.env.LOXAIC_HOSTING = prev;
     }
   });
 

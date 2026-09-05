@@ -15,7 +15,7 @@ import { BASE_URL } from '../../../scripts/standup.ts';
 describe('electron endpoint resolution', () => {
   it('exposes the main process API base URL to the renderer', async () => {
     const bridge = await browser.execute(
-      () => (window as unknown as { shannon?: { platform: string; apiBaseUrl: string | null } }).shannon,
+      () => (window as unknown as { loxaic?: { platform: string; apiBaseUrl: string | null } }).loxaic,
     );
 
     expect(bridge).toBeDefined();
@@ -39,7 +39,7 @@ describe('electron endpoint resolution', () => {
     // BASE_URL: hitting BASE_URL directly would pass even if the bridge handed
     // the renderer something useless, which is the failure this exists to catch.
     const health = await browser.execute(async () => {
-      const url = (window as unknown as { shannon?: { apiBaseUrl: string | null } }).shannon
+      const url = (window as unknown as { loxaic?: { apiBaseUrl: string | null } }).loxaic
         ?.apiBaseUrl;
       if (!url) return null;
       const res = await fetch(`${url}/health`);

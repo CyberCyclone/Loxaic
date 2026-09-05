@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
-import { db, eq, inArray } from "@shannon/db";
-import { conversationShares, conversations, user } from "@shannon/db/schema";
+import { db, eq, inArray } from "@loxaic/db";
+import { conversationShares, conversations, user } from "@loxaic/db/schema";
 
 /**
  * Route-level tests — the harness #59 asked for, started here because #76 is

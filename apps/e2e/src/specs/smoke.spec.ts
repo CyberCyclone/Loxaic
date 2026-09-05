@@ -41,7 +41,7 @@ describe('smoke', () => {
   });
 
   it('answers a chat message with the mock response', async () => {
-    const prompt = 'hello shannon';
+    const prompt = 'hello loxaic';
     await sendAndAwaitReply(prompt, mockEcho(prompt));
     await shot('chat-mock-response');
   });

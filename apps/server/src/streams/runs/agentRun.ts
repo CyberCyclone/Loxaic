@@ -1,8 +1,8 @@
 import { v4 as uuid } from "uuid";
-import { db } from "@shannon/db";
-import { conversations, messages } from "@shannon/db/schema";
-import type { AttachmentRef, ContentBlock } from "@shannon/types";
-import type { PermissionMode } from "@shannon/agent";
+import { db } from "@loxaic/db";
+import { conversations, messages } from "@loxaic/db/schema";
+import type { AttachmentRef, ContentBlock } from "@loxaic/types";
+import type { PermissionMode } from "@loxaic/agent";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
@@ -19,9 +19,9 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
 function baseSystemPrompt(): string {
   const location = getSandboxMode() === "host"
     ? "directly on the host machine, in a scratch working directory created for this conversation"
-    : "inside an isolated Linux sandbox container, with the repository checked out at /home/shannon/repo (your working directory; relative paths resolve there)";
+    : "inside an isolated Linux sandbox container, with the repository checked out at /home/loxaic/repo (your working directory; relative paths resolve there)";
   return [
-    `You are Shannon, a coding agent working ${location}.`,
+    `You are Loxaic, a coding agent working ${location}.`,
     "Work in small, verifiable steps: read before you edit, and prefer fs_edit over rewriting a whole file.",
     "Use the tools available to you rather than guessing at file contents. Explain what you are doing as you go,",
     "and finish with a short summary of what changed.",
@@ -29,9 +29,9 @@ function baseSystemPrompt(): string {
 }
 
 function planningSystemPrompt(): string {
-  const location = getSandboxMode() === "host" ? "on the host machine" : "at /home/shannon/repo";
+  const location = getSandboxMode() === "host" ? "on the host machine" : "at /home/loxaic/repo";
   return [
-    `You are Shannon in PLANNING mode. Investigate the repository ${location} using the read-only tools`,
+    `You are Loxaic in PLANNING mode. Investigate the repository ${location} using the read-only tools`,
     "available to you and produce a concrete, step-by-step plan. Do not write, edit, or execute anything —",
     "no files may change in this mode. Finish with the plan as prose.",
   ].join(" ");

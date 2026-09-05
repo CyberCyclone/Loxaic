@@ -7,7 +7,7 @@ const STOP_GRACE_MS = 10_000;
 /**
  * Spawn the bundled server as a Node child of this process
  * (ELECTRON_RUN_AS_NODE turns the Electron binary into plain Node) and wait
- * for its `SHANNON_LISTENING <port>` stdout handshake — the same pattern
+ * for its `LOXAIC_LISTENING <port>` stdout handshake — the same pattern
  * main.js already uses for tsnet-proxy's `LISTENING` line.
  *
  * Returns { port, stop } — `stop` sends SIGTERM (the server drains and closes
@@ -28,7 +28,7 @@ export function startServer({ entry, cwd, env, log }) {
       if (settled) return;
       settled = true;
       child.kill("SIGKILL");
-      reject(new Error(`server did not report SHANNON_LISTENING within ${HANDSHAKE_TIMEOUT_MS}ms\n${stderrTail.join("\n")}`));
+      reject(new Error(`server did not report LOXAIC_LISTENING within ${HANDSHAKE_TIMEOUT_MS}ms\n${stderrTail.join("\n")}`));
     }, HANDSHAKE_TIMEOUT_MS);
 
     const stop = () =>
@@ -40,7 +40,7 @@ export function startServer({ entry, cwd, env, log }) {
       });
 
     createInterface({ input: child.stdout }).on("line", (line) => {
-      const match = /^SHANNON_LISTENING (\d+)$/.exec(line);
+      const match = /^LOXAIC_LISTENING (\d+)$/.exec(line);
       if (match && !settled) {
         settled = true;
         clearTimeout(timer);

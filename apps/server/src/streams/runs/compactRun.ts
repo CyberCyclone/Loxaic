@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
-import { db, desc, eq } from "@shannon/db";
-import { conversations, messages, usageRecords } from "@shannon/db/schema";
-import type { CompactionStats, ContentBlock, ContextBreakdown, TurnUsage } from "@shannon/types";
+import { db, desc, eq } from "@loxaic/db";
+import { conversations, messages, usageRecords } from "@loxaic/db/schema";
+import type { CompactionStats, ContentBlock, ContextBreakdown, TurnUsage } from "@loxaic/types";
 import { streamCompletion, textOfContent, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { estimateTokens, summaryMessage } from "../../inference/context.ts";

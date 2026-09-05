@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Open-Shannon — Routines</title>
-<link rel="stylesheet" href="shannon.css">
+<title>Loxaic — Routines</title>
+<link rel="stylesheet" href="loxaic.css">
 <script src="assets/theme-init.js"></script>
-<script src="shannon-shared.js"></script>
+<script src="loxaic-shared.js"></script>
 <style>
 .routines-content { padding: 24px; max-width: 1100px; margin: 0 auto; width: 100%; }
 .routines-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
@@ -36,19 +36,19 @@
 <body>
 <div class="shell" data-od-id="routines-shell">
   <aside class="sidebar" data-od-id="sidebar">
-    <div class="sidebar-brand"><div class="logo">OS</div><div class="name">Open-Shannon</div></div>
-    <button class="sidebar-new" onclick="location.href='shannon-chat.html'"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>New chat</button>
+    <div class="sidebar-brand"><div class="logo">L</div><div class="name">Loxaic</div></div>
+    <button class="sidebar-new" onclick="location.href='loxaic-chat.html'"><svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>New chat</button>
     <nav class="sidebar-nav">
       <div class="nav-label">Workspace</div>
-      <a class="nav-item" href="shannon-chat.html" data-od-id="nav-chat"><svg viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h10a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 3v-3H3a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.4"/></svg>Chat</a>
-      <a class="nav-item" href="shannon-agent.html" data-od-id="nav-agent"><svg viewBox="0 0 16 16" fill="none"><path d="M5 7V5a3 3 0 016 0v2M3 7h10v6a1 1 0 01-1 1H4a1 1 0 01-1-1V7zM6 10v1M10 10v1" stroke="currentColor" stroke-width="1.4"/></svg>Agent</a>
-      <a class="nav-item active" href="shannon-routines.html" data-od-id="nav-routines"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4v4l3 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Routines</a>
-      <a class="nav-item" href="shannon-stats.html" data-od-id="nav-stats"><svg viewBox="0 0 16 16" fill="none"><path d="M2 13h12M4 13V7M7 13V4M10 13V8M13 13V6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Stats</a>
+      <a class="nav-item" href="loxaic-chat.html" data-od-id="nav-chat"><svg viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h10a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 3v-3H3a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.4"/></svg>Chat</a>
+      <a class="nav-item" href="loxaic-agent.html" data-od-id="nav-agent"><svg viewBox="0 0 16 16" fill="none"><path d="M5 7V5a3 3 0 016 0v2M3 7h10v6a1 1 0 01-1 1H4a1 1 0 01-1-1V7zM6 10v1M10 10v1" stroke="currentColor" stroke-width="1.4"/></svg>Agent</a>
+      <a class="nav-item active" href="loxaic-routines.html" data-od-id="nav-routines"><svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.4"/><path d="M8 4v4l3 2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Routines</a>
+      <a class="nav-item" href="loxaic-stats.html" data-od-id="nav-stats"><svg viewBox="0 0 16 16" fill="none"><path d="M2 13h12M4 13V7M7 13V4M10 13V8M13 13V6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Stats</a>
       <a class="nav-item" data-od-id="nav-settings" onclick="openSettings()"><svg viewBox="0 0 16 16" fill="none"><path d="M8 5a3 3 0 100 6 3 3 0 000-6zM8 1v2M8 13v2M1 8h2M13 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M3.5 12.5l1.4-1.4M11.1 4.9l1.4-1.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>Settings</a>
     </nav>
     <div class="sidebar-footer">
       <div class="status-line"><span class="status-dot"></span> Server connected · llama.cpp</div>
-      <div class="account-row"><div class="account-avatar">CG</div><div class="account-info">        <div class="account-name">Casey Gibson</div><div class="account-plan">shannon.tailscale.com</div></div></div>
+      <div class="account-row"><div class="account-avatar">CG</div><div class="account-info">        <div class="account-name">Casey Gibson</div><div class="account-plan">loxaic.tailscale.com</div></div></div>
     </div>
   </aside>
 
@@ -89,9 +89,9 @@
       <div class="form-group"><label class="label">Directory</label>
         <select class="input" id="r-directory">
           <option value="">— None —</option>
-          <option value="Open-Shannon/design">Open-Shannon/design</option>
-          <option value="Open-Shannon/api">Open-Shannon/api</option>
-          <option value="Open-Shannon/sync">Open-Shannon/sync</option>
+          <option value="Loxaic/design">Loxaic/design</option>
+          <option value="Loxaic/api">Loxaic/api</option>
+          <option value="Loxaic/sync">Loxaic/sync</option>
         </select>
         <div class="hint" style="margin-top:4px">Run the agent in this workspace, or pull data from it.</div>
       </div>
@@ -142,7 +142,7 @@
 
 <script>
 // ===== Fixtures (shaped like routines + routine_runs) =====
-let routines = JSON.parse(localStorage.getItem('shannon-routines') || 'null') || [
+let routines = JSON.parse(localStorage.getItem('loxaic-routines') || 'null') || [
   { id: 'rt1', name: 'Daily standup summary', cron: '0 9 * * 1-5', prompt: 'Summarize yesterday\'s commits and create a standup report.', target: 'agent', model: 'Llama 3.1 8B', enabled: true, lastRun: { status: 'done', at: '6h ago', tokens: 3200, duration: '45s' }, nextRun: 'Tomorrow 09:00', ntfy: true },
   { id: 'rt2', name: 'Weekly code review', cron: '0 14 * * 5', prompt: 'Review all PRs opened this week. Flag risky changes.', target: 'agent', model: 'Qwen 2.5 14B', enabled: true, lastRun: { status: 'done', at: '2d ago', tokens: 18400, duration: '3m 12s' }, nextRun: 'Fri 14:00', ntfy: true },
   { id: 'rt3', name: 'Health check', cron: '0 * * * *', prompt: 'Check server health endpoints and report anomalies.', target: 'chat', model: 'Phi 3 Mini', enabled: false, lastRun: { status: 'error', at: '1h ago', tokens: 800, duration: '12s' }, nextRun: 'Disabled', ntfy: false },
@@ -158,7 +158,7 @@ const routineRuns = {
   rt3: [{ status: 'error', started: '1h ago', finished: '1h ago', duration: '12s', tokens: 800 }],
 };
 
-function saveRoutines() { localStorage.setItem('shannon-routines', JSON.stringify(routines)); }
+function saveRoutines() { localStorage.setItem('loxaic-routines', JSON.stringify(routines)); }
 
 // ===== Cron humanizer =====
 function humanizeCron(cron) {
@@ -314,7 +314,7 @@ function openHistory(routine) {
   document.getElementById('drawer-title').textContent = `${routine.name} — History`;
   const runs = routineRuns[routine.id] || [];
   document.getElementById('drawer-body').innerHTML = runs.map(run => `
-    <div class="run-history-item" onclick="location.href='shannon-agent.html'">
+    <div class="run-history-item" onclick="location.href='loxaic-agent.html'">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
         <span class="badge badge-${run.status === 'done' ? 'success' : 'danger'}">${run.status}</span>
         <span style="font-size:12px;color:var(--fg-3)">${run.duration}</span>

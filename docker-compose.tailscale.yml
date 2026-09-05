@@ -8,14 +8,14 @@
 #   2. Put it in .env as TS_AUTHKEY=tskey-auth-...
 #   3. docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 #
-# The sidecar joins your tailnet as machine "shannon" and serves
-# https://shannon.<tailnet>.ts.net → the server container on port 4000.
+# The sidecar joins your tailnet as machine "loxaic" and serves
+# https://loxaic.<tailnet>.ts.net → the server container on port 4000.
 # Enable MagicDNS + HTTPS certificates in the Tailscale admin console first.
 
 services:
   tailscale:
     image: tailscale/tailscale:latest
-    hostname: shannon
+    hostname: loxaic
     environment:
       TS_AUTHKEY: ${TS_AUTHKEY}
       TS_STATE_DIR: /var/lib/tailscale

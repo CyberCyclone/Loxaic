@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "open-shannon",
-    "slug": "open-shannon",
+    "name": "loxaic",
+    "slug": "loxaic",
     "version": "0.0.1",
     "orientation": "portrait",
-    "scheme": "openshannon",
+    "scheme": "loxaic",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.shannon.app"
+      "bundleIdentifier": "com.loxaic.app"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#18181b"
       },
-      "package": "com.shannon.app"
+      "package": "com.loxaic.app"
     },
     "web": {
       "bundler": "metro",
@@ -36,8 +36,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Shannon uses your photo library to attach images to a message.",
-          "cameraPermission": "Shannon uses your camera to attach a photo to a message."
+          "photosPermission": "Loxaic uses your photo library to attach images to a message.",
+          "cameraPermission": "Loxaic uses your camera to attach a photo to a message."
         }
       ]
     ],

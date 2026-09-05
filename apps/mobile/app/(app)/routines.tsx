@@ -14,7 +14,7 @@ import { RoutineModal } from '@/components/routines/RoutineModal';
 import { RunHistorySheet } from '@/components/routines/RunHistorySheet';
 import { useRoutines } from '@/hooks/useRoutines';
 import { useSession } from '@/lib/session';
-import type { Routine } from '@shannon/api-client';
+import type { Routine } from '@loxaic/api-client';
 
 export default function RoutinesScreen() {
   const shell = useShell();

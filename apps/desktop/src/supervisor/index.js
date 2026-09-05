@@ -38,7 +38,7 @@ function externalDatabaseUrl(db, secrets) {
   return url.toString();
 }
 
-async function isHealthyShannon(baseUrl) {
+async function isHealthyLoxaic(baseUrl) {
   try {
     const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1500) });
     if (!res.ok) return false;
@@ -103,7 +103,7 @@ async function waitForHealth(baseUrl) {
  * `instance` is the resolved config.json for this install (mode, instanceId,
  * host name, database choice). It is what turns a Solo stack into a Host one:
  * the bind address, the advertised URL that `BETTER_AUTH_URL` is derived
- * from, and the `SHANNON_HOSTING` gate all come from it. Omitted, the stack
+ * from, and the `LOXAIC_HOSTING` gate all come from it. Omitted, the stack
  * behaves exactly as a loopback single-user install.
  *
  * Returns { apiBaseUrl, port, stop } — stop() tears down server-then-Postgres
@@ -131,7 +131,7 @@ export async function startStack({
   const entry = path.join(serverDir, "dist/index.js");
   if (!existsSync(entry)) {
     throw new Error(
-      `no server payload at ${serverDir} — run \`pnpm --filter @shannon/desktop build:server\` first`,
+      `no server payload at ${serverDir} — run \`pnpm --filter @loxaic/desktop build:server\` first`,
     );
   }
 
@@ -149,7 +149,7 @@ export async function startStack({
 
   // A previous app crash leaves both children running (they don't die with
   // the parent). The postgres side adopts via postmaster.pid; the server side
-  // adopts here: if the target port already serves a healthy Shannon /health,
+  // adopts here: if the target port already serves a healthy Loxaic /health,
   // reuse it instead of failing with EADDRINUSE. An *unhealthy* leftover (its
   // postgres died too) is reaped via the pid we recorded when spawning it —
   // never a pid we didn't write ourselves.
@@ -157,13 +157,13 @@ export async function startStack({
   const orphanBaseUrl = `http://localhost:${port}`;
   // Adoption is only safe when the leftover is configured the way this start
   // would configure it. Before instance modes existed that was always true;
-  // now the process env *is* the mode — SHANNON_HOSTING, the bind, the
+  // now the process env *is* the mode — LOXAIC_HOSTING, the bind, the
   // advertised URL BETTER_AUTH_URL derives from — and a healthy leftover Solo
   // server adopted during a Solo→Host switch would leave the user told they
   // are hosting while nothing about the running process changed, with a no-op
   // stop() so the next switch couldn't clean it up either. With an instance
   // config in hand, a leftover is reaped and replaced rather than trusted.
-  if (!instance && (await isHealthyShannon(orphanBaseUrl))) {
+  if (!instance && (await isHealthyLoxaic(orphanBaseUrl))) {
     log(`[stack] adopting running server at ${orphanBaseUrl} (left over from a previous run)`);
     return {
       apiBaseUrl: orphanBaseUrl,
@@ -193,7 +193,7 @@ export async function startStack({
     NODE_ENV: "production",
     // The bundled server records this in the hosts table. npm_package_version
     // only exists under `pnpm dev`; the packaged app has to say so itself.
-    SHANNON_VERSION: desktopVersion(),
+    LOXAIC_VERSION: desktopVersion(),
     PORT: String(port),
     HOST: bindHost,
     DATABASE_URL: databaseUrl,
@@ -210,7 +210,7 @@ export async function startStack({
     // builds its callback URLs and cookie domain from this, so a host serving
     // LAN clients while claiming to be localhost rejects every one of them.
     BETTER_AUTH_URL: advertiseUrl,
-    SHANNON_DATA_DIR: dataDir,
+    LOXAIC_DATA_DIR: dataDir,
     // Without this, storage.ts falls back to <cwd>/uploads — and cwd here is
     // serverDir, i.e. inside the installed app bundle. Attachments would be
     // written next to the shipped code, wiped by every update while their DB
@@ -223,15 +223,15 @@ export async function startStack({
     // This machine's identity in the `hosts` table. Stable across mode
     // changes, so a Solo→Host switch updates one row rather than registering
     // the same machine twice.
-    env.SHANNON_INSTANCE_ID = instance.instanceId;
-    env.SHANNON_ADVERTISE_URL = advertiseUrl;
-    if (hostConfig?.name) env.SHANNON_HOST_NAME = hostConfig.name;
+    env.LOXAIC_INSTANCE_ID = instance.instanceId;
+    env.LOXAIC_ADVERTISE_URL = advertiseUrl;
+    if (hostConfig?.name) env.LOXAIC_HOST_NAME = hostConfig.name;
   }
   if (hosting) {
     // Hosting for other users requires container isolation. The server
     // refuses to boot without it — see apps/server/src/index.ts. Enforcing it
     // there rather than here means a hand-started server can't skip the gate.
-    env.SHANNON_HOSTING = "1";
+    env.LOXAIC_HOSTING = "1";
   }
   for (const key of PASSTHROUGH_ENV) {
     if (process.env[key] !== undefined) env[key] = process.env[key];

@@ -14,13 +14,13 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # cache-layer optimization.
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @shannon/server build
-RUN pnpm --filter @shannon/mobile export:web
+RUN pnpm --filter @loxaic/server build
+RUN pnpm --filter @loxaic/mobile export:web
 
 FROM node:22-alpine
 WORKDIR /app
-# The server build stays external for @shannon/agent, @shannon/db, and
-# @shannon/sync (tsup only inlines type-only packages), so those need to be
+# The server build stays external for @loxaic/agent, @loxaic/db, and
+# @loxaic/sync (tsup only inlines type-only packages), so those need to be
 # present as real TS source at runtime — Node's built-in TypeScript support
 # (unflagged since 22.18) loads them directly, no separate compile step.
 COPY --from=builder /app/apps/server/dist ./apps/server/dist

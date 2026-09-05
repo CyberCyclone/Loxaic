@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { MessagesSquare } from 'lucide-react-native';
-import { findCommand } from '@shannon/api-client';
+import { findCommand } from '@loxaic/api-client';
 import { OfflineBanner } from '@/components/shell/OfflineBanner';
 import { useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react'
 import type { ModelInfo, ThinkingLevel } from '../../types'
-import { SHANNON_MODELS, SHANNON_WORKSPACES, THINKING_LEVELS } from '../../fixtures/models'
+import { LOXAIC_MODELS, LOXAIC_WORKSPACES, THINKING_LEVELS } from '../../fixtures/models'
 import { getModelContext } from '../../fixtures/models'
 
 interface ComposerProps {
@@ -65,7 +65,7 @@ export function Composer({
     setWorkspaces(prev => prev.includes(name) ? prev.filter(w => w !== name) : [...prev, name])
   }
 
-  const modelName = SHANNON_MODELS.find(m => m.id === selectedModel)?.display_name ?? selectedModel
+  const modelName = LOXAIC_MODELS.find(m => m.id === selectedModel)?.display_name ?? selectedModel
 
   return (
     <div className={`composer ${dragOver ? 'drag-over' : ''}`}>
@@ -110,7 +110,7 @@ export function Composer({
           }}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 2v12l4-3 4 3V2z" stroke="currentColor" strokeWidth="1.4" /></svg>
           </button>
-          {SHANNON_WORKSPACES.length > 0 && (
+          {LOXAIC_WORKSPACES.length > 0 && (
             <div style={{ position: 'relative' }}>
               <button className="btn btn-ghost" onClick={() => {}}>
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4a1 1 0 011-1h3l1 1h6a1 1 0 011 1v6a1 1 0 01-1 1H3a1 1 0 01-1-1V4z" stroke="currentColor" strokeWidth="1.4" /></svg>
@@ -126,7 +126,7 @@ export function Composer({
             {modelMenuOpen && (
               <div className="model-menu open">
                 <div className="model-group">Server Models</div>
-                {SHANNON_MODELS.filter(m => m.location === 'server').map(m => (
+                {LOXAIC_MODELS.filter(m => m.location === 'server').map(m => (
                   <div key={m.id} className={`model-option ${selectedModel === m.id ? 'selected' : ''}`} onClick={() => { onSelectModel(m.id); setModelMenuOpen(false) }}>
                     <div>
                       <div className="model-option-name">{m.display_name}</div>
@@ -136,7 +136,7 @@ export function Composer({
                   </div>
                 ))}
                 <div className="model-group">On-Device Models</div>
-                {SHANNON_MODELS.filter(m => m.location === 'device').map(m => (
+                {LOXAIC_MODELS.filter(m => m.location === 'device').map(m => (
                   <div key={m.id} className={`model-option ${selectedModel === m.id ? 'selected' : ''}`} onClick={() => { onSelectModel(m.id); setModelMenuOpen(false) }}>
                     <div>
                       <div className="model-option-name">{m.display_name}</div>
@@ -146,7 +146,7 @@ export function Composer({
                   </div>
                 ))}
                 <div className="model-group">Remote Models</div>
-                {SHANNON_MODELS.filter(m => m.location === 'remote').map(m => (
+                {LOXAIC_MODELS.filter(m => m.location === 'remote').map(m => (
                   <div key={m.id} className={`model-option ${selectedModel === m.id ? 'selected' : ''}`} onClick={() => { onSelectModel(m.id); setModelMenuOpen(false) }}>
                     <div>
                       <div className="model-option-name">{m.display_name}</div>

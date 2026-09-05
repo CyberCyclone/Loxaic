@@ -1,5 +1,5 @@
 import path from "node:path";
-import { db, migrate } from "@shannon/db";
+import { db, migrate } from "@loxaic/db";
 
 export async function runMigrations() {
   // MIGRATIONS_DIR lets a supervisor (Electron packaged build) point at the

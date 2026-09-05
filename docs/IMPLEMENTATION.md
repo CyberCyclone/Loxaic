@@ -1,4 +1,4 @@
-# Open-Shannon — Implementation Document
+# Loxaic — Implementation Document
 
 > **Superseded — kept for history only.** This describes an earlier planning iteration
 > (different stage numbering, a model-routing scheme that was never the one actually
@@ -31,7 +31,7 @@
 
 ## 1. Product Definition
 
-Open-Shannon is a **self-hosted, multi-user AI platform** — an open-source replacement for the
+Loxaic is a **self-hosted, multi-user AI platform** — an open-source replacement for the
 Claude desktop app + Claude Code + LM Studio, running on the owner's hardware.
 
 - A central **Docker host** runs inference (llama.cpp), the API/harness server, Postgres, the
@@ -97,10 +97,10 @@ Claude desktop app + Claude Code + LM Studio, running on the owner's hardware.
 
 ## 3. Monorepo Layout
 
-pnpm workspaces + Turborepo. All packages scoped `@shannon/*`.
+pnpm workspaces + Turborepo. All packages scoped `@loxaic/*`.
 
 ```
-open-shannon/
+loxaic/
 ├── apps/
 │   ├── server/     # Fastify API + WS, harness, sync, auth, sandbox orchestrator (Node 22, TS)
 │   ├── web/        # Vite + react-native-web SPA — also the bundle loaded by Electron
@@ -280,7 +280,7 @@ tool-loop iteration, linked by `run_id`), routines, and device-local generations
   selected conversation / agent run, plus a current-app-session filter. Day boundaries use
   the requesting user's local timezone.
 - **Live**: WS `usage.recorded` event updates open clients' stats views.
-- **UI**: Stats screen (shared `@shannon/ui`, all three apps): range tabs (Session / Today /
+- **UI**: Stats screen (shared `@loxaic/ui`, all three apps): range tabs (Session / Today /
   Week / Month / Year), tokens-over-time stacked by model, cache hit-rate line, pp vs tg
   speed panel, TTFT/duration percentiles, per-model and per-conversation tables. Charts
   hand-rolled on react-native-svg (D18). Micro-feature: subtle `tok/s · cached %` line under
@@ -327,7 +327,7 @@ type ServerEvent =
 
 - **Orchestrator** in `apps/server` talks to the host Docker daemon via mounted
   `/var/run/docker.sock` (server container gets the socket; documented risk + gVisor path).
-- **Base image** `shannon-sandbox`: ubuntu 24.04 + git, Node 22, Python 3.12, ripgrep, build-essential.
+- **Base image** `loxaic-sandbox`: ubuntu 24.04 + git, Node 22, Python 3.12, ripgrep, build-essential.
   Built by `infra/docker/sandbox.Dockerfile`.
 - **Lifecycle**: create per (user, session) → optional `git clone` (URL + token) → `docker exec`
   for commands (terminal over WS) → file tree read/write API → stop/destroy with TTL reaper.
@@ -372,7 +372,7 @@ Each stage ends at a demoable gate. **The human switches the agent model at each
 
 | # | Stage | Gate (acceptance) | Model |
 |---|---|---|---|
-| 1 | Monorepo + frameworks PoC + GUI shell | Same `@shannon/ui` AppShell renders on web (Vite) + mobile (Expo); `docker compose up` healthy (server `/health`, web nginx, db); Tailscale doc written | **qwen3.6-plus** |
+| 1 | Monorepo + frameworks PoC + GUI shell | Same `@loxaic/ui` AppShell renders on web (Vite) + mobile (Expo); `docker compose up` healthy (server `/health`, web nginx, db); Tailscale doc written | **qwen3.6-plus** |
 | 2 | Inference + chat core | Two users stream chat from web + mobile via llama.cpp; auth; conversations/messages persisted; model picker (server models); **`usage_records` captured at the inference proxy + stats endpoint + basic totals in UI** | **deepseek-v4-pro** design → qwen implement |
 | 3 | Offline-first sync + forks | Plane-mode phone chats (local model later; server-model cache for now) sync back; forks visible with continue/jump/delete; concurrent-edit test passes; **`usage.record` ops join the sync protocol** | **deepseek-v4-pro** design → qwen implement → **kimi-k3** gate review |
 | 4 | Sandboxes | From phone: clone repo → run tests → watch live terminal; file tree API; limits enforced | **deepseek-v4-pro** + qwen |
@@ -454,7 +454,7 @@ attempt, fall back to **NativeWind v4 + Tailwind v3** (D6) and record the decisi
   11-hex palette (zinc neutrals + aqua accent `#0096ff`), Public Sans self-hosted, dark-first
   + light mode. Tokens restructured in `packages/config-style/design-tokens.js` with
   `darkTheme`/`lightTheme` exports + pre-computed badge tints (8-digit hex). ThemeProvider in
-  `packages/ui/src/theme/index.tsx` with `useTheme()` hook, `shannon-theme` localStorage key,
+  `packages/ui/src/theme/index.tsx` with `useTheme()` hook, `loxaic-theme` localStorage key,
   system resolution via `matchMedia`, cross-tab sync. No-FOUC bootstrap in
   `apps/web/index.html`. All screens updated to use `useTheme()` hook. SVG icon set via
   `react-native-svg` (replaces emoji icons). Components upgraded: Button (4 variants × 3
@@ -463,12 +463,12 @@ attempt, fall back to **NativeWind v4 + Tailwind v3** (D6) and record the decisi
   screen removed from nav (API stays for agent integration).
 - **2026-08-12 (update 2)** — **Design integration complete.** All OpenDesign React components
   from `design/react/src/` are copied to `apps/web/src/design-components/` and used directly.
-  All 4 surfaces (Chat, Agent, Routines, Stats) render with design CSS from `shannon.css`
+  All 4 surfaces (Chat, Agent, Routines, Stats) render with design CSS from `loxaic.css`
   (32KB). Web app no longer uses react-native-web — it's plain React with HTML elements and
   CSS classes. `App.tsx` reduced to 27 lines (auth gate + surface routing). Hand-written
   screens deleted (ChatScreen, AgentScreen, StatsScreen, RoutinesScreen, SettingsModal).
   Only LoginScreen remains custom. Full CSS for all surfaces (shell, chat, agent, routines,
-  stats) in `apps/web/src/shannon.css`. Theme via `data-theme` attribute + CSS vars. Fixtures
+  stats) in `apps/web/src/loxaic.css`. Theme via `data-theme` attribute + CSS vars. Fixtures
   from design used as mock data.
 - **Next action**: Wire real API (conversations, WS streaming, routines, stats) into design
   surfaces, replacing fixture data.

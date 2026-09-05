@@ -27,7 +27,7 @@ export const MOBILE_DIR = path.resolve(E2E_DIR, '../mobile');
 export function requireAppiumDrivers(): void {
   if (!existsSync(path.join(APPIUM_HOME, 'node_modules'))) {
     throw new Error(
-      `No Appium drivers installed at ${APPIUM_HOME}. Run: pnpm --filter @shannon/e2e setup:appium`,
+      `No Appium drivers installed at ${APPIUM_HOME}. Run: pnpm --filter @loxaic/e2e setup:appium`,
     );
   }
   process.env.APPIUM_HOME = APPIUM_HOME;
@@ -116,7 +116,7 @@ export function androidApkPath(): string {
     throw new Error(
       `No Android release APK at ${apk}.\n` +
         `Build one first (see apps/e2e/README.md):\n` +
-        `  pnpm --filter @shannon/mobile prebuild:android\n` +
+        `  pnpm --filter @loxaic/mobile prebuild:android\n` +
         `  cd apps/mobile/android && EXPO_PUBLIC_API_URL=<base-url> ./gradlew assembleRelease`,
     );
   }
@@ -212,7 +212,7 @@ export function iosAppPath(): string {
   }
   const app = path.join(
     MOBILE_DIR,
-    'ios/build/Build/Products/Release-iphonesimulator/openshannon.app',
+    'ios/build/Build/Products/Release-iphonesimulator/loxaic.app',
   );
   if (!existsSync(app)) {
     throw new Error(

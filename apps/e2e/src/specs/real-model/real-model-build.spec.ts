@@ -39,7 +39,7 @@ interface SandboxRow { id: string; createdAt: string; provider: string; containe
  * Where the seeded fixture lives inside a given sandbox.
  *
  * Not hardcoded, because the two providers differ and their exec defaults
- * differ too: a container's workdir is `/home/shannon/repo` while its exec
+ * differ too: a container's workdir is `/home/loxaic/repo` while its exec
  * defaults to the parent, and a host sandbox's workdir is `<dir>/repo` while
  * its exec defaults to that same repo dir. Hardcoding the container path made
  * every poll fail with `cd: no such file or directory` under host mode — and
@@ -47,7 +47,7 @@ interface SandboxRow { id: string; createdAt: string; provider: string; containe
  * sandbox directory, so the path is derivable from the row either way.
  */
 function workdirFor(row: SandboxRow): string {
-  return row.provider === 'host' ? `${row.containerId}/repo` : '/home/shannon/repo';
+  return row.provider === 'host' ? `${row.containerId}/repo` : '/home/loxaic/repo';
 }
 
 /** This account is fresh (uniqueCreds()), so its first sandbox is the run's. */

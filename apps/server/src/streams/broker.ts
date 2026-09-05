@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { StreamEventKind, StreamSnapshot, StreamSnapshotMessage, TurnUsage } from "@shannon/types";
+import type { StreamEventKind, StreamSnapshot, StreamSnapshotMessage, TurnUsage } from "@loxaic/types";
 import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
 export type StreamProducerMeta = Omit<StreamMeta, "lastSeq" | "status" | "updatedAt" | "createdAt">;

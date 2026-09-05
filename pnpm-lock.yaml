@@ -48,7 +48,7 @@ importers:
 
   apps/e2e:
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../../packages/config-ts
       '@types/mocha':
@@ -117,10 +117,10 @@ importers:
       '@react-native-async-storage/async-storage':
         specifier: 2.2.0
         version: 2.2.0(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.2(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))
-      '@shannon/api-client':
+      '@loxaic/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
-      '@shannon/types':
+      '@loxaic/types':
         specifier: workspace:*
         version: link:../../packages/types
       expo:
@@ -211,7 +211,7 @@ importers:
         specifier: ^1.11.0
         version: 1.11.0(@expo/metro-config@54.0.17(expo@54.0.37))(metro-cache@0.84.4)(metro-transform-worker@0.84.4)(metro@0.84.4)(react-native@0.81.5(@babel/core@7.29.7)(@react-native/metro-config@0.86.2(@babel/core@7.29.7))(@types/react@19.1.17)(react@19.1.0))(react@19.1.0)(tailwindcss@4.3.2)
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../../packages/config-ts
       '@types/react':
@@ -262,16 +262,16 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@4.4.3)
-      '@shannon/agent':
+      '@loxaic/agent':
         specifier: workspace:*
         version: link:../../packages/agent
-      '@shannon/db':
+      '@loxaic/db':
         specifier: workspace:*
         version: link:../../packages/db
-      '@shannon/sync':
+      '@loxaic/sync':
         specifier: workspace:*
         version: link:../../packages/sync
-      '@shannon/types':
+      '@loxaic/types':
         specifier: workspace:*
         version: link:../../packages/types
       ajv:
@@ -308,7 +308,7 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../../packages/config-ts
       '@types/dockerode':
@@ -338,7 +338,7 @@ importers:
 
   packages/agent:
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../config-ts
       typescript:
@@ -347,11 +347,11 @@ importers:
 
   packages/api-client:
     dependencies:
-      '@shannon/types':
+      '@loxaic/types':
         specifier: workspace:*
         version: link:../types
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../config-ts
       '@types/node':
@@ -372,10 +372,10 @@ importers:
         specifier: ^3.4.0
         version: 3.4.9
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../config-ts
-      '@shannon/types':
+      '@loxaic/types':
         specifier: workspace:*
         version: link:../types
       '@types/node':
@@ -390,7 +390,7 @@ importers:
 
   packages/sync:
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../config-ts
       typescript:
@@ -399,7 +399,7 @@ importers:
 
   packages/types:
     devDependencies:
-      '@shannon/config-ts':
+      '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../config-ts
       typescript:

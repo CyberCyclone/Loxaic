@@ -15,8 +15,8 @@
  * tests that never load it — resolution falls back to env > default, which is
  * exactly the behaviour that existed before this table.
  */
-import { db, eq } from "@shannon/db";
-import { serverSettings } from "@shannon/db/schema";
+import { db, eq } from "@loxaic/db";
+import { serverSettings } from "@loxaic/db/schema";
 import type { SandboxKind, SandboxMode } from "./sandbox/provider.ts";
 
 /** Which container engine to talk to. "auto" is the historical discovery
@@ -75,13 +75,13 @@ export class SettingsError extends Error {
 let persisted: Partial<SandboxSettings> = {};
 /**
  * True when this server is hosting for other users (the desktop supervisor
- * sets `SHANNON_HOSTING=1` for Host mode).
+ * sets `LOXAIC_HOSTING=1` for Host mode).
  *
  * Read at call time, never at module load, matching every other env reader
  * here — the supervisor builds its child env late.
  */
 export function isHosting(): boolean {
-  return process.env.SHANNON_HOSTING === "1";
+  return process.env.LOXAIC_HOSTING === "1";
 }
 
 /**

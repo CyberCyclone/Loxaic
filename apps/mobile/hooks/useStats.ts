@@ -9,7 +9,7 @@ import {
   type StatsSeries,
   type ModelStats,
   type ConversationStats,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 
 export function useStats(token: string | null, range: StatsRange) {
   const [usage, setUsage] = useState<UsageStats | null>(null);

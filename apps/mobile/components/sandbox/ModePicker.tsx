@@ -2,7 +2,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
-import type { SandboxMode } from '@shannon/api-client';
+import type { SandboxMode } from '@loxaic/api-client';
 
 const MODES: { value: SandboxMode; label: string }[] = [
   { value: 'container', label: 'Container' },

@@ -27,11 +27,11 @@ RUN pip3 install --break-system-packages --no-cache-dir \
     ebooklib \
     beautifulsoup4
 
-COPY sandbox/extract.py /usr/local/bin/shannon-extract
-RUN chmod 0755 /usr/local/bin/shannon-extract
+COPY sandbox/extract.py /usr/local/bin/loxaic-extract
+RUN chmod 0755 /usr/local/bin/loxaic-extract
 
-RUN useradd -m -s /bin/bash shannon
-USER shannon
-WORKDIR /home/shannon
+RUN useradd -m -s /bin/bash loxaic
+USER loxaic
+WORKDIR /home/loxaic
 
 CMD ["bash"]

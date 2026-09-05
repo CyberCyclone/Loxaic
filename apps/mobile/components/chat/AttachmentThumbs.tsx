@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { FileText } from 'lucide-react-native';
-import { attachmentClass, attachmentUrl } from '@shannon/api-client';
+import { attachmentClass, attachmentUrl } from '@loxaic/api-client';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';

@@ -1,7 +1,7 @@
-import { and, db, eq, inArray } from "@shannon/db";
-import { attachments, conversationShares, conversations, messages, user } from "@shannon/db/schema";
-import type { AttachmentRef } from "@shannon/types";
-import { MAX_ATTACHMENTS } from "@shannon/types";
+import { and, db, eq, inArray } from "@loxaic/db";
+import { attachments, conversationShares, conversations, messages, user } from "@loxaic/db/schema";
+import type { AttachmentRef } from "@loxaic/types";
+import { MAX_ATTACHMENTS } from "@loxaic/types";
 import { isValidRef } from "../files/storage.ts";
 
 /** Thrown for both "doesn't exist" and "exists but isn't yours" — the two

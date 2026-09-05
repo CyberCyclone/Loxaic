@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray, sql } from "@shannon/db";
-import { attachments, messages, user } from "@shannon/db/schema";
+import { db, eq, inArray, sql } from "@loxaic/db";
+import { attachments, messages, user } from "@loxaic/db/schema";
 import { attachmentPath, attachmentTextPath } from "../storage.ts";
 import { sweepOrphanAttachments, usedAttachmentBytes } from "../reaper.ts";
 
@@ -22,7 +22,7 @@ import { sweepOrphanAttachments, usedAttachmentBytes } from "../reaper.ts";
  */
 describe("sweepOrphanAttachments", () => {
   const owner = `test-reaper-${uuid()}`;
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-reaper-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-reaper-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
   const convId = uuid();
 

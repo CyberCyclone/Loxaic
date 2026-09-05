@@ -16,7 +16,7 @@ import {
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { ChangedFile } from '@/lib/types';
-import type { Todo } from '@shannon/api-client';
+import type { Todo } from '@loxaic/api-client';
 
 const TODO_ICON: Record<Todo['status'], typeof Check> = {
   completed: Check,

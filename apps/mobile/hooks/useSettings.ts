@@ -17,13 +17,13 @@ const DEFAULT_ROUTING: SmartRouting = {
 };
 
 export function useSettings() {
-  return useStoredState<Settings>('shannon-settings', DEFAULT_SETTINGS);
+  return useStoredState<Settings>('loxaic-settings', DEFAULT_SETTINGS);
 }
 
 export function useSmartRouting() {
-  return useStoredState<SmartRouting>('shannon-smart-routing', DEFAULT_ROUTING);
+  return useStoredState<SmartRouting>('loxaic-smart-routing', DEFAULT_ROUTING);
 }
 
 export function useThinkingLevels() {
-  return useStoredState<Record<string, ThinkingLevel>>('shannon-thinking-levels', {});
+  return useStoredState<Record<string, ThinkingLevel>>('loxaic-thinking-levels', {});
 }

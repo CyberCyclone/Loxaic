@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
-import { conversations, messages, usageRecords, user } from "@shannon/db/schema";
-import type { ContentBlock } from "@shannon/types";
+import { db, eq } from "@loxaic/db";
+import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
+import type { ContentBlock } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { loadHistory as loadAgentHistory } from "../engine.ts";
 import { startCompactRun } from "../compactRun.ts";

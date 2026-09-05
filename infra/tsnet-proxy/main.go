@@ -1,7 +1,7 @@
 // Command tsnet-proxy is a small sidecar Electron spawns on launch. It joins
 // the user's tailnet as its own node (userspace WireGuard via tsnet — no OS
 // VPN, no system-wide tunnel, no per-app-VPN entitlement) and reverse-proxies
-// a fixed local port to one configured tailnet target: the Open-Shannon
+// a fixed local port to one configured tailnet target: the Loxaic
 // server. The Electron renderer points its API base URL at that local port,
 // so REST and WebSocket traffic both reach the server over the tailnet
 // without the user installing the standalone Tailscale app.
@@ -36,16 +36,16 @@ var authURLPattern = regexp.MustCompile(`https://login\.tailscale\.com/a/\S+`)
 
 func main() {
 	var (
-		target   = flag.String("target", "", "tailnet host:port of the Open-Shannon server, e.g. myserver.tailnet-name.ts.net:443")
+		target   = flag.String("target", "", "tailnet host:port of the Loxaic server, e.g. myserver.tailnet-name.ts.net:443")
 		listen   = flag.String("listen", "127.0.0.1:0", "local address to listen on (port 0 = pick any free port)")
 		stateDir = flag.String("state-dir", "", "directory to persist tsnet node state; defaults to the OS user config dir")
-		hostname = flag.String("hostname", "shannon-desktop", "hostname this node advertises on the tailnet")
+		hostname = flag.String("hostname", "loxaic-desktop", "hostname this node advertises on the tailnet")
 		useTLS   = flag.Bool("tls", true, "connect to target over TLS (true for a ts.net cert via Tailscale Serve; false for a plain http:// LAN target)")
 	)
 	flag.Parse()
 
 	if *target == "" {
-		log.Fatal("tsnet-proxy: --target is required (host:port of the Open-Shannon server)")
+		log.Fatal("tsnet-proxy: --target is required (host:port of the Loxaic server)")
 	}
 
 	if *stateDir == "" {
@@ -53,7 +53,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("tsnet-proxy: resolving default state dir: %v", err)
 		}
-		*stateDir = filepath.Join(dir, "open-shannon", "tsnet")
+		*stateDir = filepath.Join(dir, "loxaic", "tsnet")
 	}
 	if err := os.MkdirAll(*stateDir, 0o700); err != nil {
 		log.Fatalf("tsnet-proxy: creating state dir %s: %v", *stateDir, err)

@@ -1,14 +1,14 @@
-# Open-Shannon — Design Plan
+# Loxaic — Design Plan
 
 ## Intent
 
-Build a high-fidelity, self-contained HTML prototype of the **Open-Shannon** client —
+Build a high-fidelity, self-contained HTML prototype of the **Loxaic** client —
 a self-hosted, multi-user **AI assistant with agent harness** (per
 `docs/IMPLEMENTATION.md` §1) — with five surfaces: **Chat**, **Agent console**,
 **Routines**, **Settings**, and **Stats**. The Stats surface's layout is a faithful
 clone of a React analytics dashboard
 (`https://example.com/dashboard/analytics`); the other four follow the
-Shannon desktop/mobile layout grammar already seeded in the repo's `AppShell`.
+Loxaic desktop/mobile layout grammar already seeded in the repo's `AppShell`.
 The theme layer is the repo's own engine: **`packages/config-style` tokens +
 the `.agents/skills/gluestack-ui-v5` skill rules**, with the accent swapped to
 **Aqua accent** (user decision), so the prototype ports into `packages/ui` without
@@ -22,7 +22,7 @@ build agent follows the final version of this file.
 ## Review Round 1 — Preview comments (2026-08-12) — **ACTIVE**
 
 Source: 15 open preview comments (OD annotation store, all `status=open`) + 3 manual
-element deletions in `shannon-agent.html` made in the visual editor (run-header stat
+element deletions in `loxaic-agent.html` made in the visual editor (run-header stat
 spans `run-elapsed` / `run-tokens` / `run-cache` — already gone in the OD copy;
 propagate to the repo copy on sync, and do not re-add them).
 
@@ -46,9 +46,9 @@ every surface.
   surface (chat, agent, routines, stats). Same layout as the current page: tab rail left (General / Models /
   Workspaces / Devices / Server / Usage), content right. Deep-linkable: callers can
   open it pre-selected on a tab (the model modal's gear lands on **Models**).
-  Settings is **never a page** (Q3): `shannon-settings.html` is removed; the modal
+  Settings is **never a page** (Q3): `loxaic-settings.html` is removed; the modal
   ships on every surface, and the launcher's Settings entry points at the chat home
-  (`shannon-chat.html`) with the modal auto-opened.
+  (`loxaic-chat.html`) with the modal auto-opened.
 - **U3 — Model modal v2.** Adds: search bar filtering the list; new **Remote Models**
   group (OpenRouter and other **Cloud** third-party providers, placeholder rows);
   a **thinking level** selector (None / Low / Medium / High — llama.cpp reasoning
@@ -74,7 +74,7 @@ every surface.
 | C1 | chat | header model button ("Llama 3.1 8B") | "The belongs to the comment / reply section next to the 'workspace' selector." | Move model selector from header into composer tool row, beside workspace chips (U1) |
 | C2 | chat | model modal, Server Models group | "The modal also needs to have levels of 'thinking'. It would depend on what llama.cpp uses. E.g, None, Low, Medium, High" | Per-model thinking-level selector (U3) |
 | C3 | chat | model modal | "Add an option for remote models. I want to eventually add 'open router' etc. to the options. Also, add a search bar and a 'settings' button… opens the settings modal just jumped straight to the 'models' tab." | Search bar + Remote Models group + gear → U2 @ Models (U3) |
-| C4 | chat | sidebar account label ("Self-hosted") | "Change this to 'shannon.tailscale.com'" | Text change; apply on all pages (shared sidebar) |
+| C4 | chat | sidebar account label ("Self-hosted") | "Change this to 'loxaic.tailscale.com'" | Text change; apply on all pages (shared sidebar) |
 | C5 | chat | message badge "chat" | "Chat messages should change this and 'agent' to 'Cloud' and 'Offline'" | Origin badges become location badges: **Server** (on the server, synced) / **On device** (local to this device only) — naming per Q1 |
 | C6 | chat | sidebar "New chat" button | "Move this into the chat history panel." | Button moves into thread-list panel header (next to search); same on agent page's run-history panel for consistency |
 | C7 | chat | composer kbd hint ("↵ Send · ⇧↵ Newline") | "Remove this. Enter will not send a message, that's very annoying. Only the button will send the message." | Remove hint + Enter-to-send handler; Enter = newline; send button only |
@@ -84,7 +84,7 @@ every surface.
 
 ### R3. Manual deletions to propagate (already in OD copy)
 
-- `shannon-agent.html` run header: spans `run-elapsed`, `run-tokens`, `run-cache`
+- `loxaic-agent.html` run header: spans `run-elapsed`, `run-tokens`, `run-cache`
   deleted by the user in the visual editor. Carry into the repo copy; run stats now
   surface in the context-indicator popup (U1) and inspector panel (A3), not the header.
 
@@ -102,7 +102,7 @@ every surface.
    both persist via localStorage and reflect each other.
 7. No `chat` / `agent` text badges remain; **Server** / **On device** location badges
    used per Q1.
-8. Sidebar: New chat inside thread panel; account label `shannon.tailscale.com`
+8. Sidebar: New chat inside thread panel; account label `loxaic.tailscale.com`
    everywhere.
 9. Agent: no header stop button, no header mode selector, no run-header stat spans;
    inspector slide-over behaves like chat's context panel (incl. mobile overlay).
@@ -110,8 +110,8 @@ every surface.
     oklch/color-mix derivations only.
 11. Both copies (OD project + repo `design/`) synced; repo keeps relative asset links
     (never the preview API URL).
-12. `shannon-settings.html` is deleted; every nav Settings item opens the modal;
-    launcher's Settings entry links to `shannon-chat.html` and auto-opens the modal.
+12. `loxaic-settings.html` is deleted; every nav Settings item opens the modal;
+    launcher's Settings entry links to `loxaic-chat.html` and auto-opens the modal.
 13. Thinking level: selector in model modal + composer sets it per conversation
     (persisted per conversation); Settings › Models holds the default for new
     conversations.
@@ -125,7 +125,7 @@ every surface.
   (OpenRouter etc.), **Server** = self-hosted llama.cpp, **Hybrid** = either, chosen
   automatically per task via the three mappings (planning / heavy thinking / simple
   jobs).
-- **Q3 (S1):** Settings is **never a page** — modal only. `shannon-settings.html`
+- **Q3 (S1):** Settings is **never a page** — modal only. `loxaic-settings.html`
   is removed; anything that would deep-link to settings opens the app at the home
   chat screen with the modal opened.
 - **Q4 (A1):** Mode dropdown lives in the **agent composer only**.
@@ -144,7 +144,7 @@ the reference theme; light is **derived, not redesigned**. Control point: settin
 
 ### L1. Current state (audited 2026-08-12)
 
-- `shannon.css :root` holds dark-first tokens (`--bg #18181b` … `--warning`); no
+- `loxaic.css :root` holds dark-first tokens (`--bg #18181b` … `--warning`); no
   `data-theme` mechanism exists anywhere.
 - 35 `color-mix(in oklch, var(--token) …)` derivations across files — these follow a
   token flip automatically. ✅
@@ -154,13 +154,13 @@ the reference theme; light is **derived, not redesigned**. Control point: settin
 - `rgba(0,0,0,.3/.5)` modal backdrops are theme-agnostic — keep.
 - `.range-tab.active` + accent buttons use a `#fff` text literal → normalize to `--on-accent`.
 
-### L2. Token architecture (shannon.css)
+### L2. Token architecture (loxaic.css)
 
 - `:root, [data-theme="dark"] { …current values, unchanged… }`
 - `[data-theme="light"] { …derived light scale… }`
 - **"System" is resolved by JS, not CSS media-query blocks** (avoids duplicating the
   whole light scale): new `assets/theme-init.js` (~20 lines, loaded synchronously in
-  `<head>` before the stylesheet) reads `localStorage["shannon-theme"]`
+  `<head>` before the stylesheet) reads `localStorage["loxaic-theme"]`
   (`light | dark | system`, default **`system`** — locked 2026-08-12), resolves via `matchMedia('(prefers-color-scheme: light)')`,
   stamps `<html data-theme>`. No FOUC, no duplicated CSS. A `matchMedia` change listener
   re-resolves while set to `system`; a `storage` listener syncs across open pages; a
@@ -199,7 +199,7 @@ context menus / popovers / modals / slide-over (surface + `--shadow-2`), scrollb
 success/danger follows), range tabs, sidebar active item, composer, permission bar,
 routine toggles, charts (see L5).
 
-### L5. Chart color strategy (shannon-stats.html)
+### L5. Chart color strategy (loxaic-stats.html)
 
 - Add `chartColors()` helper: `getComputedStyle(document.documentElement)` resolves
   `--accent`, `--accent-2`, `--border`, `--fg-3`, `--success`, `--danger` → concrete
@@ -208,10 +208,10 @@ routine toggles, charts (see L5).
 - Re-run chart builders on `themechange` and `storage` events; legend dots already use
   CSS vars and follow automatically.
 
-### L6. Settings control + events (shannon-shared.js)
+### L6. Settings control + events (loxaic-shared.js)
 
 - General › Appearance: segmented control **Light / Dark / System** replaces the badge;
-  persists `shannon-theme`, applies immediately, dispatches `themechange`.
+  persists `loxaic-theme`, applies immediately, dispatches `themechange`.
 - `storage` listener updates all open pages when one changes theme.
 - Launcher `index.html` has no settings modal — init script only; renders in stored theme.
 
@@ -219,11 +219,11 @@ routine toggles, charts (see L5).
 
 | File | Change |
 |---|---|
-| `shannon.css` | `:root` split into dark/light blocks; 5 new tokens; `#fff` → `--on-accent`; component spot-fixes |
+| `loxaic.css` | `:root` split into dark/light blocks; 5 new tokens; `#fff` → `--on-accent`; component spot-fixes |
 | `assets/theme-init.js` | **NEW** — resolve + stamp + listeners; blocking load in `<head>` before stylesheet |
-| `shannon-shared.js` | Appearance segmented control + apply + `themechange` dispatch |
-| `shannon-stats.html` | `chartColors()` + re-render on `themechange`; `#fff` → `--on-accent` |
-| `shannon-chat/agent/routines.html` | `<head>` init script tag; inline color spot-checks |
+| `loxaic-shared.js` | Appearance segmented control + apply + `themechange` dispatch |
+| `loxaic-stats.html` | `chartColors()` + re-render on `themechange`; `#fff` → `--on-accent` |
+| `loxaic-chat/agent/routines.html` | `<head>` init script tag; inline color spot-checks |
 | `index.html` | init script tag |
 
 ### L8. Acceptance checks
@@ -233,7 +233,7 @@ routine toggles, charts (see L5).
    links (light uses `--accent-text`). Accent-fill button pairing documented in L3.
 3. Zero new hex literals — light scale is locked literals + `oklch(from …)` only
    (grep-verified against the 10-hex set).
-4. `shannon-theme` persists across reloads; `system` follows OS live; `storage` event
+4. `loxaic-theme` persists across reloads; `system` follows OS live; `storage` event
    syncs pages.
 5. Charts re-render resolved colors on `themechange`; no stale dark fills; legends match.
 6. All 13 Review-Round-1 checks unaffected; zero console errors on all 5 pages × both
@@ -258,11 +258,11 @@ No open questions remain in this round.
 Break the five HTML surfaces down into a reusable React component library.
 What exists today (audited 2026-08-16):
 
-- `shannon.css` — token layer + **~85 shared classes** (shell, sidebar, threadlist,
+- `loxaic.css` — token layer + **~85 shared classes** (shell, sidebar, threadlist,
   buttons, cards, badges, inputs, switch, tables, modals, composer, settings, model
   modal, smart routing, theme seg).
-- `shannon-shared.js` — Settings modal (6 tabs), Model modal v2, `SHANNON_MODELS` /
-  `SHANNON_WORKSPACES` fixtures, `locationBadge()`, settings/smart-routing/thinking-
+- `loxaic-shared.js` — Settings modal (6 tabs), Model modal v2, `LOXAIC_MODELS` /
+  `LOXAIC_WORKSPACES` fixtures, `locationBadge()`, settings/smart-routing/thinking-
   level persistence, toast.
 - Per-surface JS — chat (~55 classes: messages, thinking, tool cards, composer,
   context panel, ctx menu), agent (~45: run header, tool rows, diff, permission bar,
@@ -277,11 +277,11 @@ record**; the React app must match it pixel-for-pixel.
 
 | Option | What it means | Trade-off |
 |---|---|---|
-| **A. Web React (recommended)** | Vite + React 18 app in `design/react/`, imports `shannon.css` unchanged | Pixel-parity free; theme system just works; verifiable in browser today |
+| **A. Web React (recommended)** | Vite + React 18 app in `design/react/`, imports `loxaic.css` unchanged | Pixel-parity free; theme system just works; verifiable in browser today |
 | B. Gluestack v5 / RN now | Components straight into `packages/ui` style (RN + react-native-web) | Final destination per original brief, but CSS-var theming doesn't translate to RN inline styles; no quick visual verification |
 | C. A now, shaped for B | Web React with gluestack-style APIs (compound components, variant props) so the RN port is mechanical | Recommended path: **A with C's API discipline** |
 
-The token contract is unchanged either way: `docs/design-system.md` + `shannon.css`
+The token contract is unchanged either way: `docs/design-system.md` + `loxaic.css`
 `:root` blocks remain the source of truth; React components consume the same CSS
 variables, so the locked palette/type/radius rules keep passing unchanged.
 
@@ -378,7 +378,7 @@ design/react/
 - `src/fixtures/*` — lifted verbatim from the inline JSON (conversations with full
   histories, models, workspaces, routines, stats series). Placeholder GGUF names
   stay flagged as before.
-- Hooks: `useTheme()` (provider ports `theme-init.js`: `shannon-theme`
+- Hooks: `useTheme()` (provider ports `theme-init.js`: `loxaic-theme`
   localStorage, system resolution, cross-tab `storage` sync, `themechange`
   dispatch for charts), `useSettings()`, `useSmartRouting()`,
   `useThinkingLevel(convKey)`, generic `useLocalStorage()`.
@@ -388,7 +388,7 @@ design/react/
 
 ### RC7. Theme mapping
 
-`shannon.css` is imported once in `main.tsx` — **zero token changes, zero new hex
+`loxaic.css` is imported once in `main.tsx` — **zero token changes, zero new hex
 literals**; the dark/light blocks and `color-mix()` derivations keep working.
 `ThemeProvider` replaces the inline script: sets `data-theme` on
 `documentElement` before first paint (Vite injects it synchronously), keeps
@@ -460,7 +460,7 @@ Hard constraints the design must respect:
   className; compound components (`ButtonText`, `InputSlot`…); spacing scale, no
   arbitrary px; tva for variants; `InputIcon` must sit in `InputSlot`.
 - **Existing AppShell:** `Sidebar` (260px, bg.secondary, 1px border-right; nav =
-  chat / agent / stats / settings; "OS" avatar + "Open-Shannon" wordmark) +
+  chat / agent / stats / settings; "L" avatar + "Loxaic" wordmark) +
   `ThreadList` (280px, rows = title + kind Badge + relative time) + main pane
   (`ChatView` + `Composer`, min-height-44 input). The prototype elevates this shell,
   it doesn't reinvent it.
@@ -482,18 +482,18 @@ Hard constraints the design must respect:
 ## 3. Surface map & file strategy
 
 Six self-contained files. **Each surface file is responsive** (designed at 1440px,
-collapses to the Shannon mobile pattern at ≤768px, verified at 390px) instead of
+collapses to the Loxaic mobile pattern at ≤768px, verified at 390px) instead of
 splitting mobile files — keeps the round at 6 files instead of 11.
 Responsive-per-surface confirmed (user, 2026-08-11).
 
 | File | Surface | Repo view | Reference |
 |---|---|---|---|
 | `index.html` | Launcher/overview | — | — |
-| `shannon-chat.html` | Chat | `chat` | Shannon desktop + mobile chat |
-| `shannon-agent.html` | Agent console | `agent` | Shannon agent harness UX, app-native |
-| `shannon-routines.html` | Routines | (new nav item) | `routines` schema |
-| `shannon-settings.html` | Settings | `settings` | Shannon settings pattern |
-| `shannon-stats.html` | Stats | `stats` | Analytics dashboard layout (layout) |
+| `loxaic-chat.html` | Chat | `chat` | Loxaic desktop + mobile chat |
+| `loxaic-agent.html` | Agent console | `agent` | Loxaic agent harness UX, app-native |
+| `loxaic-routines.html` | Routines | (new nav item) | `routines` schema |
+| `loxaic-settings.html` | Settings | `settings` | Loxaic settings pattern |
+| `loxaic-stats.html` | Stats | `stats` | Analytics dashboard layout (layout) |
 
 Routines as the fifth sidebar item confirmed (user, 2026-08-11).
 
@@ -515,7 +515,7 @@ surface title; one contextual action); bottom composer on Chat/Agent. Touch targ
 
 ## 5. Surface specs
 
-### 5.1 Chat (`shannon-chat.html`)
+### 5.1 Chat (`loxaic-chat.html`)
 
 - **Thread:** user + assistant messages rendering `ContentBlock[]` — markdown text,
   collapsible **thinking** blocks, tool_call/result cards when a chat turns agentic,
@@ -538,7 +538,7 @@ surface title; one contextual action); bottom composer on Chat/Agent. Touch targ
   conversation usage accumulator (tokens, cache %, est. cost if priced).
 - **Empty state:** centered prompt suggestions (secondary cards).
 
-### 5.2 Agent console (`shannon-agent.html`) — Shannon agent harness
+### 5.2 Agent console (`loxaic-agent.html`) — Loxaic agent harness
 
 - **ThreadList** shows agent runs (title, repo/branch chip, status dot).
 - **Run header:** title, sandbox/workspace target chip, **mode selector
@@ -558,7 +558,7 @@ surface title; one contextual action); bottom composer on Chat/Agent. Touch targ
 - **Steer input** composer; disabled while paused. Fixture playback confirmed
   (user, 2026-08-11).
 
-### 5.3 Routines (`shannon-routines.html`)
+### 5.3 Routines (`loxaic-routines.html`)
 
 Grounded in the `routines` / `routine_runs` schema:
 - Header + "New routine" primary (only primary on this surface).
@@ -573,7 +573,7 @@ Grounded in the `routines` / `routine_runs` schema:
   duration, tokens), each row linking to its conversation.
 - Empty state; toggle + run-now persist via `localStorage`.
 
-### 5.4 Settings (`shannon-settings.html`)
+### 5.4 Settings (`loxaic-settings.html`)
 
 Section nav (left rail / top tabs on mobile):
 - **General:** profile (better-auth user), default mode, appearance (dark-only —
@@ -589,7 +589,7 @@ Section nav (left rail / top tabs on mobile):
   fields; destructive actions use confirm dialogs; dirty Save bar + toast; all
   persisted to `localStorage`.
 
-### 5.5 Stats (`shannon-stats.html`) — Analytics dashboard layout, `usage_records` content
+### 5.5 Stats (`loxaic-stats.html`) — Analytics dashboard layout, `usage_records` content
 
 Layout follows standard analytics dashboard patterns (§8); content follows
 IMPLEMENTATION.md §6.5:
@@ -671,8 +671,8 @@ Inlined `fixtures.js` per file, shaped like the real schema (Drizzle §6.1):
    Self-host **Public Sans** (woff2 + `assets/fonts/fonts.css`).
    Chat/Agent/Routines/Settings are original designs governed by §2 repo truth,
    not clone sources.
-3. Build order: shared tokens + shell → `shannon-stats.html` →
-   `shannon-chat.html` → `shannon-agent.html` → `shannon-routines.html` →
+3. Build order: shared tokens + shell → `loxaic-stats.html` →
+   `loxaic-chat.html` → `loxaic-agent.html` → `loxaic-routines.html` →
    `index.html`; then `od-preview-rewrite.mjs`.
 4. Verify per §9; serve locally, console clean; Stats fidelity check.
 5. Licensing (NOTES.md): all layout patterns are standard analytics dashboard
@@ -757,7 +757,7 @@ All prior rounds are implemented and both copies synced:
 - React Component Breakdown (RC1–RC9) — **implemented 2026-08-16**
 
 The React app at `design/react/` ships all 5 surfaces (chat, agent, routines, stats,
-launcher) as TypeScript components consuming `shannon.css` unchanged. Verification:
+launcher) as TypeScript components consuming `loxaic.css` unchanged. Verification:
 `tsc --noEmit` clean, `vite build` succeeds (82 modules), zero hex literals in `src/`,
 theme-init.js in `public/` for FOUC-free boot, fixtures lifted to `src/fixtures/`,
 hooks porting all localStorage persistence (theme, settings, smart routing, thinking

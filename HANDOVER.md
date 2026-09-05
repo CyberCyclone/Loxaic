@@ -1,4 +1,4 @@
-# Handover — Open-Shannon
+# Handover — Loxaic
 
 > **Deploy story has moved on.** Since this was written, the desktop app became
 > self-contained (embedded Postgres, `--headless` mode, no Docker required to run it)
@@ -74,19 +74,19 @@ pnpm install
 ulimit -n 130000                          # macOS: Metro's watcher needs more than the 256 default
 
 # Server (Postgres must be reachable — docker compose up db, or your own)
-MOCK_INFERENCE=true pnpm --filter @shannon/server dev   # no llama.cpp needed
-pnpm --filter @shannon/server dev                        # real inference at INFERENCE_BASE_URL
+MOCK_INFERENCE=true pnpm --filter @loxaic/server dev   # no llama.cpp needed
+pnpm --filter @loxaic/server dev                        # real inference at INFERENCE_BASE_URL
 
 # Mobile / Web (same codebase, three ways to run it)
-pnpm --filter @shannon/mobile web          # Expo web dev server → localhost:8081
-pnpm --filter @shannon/mobile ios          # iOS Simulator
-pnpm --filter @shannon/mobile android       # Android emulator
+pnpm --filter @loxaic/mobile web          # Expo web dev server → localhost:8081
+pnpm --filter @loxaic/mobile ios          # iOS Simulator
+pnpm --filter @loxaic/mobile android       # Android emulator
 npx expo start --tunnel                     # scan with Expo Go on a real phone
 
 # Electron
-pnpm --filter @shannon/mobile web           # dev: needs Metro running (above)
-pnpm --filter @shannon/desktop dev          # loads localhost:8081
-pnpm --filter @shannon/desktop package       # prod: export:web + tsnet sidecar + electron-builder → dist/*.dmg
+pnpm --filter @loxaic/mobile web           # dev: needs Metro running (above)
+pnpm --filter @loxaic/desktop dev          # loads localhost:8081
+pnpm --filter @loxaic/desktop package       # prod: export:web + tsnet sidecar + electron-builder → dist/*.dmg
 ```
 
 Full details, including Android emulator adb reverse-tunnel setup and EAS Update
@@ -96,15 +96,15 @@ Full details, including Android emulator adb reverse-tunnel setup and EAS Update
 
 - **Server + web, same origin**: `docker compose up --build` (Postgres + server, which
   builds and serves the web export itself — see `infra/docker/server.Dockerfile`) or
-  bare-metal via `pnpm --filter @shannon/mobile export:web && pnpm --filter
-  @shannon/server dev`.
+  bare-metal via `pnpm --filter @loxaic/mobile export:web && pnpm --filter
+  @loxaic/server dev`.
 - **Remote access**: [docs/REMOTE_ACCESS.md](docs/REMOTE_ACCESS.md) — Tailscale Serve
   (recommended, free, no open ports) or bring your own reverse proxy.
 - **Inference**: [docs/RUNTIME.md](docs/RUNTIME.md) — native llama.cpp with Metal on
   Mac, CUDA on Windows/NVIDIA, the provided ROCm compose override on Linux/AMD.
 - **Phone**: Expo Go for dev iteration, or EAS Update for a no-dev-machine phone install
   ([docs/DEPLOY.md](docs/DEPLOY.md)).
-- **Desktop**: `pnpm --filter @shannon/desktop package` → an unsigned DMG (macOS) /
+- **Desktop**: `pnpm --filter @loxaic/desktop package` → an unsigned DMG (macOS) /
   NSIS installer (Windows) / AppImage (Linux) — code-signing isn't set up, so users on
   macOS will need to right-click → Open past Gatekeeper the first time.
 
@@ -117,7 +117,7 @@ apps/
   desktop/   Electron shell (loads apps/mobile's web export) + embedded Tailscale sidecar spawn
 packages/
   agent/     tool definitions, permission-mode logic — shared by server + client
-  api-client/  typed REST + WS client, re-exports @shannon/types' stream protocol for the UI
+  api-client/  typed REST + WS client, re-exports @loxaic/types' stream protocol for the UI
   db/        Drizzle schema + query operator re-exports
   sync/      fork/conflict detection for the offline sync protocol
   types/     shared primitives (ContentBlock, Result, etc.) + the stream-protocol wire types

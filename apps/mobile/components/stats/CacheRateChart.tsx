@@ -1,7 +1,7 @@
 import Svg, { Polyline, Polygon, Line } from 'react-native-svg';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
-import type { CacheRatePoint } from '@shannon/api-client';
+import type { CacheRatePoint } from '@loxaic/api-client';
 
 const COLOR = '#0096ff';
 

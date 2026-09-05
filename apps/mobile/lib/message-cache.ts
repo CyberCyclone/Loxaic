@@ -19,7 +19,7 @@ import type { Conversation, Message } from './types';
  * conversations.
  */
 
-const PREFIX = 'shannon-cache:';
+const PREFIX = 'loxaic-cache:';
 
 /** Conversations kept per (endpoint, user). Beyond this the least recently
  * written are dropped — a cache that grows forever eventually costs more than

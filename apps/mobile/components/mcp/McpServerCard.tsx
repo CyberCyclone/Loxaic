@@ -6,7 +6,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
-import type { McpServer } from '@shannon/api-client';
+import type { McpServer } from '@loxaic/api-client';
 
 function statusLine(server: McpServer): { text: string; error: boolean } {
   if (server.lastError) return { text: server.lastError, error: true };

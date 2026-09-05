@@ -3,7 +3,7 @@ import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
-import type { StatsSeriesPoint } from '@shannon/api-client';
+import type { StatsSeriesPoint } from '@loxaic/api-client';
 
 // react-native-svg can't resolve CSS custom properties, so the palette is
 // literal here rather than theme tokens (same constraint as ContextRing).

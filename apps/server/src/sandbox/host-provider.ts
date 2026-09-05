@@ -19,7 +19,7 @@ const FILE_TREE_MAX_DEPTH = 3;
 /** Where host-mode sandboxes live. Read at call time — see provider.ts. */
 function hostRoot(): string {
   return process.env.SANDBOX_HOST_ROOT
-    ?? path.join(process.env.SHANNON_DATA_DIR ?? process.cwd(), "sandboxes");
+    ?? path.join(process.env.LOXAIC_DATA_DIR ?? process.cwd(), "sandboxes");
 }
 
 async function execHost(cwd: string, command: string[], options?: ExecOptions): Promise<ExecResult> {

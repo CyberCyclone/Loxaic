@@ -17,7 +17,7 @@ import {
   type StreamSnapshot,
   type PermissionMode,
   type Todo,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile } from '@/lib/types';

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, sql, gte, lte, lt, inArray } from "@shannon/db";
-import { db } from "@shannon/db";
-import { usageRecords, conversations } from "@shannon/db/schema";
+import { eq, and, sql, gte, lte, lt, inArray } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { usageRecords, conversations } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 
 const RANGE_WINDOWS: Record<string, { ms: number; unit: string }> = {

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, desc } from "@shannon/db";
-import { db } from "@shannon/db";
-import { routines, routineRuns } from "@shannon/db/schema";
+import { eq, and, desc } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { routines, routineRuns } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { scheduleRoutine, unscheduleRoutine, executeRoutine } from "../routines/scheduler";
 

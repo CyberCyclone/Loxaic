@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * unavailable. GUI and headless therefore share the same data by default.
  */
 export function defaultDataDir() {
-  const name = "Open-Shannon";
+  const name = "Loxaic";
   switch (process.platform) {
     case "darwin":
       return path.join(os.homedir(), "Library", "Application Support", name);

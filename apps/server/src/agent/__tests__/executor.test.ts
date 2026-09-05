@@ -21,8 +21,8 @@ function makeFakeHandle() {
   const handle: SandboxHandle = {
     provider: "container",
     ref: "fake-ref",
-    root: "/home/shannon",
-    workdir: "/home/shannon/repo",
+    root: "/home/loxaic",
+    workdir: "/home/loxaic/repo",
     async exec(command, options) {
       execCalls.push({ command, options });
       return nextExec;
@@ -59,17 +59,17 @@ const EXEC_OK: ExecResult = { stdout: "", stderr: "", exitCode: 0, truncated: fa
 describe("resolvePath", () => {
   it("resolves a relative path against the handle's workdir", () => {
     const { handle } = makeFakeHandle();
-    expect(resolvePath(handle, "notes.txt")).toBe("/home/shannon/repo/notes.txt");
+    expect(resolvePath(handle, "notes.txt")).toBe("/home/loxaic/repo/notes.txt");
   });
 
   it("accepts an absolute path inside the handle's root", () => {
     const { handle } = makeFakeHandle();
-    expect(resolvePath(handle, "/home/shannon/other/file.txt")).toBe("/home/shannon/other/file.txt");
+    expect(resolvePath(handle, "/home/loxaic/other/file.txt")).toBe("/home/loxaic/other/file.txt");
   });
 
   it("accepts the root itself", () => {
     const { handle } = makeFakeHandle();
-    expect(resolvePath(handle, "/home/shannon")).toBe("/home/shannon");
+    expect(resolvePath(handle, "/home/loxaic")).toBe("/home/loxaic");
   });
 
   it("rejects a path that escapes the root via ..", () => {
@@ -88,7 +88,7 @@ describe("resolvePath", () => {
     expect(() => resolvePath(handle, "")).toThrow(/non-empty string/);
   });
 
-  it("re-roots per handle — a host-mode handle's paths never resolve under /home/shannon", () => {
+  it("re-roots per handle — a host-mode handle's paths never resolve under /home/loxaic", () => {
     const hostHandle: SandboxHandle = {
       provider: "host",
       ref: "/data/sandboxes/abc123",
@@ -103,7 +103,7 @@ describe("resolvePath", () => {
       stop: async () => {},
     };
     expect(resolvePath(hostHandle, "notes.txt")).toBe("/data/sandboxes/abc123/repo/notes.txt");
-    expect(() => resolvePath(hostHandle, "/home/shannon/repo/notes.txt")).toThrow(/escapes the sandbox/);
+    expect(() => resolvePath(hostHandle, "/home/loxaic/repo/notes.txt")).toThrow(/escapes the sandbox/);
   });
 });
 
@@ -144,7 +144,7 @@ describe("executeTool — filesystem", () => {
     expect(execCalls[0].command).toEqual([
       "bash", "-c",
       'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
-      "_", "10", "14", "/home/shannon/repo/a.txt",
+      "_", "10", "14", "/home/loxaic/repo/a.txt",
     ]);
   });
 
@@ -174,7 +174,7 @@ describe("executeTool — filesystem", () => {
     expect(execCalls[0].command).toEqual([
       "bash", "-c",
       'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
-      "_", "1", "2000", "/home/shannon/repo/a.txt",
+      "_", "1", "2000", "/home/loxaic/repo/a.txt",
     ]);
   });
 
@@ -185,7 +185,7 @@ describe("executeTool — filesystem", () => {
     expect(execCalls[0].command).toEqual([
       "bash", "-c",
       'awk -v s="$1" -v e="$2" \'NR>=s && NR<=e {print NR"\\t"$0} END{print NR > "/dev/stderr"}\' "$3"',
-      "_", "1", "2000", "/home/shannon/repo/a.txt",
+      "_", "1", "2000", "/home/loxaic/repo/a.txt",
     ]);
   });
 
@@ -193,28 +193,28 @@ describe("executeTool — filesystem", () => {
     const { handle, files } = makeFakeHandle();
     const result = await executeTool(handle, "fs_write", { path: "new.txt", content: "hi" });
     expect(result.ok).toBe(true);
-    expect(result.diff).toEqual([{ path: "/home/shannon/repo/new.txt", oldContent: null, newContent: "hi" }]);
-    expect(files.get("/home/shannon/repo/new.txt")).toBe("hi");
+    expect(result.diff).toEqual([{ path: "/home/loxaic/repo/new.txt", oldContent: null, newContent: "hi" }]);
+    expect(files.get("/home/loxaic/repo/new.txt")).toBe("hi");
   });
 
   it("fs_write overwriting an existing file reports its prior content in the diff", async () => {
     const { handle, files } = makeFakeHandle();
-    files.set("/home/shannon/repo/existing.txt", "old");
+    files.set("/home/loxaic/repo/existing.txt", "old");
     const result = await executeTool(handle, "fs_write", { path: "existing.txt", content: "new" });
-    expect(result.diff).toEqual([{ path: "/home/shannon/repo/existing.txt", oldContent: "old", newContent: "new" }]);
+    expect(result.diff).toEqual([{ path: "/home/loxaic/repo/existing.txt", oldContent: "old", newContent: "new" }]);
   });
 
   it("fs_edit replaces a unique match", async () => {
     const { handle, files } = makeFakeHandle();
-    files.set("/home/shannon/repo/f.txt", "const x = 1;\nconst y = 2;\n");
+    files.set("/home/loxaic/repo/f.txt", "const x = 1;\nconst y = 2;\n");
     const result = await executeTool(handle, "fs_edit", { path: "f.txt", oldText: "const x = 1;", newText: "const x = 100;" });
     expect(result.ok).toBe(true);
-    expect(files.get("/home/shannon/repo/f.txt")).toBe("const x = 100;\nconst y = 2;\n");
+    expect(files.get("/home/loxaic/repo/f.txt")).toBe("const x = 100;\nconst y = 2;\n");
   });
 
   it("fs_edit rejects zero occurrences", async () => {
     const { handle, files } = makeFakeHandle();
-    files.set("/home/shannon/repo/f.txt", "abc");
+    files.set("/home/loxaic/repo/f.txt", "abc");
     const result = await executeTool(handle, "fs_edit", { path: "f.txt", oldText: "zzz", newText: "yyy" });
     expect(result.ok).toBe(false);
     expect(result.output).toContain("not found");
@@ -222,7 +222,7 @@ describe("executeTool — filesystem", () => {
 
   it("fs_edit rejects an ambiguous (non-unique) match", async () => {
     const { handle, files } = makeFakeHandle();
-    files.set("/home/shannon/repo/f.txt", "dup\ndup\n");
+    files.set("/home/loxaic/repo/f.txt", "dup\ndup\n");
     const result = await executeTool(handle, "fs_edit", { path: "f.txt", oldText: "dup", newText: "x" });
     expect(result.ok).toBe(false);
     expect(result.output).toMatch(/appears 2 times/);
@@ -258,7 +258,7 @@ describe("executeTool — shell", () => {
     await executeTool(handle, "bash", { command: "pwd" });
     expect(execCalls[0]).toEqual({
       command: ["bash", "-lc", "pwd"],
-      options: { workdir: "/home/shannon/repo", timeoutMs: 60_000 },
+      options: { workdir: "/home/loxaic/repo", timeoutMs: 60_000 },
     });
   });
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// `Open-Shannon --headless` re-execs itself as plain Node running
+// `Loxaic --headless` re-execs itself as plain Node running
 // headless.js — the exact same entry a systemd unit invokes directly via
 // ELECTRON_RUN_AS_NODE=1. This must happen before any other import: Electron
 // and electron-serve both have module-scope side effects (electron-serve
@@ -108,7 +108,7 @@ async function runGui() {
       if (!target) return resolve(null);
       const binPath = getTsnetProxyPath();
       if (!existsSync(binPath)) {
-        console.warn(`[shannon] tsnet-proxy binary not found at ${binPath}; skipping embedded Tailscale`);
+        console.warn(`[loxaic] tsnet-proxy binary not found at ${binPath}; skipping embedded Tailscale`);
         return resolve(null);
       }
 
@@ -118,7 +118,7 @@ async function runGui() {
       });
 
       const timer = setTimeout(() => {
-        console.warn(`[shannon] tsnet-proxy did not report a listener within ${TSNET_START_TIMEOUT_MS}ms; falling back`);
+        console.warn(`[loxaic] tsnet-proxy did not report a listener within ${TSNET_START_TIMEOUT_MS}ms; falling back`);
         resolve(null);
       }, TSNET_START_TIMEOUT_MS);
 
@@ -132,7 +132,7 @@ async function runGui() {
         }
         const auth = line.match(/^AUTH_URL (\S+)$/);
         if (auth) {
-          console.log(`[shannon] Tailscale needs approval for this device: ${auth[1]}`);
+          console.log(`[loxaic] Tailscale needs approval for this device: ${auth[1]}`);
           shell.openExternal(auth[1]);
         }
       });
@@ -141,12 +141,12 @@ async function runGui() {
       stderr.on("line", (line) => console.log(`[tsnet-proxy] ${line}`));
 
       child.on("error", (err) => {
-        console.warn(`[shannon] tsnet-proxy failed to start: ${err.message}`);
+        console.warn(`[loxaic] tsnet-proxy failed to start: ${err.message}`);
         clearTimeout(timer);
         resolve(null);
       });
       child.on("exit", (code) => {
-        if (code !== 0) console.warn(`[shannon] tsnet-proxy exited with code ${code}`);
+        if (code !== 0) console.warn(`[loxaic] tsnet-proxy exited with code ${code}`);
       });
 
       app.on("before-quit", () => child.kill());
@@ -160,14 +160,14 @@ async function runGui() {
    * Electron must always supply this explicitly.
    *
    * **Environment and flags still win over the stored mode.** `--remote` /
-   * `SHANNON_REMOTE_URL` / `TSNET_TARGET` / the LAN+tailnet probes / a dev
+   * `LOXAIC_REMOTE_URL` / `TSNET_TARGET` / the LAN+tailnet probes / a dev
    * server on :4000 are all "someone told this launch exactly where to point",
    * and they keep working untouched — the e2e harness and every scripted
    * workflow depend on them. Only when none of them applies does config.json
    * decide, and only when *that* is absent does the app open onboarding.
    */
   async function resolveApi() {
-    const remote = getFlag("remote") ?? process.env.SHANNON_REMOTE_URL;
+    const remote = getFlag("remote") ?? process.env.LOXAIC_REMOTE_URL;
     if (remote) return { apiBaseUrl: remote, stack: null, mode: "client" };
 
     const viaTsnet = await startTsnetProxy(process.env.TSNET_TARGET);
@@ -197,15 +197,15 @@ async function runGui() {
     }
     const started = await startStack({
       dataDir: dataDir(),
-      port: Number(getFlag("shannon-port") ?? process.env.SHANNON_PORT ?? config.host?.port ?? DEFAULT_HOST_PORT),
-      log: (line) => { console.log(`[shannon] ${line}`); },
+      port: Number(getFlag("loxaic-port") ?? process.env.LOXAIC_PORT ?? config.host?.port ?? DEFAULT_HOST_PORT),
+      log: (line) => { console.log(`[loxaic] ${line}`); },
       instance: config,
     });
     return { apiBaseUrl: started.apiBaseUrl, stack: started, mode: config.mode };
   }
 
   function dataDir() {
-    return getFlag("shannon-data-dir") ?? process.env.SHANNON_DATA_DIR ?? defaultDataDir();
+    return getFlag("loxaic-data-dir") ?? process.env.LOXAIC_DATA_DIR ?? defaultDataDir();
   }
 
   let mainWindow = null;
@@ -230,7 +230,7 @@ async function runGui() {
   }
 
   function pushStackState() {
-    mainWindow?.webContents.send("shannon:stackState", stackState());
+    mainWindow?.webContents.send("loxaic:stackState", stackState());
   }
 
   /**
@@ -278,9 +278,9 @@ async function runGui() {
    * stack. Nothing here takes a path or a command from the renderer.
    */
   function registerIpc() {
-    ipcMain.handle("shannon:getState", () => stackState());
+    ipcMain.handle("loxaic:getState", () => stackState());
 
-    ipcMain.handle("shannon:setMode", async (_event, input) => {
+    ipcMain.handle("loxaic:setMode", async (_event, input) => {
       const config = buildConfig(input ?? {}, loadConfig(dataDir()));
       return applyConfig(config);
     });
@@ -288,14 +288,14 @@ async function runGui() {
     // Is a container engine reachable? Host mode requires one — the server
     // refuses to boot otherwise — so onboarding checks before committing the
     // user to a mode that would fail at startup.
-    ipcMain.handle("shannon:probeEngine", async () => {
+    ipcMain.handle("loxaic:probeEngine", async () => {
       const { probeContainerEngine } = await import("./supervisor/engine-probe.js");
       return probeContainerEngine();
     });
 
-    // Does this URL serve a Shannon? Returns the cluster so the join screen can
+    // Does this URL serve a Loxaic? Returns the cluster so the join screen can
     // name what the user is about to connect to instead of echoing their URL.
-    ipcMain.handle("shannon:probeHost", async (_event, url) => {
+    ipcMain.handle("loxaic:probeHost", async (_event, url) => {
       if (typeof url !== "string" || !url.trim()) return { ok: false, reason: "No URL given" };
       const base = url.trim().replace(/\/+$/, "");
       try {
@@ -312,7 +312,7 @@ async function runGui() {
 
     // Validates external-database credentials before they are committed, so a
     // typo surfaces on the form rather than as a failed boot.
-    ipcMain.handle("shannon:testDb", async (_event, input) => {
+    ipcMain.handle("loxaic:testDb", async (_event, input) => {
       const { testDatabase } = await import("./supervisor/db-test.js");
       return testDatabase(input ?? {}, dataDir());
     });
@@ -320,7 +320,7 @@ async function runGui() {
     // Leave the current host: forget the stored config and return to
     // onboarding. Deliberately does NOT delete the data directory — a Host
     // that detaches keeps its own database.
-    ipcMain.handle("shannon:detach", async () => {
+    ipcMain.handle("loxaic:detach", async () => {
       const previous = stack;
       stack = null;
       apiBaseUrl = null;
@@ -352,8 +352,8 @@ async function runGui() {
         sandbox: true,
         // Empty when the app opens on onboarding: there is no server yet.
         // The renderer treats that as "ask the user", and gets the real URL
-        // over shannon:stackState once a mode is chosen.
-        additionalArguments: [`--shannon-api-base-url=${encodeURIComponent(apiBaseUrl ?? "")}`],
+        // over loxaic:stackState once a mode is chosen.
+        additionalArguments: [`--loxaic-api-base-url=${encodeURIComponent(apiBaseUrl ?? "")}`],
       },
     });
 
@@ -375,13 +375,13 @@ async function runGui() {
       // database, a Host with no container engine) must still open its
       // window: the error is actionable from onboarding, and exiting would
       // leave the user with no way to change the setting that broke it.
-      console.error(`[shannon] ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`[loxaic] ${err instanceof Error ? err.message : String(err)}`);
       startupError = err instanceof Error ? err.message : String(err);
       apiBaseUrl = null;
       stack = null;
       instanceMode = null;
     }
-    console.log(`[shannon] API base URL: ${apiBaseUrl ?? "(none — onboarding)"}`);
+    console.log(`[loxaic] API base URL: ${apiBaseUrl ?? "(none — onboarding)"}`);
     await createWindow();
     // The renderer subscribes after it loads, so the first state is pushed
     // rather than assumed: a window that opened before the stack resolved

@@ -9,7 +9,7 @@ describe("host provider", () => {
   let root: string;
 
   beforeEach(() => {
-    root = mkdtempSync(path.join(os.tmpdir(), "shannon-host-provider-"));
+    root = mkdtempSync(path.join(os.tmpdir(), "loxaic-host-provider-"));
     process.env.SANDBOX_HOST_ROOT = root;
   });
 

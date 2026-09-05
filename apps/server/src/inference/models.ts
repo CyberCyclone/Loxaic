@@ -1,4 +1,4 @@
-import type { ModelInfo } from "@shannon/types";
+import type { ModelInfo } from "@loxaic/types";
 import { selfHost } from "../cluster.ts";
 
 // Read at call time, not module load — see provider.ts.

@@ -2,8 +2,8 @@ import { ADMIN_EMAIL } from "./force-admin-emails.ts";
 import { afterAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { db, eq, inArray } from "@shannon/db";
-import { account, session, user } from "@shannon/db/schema";
+import { db, eq, inArray } from "@loxaic/db";
+import { account, session, user } from "@loxaic/db/schema";
 import { auth } from "../index.ts";
 import { authenticate, requireAdmin } from "../middleware.ts";
 

@@ -1,4 +1,4 @@
-import type { StreamEventKind, StreamStatus } from "@shannon/types";
+import type { StreamEventKind, StreamStatus } from "@loxaic/types";
 
 export interface StreamRecord { seq: number; ts: number; event: StreamEventKind }
 

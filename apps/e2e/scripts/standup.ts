@@ -38,7 +38,7 @@ export const BASE_URL = process.env.E2E_BASE_URL ?? `http://localhost:${String(P
  */
 export const SELF_CONTAINED = process.env.E2E_SELF_CONTAINED === '1';
 const DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/shannon';
+  process.env.DATABASE_URL ?? 'postgresql://postgres:postgres@localhost:5432/loxaic';
 /**
  * Sandbox specs need an admin session, and "first user ever" is unreliable
  * against a DB stand-up reuses across runs — so one account is granted admin
@@ -78,7 +78,7 @@ const SEED_DIR = path.resolve(E2E_DIR, 'fixtures/seeded-app');
 function writeAdminCreds(): { email: string; password: string } {
   const suffix = randomBytes(9).toString('hex');
   const creds = {
-    email: `e2e-admin-${suffix}@shannon.test`,
+    email: `e2e-admin-${suffix}@loxaic.test`,
     password: `Pw-${randomBytes(18).toString('base64url')}`,
   };
   mkdirSync(RUN_DIR, { recursive: true });
@@ -182,7 +182,7 @@ async function ensureMigrations(): Promise<void> {
   // failures with a log line, so a mis-migrated DB would surface much later
   // as a confusing request-time error instead of failing stand-up here.
   log('applying migrations');
-  await run('pnpm', ['--filter', '@shannon/db', 'db:migrate'], REPO_ROOT, { DATABASE_URL });
+  await run('pnpm', ['--filter', '@loxaic/db', 'db:migrate'], REPO_ROOT, { DATABASE_URL });
 }
 
 async function ensureWebExport(): Promise<void> {
@@ -194,7 +194,7 @@ async function ensureWebExport(): Promise<void> {
   // Must happen before the server starts: static serving is only registered
   // at boot, and only if dist/index.html already exists.
   log('building web export (this takes a minute)');
-  await run('pnpm', ['--filter', '@shannon/mobile', 'export:web'], REPO_ROOT);
+  await run('pnpm', ['--filter', '@loxaic/mobile', 'export:web'], REPO_ROOT);
 }
 
 async function ensureServer(): Promise<void> {
@@ -337,7 +337,7 @@ export async function teardown(): Promise<void> {
   await Promise.resolve();
 }
 
-// Also usable standalone: `pnpm --filter @shannon/e2e standup`
+// Also usable standalone: `pnpm --filter @loxaic/e2e standup`
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   standup().then(
     (r) => { log(`ready at ${r.baseUrl}`); },

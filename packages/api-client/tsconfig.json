@@ -1,5 +1,5 @@
 {
-  "extends": "@shannon/config-ts/node.json",
+  "extends": "@loxaic/config-ts/node.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src"

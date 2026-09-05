@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
-import { user } from "@shannon/db/schema";
+import { db, eq } from "@loxaic/db";
+import { user } from "@loxaic/db/schema";
 import { extractText, readExtractedText, stopAllExtractionSandboxes } from "../extract.ts";
 import { attachmentPath } from "../storage.ts";
 import { sandboxImageReady } from "../../sandbox/__tests__/docker-available.ts";
@@ -36,7 +36,7 @@ const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 const userId = `test-office-extract-${uuid()}`;
-const dir = mkdtempSync(path.join(tmpdir(), "shannon-office-test-"));
+const dir = mkdtempSync(path.join(tmpdir(), "loxaic-office-test-"));
 const prevUploadsDir = process.env.UPLOADS_DIR;
 
 const dockerReady = await sandboxImageReady();

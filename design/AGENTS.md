@@ -1,10 +1,10 @@
-# AGENTS.md — Shannon UI
+# AGENTS.md — Loxaic UI
 
 **Read `docs/design-system.md` first.** It is the source of truth for tokens, components, theme system, and rules.
 
 ## Project in one line
 
-Shannon UI — self-hosted AI assistant interface: chat, agent console, routines, usage stats. Built as self-contained HTML files sharing a CSS token system and JS component library.
+Loxaic UI — self-hosted AI assistant interface: chat, agent console, routines, usage stats. Built as self-contained HTML files sharing a CSS token system and JS component library.
 
 ## Working directory
 
@@ -14,14 +14,14 @@ All files are in `design/` at the repo root (or the Open Design project director
 
 | File | Role | Lines |
 |---|---|---|
-| `shannon.css` | Tokens, shell layout, all component styles | ~316 |
-| `shannon-shared.js` | Settings modal, model modal v2, smart routing, location badges, toast | ~390 |
+| `loxaic.css` | Tokens, shell layout, all component styles | ~316 |
+| `loxaic-shared.js` | Settings modal, model modal v2, smart routing, location badges, toast | ~390 |
 | `assets/theme-init.js` | Blocking theme bootstrap — system resolution, no FOUC, cross-tab sync | ~60 |
 | `assets/fonts/` | Self-hosted Public Sans (3 woff2 weights + fonts.css) | — |
-| `shannon-chat.html` | Chat surface — thread list, messages, composer, context panel | ~900 |
-| `shannon-agent.html` | Agent console — run header, tool calls, permission bar, inspector | ~500 |
-| `shannon-routines.html` | Scheduled recurring agent runs — cron builder, history | ~400 |
-| `shannon-stats.html` | Usage analytics — KPI cards, SVG charts, striped tables | ~450 |
+| `loxaic-chat.html` | Chat surface — thread list, messages, composer, context panel | ~900 |
+| `loxaic-agent.html` | Agent console — run header, tool calls, permission bar, inspector | ~500 |
+| `loxaic-routines.html` | Scheduled recurring agent runs — cron builder, history | ~400 |
+| `loxaic-stats.html` | Usage analytics — KPI cards, SVG charts, striped tables | ~450 |
 | `index.html` | Launcher — links to all surfaces | ~50 |
 | `docs/design-system.md` | Design system documentation (tokens, components, rules) | — |
 | `plan.md` | Design plan document — scope, decisions, acceptance checks | — |
@@ -63,11 +63,11 @@ grep -rni 'third-party-product-names' *.html *.css *.js *.md docs/*.md
 # (should return nothing)
 
 # Sync to repo
-cp shannon.css shannon-shared.js shannon-*.html index.html assets/theme-init.js \
-   /Users/caseygibson/Documents/Git/Open-Shannon/design/
-cp -r assets/fonts/ /Users/caseygibson/Documents/Git/Open-Shannon/design/assets/fonts/
-cp docs/design-system.md /Users/caseygibson/Documents/Git/Open-Shannon/design/docs/
-cp AGENTS.md /Users/caseygibson/Documents/Git/Open-Shannon/design/
+cp loxaic.css loxaic-shared.js loxaic-*.html index.html assets/theme-init.js \
+   /Users/caseygibson/Documents/Git/Loxaic/design/
+cp -r assets/fonts/ /Users/caseygibson/Documents/Git/Loxaic/design/assets/fonts/
+cp docs/design-system.md /Users/caseygibson/Documents/Git/Loxaic/design/docs/
+cp AGENTS.md /Users/caseygibson/Documents/Git/Loxaic/design/
 ```
 
 ## Gotchas
@@ -75,5 +75,5 @@ cp AGENTS.md /Users/caseygibson/Documents/Git/Open-Shannon/design/
 - **SVG chart colors:** `var(--token)` in SVG presentation attributes resolves dynamically in modern browsers, but chart functions must clear and re-render on `themechange` to be reliable.
 - **`color-mix()` support:** requires modern browsers (Chrome 111+, Safari 16.2+, Firefox 113+). The `in oklch` colorspace is the canonical derivation path.
 - **Code blocks:** use `var(--code-bg)`, not `var(--bg)` — light mode needs a subtle gray (`#f4f4f5`), not pure white, to distinguish code from page background.
-- **`theme-init.js` must be in `<head>`** before `shannon-shared.js` and before any rendering — it sets `data-theme` synchronously to prevent FOUC.
-- **Settings is a modal, not a page** — `shannon-settings.html` was deleted in Round 1. The settings modal is injected by `shannon-shared.js` on every surface. The launcher's Settings link opens chat with `?settings=1` which auto-opens the modal.
+- **`theme-init.js` must be in `<head>`** before `loxaic-shared.js` and before any rendering — it sets `data-theme` synchronously to prevent FOUC.
+- **Settings is a modal, not a page** — `loxaic-settings.html` was deleted in Round 1. The settings modal is injected by `loxaic-shared.js` on every surface. The launcher's Settings link opens chat with `?settings=1` which auto-opens the modal.

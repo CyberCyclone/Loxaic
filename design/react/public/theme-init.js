@@ -1,10 +1,10 @@
-/* Open-Shannon — theme bootstrap: system resolution, no FOUC, cross-page sync.
+/* Loxaic — theme bootstrap: system resolution, no FOUC, cross-page sync.
    Must load in <head> before paint. Sets data-theme on <html> and dispatches
    a "themechange" event when the theme flips (system pref change or cross-tab sync). */
 (function () {
   'use strict';
 
-  var STORAGE_KEY = 'shannon-theme';
+  var STORAGE_KEY = 'loxaic-theme';
   var mql = window.matchMedia('(prefers-color-scheme: light)');
 
   function resolveTheme(pref) {
@@ -44,7 +44,7 @@
   });
 
   // Public API for settings modal
-  window.ShannonTheme = {
+  window.LoxaicTheme = {
     get: function () { return getStoredPref() || 'system'; },
     set: function (pref) {
       setStoredPref(pref);

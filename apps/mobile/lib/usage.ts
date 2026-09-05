@@ -1,4 +1,4 @@
-import type { ApiMessageUsage, TurnUsage } from '@shannon/api-client';
+import type { ApiMessageUsage, TurnUsage } from '@loxaic/api-client';
 import type { MessageUsage } from '@/lib/types';
 
 /**

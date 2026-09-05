@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getConfig, type ConfigResponse } from '@shannon/api-client';
+import { getConfig, type ConfigResponse } from '@loxaic/api-client';
 
 /** Public, unauthenticated sandbox status — mode, availability, why not if
  * not. Every screen that needs to know "can the agent run tools right now"

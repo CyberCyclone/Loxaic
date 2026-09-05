@@ -11,5 +11,5 @@ export default defineConfig({
   // runs on any Node without native TS support. Real npm deps stay external —
   // drizzle-orm/postgres must therefore be direct deps of this package so the
   // bundled output can resolve them as bare specifiers.
-  noExternal: [/^@shannon\//],
+  noExternal: [/^@loxaic\//],
 });

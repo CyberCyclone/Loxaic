@@ -39,7 +39,7 @@ export const config: WebdriverIO.Config = {
       platformName: 'Android',
       'appium:automationName': 'UiAutomator2',
       'appium:app': androidApkPath(),
-      'appium:appPackage': 'com.shannon.app',
+      'appium:appPackage': 'com.loxaic.app',
       // Cold start on an emulator is slow, and slow is not the same as broken.
       'appium:appWaitDuration': 60_000,
       'appium:newCommandTimeout': 300,

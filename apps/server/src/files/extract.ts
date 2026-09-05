@@ -5,7 +5,7 @@ import {
   attachmentClass,
   MAX_CACHED_EXTRACTION_BYTES,
   MAX_PDF_PAGES,
-} from "@shannon/types";
+} from "@loxaic/types";
 import { stripControl } from "../mcp/sanitize.ts";
 import { getSandboxProvider, type SandboxHandle, type SandboxProvider } from "../sandbox/provider.ts";
 import { attachmentPath, attachmentTextPath } from "./storage.ts";
@@ -237,7 +237,7 @@ async function extractViaSandbox(input: ExtractInput): Promise<string> {
   // it would be the *real host* /tmp — world-readable, shared by every user on
   // the box, so one person's document bytes would be briefly readable by
   // anything else running there. `root` is the per-sandbox directory in host
-  // mode and /home/shannon in container mode, which is correct for both.
+  // mode and /home/loxaic in container mode, which is correct for both.
   const base = `${handle.root}/.extract/${randomUUID()}`;
   // The extension is load-bearing, not decoration: openpyxl refuses to open a
   // file whose name doesn't end in a spreadsheet extension, regardless of its
@@ -312,7 +312,7 @@ async function readSandboxText(handle: SandboxHandle, filePath: string): Promise
 
 /** The extractor argv for a mime. Every element is a literal or a path this
  * module minted; nothing here interpolates user input. */
-/** Office/ebook mimes to the short format name `shannon-extract` dispatches
+/** Office/ebook mimes to the short format name `loxaic-extract` dispatches
  * on. Kept here rather than in the script so an unknown mime fails on this
  * side, before a container is ever touched. */
 const SANDBOX_FORMATS: Record<string, string> = {
@@ -342,10 +342,10 @@ function commandFor(format: string, inPath: string): string[] {
     // stdout, which the caller redirects to a file.
     return ["pdftotext", "-layout", "-l", String(MAX_PDF_PAGES), "--", inPath, "-"];
   }
-  // shannon-extract is baked into the sandbox image (infra/docker/sandbox/
+  // loxaic-extract is baked into the sandbox image (infra/docker/sandbox/
   // extract.py) and runs the decompression-bomb guard itself, before it opens
   // anything — see that file for why the guard lives on that side.
-  return ["shannon-extract", format, inPath];
+  return ["loxaic-extract", format, inPath];
 }
 
 // ── Pooled extraction sandboxes ───────────────────────────

@@ -1,9 +1,9 @@
 import cron from "node-cron";
 import type { ScheduledTask } from "node-cron";
 import { v4 as uuid } from "uuid";
-import { eq } from "@shannon/db";
-import { db } from "@shannon/db";
-import { routines, routineRuns, conversations, messages } from "@shannon/db/schema";
+import { eq } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { routines, routineRuns, conversations, messages } from "@loxaic/db/schema";
 
 const jobs = new Map<string, ScheduledTask>();
 
@@ -96,9 +96,9 @@ export async function executeRoutine(routineId: string) {
 async function sendNtfyNotification(userId: string, title: string, message: string) {
   const ntfyUrl = process.env.NTFY_URL ?? "http://localhost:4003";
   try {
-    await fetch(`${ntfyUrl}/shannon-${userId}`, {
+    await fetch(`${ntfyUrl}/loxaic-${userId}`, {
       method: "POST",
-      body: JSON.stringify({ topic: `shannon-${userId}`, title, message }),
+      body: JSON.stringify({ topic: `loxaic-${userId}`, title, message }),
     });
   } catch {
     // ntfy may not be running in dev

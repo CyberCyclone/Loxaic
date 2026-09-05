@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_ATTACHMENTS, validateSendAttachments } from "@shannon/types";
+import { MAX_ATTACHMENTS, validateSendAttachments } from "@loxaic/types";
 
 /**
  * The shared `chat.send`/`agent.send` gate, exercised the same way for both

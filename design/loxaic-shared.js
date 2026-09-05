@@ -1,9 +1,9 @@
-/* Open-Shannon — shared components: settings modal, model modal v2, smart routing, location badges */
+/* Loxaic — shared components: settings modal, model modal v2, smart routing, location badges */
 (function () {
   'use strict';
 
   // ===== Shared fixtures =====
-  const SHANNON_MODELS = [
+  const LOXAIC_MODELS = [
     { id: 'm1', display_name: 'Llama 3.1 8B', quant: 'Q4_K_M', context_tokens: 32768, location: 'server', price: 0 },
     { id: 'm2', display_name: 'Qwen 2.5 14B', quant: 'Q5_K_M', context_tokens: 32768, location: 'server', price: 0 },
     { id: 'm3', display_name: 'Phi 3 Mini', quant: 'Q8_0', context_tokens: 4096, location: 'device', price: 0 },
@@ -13,10 +13,10 @@
     { id: 'r3', display_name: 'DeepSeek V3', quant: '—', context_tokens: 64000, location: 'remote', price: 0.27 },
   ];
 
-  const SHANNON_WORKSPACES = [
-    { name: 'Open-Shannon/design', path: '/home/casey/projects/open-shannon/design' },
-    { name: 'Open-Shannon/api', path: '/home/casey/projects/open-shannon/api' },
-    { name: 'Open-Shannon/sync', path: '/home/casey/projects/open-shannon/sync' },
+  const LOXAIC_WORKSPACES = [
+    { name: 'Loxaic/design', path: '/home/casey/projects/loxaic/design' },
+    { name: 'Loxaic/api', path: '/home/casey/projects/loxaic/api' },
+    { name: 'Loxaic/sync', path: '/home/casey/projects/loxaic/sync' },
   ];
 
   const THINKING_LEVELS = ['None', 'Low', 'Medium', 'High'];
@@ -29,37 +29,37 @@
 
   // ===== Settings persistence =====
   function getSettings() {
-    return JSON.parse(localStorage.getItem('shannon-settings') || '{}');
+    return JSON.parse(localStorage.getItem('loxaic-settings') || '{}');
   }
   function saveSettingsData(data) {
-    localStorage.setItem('shannon-settings', JSON.stringify(data));
+    localStorage.setItem('loxaic-settings', JSON.stringify(data));
   }
 
   // ===== Smart routing persistence =====
   function getSmartRouting() {
-    return JSON.parse(localStorage.getItem('shannon-smart-routing') || '{"profile":"server","planning":"m1","heavyThinking":"m2","simpleJobs":"m3"}');
+    return JSON.parse(localStorage.getItem('loxaic-smart-routing') || '{"profile":"server","planning":"m1","heavyThinking":"m2","simpleJobs":"m3"}');
   }
   function saveSmartRouting(data) {
-    localStorage.setItem('shannon-smart-routing', JSON.stringify(data));
+    localStorage.setItem('loxaic-smart-routing', JSON.stringify(data));
   }
 
   // ===== Thinking level persistence (per conversation) =====
   function getThinkingLevel(convKey) {
-    const levels = JSON.parse(localStorage.getItem('shannon-thinking-levels') || '{}');
+    const levels = JSON.parse(localStorage.getItem('loxaic-thinking-levels') || '{}');
     return levels[convKey] || getSettings().defaultThinkingLevel || 'Medium';
   }
   function setThinkingLevel(convKey, level) {
-    const levels = JSON.parse(localStorage.getItem('shannon-thinking-levels') || '{}');
+    const levels = JSON.parse(localStorage.getItem('loxaic-thinking-levels') || '{}');
     levels[convKey] = level;
-    localStorage.setItem('shannon-thinking-levels', JSON.stringify(levels));
+    localStorage.setItem('loxaic-thinking-levels', JSON.stringify(levels));
   }
 
   // ===== Toast =====
   function showToast(msg) {
-    let toast = document.getElementById('shannon-toast');
+    let toast = document.getElementById('loxaic-toast');
     if (!toast) {
       toast = document.createElement('div');
-      toast.id = 'shannon-toast';
+      toast.id = 'loxaic-toast';
       toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);border-radius:var(--r-md);padding:10px 18px;font-size:13px;z-index:500;box-shadow:0 8px 24px rgba(0,0,0,.3);display:none';
       document.body.appendChild(toast);
     }
@@ -137,8 +137,8 @@
             <div class="settings-modal-section" data-section="workspaces">
               <h2>Workspaces</h2>
               <p class="desc">Server-side directories available as agent context.</p>
-              <div class="model-row"><div class="model-row-info"><div class="model-row-name">Open-Shannon/design</div><div class="model-row-meta">/home/casey/projects/open-shannon/design</div></div><button class="btn btn-ghost btn-sm">Remove</button></div>
-              <div class="model-row"><div class="model-row-info"><div class="model-row-name">Open-Shannon/api</div><div class="model-row-meta">/home/casey/projects/open-shannon/api</div></div><button class="btn btn-ghost btn-sm">Remove</button></div>
+              <div class="model-row"><div class="model-row-info"><div class="model-row-name">Loxaic/design</div><div class="model-row-meta">/home/casey/projects/loxaic/design</div></div><button class="btn btn-ghost btn-sm">Remove</button></div>
+              <div class="model-row"><div class="model-row-info"><div class="model-row-name">Loxaic/api</div><div class="model-row-meta">/home/casey/projects/loxaic/api</div></div><button class="btn btn-ghost btn-sm">Remove</button></div>
               <button class="btn btn-secondary btn-sm">+ Register directory</button>
             </div>
             <!-- Devices -->
@@ -153,14 +153,14 @@
             <div class="settings-modal-section" data-section="server">
               <h2>Server</h2>
               <p class="desc">Connection to your llama.cpp inference server.</p>
-              <div class="setting-row"><div><div class="setting-label">Tailscale address</div><div class="setting-hint">MagicDNS hostname for your tailnet</div></div><input class="input" style="width:240px" value="shannon.tailscale.com" data-setting="tailscale"></div>
-              <div class="setting-row"><div><div class="setting-label">Inference endpoint</div><div class="setting-hint">llama.cpp server URL</div></div><input class="input" style="width:240px" value="http://shannon:8080" data-setting="endpoint"></div>
+              <div class="setting-row"><div><div class="setting-label">Tailscale address</div><div class="setting-hint">MagicDNS hostname for your tailnet</div></div><input class="input" style="width:240px" value="loxaic.tailscale.com" data-setting="tailscale"></div>
+              <div class="setting-row"><div><div class="setting-label">Inference endpoint</div><div class="setting-hint">llama.cpp server URL</div></div><input class="input" style="width:240px" value="http://loxaic:8080" data-setting="endpoint"></div>
               <div class="setting-row"><div><div class="setting-label">Connection status</div><div class="setting-hint">Server reachable · llama.cpp v0.2.1</div></div><span class="badge badge-success">Connected</span></div>
             </div>
             <!-- Usage -->
             <div class="settings-modal-section" data-section="usage">
               <h2>Usage</h2>
-              <p class="desc">Per-model token consumption. <a href="shannon-stats.html" style="font-size:14px">View full stats →</a></p>
+              <p class="desc">Per-model token consumption. <a href="loxaic-stats.html" style="font-size:14px">View full stats →</a></p>
               <table>
                 <thead><tr><th>Model</th><th>Conversations</th><th>Tokens</th><th>Cache %</th></tr></thead>
                 <tbody>
@@ -235,12 +235,12 @@
       };
     });
     function populateSRSelects() {
-      const modelOpts = SHANNON_MODELS.map(m => `<option value="${m.id}">${m.display_name}</option>`).join('');
+      const modelOpts = LOXAIC_MODELS.map(m => `<option value="${m.id}">${m.display_name}</option>`).join('');
       ['planning', 'heavy', 'simple'].forEach(key => {
         const sel = overlay.querySelector(key === 'heavy' ? '#sr-heavy' : key === 'simple' ? '#sr-simple' : '#sr-planning');
         sel.innerHTML = modelOpts;
         const field = key === 'planning' ? 'planning' : key === 'heavy' ? 'heavyThinking' : 'simpleJobs';
-        sel.value = sr[field] || SHANNON_MODELS[0].id;
+        sel.value = sr[field] || LOXAIC_MODELS[0].id;
         sel.onchange = () => { sr[field] = sel.value; saveSmartRouting(sr); };
       });
     }
@@ -257,14 +257,14 @@
     });
 
     // Theme segmented control
-    if (window.ShannonTheme) {
-      const currentPref = ShannonTheme.get();
+    if (window.LoxaicTheme) {
+      const currentPref = LoxaicTheme.get();
       overlay.querySelectorAll('.theme-seg-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.themePref === currentPref);
         btn.onclick = () => {
           overlay.querySelectorAll('.theme-seg-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
-          ShannonTheme.set(btn.dataset.themePref);
+          LoxaicTheme.set(btn.dataset.themePref);
         };
       });
     }
@@ -346,9 +346,9 @@
     list.innerHTML = '';
     const f = (filter || '').toLowerCase();
     const groups = [
-      { key: 'server', label: 'Server Models', models: SHANNON_MODELS.filter(m => m.location === 'server') },
-      { key: 'device', label: 'On-Device Models', models: SHANNON_MODELS.filter(m => m.location === 'device') },
-      { key: 'remote', label: 'Remote Models (Cloud)', models: SHANNON_MODELS.filter(m => m.location === 'remote') },
+      { key: 'server', label: 'Server Models', models: LOXAIC_MODELS.filter(m => m.location === 'server') },
+      { key: 'device', label: 'On-Device Models', models: LOXAIC_MODELS.filter(m => m.location === 'device') },
+      { key: 'remote', label: 'Remote Models (Cloud)', models: LOXAIC_MODELS.filter(m => m.location === 'remote') },
     ];
     groups.forEach(g => {
       const filtered = g.models.filter(m => m.display_name.toLowerCase().includes(f));
@@ -359,11 +359,11 @@
       list.appendChild(gl);
       filtered.forEach(m => {
         const opt = document.createElement('div');
-        opt.className = 'model-option' + (window.__shannonCurrentModelId === m.id ? ' selected' : '');
+        opt.className = 'model-option' + (window.__loxaicCurrentModelId === m.id ? ' selected' : '');
         const meta = `${m.quant} · ${(m.context_tokens / 1024).toFixed(0)}K ctx${m.price ? ' · $' + m.price + '/1M' : ' · local'}`;
-        opt.innerHTML = `<div><div class="model-option-name">${m.display_name}</div><div class="model-option-meta">${meta}</div></div>${window.__shannonCurrentModelId === m.id ? '<span class="check">✓</span>' : ''}`;
+        opt.innerHTML = `<div><div class="model-option-name">${m.display_name}</div><div class="model-option-meta">${meta}</div></div>${window.__loxaicCurrentModelId === m.id ? '<span class="check">✓</span>' : ''}`;
         opt.onclick = () => {
-          window.__shannonCurrentModelId = m.id;
+          window.__loxaicCurrentModelId = m.id;
           if (modelModalState.onSelect) modelModalState.onSelect(m);
           renderModelList(filter);
           document.getElementById('model-modal-overlay').style.display = 'none';
@@ -375,7 +375,7 @@
 
   function openModelModal(currentModelId, convKey, onSelect) {
     injectModelModal();
-    window.__shannonCurrentModelId = currentModelId;
+    window.__loxaicCurrentModelId = currentModelId;
     modelModalState.convKey = convKey || 'default';
     modelModalState.onSelect = onSelect;
     modelModalState.thinkingLevel = getThinkingLevel(modelModalState.convKey);
@@ -392,8 +392,8 @@
 
   // ===== Export =====
   Object.assign(window, {
-    SHANNON_MODELS,
-    SHANNON_WORKSPACES,
+    LOXAIC_MODELS,
+    LOXAIC_WORKSPACES,
     THINKING_LEVELS,
     locationBadge,
     openSettings,

@@ -1,4 +1,4 @@
-module github.com/open-shannon/tsnet-proxy
+module github.com/loxaic/tsnet-proxy
 
 go 1.27.0
 

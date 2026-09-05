@@ -1,6 +1,6 @@
 import { unlink } from "node:fs/promises";
-import { db, eq, sql } from "@shannon/db";
-import { attachments } from "@shannon/db/schema";
+import { db, eq, sql } from "@loxaic/db";
+import { attachments } from "@loxaic/db/schema";
 import { attachmentPath } from "./storage.ts";
 import { removeExtractedText } from "./extract.ts";
 

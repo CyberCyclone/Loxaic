@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { and, db, eq } from "@shannon/db";
-import { mcpServers } from "@shannon/db/schema";
+import { and, db, eq } from "@loxaic/db";
+import { mcpServers } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { assertPublicUrl } from "../agent/executor.ts";
 import { BUILTIN_CATALOG, catalogEntry } from "../mcp/catalog.ts";

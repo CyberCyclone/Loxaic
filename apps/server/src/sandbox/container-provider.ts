@@ -73,7 +73,7 @@ function sandboxImage(): string {
     // No build context reachable — nothing can be built here anyway, and
     // ensureImage reports that far more clearly than a throw from a name.
   }
-  imageTag = `shannon-sandbox:${digest}`;
+  imageTag = `loxaic-sandbox:${digest}`;
   return imageTag;
 }
 
@@ -320,7 +320,7 @@ async function execInContainer(
     Cmd: command,
     AttachStdout: true,
     AttachStderr: true,
-    WorkingDir: options?.workdir ?? "/home/shannon",
+    WorkingDir: options?.workdir ?? "/home/loxaic",
   });
 
   const stream = await exec.start({ hijack: true, stdin: false });
@@ -370,8 +370,8 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
   return {
     provider: "container",
     ref: containerId,
-    root: "/home/shannon",
-    workdir: "/home/shannon/repo",
+    root: "/home/loxaic",
+    workdir: "/home/loxaic/repo",
 
     exec: (command, options) => execInContainer(container, command, options),
 
@@ -396,7 +396,7 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
 
     writeFileBinary: (filePath, data) => writeBinaryToContainer(container, filePath, data),
 
-    async fileTree(treePath = "/home/shannon") {
+    async fileTree(treePath = "/home/loxaic") {
       const { stdout } = await execInContainer(container, [
         "find", treePath, "-maxdepth", "3", "-printf", "%y %P\n",
       ]);
@@ -533,7 +533,7 @@ export async function probeEngines(): Promise<EngineProbe[]> {
 }
 
 /** IDs of every running container this provider ever creates (all sandboxes
- * carry the shannon.sandbox label). Used by the boot-time orphan sweep.
+ * carry the loxaic.sandbox label). Used by the boot-time orphan sweep.
  * Empty when no engine is reachable — a sweep on a host-mode or engineless
  * machine is a no-op, not an error. */
 export async function listSandboxContainers(): Promise<string[]> {
@@ -541,7 +541,7 @@ export async function listSandboxContainers(): Promise<string[]> {
   if (!found) return [];
   try {
     const containers = await found.docker.listContainers({
-      filters: { label: ["shannon.sandbox"] },
+      filters: { label: ["loxaic.sandbox"] },
     });
     return containers.map((c) => c.Id);
   } catch {
@@ -586,7 +586,7 @@ export function getContainerProvider(): SandboxProvider {
           // Everything below runs model-directed commands, so the container
           // gets no capability it cannot demonstrate a need for.
           //
-          // The image already runs as a non-root user (`USER shannon`,
+          // The image already runs as a non-root user (`USER loxaic`,
           // uid 1001), which is the single biggest control here and predates
           // this change. These add the two things that non-root alone does
           // not give you:
@@ -602,8 +602,8 @@ export function getContainerProvider(): SandboxProvider {
           SecurityOpt: ["no-new-privileges"],
         },
         Labels: {
-          "shannon.user": userId,
-          "shannon.sandbox": uuid(),
+          "loxaic.user": userId,
+          "loxaic.sandbox": uuid(),
         },
       });
       await container.start();
@@ -620,7 +620,7 @@ export function getContainerProvider(): SandboxProvider {
           "git", "clone", "--depth=1",
           ...(config.branch ? [`--branch=${config.branch}`] : []),
           url,
-          "/home/shannon/repo",
+          "/home/loxaic/repo",
         ]);
         if (clone.exitCode !== 0) {
           await handle.stop();
@@ -628,7 +628,7 @@ export function getContainerProvider(): SandboxProvider {
         }
       } else {
         // Every sandbox gets the working directory the agent tools default to.
-        await handle.exec(["mkdir", "-p", "/home/shannon/repo"]);
+        await handle.exec(["mkdir", "-p", "/home/loxaic/repo"]);
       }
 
       return handle;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react'
 import type { ThinkingLevel } from '../../types'
-import { SHANNON_MODELS, THINKING_LEVELS } from '../../fixtures/models'
+import { LOXAIC_MODELS, THINKING_LEVELS } from '../../fixtures/models'
 import { Modal } from '../primitives/Modal'
 import { Input } from '../primitives/Input'
 
@@ -17,11 +17,11 @@ interface ModelModalProps {
 export function ModelModal({ open, onClose, selectedModel, onSelect, thinkingLevel, onThinkingLevel, onOpenSettings }: ModelModalProps) {
   const [search, setSearch] = useState('')
 
-  const filtered = SHANNON_MODELS.filter(m =>
+  const filtered = LOXAIC_MODELS.filter(m =>
     m.display_name.toLowerCase().includes(search.toLowerCase())
   )
 
-  const groups: { label: string; models: typeof SHANNON_MODELS }[] = [
+  const groups: { label: string; models: typeof LOXAIC_MODELS }[] = [
     { label: 'Server Models', models: filtered.filter(m => m.location === 'server') },
     { label: 'On-Device Models', models: filtered.filter(m => m.location === 'device') },
     { label: 'Remote Models', models: filtered.filter(m => m.location === 'remote') },

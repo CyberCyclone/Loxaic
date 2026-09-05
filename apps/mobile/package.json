@@ -1,5 +1,5 @@
 {
-  "name": "@shannon/mobile",
+  "name": "@loxaic/mobile",
   "version": "0.0.0",
   "private": true,
   "main": "expo-router/entry",
@@ -22,8 +22,8 @@
     "@gluestack-ui/utils": "^5.0.6",
     "@legendapp/motion": "^2.5.3",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "@shannon/api-client": "workspace:*",
-    "@shannon/types": "workspace:*",
+    "@loxaic/api-client": "workspace:*",
+    "@loxaic/types": "workspace:*",
     "expo": "~54.0.0",
     "expo-build-properties": "^1.0.10",
     "expo-clipboard": "~8.0.8",
@@ -55,7 +55,7 @@
     "uniwind": "^1.11.0"
   },
   "devDependencies": {
-    "@shannon/config-ts": "workspace:*",
+    "@loxaic/config-ts": "workspace:*",
     "@types/react": "^19.1.17",
     "babel-plugin-module-resolver": "^5.0.0",
     "babel-preset-expo": "^54.0.12",

@@ -14,7 +14,7 @@ import {
 } from "../config.js";
 
 function tmpDir() {
-  return mkdtempSync(path.join(os.tmpdir(), "shannon-config-test-"));
+  return mkdtempSync(path.join(os.tmpdir(), "loxaic-config-test-"));
 }
 
 describe("loadConfig", () => {
@@ -122,8 +122,8 @@ describe("buildConfig", () => {
 describe("advertiseUrlFor", () => {
   it("prefers an explicit advertise URL over anything derived", () => {
     // A reverse proxy or tailnet name the user knows better than we do.
-    expect(advertiseUrlFor({ advertiseUrl: "https://shannon.example.ts.net/", port: 4100 })).toBe(
-      "https://shannon.example.ts.net",
+    expect(advertiseUrlFor({ advertiseUrl: "https://loxaic.example.ts.net/", port: 4100 })).toBe(
+      "https://loxaic.example.ts.net",
     );
   });
 

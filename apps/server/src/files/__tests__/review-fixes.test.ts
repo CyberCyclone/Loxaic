@@ -7,7 +7,7 @@ import {
   maxBytesForMime,
   resolveAttachmentMime,
   sanitizeFilename,
-} from "@shannon/types";
+} from "@loxaic/types";
 
 /**
  * Regressions for review findings that had no coverage. Each one is a bug
@@ -79,14 +79,14 @@ describe("per-class size limits", () => {
 
 describe("readTextCapped (via extractText)", () => {
   it("does not materialize more than the cache ceiling", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "shannon-capped-"));
+    const dir = mkdtempSync(path.join(tmpdir(), "loxaic-capped-"));
     const prev = process.env.UPLOADS_DIR;
     process.env.UPLOADS_DIR = dir;
     try {
       const { extractText, readExtractedText } = await import("../extract.ts");
       const { attachmentPath } = await import("../storage.ts");
       const { v4: uuid } = await import("uuid");
-      const { MAX_CACHED_EXTRACTION_BYTES } = await import("@shannon/types");
+      const { MAX_CACHED_EXTRACTION_BYTES } = await import("@loxaic/types");
       const ref = uuid();
       // Comfortably over the cache ceiling.
       writeFileSync(attachmentPath(ref), "x".repeat(MAX_CACHED_EXTRACTION_BYTES + 500_000), "utf8");

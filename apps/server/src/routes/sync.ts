@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { eq } from "@shannon/db";
-import { db } from "@shannon/db";
-import { syncOps } from "@shannon/db/schema";
+import { eq } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { syncOps } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
-import type { SyncPushRequest, SyncPushResponse } from "@shannon/sync";
+import type { SyncPushRequest, SyncPushResponse } from "@loxaic/sync";
 
 export function syncRoutes(app: FastifyInstance) {
   // Push operations from device to server

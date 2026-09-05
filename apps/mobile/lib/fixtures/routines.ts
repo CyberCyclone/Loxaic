@@ -3,22 +3,22 @@ import type { Routine, RoutineRun } from '../types'
 export const ROUTINES: Routine[] = [
   {
     id: 'r1', name: 'Daily standup summary', prompt: 'Summarize yesterday\'s commits and flag anything risky',
-    cron: '0 9 * * 1-5', humanized: 'Weekdays 09:00', target: 'agent', directory: 'Open-Shannon/design',
+    cron: '0 9 * * 1-5', humanized: 'Weekdays 09:00', target: 'agent', directory: 'Loxaic/design',
     model: 'm3', lastRun: '6h ago', lastRunStatus: 'success', nextRun: 'Tomorrow 09:00', enabled: true,
   },
   {
     id: 'r2', name: 'Weekly dependency audit', prompt: 'Check for outdated/vulnerable dependencies and summarize',
-    cron: '0 10 * * 1', humanized: 'Mondays 10:00', target: 'agent', directory: 'Open-Shannon/api',
+    cron: '0 10 * * 1', humanized: 'Mondays 10:00', target: 'agent', directory: 'Loxaic/api',
     model: 'm1', lastRun: '3d ago', lastRunStatus: 'success', nextRun: 'Next Monday 10:00', enabled: true,
   },
   {
     id: 'r3', name: 'Nightly test runner', prompt: 'Run the full test suite and report failures',
-    cron: '0 2 * * *', humanized: 'Daily 02:00', target: 'agent', directory: 'Open-Shannon/sync',
+    cron: '0 2 * * *', humanized: 'Daily 02:00', target: 'agent', directory: 'Loxaic/sync',
     model: 'm2', lastRun: '14h ago', lastRunStatus: 'error', nextRun: 'Tonight 02:00', enabled: true,
   },
   {
     id: 'r4', name: 'Monthly changelog generator', prompt: 'Generate a changelog from merged PRs since last release',
-    cron: '0 0 1 * *', humanized: '1st of month 00:00', target: 'chat', directory: 'Open-Shannon/design',
+    cron: '0 0 1 * *', humanized: '1st of month 00:00', target: 'chat', directory: 'Loxaic/design',
     model: 'm2', lastRun: '2w ago', lastRunStatus: 'success', nextRun: 'Sep 1 00:00', enabled: false,
   },
 ]

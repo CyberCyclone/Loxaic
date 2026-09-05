@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { and, db, desc, eq, ilike, isNull, ne, or } from "@shannon/db";
-import { conversationShares, conversations, user } from "@shannon/db/schema";
+import { and, db, desc, eq, ilike, isNull, ne, or } from "@loxaic/db";
+import { conversationShares, conversations, user } from "@loxaic/db/schema";
 import { authenticate, requireAdmin } from "../auth/middleware";
 import { resolveAccess } from "../streams/authz";
 

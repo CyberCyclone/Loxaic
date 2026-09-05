@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import { AlertCircle, Copy, GitFork, Square } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
-import { attachmentClass, attachmentUrl } from '@shannon/api-client';
+import { attachmentClass, attachmentUrl } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';

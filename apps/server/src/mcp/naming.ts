@@ -1,4 +1,4 @@
-import { TOOLS } from "@shannon/agent";
+import { TOOLS } from "@loxaic/agent";
 import { MAX_TOOL_NAME } from "./sanitize.ts";
 
 /** Server slugs namespace tool names as `slug__tool`. No builtin tool name

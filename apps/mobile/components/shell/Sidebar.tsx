@@ -89,10 +89,10 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
       <HStack space="sm" className="items-center px-4 py-4">
         <Box className="h-8 w-8 items-center justify-center rounded-sm bg-primary">
           <Text size="xs" className="font-bold text-primary-foreground">
-            OS
+            L
           </Text>
         </Box>
-        <Text className="font-semibold text-foreground">Open-Shannon</Text>
+        <Text className="font-semibold text-foreground">Loxaic</Text>
       </HStack>
 
       <Box className="px-3 pb-2">

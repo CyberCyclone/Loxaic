@@ -4,7 +4,7 @@ export const AGENT_RUNS: AgentRun[] = [
   {
     id: 'a1',
     title: 'Refactor auth middleware',
-    target: 'Open-Shannon/design',
+    target: 'Loxaic/design',
     state: 'done',
     mode: 'manual',
     prompt: 'Can you look at the auth middleware in this workspace and suggest improvements? I think the error handling is inconsistent.',
@@ -67,7 +67,7 @@ export const AGENT_RUNS: AgentRun[] = [
   {
     id: 'a2',
     title: 'Debug WebSocket reconnect loop',
-    target: 'Open-Shannon/api',
+    target: 'Loxaic/api',
     state: 'awaiting_approval',
     mode: 'manual',
     prompt: 'My WebSocket client keeps reconnecting every 30 seconds even when the connection is stable.',
@@ -96,7 +96,7 @@ export const AGENT_RUNS: AgentRun[] = [
   {
     id: 'a3',
     title: 'Add JWT refresh endpoint',
-    target: 'Open-Shannon/api',
+    target: 'Loxaic/api',
     state: 'running',
     mode: 'auto',
     prompt: 'Add a JWT refresh token endpoint that accepts a valid refresh token and returns a new access token.',

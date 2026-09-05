@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { commandQuery, parseCommand } from "@shannon/types";
+import { commandQuery, parseCommand } from "@loxaic/types";
 
 describe("commandQuery", () => {
   it("shows everything on a bare slash", () => {

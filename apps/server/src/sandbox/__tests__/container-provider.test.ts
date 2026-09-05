@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
-import { sandboxes, user } from "@shannon/db/schema";
+import { db, eq } from "@loxaic/db";
+import { sandboxes, user } from "@loxaic/db/schema";
 import { getConversationSandbox } from "../../agent/sandbox-manager.ts";
 import type { SandboxHandle } from "../provider.ts";
 import { sandboxImageReady } from "./docker-available.ts";
@@ -64,7 +64,7 @@ describe.skipIf(!dockerReady)("container provider — writeFileBinary", () => {
     // A distinctive pattern, not all-zero, so a truncated-to-zero-length or
     // all-NUL failure mode would actually be caught by the spot checks below.
     for (let i = 0; i < size; i++) payload[i] = i % 251; // 251 is prime, avoids a short repeating cycle
-    const remotePath = "/home/shannon/binary-test.bin";
+    const remotePath = "/home/loxaic/binary-test.bin";
 
     await handle.writeFileBinary(remotePath, payload);
 

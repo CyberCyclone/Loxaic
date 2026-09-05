@@ -1,11 +1,11 @@
 # Remote access
 
-How to reach your Shannon server from outside your home network — phone (Expo Go),
+How to reach your Loxaic server from outside your home network — phone (Expo Go),
 laptop browser, or the Electron desktop app — **without opening any ports** on your
 router.
 
 The recommended path is [Tailscale](https://tailscale.com) (free for personal use:
-3 users, 100 devices), but nothing in Shannon depends on it. Any reverse proxy or
+3 users, 100 devices), but nothing in Loxaic depends on it. Any reverse proxy or
 VPN that gives you an HTTPS URL to the server works — skip to
 [Without Tailscale](#without-tailscale) if you bring your own.
 
@@ -58,8 +58,8 @@ docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
 
 Set `TS_AUTHKEY` in `.env` (create one at
 [admin/settings/keys](https://login.tailscale.com/admin/settings/keys)). The
-sidecar joins the tailnet as `shannon` and serves
-`https://shannon.<tailnet>.ts.net` → the server container. Config lives in
+sidecar joins the tailnet as `loxaic` and serves
+`https://loxaic.<tailnet>.ts.net` → the server container. Config lives in
 [`infra/tailscale/serve.json`](../infra/tailscale/serve.json).
 
 ## Expo Go on your phone
@@ -91,10 +91,10 @@ candidates on its own the way native/web builds do.
 **Embedded Tailscale (`tsnet`)**: set `TSNET_TARGET` (host:port of your
 `ts.net` address, e.g. `myserver.tail1234.ts.net:443`) before launching
 Electron, and its main process spawns a small bundled Go sidecar
-(`infra/tsnet-proxy`, built via `pnpm --filter @shannon/desktop
+(`infra/tsnet-proxy`, built via `pnpm --filter @loxaic/desktop
 build:tsnet-proxy`) that joins the tailnet as its own node — userspace
 WireGuard via [`tsnet`](https://pkg.go.dev/tailscale.com/tsnet), no OS-level
-VPN, no separate Tailscale install, only Shannon's own traffic goes through
+VPN, no separate Tailscale install, only Loxaic's own traffic goes through
 it — and exposes a local HTTP reverse proxy the renderer talks to. First run
 needs interactive approval: the sidecar prints a `login.tailscale.com/a/...`
 URL, which Electron opens in your default browser automatically. State
@@ -108,7 +108,7 @@ app is **self-contained**: it brings up its own embedded Postgres + server
 (default port `4100`) rather than falling back to a fixed URL — see
 [DEPLOY.md](DEPLOY.md#self-contained-app-desktop--headless) for the ports,
 data directory, and how a self-contained build and a dev server coexist on
-one host. `--remote=<url>` / `SHANNON_REMOTE_URL` skips all of this and
+one host. `--remote=<url>` / `LOXAIC_REMOTE_URL` skips all of this and
 connects to a server elsewhere, same as the mobile/web builds' Settings
 override. Mobile stays on the standalone Tailscale app — embedding on
 iOS/Android would
@@ -118,7 +118,7 @@ EAS dev-client build.
 
 ## Without Tailscale
 
-Any of these work — Shannon only needs an HTTPS URL in `PUBLIC_API_URL`:
+Any of these work — Loxaic only needs an HTTPS URL in `PUBLIC_API_URL`:
 
 - **Reverse proxy you already run** (Caddy, nginx, Traefik) with a certificate,
   forwarding to `localhost:4000` (enable WebSocket upgrades).

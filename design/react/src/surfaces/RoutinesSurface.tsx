@@ -13,7 +13,7 @@ interface RoutinesSurfaceProps {
 }
 
 export function RoutinesSurface({ onNavigate }: RoutinesSurfaceProps) {
-  const [routines, setRoutines] = useLocalStorage<Routine[]>('shannon-routines-data', ROUTINES)
+  const [routines, setRoutines] = useLocalStorage<Routine[]>('loxaic-routines-data', ROUTINES)
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Routine | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)

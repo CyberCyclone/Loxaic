@@ -2,8 +2,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
-import { db, eq, inArray } from "@shannon/db";
-import { sandboxes, user } from "@shannon/db/schema";
+import { db, eq, inArray } from "@loxaic/db";
+import { sandboxes, user } from "@loxaic/db/schema";
 import { getConversationSandbox, SandboxLimitError } from "../../agent/sandbox-manager.ts";
 import type { SandboxHandle } from "../provider.ts";
 import { sandboxImageReady } from "./docker-available.ts";
@@ -125,7 +125,7 @@ describe.skipIf(!dockerReady)("container hardening", () => {
     const { stdout } = await sandbox().exec([
       "bash",
       "-c",
-      'echo hello > /home/shannon/probe.txt && cat /home/shannon/probe.txt && python3 -c "print(2+2)"',
+      'echo hello > /home/loxaic/probe.txt && cat /home/loxaic/probe.txt && python3 -c "print(2+2)"',
     ]);
     expect(stdout).toContain("hello");
     expect(stdout).toContain("4");
@@ -175,7 +175,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
         conversationId: randomUUID(),
         containerId: `gone-${randomUUID()}`,
         provider: "container" as const,
-        image: "shannon-sandbox",
+        image: "loxaic-sandbox",
         status: "running" as const,
         limits: { memory: 512, cpu: 1 },
       })),

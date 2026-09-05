@@ -3,7 +3,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { formatTokens } from './KpiCard';
-import type { ConversationStats } from '@shannon/api-client';
+import type { ConversationStats } from '@loxaic/api-client';
 
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);

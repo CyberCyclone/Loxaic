@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { X, TriangleAlert, FileText } from 'lucide-react-native';
-import { attachmentClass } from '@shannon/api-client';
+import { attachmentClass } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';

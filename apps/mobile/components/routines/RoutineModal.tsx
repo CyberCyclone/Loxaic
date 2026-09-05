@@ -18,7 +18,7 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { CRON_PRESETS, humanizeCron, validateCron } from '@/lib/fixtures/routines';
-import type { Routine } from '@shannon/api-client';
+import type { Routine } from '@loxaic/api-client';
 
 interface RoutineModalProps {
   open: boolean;

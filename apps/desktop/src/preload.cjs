@@ -20,9 +20,9 @@ function readArg(name) {
   return arg ? decodeURIComponent(arg.slice(prefix.length)) : null;
 }
 
-const launchApiBaseUrl = readArg("shannon-api-base-url") || null;
+const launchApiBaseUrl = readArg("loxaic-api-base-url") || null;
 
-contextBridge.exposeInMainWorld("shannon", {
+contextBridge.exposeInMainWorld("loxaic", {
   platform: "electron",
   apiBaseUrl: launchApiBaseUrl,
 
@@ -32,12 +32,12 @@ contextBridge.exposeInMainWorld("shannon", {
    * of a handful of named things, and cannot ask it to do anything else.
    */
   instance: {
-    getState: () => ipcRenderer.invoke("shannon:getState"),
-    setMode: (config) => ipcRenderer.invoke("shannon:setMode", config),
-    probeEngine: () => ipcRenderer.invoke("shannon:probeEngine"),
-    probeHost: (url) => ipcRenderer.invoke("shannon:probeHost", url),
-    testDb: (input) => ipcRenderer.invoke("shannon:testDb", input),
-    detach: () => ipcRenderer.invoke("shannon:detach"),
+    getState: () => ipcRenderer.invoke("loxaic:getState"),
+    setMode: (config) => ipcRenderer.invoke("loxaic:setMode", config),
+    probeEngine: () => ipcRenderer.invoke("loxaic:probeEngine"),
+    probeHost: (url) => ipcRenderer.invoke("loxaic:probeHost", url),
+    testDb: (input) => ipcRenderer.invoke("loxaic:testDb", input),
+    detach: () => ipcRenderer.invoke("loxaic:detach"),
 
     /**
      * Fires whenever the stack changes — a mode switch, a detach, or the
@@ -48,8 +48,8 @@ contextBridge.exposeInMainWorld("shannon", {
      */
     onStackState: (callback) => {
       const listener = (_event, state) => { callback(state); };
-      ipcRenderer.on("shannon:stackState", listener);
-      return () => { ipcRenderer.off("shannon:stackState", listener); };
+      ipcRenderer.on("loxaic:stackState", listener);
+      return () => { ipcRenderer.off("loxaic:stackState", listener); };
     },
   },
 });

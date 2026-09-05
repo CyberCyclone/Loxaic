@@ -15,7 +15,7 @@ import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSandboxSettings } from '@/hooks/useSandboxSettings';
 import { useSession } from '@/lib/session';
-import type { SandboxEngine, SandboxMode } from '@shannon/api-client';
+import type { SandboxEngine, SandboxMode } from '@loxaic/api-client';
 
 type PendingWarning = { kind: 'host' } | { kind: 'network' } | null;
 

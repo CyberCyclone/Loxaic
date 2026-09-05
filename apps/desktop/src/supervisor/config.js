@@ -40,7 +40,7 @@ export function configPath(dataDir) {
  */
 export function defaultHostName() {
   const raw = os.hostname().replace(/\.local$/i, "").trim();
-  return raw || "Shannon Host";
+  return raw || "Loxaic Host";
 }
 
 /**

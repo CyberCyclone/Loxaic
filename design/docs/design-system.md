@@ -1,10 +1,10 @@
-# Shannon UI Design System
+# Loxaic UI Design System
 
 **Version:** 1.0 · **Last updated:** 2026-08-12
 
 ## 1. Overview
 
-Shannon is a self-hosted AI assistant with an agent harness. The UI provides five surfaces — chat, agent console, routines, stats, and a launcher — built as self-contained HTML files sharing a CSS token system and a JS component library.
+Loxaic is a self-hosted AI assistant with an agent harness. The UI provides five surfaces — chat, agent console, routines, stats, and a launcher — built as self-contained HTML files sharing a CSS token system and a JS component library.
 
 **Design goals:** data-dense, console-grade clarity; dark-first with system-aware light mode; one accent color used sparingly; responsive at 1440/768/390px.
 
@@ -13,27 +13,27 @@ Shannon is a self-hosted AI assistant with an agent harness. The UI provides fiv
 ```
 design/
 ├── index.html              # Launcher — links to all surfaces
-├── shannon.css             # Shared tokens + shell + components (316 lines)
-├── shannon-shared.js       # Settings modal, model modal v2, smart routing, location badges
+├── loxaic.css             # Shared tokens + shell + components (316 lines)
+├── loxaic-shared.js       # Settings modal, model modal v2, smart routing, location badges
 ├── assets/
 │   ├── theme-init.js       # Blocking theme bootstrap (system resolution, no FOUC, cross-tab sync)
 │   └── fonts/
 │       ├── fonts.css       # @font-face declarations (self-hosted Public Sans)
 │       └── *.woff2         # 3 weights: 400 Regular, 500 Medium, 600 SemiBold
-├── shannon-chat.html       # Chat surface
-├── shannon-agent.html      # Agent console surface
-├── shannon-routines.html   # Scheduled recurring agent runs
-├── shannon-stats.html      # Usage analytics
+├── loxaic-chat.html       # Chat surface
+├── loxaic-agent.html      # Agent console surface
+├── loxaic-routines.html   # Scheduled recurring agent runs
+├── loxaic-stats.html      # Usage analytics
 ├── docs/
 │   └── design-system.md    # This file
-├── AGENTS.md               # Agent instructions for working on the Shannon UI
+├── AGENTS.md               # Agent instructions for working on the Loxaic UI
 ├── plan.md                 # Design plan document
 └── NOTES.md                # Build notes, scoring, known gaps
 ```
 
 ## 3. Design Tokens
 
-All tokens are defined as CSS custom properties in `shannon.css`. Dark mode is the `:root` default; light mode overrides via `html[data-theme="light"]`.
+All tokens are defined as CSS custom properties in `loxaic.css`. Dark mode is the `:root` default; light mode overrides via `html[data-theme="light"]`.
 
 ### 3.1 Color Palette
 
@@ -98,28 +98,28 @@ Spacing follows a 4/8px baseline grid. Card padding: 16–24px. Touch targets: �
 
 - `:root` = dark tokens (default)
 - `html[data-theme="light"]` = light token overrides
-- `assets/theme-init.js` is a **blocking script** loaded in `<head>` before first paint — reads `localStorage['shannon-theme']`, resolves system preference via `matchMedia('(prefers-color-scheme: light)')`, and sets `data-theme` on `<html>`
+- `assets/theme-init.js` is a **blocking script** loaded in `<head>` before first paint — reads `localStorage['loxaic-theme']`, resolves system preference via `matchMedia('(prefers-color-scheme: light)')`, and sets `data-theme` on `<html>`
 - Default preference: `system` (respects OS dark/light setting)
 
-### 4.2 ShannonTheme API
+### 4.2 LoxaicTheme API
 
-Exposed on `window.ShannonTheme` by `theme-init.js`:
+Exposed on `window.LoxaicTheme` by `theme-init.js`:
 
 ```js
-ShannonTheme.get()        // Returns 'light' | 'dark' | 'system'
-ShannonTheme.set(pref)    // Sets preference, applies theme, persists to localStorage
-ShannonTheme.resolved()   // Returns the actually-resolved theme ('light' or 'dark')
+LoxaicTheme.get()        // Returns 'light' | 'dark' | 'system'
+LoxaicTheme.set(pref)    // Sets preference, applies theme, persists to localStorage
+LoxaicTheme.resolved()   // Returns the actually-resolved theme ('light' or 'dark')
 ```
 
 ### 4.3 Cross-Tab Sync
 
-- `storage` event listener: when another tab changes `shannon-theme`, this tab re-applies
+- `storage` event listener: when another tab changes `loxaic-theme`, this tab re-applies
 - `matchMedia` change listener: when OS preference changes and user selected "system", theme re-applies
 - `themechange` CustomEvent dispatched on `window` after every theme application — charts and other JS-rendered content listen for this to re-render
 
 ### 4.4 Settings Control
 
-The Appearance row in the Settings modal (General tab) has a three-button segmented control: **Light / Dark / System**. Wired to `ShannonTheme.set()` in `shannon-shared.js`.
+The Appearance row in the Settings modal (General tab) has a three-button segmented control: **Light / Dark / System**. Wired to `LoxaicTheme.set()` in `loxaic-shared.js`.
 
 ## 5. Component Inventory
 
@@ -182,7 +182,7 @@ Shared between chat and agent surfaces:
 
 ## 6. Surfaces
 
-### 6.1 Chat (`shannon-chat.html`)
+### 6.1 Chat (`loxaic-chat.html`)
 
 Conversation-based chat with:
 - Thread list with search, rename, pin, fork, rewind, export, delete
@@ -197,7 +197,7 @@ Conversation-based chat with:
 - Location badges (Server / On device)
 - Context panel with token meter and cost
 
-### 6.2 Agent Console (`shannon-agent.html`)
+### 6.2 Agent Console (`loxaic-agent.html`)
 
 Agent run console with:
 - Run header with status, model, elapsed time
@@ -208,7 +208,7 @@ Agent run console with:
 - Inspector slide-over with live todo list, changed files, context meter
 - Smart routing toggle in composer
 
-### 6.3 Routines (`shannon-routines.html`)
+### 6.3 Routines (`loxaic-routines.html`)
 
 Scheduled recurring agent runs:
 - Routine list with enable/disable toggles
@@ -218,7 +218,7 @@ Scheduled recurring agent runs:
 - Run history drawer
 - All persisted to localStorage
 
-### 6.4 Stats (`shannon-stats.html`)
+### 6.4 Stats (`loxaic-stats.html`)
 
 Usage analytics dashboard:
 - 4 KPI cards with sparklines (tokens, cache %, TTFT, tok/s)
@@ -246,10 +246,10 @@ Usage analytics dashboard:
 
 ## 8. Build Workflow
 
-1. Edit `shannon.css` for token/shell/component changes
-2. Edit `shannon-shared.js` for settings modal / model modal changes
-3. Edit surface files (`shannon-*.html`) for surface-specific content
+1. Edit `loxaic.css` for token/shell/component changes
+2. Edit `loxaic-shared.js` for settings modal / model modal changes
+3. Edit surface files (`loxaic-*.html`) for surface-specific content
 4. Add `<script src="assets/theme-init.js">` in `<head>` to any new HTML file
 5. Use `var(--token)` in inline styles — never raw hex values
 6. Run `grep -rn '#[0-9a-fA-F]\{3,8\}' *.html *.css *.js | sort -u` to verify literal discipline
-7. Sync to `/Users/caseygibson/Documents/Git/Open-Shannon/design/`
+7. Sync to `/Users/caseygibson/Documents/Git/Loxaic/design/`

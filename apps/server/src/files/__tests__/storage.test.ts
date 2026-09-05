@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { MAX_EXTRACTED_BYTES } from "@shannon/types";
+import { MAX_EXTRACTED_BYTES } from "@loxaic/types";
 import {
   MAX_HISTORY_IMAGE_BYTES,
   attachmentContentParts,
@@ -54,7 +54,7 @@ describe("attachmentPath", () => {
 });
 
 describe("readAsDataUri / attachmentContentParts", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-uploads-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-uploads-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(() => {
@@ -137,7 +137,7 @@ describe("readAsDataUri / attachmentContentParts", () => {
 });
 
 describe("attachmentContentParts — document truncation and overflow handling", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-doc-truncation-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-doc-truncation-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(() => {
@@ -216,7 +216,7 @@ describe("attachmentContentParts — document truncation and overflow handling",
  * demand for the price of one WebSocket frame.
  */
 describe("selectAffordableImages", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-budget-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-budget-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(() => {
@@ -307,7 +307,7 @@ describe("selectAffordableImages", () => {
  * oldest one.
  */
 describe("selectAffordableAttachments — documents", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-doc-budget-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-doc-budget-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(() => {
@@ -389,7 +389,7 @@ describe("sniffMime", () => {
  * file's suites.
  */
 describe("isDecodableText / verifyStoredBytes", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-verify-bytes-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-verify-bytes-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(() => {

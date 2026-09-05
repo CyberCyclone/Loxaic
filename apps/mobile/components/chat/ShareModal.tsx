@@ -17,7 +17,7 @@ import {
   searchUsers,
   type ConversationShare,
   type DirectoryUser,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 
 /**
  * Who a conversation is shared with, and at what level.

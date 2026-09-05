@@ -1,15 +1,15 @@
 import "./force-mock-inference.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray } from "@shannon/db";
-import { conversations, mcpServers, messages, sandboxes, usageRecords, user } from "@shannon/db/schema";
-import type { ContentBlock } from "@shannon/types";
+import { db, eq, inArray } from "@loxaic/db";
+import { conversations, mcpServers, messages, sandboxes, usageRecords, user } from "@loxaic/db/schema";
+import type { ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../streams/index.ts";
 import { getRun } from "../../streams/registry.ts";
 import { startAgentRun } from "../../streams/runs/agentRun.ts";
 import { startChatRun } from "../../streams/runs/chatRun.ts";
 import { getProviderByKind } from "../../sandbox/provider.ts";
-import type { PermissionMode } from "@shannon/agent";
+import type { PermissionMode } from "@loxaic/agent";
 import Docker from "dockerode";
 
 /**
@@ -29,7 +29,7 @@ let serverId: string;
 /**
  * Every case here runs on the mock inference loop, so only the one builtin
  * case that actually *executes* (bash) needs a container. Building
- * `shannon-sandbox` is a multi-minute ubuntu + build-essential + Node + Python
+ * `loxaic-sandbox` is a multi-minute ubuntu + build-essential + Node + Python
  * image — far too much to add to every CI run for a single assertion — so CI
  * has no such image and that one case is skipped there, the same way
  * drivers.test.ts skips its Redis contract when no Redis is reachable. It
@@ -40,7 +40,7 @@ const sandboxImage = await (async () => {
     const docker = process.env.CONTAINER_SOCKET
       ? new Docker({ socketPath: process.env.CONTAINER_SOCKET })
       : new Docker();
-    await docker.getImage("shannon-sandbox").inspect();
+    await docker.getImage("loxaic-sandbox").inspect();
     return true;
   } catch {
     return false;
@@ -233,7 +233,7 @@ describe("MCP end-to-end through the chat loop", () => {
     // bash is a builtin with no MCP wiring — proves chat's approval gate
     // covers builtins, not just MCP tools. Denied rather than approved: an
     // approved bash call would go on to create a sandbox, and on a machine
-    // without the shannon-sandbox image the container provider would build
+    // without the loxaic-sandbox image the container provider would build
     // it from scratch mid-test (multi-minute). The gate itself is the claim
     // here; real execution is the runIf(sandboxImage) case below.
     const turn = await runTurn("please run a bash command", "manual", false, { surface: "chat" });

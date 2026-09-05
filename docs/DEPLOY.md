@@ -1,6 +1,6 @@
 # Deploying the app
 
-Two ways to run Shannon — **self-contained** (one binary, brings its own
+Two ways to run Loxaic — **self-contained** (one binary, brings its own
 Postgres; recommended) or **Docker Compose** (containers for everything; the
 dev workflow, and an alternative if you'd rather manage Postgres yourself).
 Both serve the same frontend: one universal Expo codebase (`apps/mobile`)
@@ -29,14 +29,14 @@ pnpm package:dir # prod, unpacked (skips the installer step — faster iteration
   against its models in everyone's model picker. Requires Docker or Podman:
   hosting runs other people's agent commands, and the server refuses to start
   without container isolation (see [RUNTIME.md](RUNTIME.md)).
-- **Connect to a host** — no local stack at all; the app points at a Shannon
+- **Connect to a host** — no local stack at all; the app points at a Loxaic
   running elsewhere.
 
 You can change modes later from Settings without restarting the app, and a
 Host can use an external PostgreSQL instead of the embedded one.
 
 On launch the main process resolves how to reach a server, in order:
-`--remote=<url>` / `SHANNON_REMOTE_URL` (connect to a server elsewhere, skip
+`--remote=<url>` / `LOXAIC_REMOTE_URL` (connect to a server elsewhere, skip
 everything below) → the embedded-Tailscale proxy (`TSNET_TARGET`) → a
 LAN/tailnet candidate that answers `/health` → in dev, a running `pnpm dev`
 server on :4000 → **the stored instance mode** → otherwise, first-run
@@ -52,7 +52,7 @@ embedded-Tailscale sidecar.
 For server installs — a Proxmox VM/LXC, a bare Linux box, anything you'd
 rather not put a display on. Two equivalent ways to invoke it:
 
-- **Convenience, on a machine with a display**: `Open-Shannon --headless`.
+- **Convenience, on a machine with a display**: `Loxaic --headless`.
   The GUI binary re-execs itself as plain Node running `headless.js` before
   touching Electron/Chromium at all — best-effort, since a truly
   display-less machine may not let the GUI binary get that far.
@@ -61,17 +61,17 @@ rather not put a display on. Two equivalent ways to invoke it:
   initialises Chromium, so it needs no display and no `xvfb`, ever.
 
 ```ini
-# /etc/systemd/system/open-shannon.service
+# /etc/systemd/system/loxaic.service
 [Unit]
-Description=Open Shannon
+Description=Loxaic
 After=network.target
 
 [Service]
 Environment=ELECTRON_RUN_AS_NODE=1
-ExecStart=/opt/open-shannon/open-shannon /opt/open-shannon/resources/app/src/headless.js \
-  --data-dir=/var/lib/open-shannon --port=4100
+ExecStart=/opt/loxaic/loxaic /opt/loxaic/resources/app/src/headless.js \
+  --data-dir=/var/lib/loxaic --port=4100
 Restart=on-failure
-User=shannon
+User=loxaic
 
 [Install]
 WantedBy=multi-user.target
@@ -85,16 +85,16 @@ it. On a box that has never seen the GUI, add `--as-host` (with an optional
 yet; the flag exits with a message rather than silently starting a host
 instead.
 
-For the AppImage, extract it first — `./Open-Shannon.AppImage --appimage-extract`
-— and point `ExecStart` at `squashfs-root/open-shannon` and
+For the AppImage, extract it first — `./Loxaic.AppImage --appimage-extract`
+— and point `ExecStart` at `squashfs-root/loxaic` and
 `squashfs-root/resources/app/src/headless.js`. The `.deb` build gives a
-stable install path (`/opt/Open-Shannon` by default) without that extraction
+stable install path (`/opt/Loxaic` by default) without that extraction
 step, which is why the unit above assumes one.
 
-Flags: `--port` (default 4100, or `$SHANNON_PORT`), `--host` (default
+Flags: `--port` (default 4100, or `$LOXAIC_PORT`), `--host` (default
 `0.0.0.0`), `--data-dir` (default the platform user-data dir, or
-`$SHANNON_DATA_DIR`), `--inference-url`, `--mock-inference`, `--help`. The
-GUI's `--shannon-port`/`--shannon-data-dir` names are accepted too, so one
+`$LOXAIC_DATA_DIR`), `--inference-url`, `--mock-inference`, `--help`. The
+GUI's `--loxaic-port`/`--loxaic-data-dir` names are accepted too, so one
 set of flags works with either entry point.
 
 The GUI and the headless server share the same data directory by default (an
@@ -108,7 +108,7 @@ below) reuses the existing database.
 
 | | Server port | Postgres | Data directory |
 |---|---|---|---|
-| **Self-contained** (GUI or headless) | `4100` default — `SHANNON_PORT` / `--shannon-port` | embedded, ephemeral localhost port chosen at startup | platform user-data dir — `SHANNON_DATA_DIR` / `--shannon-data-dir` |
+| **Self-contained** (GUI or headless) | `4100` default — `LOXAIC_PORT` / `--loxaic-port` | embedded, ephemeral localhost port chosen at startup | platform user-data dir — `LOXAIC_DATA_DIR` / `--loxaic-data-dir` |
 | **Dev** (`pnpm dev` + Compose) | `4000` | Compose, `localhost:5432` | Compose volume |
 
 A self-contained release build and a dev checkout run **simultaneously on the
@@ -134,7 +134,7 @@ inference — is unchanged, and is still the dev workflow
 container-engine and inference matrices, and [`.env.example`](../.env.example)
 for every variable either deployment reads.
 
-## Website — served by the Shannon server
+## Website — served by the Loxaic server
 
 The Fastify server serves the Expo web export on the **same origin as the
 API** — no CORS, no mixed content, one URL for everything (LAN or tailnet).
@@ -143,10 +143,10 @@ does the build-and-serve step for you.
 
 ```bash
 # 1. Build the web app
-pnpm --filter @shannon/mobile export:web
+pnpm --filter @loxaic/mobile export:web
 
 # 2. (Re)start the server — it auto-detects apps/mobile/dist
-pnpm --filter @shannon/server dev
+pnpm --filter @loxaic/server dev
 ```
 
 Then open `http://<lan-ip>:4000` on your network (`:4100` for a

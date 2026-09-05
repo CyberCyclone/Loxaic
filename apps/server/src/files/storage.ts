@@ -1,7 +1,7 @@
 import { createReadStream, mkdirSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { attachmentClass, MAX_EXTRACTED_BYTES, type AttachmentRef } from "@shannon/types";
+import { attachmentClass, MAX_EXTRACTED_BYTES, type AttachmentRef } from "@loxaic/types";
 import type { ContentPart } from "../inference/provider.ts";
 import { estimateTokens } from "../inference/context.ts";
 import { readExtractedText } from "./extract.ts";

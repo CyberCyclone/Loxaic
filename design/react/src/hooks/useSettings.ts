@@ -5,8 +5,8 @@ const DEFAULT_SETTINGS: Settings = {
   name: 'Casey Gibson',
   defaultMode: 'manual',
   defaultThinkingLevel: 'Medium',
-  tailscale: 'shannon.tailscale.com',
-  endpoint: 'http://shannon:8080',
+  tailscale: 'loxaic.tailscale.com',
+  endpoint: 'http://loxaic:8080',
 }
 
 const DEFAULT_ROUTING: SmartRouting = {
@@ -17,13 +17,13 @@ const DEFAULT_ROUTING: SmartRouting = {
 }
 
 export function useSettings() {
-  return useLocalStorage<Settings>('shannon-settings', DEFAULT_SETTINGS)
+  return useLocalStorage<Settings>('loxaic-settings', DEFAULT_SETTINGS)
 }
 
 export function useSmartRouting() {
-  return useLocalStorage<SmartRouting>('shannon-smart-routing', DEFAULT_ROUTING)
+  return useLocalStorage<SmartRouting>('loxaic-smart-routing', DEFAULT_ROUTING)
 }
 
 export function useThinkingLevels() {
-  return useLocalStorage<Record<string, ThinkingLevel>>('shannon-thinking-levels', {})
+  return useLocalStorage<Record<string, ThinkingLevel>>('loxaic-thinking-levels', {})
 }

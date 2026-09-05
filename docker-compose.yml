@@ -4,7 +4,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: shannon
+      POSTGRES_DB: loxaic
     ports:
       - "5432:5432"
     volumes:
@@ -32,7 +32,7 @@ services:
       dockerfile: infra/docker/server.Dockerfile
     environment:
       PORT: 4000
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/shannon
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/loxaic
       INFERENCE_BASE_URL: http://inference:8080
       BETTER_AUTH_SECRET: dev-secret-change-me
       STREAM_BACKEND: redis

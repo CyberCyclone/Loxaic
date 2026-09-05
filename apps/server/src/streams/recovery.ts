@@ -1,6 +1,6 @@
-import { and, db, eq, lt } from "@shannon/db";
-import { messages } from "@shannon/db/schema";
-import type { ContentBlock } from "@shannon/types";
+import { and, db, eq, lt } from "@loxaic/db";
+import { messages } from "@loxaic/db/schema";
+import type { ContentBlock } from "@loxaic/types";
 import { getStreamBroker } from "./index.ts";
 
 /** Any Postgres row still `status: "streaming"` this long after boot has no

@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
-import { MAX_UPLOAD_BYTES } from "@shannon/types";
+import { MAX_UPLOAD_BYTES } from "@loxaic/types";
 import fastifyStatic from "@fastify/static";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -22,7 +22,7 @@ import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
 import { startRoutineScheduler, stopRoutineScheduler } from "./routines/scheduler";
 import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manager";
-import { closeDb } from "@shannon/db";
+import { closeDb } from "@loxaic/db";
 import { routineRoutes } from "./routes/routines";
 import { modelRoutes } from "./routes/models";
 import { configRoutes } from "./routes/config";
@@ -76,13 +76,13 @@ await loadServerSettings();
 // A Host serves other users' chats and agent runs, which is only defensible
 // with container isolation. Fail the boot rather than start unisolated —
 // enforced here, not in the desktop supervisor, so a hand-started server
-// cannot skip it. Solo/dev installs (no SHANNON_HOSTING) are unaffected.
+// cannot skip it. Solo/dev installs (no LOXAIC_HOSTING) are unaffected.
 const hostingBlocked = hostingBlockedReason();
 if (hostingBlocked) throw new Error(hostingBlocked);
 
 // ── Cluster identity ──────────────────────────────────────
 // The cluster is the set of instances sharing this database; its id is minted
-// here on first boot. Registration is a no-op without SHANNON_INSTANCE_ID
+// here on first boot. Registration is a no-op without LOXAIC_INSTANCE_ID
 // (a dev server or a Compose deployment has no durable per-machine identity).
 await ensureCluster();
 const registeredHostId = await registerHost();
@@ -121,7 +121,7 @@ await app.register(multipart, {
 app.get("/health", async () => {
   let dbStatus: "ok" | "error" = "ok";
   try {
-    const { db } = await import("@shannon/db");
+    const { db } = await import("@loxaic/db");
     await db.query.conversations.findFirst();
   } catch {
     dbStatus = "error";
@@ -176,7 +176,7 @@ sandboxTerminalWs(app);
 agentWsHandler(app);
 
 // ── Web app (Expo static export, same origin as the API) ──
-// Build with: pnpm --filter @shannon/mobile export:web
+// Build with: pnpm --filter @loxaic/mobile export:web
 // Override the location with WEB_DIST_DIR; skipped when the dir is absent.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const webDist =
@@ -223,7 +223,7 @@ if (existsSync(path.join(webDist, "index.html"))) {
 
 // ── Start ─────────────────────────────────────────────────
 // PORT=0 is valid (bind an ephemeral port; the supervisor reads the real one
-// from the SHANNON_LISTENING handshake), so no `|| 4000` here — that maps 0
+// from the LOXAIC_LISTENING handshake), so no `|| 4000` here — that maps 0
 // to the default.
 const PORT =
   process.env.PORT === undefined || process.env.PORT === ""
@@ -248,7 +248,7 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   // Machine-readable readiness handshake for the desktop supervisor (same
   // pattern as tsnet-proxy's `LISTENING <addr>` line). Must be plain stdout,
   // not pino, so a readline consumer can match it without parsing JSON.
-  console.log(`SHANNON_LISTENING ${String(actualPort)}`);
+  console.log(`LOXAIC_LISTENING ${String(actualPort)}`);
   startRoutineScheduler().catch((e: unknown) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });

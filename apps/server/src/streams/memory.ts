@@ -1,4 +1,4 @@
-import type { StreamEventKind } from "@shannon/types";
+import type { StreamEventKind } from "@loxaic/types";
 import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
 interface Entry { meta: StreamMeta; records: StreamRecord[] }

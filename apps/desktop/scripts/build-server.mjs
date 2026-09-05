@@ -1,10 +1,10 @@
 // Builds the server payload the packaged desktop app ships and spawns:
-//   resources/server/dist/       bundled server (tsup, @shannon/* inlined)
+//   resources/server/dist/       bundled server (tsup, @loxaic/* inlined)
 //   resources/server/node_modules  real npm deps via `pnpm deploy` (no
 //                                  workspace symlinks — Electron can't follow
 //                                  them outside the repo)
 //   resources/server/drizzle/    migrations copy for MIGRATIONS_DIR
-// Run via `pnpm --filter @shannon/desktop build:server`.
+// Run via `pnpm --filter @loxaic/desktop build:server`.
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -19,17 +19,17 @@ function run(args, cwd = repoRoot) {
   execFileSync(args[0], args.slice(1), { cwd, stdio: "inherit" });
 }
 
-run(["pnpm", "--filter", "@shannon/server", "build"]);
+run(["pnpm", "--filter", "@loxaic/server", "build"]);
 
 rmSync(outDir, { recursive: true, force: true });
 // pnpm 10 renamed the pre-v9 deploy behaviour behind --legacy; older versions
 // reject the flag, so fall back without it.
 try {
-  run(["pnpm", "--filter", "@shannon/server", "deploy", "--legacy", "--prod", outDir]);
+  run(["pnpm", "--filter", "@loxaic/server", "deploy", "--legacy", "--prod", outDir]);
 } catch {
   console.log("[build-server] deploy --legacy failed, retrying without the flag");
   rmSync(outDir, { recursive: true, force: true });
-  run(["pnpm", "--filter", "@shannon/server", "deploy", "--prod", outDir]);
+  run(["pnpm", "--filter", "@loxaic/server", "deploy", "--prod", outDir]);
 }
 
 // pnpm deploy also scaffolds an empty node_modules/.bin tree relative to the

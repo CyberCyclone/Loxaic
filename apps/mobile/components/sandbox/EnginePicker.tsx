@@ -3,7 +3,7 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Input, InputField } from '@/components/ui/input';
-import type { EngineProbe, SandboxEngine } from '@shannon/api-client';
+import type { EngineProbe, SandboxEngine } from '@loxaic/api-client';
 
 const ENGINES: { value: SandboxEngine; label: string }[] = [
   { value: 'auto', label: 'Auto' },

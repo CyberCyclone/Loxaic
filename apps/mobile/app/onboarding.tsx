@@ -119,17 +119,17 @@ export default function OnboardingScreen() {
         <VStack space="xl" className="w-full max-w-[520px]">
           <VStack space="xs" className="items-center">
             <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
-              <Text className="text-lg font-bold text-primary-foreground">OS</Text>
+              <Text className="text-lg font-bold text-primary-foreground">L</Text>
             </Box>
             <Heading size="xl" className="text-foreground">
-              Set up Open-Shannon
+              Set up Loxaic
             </Heading>
             <Text size="sm" className="text-center text-muted-foreground">
               {step === 'choose'
-                ? 'This machine can run Shannon for you, serve it to others, or connect to one already running.'
+                ? 'This machine can run Loxaic for you, serve it to others, or connect to one already running.'
                 : step === 'host'
                   ? 'Other people sign in to this machine and use its models.'
-                  : 'Connect to a Shannon already running somewhere else.'}
+                  : 'Connect to a Loxaic already running somewhere else.'}
             </Text>
           </VStack>
 
@@ -164,7 +164,7 @@ export default function OnboardingScreen() {
                 testID="onboarding.mode.client"
                 icon={Boxes}
                 title="Connect to a host"
-                body="Use a Shannon running on another machine. Nothing runs here."
+                body="Use a Loxaic running on another machine. Nothing runs here."
                 onPress={() => { setStep('client'); }}
                 disabled={busy}
               />
@@ -258,12 +258,12 @@ export default function OnboardingScreen() {
 
               {probe && !probe.ok && (
                 <Text testID="onboarding.client.error" size="sm" className="text-destructive">
-                  Couldn&apos;t reach a Shannon there: {probe.reason}
+                  Couldn&apos;t reach a Loxaic there: {probe.reason}
                 </Text>
               )}
               {probe?.ok && (
                 <Text testID="onboarding.client.found" size="sm" className="text-muted-foreground">
-                  Found {probe.cluster?.name ?? 'a Shannon host'}. You&apos;ll sign in next.
+                  Found {probe.cluster?.name ?? 'a Loxaic host'}. You&apos;ll sign in next.
                 </Text>
               )}
 

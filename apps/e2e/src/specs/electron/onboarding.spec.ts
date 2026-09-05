@@ -39,8 +39,8 @@ async function returnToOnboarding(): Promise<void> {
   rmSync(path.join(selfContainedDataDir ?? '', 'config.json'), { force: true });
   await browser.execute(async () => {
     const bridge = (window as unknown as {
-      shannon?: { instance?: { detach: () => Promise<unknown> } };
-    }).shannon;
+      loxaic?: { instance?: { detach: () => Promise<unknown> } };
+    }).loxaic;
     await bridge?.instance?.detach();
   });
   await browser.url('app://-/onboarding');
@@ -49,8 +49,8 @@ async function returnToOnboarding(): Promise<void> {
 async function instanceState(): Promise<InstanceState | null> {
   return browser.execute(async () => {
     const bridge = (window as unknown as {
-      shannon?: { instance?: { getState: () => Promise<InstanceState> } };
-    }).shannon;
+      loxaic?: { instance?: { getState: () => Promise<InstanceState> } };
+    }).loxaic;
     return (await bridge?.instance?.getState()) ?? null;
   });
 }

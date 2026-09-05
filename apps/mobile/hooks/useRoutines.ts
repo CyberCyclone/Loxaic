@@ -8,7 +8,7 @@ import {
   getRoutineRuns,
   type Routine,
   type RoutineRun,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
 
 export function useRoutines(token: string | null) {
