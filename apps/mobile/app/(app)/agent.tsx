@@ -3,6 +3,8 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, TriangleAlert } from 'lucide-react-native';
 import { findCommand } from '@shannon/api-client';
+import { OfflineBanner } from '@/components/shell/OfflineBanner';
+import { useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -31,6 +33,7 @@ import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
 export default function AgentScreen() {
+  const connection = useConnection();
   const shell = useShell();
   const { token } = useSession();
   const router = useRouter();
@@ -187,6 +190,7 @@ export default function AgentScreen() {
             </Text>
           </Pressable>
         )}
+        <OfflineBanner />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -219,7 +223,9 @@ export default function AgentScreen() {
                 readOnlyReason={
                   activeRun && !canEdit(activeRun)
                     ? 'This run is shared with you for viewing. You can follow it as it happens, but not send.'
-                    : null
+                    : connection === 'online'
+                      ? null
+                      : "You're offline. This is your saved copy of the run — sending will work again once your server is reachable."
                 }
               />
             </VStack>

@@ -13,7 +13,9 @@ import {
   type Session,
 } from '@shannon/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
-import { electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
+import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
+import { setConnectionState } from './connection';
+import { clearCacheForEndpoint, rememberUserId } from './message-cache';
 import { hydrateStorage } from './storage';
 
 type SessionUser = Session['user'];
@@ -37,6 +39,20 @@ interface SessionState {
 }
 
 const SessionContext = createContext<SessionState | null>(null);
+
+/**
+ * Remember who this endpoint is signed in as, for offline cache scoping.
+ *
+ * Called from *every* path that establishes a session — bootstrap, sign-in,
+ * and sign-up alike. Wiring it only into the bootstrap looked sufficient and
+ * wasn't: a fresh sign-up sets the user from its own response and never goes
+ * through that branch, so the very first session on a machine remembered
+ * nothing and its cache was unreadable offline.
+ */
+function rememberSessionUser(userId: string): void {
+  const endpoint = currentEndpoint();
+  if (endpoint) rememberUserId(endpoint, userId);
+}
 
 export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
@@ -65,7 +81,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       try {
         const info = await apiGetSession();
         if (info) {
+          setConnectionState('online');
           sessionUser = info.user;
+          // Remembered so the cache can still be scoped when the server is
+          // unreachable — see message-cache's rememberUserId.
+          rememberSessionUser(info.user.id);
         } else {
           // Dead token. It has to be cleared, not just left unused: the app
           // gate in app/(app)/_layout.tsx keys on `token` alone, so keeping
@@ -75,7 +95,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           stored = null;
         }
       } catch {
-        // Server unreachable — no conclusion can be drawn about the token.
+        // Server unreachable — no conclusion can be drawn about the token,
+        // but this *is* the earliest reliable signal that the host is down,
+        // and it is what puts the app into its offline state before a single
+        // screen renders.
+        setConnectionState('offline');
       }
     }
 
@@ -139,6 +163,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await saveToken(session.token); // also sets the api-client's AUTH_TOKEN
     setToken(session.token);
     setUser(session.user);
+    rememberSessionUser(session.user.id);
     return session;
   }, []);
 
@@ -148,13 +173,23 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       await saveToken(session.token); // also sets the api-client's AUTH_TOKEN
       setToken(session.token);
       setUser(session.user);
+      rememberSessionUser(session.user.id);
       return session;
     },
     [],
   );
 
   const signOut = useCallback(async () => {
+    // Sign-out is the moment a user expects their content to stop being
+    // reachable on this device — and the cache is plaintext conversation
+    // bodies in localStorage on web/Electron. Clearing it was wired only into
+    // Electron detach, which looked deliberate and wasn't: detach is a
+    // desktop-only path, sign-out is the universal one. The remembered user
+    // id goes with it (same prefix) — keeping it would leave a stale record of
+    // the last account used on the machine, scoping data that no longer exists.
+    const endpoint = currentEndpoint();
     await clearToken(); // also clears the api-client's AUTH_TOKEN
+    if (endpoint) clearCacheForEndpoint(endpoint);
     setToken(null);
     setUser(null);
   }, []);

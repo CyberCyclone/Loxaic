@@ -88,6 +88,11 @@ export interface Conversation {
   model: string
   location: MessageLocation
   msgs: Message[]
+  /** Server-side last-activity timestamp (ISO). The offline cache sorts and
+   * evicts on this rather than on when it happened to write a row — the two
+   * disagree, and the second one is meaningless to a user. Absent on a
+   * locally-created conversation until the server has listed it. */
+  updatedAt?: string
   /** What this user may do here. Absent means owner — a locally-created
    * conversation that hasn't round-tripped through the server yet is always
    * the creator's own. */
