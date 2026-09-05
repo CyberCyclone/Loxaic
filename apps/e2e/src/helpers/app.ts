@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, isVisible, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, isVisible, platform, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
@@ -85,6 +85,7 @@ export async function signUp(creds: Credentials): Promise<void> {
   await typeInto('login.password', creds.password);
   await tap('login.submit');
   await waitForComposerReady();
+  await dismissIosSavePasswordPrompt();
 }
 
 export async function signIn(creds: Credentials): Promise<void> {
@@ -93,6 +94,27 @@ export async function signIn(creds: Credentials): Promise<void> {
   await typeInto('login.password', creds.password);
   await tap('login.submit');
   await waitForComposerReady();
+  await dismissIosSavePasswordPrompt();
+}
+
+/**
+ * iOS 26's Passwords app raises a "Save Password?" sheet over the app right
+ * after a credential submit (the login fields are `textContentType="password"`,
+ * which is correct for real users). It is not a UIAlertController, so
+ * `autoDismissAlerts` never sees it, and the next tap the spec makes lands on
+ * the sheet instead of the app — the composer's attach sheet "never opened"
+ * for exactly this reason on the first iOS 26 run. It appears only once per
+ * install and only on iOS 26+ (iOS 17 simulators never show it), so this is
+ * conditional and cheap when absent.
+ */
+async function dismissIosSavePasswordPrompt(): Promise<void> {
+  if (platform() !== 'ios') return;
+  const notNow = $('~Not Now');
+  const appeared = await notNow.waitForExist({ timeout: 4_000 }).catch(() => false);
+  if (appeared) {
+    await notNow.click();
+    await browser.pause(300);
+  }
 }
 
 export async function signOut(): Promise<void> {

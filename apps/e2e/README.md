@@ -81,7 +81,15 @@ pnpm --filter @loxaic/e2e test:android
 ```
 
 Needs the Android SDK (`ANDROID_HOME`, or Android Studio's default location) and a running
-emulator or connected device.
+emulator or connected device. `expo prebuild` regenerates `android/gradle.properties` with
+`org.gradle.jvmargs=-Xmx2048m -XX:MaxMetaspaceSize=512m`, which is not enough for a clean
+SDK 57 / React Native 0.86 release build — KSP and lint die with `Metaspace` — so pass a
+bigger daemon on the command line (or set the same in `~/.gradle/gradle.properties`, which
+survives prebuilds):
+
+```bash
+./gradlew assembleRelease -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g"
+```
 
 A **release** build is used because release embeds the JS bundle, so the app under test is
 self-contained and no Metro server has to stay alive beside the suite. It is signed with the
