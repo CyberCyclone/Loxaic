@@ -126,7 +126,9 @@ export async function startCompactRun(input: {
   const guidance = input.args?.trim();
   const broker = getStreamBroker();
 
-  await assertConversationAccess(userId, convId);
+  // /compact rewrites the conversation's replayed history, so it is an
+  // editor action rather than a reader's convenience.
+  await assertConversationAccess(userId, convId, "editor");
 
   if (getRunByConversation(convId)) {
     throw new Error("A response is already in progress for this conversation");

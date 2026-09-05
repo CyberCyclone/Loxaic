@@ -19,6 +19,8 @@ import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
+import { canEdit } from '@/lib/types';
+import { ShareModal } from '@/components/chat/ShareModal';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -58,6 +60,7 @@ export default function ChatScreen() {
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
+  const [sharingId, setSharingId] = useState<string | null>(null);
 
   const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
   const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
@@ -107,12 +110,20 @@ export default function ChatScreen() {
       onFork={handleFork}
       onRename={handleRename}
       onDelete={handleDelete}
+      onShare={(id) => { setSharingId(id); }}
     />
   );
 
   return (
     <HStack className="h-full flex-1">
       {breakpoint === 'wide' && threadList}
+
+      <ShareModal
+        open={!!sharingId}
+        onClose={() => { setSharingId(null); }}
+        conversationId={sharingId}
+        title={conversations.find((c) => c.id === sharingId)?.title ?? ''}
+      />
 
       <VStack className="h-full flex-1">
         <MainHeader
@@ -154,6 +165,11 @@ export default function ChatScreen() {
           onOpenModelModal={() => { setModelModalOpen(true); }}
           surface="chat"
           onRunCommand={handleRunCommand}
+          readOnlyReason={
+            activeConv && !canEdit(activeConv)
+              ? 'This conversation is shared with you for viewing. You can read it as it happens, but not send.'
+              : null
+          }
         />
         </KeyboardAvoidingView>
       </VStack>

@@ -46,12 +46,25 @@ export function isConversationBusy(conversationId: string): boolean {
   return runByConversation.has(conversationId);
 }
 
-/** Finds the run (owned by `userId`) with a pending approval for `callId`.
- * Approve/deny only carry a call_id, not a stream_id — this both locates
- * the run and enforces that a user can only resolve their own approvals. */
-export function findRunByApprovalCallId(userId: string, callId: string): RunHandle | undefined {
+/**
+ * Every run with a pending approval for `callId`.
+ *
+ * Approve/deny carry only a call_id, so this locates; it does **not**
+ * authorize — callers check the caller's role on each `conversationId` (see
+ * ws/chat.ts's `mayActOnRun`) and act on the one that passes.
+ *
+ * Plural, deliberately. `call_id` is *model*-supplied and only unique within
+ * one response: chat templates routinely emit `call_0`, `call_1`, and the
+ * local fallback is `call_<index>_<ms>`, which two runs starting in the same
+ * millisecond share. Returning the first match let an approval land on a
+ * different run that happened to hold the same id — and, across two users,
+ * silently swallow the legitimate one. Handing back all candidates lets the
+ * caller pick the run they are actually allowed to answer for.
+ */
+export function findRunsByApprovalCallId(callId: string): RunHandle[] {
+  const out: RunHandle[] = [];
   for (const handle of runsByStreamId.values()) {
-    if (handle.userId === userId && handle.approvals.has(callId)) return handle;
+    if (handle.approvals.has(callId)) out.push(handle);
   }
-  return undefined;
+  return out;
 }

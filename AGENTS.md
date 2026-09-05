@@ -237,6 +237,40 @@ screenshots showing that behaviour working. Writing those tests is the implement
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
 
+### Conversation sharing and roles
+
+- **One ordered role, resolved in one place.** `viewer < editor < owner`
+  (`streams/authz.ts`). `resolveAccess` resolves **owner → explicit share → admin**, and
+  `assertConversationAccess(userId, convId, minimum)` is the WS chokepoint. Ownership lives on
+  `conversations.ownerId` and is deliberately *not* a row in `conversation_shares` — two
+  sources of truth for the same fact eventually disagree, and "owner" is therefore not a
+  grantable role (a share payload asking for it degrades to viewer rather than escalating).
+- **Admin resolves to `viewer`, never higher**, with `viaAdmin: true` on the grant. An admin
+  can see any conversation; seeing is not acting. An admin who needs to participate shares it
+  to themselves, and `conversation_shares.createdBy` records that they did. A real share
+  always beats the admin fallback, so a genuinely-granted admin editor isn't demoted by their
+  own admin status.
+- **Not-found, not-shared, and shared-too-low all raise the same `NotFoundError`.** Never
+  branch on which it was — the route tests assert the responses are byte-identical.
+- **`stop` and `approve` authorize on the conversation, not the run's starter.**
+  `run.userId === userId` used to be both the lookup and the authorization; that breaks as
+  soon as a conversation has editors besides its owner, and runs deliberately outlive the
+  socket that began them. `findRunByApprovalCallId` now only *locates* — `mayActOnRun` in the
+  WS handlers is what authorizes. Both paths still no-op silently on refusal.
+- **Revoking takes effect on the revoked user's next command**, not instantly: their live
+  socket keeps the stream it is already tapped into until it re-subscribes. Every command
+  re-authorizes, so nothing new reaches them, but this is not an emergency kill switch.
+- **REST goes through `hasRole`**, not inlined ownership predicates. Reading a thread needs
+  viewer; model/MCP prefs and delete stay owner-only. **Sandbox routes stay owner-only** —
+  terminal access is arbitrary code execution, not participation in a chat.
+- **Attachment reads extend to "appears in a conversation you can see"**, scoped to
+  conversations the caller can access — otherwise a shared thread renders its messages and
+  404s every image in them. The jsonb predicate matches the reaper's (`block->>'kind' =
+  'attachment'`); a future ref-carrying block kind has to teach both.
+- **e2e login waits for either `composer.input` or `composer.readOnly`.** A viewer's composer
+  is replaced by an explanation, so waiting on the input alone hangs for exactly the user the
+  sharing spec signs in.
+
 ### File attachments
 
 - **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**

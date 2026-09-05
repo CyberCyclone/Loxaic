@@ -1,5 +1,5 @@
-import { db, eq, inArray } from "@shannon/db";
-import { attachments, conversations, messages } from "@shannon/db/schema";
+import { and, db, eq, inArray } from "@shannon/db";
+import { attachments, conversationShares, conversations, messages, user } from "@shannon/db/schema";
 import type { AttachmentRef } from "@shannon/types";
 import { MAX_ATTACHMENTS } from "@shannon/types";
 import { isValidRef } from "../files/storage.ts";
@@ -14,22 +14,98 @@ export class NotFoundError extends Error {
   }
 }
 
-export interface AccessGrant { conversationId: string }
+/**
+ * What a user may do in a conversation, weakest first. Ordered so a minimum
+ * requirement is a numeric comparison rather than a set of special cases —
+ * see `atLeast`.
+ *
+ * `viewer` reads and streams. `editor` also sends, stops runs, and answers
+ * tool approvals. `owner` additionally reconfigures the conversation: sharing,
+ * renaming, deleting, model and MCP preferences — and the sandbox terminal,
+ * which is arbitrary code execution rather than participation in a chat.
+ */
+export const ROLES = ["viewer", "editor", "owner"] as const;
+export type ConversationRole = (typeof ROLES)[number];
+
+const RANK: Record<ConversationRole, number> = { viewer: 0, editor: 1, owner: 2 };
+
+export function atLeast(role: ConversationRole, minimum: ConversationRole): boolean {
+  return RANK[role] >= RANK[minimum];
+}
+
+export interface AccessGrant {
+  conversationId: string;
+  role: ConversationRole;
+  /** True when the grant came from the admin role rather than ownership or an
+   * explicit share. Callers that must not let an admin *act* (as opposed to
+   * look) branch on this rather than on the role. */
+  viaAdmin: boolean;
+}
 
 /**
  * Single authz chokepoint for every conversation-scoped WS command
  * (chat.send/agent.send with a conversation_id, stream.subscribe, and via
- * stream meta's userId: stream.stop/agent.approve/agent.deny). "Doesn't
- * exist" and "exists but isn't yours" resolve identically (NotFoundError),
- * from the same single query — no oracle either way.
+ * stream meta's userId: stream.stop/agent.approve/agent.deny).
+ *
+ * Resolution order is owner → explicit share → admin. Admin comes last and
+ * grants only `viewer`: an admin can see any conversation, which the product
+ * requires, but "see" is not "act" — an admin who wants to participate can
+ * share the conversation to themselves, and that leaves a row saying so.
+ *
+ * "Doesn't exist", "exists but isn't shared with you", and "shared but at too
+ * low a role" must stay indistinguishable to the caller — every one of them
+ * surfaces as the same NotFoundError. Never branch on which it was.
  */
-export async function assertConversationAccess(userId: string, conversationId: string): Promise<AccessGrant> {
+export async function assertConversationAccess(
+  userId: string,
+  conversationId: string,
+  minimum: ConversationRole = "viewer",
+): Promise<AccessGrant> {
+  const grant = await resolveAccess(userId, conversationId);
+  if (!grant || !atLeast(grant.role, minimum)) throw new NotFoundError();
+  return grant;
+}
+
+/** The grant itself, or null. Separate from the assert so callers that need
+ * to *decide* rather than *reject* (the attachment reader, the sidebar) don't
+ * have to catch an exception to ask a question. */
+export async function resolveAccess(
+  userId: string,
+  conversationId: string,
+): Promise<AccessGrant | null> {
   const row = await db.query.conversations.findFirst({
     where: eq(conversations.id, conversationId),
-    columns: { id: true, ownerId: true },
+    columns: { id: true, ownerId: true, deletedAt: true },
   });
-  if (row?.ownerId === userId) return { conversationId };
-  throw new NotFoundError();
+  // A soft-deleted conversation is absent for access purposes. The list
+  // endpoint already hides it, but share rows outlive the delete, so without
+  // this a guest who kept the id could still read the thread, stream it, pull
+  // its attachments, and — as an editor — keep sending into it. "Delete" has
+  // to mean revoke, for the owner too.
+  if (!row || row.deletedAt) return null;
+  if (row.ownerId === userId) return { conversationId, role: "owner", viaAdmin: false };
+
+  const share = await db.query.conversationShares.findFirst({
+    where: and(
+      eq(conversationShares.conversationId, conversationId),
+      eq(conversationShares.userId, userId),
+    ),
+    columns: { role: true },
+  });
+  if (share) return { conversationId, role: share.role, viaAdmin: false };
+
+  if (await isAdmin(userId)) return { conversationId, role: "viewer", viaAdmin: true };
+  return null;
+}
+
+/** Admin lookup, by id rather than by session, because the WS path has only
+ * the user id by the time authorization runs. */
+async function isAdmin(userId: string): Promise<boolean> {
+  const row = await db.query.user.findFirst({
+    where: eq(user.id, userId),
+    columns: { role: true },
+  });
+  return row?.role === "admin";
 }
 
 /** Guards against a client-supplied parent_id pointing at a message in a
