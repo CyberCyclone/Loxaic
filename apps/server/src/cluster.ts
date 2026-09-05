@@ -17,6 +17,19 @@ import { hosts, serverSettings } from "@loxaic/db/schema";
 
 const CLUSTER_KEY = "cluster";
 
+/**
+ * The cluster's display name. Not user-settable — nothing writes this row but
+ * `ensureCluster` — so it is purely the product brand, and a stored value that
+ * disagrees is a stale brand rather than someone's choice to preserve.
+ *
+ * That is why `ensureCluster` refreshes it. The name is minted once, so after
+ * the Loxaic rename every database that had booted before kept announcing
+ * "Shannon" — over `GET /v1/cluster`, the desktop `loxaic:probeHost` reply,
+ * and the join screen a client sees before signing in. The cluster *id* is
+ * the identity here and is never rewritten; the name is a label.
+ */
+const CLUSTER_NAME = "Loxaic";
+
 /** Refresh interval for this instance's heartbeat. Comfortably under the
  * staleness window a reader would apply, so a live host is never mistaken for
  * a departed one because of one slow tick. */
@@ -61,11 +74,17 @@ export async function ensureCluster(): Promise<ClusterIdentity> {
   });
   const stored = existing?.value as Partial<ClusterIdentity> | undefined;
   if (stored?.id) {
-    cached = { id: stored.id, name: stored.name ?? "Loxaic" };
+    cached = { id: stored.id, name: CLUSTER_NAME };
+    if (stored.name !== CLUSTER_NAME) {
+      await db
+        .update(serverSettings)
+        .set({ value: cached })
+        .where(eq(serverSettings.key, CLUSTER_KEY));
+    }
     return cached;
   }
 
-  const minted: ClusterIdentity = { id: randomUUID(), name: "Loxaic" };
+  const minted: ClusterIdentity = { id: randomUUID(), name: CLUSTER_NAME };
   await db
     .insert(serverSettings)
     .values({ key: CLUSTER_KEY, value: minted })
@@ -91,7 +110,10 @@ export async function getCluster(): Promise<ClusterIdentity | null> {
   });
   const stored = existing?.value as Partial<ClusterIdentity> | undefined;
   if (!stored?.id) return null;
-  cached = { id: stored.id, name: stored.name ?? "Loxaic" };
+  // Reports the current brand even for a row `ensureCluster` has not repaired
+  // yet, but never writes: this is reached by an unauthenticated route, and
+  // boot is where the row is fixed.
+  cached = { id: stored.id, name: CLUSTER_NAME };
   return cached;
 }
 

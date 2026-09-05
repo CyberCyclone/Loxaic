@@ -21,13 +21,20 @@ vi.mock('react-native', () => ({
 
 vi.mock('@react-native-async-storage/async-storage', () => ({
   default: {
-    getAllKeys: async () => [...asyncStore.keys()],
-    multiGet: async (keys: string[]) => keys.map((k) => [k, asyncStore.get(k) ?? null]),
-    multiRemove: async (keys: string[]) => {
+    getAllKeys: () => Promise.resolve([...asyncStore.keys()]),
+    multiGet: (keys: string[]) => Promise.resolve(keys.map((k) => [k, asyncStore.get(k) ?? null])),
+    multiRemove: (keys: string[]) => {
       for (const k of keys) asyncStore.delete(k);
+      return Promise.resolve();
     },
-    setItem: async (k: string, v: string) => void asyncStore.set(k, v),
-    removeItem: async (k: string) => void asyncStore.delete(k),
+    setItem: (k: string, v: string) => {
+      asyncStore.set(k, v);
+      return Promise.resolve();
+    },
+    removeItem: (k: string) => {
+      asyncStore.delete(k);
+      return Promise.resolve();
+    },
   },
 }));
 
@@ -52,16 +59,23 @@ describe('purgePreRenameKeys on web', () => {
     platform.OS = 'web';
     local.clear();
     for (const [k, v] of Object.entries({ ...PRE_RENAME, ...CURRENT })) local.set(k, v);
-    globalThis.localStorage = {
+    const fake = {
       get length() {
         return local.size;
       },
       key: (i: number) => [...local.keys()][i] ?? null,
       getItem: (k: string) => local.get(k) ?? null,
-      setItem: (k: string, v: string) => void local.set(k, v),
-      removeItem: (k: string) => void local.delete(k),
-      clear: () => local.clear(),
-    } as unknown as Storage;
+      setItem: (k: string, v: string) => {
+        local.set(k, v);
+      },
+      removeItem: (k: string) => {
+        local.delete(k);
+      },
+      clear: () => {
+        local.clear();
+      },
+    };
+    globalThis.localStorage = fake;
   });
 
   it('deletes every pre-rename key, credentials and cached content included', async () => {
@@ -107,9 +121,7 @@ describe('purgePreRenameKeys on native', () => {
     asyncStore.clear();
     const broken = await import('@react-native-async-storage/async-storage');
     const original = broken.default.getAllKeys;
-    broken.default.getAllKeys = async () => {
-      throw new Error('AsyncStorage unavailable');
-    };
+    broken.default.getAllKeys = () => Promise.reject(new Error('AsyncStorage unavailable'));
     await expect(purgePreRenameKeys()).resolves.toBeUndefined();
     broken.default.getAllKeys = original;
   });
