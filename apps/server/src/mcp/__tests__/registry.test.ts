@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
-import { mcpServers, user, userPrefs } from "@shannon/db/schema";
-import { toOpenAiTools } from "@shannon/agent";
+import { db, eq } from "@loxaic/db";
+import { mcpServers, user, userPrefs } from "@loxaic/db/schema";
+import { toOpenAiTools } from "@loxaic/agent";
 import { buildToolset } from "../registry.ts";
 import { encryptSecrets } from "../secrets.ts";
 import { MAX_RESULT_BYTES } from "../sanitize.ts";

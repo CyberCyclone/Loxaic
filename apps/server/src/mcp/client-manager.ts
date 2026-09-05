@@ -1,8 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { db, eq } from "@shannon/db";
-import { mcpServers } from "@shannon/db/schema";
+import { db, eq } from "@loxaic/db";
+import { mcpServers } from "@loxaic/db/schema";
 import { assertPublicUrl } from "../agent/executor.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 import { MAX_TOOLS_PER_SERVER, sanitizeToolMeta, type SanitizedToolMeta } from "./sanitize.ts";
@@ -51,7 +51,7 @@ function asStringRecord(value: unknown): Record<string, string> {
 
 async function connect(userId: string, row: McpServerRow): Promise<Entry> {
   const secrets = rowSecrets(row);
-  const client = new Client({ name: "open-shannon", version: "1.0.0" });
+  const client = new Client({ name: "loxaic", version: "1.0.0" });
 
   try {
     if (row.transport === "stdio") {

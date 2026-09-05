@@ -1,8 +1,8 @@
 {
   "version": 1,
   "kind": "html",
-  "title": "shannon-chat.html",
-  "entry": "shannon-chat.html",
+  "title": "loxaic-stats.html",
+  "entry": "loxaic-stats.html",
   "renderer": "html",
   "status": "complete",
   "exports": [
@@ -10,8 +10,8 @@
     "pdf",
     "zip"
   ],
-  "createdAt": "2026-08-11T11:44:22.290Z",
-  "updatedAt": "2026-08-11T11:44:22.290Z",
+  "createdAt": "2026-08-11T11:43:18.289Z",
+  "updatedAt": "2026-08-11T11:43:18.289Z",
   "metadata": {
     "inferred": true,
     "reconciled": true

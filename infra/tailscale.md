@@ -1,4 +1,4 @@
-# Tailscale Setup — Open-Shannon
+# Tailscale Setup — Loxaic
 
 ## Host (Docker server)
 

@@ -1,8 +1,8 @@
 import type { Redis } from "ioredis";
-import type { StreamEventKind, StreamStatus } from "@shannon/types";
+import type { StreamEventKind, StreamStatus } from "@loxaic/types";
 import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
-const P = "shannon";
+const P = "loxaic";
 const streamKey = (id: string) => `${P}:stream:${id}`;
 const metaKey = (id: string) => `${P}:stream:${id}:meta`;
 const convActiveKey = (convId: string) => `${P}:conv:${convId}:active`;

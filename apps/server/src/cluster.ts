@@ -12,8 +12,8 @@
  * module is shaped so that only `listHosts` consumers change when it does.
  */
 import { randomUUID } from "node:crypto";
-import { db, eq, sql } from "@shannon/db";
-import { hosts, serverSettings } from "@shannon/db/schema";
+import { db, eq, sql } from "@loxaic/db";
+import { hosts, serverSettings } from "@loxaic/db/schema";
 
 const CLUSTER_KEY = "cluster";
 
@@ -61,11 +61,11 @@ export async function ensureCluster(): Promise<ClusterIdentity> {
   });
   const stored = existing?.value as Partial<ClusterIdentity> | undefined;
   if (stored?.id) {
-    cached = { id: stored.id, name: stored.name ?? "Shannon" };
+    cached = { id: stored.id, name: stored.name ?? "Loxaic" };
     return cached;
   }
 
-  const minted: ClusterIdentity = { id: randomUUID(), name: "Shannon" };
+  const minted: ClusterIdentity = { id: randomUUID(), name: "Loxaic" };
   await db
     .insert(serverSettings)
     .values({ key: CLUSTER_KEY, value: minted })
@@ -91,14 +91,14 @@ export async function getCluster(): Promise<ClusterIdentity | null> {
   });
   const stored = existing?.value as Partial<ClusterIdentity> | undefined;
   if (!stored?.id) return null;
-  cached = { id: stored.id, name: stored.name ?? "Shannon" };
+  cached = { id: stored.id, name: stored.name ?? "Loxaic" };
   return cached;
 }
 
 /**
  * Registers this instance in `hosts` and starts its heartbeat.
  *
- * Keyed on `SHANNON_INSTANCE_ID` — the desktop install's stable id, carried
+ * Keyed on `LOXAIC_INSTANCE_ID` — the desktop install's stable id, carried
  * across mode changes — so a Solo→Host switch updates this machine's row
  * instead of registering the same machine a second time. Without that env var
  * (a bare `pnpm dev`, a Compose deployment) nothing registers: an instance
@@ -106,18 +106,18 @@ export async function getCluster(): Promise<ClusterIdentity | null> {
  * restart and litter the cluster with ghosts.
  */
 export async function registerHost(): Promise<string | null> {
-  const id = process.env.SHANNON_INSTANCE_ID;
+  const id = process.env.LOXAIC_INSTANCE_ID;
   if (!id) return null;
 
   await ensureCluster();
-  const name = process.env.SHANNON_HOST_NAME ?? "Shannon Host";
-  const advertiseUrl = process.env.SHANNON_ADVERTISE_URL ?? `http://localhost:${process.env.PORT ?? "4000"}`;
+  const name = process.env.LOXAIC_HOST_NAME ?? "Loxaic Host";
+  const advertiseUrl = process.env.LOXAIC_ADVERTISE_URL ?? `http://localhost:${process.env.PORT ?? "4000"}`;
   const inferenceBaseUrl = process.env.INFERENCE_BASE_URL ?? null;
-  // SHANNON_VERSION is what the desktop supervisor passes; npm_package_version
+  // LOXAIC_VERSION is what the desktop supervisor passes; npm_package_version
   // is what `pnpm dev` sets. Neither reaching here used to mean the column was
   // always null — and the upsert never refreshed it, so even a value that did
   // arrive was frozen at first registration.
-  const version = process.env.SHANNON_VERSION ?? process.env.npm_package_version ?? null;
+  const version = process.env.LOXAIC_VERSION ?? process.env.npm_package_version ?? null;
 
   await db
     .insert(hosts)

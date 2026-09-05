@@ -10,7 +10,7 @@ import {
   type McpServerInput,
   type McpCatalogEntry,
   type McpTestResult,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
 
 export function useMcpServers(token: string | null) {

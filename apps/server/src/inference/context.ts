@@ -1,4 +1,4 @@
-import type { ContextBreakdown, ContextCategory, ContextPart } from "@shannon/types";
+import type { ContextBreakdown, ContextCategory, ContextPart } from "@loxaic/types";
 import type { ChatMessage, OpenAiTool } from "./provider.ts";
 import { textOfContent } from "./provider.ts";
 

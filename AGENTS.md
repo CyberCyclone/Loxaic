@@ -36,12 +36,12 @@ export **is** the web app, served same-origin by `apps/server` (see HANDOVER.md)
 pnpm install
 pnpm dev                          # turbo: server (4000) — mobile/web/desktop have their own dev scripts, see HANDOVER.md
 docker compose up --build         # db + server (serves API + web same-origin) + inference + ntfy
-pnpm --filter @shannon/mobile web # Expo web dev server (localhost:8081)
-pnpm --filter @shannon/mobile ios # or android
+pnpm --filter @loxaic/mobile web # Expo web dev server (localhost:8081)
+pnpm --filter @loxaic/mobile ios # or android
 
-pnpm --filter @shannon/desktop dev         # self-contained desktop app, dev mode (embedded stack, Metro web build)
-pnpm --filter @shannon/desktop package     # prod build: mac dmg, linux AppImage + deb, windows nsis (untested)
-pnpm --filter @shannon/desktop package:dir # prod, unpacked — faster iteration, what the e2e suite drives
+pnpm --filter @loxaic/desktop dev         # self-contained desktop app, dev mode (embedded stack, Metro web build)
+pnpm --filter @loxaic/desktop package     # prod build: mac dmg, linux AppImage + deb, windows nsis (untested)
+pnpm --filter @loxaic/desktop package:dir # prod, unpacked — faster iteration, what the e2e suite drives
 
 pnpm test        # turbo test — vitest (only apps/server + apps/desktop have tests today)
 pnpm lint        # turbo lint — eslint (apps/server)
@@ -51,17 +51,17 @@ pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
 Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
 
 ```bash
-pnpm --filter @shannon/server test               # all server tests
-pnpm --filter @shannon/server test -- authz      # tests matching "authz"
-pnpm --filter @shannon/server test -- src/streams/__tests__/drivers.test.ts
+pnpm --filter @loxaic/server test               # all server tests
+pnpm --filter @loxaic/server test -- authz      # tests matching "authz"
+pnpm --filter @loxaic/server test -- src/streams/__tests__/drivers.test.ts
 ```
 
 End-to-end suites are WebdriverIO, in `apps/e2e`, and run on demand (never as part of
 `pnpm test`). They stand the whole stack up themselves:
 
 ```bash
-pnpm --filter @shannon/e2e test:web        # see apps/e2e/README.md for setup + env vars
-E2E_SELF_CONTAINED=1 pnpm --filter @shannon/e2e test:electron  # against the packaged app's own embedded stack
+pnpm --filter @loxaic/e2e test:web        # see apps/e2e/README.md for setup + env vars
+E2E_SELF_CONTAINED=1 pnpm --filter @loxaic/e2e test:electron  # against the packaged app's own embedded stack
 ```
 
 ## End-to-end tests
@@ -134,7 +134,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
 ### DB / Drizzle
 
 - **Never import from `drizzle-orm` directly.** `packages/db` re-exports every operator
-  (`eq`, `and`, `desc`, etc.) and the `db` instance — import from `@shannon/db`. Two
+  (`eq`, `and`, `desc`, etc.) and the `db` instance — import from `@loxaic/db`. Two
   drizzle-orm instances in the dependency tree cause type errors.
 - **No `users` table** — the table is `user` (singular), owned by Drizzle like any other
   table (`packages/db/src/schema.ts`), not auto-created by better-auth: it's passed
@@ -156,7 +156,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   (bigint/numeric precision preservation). Cast to `::float8` in SQL, not `::int` (avoids a
   32-bit overflow ceiling on lifetime token sums). Columns typed `real` parse natively.
 - Migrations auto-run on server startup (`apps/server/src/db/migrate.ts`). Migration folder:
-  `packages/db/drizzle/`. Run `pnpm --filter @shannon/db db:generate` after schema changes.
+  `packages/db/drizzle/`. Run `pnpm --filter @loxaic/db db:generate` after schema changes.
 
 ### Inference
 
@@ -225,7 +225,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   A sandbox row (`sandboxes` table) records which provider it belongs to; a mode switch
   mid-deployment makes old rows unusable rather than silently reattaching to the wrong kind.
   A crash between `provider.create` and the row insert leaves a container no row claims, so
-  it is only findable by its `shannon.sandbox` label; `sweepOrphanSandboxes()` does that
+  it is only findable by its `loxaic.sandbox` label; `sweepOrphanSandboxes()` does that
   sweep at boot (container provider only — host sandboxes are plain directories), alongside
   the stream log's own orphan recovery.
 - `web_fetch` always runs on the **server**, never in the sandbox — container sandboxes
@@ -233,7 +233,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
   private/loopback/link-local answers, follows redirects manually so every hop is
   re-checked).
-- The container sandbox image (`shannon-sandbox`) builds itself automatically on first use
+- The container sandbox image (`loxaic-sandbox`) builds itself automatically on first use
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
 
@@ -310,7 +310,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   (`TEXT_MIMES`) are just UTF-8 bytes, decoded in-process — no parser, so they work with
   `SANDBOX_MODE=off`. Everything in `DOCUMENT_MIMES` (PDF, DOCX/XLSX/PPTX, ODT, RTF, EPUB)
   needs a real parser over a file the server did not author; `files/extract.ts` runs it in a
-  pooled per-user sandbox — argv-safe `pdftotext` for PDF, the `shannon-extract` script baked
+  pooled per-user sandbox — argv-safe `pdftotext` for PDF, the `loxaic-extract` script baked
   into the image (`infra/docker/sandbox/extract.py`) for the rest — and the upload route
   **rejects document mimes outright when no sandbox is configured**, with a 415 naming why.
   Extraction reads and never executes: no macro, embedded script, or PDF JavaScript runs, and
@@ -444,7 +444,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   signal there is**: no config means the window opens on onboarding and *no stack starts*.
   Anything that creates a data dir without a config (the self-contained e2e harness, a
   packaging script) must seed one or it will land on onboarding.
-- **Env and flags still outrank the stored mode.** `--remote` / `SHANNON_REMOTE_URL` /
+- **Env and flags still outrank the stored mode.** `--remote` / `LOXAIC_REMOTE_URL` /
   `TSNET_TARGET` / the `EXPO_PUBLIC_*` probes / a dev server on `:4000` are all "this launch
   was told exactly where to point", and they are checked before config.json. The e2e suites
   and every scripted workflow depend on that ordering — don't reverse it.
@@ -464,8 +464,8 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Database credentials never go in config.json** — it is read by the renderer and safe to
   log. An external database's password lives in `secrets.json` (0600) beside the auth secret,
   and the supervisor injects it into the URL at spawn time.
-- **The IPC contract is the app's only one** (`shannon:getState/setMode/probeEngine/
-  probeHost/testDb/detach`, plus a pushed `shannon:stackState`). Every channel is a fixed
+- **The IPC contract is the app's only one** (`loxaic:getState/setMode/probeEngine/
+  probeHost/testDb/detach`, plus a pushed `loxaic:stackState`). Every channel is a fixed
   name and none takes a path or command from the renderer. The `stackState` listener is
   wrapped in `preload.cjs` so the renderer never receives Electron's `IpcRendererEvent`,
   which carries a live `sender` handle back into the main process.
@@ -478,31 +478,31 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - There's no server at the renderer's origin (`app://` in prod, `localhost:8081` in dev),
   so unlike the mobile/web builds Electron can't assume same-origin. The main process
   resolves the real API URL and hands it to the renderer via a `contextBridge` preload
-  script (`window.shannon.apiBaseUrl`) — see `apps/mobile/lib/endpoint.ts`.
+  script (`window.loxaic.apiBaseUrl`) — see `apps/mobile/lib/endpoint.ts`.
 - **`"asar": false`** in `apps/desktop/package.json`'s electron-builder config, deliberately.
   Electron patches `child_process.execFile` to transparently read out of `app.asar`, but not
   `spawn` — and `embedded-postgres` `spawn`s `initdb`/`postgres` from paths its own package
   exports (no custom-binary-dir option), while its postinstall also creates symlinks that
   asar-packing would silently drop. The app's own source is tiny (a handful of files), so
   nothing meaningful is lost by shipping unpacked.
-- **`SHANNON_LISTENING <port>`** is a stdout handshake line the bundled server prints once
+- **`LOXAIC_LISTENING <port>`** is a stdout handshake line the bundled server prints once
   `app.listen()` resolves (`apps/server/src/index.ts`) — the desktop supervisor
   (`apps/desktop/src/supervisor/server.js`) greps for it via `readline` instead of polling
   `/health`, mirroring the `tsnet-proxy` sidecar's own `LISTENING <addr>` handshake. Don't
   remove or reformat that `console.log` without updating the supervisor.
 - **Release build vs `pnpm dev` never collide on one host, by construction**: the
-  self-contained app defaults to port `4100` (`SHANNON_PORT`) with an embedded Postgres on
+  self-contained app defaults to port `4100` (`LOXAIC_PORT`) with an embedded Postgres on
   an ephemeral localhost port, data under the platform user-data dir; the dev stack keeps
   `4000`/`5432`/compose volumes. The packaged app never reads the repo's `.env` — its child
   env is built entirely by the supervisor. See `docs/DEPLOY.md`'s ports/data-dir table.
 
 ## Conventions
 
-- pnpm workspaces + Turborepo; packages scoped `@shannon/*`; TypeScript strict.
+- pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.
 - Minimal changes; match existing file style; don't add deps without a reason.
 - Ports (dev): server 4000, inference 4002, ntfy 4003, Postgres 5432, Expo web 8081.
   Self-contained desktop app (a separate deployment, coexists with dev on one host): server
-  4100 (`SHANNON_PORT`), Postgres on an ephemeral localhost port — see `docs/DEPLOY.md`.
+  4100 (`LOXAIC_PORT`), Postgres on an ephemeral localhost port — see `docs/DEPLOY.md`.
 - **Semantic gluestack tokens only** for UI colors (`text-foreground`, `bg-primary`, etc.)
   — never numbered Tailwind colors (`gray-500`) or raw hex in className. `react-native-svg`
   can't resolve CSS custom properties, so SVG fills/strokes are the one exception: literal
@@ -511,7 +511,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
 ## Theme system
 
 - **Preference hook:** `apps/mobile/hooks/useTheme.ts` — `useThemePreference()` returns
-  `[pref, setPref]`, `pref: 'light' | 'dark' | 'system'`. Persistence key: `shannon-theme`.
+  `[pref, setPref]`, `pref: 'light' | 'dark' | 'system'`. Persistence key: `loxaic-theme`.
   Feed the value into `GluestackUIProvider`'s `mode` prop.
 - **Tokens:** Tailwind v4 CSS-first config in `apps/mobile/global.css` (`@theme inline`,
   `@variant light`/`@variant dark`) — no separate design-tokens package. Dark is the

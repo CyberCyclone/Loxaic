@@ -14,7 +14,7 @@ import { assembleSystemPrompt } from "../engine.ts";
  * code that introduced it. These assertions are the thing that would.
  */
 describe("assembleSystemPrompt", () => {
-  const BASE = "You are Shannon.";
+  const BASE = "You are Loxaic.";
 
   it("appends the document addendum when the turn carries a document", () => {
     const prompt = assembleSystemPrompt(BASE, null, true);

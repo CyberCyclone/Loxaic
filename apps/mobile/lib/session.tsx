@@ -11,7 +11,7 @@ import {
   signIn as apiSignIn,
   signUp as apiSignUp,
   type Session,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
 import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
 import { setConnectionState } from './connection';

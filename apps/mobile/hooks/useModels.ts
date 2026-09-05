@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getModels, type ModelInfo } from '@shannon/api-client';
+import { getModels, type ModelInfo } from '@loxaic/api-client';
 
 export interface ModelWindow {
   /** The window actually in force — the only valid meter denominator. */

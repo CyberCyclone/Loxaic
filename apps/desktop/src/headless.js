@@ -4,7 +4,7 @@
 // it with ELECTRON_RUN_AS_NODE=1 set on the packaged binary and never
 // initialise a display, so headless installs (Proxmox VM/LXC) need no xvfb.
 //
-// Also reachable as `Open-Shannon --headless` (see main.js), which re-execs
+// Also reachable as `Loxaic --headless` (see main.js), which re-execs
 // itself into this same file for a display-having machine's convenience.
 import "./cwd-guard.js";
 import os from "node:os";
@@ -12,17 +12,17 @@ import { startStack } from "./supervisor/index.js";
 import { defaultDataDir } from "./supervisor/paths.js";
 import { buildConfig, loadConfig, saveConfig } from "./supervisor/config.js";
 
-const HELP = `Usage: open-shannon-headless [options]
+const HELP = `Usage: loxaic-headless [options]
 
-Runs the self-contained Shannon stack (embedded Postgres + server) with no
+Runs the self-contained Loxaic stack (embedded Postgres + server) with no
 window, for server installs.
 
 Options:
-  --port <n>          Server port (default: 4100, or $SHANNON_PORT).
-                       --shannon-port also accepted (same flag the GUI uses).
+  --port <n>          Server port (default: 4100, or $LOXAIC_PORT).
+                       --loxaic-port also accepted (same flag the GUI uses).
   --host <addr>        Bind address (default: from config.json, else 0.0.0.0)
   --data-dir <path>    Data directory (default: platform user-data dir, or
-                       $SHANNON_DATA_DIR). --shannon-data-dir also accepted.
+                       $LOXAIC_DATA_DIR). --loxaic-data-dir also accepted.
   --as-host            Configure this install as a Host (serves other users)
                        and persist it, then start. Requires a container engine.
   --host-name <name>   Name shown against this host's models (default: hostname)
@@ -39,8 +39,8 @@ Headless *client* mode (joining someone else's host) is not supported yet.
  * Value of a --name <value> or --name=value CLI flag, or undefined.
  * Accepts any of several equivalent names — main.js's GUI mode and this
  * standalone entry document slightly different flag names for the same
- * option (`--shannon-port` vs `--port`), and `Open-Shannon --headless
- * --shannon-port=X` forwards whatever the user typed verbatim, so both must
+ * option (`--loxaic-port` vs `--port`), and `Loxaic --headless
+ * --loxaic-port=X` forwards whatever the user typed verbatim, so both must
  * resolve to the same value here or the flag silently falls back to default.
  */
 function getFlag(...names) {
@@ -76,7 +76,7 @@ async function main() {
   if (hasFlag("inference-url")) process.env.INFERENCE_BASE_URL = getFlag("inference-url");
   if (hasFlag("mock-inference")) process.env.MOCK_INFERENCE = "true";
 
-  const dataDir = getFlag("data-dir", "shannon-data-dir") ?? process.env.SHANNON_DATA_DIR ?? defaultDataDir();
+  const dataDir = getFlag("data-dir", "loxaic-data-dir") ?? process.env.LOXAIC_DATA_DIR ?? defaultDataDir();
 
   // Headless client mode ("like OpenCode") is a later feature — #73 defers it
   // explicitly. Say so rather than silently starting a *host*, which is what
@@ -107,7 +107,7 @@ async function main() {
   }
 
   const port = Number(
-    getFlag("port", "shannon-port") ?? process.env.SHANNON_PORT ?? instance?.host?.port ?? 4100,
+    getFlag("port", "loxaic-port") ?? process.env.LOXAIC_PORT ?? instance?.host?.port ?? 4100,
   );
   const host = getFlag("host") ?? undefined;
 
@@ -119,7 +119,7 @@ async function main() {
     instance,
   });
 
-  console.log("Open Shannon is running:");
+  console.log("Open Loxaic is running:");
   for (const url of listAddresses(stack.port)) console.log(`  ${url}`);
   console.log(`Data directory: ${dataDir}`);
 

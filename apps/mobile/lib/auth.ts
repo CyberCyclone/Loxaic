@@ -1,9 +1,9 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { setAuthToken } from '@shannon/api-client';
+import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint } from './endpoint';
 
-const LEGACY_TOKEN_KEY = 'shannon-session-token';
+const LEGACY_TOKEN_KEY = 'loxaic-session-token';
 
 /**
  * One token per server, keyed by endpoint.
@@ -19,7 +19,7 @@ const LEGACY_TOKEN_KEY = 'shannon-session-token';
  */
 function tokenKey(endpoint: string | null): string {
   if (!endpoint) return LEGACY_TOKEN_KEY;
-  return `shannon-session-token:${endpoint.replace(/\/+$/, '')}`;
+  return `loxaic-session-token:${endpoint.replace(/\/+$/, '')}`;
 }
 
 /** Persist the session token: SecureStore on native, localStorage on web.

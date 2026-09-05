@@ -5,17 +5,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  * Cross-platform key-value store with a synchronous in-memory cache.
  *
  * Web uses localStorage directly (kept key-compatible with the old Vite app:
- * shannon-theme, shannon-settings, …). Native reads go through the cache,
+ * loxaic-theme, loxaic-settings, …). Native reads go through the cache,
  * which `hydrateStorage()` fills from AsyncStorage once at app start —
  * await it before first render (the root layout does, behind the font gate).
  */
 const cache = new Map<string, string>();
 
 const KNOWN_KEYS = [
-  'shannon-theme',
-  'shannon-settings',
-  'shannon-endpoint',
-  'shannon-selected-model',
+  'loxaic-theme',
+  'loxaic-settings',
+  'loxaic-endpoint',
+  'loxaic-selected-model',
 ] as const;
 
 /**
@@ -27,7 +27,7 @@ const KNOWN_KEYS = [
  * a key that is neither listed nor prefixed is written and then silently
  * never read again, which is the trap this rule exists to close.
  */
-const KNOWN_PREFIXES = ['shannon-cache:', 'shannon-session-token:'] as const;
+const KNOWN_PREFIXES = ['loxaic-cache:', 'loxaic-session-token:'] as const;
 
 function isKnownKey(key: string): boolean {
   return (

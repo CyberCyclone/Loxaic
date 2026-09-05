@@ -1,5 +1,5 @@
-import { and, db, eq } from "@shannon/db";
-import { conversations, sandboxes } from "@shannon/db/schema";
+import { and, db, eq } from "@loxaic/db";
+import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
@@ -273,7 +273,7 @@ async function createEntry(
   //
   // Container limits are per *container* — memory, CPU, pids — so one user
   // with a conversation per tab could hold N times all of them and starve
-  // everyone else on a shared host. The `shannon.user` label existed for
+  // everyone else on a shared host. The `loxaic.user` label existed for
   // bookkeeping; this is what turns it into a budget.
   //
   // Counted from the `sandboxes` table rather than the in-process map,
@@ -330,7 +330,7 @@ async function createEntryReserved(
       conversationId,
       containerId: handle.ref,
       provider: provider.kind,
-      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
+      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : "host",
       status: "running",
       limits: { memory: 512, cpu: 1 },
     })

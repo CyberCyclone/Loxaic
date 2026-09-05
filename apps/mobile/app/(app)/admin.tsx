@@ -21,7 +21,7 @@ import {
   type AdminConversation,
   type ConversationShare,
   type DirectoryUser,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 
 /**
  * Admin oversight: every conversation on this deployment, and who can reach

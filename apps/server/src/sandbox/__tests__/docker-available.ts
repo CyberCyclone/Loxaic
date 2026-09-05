@@ -4,7 +4,7 @@ import { getSandboxProvider } from "../provider.ts";
  * Whether a container engine is actually reachable *and* the sandbox image is
  * already built.
  *
- * Both halves matter. `ensureImage()` builds `shannon-sandbox` from scratch on
+ * Both halves matter. `ensureImage()` builds `loxaic-sandbox` from scratch on
  * first use, which takes far longer than any sane hook timeout — so on a cold
  * CI runner this suite doesn't fail because the code is wrong, it fails
  * because a multi-minute image build was started inside a `beforeAll`. Skipping
@@ -22,7 +22,7 @@ export async function sandboxImageReady(): Promise<boolean> {
     if (!ok) return false;
     const docker = await import("dockerode");
     const engine = new docker.default();
-    const images = await engine.listImages({ filters: { reference: ["shannon-sandbox"] } });
+    const images = await engine.listImages({ filters: { reference: ["loxaic-sandbox"] } });
     return images.length > 0;
   } catch {
     return false;

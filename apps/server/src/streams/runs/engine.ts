@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
-import { and, db, eq, gt } from "@shannon/db";
-import { conversations, messages, usageRecords } from "@shannon/db/schema";
-import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@shannon/types";
+import { and, db, eq, gt } from "@loxaic/db";
+import { conversations, messages, usageRecords } from "@loxaic/db/schema";
+import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@loxaic/types";
 import {
   countDocumentParts,
   countImageParts,
@@ -18,7 +18,7 @@ import {
 } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
-import type { PermissionMode, ToolName } from "@shannon/agent";
+import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import {
   attachActiveSandbox,

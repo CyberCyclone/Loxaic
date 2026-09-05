@@ -17,7 +17,7 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { useMcpServers } from '@/hooks/useMcpServers';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useSession } from '@/lib/session';
-import type { McpServer, McpServerInput, McpCatalogEntry } from '@shannon/api-client';
+import type { McpServer, McpServerInput, McpCatalogEntry } from '@loxaic/api-client';
 
 type Row =
   | { type: 'catalog'; entry: McpCatalogEntry }

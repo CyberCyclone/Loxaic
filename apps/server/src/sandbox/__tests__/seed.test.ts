@@ -10,8 +10,8 @@ describe("seedSandbox", () => {
   let fixtureDir: string;
 
   beforeEach(() => {
-    sandboxRoot = mkdtempSync(path.join(os.tmpdir(), "shannon-seed-sandbox-"));
-    fixtureDir = mkdtempSync(path.join(os.tmpdir(), "shannon-seed-fixture-"));
+    sandboxRoot = mkdtempSync(path.join(os.tmpdir(), "loxaic-seed-sandbox-"));
+    fixtureDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-seed-fixture-"));
     process.env.SANDBOX_HOST_ROOT = sandboxRoot;
   });
 

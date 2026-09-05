@@ -11,7 +11,7 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import { Spinner } from '@/components/ui/spinner';
-import type { Routine, RoutineRun } from '@shannon/api-client';
+import type { Routine, RoutineRun } from '@loxaic/api-client';
 
 function formatDuration(startedAt: string, finishedAt: string | null): string {
   if (!finishedAt) return 'running…';

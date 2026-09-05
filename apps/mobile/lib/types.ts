@@ -16,9 +16,9 @@ export type ThemePref = 'light' | 'dark' | 'system'
 
 export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
-export type { ModelInfo } from '@shannon/api-client'
-export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand, AttachmentRef } from '@shannon/api-client'
-import type { ContextBreakdown, CompactionStats, AttachmentRef } from '@shannon/api-client'
+export type { ModelInfo } from '@loxaic/api-client'
+export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand, AttachmentRef } from '@loxaic/api-client'
+import type { ContextBreakdown, CompactionStats, AttachmentRef } from '@loxaic/api-client'
 
 export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
 

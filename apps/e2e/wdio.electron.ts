@@ -4,12 +4,12 @@
  * That choice is the point of this suite. Electron is the one target that
  * cannot assume same-origin: the window loads from the `app://` scheme with no
  * server behind it, so the renderer learns where the API lives only through the
- * main process's `window.shannon.apiBaseUrl` bridge. `pnpm dev` skips that path
+ * main process's `window.loxaic.apiBaseUrl` bridge. `pnpm dev` skips that path
  * entirely (it loads Metro over http://localhost:8081), so only a packaged
  * build exercises what real users run.
  *
  * Build it first:
- *   pnpm --filter @shannon/desktop package:dir
+ *   pnpm --filter @loxaic/desktop package:dir
  */
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -30,7 +30,7 @@ if (SELF_CONTAINED) {
   // the server child it spawns.
   delete process.env.EXPO_PUBLIC_API_URL;
   delete process.env.EXPO_PUBLIC_LAN_API_URL;
-  delete process.env.SHANNON_REMOTE_URL;
+  delete process.env.LOXAIC_REMOTE_URL;
   process.env.MOCK_INFERENCE = 'true';
 } else {
   // main.js resolves its API base URL before creating the window, probing each
@@ -73,12 +73,12 @@ function appBinaryPath(): string {
     process.platform === 'darwin'
       ? [
           // arch-suffixed on Apple Silicon, bare "mac" on Intel
-          'mac-arm64/Open-Shannon.app/Contents/MacOS/Open-Shannon',
-          'mac/Open-Shannon.app/Contents/MacOS/Open-Shannon',
+          'mac-arm64/Loxaic.app/Contents/MacOS/Loxaic',
+          'mac/Loxaic.app/Contents/MacOS/Loxaic',
         ]
       : process.platform === 'win32'
-        ? ['win-unpacked/Open-Shannon.exe']
-        : ['linux-unpacked/open-shannon'];
+        ? ['win-unpacked/Loxaic.exe']
+        : ['linux-unpacked/loxaic'];
 
   for (const rel of candidates) {
     const full = path.join(DESKTOP_DIST, rel);
@@ -86,7 +86,7 @@ function appBinaryPath(): string {
   }
   throw new Error(
     `No unpacked Electron build found under ${DESKTOP_DIST}. ` +
-      `Build one first: pnpm --filter @shannon/desktop package:dir`,
+      `Build one first: pnpm --filter @loxaic/desktop package:dir`,
   );
 }
 
@@ -107,8 +107,8 @@ export const config: WebdriverIO.Config = {
         ...(SELF_CONTAINED && selfContainedDataDir
           ? {
               appArgs: [
-                `--shannon-port=${process.env.E2E_PORT ?? ''}`,
-                `--shannon-data-dir=${selfContainedDataDir}`,
+                `--loxaic-port=${process.env.E2E_PORT ?? ''}`,
+                `--loxaic-data-dir=${selfContainedDataDir}`,
               ],
             }
           : {}),

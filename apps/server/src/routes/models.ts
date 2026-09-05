@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { db } from "@shannon/db";
-import { modelRegistry } from "@shannon/db/schema";
+import { db } from "@loxaic/db";
+import { modelRegistry } from "@loxaic/db/schema";
 import { listBackendModels } from "../inference/models";
 
 export function modelRoutes(app: FastifyInstance) {

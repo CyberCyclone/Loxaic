@@ -1,4 +1,4 @@
-import type { ServerMessage, StreamStatus } from "@shannon/types";
+import type { ServerMessage, StreamStatus } from "@loxaic/types";
 import { assertConversationAccess } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";

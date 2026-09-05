@@ -1,7 +1,7 @@
 import { promises as dns } from "node:dns";
 import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
-import type { FileDiff, Todo, ToolName } from "@shannon/agent";
+import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
 const SANDBOX_TOOLS: ToolName[] = ["fs_read", "fs_write", "fs_edit", "bash", "grep", "glob"];
@@ -25,7 +25,7 @@ const MAX_REDIRECTS = 3;
  * Resolve a model-supplied path to an absolute path inside the sandbox,
  * rejecting anything that escapes the handle's root (../, symlink-ish
  * absolute paths, etc.). Re-rooted per handle rather than a hardcoded
- * constant so container mode (/home/shannon) and host mode (a per-sandbox
+ * constant so container mode (/home/loxaic) and host mode (a per-sandbox
  * directory under SANDBOX_HOST_ROOT) get the same guarantee. Exported so the
  * REST sandbox routes — which touch sandbox files directly, outside the
  * agent tool loop — get the same validation instead of trusting a
@@ -335,7 +335,7 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
       const res = await fetch(url, {
         redirect: "manual",
         signal: controller.signal,
-        headers: { "User-Agent": "Open-Shannon-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
+        headers: { "User-Agent": "Loxaic-Agent/1.0", Accept: "text/*, application/json;q=0.9, */*;q=0.5" },
       });
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {

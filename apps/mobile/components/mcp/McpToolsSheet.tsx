@@ -14,7 +14,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import { Badge, BadgeText } from '@/components/ui/badge';
-import type { McpDiscoveredTool, McpServer, McpServerInput, McpTestResult, McpToolPolicy } from '@shannon/api-client';
+import type { McpDiscoveredTool, McpServer, McpServerInput, McpTestResult, McpToolPolicy } from '@loxaic/api-client';
 
 const APPROVALS: { value: McpToolPolicy['approval']; label: string }[] = [
   { value: 'ask', label: 'Ask first' },

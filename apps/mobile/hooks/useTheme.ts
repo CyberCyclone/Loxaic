@@ -3,7 +3,7 @@ import { getItem, setItem } from '@/lib/storage';
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
-const KEY = 'shannon-theme';
+const KEY = 'loxaic-theme';
 const listeners = new Set<() => void>();
 let current: ThemePreference = 'dark';
 let loaded = false;

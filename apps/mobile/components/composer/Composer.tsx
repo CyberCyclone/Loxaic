@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps, type Ref } from 'react';
 import { Platform, TextInput, type TextInputKeyPressEvent } from 'react-native';
 import { ArrowUp, Square, ChevronDown, CircleDot } from 'lucide-react-native';
-import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand, type AttachmentRef } from '@shannon/api-client';
+import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand, type AttachmentRef } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -201,7 +201,7 @@ export function Composer({
               // instead of the TextInput instance it actually is at runtime
               // (confirmed: .focus() works) — cast around the mistyping.
               ref={textareaInputRef as unknown as Ref<ComponentProps<typeof TextareaInput>>}
-              placeholder="Message Shannon..."
+              placeholder="Message Loxaic..."
               value={text}
               onChangeText={setText}
               onKeyPress={onKeyPress}

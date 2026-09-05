@@ -46,7 +46,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: shannon
+          POSTGRES_DB: loxaic
         ports:
           - 5432:5432
         options: >-
@@ -64,7 +64,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shannon
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/loxaic
       REDIS_URL: redis://localhost:6379
       MOCK_INFERENCE: "true"
       BETTER_AUTH_SECRET: ci-test-secret-not-for-production
@@ -81,5 +81,5 @@ jobs:
       # The two Postgres-backed test files assume the schema already exists —
       # nothing else applies migrations for them (the server's own boot-time
       # migration step is never exercised by any test, see apps/server/src/index.ts).
-      - run: pnpm --filter @shannon/db db:migrate
-      - run: pnpm --filter @shannon/server test
+      - run: pnpm --filter @loxaic/db db:migrate
+      - run: pnpm --filter @loxaic/server test

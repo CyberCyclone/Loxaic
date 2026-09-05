@@ -4,7 +4,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Icon } from '@/components/ui/icon';
-import type { SandboxMode } from '@shannon/api-client';
+import type { SandboxMode } from '@loxaic/api-client';
 
 interface SandboxStatusCardProps {
   mode: SandboxMode;

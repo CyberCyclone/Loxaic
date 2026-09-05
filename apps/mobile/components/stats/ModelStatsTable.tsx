@@ -3,7 +3,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { formatTokens } from './KpiCard';
-import type { ModelStats } from '@shannon/api-client';
+import type { ModelStats } from '@loxaic/api-client';
 
 function fmt(n: number | null, digits = 0): string {
   return n === null ? '—' : n.toFixed(digits);

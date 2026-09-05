@@ -1,5 +1,5 @@
 {
-  "name": "@shannon/db",
+  "name": "@loxaic/db",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -19,8 +19,8 @@
     "postgres": "^3.4.0"
   },
   "devDependencies": {
-    "@shannon/config-ts": "workspace:*",
-    "@shannon/types": "workspace:*",
+    "@loxaic/config-ts": "workspace:*",
+    "@loxaic/types": "workspace:*",
     "@types/node": "^26.2.0",
     "drizzle-kit": "^0.30.0",
     "typescript": "^5.7.0"

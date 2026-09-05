@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { and, db, eq, inArray } from "@shannon/db";
-import { sandboxes, user } from "@shannon/db/schema";
+import { and, db, eq, inArray } from "@loxaic/db";
+import { sandboxes, user } from "@loxaic/db/schema";
 import { attachActiveSandbox, getConversationSandbox, hasActiveSandbox, stopAllSandboxes } from "../sandbox-manager.ts";
 import { getHostProvider } from "../../sandbox/host-provider.ts";
 
@@ -38,7 +38,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  root = mkdtempSync(path.join(os.tmpdir(), "shannon-stopall-"));
+  root = mkdtempSync(path.join(os.tmpdir(), "loxaic-stopall-"));
   process.env.SANDBOX_HOST_ROOT = root;
 });
 
@@ -55,7 +55,7 @@ async function insertRow(ref: string, status = "running", provider = "host") {
       ownerId: userId,
       containerId: ref,
       provider,
-      image: provider === "host" ? "host" : "shannon-sandbox",
+      image: provider === "host" ? "host" : "loxaic-sandbox",
       status,
     })
     .returning();

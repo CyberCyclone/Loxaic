@@ -6,7 +6,7 @@ import globals from "globals";
 
 /**
  * One root flat config for the whole pnpm/turbo monorepo, rather than a
- * per-package config mirroring @shannon/config-ts's base/node/react split.
+ * per-package config mirroring @loxaic/config-ts's base/node/react split.
  * tsc needs a --project per package; ESLint 9's flat config doesn't — a
  * single file can apply different rules to different packages purely via
  * `files` globs, which is less to maintain than N near-identical configs.

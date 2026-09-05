@@ -57,10 +57,10 @@ export default function LoginScreen() {
         <VStack space="xl" className="w-full max-w-[380px]">
           <VStack space="xs" className="items-center">
             <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
-              <Text className="text-lg font-bold text-primary-foreground">OS</Text>
+              <Text className="text-lg font-bold text-primary-foreground">L</Text>
             </Box>
             <Heading size="xl" className="text-foreground">
-              Open-Shannon
+              Loxaic
             </Heading>
             <Text size="sm" className="text-muted-foreground">
               {mode === 'sign-in'

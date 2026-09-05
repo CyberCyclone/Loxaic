@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray } from "@shannon/db";
-import { conversationShares, conversations, user } from "@shannon/db/schema";
+import { db, eq, inArray } from "@loxaic/db";
+import { conversationShares, conversations, user } from "@loxaic/db/schema";
 import { initStreamBroker } from "../index.ts";
 import { assertConversationAccess, assertParentInConversation, NotFoundError } from "../authz.ts";
 

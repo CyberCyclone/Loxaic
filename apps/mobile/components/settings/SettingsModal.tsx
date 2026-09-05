@@ -58,7 +58,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setSettings(draft);
     const endpoint = draft.endpoint.trim();
     if (endpoint) {
-      setItem('shannon-endpoint', endpoint);
+      setItem('loxaic-endpoint', endpoint);
       // setEndpoint, not setApiBaseUrl: the api-client's base URL is only half
       // of it. endpoint.ts caches the resolution and the chat/agent sockets
       // hold a URL captured when their effect last ran, so both have to be
@@ -68,7 +68,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       // Clearing the field has to actually clear the override. It previously
       // fell through this branch entirely, so an endpoint could be set from
       // the UI but never unset from it — the only way back was reinstalling.
-      removeItem('shannon-endpoint');
+      removeItem('loxaic-endpoint');
       setEndpoint(null);
       // resolveEndpoint assigns the resolved value directly and never fires
       // the listeners the chat/agent sockets subscribe to — only setEndpoint
@@ -98,7 +98,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       clearCacheForEndpoint(endpoint);
       await clearToken(endpoint);
     }
-    removeItem('shannon-endpoint');
+    removeItem('loxaic-endpoint');
     setConfirmDetach(false);
     onClose();
     await electronBridge()?.instance.detach();

@@ -16,7 +16,7 @@ import { ModelStatsTable } from '@/components/stats/ModelStatsTable';
 import { ConversationStatsTable } from '@/components/stats/ConversationStatsTable';
 import { useStats } from '@/hooks/useStats';
 import { useSession } from '@/lib/session';
-import type { StatsRange } from '@shannon/api-client';
+import type { StatsRange } from '@loxaic/api-client';
 
 const RANGES: StatsRange[] = ['session', 'today', 'week', 'month', 'year'];
 

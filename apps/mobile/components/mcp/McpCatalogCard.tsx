@@ -7,7 +7,7 @@ import { Text } from '@/components/ui/text';
 import { Icon } from '@/components/ui/icon';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
-import type { McpCatalogEntry, McpServerInput } from '@shannon/api-client';
+import type { McpCatalogEntry, McpServerInput } from '@loxaic/api-client';
 
 interface McpCatalogCardProps {
   entry: McpCatalogEntry;

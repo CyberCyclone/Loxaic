@@ -1,6 +1,6 @@
 import type { FileDiff } from "./index";
 
-/** Duplicated (structurally, not nominally) from @shannon/agent so this
+/** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
  * agent-loop *logic* (toolRequiresApproval etc.), this is only the wire shape. */
 export type PermissionMode = "planning" | "manual" | "auto";

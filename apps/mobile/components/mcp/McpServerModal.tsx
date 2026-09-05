@@ -17,7 +17,7 @@ import { Textarea, TextareaInput } from '@/components/ui/textarea';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon, CloseIcon } from '@/components/ui/icon';
-import { McpApiError, type McpServer, type McpServerInput } from '@shannon/api-client';
+import { McpApiError, type McpServer, type McpServerInput } from '@loxaic/api-client';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const TRANSPORTS = ['stdio', 'http'] as const;

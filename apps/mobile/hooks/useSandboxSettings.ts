@@ -4,7 +4,7 @@ import {
   updateSandboxSettings,
   type SandboxSettings,
   type SandboxSettingsPatch,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
 
 /** Admin-only sandbox settings (mode/engine/network) with optimistic writes,

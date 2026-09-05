@@ -4,7 +4,7 @@
     {
       "name": "metro",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@shannon/mobile", "web"],
+      "runtimeArgs": ["--filter", "@loxaic/mobile", "web"],
       "port": 8081
     }
   ]

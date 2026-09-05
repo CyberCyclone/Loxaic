@@ -1,8 +1,8 @@
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
-import type { OpenAiTool, PermissionMode, ResolvedTool } from "@shannon/agent";
-import { resolveBuiltinTools, resolvedToOpenAiTool } from "@shannon/agent";
-import { and, db, eq } from "@shannon/db";
-import { conversations, mcpServers, userPrefs } from "@shannon/db/schema";
+import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
+import { resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
+import { and, db, eq } from "@loxaic/db";
+import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
 import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";

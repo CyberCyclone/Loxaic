@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import type { ThemePref } from '../types'
 
-const STORAGE_KEY = 'shannon-theme'
+const STORAGE_KEY = 'loxaic-theme'
 const mql = typeof window !== 'undefined' ? window.matchMedia('(prefers-color-scheme: light)') : null
 
 function resolveTheme(pref: string | null): 'light' | 'dark' {

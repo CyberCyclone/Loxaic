@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { db, eq } from "@shannon/db";
-import { userPrefs } from "@shannon/db/schema";
-import { isToolName } from "@shannon/agent";
+import { db, eq } from "@loxaic/db";
+import { userPrefs } from "@loxaic/db/schema";
+import { isToolName } from "@loxaic/agent";
 import { authenticate } from "../auth/middleware";
 
 /** What the API exposes. Builtin-only today; MCP tools have their own

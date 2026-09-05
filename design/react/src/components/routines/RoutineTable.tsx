@@ -2,8 +2,8 @@ import React, { useState } from 'react'
 import type { Routine } from '../../types'
 import { Table, Switch, Badge, Button } from '../primitives'
 import { CRON_PRESETS, humanizeCron, validateCron } from '../../fixtures/routines'
-import { SHANNON_MODELS } from '../../fixtures/models'
-import { SHANNON_WORKSPACES } from '../../fixtures/models'
+import { LOXAIC_MODELS } from '../../fixtures/models'
+import { LOXAIC_WORKSPACES } from '../../fixtures/models'
 import { Modal } from '../primitives/Modal'
 import { Input, Select, Label, Hint } from '../primitives/Input'
 
@@ -25,7 +25,7 @@ export function RoutineTable({ routines, onToggle, onRunNow, onDelete }: Omit<Ro
             <td>{r.name}</td>
             <td>{r.humanized}</td>
             <td>{r.target}</td>
-            <td>{SHANNON_MODELS.find(m => m.id === r.model)?.display_name ?? r.model}</td>
+            <td>{LOXAIC_MODELS.find(m => m.id === r.model)?.display_name ?? r.model}</td>
             <td>
               {r.lastRun ? (
                 <React.Fragment>
@@ -106,7 +106,7 @@ export function RoutineModal({ open, onClose, onSave, editing }: RoutineModalPro
           <Label>Directory</Label>
           <Select value={directory} onChange={e => setDirectory(e.target.value)}>
             <option value="">— None —</option>
-            {SHANNON_WORKSPACES.map(ws => <option key={ws.name} value={ws.name}>{ws.name}</option>)}
+            {LOXAIC_WORKSPACES.map(ws => <option key={ws.name} value={ws.name}>{ws.name}</option>)}
           </Select>
           <Hint>Run the agent in this workspace, or pull data from it.</Hint>
         </div>
@@ -134,7 +134,7 @@ export function RoutineModal({ open, onClose, onSave, editing }: RoutineModalPro
         <div className="form-group">
           <Label>Model</Label>
           <Select value={model} onChange={e => setModel(e.target.value)}>
-            {SHANNON_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+            {LOXAIC_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
           </Select>
         </div>
       </div>

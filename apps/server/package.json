@@ -1,5 +1,5 @@
 {
-  "name": "@shannon/server",
+  "name": "@loxaic/server",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -19,10 +19,10 @@
     "@fastify/static": "^10.1.3",
     "@fastify/websocket": "^11.0.0",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "@shannon/agent": "workspace:*",
-    "@shannon/db": "workspace:*",
-    "@shannon/sync": "workspace:*",
-    "@shannon/types": "workspace:*",
+    "@loxaic/agent": "workspace:*",
+    "@loxaic/db": "workspace:*",
+    "@loxaic/sync": "workspace:*",
+    "@loxaic/types": "workspace:*",
     "ajv": "^8.20.0",
     "better-auth": "1.6.26",
     "dockerode": "^5.0.1",
@@ -36,7 +36,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@shannon/config-ts": "workspace:*",
+    "@loxaic/config-ts": "workspace:*",
     "@types/dockerode": "^4.0.1",
     "@types/node-cron": "^3.0.11",
     "@types/tar-fs": "^2.0.4",

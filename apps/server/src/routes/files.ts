@@ -3,15 +3,15 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { readFile, stat, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { randomUUID } from "node:crypto";
-import { db, eq, sql } from "@shannon/db";
-import { attachments } from "@shannon/db/schema";
+import { db, eq, sql } from "@loxaic/db";
+import { attachments } from "@loxaic/db/schema";
 import {
   attachmentClass,
   maxBytesForMime,
   resolveAttachmentMime,
   sanitizeFilename,
   MAX_DOCUMENT_BYTES,
-} from "@shannon/types";
+} from "@loxaic/types";
 import { authenticate, authenticateHeaderOrQuery } from "../auth/middleware";
 import { attachmentPath, attachmentTextPath, isValidRef, verifyStoredBytes } from "../files/storage";
 import { usedAttachmentBytes, userQuotaBytes } from "../files/reaper";

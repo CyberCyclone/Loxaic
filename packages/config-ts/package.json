@@ -1,5 +1,5 @@
 {
-  "name": "@shannon/config-ts",
+  "name": "@loxaic/config-ts",
   "version": "0.0.0",
   "private": true,
   "files": ["base.json", "node.json", "react.json"]

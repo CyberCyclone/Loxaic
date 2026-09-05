@@ -1,8 +1,8 @@
 {
   "version": 1,
   "kind": "html",
-  "title": "shannon-routines.html",
-  "entry": "shannon-routines.html",
+  "title": "loxaic-agent.html",
+  "entry": "loxaic-agent.html",
   "renderer": "html",
   "status": "complete",
   "exports": [
@@ -10,8 +10,8 @@
     "pdf",
     "zip"
   ],
-  "createdAt": "2026-08-11T11:46:09.726Z",
-  "updatedAt": "2026-08-11T11:46:09.726Z",
+  "createdAt": "2026-08-11T11:45:24.830Z",
+  "updatedAt": "2026-08-11T11:45:24.830Z",
   "metadata": {
     "inferred": true,
     "reconciled": true

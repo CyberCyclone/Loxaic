@@ -145,10 +145,10 @@ export async function updateSandboxSettings(patch: SandboxSettingsPatch): Promis
   });
 }
 
-export type { ModelInfo, ModelPref } from "@shannon/types";
+export type { ModelInfo, ModelPref } from "@loxaic/types";
 
-export async function getModels(): Promise<import("@shannon/types").ModelInfo[]> {
-  return (await authedFetch("/v1/models")).json() as Promise<import("@shannon/types").ModelInfo[]>;
+export async function getModels(): Promise<import("@loxaic/types").ModelInfo[]> {
+  return (await authedFetch("/v1/models")).json() as Promise<import("@loxaic/types").ModelInfo[]>;
 }
 
 // ── Auth ──────────────────────────────────────────────────
@@ -233,7 +233,7 @@ export interface Conversation {
   title: string;
   kind: string;
   activeLeafId: string | null;
-  modelPref: import("@shannon/types").ModelPref | null;
+  modelPref: import("@loxaic/types").ModelPref | null;
   mcpOverrides: { disabledServerIds?: string[] } | null;
   createdAt: string;
   updatedAt: string;
@@ -337,7 +337,7 @@ export async function getConversations(): Promise<Conversation[]> {
 export async function updateConversation(
   id: string,
   patch: {
-    model_pref?: import("@shannon/types").ModelPref;
+    model_pref?: import("@loxaic/types").ModelPref;
     mcp_overrides?: { disabledServerIds?: string[] };
   },
 ): Promise<Conversation> {
@@ -362,7 +362,7 @@ export interface ApiMessageUsage {
   predictedTps: number | null;
   /** null for rows written before this column existed, and for any backend
    * that reported no usage — the UI must degrade rather than assume. */
-  contextBreakdown: import("@shannon/types").ContextBreakdown | null;
+  contextBreakdown: import("@loxaic/types").ContextBreakdown | null;
 }
 
 export interface ApiMessage {
@@ -375,7 +375,7 @@ export interface ApiMessage {
   deviceId: string | null;
   model: string | null;
   lamport: number;
-  content: import("@shannon/types").ContentBlock[];
+  content: import("@loxaic/types").ContentBlock[];
   status: "streaming" | "complete" | "error" | "cancelled";
   createdAt: string;
   deletedAt: string | null;
@@ -426,7 +426,7 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
 }
 
 // ── Attachments ───────────────────────────────────────────
-export type { AttachmentRef } from "@shannon/types";
+export type { AttachmentRef } from "@loxaic/types";
 
 export interface UploadedAttachment {
   ref: string;
@@ -771,7 +771,7 @@ export async function getConversationStats(range?: StatsRange, limit?: number): 
 }
 
 // ── Streaming protocol (shared by chat + agent WebSockets) ─
-// The envelope is owned by @shannon/types (the server emits it from the
+// The envelope is owned by @loxaic/types (the server emits it from the
 // same definitions) and re-exported here so UI code has a single import.
 export type {
   ServerMessage,
@@ -790,14 +790,14 @@ export type {
   CommandKind,
   CommandSurface,
   SlashCommand,
-} from "@shannon/types";
-import type { ServerMessage } from "@shannon/types";
+} from "@loxaic/types";
+import type { ServerMessage } from "@loxaic/types";
 export {
   BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
-} from "@shannon/types";
+} from "@loxaic/types";
 
 /** True if the send was actually written to the socket — false (never
  * throws) if the connection isn't open, so callers can decide whether to
@@ -850,7 +850,7 @@ export function sendChatMessage(
 export function sendAgentMessage(
   ws: WebSocket,
   content: string,
-  mode: import("@shannon/types").PermissionMode,
+  mode: import("@loxaic/types").PermissionMode,
   convId?: string,
   parentId?: string,
   model?: string,
@@ -894,7 +894,7 @@ export function stopStream(ws: WebSocket, streamId: string): boolean {
   return trySend(ws, { type: "stream.stop", stream_id: streamId });
 }
 
-export function setAgentMode(ws: WebSocket, mode: import("@shannon/types").PermissionMode): boolean {
+export function setAgentMode(ws: WebSocket, mode: import("@loxaic/types").PermissionMode): boolean {
   return trySend(ws, { type: "agent.mode", mode });
 }
 

@@ -1,4 +1,4 @@
-# @shannon/e2e
+# @loxaic/e2e
 
 End-to-end suites driven by [WebdriverIO](https://webdriver.io/). One shared smoke spec is
 written against `testID`s and runs unchanged on every platform; the per-platform difference is
@@ -13,7 +13,7 @@ From a fresh checkout, this is the whole thing:
 
 ```bash
 pnpm install
-pnpm --filter @shannon/e2e test:web
+pnpm --filter @loxaic/e2e test:web
 ```
 
 Everything else is automatic: the runner stands the stack up before the session and tears the
@@ -26,7 +26,7 @@ its own matching chromedriver — nothing to install by hand.
 To watch it happen in a real browser window instead of headless:
 
 ```bash
-E2E_HEADED=1 pnpm --filter @shannon/e2e test:web
+E2E_HEADED=1 pnpm --filter @loxaic/e2e test:web
 ```
 
 ## Electron
@@ -34,8 +34,8 @@ E2E_HEADED=1 pnpm --filter @shannon/e2e test:web
 Needs an unpacked desktop build first, then runs like any other suite:
 
 ```bash
-pnpm --filter @shannon/desktop package:dir     # builds the web export + packages the app
-pnpm --filter @shannon/e2e test:electron
+pnpm --filter @loxaic/desktop package:dir     # builds the web export + packages the app
+pnpm --filter @loxaic/e2e test:electron
 ```
 
 Re-run `package:dir` whenever `apps/desktop` or the app itself changes — the suite drives the
@@ -43,7 +43,7 @@ built binary, not your working tree.
 
 It runs against the **packaged** app rather than `pnpm dev` on purpose. Electron is the one
 target that can't assume same-origin: the window loads from `app://`, where no server exists, so
-the renderer only learns where the API is through the main process's `window.shannon.apiBaseUrl`
+the renderer only learns where the API is through the main process's `window.loxaic.apiBaseUrl`
 bridge. The dev shell loads Metro over http instead and never exercises that path.
 `src/specs/electron/endpoint.spec.ts` covers the bridge specifically.
 
@@ -53,7 +53,7 @@ Chromedriver is matched to the Electron version automatically, read from the ver
 ### Self-contained mode
 
 ```bash
-E2E_SELF_CONTAINED=1 pnpm --filter @shannon/e2e test:electron
+E2E_SELF_CONTAINED=1 pnpm --filter @loxaic/e2e test:electron
 ```
 
 Targets the packaged app's own embedded stack (its bundled Postgres + spawned server) instead of
@@ -69,15 +69,15 @@ Both use Appium. Install its drivers once — they go into a repo-local `.appium
 the versions this repo pins rather than whatever is installed globally:
 
 ```bash
-pnpm --filter @shannon/e2e setup:appium
+pnpm --filter @loxaic/e2e setup:appium
 ```
 
 ### Android
 
 ```bash
-pnpm --filter @shannon/mobile prebuild:android
+pnpm --filter @loxaic/mobile prebuild:android
 cd apps/mobile/android && ./gradlew assembleRelease
-pnpm --filter @shannon/e2e test:android
+pnpm --filter @loxaic/e2e test:android
 ```
 
 Needs the Android SDK (`ANDROID_HOME`, or Android Studio's default location) and a running
@@ -98,7 +98,7 @@ values are inlined at bundle time rather than read at runtime:
 
 ```bash
 EXPO_PUBLIC_API_URL=http://localhost:4055 ./gradlew assembleRelease
-E2E_PORT=4055 pnpm --filter @shannon/e2e test:android
+E2E_PORT=4055 pnpm --filter @loxaic/e2e test:android
 ```
 
 Gradle caches the JS bundle, so changing that variable alone will not rebuild it — pass
@@ -115,12 +115,12 @@ until the media scanner indexes it. See `seedAndroidPhoto` in `scripts/native.ts
 ### iOS
 
 ```bash
-pnpm --filter @shannon/mobile prebuild:ios
+pnpm --filter @loxaic/mobile prebuild:ios
 cd apps/mobile/ios && pod install
-xcodebuild -workspace openshannon.xcworkspace -scheme openshannon \
+xcodebuild -workspace loxaic.xcworkspace -scheme loxaic \
   -configuration Release -sdk iphonesimulator -derivedDataPath build \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
-pnpm --filter @shannon/e2e test:ios
+pnpm --filter @loxaic/e2e test:ios
 ```
 
 Do **not** pass `CODE_SIGNING_ALLOWED=NO`. Simulator builds need no team or certificate —
@@ -145,7 +145,7 @@ assertions confusingly (or worse, runs real inference):
 
 ```bash
 EXPO_PUBLIC_API_URL=http://localhost:4055 xcodebuild ... build
-E2E_PORT=4055 pnpm --filter @shannon/e2e test:ios
+E2E_PORT=4055 pnpm --filter @loxaic/e2e test:ios
 ```
 
 Two harness behaviours specific to iOS, both handled automatically:
@@ -217,7 +217,7 @@ carries a `testID` (`composer.attach.camera`) and is verified by hand.
 
 1. **Postgres** — reused if something already answers on the `DATABASE_URL` host/port,
    otherwise `docker compose up -d db` and wait for it.
-2. **Migrations** — `pnpm --filter @shannon/db db:migrate`, run explicitly rather than relying
+2. **Migrations** — `pnpm --filter @loxaic/db db:migrate`, run explicitly rather than relying
    on the server's boot-time migration (that one is cwd-sensitive and only logs on failure).
 3. **Web export** — built if `apps/mobile/dist/index.html` is missing. Must happen *before* the
    server starts: static serving is only registered at boot, and only if the export exists.
@@ -243,7 +243,7 @@ so the tool-approval step of the smoke suite needs a working Docker socket.
 `sandbox-bash.spec.ts`, `sandbox-settings.spec.ts`, and `sandbox-degraded.spec.ts` exercise the
 admin-only sandbox settings API and GUI (mode, container engine, network access — see
 `apps/server/src/settings.ts` and the `/sandbox` screen). They log in as a fixed admin account,
-`e2e-admin@shannon.test` (see `helpers/auth.ts`'s `provisionAdmin()`), rather than a per-run unique
+`e2e-admin@loxaic.test` (see `helpers/auth.ts`'s `provisionAdmin()`), rather than a per-run unique
 one: "whoever signs up first" is unreliable against a database stand-up reuses across runs, so this
 email is granted the admin role via `ADMIN_EMAILS`, which `standup.ts` sets on the server it spawns.
 
@@ -269,7 +269,7 @@ a real OpenAI-compatible endpoint drives the agent through a genuine multi-step 
 no scripted tool sequence standing in for it.
 
 ```bash
-E2E_REAL_MODEL=1 E2E_INFERENCE_URL=http://localhost:1234 pnpm --filter @shannon/e2e test:web:real-model
+E2E_REAL_MODEL=1 E2E_INFERENCE_URL=http://localhost:1234 pnpm --filter @loxaic/e2e test:web:real-model
 ```
 
 `E2E_INFERENCE_URL` points at any OpenAI-compatible endpoint — LM Studio, `llama.cpp` started
@@ -332,15 +332,15 @@ PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end
 | `E2E_IOS_APP` | — | Path to a built `.app` bundle, if not in the default location. |
 | `E2E_ANDROID_AVD` | — | AVD to boot; otherwise uses the running emulator/device. |
 | `ANDROID_HOME` | Android Studio's default SDK path | Android SDK location. |
-| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/shannon` | Test database. |
+| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/loxaic` | Test database. |
 
 Stand-up and teardown can also be driven on their own, which is handy when iterating on a spec
 and you don't want to pay the start-up cost each time:
 
 ```bash
-pnpm --filter @shannon/e2e standup
-E2E_NO_STANDUP=1 pnpm --filter @shannon/e2e test:web
-pnpm --filter @shannon/e2e teardown
+pnpm --filter @loxaic/e2e standup
+E2E_NO_STANDUP=1 pnpm --filter @loxaic/e2e test:web
+pnpm --filter @loxaic/e2e teardown
 ```
 
 ## Writing a spec

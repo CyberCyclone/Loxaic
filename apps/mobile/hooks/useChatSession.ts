@@ -18,7 +18,7 @@ import {
   updatePrefs,
   type ServerMessage,
   type AttachmentRef,
-} from '@shannon/api-client';
+} from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { isOffline, setConnectionState } from '@/lib/connection';
 import { lastUserId, readCachedConversations, removeCachedConversation, writeCachedConversation, writeCachedList } from '@/lib/message-cache';

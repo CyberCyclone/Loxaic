@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react-native';
-import { getAttachmentText } from '@shannon/api-client';
+import { getAttachmentText } from '@loxaic/api-client';
 import { Modal, ModalBackdrop, ModalContent, ModalHeader, ModalBody } from '@/components/ui/modal';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';

@@ -27,8 +27,8 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
   return (
     <aside className="sidebar" data-od-id="sidebar">
       <div className="sidebar-brand">
-        <div className="logo">OS</div>
-        <div className="name">Open-Shannon</div>
+        <div className="logo">L</div>
+        <div className="name">Loxaic</div>
       </div>
       <button className="sidebar-new" onClick={onNewChat}>
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><PlusIcon /></svg>
@@ -65,7 +65,7 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
           <div className="account-avatar">CG</div>
           <div className="account-info">
             <div className="account-name">Casey Gibson</div>
-            <div className="account-plan">shannon.tailscale.com</div>
+            <div className="account-plan">loxaic.tailscale.com</div>
           </div>
         </div>
       </div>

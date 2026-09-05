@@ -31,7 +31,7 @@ describe("ports", () => {
 
 describe("secrets", () => {
   it("creates once and returns the same values on reload", () => {
-    const dir = mkdtempSync(path.join(os.tmpdir(), "shannon-secrets-"));
+    const dir = mkdtempSync(path.join(os.tmpdir(), "loxaic-secrets-"));
     const first = loadOrCreateSecrets(dir);
     expect(first.betterAuthSecret).toMatch(/^[0-9a-f]{64}$/);
     expect(first.pgPassword).toMatch(/^[0-9a-f]{64}$/);
@@ -48,6 +48,6 @@ describe("paths", () => {
   it("defaultDataDir ends with the app name and is absolute", () => {
     const dir = defaultDataDir();
     expect(path.isAbsolute(dir)).toBe(true);
-    expect(path.basename(dir)).toBe("Open-Shannon");
+    expect(path.basename(dir)).toBe("Loxaic");
   });
 });

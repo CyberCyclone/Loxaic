@@ -4,7 +4,7 @@ import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
-import type { ModelStats } from '@shannon/api-client';
+import type { ModelStats } from '@loxaic/api-client';
 
 const PP_COLOR = '#0096ff';
 const TG_COLOR = '#22c55e';

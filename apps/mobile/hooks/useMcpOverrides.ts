@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getConversations, getMcpServers, updateConversation, type McpServer } from '@shannon/api-client';
+import { getConversations, getMcpServers, updateConversation, type McpServer } from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
 
 /**

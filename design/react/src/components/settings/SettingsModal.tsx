@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import type { Settings, SmartRouting, ThemePref, AgentMode, ThinkingLevel } from '../../types'
-import { SHANNON_MODELS } from '../../fixtures/models'
+import { LOXAIC_MODELS } from '../../fixtures/models'
 import { Modal } from '../primitives/Modal'
 import { Button } from '../primitives/Button'
 import { Input, Select } from '../primitives/Input'
@@ -125,7 +125,7 @@ export function SettingsModal({ open, onClose, initialTab = 'general' }: Setting
               <h2>Models</h2>
               <p className="desc">Manage server and on-device models.</p>
               <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Server Models</h3>
-              {SHANNON_MODELS.filter(m => m.location === 'server').map(m => (
+              {LOXAIC_MODELS.filter(m => m.location === 'server').map(m => (
                 <div key={m.id} className="model-row">
                   <div className="model-row-info">
                     <div className="model-row-name">{m.display_name}</div>
@@ -136,7 +136,7 @@ export function SettingsModal({ open, onClose, initialTab = 'general' }: Setting
               ))}
               <Button variant="secondary" size="sm" style={{ marginBottom: 16 }}>+ Add model by URL</Button>
               <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>On-Device Models</h3>
-              {SHANNON_MODELS.filter(m => m.location === 'device').map(m => (
+              {LOXAIC_MODELS.filter(m => m.location === 'device').map(m => (
                 <div key={m.id} className="model-row">
                   <div className="model-row-info">
                     <div className="model-row-name">{m.display_name}</div>
@@ -157,17 +157,17 @@ export function SettingsModal({ open, onClose, initialTab = 'general' }: Setting
               <div className="task-mappings">
                 <div><label className="label">Planning</label>
                   <Select value={routing.planning} onChange={e => setRouting(prev => ({ ...prev, planning: e.target.value }))}>
-                    {SHANNON_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+                    {LOXAIC_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
                   </Select>
                 </div>
                 <div><label className="label">Heavy thinking</label>
                   <Select value={routing.heavyThinking} onChange={e => setRouting(prev => ({ ...prev, heavyThinking: e.target.value }))}>
-                    {SHANNON_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+                    {LOXAIC_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
                   </Select>
                 </div>
                 <div><label className="label">Simple jobs</label>
                   <Select value={routing.simpleJobs} onChange={e => setRouting(prev => ({ ...prev, simpleJobs: e.target.value }))}>
-                    {SHANNON_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
+                    {LOXAIC_MODELS.map(m => <option key={m.id} value={m.id}>{m.display_name}</option>)}
                   </Select>
                 </div>
               </div>
@@ -178,8 +178,8 @@ export function SettingsModal({ open, onClose, initialTab = 'general' }: Setting
             <div className="settings-modal-section active">
               <h2>Workspaces</h2>
               <p className="desc">Server-side directories available as agent context.</p>
-              <div className="model-row"><div className="model-row-info"><div className="model-row-name">Open-Shannon/design</div><div className="model-row-meta">/home/casey/projects/open-shannon/design</div></div><Button variant="ghost" size="sm">Remove</Button></div>
-              <div className="model-row"><div className="model-row-info"><div className="model-row-name">Open-Shannon/api</div><div className="model-row-meta">/home/casey/projects/open-shannon/api</div></div><Button variant="ghost" size="sm">Remove</Button></div>
+              <div className="model-row"><div className="model-row-info"><div className="model-row-name">Loxaic/design</div><div className="model-row-meta">/home/casey/projects/loxaic/design</div></div><Button variant="ghost" size="sm">Remove</Button></div>
+              <div className="model-row"><div className="model-row-info"><div className="model-row-name">Loxaic/api</div><div className="model-row-meta">/home/casey/projects/loxaic/api</div></div><Button variant="ghost" size="sm">Remove</Button></div>
               <Button variant="secondary" size="sm">+ Register directory</Button>
             </div>
           )}

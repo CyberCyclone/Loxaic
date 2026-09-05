@@ -19,8 +19,8 @@ export function LauncherSurface({ onNavigate }: LauncherSurfaceProps) {
         <div className="main-content">
           <div style={{ maxWidth: 800, margin: '0 auto', padding: '60px 24px' }}>
             <div style={{ textAlign: 'center', marginBottom: 48 }}>
-              <div style={{ width: 48, height: 48, borderRadius: 'var(--r-md)', background: 'var(--accent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 600, color: 'var(--on-accent)', marginBottom: 16 }}>OS</div>
-              <h1 style={{ fontSize: 28, fontWeight: 600, marginBottom: 8 }}>Open-Shannon</h1>
+              <div style={{ width: 48, height: 48, borderRadius: 'var(--r-md)', background: 'var(--accent)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 600, color: 'var(--on-accent)', marginBottom: 16 }}>L</div>
+              <h1 style={{ fontSize: 28, fontWeight: 600, marginBottom: 8 }}>Loxaic</h1>
               <p style={{ fontSize: 16, color: 'var(--fg-3)' }}>Self-hosted AI assistant with agent harness</p>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>

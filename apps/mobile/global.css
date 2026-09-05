@@ -2,7 +2,7 @@
 @import 'uniwind';
 
 /* ─── UniWind theme variants ─────────────────────────────────────
-   Shannon design tokens, ported from apps/web/src/shannon.css
+   Loxaic design tokens, ported from apps/web/src/loxaic.css
    (zinc neutrals + #0096ff accent, Public Sans; dark is the design default).
    Switched at runtime via Uniwind.setTheme('light' | 'dark' | 'system')
    through GluestackUIProvider. Values are RGB triples so alpha

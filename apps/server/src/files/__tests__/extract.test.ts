@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { MAX_CACHED_EXTRACTION_BYTES, MAX_EXTRACTED_BYTES } from "@shannon/types";
+import { MAX_CACHED_EXTRACTION_BYTES, MAX_EXTRACTED_BYTES } from "@loxaic/types";
 import { extractText, readExtractedText, removeExtractedText } from "../extract.ts";
 import { attachmentPath } from "../storage.ts";
 
@@ -14,7 +14,7 @@ import { attachmentPath } from "../storage.ts";
  * restored in afterAll.
  */
 describe("extractText", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-extract-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-extract-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(() => {

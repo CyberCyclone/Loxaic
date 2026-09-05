@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
-import { db } from "@shannon/db";
-import { conversations, messages } from "@shannon/db/schema";
-import type { AttachmentRef, ContentBlock } from "@shannon/types";
+import { db } from "@loxaic/db";
+import { conversations, messages } from "@loxaic/db/schema";
+import type { AttachmentRef, ContentBlock } from "@loxaic/types";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
@@ -25,9 +25,9 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
 function chatSystemPrompt(): string {
   const workspace = getSandboxMode() === "host"
     ? "a scratch working directory on the host machine"
-    : "an isolated Linux sandbox (working directory /home/shannon/repo — an empty scratch workspace, not a checked-out project)";
+    : "an isolated Linux sandbox (working directory /home/loxaic/repo — an empty scratch workspace, not a checked-out project)";
   return [
-    "You are Shannon, a helpful AI assistant. Answer directly from your own knowledge when that is all a question needs.",
+    "You are Loxaic, a helpful AI assistant. Answer directly from your own knowledge when that is all a question needs.",
     `You also have tools: ${workspace} for running commands and working with files, and possibly external tools from the`,
     "user's connected services. Use a tool when it genuinely helps — live or verifiable information, running code,",
     "reading or writing files — and skip tools otherwise. Before calling a tool, state in one short sentence why.",

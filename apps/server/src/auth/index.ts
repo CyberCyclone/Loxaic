@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { admin, bearer } from "better-auth/plugins";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
-import { count, db, user, session, account, verification } from "@shannon/db";
+import { count, db, user, session, account, verification } from "@loxaic/db";
 
 const ADMIN_EMAILS = new Set(
   (process.env.ADMIN_EMAILS ?? "")

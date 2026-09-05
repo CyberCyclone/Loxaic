@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@shannon/db";
-import { attachments, conversations, messages, user } from "@shannon/db/schema";
-import type { ContentBlock } from "@shannon/types";
+import { db, eq } from "@loxaic/db";
+import { attachments, conversations, messages, user } from "@loxaic/db/schema";
+import type { ContentBlock } from "@loxaic/types";
 import { attachmentPath } from "../../../files/storage.ts";
 import { initStreamBroker } from "../../index.ts";
 import { loadHistory } from "../engine.ts";
@@ -20,7 +20,7 @@ import { loadHistory } from "../engine.ts";
 describe("attachment content in history loaders", () => {
   const userId = `test-attach-history-${uuid()}`;
   const convIds: string[] = [];
-  const dir = mkdtempSync(path.join(tmpdir(), "shannon-uploads-test-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "loxaic-uploads-test-"));
   const prevUploadsDir = process.env.UPLOADS_DIR;
 
   beforeAll(async () => {

@@ -12,7 +12,7 @@ let instance: Db | undefined;
 
 function getDb(): Db {
   if (!instance) {
-    client = postgres(process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/shannon");
+    client = postgres(process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/loxaic");
     instance = drizzle(client, { schema });
   }
   return instance;

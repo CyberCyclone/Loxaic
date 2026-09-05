@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { findCommand, validateSendAttachments, type ClientMessage, type ServerMessage } from "@shannon/types";
+import { findCommand, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
 import { startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";

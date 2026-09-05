@@ -39,7 +39,7 @@ if (SELF_CONTAINED && process.env.E2E_BASE_URL === undefined) {
 }
 
 if (SELF_CONTAINED) {
-  selfContainedDataDir = mkdtempSync(path.join(os.tmpdir(), 'shannon-e2e-selfcontained-'));
+  selfContainedDataDir = mkdtempSync(path.join(os.tmpdir(), 'loxaic-e2e-selfcontained-'));
 
   // Seed the instance config the app would otherwise ask the user for. A data
   // dir with no config.json is, by design, a first run: the app opens

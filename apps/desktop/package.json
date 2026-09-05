@@ -1,12 +1,12 @@
 {
-  "name": "@shannon/desktop",
+  "name": "@loxaic/desktop",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "src/main.js",
   "scripts": {
     "dev": "electron .",
-    "build:web": "pnpm --filter @shannon/mobile export:web",
+    "build:web": "pnpm --filter @loxaic/mobile export:web",
     "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
     "build:server": "node scripts/build-server.mjs",
     "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder",
@@ -24,8 +24,8 @@
     "vitest": "^3.0.0"
   },
   "build": {
-    "appId": "com.shannon.desktop",
-    "productName": "Open-Shannon",
+    "appId": "com.loxaic.desktop",
+    "productName": "Loxaic",
     "npmRebuild": false,
     "asar": false,
     "files": [

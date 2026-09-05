@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { tcpOpen } from "./ports.js";
 
-const DB_NAME = "shannon";
+const DB_NAME = "loxaic";
 
 /**
  * Reads <databaseDir>/postmaster.pid. Returns { pid, port } or null.

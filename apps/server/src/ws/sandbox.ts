@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { and, eq } from "@shannon/db";
-import { db } from "@shannon/db";
-import { sandboxes } from "@shannon/db/schema";
+import { and, eq } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { sandboxes } from "@loxaic/db/schema";
 import { resolveSessionFromToken } from "../auth/middleware";
 import { getProviderByKind } from "../sandbox/provider.ts";
 

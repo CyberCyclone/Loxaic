@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, isNull, desc, inArray, or } from "@shannon/db";
-import { db } from "@shannon/db";
-import { conversationShares, conversations, messages, usageRecords } from "@shannon/db/schema";
-import type { ContextBreakdown } from "@shannon/types";
+import { eq, and, isNull, desc, inArray, or } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { conversationShares, conversations, messages, usageRecords } from "@loxaic/db/schema";
+import type { ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
-import { detectForks } from "@shannon/sync";
+import { detectForks } from "@loxaic/sync";
 import { atLeast, type ConversationRole, resolveAccess } from "../streams/authz";
 
 /**

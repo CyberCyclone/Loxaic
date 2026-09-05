@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq } from "@shannon/db";
-import { db } from "@shannon/db";
-import { sandboxes } from "@shannon/db/schema";
+import { and, desc, eq } from "@loxaic/db";
+import { db } from "@loxaic/db";
+import { sandboxes } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { resolvePath } from "../agent/executor.ts";
 import { assertUnderUserLimit, releaseSandboxSlot, SandboxLimitError } from "../agent/sandbox-manager.ts";
@@ -78,7 +78,7 @@ export function sandboxRoutes(app: FastifyInstance) {
           conversationId: conversation_id ?? null,
           containerId: handle.ref,
           provider: kind,
-          image: kind === "container" ? (process.env.SANDBOX_IMAGE ?? "shannon-sandbox") : "host",
+          image: kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : "host",
           status: "running",
           repoUrl: repo_url ?? null,
           branch: branch ?? null,

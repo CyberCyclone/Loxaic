@@ -1,6 +1,6 @@
 # Runtime: container engine + inference backend
 
-Shannon runs two ways — see [`DEPLOY.md`](DEPLOY.md) for the full comparison:
+Loxaic runs two ways — see [`DEPLOY.md`](DEPLOY.md) for the full comparison:
 
 - **Self-contained** (the packaged desktop app, or its `--headless` /
   `headless.js` entry): embeds its own Postgres, no container engine needed
@@ -20,7 +20,7 @@ which speaks the **Docker Engine API** — not "Docker" specifically. Any engine
 that exposes that API works, and is **auto-discovered**: the default socket is
 tried first, then common Podman locations (rootless on Linux, the
 `podman machine` socket on macOS/Windows), then Colima's — re-probed live, so
-starting the engine after Shannon is already running needs no restart.
+starting the engine after Loxaic is already running needs no restart.
 
 An admin can also pick the engine explicitly in the app (**Settings → Agent
 Sandbox**): Docker and Podman are offered as choices, with whichever isn't
@@ -38,7 +38,7 @@ socket instead and makes the GUI control read-only — see
 | **Podman** | Linux, Mac, Windows | auto-discovered, or `podman machine inspect` prints it | Fully open-source, daemonless. Rootless by default. |
 | **Docker Engine (native)** | Linux, Proxmox LXC/VM | default | What you're likely running on a Proxmox host or VM already. |
 
-The `shannon-sandbox` image is built automatically on first use if it isn't
+The `loxaic-sandbox` image is built automatically on first use if it isn't
 already present (from `infra/docker/sandbox.Dockerfile`, or a copy the
 packaged app ships) — nothing needs to build it ahead of time. Only agent
 sandboxes need the engine — inference does not go through it (see below), so
@@ -52,7 +52,7 @@ glob) actually run:
 | Mode | Behavior |
 |---|---|
 | `container` (default) | Isolated via the engine above. If none is reachable, sandboxed tool calls fail with an instructive message (which engine/socket was tried, and the two ways to fix it) — chat and everything else keeps working. |
-| `host` | **No isolation** — commands run directly on the machine Shannon is on. An explicit opt-in: logs a prominent warning at boot and on first use. Only enable this if you trust everything the agent might be asked to run. |
+| `host` | **No isolation** — commands run directly on the machine Loxaic is on. An explicit opt-in: logs a prominent warning at boot and on first use. Only enable this if you trust everything the agent might be asked to run. |
 | `off` | Sandboxed tools are disabled entirely; the agent falls back to read-only/no-tool behavior. |
 
 `GET /v1/config` reports the current mode and whether it's actually usable
@@ -65,7 +65,7 @@ Agent tool calls run in a container that is deliberately unprivileged:
 
 | | |
 |---|---|
-| **User** | non-root (`shannon`, uid 1001) — cannot write the image's own `/usr/bin`, `/etc`, `/lib` |
+| **User** | non-root (`loxaic`, uid 1001) — cannot write the image's own `/usr/bin`, `/etc`, `/lib` |
 | **Capabilities** | none at all (`CapDrop: ALL`), and `no-new-privileges` so none can be regained |
 | **Network** | none, unless an admin enables it (see below) |
 | **Memory / CPU / pids** | 512 MB, 1 CPU, 100 processes |
@@ -108,7 +108,7 @@ in `<dataDir>/config.json`:
 
 The Host requirement is enforced in three places, so it can't be sidestepped:
 onboarding won't complete without a reachable engine, a server started with
-`SHANNON_HOSTING=1` and a non-container sandbox mode **fails its boot** with a
+`LOXAIC_HOSTING=1` and a non-container sandbox mode **fails its boot** with a
 named error, and `PATCH /v1/admin/settings/sandbox` refuses to switch away
 while hosting.
 
@@ -206,7 +206,7 @@ work — they're just UTF-8 bytes, decoded on the server with no parser
 involved, so they need nothing extra beyond a running server.
 
 **PDF and Office formats need a container sandbox.** DOCX, XLSX, PPTX, ODT,
-RTF, EPUB, and PDF are all extracted inside the same `shannon-sandbox` image
+RTF, EPUB, and PDF are all extracted inside the same `loxaic-sandbox` image
 agent tool calls use, never on the server itself — so `SANDBOX_MODE` must be
 `container`, with an engine actually reachable (see
 [Container engine](#container-engine-agent-sandboxes) above).
@@ -238,7 +238,7 @@ extracts to nothing useful, the same limitation the underlying tools have.
 # Self-contained app: no container engine needed at all to chat.
 # For agent sandboxes, install Docker or Podman — nothing else to configure,
 # it's auto-discovered. Without one, SANDBOX_MODE=host or =off still work.
-open Open-Shannon.dmg   # or: ./open-shannon --headless
+open Loxaic.dmg   # or: ./loxaic --headless
 
 # Docker Compose — Mac: native inference, Docker Desktop/OrbStack for everything else
 llama-server --host 0.0.0.0 --port 4002 --jinja -m model.gguf -ngl 999 &
