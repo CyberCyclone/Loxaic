@@ -88,8 +88,6 @@ export interface Conversation {
   model: string
   location: MessageLocation
   msgs: Message[]
-  /** Lives only in the server's stream log, never Postgres — absent from
-   * GET /v1/conversations and gone on app restart. */
 }
 
 export interface Routine {
