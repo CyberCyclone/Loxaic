@@ -35,11 +35,17 @@ export const config: WebdriverIO.Config = {
       'appium:automationName': 'XCUITest',
       'appium:deviceName': IOS_DEVICE,
       'appium:app': iosAppPath(),
-      // iOS interrupts the first sign-in with a system "Save Password?"
-      // sheet, which sits above the app and blocks every element query.
-      // Dismiss system alerts automatically ("Not Now"); the suite never
-      // needs to accept one.
+      // Dismiss system alerts automatically; the suite never needs to accept
+      // one. On iOS 17 this also covered the "Save Password?" prompt after
+      // the first sign-in. On iOS 26 that prompt is a Passwords-app sheet,
+      // not an alert, and is handled by dismissIosSavePasswordPrompt in
+      // helpers/app.ts instead.
       'appium:autoDismissAlerts': true,
+      // WDA's default typing rate (60 keys/s) drops characters on the iOS 26
+      // simulator — a run signed up "ee+…@example.test" for "e2e+…", and the
+      // spec's API sign-in with the intended email then 401'd. Half speed
+      // costs well under a second per field; typeInto also verifies.
+      'appium:maxTypingFrequency': 30,
       // First launch also builds/installs WebDriverAgent onto the simulator,
       // which is far slower than any later run.
       'appium:wdaLaunchTimeout': 240_000,
