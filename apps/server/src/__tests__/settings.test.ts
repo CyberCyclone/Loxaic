@@ -169,6 +169,32 @@ describe("updateSandboxSettings validation", () => {
     await expectRejection({ engine: "custom" }, "invalid");
   });
 
+  it("refuses to leave container mode while hosting — on the write path, not just at boot", async () => {
+    // hostingBlockedReason() guards startup; this guards the only other way
+    // the mode changes. Without it an admin on a live Host could switch to
+    // "host" and run every other user's commands unisolated immediately, or
+    // to "off" and brick the next boot.
+    const prev = process.env.SHANNON_HOSTING;
+    process.env.SHANNON_HOSTING = "1";
+    try {
+      await expect(updateSandboxSettings({ mode: "host" })).rejects.toMatchObject({
+        name: "SettingsError",
+        code: "invalid",
+      });
+      await expect(updateSandboxSettings({ mode: "off" })).rejects.toMatchObject({
+        name: "SettingsError",
+        code: "invalid",
+      });
+      const err = await updateSandboxSettings({ mode: "host" }).catch((e: unknown) => e);
+      expect((err as SettingsError).message).toContain("hosts for other users");
+      // Container stays permitted — the gate pins the value, it doesn't freeze the field.
+      await expect(updateSandboxSettings({ mode: "container" })).resolves.toBeDefined();
+    } finally {
+      if (prev === undefined) delete process.env.SHANNON_HOSTING;
+      else process.env.SHANNON_HOSTING = prev;
+    }
+  });
+
   it("rejects a field pinned by the environment", async () => {
     process.env.SANDBOX_MODE = "host";
     await expectRejection({ mode: "container" }, "envOverride");

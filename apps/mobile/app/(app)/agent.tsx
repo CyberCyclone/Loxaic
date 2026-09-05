@@ -26,6 +26,7 @@ import { useModels } from '@/hooks/useModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useServerConfig } from '@/hooks/useServerConfig';
+import { canEdit } from '@/lib/types';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -220,9 +221,11 @@ export default function AgentScreen() {
                 onRunCommand={handleRunCommand}
                 commandSeed={commandSeed}
                 readOnlyReason={
-                  connection === 'online'
-                    ? null
-                    : "You're offline. This is your saved copy of the run — sending will work again once your server is reachable."
+                  activeRun && !canEdit(activeRun)
+                    ? 'This run is shared with you for viewing. You can follow it as it happens, but not send.'
+                    : connection === 'online'
+                      ? null
+                      : "You're offline. This is your saved copy of the run — sending will work again once your server is reachable."
                 }
               />
             </VStack>

@@ -31,10 +31,10 @@ interface ComposerProps {
   /** Which screen this composer belongs to — filters the slash palette and
    * is implied server-side by which socket a command rides on. */
   surface: 'chat' | 'agent';
-  /** Set when the conversation can be read but not written to — offline, in
-   * this phase. The composer becomes an explanation rather than an input: a
-   * disabled textarea with no reason reads as a bug, and a send would be
-   * dropped anyway. */
+  /** Set when the conversation can be read but not written to — offline, or
+   * shared read-only. The composer becomes an explanation rather than an
+   * input: a disabled textarea with no hint of why reads as a bug, and every
+   * send would be dropped or rejected server-side anyway. */
   readOnlyReason?: string | null;
   /** Send() routes a recognized "/name ..." here instead of onSend. */
   onRunCommand: (name: string, args: string) => void;

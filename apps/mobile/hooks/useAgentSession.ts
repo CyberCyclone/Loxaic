@@ -180,6 +180,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           model: c.modelPref?.model ?? '',
           location: 'server' as const,
           msgs: [],
+          role: c.role ?? 'owner',
         }));
         setRuns((prev) => {
           const existing = new Set(prev.map((r) => r.id));

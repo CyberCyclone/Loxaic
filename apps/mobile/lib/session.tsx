@@ -28,6 +28,10 @@ interface SessionState {
   /** Desktop only: this install has no stored instance mode, so there is no
    * server to sign in to yet. Routes to /onboarding ahead of the auth gate. */
   needsOnboarding: boolean;
+  /** Desktop only: clears needsOnboarding and builds the session against the
+   * server the chosen mode just brought up. Call before routing away from
+   * /onboarding, or the app layout routes straight back. */
+  completeOnboarding: () => Promise<void>;
   isAdmin: boolean;
   signIn: (email: string, password: string) => Promise<Session>;
   signUp: (email: string, password: string, name?: string) => Promise<Session>;
@@ -60,6 +64,52 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [needsOnboarding, setNeedsOnboarding] = useState(false);
   useEffect(() => subscribeToDesktopEndpoint(), []);
 
+  /** Resolve the endpoint, load the token, and check it against the server.
+   * Shared by first launch and by completing onboarding, which the first
+   * launch skipped. */
+  const bootstrapSession = useCallback(async (state: { cancelled: boolean }) => {
+    await resolveEndpoint();
+    let stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
+    let sessionUser: SessionUser | null = null;
+
+    if (stored) {
+      // getSession resolves null *only* on a 401 — a definitively dead
+      // token — and throws when the server can't be reached. Those must not
+      // be conflated: signing someone out because their self-hosted server
+      // was briefly down would be worse than carrying on with a token that
+      // is very probably still good.
+      try {
+        const info = await apiGetSession();
+        if (info) {
+          setConnectionState('online');
+          sessionUser = info.user;
+          // Remembered so the cache can still be scoped when the server is
+          // unreachable — see message-cache's rememberUserId.
+          rememberSessionUser(info.user.id);
+        } else {
+          // Dead token. It has to be cleared, not just left unused: the app
+          // gate in app/(app)/_layout.tsx keys on `token` alone, so keeping
+          // it drops the user into the authenticated shell where every
+          // request 401s and nothing ever signs them out.
+          await clearToken();
+          stored = null;
+        }
+      } catch {
+        // Server unreachable — no conclusion can be drawn about the token,
+        // but this *is* the earliest reliable signal that the host is down,
+        // and it is what puts the app into its offline state before a single
+        // screen renders.
+        setConnectionState('offline');
+      }
+    }
+
+    if (!state.cancelled) {
+      setToken(stored);
+      setUser(sessionUser);
+      setReady(true);
+    }
+  }, []);
+
   useEffect(() => {
     const state = { cancelled: false };
     void (async () => {
@@ -85,51 +135,28 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      await resolveEndpoint();
-      let stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
-      let sessionUser: SessionUser | null = null;
-
-      if (stored) {
-        // getSession resolves null *only* on a 401 — a definitively dead
-        // token — and throws when the server can't be reached. Those must not
-        // be conflated: signing someone out because their self-hosted server
-        // was briefly down would be worse than carrying on with a token that
-        // is very probably still good.
-        try {
-          const info = await apiGetSession();
-          if (info) {
-            setConnectionState('online');
-            sessionUser = info.user;
-            // Remembered so the cache can still be scoped when the server is
-            // unreachable — see message-cache's rememberUserId.
-            rememberSessionUser(info.user.id);
-          } else {
-            // Dead token. It has to be cleared, not just left unused: the app
-            // gate in app/(app)/_layout.tsx keys on `token` alone, so keeping
-            // it drops the user into the authenticated shell where every
-            // request 401s and nothing ever signs them out.
-            await clearToken();
-            stored = null;
-          }
-        } catch {
-          // Server unreachable — no conclusion can be drawn about the token,
-          // but this *is* the earliest reliable signal that the host is down,
-          // and it is what puts the app into its offline state before a single
-          // screen renders.
-          setConnectionState('offline');
-        }
-      }
-
-      if (!state.cancelled) {
-        setToken(stored);
-        setUser(sessionUser);
-        setReady(true);
-      }
+      await bootstrapSession(state);
     })();
     return () => {
       state.cancelled = true;
     };
-  }, []);
+  }, [bootstrapSession]);
+
+  /**
+   * Leave onboarding for the app proper.
+   *
+   * `needsOnboarding` latches true when the bootstrap finds an unconfigured
+   * install, and nothing used to clear it — so after choosing a mode the app
+   * layout redirected straight back here, forever. Clearing the flag alone
+   * isn't enough either: that bootstrap returned early, before resolving an
+   * endpoint or loading a token, so the session has to be built now that
+   * there is a server to build it against.
+   */
+  const completeOnboarding = useCallback(async () => {
+    setNeedsOnboarding(false);
+    await resolveEndpoint(true);
+    await bootstrapSession({ cancelled: false });
+  }, [bootstrapSession]);
 
   const signIn = useCallback(async (email: string, password: string) => {
     const session = await apiSignIn(email, password);
@@ -168,8 +195,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ ready, token, user, needsOnboarding, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
-    [ready, token, user, needsOnboarding, signIn, signUp, signOut],
+    () => ({ ready, token, user, needsOnboarding, completeOnboarding, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
+    [ready, token, user, needsOnboarding, completeOnboarding, signIn, signUp, signOut],
   );
 
   return (

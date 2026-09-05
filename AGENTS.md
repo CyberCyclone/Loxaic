@@ -237,65 +237,39 @@ screenshots showing that behaviour working. Writing those tests is the implement
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
 
-### Offline cache and connection state
+### Conversation sharing and roles
 
-- **`lib/connection.ts` is the only source of "can we reach the server".** Fed by the socket
-  lifecycle and by the session bootstrap's existing unreachable-vs-401 split — deliberately not
-  a network-reachability check, because a phone with full signal and a switched-off host is
-  offline for our purposes and NetInfo would say otherwise. The first drop reads as
-  `reconnecting` and only becomes `offline` after retries keep failing, so the banner doesn't
-  flap on a blip.
-- **The cache is a read-only display snapshot, and explicitly not `packages/sync`.** That
-  op-log/LWW design was for device-side *editing*, was never wired into the client, and stays
-  unused. Nothing here merges or replays: a successful fetch replaces an entry wholesale,
-  because a merged cache would invent a state the server never had. If offline *sending* is
-  ever built, that is when the op-log becomes the right tool.
-- **Cache keys are dynamic** (endpoint, user, conversation), so they cannot join `storage.ts`'s
-  static `KNOWN_KEYS`. `KNOWN_PREFIXES` exists for exactly this: a key that is neither listed
-  nor prefixed is written and then silently never read back on native.
-- **Scoped per endpoint *and* per user**, and the user id is **remembered locally** — it comes
-  only from the server, so without that the cache cannot be scoped at precisely the moment it
-  matters. Remembered on *every* path that establishes a session; wiring it only into the
-  bootstrap misses sign-up, which sets the user from its own response.
-- **Conversations are cached when they settle, not on a timer.** A debounce loses the write if
-  the app reloads or quits inside the window — which is the moment that matters. Conversations
-  still streaming are skipped, which avoids a write per token without needing one. The
-  dirty-check is a cheap identity (message count, title, model, last message id and length) —
-  keying on message count alone missed every rename and model change.
-- **The cache is written from the *merged* list, never from the raw server list.** The server's
-  rows arrive with `msgs: []`; writing them straight to the cache emptied every cached thread on
-  each online start. And a thread populated *from the cache* must still yield to the server's
-  history — only a thread filled by a live run is protected from the history fetch (`fromCacheRef`).
-- **Ordering and eviction key on the conversation's own `updatedAt`, not the cache's write
-  clock.** The caller writes newest-first, so a write-clock key made the newest thread the
-  earliest write — the first evicted — and could invert the sidebar across a millisecond
-  boundary. The unit test writes newest-first for exactly this reason; an ascending fixture passed
-  while the real path evicted the wrong threads.
-- **Only a request that never got an answer means offline.** `isUnreachableError` — a 404 or
-  500 is a reachable server saying no, and flipping to offline over one locked the user out of
-  sending on a healthy host with nothing to recover it. `ApiError` carries the status for this.
-- **The foreground-resume socket close is intentional and must not read as a drop.** Without
-  the `intentionalClose` flag, every app switch on a phone flashed the offline banner and refused
-  sends for a second on a healthy server.
-- **A refused send rolls back its optimistic bubble.** Otherwise the settle-cache wrote a message
-  that was never sent into the user's "saved copy" and replayed it on every offline start.
-- **Deleting a conversation removes it from the cache** (`removeCachedConversation`) — the only
-  other pruning path needs a successful list fetch, which offline is precisely the absence of.
-- **Sign-out clears the cache for that endpoint.** Plaintext conversation bodies in
-  `localStorage` outliving sign-out is a disclosure, not a convenience; the remembered user id
-  goes with it.
-- **`secureKey` is injective.** Native SecureStore keys allow only `[A-Za-z0-9._-]`, and the first
-  encoding collapsed every other byte to `_` — so `http://box:4100` and `http://box/4100` shared a
-  slot and one host's token was *presented to* the other. Each disallowed byte is now `_` + hex.
-- **Starting offline must also *open* a thread.** `setActiveId` used to run only on the
-  conversation fetch's success path, so an offline start filled the sidebar and opened nothing.
-- **Session tokens are endpoint-scoped** (`shannon-session-token:<origin>`), with a one-time
-  migration of the old flat key. Unscoped, switching hosts presented the previous host's token,
-  got a 401, and cleared it — so returning meant signing in again.
-- **The offline e2e spec is Electron-only, and that is a property of the product**: the web
-  build is served *by the host being simulated as dead*, so cutting the network takes the page
-  down with it. Only a locally-loaded client (Electron's `app://`, or a native bundle) can
-  outlive its server, which is what an offline cache is for.
+- **One ordered role, resolved in one place.** `viewer < editor < owner`
+  (`streams/authz.ts`). `resolveAccess` resolves **owner → explicit share → admin**, and
+  `assertConversationAccess(userId, convId, minimum)` is the WS chokepoint. Ownership lives on
+  `conversations.ownerId` and is deliberately *not* a row in `conversation_shares` — two
+  sources of truth for the same fact eventually disagree, and "owner" is therefore not a
+  grantable role (a share payload asking for it degrades to viewer rather than escalating).
+- **Admin resolves to `viewer`, never higher**, with `viaAdmin: true` on the grant. An admin
+  can see any conversation; seeing is not acting. An admin who needs to participate shares it
+  to themselves, and `conversation_shares.createdBy` records that they did. A real share
+  always beats the admin fallback, so a genuinely-granted admin editor isn't demoted by their
+  own admin status.
+- **Not-found, not-shared, and shared-too-low all raise the same `NotFoundError`.** Never
+  branch on which it was — the route tests assert the responses are byte-identical.
+- **`stop` and `approve` authorize on the conversation, not the run's starter.**
+  `run.userId === userId` used to be both the lookup and the authorization; that breaks as
+  soon as a conversation has editors besides its owner, and runs deliberately outlive the
+  socket that began them. `findRunByApprovalCallId` now only *locates* — `mayActOnRun` in the
+  WS handlers is what authorizes. Both paths still no-op silently on refusal.
+- **Revoking takes effect on the revoked user's next command**, not instantly: their live
+  socket keeps the stream it is already tapped into until it re-subscribes. Every command
+  re-authorizes, so nothing new reaches them, but this is not an emergency kill switch.
+- **REST goes through `hasRole`**, not inlined ownership predicates. Reading a thread needs
+  viewer; model/MCP prefs and delete stay owner-only. **Sandbox routes stay owner-only** —
+  terminal access is arbitrary code execution, not participation in a chat.
+- **Attachment reads extend to "appears in a conversation you can see"**, scoped to
+  conversations the caller can access — otherwise a shared thread renders its messages and
+  404s every image in them. The jsonb predicate matches the reaper's (`block->>'kind' =
+  'attachment'`); a future ref-carrying block kind has to teach both.
+- **e2e login waits for either `composer.input` or `composer.readOnly`.** A viewer's composer
+  is replaced by an explanation, so waiting on the input alone hangs for exactly the user the
+  sharing spec signs in.
 
 ### File attachments
 

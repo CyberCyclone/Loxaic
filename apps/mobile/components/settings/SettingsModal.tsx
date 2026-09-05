@@ -70,7 +70,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       // the UI but never unset from it — the only way back was reinstalling.
       removeItem('shannon-endpoint');
       setEndpoint(null);
-      void resolveEndpoint(true);
+      // resolveEndpoint assigns the resolved value directly and never fires
+      // the listeners the chat/agent sockets subscribe to — only setEndpoint
+      // does. Without routing the result back through it, REST moves to the
+      // new server while both sockets stay connected to the old one until an
+      // app restart: a split-brain where the socket keeps streaming to a host
+      // the user thinks they left.
+      void resolveEndpoint(true).then((resolved) => {
+        if (resolved) setEndpoint(resolved);
+      });
     }
     setDirty(false);
     showToast('Settings saved');

@@ -1,4 +1,4 @@
-import { MessageSquare, Bot, Clock, BarChart3, Plug, Settings, Plus, LogOut } from 'lucide-react-native';
+import { MessageSquare, Bot, Clock, BarChart3, Plug, Settings, Plus, LogOut, ShieldCheck } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -25,6 +25,15 @@ const NAV_ITEMS: { id: SurfaceId; label: string; icon: typeof MessageSquare }[] 
   { id: 'mcp', label: 'MCP Servers', icon: Plug },
   { id: 'stats', label: 'Stats', icon: BarChart3 },
 ];
+
+/** Shown only to admins. Appended rather than filtered out of NAV_ITEMS so a
+ * non-admin's sidebar is identical to what it was before this existed — the
+ * screen itself and every route behind it are guarded regardless. */
+const ADMIN_NAV: { id: SurfaceId; label: string; icon: typeof MessageSquare } = {
+  id: 'admin',
+  label: 'Admin',
+  icon: ShieldCheck,
+};
 
 function NavItem({
   label,
@@ -64,7 +73,7 @@ function NavItem({
 
 export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }: SidebarProps) {
   const [settings] = useSettings();
-  const { signOut } = useSession();
+  const { signOut, isAdmin } = useSession();
   const router = useRouter();
   const initials =
     settings.name
@@ -113,6 +122,15 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
             onPress={() => { onNavigate(item.id); }}
           />
         ))}
+        {isAdmin && (
+          <NavItem
+            testID={`sidebar.nav.${ADMIN_NAV.id}`}
+            label={ADMIN_NAV.label}
+            icon={ADMIN_NAV.icon}
+            active={activeSurface === ADMIN_NAV.id}
+            onPress={() => { onNavigate(ADMIN_NAV.id); }}
+          />
+        )}
         <NavItem testID="sidebar.settings" label="Settings" icon={Settings} onPress={onOpenSettings} />
       </VStack>
 

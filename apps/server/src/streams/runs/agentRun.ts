@@ -62,7 +62,8 @@ export async function startAgentRun(input: {
 
   let convId = input.conversationId;
   if (convId) {
-    await assertConversationAccess(userId, convId);
+    // Sending is an editor action — see chatRun.ts.
+    await assertConversationAccess(userId, convId, "editor");
     if (input.parentId) await assertParentInConversation(convId, input.parentId);
   } else {
     const [conv] = await db

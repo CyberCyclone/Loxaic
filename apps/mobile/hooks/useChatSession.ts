@@ -259,6 +259,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           location: 'server' as const,
           msgs: [],
           updatedAt: c.updatedAt,
+          role: c.role ?? 'owner',
         }));
         // Built outside the updater so the *merged* list — cached messages
         // kept — is what reaches the cache. Passing `apiConversations` (every

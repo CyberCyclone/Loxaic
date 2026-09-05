@@ -1,4 +1,4 @@
-export type SurfaceId = 'chat' | 'agent' | 'routines' | 'mcp' | 'stats' | 'launcher'
+export type SurfaceId = 'chat' | 'agent' | 'routines' | 'mcp' | 'stats' | 'launcher' | 'admin'
 
 export type ModelLocation = 'server' | 'device' | 'remote'
 
@@ -93,6 +93,20 @@ export interface Conversation {
    * disagree, and the second one is meaningless to a user. Absent on a
    * locally-created conversation until the server has listed it. */
   updatedAt?: string
+  /** What this user may do here. Absent means owner — a locally-created
+   * conversation that hasn't round-tripped through the server yet is always
+   * the creator's own. */
+  role?: ConversationRole
+  /** The owner's display name, for a thread shared with this user. Absent on
+   * their own conversations, which is what the sidebar keys on to badge. */
+  sharedBy?: string
+}
+
+export type ConversationRole = 'viewer' | 'editor' | 'owner'
+
+/** May this user send into the conversation? Absent role means their own. */
+export function canEdit(conv: { role?: ConversationRole } | null | undefined): boolean {
+  return !conv?.role || conv.role === 'owner' || conv.role === 'editor'
 }
 
 export interface Routine {

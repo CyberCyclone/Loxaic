@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { FlatList } from 'react-native';
-import { Plus, GitFork, Pencil, Download, Trash2, X } from 'lucide-react-native';
+import { Plus, GitFork, Pencil, Download, Trash2, X, Users } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -30,6 +30,14 @@ interface ThreadListProps {
   onFork: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  /** Opens the share sheet. Omitted on surfaces that don't support sharing. */
+  onShare?: (id: string) => void;
+}
+
+/** Absent role means a conversation created locally this session, which is
+ * always the creator's own — only a server round-trip can make it otherwise. */
+function isOwner(conv: Conversation): boolean {
+  return !conv.role || conv.role === 'owner';
 }
 
 // Web's thread-row actions only appear on hover, which the design's own
@@ -44,6 +52,7 @@ export function ThreadList({
   onFork,
   onRename,
   onDelete,
+  onShare,
 }: ThreadListProps) {
   const [search, setSearch] = useState('');
   const [actionsFor, setActionsFor] = useState<Conversation | null>(null);
@@ -91,6 +100,21 @@ export function ThreadList({
               <Badge variant="outline" className="border-border">
                 <BadgeText className="text-2xs normal-case">{item.kind}</BadgeText>
               </Badge>
+              {/* Someone else's conversation, shared with this user. The role
+                  matters as much as the fact: a viewer's composer is disabled,
+                  so saying which they hold explains the difference before they
+                  hit it. */}
+              {!isOwner(item) && (
+                <Badge
+                  testID={`threadList.shared.${item.id}`}
+                  variant="outline"
+                  className="border-primary"
+                >
+                  <BadgeText className="text-2xs normal-case text-primary">
+                    {item.role === 'editor' ? 'shared · can edit' : 'shared · view only'}
+                  </BadgeText>
+                </Badge>
+              )}
               <Text size="2xs" className="text-muted-foreground">
                 {item.time}
               </Text>
@@ -116,16 +140,34 @@ export function ThreadList({
                 <ActionsheetIcon as={GitFork} />
                 <ActionsheetItemText>Fork conversation</ActionsheetItemText>
               </ActionsheetItem>
-              <ActionsheetItem
-                onPress={() => {
-                  setRenameText(actionsFor.title);
-                  setRenaming(actionsFor);
-                  setActionsFor(null);
-                }}
-              >
-                <ActionsheetIcon as={Pencil} />
-                <ActionsheetItemText>Rename</ActionsheetItemText>
-              </ActionsheetItem>
+              {onShare && isOwner(actionsFor) && (
+                <ActionsheetItem
+                  testID="threadList.share"
+                  onPress={() => {
+                    onShare(actionsFor.id);
+                    setActionsFor(null);
+                  }}
+                >
+                  <ActionsheetIcon as={Users} />
+                  <ActionsheetItemText>Share…</ActionsheetItemText>
+                </ActionsheetItem>
+              )}
+              {/* Rename and Delete are owner actions, like Share. The server
+                  refuses both for anyone else, so offering them to a guest
+                  only produced a local change that silently reverted on the
+                  next load. */}
+              {isOwner(actionsFor) && (
+                <ActionsheetItem
+                  onPress={() => {
+                    setRenameText(actionsFor.title);
+                    setRenaming(actionsFor);
+                    setActionsFor(null);
+                  }}
+                >
+                  <ActionsheetIcon as={Pencil} />
+                  <ActionsheetItemText>Rename</ActionsheetItemText>
+                </ActionsheetItem>
+              )}
               <ActionsheetItem
                 onPress={() => {
                   setActionsFor(null);
@@ -134,15 +176,17 @@ export function ThreadList({
                 <ActionsheetIcon as={Download} />
                 <ActionsheetItemText>Export as Markdown</ActionsheetItemText>
               </ActionsheetItem>
-              <ActionsheetItem
-                onPress={() => {
-                  onDelete(actionsFor.id);
-                  setActionsFor(null);
-                }}
-              >
-                <ActionsheetIcon as={Trash2} className="text-destructive" />
-                <ActionsheetItemText className="text-destructive">Delete</ActionsheetItemText>
-              </ActionsheetItem>
+              {isOwner(actionsFor) && (
+                <ActionsheetItem
+                  onPress={() => {
+                    onDelete(actionsFor.id);
+                    setActionsFor(null);
+                  }}
+                >
+                  <ActionsheetIcon as={Trash2} className="text-destructive" />
+                  <ActionsheetItemText className="text-destructive">Delete</ActionsheetItemText>
+                </ActionsheetItem>
+              )}
             </>
           )}
         </ActionsheetContent>

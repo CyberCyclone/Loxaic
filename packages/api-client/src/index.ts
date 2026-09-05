@@ -225,6 +225,8 @@ export async function getAuthToken(): Promise<string | null> {
 }
 
 // ── Conversations ─────────────────────────────────────────
+export type ConversationRole = "viewer" | "editor" | "owner";
+
 export interface Conversation {
   id: string;
   ownerId: string;
@@ -235,6 +237,92 @@ export interface Conversation {
   mcpOverrides: { disabledServerIds?: string[] } | null;
   createdAt: string;
   updatedAt: string;
+  /** What the caller may do here. Present on list and single-conversation
+   * reads; absent on rows returned by create/update, where the caller is the
+   * owner by construction. */
+  role?: ConversationRole;
+}
+
+export interface ConversationShare {
+  userId: string;
+  role: "viewer" | "editor";
+  name: string;
+  email: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+export interface AdminConversation {
+  id: string;
+  title: string;
+  kind: string;
+  ownerId: string;
+  ownerName: string;
+  ownerEmail: string;
+  updatedAt: string;
+  createdAt: string;
+  shareCount: number;
+}
+
+export interface DirectoryUser {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export async function getShares(conversationId: string): Promise<ConversationShare[]> {
+  const res = await authedFetch(`/v1/conversations/${conversationId}/shares`);
+  return ((await res.json()) as { shares: ConversationShare[] }).shares;
+}
+
+export async function putShare(
+  conversationId: string,
+  userId: string,
+  role: "viewer" | "editor",
+): Promise<ConversationShare[]> {
+  const res = await authedFetch(`/v1/conversations/${conversationId}/shares`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, role }),
+  });
+  return ((await res.json()) as { shares: ConversationShare[] }).shares;
+}
+
+export async function deleteShare(
+  conversationId: string,
+  userId: string,
+): Promise<ConversationShare[]> {
+  const res = await authedFetch(`/v1/conversations/${conversationId}/shares/${userId}`, {
+    method: "DELETE",
+  });
+  return ((await res.json()) as { shares: ConversationShare[] }).shares;
+}
+
+export async function searchUsers(q: string): Promise<DirectoryUser[]> {
+  const res = await authedFetch(`/v1/users/search?q=${encodeURIComponent(q)}`);
+  return ((await res.json()) as { users: DirectoryUser[] }).users;
+}
+
+export async function adminListConversations(): Promise<AdminConversation[]> {
+  const res = await authedFetch("/v1/admin/conversations");
+  return (await res.json()) as AdminConversation[];
+}
+
+export async function adminGetShares(conversationId: string): Promise<ConversationShare[]> {
+  const res = await authedFetch(`/v1/admin/conversations/${conversationId}/shares`);
+  return ((await res.json()) as { shares: ConversationShare[] }).shares;
+}
+
+export async function adminPatchShare(
+  conversationId: string,
+  input: { user_id: string; role?: "viewer" | "editor"; revoke?: boolean },
+): Promise<ConversationShare[]> {
+  const res = await authedFetch(`/v1/admin/conversations/${conversationId}/shares`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return ((await res.json()) as { shares: ConversationShare[] }).shares;
 }
 
 export async function getConversations(): Promise<Conversation[]> {

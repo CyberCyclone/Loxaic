@@ -96,9 +96,13 @@ export function buildConfig(input, previous = null) {
       bind: mode === "solo" ? "localhost" : (host.bind ?? previousHost.bind ?? "lan"),
       db: host.db ?? previousHost.db ?? { kind: "embedded" },
     };
-    if (host.advertiseUrl ?? previousHost.advertiseUrl) {
-      config.host.advertiseUrl = host.advertiseUrl ?? previousHost.advertiseUrl;
-    }
+    // Solo never inherits a previous Host's advertiseUrl. The loopback bind
+    // above would otherwise be outranked by it: BETTER_AUTH_URL derives from
+    // the advertised URL, so sign-in on a machine that only talks to itself
+    // would point at an external address nothing is listening on — and
+    // registerHost would keep publishing that dead address into the cluster.
+    const advertiseUrl = mode === "solo" ? host.advertiseUrl : (host.advertiseUrl ?? previousHost.advertiseUrl);
+    if (advertiseUrl) config.host.advertiseUrl = advertiseUrl;
   }
 
   if (mode === "client") {

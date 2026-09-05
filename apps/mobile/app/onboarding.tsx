@@ -11,6 +11,7 @@ import { Icon } from '@/components/ui/icon';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
+import { useSession } from '@/lib/session';
 import { electronBridge, type InstanceState } from '@/lib/endpoint';
 
 type Step = 'choose' | 'host' | 'client';
@@ -30,6 +31,7 @@ type Step = 'choose' | 'host' | 'client';
  */
 export default function OnboardingScreen() {
   const bridge = electronBridge();
+  const { completeOnboarding } = useSession();
   const router = useRouter();
   const [state, setState] = useState<InstanceState | null>(null);
   const [step, setStep] = useState<Step>('choose');
@@ -71,6 +73,13 @@ export default function OnboardingScreen() {
         // so by the time we route away the app is already pointed at the new
         // server — no restart, and no window where the UI is live against the
         // old one.
+        //
+        // completeOnboarding is what actually lets us leave. The session's
+        // needsOnboarding flag latched true when the bootstrap found no config,
+        // and the app layout redirects here while it is set; without clearing
+        // it — and running the session bootstrap the early return skipped —
+        // the replace below bounces straight back to this screen.
+        await completeOnboarding();
         router.replace('/');
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -78,7 +87,7 @@ export default function OnboardingScreen() {
         setBusy(false);
       }
     },
-    [bridge, router],
+    [bridge, router, completeOnboarding],
   );
 
   // Nothing to configure off the desktop app: the endpoint is same-origin on

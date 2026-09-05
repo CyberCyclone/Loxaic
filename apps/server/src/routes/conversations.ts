@@ -1,35 +1,85 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, isNull, desc } from "@shannon/db";
+import { eq, and, isNull, desc, inArray, or } from "@shannon/db";
 import { db } from "@shannon/db";
-import { conversations, messages, usageRecords } from "@shannon/db/schema";
+import { conversationShares, conversations, messages, usageRecords } from "@shannon/db/schema";
 import type { ContextBreakdown } from "@shannon/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@shannon/sync";
+import { atLeast, type ConversationRole, resolveAccess } from "../streams/authz";
+
+/**
+ * Does this user hold at least `minimum` on this conversation?
+ *
+ * The REST counterpart of the WS chokepoint. It exists because the same
+ * ownership predicate was inlined into five conversation routes and seven
+ * sandbox ones — twelve places that all had to learn about sharing at once,
+ * and twelve chances to miss one. Routes now ask this instead.
+ *
+ * Returns a boolean rather than throwing: every caller answers a refusal with
+ * the same 404 the resource-not-found path uses, so there is no existence
+ * oracle to leak.
+ */
+async function hasRole(
+  userId: string,
+  conversationId: string,
+  minimum: ConversationRole,
+): Promise<boolean> {
+  const grant = await resolveAccess(userId, conversationId);
+  return !!grant && atLeast(grant.role, minimum);
+}
 
 export function conversationRoutes(app: FastifyInstance) {
-  // List conversations
+  /**
+   * Conversations this user can see: their own, plus any shared with them.
+   *
+   * Each row carries the caller's `role`, because the sidebar has to render a
+   * shared thread differently (a badge, and a read-only composer for a
+   * viewer) and would otherwise have to ask per conversation.
+   */
   app.get("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
+    const shared = await db
+      .select({ conversationId: conversationShares.conversationId, role: conversationShares.role })
+      .from(conversationShares)
+      .where(eq(conversationShares.userId, userId));
+    const sharedRoles = new Map(shared.map((s) => [s.conversationId, s.role]));
+
     const rows = await db
       .select()
       .from(conversations)
-      .where(and(eq(conversations.ownerId, userId), isNull(conversations.deletedAt)))
+      .where(
+        and(
+          isNull(conversations.deletedAt),
+          shared.length
+            ? or(eq(conversations.ownerId, userId), inArray(conversations.id, [...sharedRoles.keys()]))
+            : eq(conversations.ownerId, userId),
+        ),
+      )
       .orderBy(desc(conversations.updatedAt))
       .limit(50);
-    return rows;
+
+    return rows.map((row) => ({
+      ...row,
+      role: row.ownerId === userId ? "owner" : (sharedRoles.get(row.id) ?? "viewer"),
+    }));
   });
 
   // Get single conversation
   app.get<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
+    const grant = await resolveAccess(userId, request.params.id);
+    if (!grant) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
     const row = await db.query.conversations.findFirst({
-      where: and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)),
+      where: eq(conversations.id, request.params.id),
     });
     if (!row) {
       reply.code(404);
       return { error: "Not found" };
     }
-    return row;
+    return { ...row, role: grant.role };
   });
 
   // Create conversation
@@ -61,6 +111,12 @@ export function conversationRoutes(app: FastifyInstance) {
         : undefined;
     // Drizzle's `.returning()` type doesn't reflect that a non-matching
     // WHERE yields zero rows — cast to what actually comes back at runtime.
+    // Owner-only: model and MCP preferences reconfigure the conversation for
+    // everyone in it, which is not something a guest editor should do.
+    if (!(await hasRole(userId, request.params.id, "owner"))) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
     const [row] = (await db
       .update(conversations)
       .set({
@@ -68,7 +124,7 @@ export function conversationRoutes(app: FastifyInstance) {
         ...(mcpOverrides !== undefined ? { mcpOverrides } : {}),
         updatedAt: new Date(),
       })
-      .where(and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)))
+      .where(eq(conversations.id, request.params.id))
       .returning()) as (typeof conversations.$inferSelect | undefined)[];
     if (!row) {
       reply.code(404);
@@ -80,20 +136,22 @@ export function conversationRoutes(app: FastifyInstance) {
   // Delete conversation (soft)
   app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    await db
-      .update(conversations)
-      .set({ deletedAt: new Date() })
-      .where(and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)));
+    // Owner-only, and silent either way: a non-owner's delete must look the
+    // same as deleting something that was already gone.
+    if (await hasRole(userId, request.params.id, "owner")) {
+      await db
+        .update(conversations)
+        .set({ deletedAt: new Date() })
+        .where(eq(conversations.id, request.params.id));
+    }
     return { ok: true };
   });
 
   // Get messages for conversation
   app.get<{ Params: { id: string } }>("/v1/conversations/:id/messages", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const conv = await db.query.conversations.findFirst({
-      where: and(eq(conversations.id, request.params.id), eq(conversations.ownerId, userId)),
-    });
-    if (!conv) {
+    // Viewer is enough: reading the thread is the whole point of a share.
+    if (!(await hasRole(userId, request.params.id, "viewer"))) {
       reply.code(404);
       return { error: "Not found" };
     }
