@@ -3,7 +3,28 @@ import * as SecureStore from 'expo-secure-store';
 import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint } from './endpoint';
 
-const LEGACY_TOKEN_KEY = 'loxaic-session-token';
+/**
+ * The unscoped slot, used when no endpoint has resolved yet.
+ *
+ * Before the Loxaic rename this constant did double duty: the flat key and
+ * the key older releases had written were the same string, so one name served
+ * both. They are different strings now, and conflating them is how a rename
+ * strands a credential — see `PRE_RENAME_TOKEN_KEY`.
+ */
+const FLAT_TOKEN_KEY = 'loxaic-session-token';
+
+/**
+ * The flat key written by pre-rename (Shannon-branded) releases.
+ *
+ * Purged, never adopted. Carrying a bearer token across a rebrand would
+ * contradict the clean break the rename is, and the alternative — leaving it
+ * — is worse still: no code path reads this key any more, so nothing would
+ * ever delete a credential that stays valid server-side for the life of its
+ * session row. `storage.ts`'s `purgePreRenameKeys` handles the web side (and
+ * everything else under the old prefix); this covers native SecureStore,
+ * which has no key enumeration and so must name its keys exactly.
+ */
+const PRE_RENAME_TOKEN_KEY = 'shannon-session-token';
 
 /**
  * One token per server, keyed by endpoint.
@@ -18,7 +39,7 @@ const LEGACY_TOKEN_KEY = 'loxaic-session-token';
  * empty session slot.
  */
 function tokenKey(endpoint: string | null): string {
-  if (!endpoint) return LEGACY_TOKEN_KEY;
+  if (!endpoint) return FLAT_TOKEN_KEY;
   return `loxaic-session-token:${endpoint.replace(/\/+$/, '')}`;
 }
 
@@ -49,9 +70,9 @@ export async function loadToken(): Promise<string | null> {
   try {
     const key = tokenKey(endpoint);
     if (Platform.OS === 'web') {
-      token = globalThis.localStorage.getItem(key) ?? migrateLegacyWeb(key);
+      token = globalThis.localStorage.getItem(key);
     } else {
-      token = (await SecureStore.getItemAsync(secureKey(key))) ?? (await migrateLegacyNative(key));
+      token = await SecureStore.getItemAsync(secureKey(key));
     }
   } catch {
     token = null;
@@ -61,35 +82,30 @@ export async function loadToken(): Promise<string | null> {
 }
 
 /**
- * One-time move of the old flat key into this endpoint's slot.
+ * Deletes any pre-rename token from native SecureStore. Web is covered by
+ * `purgePreRenameKeys`, which can enumerate `localStorage`; SecureStore
+ * cannot be enumerated, so both shapes a pre-rename release could have
+ * written are named explicitly:
  *
- * Without it every existing install is silently signed out by this change.
- * The legacy token belongs to whatever endpoint the app was last using, and
- * on the overwhelmingly common single-server install that is the endpoint
- * resolving right now — so adopting it here is correct, and the legacy key is
- * removed afterwards so it can never be adopted by a *second* host later.
+ *   - the flat key, from before tokens were scoped per endpoint;
+ *   - this endpoint's scoped key, which is the one an install upgrading from
+ *     any recent release actually holds.
+ *
+ * Only the current endpoint's scoped key is reachable — a token stored for a
+ * host this install has since stopped using can't be named without the
+ * endpoint, and SecureStore won't list it. That residue is called out in the
+ * upgrade notes; reinstalling clears the Keychain entry outright.
  */
-function migrateLegacyWeb(key: string): string | null {
-  try {
-    const legacy = globalThis.localStorage.getItem(LEGACY_TOKEN_KEY);
-    if (!legacy) return null;
-    globalThis.localStorage.setItem(key, legacy);
-    globalThis.localStorage.removeItem(LEGACY_TOKEN_KEY);
-    return legacy;
-  } catch {
-    return null;
-  }
-}
-
-async function migrateLegacyNative(key: string): Promise<string | null> {
-  try {
-    const legacy = await SecureStore.getItemAsync(LEGACY_TOKEN_KEY);
-    if (!legacy) return null;
-    await SecureStore.setItemAsync(secureKey(key), legacy);
-    await SecureStore.deleteItemAsync(LEGACY_TOKEN_KEY);
-    return legacy;
-  } catch {
-    return null;
+export async function purgePreRenameToken(endpoint: string | null): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const stale = [PRE_RENAME_TOKEN_KEY];
+  if (endpoint) stale.push(`${PRE_RENAME_TOKEN_KEY}:${endpoint.replace(/\/+$/, '')}`);
+  for (const key of stale) {
+    try {
+      await SecureStore.deleteItemAsync(secureKey(key));
+    } catch {
+      // A locked device or a missing entitlement — retries next launch.
+    }
   }
 }
 

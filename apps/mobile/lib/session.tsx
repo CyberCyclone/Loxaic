@@ -12,11 +12,11 @@ import {
   signUp as apiSignUp,
   type Session,
 } from '@loxaic/api-client';
-import { clearToken, loadToken, saveToken } from './auth';
+import { clearToken, loadToken, purgePreRenameToken, saveToken } from './auth';
 import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
 import { setConnectionState } from './connection';
 import { clearCacheForEndpoint, rememberUserId } from './message-cache';
-import { hydrateStorage } from './storage';
+import { hydrateStorage, purgePreRenameKeys } from './storage';
 
 type SessionUser = Session['user'];
 
@@ -69,6 +69,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
    * launch skipped. */
   const bootstrapSession = useCallback(async (state: { cancelled: boolean }) => {
     await resolveEndpoint();
+    // Drop the pre-rename Keychain token now the endpoint is known — its
+    // scoped key can't be named before this point. Never awaited for its
+    // result: nothing downstream depends on it, and a Keychain that refuses
+    // must not hold up the splash.
+    void purgePreRenameToken(currentEndpoint());
     let stored = await loadToken(); // also sets the api-client's AUTH_TOKEN
     let sessionUser: SessionUser | null = null;
 
@@ -113,6 +118,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const state = { cancelled: false };
     void (async () => {
+      // Before hydration, so the cache is never populated from keys that are
+      // about to be deleted.
+      await purgePreRenameKeys();
       await hydrateStorage();
 
       // Ask the desktop main process first. Its answer decides whether there

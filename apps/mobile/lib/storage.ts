@@ -16,6 +16,8 @@ const KNOWN_KEYS = [
   'loxaic-settings',
   'loxaic-endpoint',
   'loxaic-selected-model',
+  'loxaic-smart-routing',
+  'loxaic-thinking-levels',
 ] as const;
 
 /**
@@ -46,6 +48,45 @@ export async function hydrateStorage(): Promise<void> {
   const pairs = await AsyncStorage.multiGet(wanted);
   for (const [key, value] of pairs) {
     if (value != null) cache.set(key, value);
+  }
+}
+
+/**
+ * Keys written by pre-rename (Shannon-branded) releases, purged once at start.
+ *
+ * The rename moved every key this module owns, so nothing reads these again —
+ * but nothing *removes* them either. `removeItem` is only ever called with a
+ * key some code path still knows, and no code path knows these any more. Left
+ * alone they sit on disk for the life of the install: a valid bearer token in
+ * web `localStorage`, and cached message content that `clearCacheForEndpoint`
+ * — the detach path, whose whole job is dropping a host's data — can no longer
+ * see, because it scans the `loxaic-cache:` prefix.
+ *
+ * Purged rather than migrated, deliberately. The rename is a clean break, and
+ * carrying a credential across it would be a worse answer than signing in
+ * once more, which the upgrade notes already promise.
+ *
+ * Native tokens live in SecureStore, which has no key enumeration, so
+ * `purgePreRenameToken` in `auth.ts` handles that half by exact key.
+ */
+const PRE_RENAME_PREFIX = 'shannon-';
+
+export async function purgePreRenameKeys(): Promise<void> {
+  if (Platform.OS === 'web') {
+    for (const key of keysWithPrefix(PRE_RENAME_PREFIX)) removeItem(key);
+    return;
+  }
+  try {
+    // Not keysWithPrefix: that reads the hydration cache, which by design
+    // only ever holds known (post-rename) keys, so it can never see these.
+    const stale = (await AsyncStorage.getAllKeys()).filter((key) =>
+      key.startsWith(PRE_RENAME_PREFIX),
+    );
+    if (stale.length === 0) return;
+    for (const key of stale) cache.delete(key);
+    await AsyncStorage.multiRemove(stale);
+  } catch {
+    // A failed purge must never block the splash — it retries next launch.
   }
 }
 

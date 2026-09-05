@@ -63,7 +63,7 @@ rather not put a display on. Two equivalent ways to invoke it:
 ```ini
 # /etc/systemd/system/loxaic.service
 [Unit]
-Description=Open Loxaic
+Description=Loxaic
 After=network.target
 
 [Service]

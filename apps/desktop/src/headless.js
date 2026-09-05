@@ -119,7 +119,7 @@ async function main() {
     instance,
   });
 
-  console.log("Open Loxaic is running:");
+  console.log("Loxaic is running:");
   for (const url of listAddresses(stack.port)) console.log(`  ${url}`);
   console.log(`Data directory: ${dataDir}`);
 
