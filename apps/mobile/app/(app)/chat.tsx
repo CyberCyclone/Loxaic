@@ -2,6 +2,8 @@ import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { MessagesSquare } from 'lucide-react-native';
 import { findCommand } from '@shannon/api-client';
+import { OfflineBanner } from '@/components/shell/OfflineBanner';
+import { useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -27,6 +29,7 @@ import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
 export default function ChatScreen() {
+  const connection = useConnection();
   const shell = useShell();
   const { token } = useSession();
   const breakpoint = useBreakpoint();
@@ -141,6 +144,7 @@ export default function ChatScreen() {
             ) : undefined
           }
         />
+        <OfflineBanner />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -168,7 +172,9 @@ export default function ChatScreen() {
           readOnlyReason={
             activeConv && !canEdit(activeConv)
               ? 'This conversation is shared with you for viewing. You can read it as it happens, but not send.'
-              : null
+              : connection === 'online'
+                ? null
+                : "You're offline. This is your saved copy of the conversation — sending will work again once your server is reachable."
           }
         />
         </KeyboardAvoidingView>

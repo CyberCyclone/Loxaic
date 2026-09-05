@@ -18,11 +18,14 @@ import { Heading } from '@/components/ui/heading';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
+import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
 import { removeItem, setItem } from '@/lib/storage';
-import { resolveEndpoint, setEndpoint } from '@/lib/endpoint';
+import { clearCacheForEndpoint } from '@/lib/message-cache';
+import { clearToken } from '@/lib/auth';
+import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
 
@@ -37,6 +40,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const { showToast } = useToastHelper();
   const [draft, setDraft] = useState<Settings>(settings);
   const [dirty, setDirty] = useState(false);
+  const [confirmDetach, setConfirmDetach] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -80,12 +84,33 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     showToast('Settings saved');
   };
 
+  /**
+   * Leave the current host.
+   *
+   * Order matters: the cache and token are cleared *before* the main process
+   * tears the stack down, because both are keyed by the endpoint and reading
+   * it back afterwards would give the next one's. Only this endpoint's data
+   * goes — another host the user has joined keeps its own session and cache.
+   */
+  const detach = async () => {
+    const endpoint = currentEndpoint();
+    if (endpoint) {
+      clearCacheForEndpoint(endpoint);
+      await clearToken(endpoint);
+    }
+    removeItem('shannon-endpoint');
+    setConfirmDetach(false);
+    onClose();
+    await electronBridge()?.instance.detach();
+  };
+
   const discard = () => {
     setDraft(settings);
     setDirty(false);
   };
 
   return (
+    <>
     <Modal isOpen={open} onClose={onClose} size="md">
       <ModalBackdrop />
       <ModalContent>
@@ -233,6 +258,26 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 Overrides auto-detection (LAN then tailnet). Leave blank to auto-detect.
               </Text>
             </VStack>
+
+            {/* Desktop only: leaving a host is a main-process action (it stops
+                the stack and returns to onboarding), which no other platform
+                can do. */}
+            {electronBridge() && (
+              <VStack space="xs">
+                <Text size="xs" className="text-muted-foreground">Disconnect</Text>
+                <Button
+                  testID="settings.detach"
+                  variant="outline"
+                  onPress={() => { setConfirmDetach(true); }}
+                >
+                  <ButtonText className="text-destructive">Disconnect from this server</ButtonText>
+                </Button>
+                <Text size="2xs" className="text-muted-foreground">
+                  Your conversations stay on the server. The copy saved on this device is
+                  removed, and you&apos;ll be asked how to set this machine up again.
+                </Text>
+              </VStack>
+            )}
           </VStack>
         </ModalBody>
         {dirty && (
@@ -252,5 +297,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         )}
       </ModalContent>
     </Modal>
+    <WarningConfirmModal
+      open={confirmDetach}
+      title="Disconnect from this server?"
+      message="Your conversations stay on the server — nothing there is deleted. The copy saved on this device is removed, along with your sign-in for it, and this machine will ask how you want to set it up again."
+      confirmLabel="Disconnect"
+      testIDPrefix="settings.detach"
+      onConfirm={() => { void detach(); }}
+      onCancel={() => { setConfirmDetach(false); }}
+    />
+    </>
   );
 }
