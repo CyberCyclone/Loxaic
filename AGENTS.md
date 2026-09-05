@@ -124,10 +124,17 @@ screenshots showing that behaviour working. Writing those tests is the implement
   it: under pnpm it is only hoisted to `node_modules/.pnpm/node_modules`, which Babel can't
   resolve from `apps/mobile`. It injects `react-native-worklets/plugin` itself, so that plugin
   is intentionally absent from `babel.config.js` — listing it twice breaks reanimated.
-- **`expo/fetch` is `globalThis.fetch` on native since SDK 56.** If native uploads (the RN
-  `{uri, name, type}` FormData part in `packages/api-client`) ever fail with "Network request
-  failed", `EXPO_PUBLIC_USE_RN_FETCH=1` restores React Native's fetch — it is inlined at bundle
-  time, so it has to be set in the shell that runs `xcodebuild`/`gradlew`, not just `.env`.
+- **`expo/fetch` is `globalThis.fetch` on native since SDK 56, and its FormData encoder only
+  accepts a string, a `Blob`, or an object with `bytes()`.** React Native's classic
+  `{uri, name, type}` upload part is *not* one of them — it fails client-side with
+  "Unsupported FormDataPart implementation" before any request is made (this shipped briefly
+  during the SDK 57 upgrade; the iOS attachments spec caught it). Native uploads therefore go
+  through `nativeAttachmentFile` in `apps/mobile/lib/attachmentUpload.ts`, which returns a
+  `{name, type, bytes()}` part: `file://` URIs are read via `fetch(uri)` (expo/fetch supports
+  the file scheme on both platforms), `data:` URIs are decoded in JS. Do **not** reach for
+  `EXPO_PUBLIC_USE_RN_FETCH=1` to paper over this — it is inlined at bundle time, so it would
+  have to be set in every build shell forever, and it silently changes fetch semantics for the
+  whole app.
 
 ### testIDs and e2e selectors
 

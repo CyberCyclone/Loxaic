@@ -436,23 +436,34 @@ export interface UploadedAttachment {
   extract_status: "none" | "ok" | "failed" | "unsupported";
 }
 
-/** Upload one file — image or document. `file` is a web File/Blob, or a React
- * Native picker asset shape ({uri, name, type}); both work as a FormData
- * entry. `filename`, when given, names the multipart part explicitly — needed
- * when `file` is a plain Blob (a Blob carries no name of its own; a File
- * would, but the web upload path here works from a re-wrapped Blob, not the
- * original File, so the name has to be threaded through separately). */
+/** A multipart part `expo/fetch` can encode on native: it reads `name` and
+ * `type` for the part headers and `bytes()` for the body. This is the *only*
+ * non-Blob shape it accepts — React Native's `{uri, name, type}` recipe throws
+ * "Unsupported FormDataPart implementation" now that `expo/fetch` is
+ * `globalThis.fetch` (SDK 56+). Built by `nativeAttachmentFile` in
+ * apps/mobile/lib/attachmentUpload.ts. */
+export interface NativeUploadPart {
+  name: string;
+  type: string;
+  bytes(): Promise<Uint8Array>;
+}
+
+/** Upload one file — image or document. `file` is a web File/Blob, or a
+ * native `NativeUploadPart`; both work as a FormData entry. `filename`, when
+ * given, names the multipart part explicitly — needed when `file` is a plain
+ * Blob (a Blob carries no name of its own; a File would, but the web upload
+ * path here works from a re-wrapped Blob, not the original File, so the name
+ * has to be threaded through separately). */
 export async function uploadAttachment(
-  file: Blob | { uri: string; name: string; type: string },
+  file: Blob | NativeUploadPart,
   filename?: string,
 ): Promise<UploadedAttachment> {
   const token = await getAuthToken();
   const form = new FormData();
-  // RN's FormData accepts {uri,name,type} directly; the DOM lib's types don't
-  // know that shape, hence the cast — this is the standard RN upload pattern.
-  // The RN shape already carries its own `name`, so `filename` only matters
-  // for the Blob branch — FormData.append's 3rd argument is exactly the web
-  // mechanism for naming a Blob part.
+  // The DOM lib's FormData types only know Blob, hence the cast on the native
+  // part; expo/fetch's encoder duck-types it. The part already carries its own
+  // `name`, so `filename` only matters for the Blob branch — FormData.append's
+  // 3rd argument is exactly the web mechanism for naming a Blob part.
   if (file instanceof Blob) {
     form.append("file", file, filename);
   } else {

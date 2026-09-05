@@ -164,12 +164,9 @@ export function useComposerAttachments() {
           throw new Error(`uploading (${String(blob.size)} bytes): ${(e as Error).message}`);
         });
       } else {
-        // Native: hand the {uri, name, type} shape straight to FormData —
-        // RN's own networking module streams the file (or decodes a data:
-        // URI) directly. Building a Blob via fetch(uri).blob() first and
-        // uploading *that* is the well-documented unreliable RN path (fails
-        // client-side with the same generic "Network request failed" this
-        // hook was hitting, with no request ever reaching the server). The
+        // Native: a `bytes()`-bearing part that expo/fetch's FormData encoder
+        // reads lazily (see nativeAttachmentFile for why neither RN's
+        // {uri, name, type} recipe nor a Blob works here since SDK 56). The
         // 10 MB pre-check is skipped here — normalize() already resizes to
         // MAX_EDGE, and the server enforces the real cap regardless.
         uploaded = await uploadAttachment(nativeAttachmentFile(uri, mime, name)).catch((e: unknown) => {
