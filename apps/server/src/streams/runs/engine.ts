@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, eq, gt } from "@loxaic/db";
+import { and, count, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@loxaic/types";
 import {
@@ -18,6 +18,7 @@ import {
 } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { fingerprintPrompt, measureReuse, recordPrompt, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import {
@@ -35,8 +36,45 @@ import { getRun, unregisterRun } from "../registry.ts";
 const MAX_ITERATIONS = 20;
 /** An approval request left unanswered this long is treated as a denial. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
-/** How many prior messages to replay as context. */
+/**
+ * The smallest number of prior messages the replay window is ever narrowed
+ * to. It is a floor, not a fixed size — see `historyAnchor`.
+ */
 export const HISTORY_LIMIT = 50;
+
+/**
+ * How far the window's oldest edge jumps when it finally has to move.
+ *
+ * A window of exactly HISTORY_LIMIT messages that slides by one on every turn
+ * destroys the backend's prompt cache: the prompt no longer *starts* with the
+ * same tokens, so llama.cpp/LM Studio re-evaluate the entire history from
+ * scratch, every single turn, for the life of the conversation. Measured on a
+ * 14.5k-token thread against a local LM Studio: 312 ms when the window held
+ * still versus 14,551 ms the turn one message fell off the front — a 45×
+ * difference that grows with the conversation.
+ *
+ * So the window is allowed to *grow* from HISTORY_LIMIT up to
+ * HISTORY_LIMIT + HISTORY_STEP - 1 messages, and only re-anchors — paying one
+ * full prompt evaluation — once every HISTORY_STEP messages. Every turn in
+ * between extends a prefix the backend already has cached.
+ */
+export const HISTORY_STEP = 25;
+
+/**
+ * The oldest message this turn replays, as an offset from the oldest message
+ * available (0 = replay everything). Quantised to HISTORY_STEP so it is a
+ * *stable* function of the conversation's length rather than a value that
+ * drifts by one per message: it holds still for HISTORY_STEP messages at a
+ * time, which is what keeps the prompt prefix — and so the backend's KV cache
+ * — intact across turns.
+ *
+ * Exported for the tests that pin the quantisation; `loadHistory` is the only
+ * caller.
+ */
+export function historyAnchor(total: number): number {
+  if (total <= HISTORY_LIMIT) return 0;
+  return Math.max(0, Math.floor((total - HISTORY_LIMIT) / HISTORY_STEP) * HISTORY_STEP);
+}
 
 /**
  * A plain function call rather than a direct `abort.signal.aborted` read:
@@ -183,6 +221,12 @@ export async function runToolLoop(ctx: {
         summaryMsg ? chatMessages.filter((m) => m !== summaryMsg) : chatMessages,
         tools,
       );
+      // Fingerprint the exact payload about to go out — same reason the tally
+      // is taken here rather than once per run: `chatMessages` grows as tool
+      // calls and results are appended, and each iteration is its own request
+      // with its own prefix relationship to the one before it.
+      const fingerprint = fingerprintPrompt(model, chatMessages, tools);
+      const reuse = measureReuse(convId, fingerprint);
       if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
       const breakdownMeta = {
         historyMessages: history.messages.length,
@@ -202,6 +246,7 @@ export async function runToolLoop(ctx: {
           } else {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
+            recordPrompt(convId, fingerprint, event.result.usage.prompt_tokens);
             await recordUsage({
               runId: streamId,
               userId,
@@ -209,6 +254,7 @@ export async function runToolLoop(ctx: {
               messageId: assistantMsgId,
               model,
               result: event.result,
+              reuse,
               context: apportion(
                 tally,
                 event.result.usage.prompt_tokens,
@@ -280,6 +326,9 @@ export async function runToolLoop(ctx: {
               prompt_tps: doneResult.promptTps,
               gen_tps: doneResult.genTps,
               total_ms: doneResult.totalMs,
+              ttft_ms: doneResult.ttftMs,
+              cached_tokens: doneResult.cachedTokens,
+              reusable_tokens: reuse.tokens,
               // This is the terminating iteration, so `tally` and `doneResult`
               // describe the same call — the breakdown lines up exactly.
               context: apportion(
@@ -498,6 +547,7 @@ async function recordUsage(input: {
   messageId: string;
   model: string;
   result: CompletionResult;
+  reuse: PromptReuse;
   context?: ContextBreakdown;
 }): Promise<void> {
   const { result } = input;
@@ -512,7 +562,9 @@ async function recordUsage(input: {
     model: input.model,
     origin: "server",
     inputTokens: result.usage.prompt_tokens,
-    cachedTokens: result.timings?.cache_n ?? 0,
+    // Null, not 0, when the backend says nothing — see the column's comment.
+    cachedTokens: result.cachedTokens,
+    reusableTokens: input.reuse.tokens,
     outputTokens: result.usage.completion_tokens,
     ttftMs: result.ttftMs,
     promptMs: result.timings?.prompt_ms ?? null,
@@ -526,9 +578,15 @@ async function recordUsage(input: {
 
 /**
  * Rebuilds the OpenAI message list from stored content blocks. Thinking
- * blocks are dropped (display-only), and assistant tool calls with no
- * matching tool_result are stripped — an interrupted run would otherwise
- * leave a dangling call that most servers reject.
+ * blocks are dropped (display-only), and tool calls and results that lost
+ * their partner are stripped in both directions — an interrupted run leaves a
+ * dangling call, and the window's oldest edge can orphan a result; most
+ * servers reject either.
+ *
+ * The replayed window is anchored, not sliding: its oldest edge is quantised
+ * to HISTORY_STEP so that consecutive turns send a prompt the previous turn's
+ * prompt is a *prefix* of, which is the whole basis of the backend's KV
+ * cache. See HISTORY_STEP for what a per-message slide costs.
  */
 export async function loadHistory(
   conversationId: string,
@@ -551,24 +609,48 @@ export async function loadHistory(
     .find((r) => r.text.length > 0);
   const summaryText = summaryRow?.text ?? null;
 
-  // One over the limit, so we can tell the client whether older turns were
-  // already dropped. Cheaper than a second COUNT(*).
-  const rows = await db.query.messages.findMany({
-    where: summaryRow
-      ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
-      : eq(messages.conversationId, conversationId),
-    orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
-    columns: { authorType: true, content: true, status: true, lamport: true },
-    limit: HISTORY_LIMIT + 1,
-  });
-  const truncated = rows.length > HISTORY_LIMIT;
-  const ordered = rows.slice(0, HISTORY_LIMIT).reverse();
+  const replayable = summaryRow
+    ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
+    : eq(messages.conversationId, conversationId);
 
+  // A real COUNT(*), where the old code inferred "is there more?" from a
+  // limit+1 fetch. The window's oldest edge has to be a stable function of
+  // how long the conversation is (historyAnchor), and that needs the actual
+  // length — an over-fetch by one can only answer the yes/no. One indexed
+  // count per run (not per tool iteration) is a fair price for a prompt
+  // prefix the backend can cache.
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(messages)
+    .where(replayable);
+
+  const anchor = historyAnchor(total);
+  const windowSize = total - anchor;
+  const truncated = anchor > 0;
+
+  const rows = windowSize > 0
+    ? await db.query.messages.findMany({
+        where: replayable,
+        orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
+        columns: { authorType: true, content: true, status: true, lamport: true },
+        limit: windowSize,
+      })
+    : [];
+  const ordered = rows.reverse();
+
+  // Call ids in both directions. `resolvedCallIds` strips an assistant's
+  // dangling tool_call (an interrupted run) — but the window's oldest edge
+  // can equally cut the other way, leaving a tool_result whose assistant
+  // tool_call fell outside it. A `role: "tool"` message with no preceding
+  // call is rejected outright by most backends, so `presentCallIds` drops
+  // those too. Both sets are collected before anything is emitted, because
+  // the rows they describe are interleaved.
   const resolvedCallIds = new Set<string>();
+  const presentCallIds = new Set<string>();
   for (const row of ordered) {
-    if (row.authorType !== "tool") continue;
     for (const block of row.content as ContentBlock[]) {
-      if (block.kind === "tool_result") resolvedCallIds.add(block.call_id);
+      if (row.authorType === "tool" && block.kind === "tool_result") resolvedCallIds.add(block.call_id);
+      if (row.authorType === "assistant" && block.kind === "tool_call") presentCallIds.add(block.call_id);
     }
   }
 
@@ -624,6 +706,7 @@ export async function loadHistory(
     if (row.authorType === "tool") {
       for (const block of blocks) {
         if (block.kind !== "tool_result") continue;
+        if (!presentCallIds.has(block.call_id)) continue;
         out.push({ role: "tool", tool_call_id: block.call_id, content: block.output });
       }
     }

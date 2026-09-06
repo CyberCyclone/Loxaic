@@ -61,10 +61,10 @@ export function ModelStatsTable({ models }: { models: ModelStats[] }) {
               </VStack>
               <VStack>
                 <Text size="2xs" className="text-muted-foreground">
-                  Cache %
+                  Reuse %
                 </Text>
                 <Text size="sm" className="text-foreground">
-                  {m.cachePct}%
+                  {m.cachePct != null ? `${String(m.cachePct)}%` : '—'}
                 </Text>
               </VStack>
               <VStack>

@@ -383,7 +383,7 @@ async function runCompactGeneration(ctx: {
         model,
         origin: "server",
         inputTokens: doneResult.usage.prompt_tokens,
-        cachedTokens: doneResult.timings?.cache_n ?? 0,
+        cachedTokens: doneResult.cachedTokens,
         outputTokens: doneResult.usage.completion_tokens,
         ttftMs: doneResult.ttftMs,
         promptMs: doneResult.timings?.prompt_ms ?? null,

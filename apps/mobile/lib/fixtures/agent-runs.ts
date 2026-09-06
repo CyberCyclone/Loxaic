@@ -18,7 +18,7 @@ export const AGENT_RUNS: AgentRun[] = [
           { tool: 'grep', summary: '"res.status" in src/auth/', result: 'src/auth/middleware.ts:5:  if (!token) return res.status(401).json({ error: "No token" });\nsrc/auth/middleware.ts:9:    return res.status(401).json({ error: e.message });\nsrc/auth/index.ts:12:  return res.status(403).json({ error: "Forbidden" });\nsrc/auth/refresh.ts:8:  return res.status(400).json({ error: "Missing refresh token" });', duration: '0.2s' },
         ],
         text: "I've reviewed your middleware. Here are the issues:\n\n**1. Inconsistent error shapes** — strings vs dynamic messages\n**2. JWT secret hardcoded** — should be environment-injected\n**3. No expired vs invalid token distinction**\n\nWant me to apply the fix?",
-        usage: { in: 8400, out: 1240, tps: 38, cache: 62 },
+        usage: { in: 8400, out: 1240, tps: 38, cachedTokens: 5208 },
       },
       {
         role: 'assistant',
@@ -47,7 +47,7 @@ export const AGENT_RUNS: AgentRun[] = [
           { tool: 'bash', summary: 'npm test -- src/auth/', result: 'PASS  src/auth/middleware.test.ts\nPASS  src/auth/errors.test.ts\nTests: 14 passed', duration: '2.4s' },
         ],
         text: "Changes applied and tests pass. The middleware now uses typed `AuthError` subclasses and the JWT secret is injected via config.",
-        usage: { in: 5200, out: 480, tps: 40, cache: 68 },
+        usage: { in: 5200, out: 480, tps: 40, cachedTokens: 3536 },
       },
     ],
     todos: [
@@ -81,7 +81,7 @@ export const AGENT_RUNS: AgentRun[] = [
           { tool: 'bash', summary: 'curl -s -I wss://api.example.com', result: 'HTTP/1.1 426 Upgrade Required\nConnection: close\nKeep-Alive: timeout=30', duration: '0.5s' },
         ],
         text: "Found it. The server has a **30-second idle timeout**. I'll add a ping interval — requesting permission to edit `src/ws/client.ts`.",
-        usage: { in: 5200, out: 480, tps: 40, cache: 68 },
+        usage: { in: 5200, out: 480, tps: 40, cachedTokens: 3536 },
       },
     ],
     todos: [
@@ -110,7 +110,7 @@ export const AGENT_RUNS: AgentRun[] = [
           { tool: 'fs_write', summary: 'src/auth/refresh.ts (new)', result: 'Created src/auth/refresh.ts', duration: '0.1s' },
         ],
         text: 'Creating the refresh endpoint...',
-        usage: { in: 3400, out: 320, tps: 36, cache: 70 },
+        usage: { in: 3400, out: 320, tps: 36, cachedTokens: 2380 },
       },
     ],
     todos: [

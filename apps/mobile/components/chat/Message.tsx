@@ -17,6 +17,7 @@ import { AttachmentThumbs } from './AttachmentThumbs';
 import { ImageViewer } from '@/components/viewer/ImageViewer';
 import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
+import { promptReuse } from '@/lib/usage';
 import type { Message as MessageType } from '@/lib/types';
 
 interface MessageProps {
@@ -34,6 +35,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
   const { token } = useSession();
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<NonNullable<MessageType['attachments']>[number] | null>(null);
+  const reuse = msg.usage ? promptReuse(msg.usage) : null;
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -124,11 +126,18 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
                     {(msg.usage.totalMs / 1000).toFixed(1)}s
                   </Text>
                 )}
-                {!!msg.usage.promptTps && (
-                  <Text size="xs" className="text-muted-foreground">
+                {msg.usage.promptTps != null ? (
+                  <Text testID="chat.usage.promptRate" size="xs" className="text-muted-foreground">
                     {Math.round(msg.usage.promptTps)} tok/s prompt
                   </Text>
-                )}
+                ) : msg.usage.ttftMs != null ? (
+                  // No prompt rate to show: the backend didn't say how many
+                  // prompt tokens it actually evaluated, and dividing the whole
+                  // prompt by TTFT is not a speed once any of it was cached.
+                  <Text testID="chat.usage.promptCost" size="xs" className="text-muted-foreground">
+                    {(msg.usage.ttftMs / 1000).toFixed(1)}s prompt
+                  </Text>
+                ) : null}
                 {msg.usage.tps > 0 && (
                   <Text size="xs" className="text-muted-foreground">
                     {Math.round(msg.usage.tps)} tok/s gen
@@ -140,9 +149,9 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
                 <Text size="xs" className="text-muted-foreground">
                   {msg.usage.out.toLocaleString()} out
                 </Text>
-                {msg.usage.cache > 0 && (
-                  <Text size="xs" className="text-muted-foreground">
-                    {msg.usage.cache}% cache
+                {reuse && (
+                  <Text testID="chat.usage.reuse" size="xs" className="text-muted-foreground">
+                    {reuse.pct}% {reuse.measured ? 'cached' : 'reused'}
                   </Text>
                 )}
               </HStack>

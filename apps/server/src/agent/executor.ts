@@ -18,7 +18,18 @@ export interface ToolResult {
 }
 
 const WEB_FETCH_TIMEOUT_MS = 15_000;
+/** Ceiling on the *extracted text* a fetch contributes to the prompt. */
 const WEB_FETCH_MAX_BYTES = 100 * 1024;
+/**
+ * Ceiling on the raw bytes read off the wire, before markup is stripped.
+ * Deliberately much larger than WEB_FETCH_MAX_BYTES: a modern page is mostly
+ * markup, inline CSS and inline JS, so a 100 KB slice of the *source* is
+ * routinely a few KB of readable text — or, as happened here, none at all
+ * (see htmlToText). The body is read incrementally and abandoned at this
+ * cap, so a model-chosen URL pointing at a huge asset can't be buffered
+ * whole into the server process either.
+ */
+const WEB_FETCH_MAX_RAW_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 3;
 
 /**
@@ -301,10 +312,23 @@ export async function assertPublicUrl(url: URL): Promise<void> {
   }
 }
 
-function htmlToText(html: string): string {
+/**
+ * Markup to readable text.
+ *
+ * The trailing-unterminated pass is load-bearing, not defensive: a body cut
+ * off at WEB_FETCH_MAX_RAW_BYTES can end *inside* a <style> or <script>, and
+ * the paired patterns above — non-greedy, and requiring a closing tag — then
+ * match nothing at all, leaving the entire tail of CSS or JS in place for the
+ * generic tag strip to hand straight to the model. That is exactly how one
+ * news fetch put 100 KB of raw CSS into a prompt. Once the paired blocks are
+ * gone, any remaining opening tag has no partner and can only be the start of
+ * a block truncation cut short, so everything from it to the end is markup.
+ */
+export function htmlToText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<(?:script|style)\b[\s\S]*$/i, " ")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -313,6 +337,28 @@ function htmlToText(html: string): string {
     .replace(/\s+\n/g, "\n")
     .replace(/[ \t]{2,}/g, " ")
     .trim();
+}
+
+/**
+ * What a fetched body contributes to the prompt: markup stripped FIRST, then
+ * the *extracted text* truncated.
+ *
+ * The order is the whole point. Capping the source instead both spends the
+ * budget on markup the model never sees and, worse, can sever a <style> or
+ * <script> so htmlToText's paired patterns match nothing — which is how a
+ * single news fetch once put 100 KB of raw CSS into a prompt and cost 109
+ * seconds of prompt evaluation. Pure and exported so that ordering can be
+ * asserted without a network round-trip.
+ */
+export function extractFetchText(body: string, contentType: string, rawTruncated: boolean): string {
+  const text = contentType.includes("html") ? htmlToText(body) : body;
+  if (text.length > WEB_FETCH_MAX_BYTES) {
+    return `${text.slice(0, WEB_FETCH_MAX_BYTES)}\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} characters of extracted text]`;
+  }
+  if (rawTruncated) {
+    return `${text}\n… [page was larger than ${String(WEB_FETCH_MAX_RAW_BYTES)} bytes; the rest was not read]`;
+  }
+  return text;
 }
 
 async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
@@ -348,15 +394,10 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
     if (!response) return { ok: false, output: `Too many redirects (>${String(MAX_REDIRECTS)})` };
     if (!response.ok) return { ok: false, output: `HTTP ${String(response.status)} ${response.statusText} for ${url.href}` };
 
-    const buf = Buffer.from(await response.arrayBuffer());
-    const truncated = buf.length > WEB_FETCH_MAX_BYTES;
-    const bodyText = buf.subarray(0, WEB_FETCH_MAX_BYTES).toString("utf8");
-    const contentType = response.headers.get("content-type") ?? "";
-    const text = contentType.includes("html") ? htmlToText(bodyText) : bodyText;
-
+    const { text: bodyText, truncated: rawTruncated } = await readBoundedText(response);
     return {
       ok: true,
-      output: `${text}${truncated ? `\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} bytes]` : ""}`,
+      output: extractFetchText(bodyText, response.headers.get("content-type") ?? "", rawTruncated),
     };
   } catch (err) {
     const message = (err as Error).name === "AbortError"
@@ -366,4 +407,42 @@ async function runWebFetch(args: Record<string, unknown>): Promise<ToolResult> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Read a response body up to WEB_FETCH_MAX_RAW_BYTES and decode it as UTF-8.
+ *
+ * Streamed rather than `arrayBuffer()`d because that buffers the *whole*
+ * response before any cap can apply — a model-chosen URL is all it takes to
+ * pull an arbitrarily large file into the server's heap. Decoding is
+ * incremental (`stream: true`) so a chunk boundary landing mid-UTF-8-sequence
+ * doesn't corrupt that character, the way slicing a Buffer at a fixed byte
+ * offset does.
+ */
+async function readBoundedText(response: Response): Promise<{ text: string; truncated: boolean }> {
+  if (!response.body) return { text: "", truncated: false };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let text = "";
+  let read = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (read + value.length > WEB_FETCH_MAX_RAW_BYTES) {
+        text += decoder.decode(value.subarray(0, WEB_FETCH_MAX_RAW_BYTES - read));
+        truncated = true;
+        break;
+      }
+      read += value.length;
+      text += decoder.decode(value, { stream: true });
+    }
+    if (!truncated) text += decoder.decode();
+  } finally {
+    // Releasing the lock lets the runtime tear the (possibly unfinished)
+    // body down; the caller's AbortController covers the rest.
+    reader.releaseLock();
+  }
+  return { text, truncated };
 }

@@ -91,12 +91,29 @@ export interface CompletionResult {
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
   timings: LlamaTimings | null;
   /**
-   * Tokens/sec for prompt eval and generation. Uses `timings` when the
-   * backend reports it natively (llama.cpp); otherwise LM Studio gives us no
-   * such field over its streaming API at all, so this is derived from
-   * wall-clock TTFT and total duration against the token counts instead.
+   * Tokens the backend reported reusing from its KV cache. **Null means the
+   * backend does not report it**, which is a different fact from zero — and
+   * conflating the two is what pinned the stats screen at a 0% cache-hit
+   * rate. llama.cpp reports `timings.cache_n`; LM Studio reports nothing
+   * about caching on any endpoint (no cache field in `usage`, no `/slots`,
+   * no `/props`, and its `stats` block carries only TTFT and generation
+   * rate). `reusableTokens`, computed in `inference/prompt-reuse.ts`, is what
+   * fills that gap.
+   */
+  cachedTokens: number | null;
+  /**
+   * Prompt-evaluation rate, over the tokens that were actually *evaluated*.
+   *
+   * Null unless the backend says how many that was. This used to fall back to
+   * `prompt_tokens / ttft`, which is not a rate of anything once a cache hit
+   * is involved: a fully-cached 30k-token prompt returns its first token in
+   * ~400 ms, and the fallback duly reported 47,742 tok/s as "Prompt speed".
+   * The honest presentation without `timings` is the prompt size and the
+   * wall-clock time it took, which is what the client now shows.
    */
   promptTps: number | null;
+  /** Generation rate. Safe to derive from the wall clock — every completion
+   * token really was produced in the measured window. */
   genTps: number | null;
 }
 
@@ -232,6 +249,7 @@ async function* mockStream(
         cache_n: 3,
         total_ms: Date.now() - startTime,
       },
+      cachedTokens: 3,
       promptTps: 200,
       genTps: 66,
     },
@@ -444,9 +462,8 @@ async function* liveStream(
   // comes back, so ttftMs is a reasonable stand-in for prompt-eval duration;
   // whatever's left of the total is generation.
   const genMs = ttftMs !== null ? totalMs - ttftMs : null;
-  const promptTps =
-    lastTimings?.prompt_per_second ??
-    (ttftMs && ttftMs > 0 && usage.prompt_tokens > 0 ? (usage.prompt_tokens / ttftMs) * 1000 : null);
+  // No wall-clock fallback: see CompletionResult.promptTps.
+  const promptTps = lastTimings?.prompt_per_second ?? null;
   const genTps =
     lastTimings?.predicted_per_second ??
     (genMs && genMs > 0 && usage.completion_tokens > 0 ? (usage.completion_tokens / genMs) * 1000 : null);
@@ -462,6 +479,7 @@ async function* liveStream(
       totalMs,
       usage,
       timings: lastTimings,
+      cachedTokens: lastTimings?.cache_n ?? null,
       promptTps,
       genTps,
     },

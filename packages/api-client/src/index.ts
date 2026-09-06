@@ -352,7 +352,13 @@ export async function updateConversation(
 
 export interface ApiMessageUsage {
   inputTokens: number;
-  cachedTokens: number;
+  /** Tokens the backend reported reusing from its KV cache. **Null means the
+   * backend does not report it** — not that nothing was cached. */
+  cachedTokens: number | null;
+  /** Tokens of the prompt that were a token-identical prefix of the previous
+   * request — what the server offered the backend to reuse. Computed
+   * server-side, so present on every backend. */
+  reusableTokens: number | null;
   outputTokens: number;
   ttftMs: number | null;
   promptMs: number | null;
@@ -703,7 +709,10 @@ export interface UsageStatsSnapshot {
   cachedTokens: number;
   outputTokens: number;
   totalTokens: number;
-  cacheHitRate: number;
+  /** Percentage of prompt tokens that did not need fresh evaluation. Null when
+   * nothing in the window carried a reuse figure — render that as "not
+   * measured", never as 0%. */
+  cacheHitRate: number | null;
   requestCount: number;
   avgTtftMs: number | null;
   avgPromptTps: number | null;
@@ -713,7 +722,7 @@ export interface UsageStatsSnapshot {
 
 export interface UsageStatsSpark {
   totalTokens: number[];
-  cacheHitRate: number[];
+  cacheHitRate: (number | null)[];
   avgTtftMs: (number | null)[];
   avgPredictedTps: (number | null)[];
 }
@@ -737,7 +746,7 @@ export async function getUsageStats(params?: {
 }
 
 export interface StatsSeriesPoint { bucket: string; values: Record<string, number> }
-export interface CacheRatePoint { bucket: string; cacheHitRate: number }
+export interface CacheRatePoint { bucket: string; cacheHitRate: number | null }
 export interface StatsSeries { range: StatsRange; points: StatsSeriesPoint[]; cachePoints: CacheRatePoint[] }
 
 export async function getStatsSeries(range?: StatsRange): Promise<StatsSeries> {
@@ -749,7 +758,7 @@ export interface ModelStats {
   model: string;
   conversations: number;
   tokens: number;
-  cachePct: number;
+  cachePct: number | null;
   ppSpeed: number | null;
   tgSpeed: number | null;
   ttftP50: number | null;
@@ -768,7 +777,7 @@ export interface ConversationStats {
   kind: "chat" | "agent" | "routine";
   model: string;
   tokens: number;
-  cachePct: number;
+  cachePct: number | null;
   avgTtftMs: number | null;
   lastUsedAt: string;
 }

@@ -191,12 +191,34 @@ export const usageRecords = pgTable("usage_records", {
   model: text("model").notNull(),
   origin: text("origin", { enum: ["server", "device"] }).notNull().default("server"),
   inputTokens: integer("input_tokens").notNull(),
-  cachedTokens: integer("cached_tokens").notNull().default(0),
+  /**
+   * Tokens the *backend* reported reusing from its KV cache — ground truth,
+   * and deliberately nullable: "the backend does not report this" is not the
+   * same fact as "nothing was cached". llama.cpp reports it (`timings.cache_n`);
+   * LM Studio reports nothing about caching at all, and storing that as 0 is
+   * what pinned the stats screen's cache-hit rate at a permanent 0%.
+   */
+  cachedTokens: integer("cached_tokens"),
+  /**
+   * Tokens of this prompt that were a token-identical prefix of the previous
+   * request we sent for the same conversation, model and toolset — i.e. what
+   * we *offered* the backend to reuse. Computed by us (see
+   * `inference/prompt-reuse.ts`), so it is available on every backend, and it
+   * is the figure the aggregate charts use. It is not proof the backend
+   * reused it; `cachedTokens` is the only thing that proves that.
+   */
+  reusableTokens: integer("reusable_tokens"),
   outputTokens: integer("output_tokens").notNull(),
   ttftMs: integer("ttft_ms"),
   promptMs: integer("prompt_ms"),
   predictMs: integer("predict_ms"),
   totalMs: integer("total_ms"),
+  /**
+   * Prompt-evaluation rate over the tokens actually *evaluated*. Null when the
+   * backend does not say how many that was — it was previously derived as
+   * `prompt_tokens / ttft`, which on a cache hit is not a rate of anything
+   * (47,742 tok/s was observed and rendered as "Prompt speed").
+   */
   promptTps: real("prompt_tps"),
   predictedTps: real("predicted_tps"),
   /** What this turn's prompt was made of — see ContextBreakdown in

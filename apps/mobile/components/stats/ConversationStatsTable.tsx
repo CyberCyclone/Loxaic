@@ -52,7 +52,7 @@ export function ConversationStatsTable({ conversations }: { conversations: Conve
               {formatTokens(c.tokens)}
             </Text>
             <Text size="2xs" className="text-muted-foreground">
-              {c.cachePct}% cache
+              {c.cachePct != null ? `${String(c.cachePct)}% reuse` : '— reuse'}
             </Text>
           </VStack>
         </HStack>

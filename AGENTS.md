@@ -268,9 +268,82 @@ screenshots showing that behaviour working. Writing those tests is the implement
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
   private/loopback/link-local answers, follows redirects manually so every hop is
   re-checked).
+- **`web_fetch` strips markup BEFORE it truncates, never after.** The two caps are
+  separate and both matter: `WEB_FETCH_MAX_RAW_BYTES` bounds the bytes read off the wire
+  (streamed, so a model-chosen URL can't buffer a huge asset into the server), and
+  `WEB_FETCH_MAX_BYTES` bounds the *extracted text* that reaches the prompt. Capping the
+  source instead spends the whole budget on markup — and worse, a cut that lands inside a
+  `<style>` leaves htmlToText's non-greedy `<style>…</style>` with no closing tag to match,
+  so **nothing** is stripped. That is not hypothetical: one news fetch put 100 KB of raw CSS
+  into a prompt and cost 109 seconds of prompt evaluation. htmlToText therefore also drops a
+  trailing *unterminated* script/style block, which by construction can only be a truncation
+  artefact. `extractFetchText` is pure and exported so the ordering is asserted without a
+  network round-trip.
 - The container sandbox image (`loxaic-sandbox`) builds itself automatically on first use
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
+
+### Prompt caching (why the history window is anchored)
+
+- **llama.cpp and LM Studio cache the KV state of a prompt *prefix*.** A turn is cheap only
+  when the previous turn's prompt is a literal prefix of it; the moment the first tokens
+  differ, the backend re-evaluates the whole history. Measured on a 14.5k-token thread
+  against a local LM Studio: **312 ms** when the window held still versus **14,551 ms** the
+  turn one message fell off the front, and the gap grows with the conversation.
+- **So `HISTORY_LIMIT` is a floor, not a window size.** `loadHistory`'s oldest edge is
+  quantised by `historyAnchor` to `HISTORY_STEP` (25), letting the replay grow to
+  `HISTORY_LIMIT + HISTORY_STEP - 1` messages and re-anchoring only once per step. A plain
+  "newest 50" window slides by one every turn — past message 50 that is a **full prompt
+  evaluation on every single turn, forever**, which is exactly what it looked like from the
+  outside ("the second message reprocesses the whole history"). An agent turn can persist a
+  dozen messages, so 50 arrives faster than it sounds.
+- This needs a real `COUNT(*)`, not the old limit+1 over-fetch: the anchor has to be a stable
+  function of the conversation's actual length, and an over-fetch by one can only answer
+  "is there more?". One indexed count per run (not per tool iteration).
+- **Anything that changes an *older* part of the prompt breaks the cache just as badly.**
+  `selectAffordableAttachments` spends its budget newest-first, so a growing thread can drop
+  an image or document out of a turn that previously carried it — same failure, still open.
+- **Partner-less tool calls and results are stripped in both directions.** An interrupted run
+  leaves an assistant `tool_call` with no result (`resolvedCallIds`); the window's oldest edge
+  can equally orphan a `tool_result` whose call fell outside it (`presentCallIds`). Most
+  backends reject either.
+
+### Reporting cache figures honestly
+
+- **Only llama.cpp reports what it actually reused** (`timings.cache_n`). LM Studio reports
+  nothing about caching anywhere — no field in `usage`, no `/tokenize`, no `/slots`, no
+  `/props` (all probed and absent), and its native `stats` block carries only TTFT and the
+  generation rate. So `usage_records.cached_tokens` is **nullable, and null means "the
+  backend does not report this"** — storing that as 0 is what pinned the stats screen at a
+  permanent 0% hit rate. Never reintroduce a `?? 0` on that path.
+- **`prompt_tps` must never be derived as `prompt_tokens / ttft`.** That is not a rate of
+  anything once any of the prompt was cached: a fully-cached 30k-token prompt returns its
+  first token in ~400 ms, and the old fallback duly rendered "Prompt speed: 47,742 tok/s".
+  It comes from `timings.prompt_per_second` or it is null, and the client shows the prompt's
+  size against `ttft_ms` instead.
+- **`usage_records.reusable_tokens` is our own measurement, and it is what the aggregates
+  use.** `inference/prompt-reuse.ts` fingerprints each request (model, tools hash, one hash
+  per message) and reports how much of this prompt was a token-identical prefix of the
+  previous request for the same conversation. When the previous request's whole message list
+  is a prefix of this one — every ordinary turn, every tool iteration — the answer *is* that
+  request's measured `prompt_tokens`, so the figure is exact but for the 3-5 tokens of
+  generation prompt the template appends. **A prefix that breaks earlier reports 0 rather
+  than an estimate**: guessing at a token split we cannot measure is the exact failure this
+  module exists to avoid, and in practice the break is at the first message after the system
+  prompt (a history re-anchor), where the true value really is near zero.
+- **Reusable is not cached, and the UI must not say it is.** It proves what we *offered*; the
+  backend may have evicted the slot for another conversation, restarted, or reloaded the
+  model. `promptReuse()` in `apps/mobile/lib/usage.ts` carries the provenance, and the labels
+  differ deliberately: "Prompt cached" (backend ground truth) versus "Prompt reused" (ours).
+  It floors rather than rounds, so 99.58% never reads as a perfect 100%.
+- **The aggregates deliberately use `reusable_tokens`, not `cached_tokens`** — it is the only
+  one present on every backend, so it is the only one comparable across models and
+  deployments. Denominators are `SUM(input_tokens) FILTER (WHERE reusable_tokens IS NOT
+  NULL)`, so a turn with no figure (a conversation's first, or one after a restart) cannot
+  dilute the rate, and an empty window yields **null — rendered "—", never "0%"**.
+- Traces are in-memory and bounded (LRU, 500 conversations). A server restart costs one turn
+  reporting "no previous request", which is the conservative direction: the separately-hosted
+  backend may well still hold the prefix, but we cannot prove it, so we claim nothing.
 
 ### Conversation sharing and roles
 

@@ -259,6 +259,7 @@ export function Composer({
               trigger={(triggerProps) => (
                 <Pressable
                   {...triggerProps}
+                  testID="composer.context"
                   // The ring and its label are only ~16pt tall — far below a
                   // comfortable touch target, and easy to miss entirely.
                   hitSlop={{ top: 14, bottom: 14, left: 10, right: 10 }}

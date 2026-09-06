@@ -24,9 +24,16 @@ export interface ContextSegment {
 export interface LastTurn {
   in: number;
   out: number;
+  /** Null when the backend didn't report how many prompt tokens it actually
+   * evaluated — show `ttftMs` against `in` instead of inventing a rate. */
   promptTps: number | null;
   genTps: number | null;
   totalMs: number | null;
+  ttftMs: number | null;
+  /** Backend-reported cache reuse; null when it reports none. */
+  cachedTokens: number | null;
+  /** Server-measured prefix reuse; available on every backend. */
+  reusableTokens: number | null;
 }
 
 export interface ContextView {
@@ -126,6 +133,9 @@ export function useContextUsage(msgs: Message[] | undefined, window: ModelWindow
             promptTps: usage.promptTps ?? null,
             genTps: usage.tps || null,
             totalMs: usage.totalMs ?? null,
+            ttftMs: usage.ttftMs ?? null,
+            cachedTokens: usage.cachedTokens ?? null,
+            reusableTokens: usage.reusableTokens ?? null,
           }
         : null,
     };
