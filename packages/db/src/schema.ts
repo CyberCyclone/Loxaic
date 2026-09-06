@@ -379,6 +379,15 @@ export const userPrefs = pgTable("user_prefs", {
    * hand — see streams/runs/auto-compact.ts.
    */
   autoCompact: boolean("auto_compact").notNull().default(true),
+  /**
+   * How many tool round-trips the agent may take for one message before it
+   * stops and hands back. The only brake in auto mode, where nothing else
+   * asks permission — which is why it is worth exposing rather than leaving
+   * as the constant it used to be. Bounded by the route, not just the column:
+   * a zero would make the agent unable to act at all, and an unbounded value
+   * is a way to spend a very long time without being asked.
+   */
+  maxIterations: integer("max_iterations").notNull().default(20),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

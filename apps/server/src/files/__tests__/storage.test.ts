@@ -276,9 +276,21 @@ describe("selectAffordableImages", () => {
     expect(allowed).toEqual(new Set([ref]));
   });
 
-  it("leaves an unreadable ref out, to degrade downstream as [image unavailable]", async () => {
-    const allowed = await selectAffordableAttachments([[{ ref: uuid(), mime: "image/png" }]]);
-    expect(allowed.size).toBe(0);
+  it("admits an unreadable ref so it degrades as [image unavailable], not as a budget drop", async () => {
+    // The name this test always had, now actually true. It used to assert the
+    // opposite — that a missing file is left *out* of the allowed set — which
+    // sent it down attachmentContentParts' `!allowed.has(ref)` branch and told
+    // the model "over this prompt's image budget" about a file that is not on
+    // disk. It never reached the "[image unavailable]" the name promised.
+    //
+    // It matters more now that the same verdict is shown to the user, where
+    // the accompanying advice is given in the imperative and cannot help. The
+    // document branch has always drawn this distinction; this is the image
+    // branch catching up. Admitting costs no budget — there are no bytes to
+    // charge — so it cannot crowd out a file that is really there.
+    const ref = uuid();
+    const allowed = await selectAffordableAttachments([[{ ref, mime: "image/png" }]]);
+    expect(allowed.has(ref)).toBe(true);
   });
 });
 

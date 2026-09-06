@@ -47,9 +47,18 @@ interface McpToolEntry {
 
 export async function buildToolset(
   userId: string,
-  opts: { mode: PermissionMode; conversationId?: string },
+  opts: {
+    mode: PermissionMode;
+    conversationId?: string;
+    /** The user's builtin allowlist, when the caller has already loaded the
+     * prefs row. Optional so this stays usable on its own; the tool loop
+     * passes it because it reads the same row one line earlier for the
+     * iteration ceiling, and two statements against the same key back to back
+     * is just waste. */
+    allowlist?: ReadonlySet<string>;
+  },
 ): Promise<Toolset> {
-  const allowlist = await builtinAllowlist(userId);
+  const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
   const resolved = resolveBuiltinTools().map((t) =>
     allowlist.has(t.name) ? { ...t, requiresApproval: false } : t,
   );

@@ -27,15 +27,34 @@ interface MessageProps {
   liveThinking?: boolean;
   /** Epoch ms the response started at — set only while this message is the one still in flight. */
   elapsedSince?: number | null;
+  /** True for the newest message in the thread. Only it carries standing
+   * notices about the conversation's current state. */
+  isNewest?: boolean;
 }
 
-function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps) {
+/** "photo.png" when the server knew a name, "An image"/"A file" when it didn't
+ * — a bare ref would mean nothing to anyone. */
+function describeOmitted(a: { mime: string; name?: string }): string {
+  if (a.name) return `"${a.name}"`;
+  return attachmentClass(a.mime) === 'image' ? 'An image' : 'A file';
+}
+
+/** Names every dropped file, capped so a pathological thread can't turn the
+ * notice into a wall of text. */
+function listOmitted(atts: { mime: string; name?: string }[], max = 4): string {
+  const shown = atts.slice(0, max).map(describeOmitted).join(', ');
+  const rest = atts.length - max;
+  return rest > 0 ? `${shown} and ${String(rest)} more` : shown;
+}
+
+function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
   const { token } = useSession();
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<NonNullable<MessageType['attachments']>[number] | null>(null);
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
+  const omitted = msg.usage?.omittedAttachments ?? [];
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -155,6 +174,42 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
                   </Text>
                 )}
               </HStack>
+            )}
+
+            {!isUser && isNewest && omitted.length > 0 && (
+              // Next to the answer it explains, rather than on the thumbnail
+              // upstream: the moment it matters is when a reply looks like it
+              // ignored a file. The transcript still shows the attachment,
+              // because it was genuinely sent — the model just couldn't be
+              // given it.
+              //
+              // Newest message only. Being over budget is a standing condition,
+              // re-derived over the whole replay every turn, so rendering it
+              // per-message would staple the same sentence to every subsequent
+              // reply — including ones the user attached nothing to.
+              <Box
+                testID="chat.usage.omittedAttachments"
+                className="mt-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5"
+              >
+                <Text size="2xs" className="text-muted-foreground">
+                  {/* Every file is named. "2 attachments weren't sent" leaves
+                      the user unable to tell whether it dropped the
+                      spreadsheet that mattered or the screenshot that didn't —
+                      no better off than silence. */}
+                  {omitted.length === 1
+                    ? `${describeOmitted(omitted[0])} wasn't sent to the model: this conversation has more attachments than fit in its context.`
+                    : `${String(omitted.length)} attachments weren't sent to the model — ${listOmitted(omitted)} — because this conversation has more attachments than fit in its context.`}
+                  {' '}
+                  {/* Deliberately not "re-attach it". Re-attaching does bring
+                      that file back, but it pushes another out of the history
+                      pool in its place: measured on four over-budget files, the
+                      dropped file simply alternates and the notice never
+                      clears. Compacting frees the budget for real, because the
+                      replay then starts after the summary and the older
+                      attachment turns are no longer counted. */}
+                  Compacting the conversation or starting a new one will make room.
+                </Text>
+              </Box>
             )}
 
             {!isUser && (

@@ -1,0 +1,1 @@
+ALTER TABLE "user_prefs" ADD COLUMN "max_iterations" integer DEFAULT 20 NOT NULL;

@@ -26,6 +26,7 @@ const { prefsRoutes } = await import("../prefs.ts");
 interface PrefsBody {
   toolAllowlist: string[];
   autoCompact: boolean;
+  maxIterations: number;
 }
 
 const userId = `test-prefs-${uuid()}`;
@@ -64,7 +65,7 @@ describe("GET /v1/prefs", () => {
     // A user who has never touched settings must read the same as one whose
     // row says nothing — otherwise the feature looks disabled until they
     // happen to change something unrelated.
-    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true });
+    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true, maxIterations: 20 });
   });
 });
 
@@ -106,6 +107,33 @@ describe("PATCH /v1/prefs", () => {
   it("rejects an allowlist that is not builtin tool names", async () => {
     expect((await patch({ toolAllowlist: ["not_a_tool"] })).statusCode).toBe(400);
     expect((await patch({ toolAllowlist: "fs_read" })).statusCode).toBe(400);
+  });
+
+  it("sets the agent step limit and reads it back", async () => {
+    const res = await patch({ maxIterations: 5 });
+    expect(res.statusCode).toBe(200);
+    expect((await get()).maxIterations).toBe(5);
+  });
+
+  it("leaves the other prefs alone when only the step limit is sent", async () => {
+    await patch({ autoCompact: false, toolAllowlist: ["fs_read"] });
+    await patch({ maxIterations: 50 });
+    const prefs = await get();
+    expect(prefs.maxIterations).toBe(50);
+    expect(prefs.autoCompact).toBe(false);
+    expect(prefs.toolAllowlist).toEqual(["fs_read"]);
+  });
+
+  it("refuses a step limit outside the supported range", async () => {
+    // In auto mode this ceiling is the only thing that asks the agent to stop,
+    // so it is rejected rather than silently clamped — a client that asked for
+    // 500 should be told it did not get 500.
+    for (const bad of [0, -1, 51, 1000, 2.5, "20", null]) {
+      expect((await patch({ maxIterations: bad })).statusCode).toBe(400);
+    }
+    // The boundaries themselves are valid.
+    expect((await patch({ maxIterations: 1 })).statusCode).toBe(200);
+    expect((await patch({ maxIterations: 50 })).statusCode).toBe(200);
   });
 
   it("rejects a patch with nothing in it, rather than writing an empty row", async () => {
