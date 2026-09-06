@@ -16,7 +16,7 @@ import {
 import { useToastHelper } from './useToastHelper';
 import { useServerConfig } from './useServerConfig';
 import type { AttachmentRejection } from '@/components/composer/AttachmentRejectedModal';
-import { nativeAttachmentFile } from '@/lib/attachmentUpload';
+import { dataUriByteLength, nativeAttachmentFile } from '@/lib/attachmentUpload';
 
 /** Longest edge an attached image is allowed to keep — larger originals are
  * downscaled client-side before upload. */
@@ -134,30 +134,33 @@ export function useComposerAttachments() {
   // every one of them for the life of the page.
   useEffect(() => releaseAll, [releaseAll]);
 
-  const upload = useCallback(async (localUri: string, uri: string, mime: string, name?: string) => {
+  const upload = useCallback(async (localUri: string, uri: string, mime: string, name?: string, knownSize?: number) => {
     try {
       let uploaded: UploadedAttachment;
+      // Per class, not the image cap for everything: documents are allowed
+      // MAX_DOCUMENT_BYTES (25 MB) and maxBytesForMime is what the server
+      // actually enforces. Applying the 10 MB image ceiling here stripped
+      // perfectly valid PDFs and CSVs client-side — and told the user their
+      // "image" was too large.
+      const limit = maxBytesForMime(mime);
+      const rejectTooLarge = () => {
+        release(localUri);
+        setItems((prev) => prev.filter((i) => i.localUri !== localUri));
+        const mb = String(Math.round(limit / (1024 * 1024)));
+        showToast(
+          attachmentClass(mime) === 'image'
+            ? `That image is over ${mb} MB even after resizing`
+            : `That file is over ${mb} MB`,
+        );
+      };
       if (Platform.OS === 'web') {
         // Web: a real Blob via fetch(uri).blob() is the standard, reliable
         // path — browsers stream a Blob through FormData/fetch natively.
         const blob = await readAsBlob(uri, mime).catch((e: unknown) => {
           throw new Error(`reading image: ${(e as Error).message}`);
         });
-        // Per class, not the image cap for everything: documents are allowed
-        // MAX_DOCUMENT_BYTES (25 MB) and maxBytesForMime is what the server
-        // actually enforces. Applying the 10 MB image ceiling here stripped
-        // perfectly valid PDFs and CSVs client-side — and told the user their
-        // "image" was too large.
-        const limit = maxBytesForMime(mime);
         if (blob.size > limit) {
-          release(localUri);
-          setItems((prev) => prev.filter((i) => i.localUri !== localUri));
-          const mb = String(Math.round(limit / (1024 * 1024)));
-          showToast(
-            attachmentClass(mime) === 'image'
-              ? `That image is over ${mb} MB even after resizing`
-              : `That file is over ${mb} MB`,
-          );
+          rejectTooLarge();
           return;
         }
         uploaded = await uploadAttachment(blob, name).catch((e: unknown) => {
@@ -166,10 +169,18 @@ export function useComposerAttachments() {
       } else {
         // Native: a `bytes()`-bearing part that expo/fetch's FormData encoder
         // reads lazily (see nativeAttachmentFile for why neither RN's
-        // {uri, name, type} recipe nor a Blob works here since SDK 56). The
-        // 10 MB pre-check is skipped here — normalize() already resizes to
-        // MAX_EDGE, and the server enforces the real cap regardless.
-        uploaded = await uploadAttachment(nativeAttachmentFile(uri, mime, name)).catch((e: unknown) => {
+        // {uri, name, type} recipe nor a Blob works here since SDK 56).
+        // Unlike RN's networking module, which streamed the file off disk,
+        // that read buffers the whole file in the JS heap — so the size cap
+        // has to be applied *before* the read, from the size the picker
+        // reported or the data: URI's own length. `limit` is passed through
+        // as a post-read backstop for the file:// case nothing measured.
+        const size = knownSize ?? dataUriByteLength(uri);
+        if (size !== undefined && size > limit) {
+          rejectTooLarge();
+          return;
+        }
+        uploaded = await uploadAttachment(nativeAttachmentFile(uri, mime, name, limit)).catch((e: unknown) => {
           throw new Error(`uploading: ${(e as Error).message}`);
         });
       }
@@ -198,7 +209,7 @@ export function useComposerAttachments() {
           return [...prev, { localUri: asset.uri, mime: asset.mimeType ?? 'image/jpeg', status: 'uploading' }];
         });
         const { uri, mime } = await normalize(asset);
-        void upload(asset.uri, uri, mime, asset.fileName ?? undefined);
+        void upload(asset.uri, uri, mime, asset.fileName ?? undefined, uri === asset.uri ? (asset.fileSize ?? undefined) : undefined);
       }
     },
     [upload],
@@ -258,7 +269,7 @@ export function useComposerAttachments() {
         continue;
       }
       setItems((prev) => [...prev, { localUri: asset.uri, mime, name: asset.name, size: asset.size ?? undefined, status: 'uploading' }]);
-      void upload(asset.uri, asset.uri, mime, asset.name);
+      void upload(asset.uri, asset.uri, mime, asset.name, asset.size ?? undefined);
     }
   }, [items.length, upload, showToast, canReadDocuments, rejectDocument]);
 

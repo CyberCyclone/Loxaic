@@ -49,31 +49,89 @@ export interface NativeAttachmentPart {
  * have no real filename to offer, so omitting it keeps the mime-based
  * `attachment.<ext>` fallback.
  */
-export function nativeAttachmentFile(uri: string, mime: string, name?: string): NativeAttachmentPart {
+export function nativeAttachmentFile(
+  uri: string,
+  mime: string,
+  name?: string,
+  maxBytes?: number,
+): NativeAttachmentPart {
   return {
     uri,
     name: name ?? attachmentFileName(mime),
     type: mime,
-    bytes: () => readUriBytes(uri),
+    bytes: () => readUriBytes(uri, maxBytes),
   };
 }
 
-const DATA_URI = /^data:([^;,]*)(;base64)?,(.*)$/s;
+// `data:[<mediatype>][;base64],<data>` — the media type may carry parameters
+// (`image/jpeg;charset=utf-8;base64,…` is legal), so match everything up to the
+// comma and only peel `;base64` off its end.
+const DATA_URI = /^data:([^,]*?)(;base64)?,(.*)$/s;
 
-/** Bytes behind a `file://` or `data:` URI. Exported for the unit tests. */
-export async function readUriBytes(uri: string): Promise<Uint8Array> {
+/**
+ * Byte length a `data:` URI decodes to, without decoding it — what the
+ * pre-upload size check uses for the manipulated-image path, where no picker
+ * ever reported a size. `undefined` for anything that is not a data URI.
+ */
+export function dataUriByteLength(uri: string): number | undefined {
   const m = DATA_URI.exec(uri);
+  if (!m) return undefined;
+  const [, , isBase64, payload] = m;
+  if (isBase64) {
+    const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+    return Math.floor((payload.length * 3) / 4) - padding;
+  }
+  return percentDecodeBytes(payload).length;
+}
+
+/** Percent-decoding straight to bytes: `%FF` is the byte 0xFF, not a UTF-8
+ * round-trip through a JS string (which would throw or re-encode it). */
+function percentDecodeBytes(text: string): Uint8Array {
+  const out: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    if (ch === 0x25 /* % */ && i + 2 < text.length && /^[0-9a-fA-F]{2}$/.test(text.slice(i + 1, i + 3))) {
+      out.push(parseInt(text.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else if (ch < 0x80) {
+      out.push(ch);
+    } else {
+      // A non-ASCII character that was never percent-encoded: encode it as
+      // UTF-8, which is the only sensible reading of a JS string here.
+      out.push(...new TextEncoder().encode(text[i]));
+    }
+  }
+  return new Uint8Array(out);
+}
+
+/**
+ * Bytes behind a `file://` or `data:` URI. Exported for the unit tests.
+ *
+ * `maxBytes`, when given, is a hard ceiling checked *after* the read — the
+ * caller's pre-read check (picker-reported size, `dataUriByteLength`) is what
+ * keeps an oversized pick out of memory in the first place; this is the
+ * backstop for a `file://` whose size nothing reported, so an oversized file
+ * fails with a reason instead of being shipped for the server to reject.
+ */
+export async function readUriBytes(uri: string, maxBytes?: number): Promise<Uint8Array> {
+  const m = DATA_URI.exec(uri);
+  let bytes: Uint8Array;
   if (m) {
     const [, , isBase64, payload] = m;
     if (isBase64) {
       const bin = atob(payload);
-      const out = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-      return out;
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } else {
+      bytes = percentDecodeBytes(payload);
     }
-    return new TextEncoder().encode(decodeURIComponent(payload));
+  } else {
+    const res = await fetch(uri);
+    if (!res.ok) throw new Error(`reading ${uri}: ${String(res.status)}`);
+    bytes = new Uint8Array(await res.arrayBuffer());
   }
-  const res = await fetch(uri);
-  if (!res.ok) throw new Error(`reading ${uri}: ${String(res.status)}`);
-  return new Uint8Array(await res.arrayBuffer());
+  if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+    throw new Error(`file is ${String(bytes.byteLength)} bytes, over the ${String(maxBytes)} byte limit`);
+  }
+  return bytes;
 }

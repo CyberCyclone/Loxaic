@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { attachmentFileName, nativeAttachmentFile, readUriBytes } from './attachmentUpload';
+import { attachmentFileName, dataUriByteLength, nativeAttachmentFile, readUriBytes } from './attachmentUpload';
 
 /**
  * Locks down the exact regression that shipped and broke image attachment
@@ -55,7 +55,7 @@ describe('readUriBytes — what expo/fetch will call through bytes()', () => {
 
   it('reads a file: URI through fetch(uri).arrayBuffer() — the expo/fetch file-scheme path', async () => {
     const payload = new Uint8Array([1, 2, 3, 4]);
-    const fetchSpy = vi.fn(async () => ({ ok: true, arrayBuffer: async () => payload.buffer }));
+    const fetchSpy = vi.fn(() => Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(payload.buffer) }));
     vi.stubGlobal('fetch', fetchSpy);
     const bytes = await readUriBytes('file:///tmp/photo.jpg');
     expect(Array.from(bytes)).toEqual([1, 2, 3, 4]);
@@ -63,11 +63,51 @@ describe('readUriBytes — what expo/fetch will call through bytes()', () => {
   });
 
   it('is lazy: building the part reads nothing until bytes() runs', async () => {
-    const fetchSpy = vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }));
+    const fetchSpy = vi.fn(() => Promise.resolve({ ok: true, arrayBuffer: () => Promise.resolve(new ArrayBuffer(0)) }));
     vi.stubGlobal('fetch', fetchSpy);
     const part = nativeAttachmentFile('file:///tmp/photo.jpg', 'image/jpeg');
     expect(fetchSpy).not.toHaveBeenCalled();
     await part.bytes();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('readUriBytes — data: URI edge cases (review findings on #90)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('accepts a media type carrying parameters instead of falling through to fetch', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const bytes = await readUriBytes('data:image/jpeg;charset=utf-8;base64,' + btoa('hi'));
+    expect(Array.from(bytes)).toEqual([0x68, 0x69]);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('percent-decodes a non-base64 payload byte-wise — %FF is the byte 0xFF, not a URIError', async () => {
+    const bytes = await readUriBytes('data:application/octet-stream,a%FF%00b');
+    expect(Array.from(bytes)).toEqual([0x61, 0xff, 0x00, 0x62]);
+  });
+
+  it('enforces maxBytes after the read, with a message that names the sizes', async () => {
+    await expect(readUriBytes('data:text/plain;base64,' + btoa('hello'), 4)).rejects.toThrow(/5 bytes, over the 4 byte limit/);
+    await expect(readUriBytes('data:text/plain;base64,' + btoa('hello'), 5)).resolves.toHaveLength(5);
+  });
+});
+
+describe('dataUriByteLength — the pre-read size check for the manipulated-image path', () => {
+  it('sizes a base64 payload without decoding it, padding included', () => {
+    expect(dataUriByteLength('data:image/jpeg;base64,' + btoa('hello'))).toBe(5);     // one '=' of padding
+    expect(dataUriByteLength('data:image/jpeg;base64,' + btoa('hell'))).toBe(4);      // two
+    expect(dataUriByteLength('data:image/jpeg;base64,' + btoa('hel'))).toBe(3);       // none
+  });
+
+  it('sizes a percent-encoded payload by its decoded bytes', () => {
+    expect(dataUriByteLength('data:text/plain,a%FFb')).toBe(3);
+  });
+
+  it('is undefined for anything that is not a data: URI, so a file:// read stays lazy', () => {
+    expect(dataUriByteLength('file:///tmp/photo.jpg')).toBeUndefined();
   });
 });

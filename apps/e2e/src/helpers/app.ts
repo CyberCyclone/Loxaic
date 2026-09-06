@@ -103,14 +103,16 @@ export async function signIn(creds: Credentials): Promise<void> {
  * which is correct for real users). It is not a UIAlertController, so
  * `autoDismissAlerts` never sees it, and the next tap the spec makes lands on
  * the sheet instead of the app — the composer's attach sheet "never opened"
- * for exactly this reason on the first iOS 26 run. It appears only once per
- * install and only on iOS 26+ (iOS 17 simulators never show it), so this is
- * conditional and cheap when absent.
+ * for exactly this reason on the first iOS 26 run. Only iOS 26+ raises it
+ * (iOS 17 simulators never do), so this is conditional.
  */
 async function dismissIosSavePasswordPrompt(): Promise<void> {
   if (platform() !== 'ios') return;
+  // The sheet is raised with the credential submit, and waitForComposerReady
+  // has already absorbed that latency, so a short wait is enough — and it is
+  // the price paid on every sign-in where the sheet does *not* appear.
   const notNow = $('~Not Now');
-  const appeared = await notNow.waitForExist({ timeout: 4_000 }).catch(() => false);
+  const appeared = await notNow.waitForExist({ timeout: 1_500 }).catch(() => false);
   if (appeared) {
     await notNow.click();
     await browser.pause(300);

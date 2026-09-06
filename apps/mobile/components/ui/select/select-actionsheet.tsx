@@ -349,6 +349,9 @@ const ActionsheetBackdrop = React.forwardRef<
 >(function ActionsheetBackdrop({ className, ...props }, ref) {
   return (
     <UIActionsheet.Backdrop
+      // Deliberately fades to full opacity, like the Actionsheet's backdrop:
+      // the legend-motion version stopped at 0.5 over a 50%-black background,
+      // an effective 25% scrim that matched none of the other overlays.
       entering={FadeIn.duration(200).easing(Easing.linear)}
       exiting={FadeOut.duration(200).easing(Easing.linear)}
       {...props}

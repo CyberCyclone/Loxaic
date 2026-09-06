@@ -102,12 +102,13 @@ export async function typeInto(id: string, text: string): Promise<void> {
   // maxTypingFrequency note in wdio.ios.ts). Read the field back and retype
   // when it disagrees — except secure fields, whose value reads as bullets.
   if (platform() !== 'ios') return;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const value = await el.getValue().catch(() => '');
     if (value === text || /^[•*]+$/.test(value)) return;
     await el.clearValue();
     await el.setValue(text);
   }
+  throw new Error(`typeInto(${id}): field still disagrees with the intended text after 3 attempts`);
 }
 
 export async function waitForVisible(id: string, timeout = 20_000): Promise<void> {
