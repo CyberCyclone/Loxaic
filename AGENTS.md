@@ -300,9 +300,9 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - This needs a real `COUNT(*)`, not the old limit+1 over-fetch: the anchor has to be a stable
   function of the conversation's actual length, and an over-fetch by one can only answer
   "is there more?". One indexed count per run (not per tool iteration).
-- **Anything that changes an *older* part of the prompt breaks the cache just as badly.**
-  `selectAffordableAttachments` spends its budget newest-first, so a growing thread can drop
-  an image or document out of a turn that previously carried it — same failure, still open.
+- **Anything that changes an *older* part of the prompt breaks the cache just as badly**, which
+  is why `selectAffordableAttachments` spends its history budget oldest-first — see the
+  attachment-budget bullet below.
 - **Partner-less tool calls and results are stripped in both directions.** An interrupted run
   leaves an assistant `tool_call` with no result (`resolvedCallIds`); the window's oldest edge
   can equally orphan a `tool_result` whose call fell outside it (`presentCallIds`). Most
@@ -469,7 +469,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   closing marker inside the body is neutralized with a zero-width space so the content can't
   escape its own wrapper, and a sibling system-prompt addendum tells the model the content is
   untrusted. A user's own upload still gets this treatment: they may not have written it.
-- **Two independent prompt budgets, spent newest-first, never shared.** `MAX_HISTORY_IMAGE_BYTES`
+- **Two independent prompt budgets, never shared.** `MAX_HISTORY_IMAGE_BYTES`
   bounds images by raw bytes (their prompt cost is backend-specific patch embeddings, which is
   why `context.ts` refuses to tally them at all). `MAX_HISTORY_DOCUMENT_TOKENS` bounds documents
   by estimated tokens (they *are* tallied, via `textOfContent`) and is **derived from**, not
@@ -478,6 +478,21 @@ screenshots showing that behaviour working. Writing those tests is the implement
   exceed the whole budget and vanish from the turn that sent it. `selectAffordableAttachments`
   also caps a document's *measured* size at `MAX_EXTRACTED_BYTES` before estimating, since
   that's the ceiling on what actually reaches the prompt regardless of how large the cache is.
+- **Each budget is split into a current-turn reserve and a history pool spent oldest-first, and
+  an older turn's verdict must never depend on a newer one.** The walk used to be newest-first,
+  which meant a large new attachment could price out one that had fit for many turns — silently
+  rewriting a message the model had already been shown, and so throwing away the backend's
+  cached prefix from that message onward, exactly like a sliding history window. Oldest-first
+  makes each turn's verdict a function of the turns up to it and nothing later, so it is
+  permanent once made. **This costs recency:** in a saturated thread the *middle* attachments
+  are dropped, not the oldest. That is not an oversight — bounded budget, recency-preferring
+  retention and prefix stability cannot all hold at once (recency means a new arrival evicts an
+  old one, which is the rewrite), and "decide on arrival, never revisit" is unbounded because
+  every attachment ever sent would stay forever. `CURRENT_TURN_IMAGE_BYTES` /
+  `CURRENT_TURN_DOCUMENT_TOKENS` are what keep the just-sent attachment guaranteed, so the
+  property the old walk order provided is now explicit rather than emergent. The one remaining
+  change point is a turn's own move from current to history, which is a single message at the
+  very end of the prompt and cannot cascade.
 - **A truncated document can be paged through the sandbox, but only if one is already live.**
   When a document overflows `MAX_EXTRACTED_BYTES` and the conversation already has an active
   sandbox, `engine.ts`'s `writeOverflowToSandbox` writes the *full* cached text to

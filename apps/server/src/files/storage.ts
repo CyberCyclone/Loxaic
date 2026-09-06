@@ -1,7 +1,7 @@
 import { createReadStream, mkdirSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { attachmentClass, MAX_EXTRACTED_BYTES, type AttachmentRef } from "@loxaic/types";
+import { attachmentClass, MAX_ATTACHMENT_BYTES, MAX_EXTRACTED_BYTES, type AttachmentRef } from "@loxaic/types";
 import type { ContentPart } from "../inference/provider.ts";
 import { estimateTokens } from "../inference/context.ts";
 import { readExtractedText } from "./extract.ts";
@@ -96,35 +96,78 @@ const MAX_SINGLE_DOCUMENT_TOKENS = estimateTokens("history", "x".repeat(MAX_EXTR
  * Sized as a multiple of {@link MAX_SINGLE_DOCUMENT_TOKENS}, not a flat
  * number, so it can never again fall below what one document at the cap
  * costs — mirroring MAX_HISTORY_IMAGE_BYTES's own property that a single
- * image at its per-upload cap always has room. The walk in
- * selectAffordableAttachments is newest-first, so this guarantees the
- * document just sent always survives even when the whole allowance is spent,
- * with the remainder going to whatever else fits from earlier turns.
+ * image at its per-upload cap always has room.
  */
 export const MAX_HISTORY_DOCUMENT_TOKENS = MAX_SINGLE_DOCUMENT_TOKENS * 3;
 
 /**
- * Which refs across a whole history fit their class's budget, chosen
- * newest-first.
+ * The slice of each budget held back for the turn the user just sent.
  *
- * `turns` is oldest-first (the order the prompt is assembled in), and the
- * walk is deliberately backwards: the attachments the user just sent are the
- * ones the model is being asked about, so a budget spent oldest-first would
- * starve exactly the turn that matters. A ref that doesn't fit is skipped
- * rather than ending the walk, so one big old file can't hide several small
- * newer ones. Unreadable files are left out here and degrade to a marker
- * downstream, same as before.
+ * The guarantee that the newest attachment always reaches the model used to
+ * come from walking newest-first. That walk is what made an *older* turn's
+ * verdict depend on what arrived after it: a new large attachment could price
+ * out one the previous prompt had included, silently rewriting a message the
+ * model had already seen. Since backends cache a prompt *prefix*, rewriting an
+ * old message throws away the cache for everything from that message onward —
+ * the same class of bug as a sliding history window (see HISTORY_STEP in
+ * `streams/runs/engine.ts`).
+ *
+ * So the guarantee is now explicit instead of emergent: the newest turn draws
+ * on its own reserve, and history is spent oldest-first, which makes an older
+ * turn's verdict a function of the turns up to it and nothing later.
+ *
+ * One reserve per class, each sized so a single attachment at its per-upload
+ * cap always fits: an image at MAX_ATTACHMENT_BYTES, a document at
+ * MAX_EXTRACTED_BYTES.
+ */
+const CURRENT_TURN_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
+const CURRENT_TURN_DOCUMENT_TOKENS = MAX_SINGLE_DOCUMENT_TOKENS;
+
+/**
+ * Which refs across a whole history fit their class's budget.
+ *
+ * `turns` is oldest-first — one entry per user turn, in prompt-assembly order,
+ * empty entries included — and the last entry is the turn the user just sent.
+ *
+ * **An older turn's verdict must never depend on a newer turn.** Backends cache
+ * a prompt prefix, so dropping an attachment out of a message the model has
+ * already been shown rewrites that message and invalidates the cache for
+ * everything after it. The previous newest-first walk did exactly that: a large
+ * new attachment could price out an older one that had fit for many turns,
+ * turning an ordinary next turn into a full prompt re-evaluation.
+ *
+ * So the history is spent **oldest-first**, which makes each turn's verdict a
+ * function of the turns up to and including it and nothing later — permanent
+ * once made. The just-sent turn keeps its guarantee through an explicit
+ * reserve (see CURRENT_TURN_IMAGE_BYTES) rather than through walk order, and is
+ * settled last so it can also use whatever the history left unspent — leftovers
+ * it takes are, by construction, exactly the leftovers it will still have when
+ * it becomes history next turn.
+ *
+ * The one thing that can still change is a turn's own move from "current" to
+ * "history": an attachment admitted *only* because of the reserve is dropped a
+ * turn later if the history pool was already full. That is a single message at
+ * the very end of the prompt, so it costs re-evaluating the last turn rather
+ * than the whole conversation, and it cannot cascade — the verdict is final
+ * from then on. Removing even that would mean persisting per-conversation
+ * selections, which is not worth the state.
+ *
+ * A ref that doesn't fit is skipped rather than ending the walk, so one big
+ * file can't hide several small ones. Unreadable files are left out here and
+ * degrade to a marker downstream.
  *
  * The two budgets are spent independently — a history heavy in images does not
  * reduce what its documents may carry, or the reverse.
  */
 export async function selectAffordableAttachments(turns: AttachmentRef[][]): Promise<Set<string>> {
   const allowed = new Set<string>();
-  let imageBytes = MAX_HISTORY_IMAGE_BYTES;
-  let documentTokens = MAX_HISTORY_DOCUMENT_TOKENS;
+  let imageBytes = MAX_HISTORY_IMAGE_BYTES - CURRENT_TURN_IMAGE_BYTES;
+  let documentTokens = MAX_HISTORY_DOCUMENT_TOKENS - CURRENT_TURN_DOCUMENT_TOKENS;
 
-  for (let i = turns.length - 1; i >= 0; i--) {
-    for (const a of turns[i]) {
+  /** Admits what fits, charging the running budgets. Shared so the history and
+   * the current turn are priced identically — only their allowances differ. */
+  const admit = async (refs: AttachmentRef[]): Promise<void> => {
+    for (const a of refs) {
       if (allowed.has(a.ref)) continue;
       if (attachmentClass(a.mime) === "image") {
         let size: number;
@@ -166,7 +209,16 @@ export async function selectAffordableAttachments(turns: AttachmentRef[][]): Pro
       documentTokens -= cost;
       allowed.add(a.ref);
     }
-  }
+  };
+
+  // History first, oldest-first: these verdicts must not see the current turn.
+  for (let i = 0; i < turns.length - 1; i++) await admit(turns[i]);
+
+  // Then the just-sent turn, on its reserve plus whatever history didn't spend.
+  imageBytes += CURRENT_TURN_IMAGE_BYTES;
+  documentTokens += CURRENT_TURN_DOCUMENT_TOKENS;
+  if (turns.length > 0) await admit(turns[turns.length - 1]);
+
   return allowed;
 }
 
