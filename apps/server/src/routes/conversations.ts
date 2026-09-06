@@ -179,6 +179,7 @@ export function conversationRoutes(app: FastifyInstance) {
           ? {
               inputTokens: u.inputTokens,
               cachedTokens: u.cachedTokens,
+              reusableTokens: u.reusableTokens,
               outputTokens: u.outputTokens,
               ttftMs: u.ttftMs,
               promptMs: u.promptMs,

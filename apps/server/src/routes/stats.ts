@@ -17,10 +17,24 @@ function rangeToWindow(range?: string) {
   return { since: new Date(Date.now() - window.ms), ms: window.ms, unit: window.unit };
 }
 
-/** The four headline aggregates, shared by the current-window query, the previous-window comparison, and the sparkline buckets. */
+/**
+ * Aggregate reuse over `reusable_tokens`, not `cached_tokens`.
+ *
+ * `cached_tokens` is the backend's own report and is the only thing that
+ * *proves* a cache hit — but only llama.cpp reports it, so on an LM Studio
+ * deployment it is null for every row and any chart built on it is empty (it
+ * used to read a fabricated 0, which is how this screen showed a permanent 0%
+ * hit rate). `reusable_tokens` is computed by us for every backend, means the
+ * same physical thing — prompt tokens that did not need fresh evaluation —
+ * and is therefore the one that is comparable across models and deployments.
+ * The per-turn view still shows the backend's ground truth when it exists.
+ */
 const USAGE_AGGREGATE = {
   totalInputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
-  totalCachedTokens: sql<number>`COALESCE(SUM(${usageRecords.cachedTokens}), 0)::float8`,
+  totalCachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
+  /** Input tokens on rows that actually carry a reuse figure — the correct
+   * denominator, so turns predating the column can't dilute the rate. */
+  measuredInputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
   totalOutputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
   count: sql<number>`COUNT(*)::int`,
   avgTtftMs: sql<number>`AVG(${usageRecords.ttftMs})::float8`,
@@ -32,6 +46,7 @@ const USAGE_AGGREGATE = {
 interface UsageAggRow {
   totalInputTokens: number;
   totalCachedTokens: number;
+  measuredInputTokens: number;
   totalOutputTokens: number;
   count: number;
   avgTtftMs: number | null;
@@ -41,13 +56,16 @@ interface UsageAggRow {
 }
 
 function shapeUsage(r: UsageAggRow) {
-  const hitRate = r.totalInputTokens > 0 ? (r.totalCachedTokens / r.totalInputTokens) * 100 : 0;
+  // Null, not 0, when nothing in the window carried a reuse figure — the
+  // client renders that as "not measured" rather than as a real 0%.
+  const hitRate =
+    r.measuredInputTokens > 0 ? Math.round((r.totalCachedTokens / r.measuredInputTokens) * 10000) / 100 : null;
   return {
     inputTokens: r.totalInputTokens,
     cachedTokens: r.totalCachedTokens,
     outputTokens: r.totalOutputTokens,
     totalTokens: r.totalInputTokens + r.totalOutputTokens,
-    cacheHitRate: Math.round(hitRate * 100) / 100,
+    cacheHitRate: hitRate,
     requestCount: r.count,
     avgTtftMs: r.avgTtftMs,
     avgPromptTps: r.avgPromptTps,
@@ -114,8 +132,8 @@ export function statsRoutes(app: FastifyInstance) {
               .select({
                 bucket: sql<number>`${bucketExpr}`,
                 tokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens} + ${usageRecords.outputTokens}), 0)::float8`,
-                inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
-                cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.cachedTokens}), 0)::float8`,
+                inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
+                cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
                 avgTtftMs: sql<number>`AVG(${usageRecords.ttftMs})::float8`,
                 avgPredictedTps: sql<number>`AVG(${usageRecords.predictedTps})::float8`,
               })
@@ -132,7 +150,7 @@ export function statsRoutes(app: FastifyInstance) {
 
     let spark: {
       totalTokens: number[];
-      cacheHitRate: number[];
+      cacheHitRate: (number | null)[];
       avgTtftMs: (number | null)[];
       avgPredictedTps: (number | null)[];
     } | null = null;
@@ -142,7 +160,7 @@ export function statsRoutes(app: FastifyInstance) {
       for (let i = 0; i < SPARK_BUCKETS; i++) {
         const b = byBucket.get(i);
         spark.totalTokens.push(b?.tokens ?? 0);
-        spark.cacheHitRate.push(b && b.inputTokens > 0 ? (b.cachedTokens / b.inputTokens) * 100 : 0);
+        spark.cacheHitRate.push(b && b.inputTokens > 0 ? (b.cachedTokens / b.inputTokens) * 100 : null);
         spark.avgTtftMs.push(b?.avgTtftMs ?? null);
         spark.avgPredictedTps.push(b?.avgPredictedTps ?? null);
       }
@@ -180,8 +198,8 @@ export function statsRoutes(app: FastifyInstance) {
       db
         .select({
           bucket: sql<string>`${bucketExpr}`,
-          inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
-          cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.cachedTokens}), 0)::float8`,
+          inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
+          cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
         })
         .from(usageRecords)
         .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
@@ -201,7 +219,7 @@ export function statsRoutes(app: FastifyInstance) {
       points: Array.from(buckets.entries()).map(([bucket, values]) => ({ bucket, values })),
       cachePoints: cacheRows.map((r) => ({
         bucket: r.bucket,
-        cacheHitRate: r.inputTokens > 0 ? Math.round((r.cachedTokens / r.inputTokens) * 10000) / 100 : 0,
+        cacheHitRate: r.inputTokens > 0 ? Math.round((r.cachedTokens / r.inputTokens) * 10000) / 100 : null,
       })),
     };
   });
@@ -217,7 +235,8 @@ export function statsRoutes(app: FastifyInstance) {
         model: usageRecords.model,
         conversations: sql<number>`COUNT(DISTINCT ${usageRecords.conversationId})::int`,
         inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
-        cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.cachedTokens}), 0)::float8`,
+        cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
+        measuredInputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
         outputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
         ppSpeed: sql<number>`AVG(${usageRecords.promptTps})::float8`,
         tgSpeed: sql<number>`AVG(${usageRecords.predictedTps})::float8`,
@@ -233,7 +252,8 @@ export function statsRoutes(app: FastifyInstance) {
       model: r.model,
       conversations: r.conversations,
       tokens: r.inputTokens + r.outputTokens,
-      cachePct: r.inputTokens > 0 ? Math.round((r.cachedTokens / r.inputTokens) * 10000) / 100 : 0,
+      cachePct:
+        r.measuredInputTokens > 0 ? Math.round((r.cachedTokens / r.measuredInputTokens) * 10000) / 100 : null,
       ppSpeed: r.ppSpeed,
       tgSpeed: r.tgSpeed,
       ttftP50: r.ttftP50,
@@ -254,7 +274,8 @@ export function statsRoutes(app: FastifyInstance) {
         conversationId: usageRecords.conversationId,
         model: sql<string>`(array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC))[1]`,
         inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
-        cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.cachedTokens}), 0)::float8`,
+        cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
+        measuredInputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
         outputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
         avgTtftMs: sql<number>`AVG(${usageRecords.ttftMs})::float8`,
         lastUsedAt: sql<string>`MAX(${usageRecords.createdAt})`,
@@ -282,7 +303,8 @@ export function statsRoutes(app: FastifyInstance) {
         kind: conv?.kind ?? "chat",
         model: r.model,
         tokens: r.inputTokens + r.outputTokens,
-        cachePct: r.inputTokens > 0 ? Math.round((r.cachedTokens / r.inputTokens) * 10000) / 100 : 0,
+        cachePct:
+          r.measuredInputTokens > 0 ? Math.round((r.cachedTokens / r.measuredInputTokens) * 10000) / 100 : null,
         avgTtftMs: r.avgTtftMs,
         lastUsedAt: r.lastUsedAt,
       };

@@ -268,9 +268,151 @@ screenshots showing that behaviour working. Writing those tests is the implement
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
   private/loopback/link-local answers, follows redirects manually so every hop is
   re-checked).
+- **`web_fetch` strips markup BEFORE it truncates, never after.** The two caps are
+  separate and both matter: `WEB_FETCH_MAX_RAW_BYTES` bounds the bytes read off the wire
+  (streamed, so a model-chosen URL can't buffer a huge asset into the server), and
+  `WEB_FETCH_MAX_BYTES` bounds the *extracted text* that reaches the prompt. Capping the
+  source instead spends the whole budget on markup — and worse, a cut that lands inside a
+  `<style>` leaves htmlToText's non-greedy `<style>…</style>` with no closing tag to match,
+  so **nothing** is stripped. That is not hypothetical: one news fetch put 100 KB of raw CSS
+  into a prompt and cost 109 seconds of prompt evaluation. htmlToText therefore also drops a
+  trailing *unterminated* script/style block, which by construction can only be a truncation
+  artefact. `extractFetchText` is pure and exported so the ordering is asserted without a
+  network round-trip.
 - The container sandbox image (`loxaic-sandbox`) builds itself automatically on first use
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
+
+### Prompt caching (why the history window is anchored)
+
+- **llama.cpp and LM Studio cache the KV state of a prompt *prefix*.** A turn is cheap only
+  when the previous turn's prompt is a literal prefix of it; the moment the first tokens
+  differ, the backend re-evaluates the whole history. Measured on a 14.5k-token thread
+  against a local LM Studio: **312 ms** when the window held still versus **14,551 ms** the
+  turn one message fell off the front, and the gap grows with the conversation.
+- **So `HISTORY_LIMIT` is a floor, not a window size.** `loadHistory`'s oldest edge is
+  quantised by `historyAnchor` to `HISTORY_STEP` (25), letting the replay grow to
+  `HISTORY_LIMIT + HISTORY_STEP - 1` messages and re-anchoring only once per step. A plain
+  "newest 50" window slides by one every turn — past message 50 that is a **full prompt
+  evaluation on every single turn, forever**, which is exactly what it looked like from the
+  outside ("the second message reprocesses the whole history"). An agent turn can persist a
+  dozen messages, so 50 arrives faster than it sounds.
+- This needs a real `COUNT(*)`, not the old limit+1 over-fetch: the anchor has to be a stable
+  function of the conversation's actual length, and an over-fetch by one can only answer
+  "is there more?". One indexed count per run (not per tool iteration).
+- **Anything that changes an *older* part of the prompt breaks the cache just as badly**, which
+  is why `selectAffordableAttachments` spends its history budget oldest-first — see the
+  attachment-budget bullet below.
+- **Partner-less tool calls and results are stripped in both directions.** An interrupted run
+  leaves an assistant `tool_call` with no result (`resolvedCallIds`); the window's oldest edge
+  can equally orphan a `tool_result` whose call fell outside it (`presentCallIds`). Most
+  backends reject either.
+
+### Automatic compaction
+
+- **The server compacts on its own** once a finished turn's `prompt + completion` crosses
+  `AUTO_COMPACT_THRESHOLD` (default 0.85) of the model's window, provided the replay holds at
+  least `AUTO_COMPACT_MIN_MESSAGES` (8) and the user hasn't turned it off. Policy lives in
+  `streams/runs/auto-compact.ts`; `/compact` is the same machinery with `auto: false`, no
+  threshold, and no pref check — asking for it is a decision.
+- **It is a per-user pref (`user_prefs.auto_compact`, default true), read only after the
+  threshold has already been crossed** — so an ordinary turn costs no extra query. A failed
+  prefs lookup **fails closed** (no compaction): not compacting costs one long prompt, whereas
+  compacting against someone's wishes costs a conversation they can't get back.
+- **`PATCH /v1/prefs` is partial.** It used to require `toolAllowlist` on every call; a second
+  field on a route shaped like that is how one setting silently reverts another, since any
+  client writing one key would have had to send the other, and a client holding stale prefs
+  would write back the old value. Absent keys are left alone, present ones are still validated,
+  and an empty patch is a 400 rather than an empty row.
+- **The settings toggle spells out both outcomes, not just the one being enabled**
+  (`components/settings/AutoCompactToggle.tsx`). The trade is between two unlike costs — losing
+  detail from old turns versus a conversation that eventually stops replying — and neither is
+  guessable from a switch label. The inactive branch stays on screen, dimmed, so the
+  consequence of flipping it is visible before it is flipped.
+- **The trigger sits past `runToolLoop`'s `finally`, and must stay there.** `startCompactRun`
+  takes the per-conversation lock the run holds until `unregisterRun`, so triggering one line
+  earlier makes the run refuse itself with "already in progress" — silently, forever. There is
+  a test that fails (by timing out) if it is moved back inside the `try`.
+- **Only the success path fires it.** The error and cancel paths `return` before reaching it:
+  a failed turn never established what the prompt costs, and compacting straight after a user
+  pressed stop is the opposite of what they asked for. A refused lock or a backend hiccup is
+  caught and logged, never surfaced as a failure of the turn that already succeeded.
+- **The check is deliberately *after* a turn, not before the next one** — that is the one point
+  where the measured prompt size and the window it was assembled against are both in hand.
+  What makes acting after the fact safe is the headroom: the threshold has to be low enough
+  that the following turn still fits.
+- **`AUTO_COMPACT_MIN_MESSAGES` is an anti-thrash guard, not a nicety.** After a compaction the
+  replay restarts at zero, so without a floor a conversation whose *summary alone* sits near
+  the threshold would re-compact every turn, burning a model call and a full prompt
+  re-evaluation each time to save nothing.
+- **An unknown window disables it.** A fraction of null is not a number, and compacting on a
+  guess rewrites a conversation for no established reason.
+- **`auto-compact.ts` exists to break a cycle.** The engine needs the policy and `compactRun`
+  needs the engine's `loadHistory`, so keeping the policy in `compactRun.ts` would have the two
+  importing each other — working only by the accident that every binding crossing it is a
+  hoisted function declaration. The engine reaches `startCompactRun` itself through a dynamic
+  `import()` for the same reason.
+- **Compaction always costs one full prompt re-evaluation**, because the whole prefix changes
+  (see the prompt-caching section). That is the trade being made: one expensive turn to make
+  every subsequent one cheap. It is also why the threshold is not lower.
+- The summarisation prompt **weights recency** — recent exchanges kept in near-full detail,
+  older material compressed harder — with section 6 ("All User Messages") the deliberate
+  exception, since nothing else survives verbatim. `stats.auto` reaches the client so the card
+  can explain a summary nobody asked for.
+- **`prompt-prefix.test.ts` is the guard for all of this, and it is the only
+  test that can see this class of bug.** It records the actual `messages` array
+  handed to `streamCompletion` on every request and asserts each is an
+  element-wise extension of the one before. Four separate defects broke that
+  invariant and every one was found by inspection after shipping: a sliding
+  window; the replay dropping `name` from tool messages; the replay
+  re-serialising tool `arguments` (with jsonb reordering keys underneath it);
+  and the live loop sending untrimmed assistant text where the replay trimmed.
+  All four are *serialisation mismatches between two paths that must agree*, so
+  no unit test on either path alone can catch them. Each was re-introduced and
+  confirmed to fail this test before it was committed.
+- **MOCK_INFERENCE's untidiness is load-bearing.** Its tool-call text ends in a
+  newline and its tool arguments are in an order Postgres jsonb will not
+  preserve — because a mock tidier than a real model is *why* two of those four
+  defects stayed invisible. `prompt-prefix.test.ts` has a canary case that fails
+  if either property is cleaned up, since the other cases would otherwise just
+  quietly stop covering anything.
+
+### Reporting cache figures honestly
+
+- **Only llama.cpp reports what it actually reused** (`timings.cache_n`). LM Studio reports
+  nothing about caching anywhere — no field in `usage`, no `/tokenize`, no `/slots`, no
+  `/props` (all probed and absent), and its native `stats` block carries only TTFT and the
+  generation rate. So `usage_records.cached_tokens` is **nullable, and null means "the
+  backend does not report this"** — storing that as 0 is what pinned the stats screen at a
+  permanent 0% hit rate. Never reintroduce a `?? 0` on that path.
+- **`prompt_tps` must never be derived as `prompt_tokens / ttft`.** That is not a rate of
+  anything once any of the prompt was cached: a fully-cached 30k-token prompt returns its
+  first token in ~400 ms, and the old fallback duly rendered "Prompt speed: 47,742 tok/s".
+  It comes from `timings.prompt_per_second` or it is null, and the client shows the prompt's
+  size against `ttft_ms` instead.
+- **`usage_records.reusable_tokens` is our own measurement, and it is what the aggregates
+  use.** `inference/prompt-reuse.ts` fingerprints each request (model, tools hash, one hash
+  per message) and reports how much of this prompt was a token-identical prefix of the
+  previous request for the same conversation. When the previous request's whole message list
+  is a prefix of this one — every ordinary turn, every tool iteration — the answer *is* that
+  request's measured `prompt_tokens`, so the figure is exact but for the 3-5 tokens of
+  generation prompt the template appends. **A prefix that breaks earlier reports 0 rather
+  than an estimate**: guessing at a token split we cannot measure is the exact failure this
+  module exists to avoid, and in practice the break is at the first message after the system
+  prompt (a history re-anchor), where the true value really is near zero.
+- **Reusable is not cached, and the UI must not say it is.** It proves what we *offered*; the
+  backend may have evicted the slot for another conversation, restarted, or reloaded the
+  model. `promptReuse()` in `apps/mobile/lib/usage.ts` carries the provenance, and the labels
+  differ deliberately: "Prompt cached" (backend ground truth) versus "Prompt reused" (ours).
+  It floors rather than rounds, so 99.58% never reads as a perfect 100%.
+- **The aggregates deliberately use `reusable_tokens`, not `cached_tokens`** — it is the only
+  one present on every backend, so it is the only one comparable across models and
+  deployments. Denominators are `SUM(input_tokens) FILTER (WHERE reusable_tokens IS NOT
+  NULL)`, so a turn with no figure (a conversation's first, or one after a restart) cannot
+  dilute the rate, and an empty window yields **null — rendered "—", never "0%"**.
+- Traces are in-memory and bounded (LRU, 500 conversations). A server restart costs one turn
+  reporting "no previous request", which is the conservative direction: the separately-hosted
+  backend may well still hold the prefix, but we cannot prove it, so we claim nothing.
 
 ### Conversation sharing and roles
 
@@ -396,7 +538,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
   closing marker inside the body is neutralized with a zero-width space so the content can't
   escape its own wrapper, and a sibling system-prompt addendum tells the model the content is
   untrusted. A user's own upload still gets this treatment: they may not have written it.
-- **Two independent prompt budgets, spent newest-first, never shared.** `MAX_HISTORY_IMAGE_BYTES`
+- **Two independent prompt budgets, never shared.** `MAX_HISTORY_IMAGE_BYTES`
   bounds images by raw bytes (their prompt cost is backend-specific patch embeddings, which is
   why `context.ts` refuses to tally them at all). `MAX_HISTORY_DOCUMENT_TOKENS` bounds documents
   by estimated tokens (they *are* tallied, via `textOfContent`) and is **derived from**, not
@@ -405,6 +547,21 @@ screenshots showing that behaviour working. Writing those tests is the implement
   exceed the whole budget and vanish from the turn that sent it. `selectAffordableAttachments`
   also caps a document's *measured* size at `MAX_EXTRACTED_BYTES` before estimating, since
   that's the ceiling on what actually reaches the prompt regardless of how large the cache is.
+- **Each budget is split into a current-turn reserve and a history pool spent oldest-first, and
+  an older turn's verdict must never depend on a newer one.** The walk used to be newest-first,
+  which meant a large new attachment could price out one that had fit for many turns — silently
+  rewriting a message the model had already been shown, and so throwing away the backend's
+  cached prefix from that message onward, exactly like a sliding history window. Oldest-first
+  makes each turn's verdict a function of the turns up to it and nothing later, so it is
+  permanent once made. **This costs recency:** in a saturated thread the *middle* attachments
+  are dropped, not the oldest. That is not an oversight — bounded budget, recency-preferring
+  retention and prefix stability cannot all hold at once (recency means a new arrival evicts an
+  old one, which is the rewrite), and "decide on arrival, never revisit" is unbounded because
+  every attachment ever sent would stay forever. `CURRENT_TURN_IMAGE_BYTES` /
+  `CURRENT_TURN_DOCUMENT_TOKENS` are what keep the just-sent attachment guaranteed, so the
+  property the old walk order provided is now explicit rather than emergent. The one remaining
+  change point is a turn's own move from current to history, which is a single message at the
+  very end of the prompt and cannot cascade.
 - **A truncated document can be paged through the sandbox, but only if one is already live.**
   When a document overflows `MAX_EXTRACTED_BYTES` and the conversation already has an active
   sandbox, `engine.ts`'s `writeOverflowToSandbox` writes the *full* cached text to

@@ -83,8 +83,8 @@ export default function StatsScreen() {
                 spark={usage?.spark?.totalTokens}
               />
               <KpiCard
-                label="Cache Hit %"
-                value={usage ? `${String(usage.cacheHitRate)}%` : '—'}
+                label="Prompt Reuse %"
+                value={usage?.cacheHitRate != null ? `${String(usage.cacheHitRate)}%` : '—'}
                 delta={computeDelta(usage?.cacheHitRate, usage?.previous?.cacheHitRate, 'pct-point')}
                 hint={usage?.previous ? 'vs previous period' : undefined}
                 spark={usage?.spark?.cacheHitRate}
@@ -114,7 +114,7 @@ export default function StatsScreen() {
 
             <VStack space="xs">
               <Text size="sm" className="font-medium text-foreground">
-                Cache Hit Rate
+                Prompt Reuse
               </Text>
               <CacheRateChart points={series?.cachePoints ?? []} />
             </VStack>

@@ -5,18 +5,29 @@ import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 import { Pressable } from '@/components/ui/pressable';
 import type { ContextView } from '@/hooks/useContextUsage';
+import { promptReuse } from '@/lib/usage';
 import { ContextBar } from './ContextBar';
 import { SEGMENT_CLASS } from './segments';
 
 const fmt = (n: number) => n.toLocaleString();
 
-function Row({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
+function Row({
+  label,
+  value,
+  muted,
+  testID,
+}: {
+  label: string;
+  value: string;
+  muted?: boolean;
+  testID?: string;
+}) {
   return (
     <HStack className="items-center justify-between">
       <Text size="xs" className="text-muted-foreground">
         {label}
       </Text>
-      <Text size="xs" className={muted ? 'text-muted-foreground' : 'text-foreground'}>
+      <Text testID={testID} size="xs" className={muted ? 'text-muted-foreground' : 'text-foreground'}>
         {value}
       </Text>
     </HStack>
@@ -120,7 +131,12 @@ export function ContextBreakdown({
           <Note>Estimated from model max — actual window unknown.</Note>
         )}
         {context.truncated && (
-          <Note>{`Showing last ${String(context.historyLimit)} messages; older turns already dropped.`}</Note>
+          // historyMessages, not historyLimit: the limit stopped being the
+          // window size when the replay was anchored — it is a floor now, and
+          // the window grows to HISTORY_LIMIT + HISTORY_STEP - 1 before
+          // re-anchoring. Reporting the floor would claim "last 50" on a
+          // conversation that actually replayed 74.
+          <Note>{`Showing last ${String(context.historyMessages)} messages; older turns already dropped.`}</Note>
         )}
       </VStack>
 
@@ -137,6 +153,7 @@ export function ContextBreakdown({
 }
 
 function LastTurnRows({ lastTurn }: { lastTurn: NonNullable<ContextView['lastTurn']> }) {
+  const reuse = promptReuse(lastTurn);
   return (
     <VStack space="xs">
       <Text size="2xs" className="uppercase text-muted-foreground">
@@ -144,7 +161,24 @@ function LastTurnRows({ lastTurn }: { lastTurn: NonNullable<ContextView['lastTur
       </Text>
       <Row label="Tokens in" value={fmt(lastTurn.in)} />
       <Row label="Tokens out" value={fmt(lastTurn.out)} />
-      {lastTurn.promptTps != null && <Row label="Prompt speed" value={`${String(Math.round(lastTurn.promptTps))} tok/s`} />}
+      {reuse && (
+        // "Cached" is the backend's own count and proves a hit; "reused" is
+        // our measurement of how much of this prompt repeated the previous
+        // one, which is all that's knowable on a backend (LM Studio) that
+        // reports no cache figures at all. Never conflate the two labels.
+        <Row
+          testID="context.lastTurn.reuse"
+          label={reuse.measured ? 'Prompt cached' : 'Prompt reused'}
+          value={`${String(reuse.pct)}%`}
+        />
+      )}
+      {lastTurn.promptTps != null ? (
+        <Row testID="context.lastTurn.promptRate" label="Prompt speed" value={`${String(Math.round(lastTurn.promptTps))} tok/s`} />
+      ) : lastTurn.ttftMs != null ? (
+        // No honest rate available — the backend didn't say how many prompt
+        // tokens it actually evaluated. Show what it cost instead.
+        <Row testID="context.lastTurn.promptCost" label="Prompt eval" value={`${(lastTurn.ttftMs / 1000).toFixed(2)}s`} />
+      ) : null}
       {lastTurn.genTps != null && <Row label="Generation speed" value={`${String(Math.round(lastTurn.genTps))} tok/s`} />}
       {lastTurn.totalMs != null && <Row label="Duration" value={`${(lastTurn.totalMs / 1000).toFixed(1)}s`} />}
     </VStack>

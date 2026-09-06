@@ -245,7 +245,7 @@ describe("selectAffordableImages", () => {
     expect(allowed).toEqual(new Set([a, b]));
   });
 
-  it("spends the budget newest-first, so the turn being asked about survives", async () => {
+  it("keeps the just-sent image even when an older one has already filled the budget", async () => {
     const oldRef = write(MAX_HISTORY_IMAGE_BYTES);
     const newRef = write(MAX_HISTORY_IMAGE_BYTES);
     // Oldest-first input, mirroring prompt assembly order.
@@ -345,19 +345,62 @@ describe("selectAffordableAttachments — documents", () => {
     expect(allowed.has(ref)).toBe(true);
   });
 
-  it("drops the oldest document once several turns' worth exceed the whole-history budget", async () => {
+  it("drops from the middle once several turns' worth exceed the whole-history budget", async () => {
     // Four documents each at the per-document cap cost roughly 4x
-    // MAX_SINGLE_DOCUMENT_TOKENS, comfortably over the 3x budget — so exactly
-    // one must be dropped, and the newest-first walk means it's the oldest.
+    // MAX_SINGLE_DOCUMENT_TOKENS, over the 3x budget — so one must go.
+    //
+    // It is deliberately not the oldest. Dropping by recency requires a new
+    // attachment to evict an older one, which rewrites a message the model has
+    // already been shown and throws away the backend's cached prefix from that
+    // message onward. History is therefore spent oldest-first (turns 0 and 1
+    // fill the 2x history pool, turn 2 no longer fits) while the just-sent
+    // turn keeps its own reserve.
     const refs = [writeExtraction(MAX_EXTRACTED_BYTES), writeExtraction(MAX_EXTRACTED_BYTES),
       writeExtraction(MAX_EXTRACTED_BYTES), writeExtraction(MAX_EXTRACTED_BYTES)];
     const allowed = await selectAffordableAttachments(
       refs.map((ref) => [{ ref, mime: "application/pdf" }]),
     );
-    expect(allowed.has(refs[0])).toBe(false);
+    expect(allowed.has(refs[0])).toBe(true);
     expect(allowed.has(refs[1])).toBe(true);
-    expect(allowed.has(refs[2])).toBe(true);
+    expect(allowed.has(refs[2])).toBe(false);
     expect(allowed.has(refs[3])).toBe(true);
+  });
+
+  it("never revises an older turn's verdict when a new turn arrives", async () => {
+    // The invariant the whole oldest-first split exists for. Growing the
+    // conversation one attachment-bearing turn at a time must only ever *add*
+    // to what the earlier turns contributed — anything else rewrites a message
+    // the model already saw, and the backend re-evaluates the prompt from that
+    // point on. Under the old newest-first walk this failed at the third turn.
+    const refs = Array.from({ length: 6 }, () => writeExtraction(MAX_EXTRACTED_BYTES));
+    const turns = refs.map((ref) => [{ ref, mime: "application/pdf" }]);
+
+    let previous: Set<string> | null = null;
+    for (let n = 1; n <= turns.length; n++) {
+      const allowed = await selectAffordableAttachments(turns.slice(0, n));
+      if (previous) {
+        // Every turn before the newest two keeps exactly the verdict it had.
+        // The second-newest is the one exception by design: it moves from the
+        // current-turn reserve into the history pool, which is a single
+        // message at the very end of the prompt.
+        for (let i = 0; i < n - 2; i++) {
+          expect(allowed.has(refs[i])).toBe(previous.has(refs[i]));
+        }
+      }
+      // The just-sent turn always survives — that is what the reserve buys.
+      expect(allowed.has(refs[n - 1])).toBe(true);
+      previous = allowed;
+    }
+  });
+
+  it("keeps a newly-sent document even when the history budget is already full", async () => {
+    const old = Array.from({ length: 4 }, () => writeExtraction(MAX_EXTRACTED_BYTES));
+    const fresh = writeExtraction(MAX_EXTRACTED_BYTES);
+    const allowed = await selectAffordableAttachments([
+      ...old.map((ref) => [{ ref, mime: "application/pdf" }]),
+      [{ ref: fresh, mime: "application/pdf" }],
+    ]);
+    expect(allowed.has(fresh)).toBe(true);
   });
 });
 

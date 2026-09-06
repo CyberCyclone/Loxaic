@@ -269,9 +269,28 @@ export interface TurnUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /**
+   * Prompt-evaluation rate over the tokens actually evaluated. **Null when
+   * the backend does not report how many that was** (LM Studio reports
+   * nothing about caching anywhere), in which case there is no honest rate to
+   * show — render `prompt_tokens` against `ttft_ms` instead. It must never be
+   * derived as `prompt_tokens / ttft_ms`: a cached 30k-token prompt returns
+   * its first token in ~400 ms, which that formula turns into "47,742 tok/s".
+   */
   prompt_tps: number | null;
   gen_tps: number | null;
   total_ms: number;
+  /** Wall-clock time to the first token — the prompt-evaluation cost, and the
+   * honest thing to show beside `prompt_tokens` when `prompt_tps` is null. */
+  ttft_ms?: number | null;
+  /** Tokens the backend reported reusing from its KV cache. Null = the
+   * backend does not report it, which is not the same as zero. */
+  cached_tokens?: number | null;
+  /** Tokens of this prompt that were a token-identical prefix of the previous
+   * request — what we offered the backend to reuse. Computed by us, so it is
+   * present on every backend; null only when there was no previous request.
+   * Evidence about our own prompt, not proof the backend reused it. */
+  reusable_tokens?: number | null;
   context?: ContextBreakdown;
 }
 
@@ -296,6 +315,11 @@ export interface CompactionStats {
   skipped?: "already_compacted" | "too_short";
   /** The user's steering text ("make sure to include …"), verbatim. */
   guidance?: string;
+  /** True when the server started this compaction itself, because the prompt
+   * crossed AUTO_COMPACT_THRESHOLD of the model's window. Surfaced so the card
+   * can say so: a summary nobody asked for, appearing mid-conversation, is
+   * confusing unless it explains itself. */
+  auto?: boolean;
 }
 
 /**

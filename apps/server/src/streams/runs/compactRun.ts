@@ -44,6 +44,12 @@ const COMPACT_INSTRUCTION = [
   "8. Current Work — precisely what was in progress at the point of this summary.",
   "9. Optional Next Step — the immediate next action, only if one clearly follows from the above.",
   "",
+  "Weight recency. The most recent exchanges are what the work is actually standing on, so keep",
+  "them in near-full detail — exact file paths, function names, error text, numbers, and whatever",
+  "was mid-flight. Compress older material harder the further back it goes, down to the decisions",
+  "and conclusions that still constrain the work. Section 6 is the exception and stays exhaustive:",
+  "every user message must appear, however tersely, because nothing else survives verbatim.",
+  "",
   "Respond with ONLY the summary document. No preamble, no commentary, no questions.",
 ].join("\n");
 
@@ -91,6 +97,7 @@ export function computeCompactionStats(input: {
   instructionTokens: number;
   summaryText: string;
   guidance?: string;
+  auto?: boolean;
 }): CompactionStats {
   const afterEstimated = input.completionTokens <= 0;
   const after = afterEstimated ? estimateTokens("summary", input.summaryText) : input.completionTokens;
@@ -106,6 +113,7 @@ export function computeCompactionStats(input: {
     saved_tokens: Math.max(0, before - after),
     before_estimated: beforeEstimated || afterEstimated,
     ...(input.guidance ? { guidance: input.guidance } : {}),
+    ...(input.auto ? { auto: true } : {}),
   };
 }
 
@@ -121,6 +129,8 @@ export async function startCompactRun(input: {
   model: string;
   args?: string;
   surface: "chat" | "agent";
+  /** Set by the engine's threshold check, not by any client command. */
+  auto?: boolean;
 }): Promise<StartCompactRunResult> {
   const { userId, conversationId: convId, model, surface } = input;
   const guidance = input.args?.trim();
@@ -161,6 +171,7 @@ export async function startCompactRun(input: {
       saved_tokens: 0,
       before_estimated: false,
       skipped,
+      ...(input.auto ? { auto: true } : {}),
     };
     await db.insert(messages).values({
       id: summaryMsgId,
@@ -239,6 +250,7 @@ export async function startCompactRun(input: {
     guidance,
     messagesCompacted: count + (hasSummary ? 1 : 0),
     historyLimit,
+    auto: input.auto ?? false,
   });
 
   return { streamId, conversationId: convId, summaryMessageId: summaryMsgId };
@@ -282,6 +294,7 @@ async function runCompactGeneration(ctx: {
   guidance?: string;
   messagesCompacted: number;
   historyLimit: number;
+  auto: boolean;
 }): Promise<void> {
   const { streamId, convId, userId, summaryMsgId, model, abort, producer } = ctx;
   let summaryText = "";
@@ -333,6 +346,7 @@ async function runCompactGeneration(ctx: {
       instructionTokens: estimateTokens("current", ctx.instruction),
       summaryText,
       guidance: ctx.guidance,
+      auto: ctx.auto,
     });
 
     // The breakdown describes the window AFTER compaction — the summary is
@@ -383,7 +397,7 @@ async function runCompactGeneration(ctx: {
         model,
         origin: "server",
         inputTokens: doneResult.usage.prompt_tokens,
-        cachedTokens: doneResult.timings?.cache_n ?? 0,
+        cachedTokens: doneResult.cachedTokens,
         outputTokens: doneResult.usage.completion_tokens,
         ttftMs: doneResult.ttftMs,
         promptMs: doneResult.timings?.prompt_ms ?? null,

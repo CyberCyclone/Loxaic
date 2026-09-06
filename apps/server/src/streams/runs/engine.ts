@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, eq, gt } from "@loxaic/db";
+import { and, count, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@loxaic/types";
 import {
@@ -18,6 +18,7 @@ import {
 } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { fingerprintPrompt, measureReuse, recordPrompt, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import {
@@ -28,6 +29,7 @@ import {
   markOverflowWritten,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 
@@ -35,8 +37,106 @@ import { getRun, unregisterRun } from "../registry.ts";
 const MAX_ITERATIONS = 20;
 /** An approval request left unanswered this long is treated as a denial. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
-/** How many prior messages to replay as context. */
+/**
+ * The smallest number of prior messages the replay window is ever narrowed
+ * to. It is a floor, not a fixed size — see `historyAnchor`.
+ */
 export const HISTORY_LIMIT = 50;
+
+/**
+ * How far the window's oldest edge jumps when it finally has to move.
+ *
+ * A window of exactly HISTORY_LIMIT messages that slides by one on every turn
+ * destroys the backend's prompt cache: the prompt no longer *starts* with the
+ * same tokens, so llama.cpp/LM Studio re-evaluate the entire history from
+ * scratch, every single turn, for the life of the conversation. Measured on a
+ * 14.5k-token thread against a local LM Studio: 312 ms when the window held
+ * still versus 14,551 ms the turn one message fell off the front — a 45×
+ * difference that grows with the conversation.
+ *
+ * So the window is allowed to *grow* from HISTORY_LIMIT up to
+ * HISTORY_LIMIT + HISTORY_STEP - 1 messages, and only re-anchors — paying one
+ * full prompt evaluation — once every HISTORY_STEP messages. Every turn in
+ * between extends a prefix the backend already has cached.
+ */
+export const HISTORY_STEP = 25;
+
+/**
+ * The oldest message this turn replays, as an offset from the oldest message
+ * available (0 = replay everything). Quantised to HISTORY_STEP so it is a
+ * *stable* function of the conversation's length rather than a value that
+ * drifts by one per message: it holds still for HISTORY_STEP messages at a
+ * time, which is what keeps the prompt prefix — and so the backend's KV cache
+ * — intact across turns.
+ *
+ * Exported for the tests that pin the quantisation; `loadHistory` is the only
+ * caller.
+ */
+export function historyAnchor(total: number): number {
+  if (total <= HISTORY_LIMIT) return 0;
+  return Math.max(0, Math.floor((total - HISTORY_LIMIT) / HISTORY_STEP) * HISTORY_STEP);
+}
+
+/**
+ * The wire shapes for a tool exchange — built here and nowhere else.
+ *
+ * The live loop appends these to `chatMessages` as a run proceeds; `loadHistory`
+ * rebuilds them from stored blocks on the next turn. If the two ever differ by
+ * so much as a key, the next prompt is not a prefix of the last one, the
+ * backend re-evaluates from the first tool call in the window, and
+ * `reusable_tokens` records 0 for every turn after it — the anchored-window
+ * work upstream undone by a serialisation mismatch.
+ *
+ * They *did* differ, in two ways. The loop sent the model's verbatim
+ * `arguments` string and a `name` on the tool message; the replay sent
+ * `JSON.stringify` of the parsed args and no `name`.
+ *
+ * Matching the code was not sufficient on its own: the replayed args come back
+ * through Postgres **jsonb, which does not preserve key order** — it re-sorts
+ * by key length and bytes — so `{"command":…,"cwd":…}` returns as
+ * `{"cwd":…,"command":…}` and re-serialises to different bytes no matter how
+ * carefully both call sites are written. Hence `canonicalJson`: order the keys
+ * deterministically on both paths and the round-trip stops mattering. The JSON
+ * is semantically identical either way, so the model is unaffected.
+ */
+function canonicalJson(value: unknown): string {
+  // undefined can't reach here: object entries are filtered below, and the
+  // top-level caller always passes an object.
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+}
+
+export function toolCallsForPrompt(calls: { id: string; name: string; args: unknown }[]): ToolCall[] {
+  return calls.map((c) => ({
+    id: c.id,
+    type: "function" as const,
+    function: { name: c.name, arguments: canonicalJson(c.args ?? {}) },
+  }));
+}
+
+export function assistantMessageForPrompt(text: string, calls: ToolCall[]): ChatMessage {
+  // Trimmed *here*, in the shared builder, rather than by one caller.
+  // `loadHistory` reads assistant text through `textOf`, which trims; the live
+  // loop passes the raw accumulated deltas, which do not. A model ending its
+  // text with "\n" before a tool call — routine — therefore sent
+  // `content: "Running it.\n"` during the run and `content: "Running it."` on
+  // the next one, breaking the prefix at that message and recording
+  // reusable_tokens: 0 for the turn after it. Whitespace-only text was worse:
+  // live sent "\n" (truthy) where the replay sent null.
+  const content = text.trim();
+  // Key order matters as well as content: prompt fingerprints hash each
+  // message with JSON.stringify, so two objects that differ only in key order
+  // hash differently.
+  return { role: "assistant", content: content || null, ...(calls.length ? { tool_calls: calls } : {}) };
+}
+
+export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
+  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: output };
+}
 
 /**
  * A plain function call rather than a direct `abort.signal.aborted` read:
@@ -91,10 +191,18 @@ export async function runToolLoop(ctx: {
   /** Surface-appropriate system prompt, or null for none. The engine appends
    * the MCP untrusted-content addendum when MCP tools are offered. */
   basePrompt: string | null;
+  /** Which surface started this run. Only needed so an automatic compaction
+   * opens its stream on the same one. */
+  surface: "chat" | "agent";
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
+
+  // Decided inside the loop, acted on outside it: startCompactRun takes the
+  // per-conversation lock this run is still holding until `finally` releases
+  // it, so triggering in place would refuse itself with "already in progress".
+  let autoCompact = false;
 
   try {
     const toolset = await buildToolset(userId, { mode, conversationId: convId });
@@ -120,6 +228,10 @@ export async function runToolLoop(ctx: {
     // Only user turns ever carry image parts, and the loop below only appends
     // assistant and tool messages — so this holds for every iteration.
     const hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
+
+    // Per-message hashes from the previous iteration; safe to reuse because
+    // `chatMessages` is only ever appended to below.
+    let carriedHashes: readonly string[] | undefined;
 
     let parentId = ctx.userMsgId;
     let lastAssistantId: string | null = null;
@@ -183,6 +295,18 @@ export async function runToolLoop(ctx: {
         summaryMsg ? chatMessages.filter((m) => m !== summaryMsg) : chatMessages,
         tools,
       );
+      // Fingerprint the exact payload about to go out — same reason the tally
+      // is taken here rather than once per run: `chatMessages` grows as tool
+      // calls and results are appended, and each iteration is its own request
+      // with its own prefix relationship to the one before it.
+      //
+      // Hashes from the previous iteration are carried forward: `chatMessages`
+      // is append-only within a run, and re-hashing it whole each time meant
+      // re-reading every inlined image data URI on every iteration. See
+      // fingerprintPrompt for the guarantee this relies on.
+      const fingerprint = fingerprintPrompt(model, chatMessages, tools, carriedHashes);
+      carriedHashes = fingerprint.messageHashes;
+      const reuse = measureReuse(convId, fingerprint);
       if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
       const breakdownMeta = {
         historyMessages: history.messages.length,
@@ -202,6 +326,7 @@ export async function runToolLoop(ctx: {
           } else {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
+            recordPrompt(convId, fingerprint, event.result.usage.prompt_tokens);
             await recordUsage({
               runId: streamId,
               userId,
@@ -209,6 +334,7 @@ export async function runToolLoop(ctx: {
               messageId: assistantMsgId,
               model,
               result: event.result,
+              reuse,
               context: apportion(
                 tally,
                 event.result.usage.prompt_tokens,
@@ -280,6 +406,9 @@ export async function runToolLoop(ctx: {
               prompt_tps: doneResult.promptTps,
               gen_tps: doneResult.genTps,
               total_ms: doneResult.totalMs,
+              ttft_ms: doneResult.ttftMs,
+              cached_tokens: doneResult.cachedTokens,
+              reusable_tokens: reuse.tokens,
               // This is the terminating iteration, so `tally` and `doneResult`
               // describe the same call — the breakdown lines up exactly.
               context: apportion(
@@ -290,6 +419,16 @@ export async function runToolLoop(ctx: {
               ),
             }
           : undefined;
+        // Checked here rather than before the next turn starts: this is the
+        // one point where the *measured* size of the prompt and the window it
+        // was assembled against are both in hand. The threshold leaves room
+        // for the turn that follows, which is what makes acting after the
+        // fact safe.
+        autoCompact = shouldAutoCompact({
+          usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
+          windowTokens: breakdownMeta.windowTokens ?? null,
+          historyMessages: history.messages.length,
+        });
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
         await producer.end("complete", { usage });
         break;
@@ -297,7 +436,12 @@ export async function runToolLoop(ctx: {
 
       // toolCalls.length > 0: message.end is deferred — the run continues
       // (tool results still need to land on this message before it's done).
-      chatMessages.push({ role: "assistant", content: text || null, tool_calls: toolCalls });
+      // Normalised through the same builder the replay uses — see
+      // toolCallsForPrompt for what drifting apart costs.
+      const promptCalls = toolCallsForPrompt(
+        toolCalls.map((c) => ({ id: c.id, name: c.function.name, args: safeParseArgs(c.function.arguments) })),
+      );
+      chatMessages.push(assistantMessageForPrompt(text, promptCalls));
       parentId = assistantMsgId;
 
       // ── Run each requested tool ───────────────────────────
@@ -310,12 +454,7 @@ export async function runToolLoop(ctx: {
           output: outcome.output,
           ...(outcome.diff ? { diff: outcome.diff } : {}),
         });
-        chatMessages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          name: call.function.name,
-          content: outcome.output,
-        });
+        chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
       }
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete" });
 
@@ -361,6 +500,29 @@ export async function runToolLoop(ctx: {
     }
   } finally {
     unregisterRun(streamId);
+  }
+
+  // Past the `finally`, so the lock is free. Deliberately not reached by the
+  // error and cancel paths above, which `return` — a run that failed has not
+  // established what the prompt costs, and compacting after a user pressed
+  // stop would be the opposite of what they asked for.
+  // The pref is checked here rather than beside shouldAutoCompact so an
+  // ordinary turn never pays for the query — only a turn that has already
+  // decided it wants to compact asks whether it may.
+  if (autoCompact && (await userAllowsAutoCompact(userId))) {
+    try {
+      // Dynamic on purpose: compactRun imports this module's history loader,
+      // so a static import here would close a cycle between the two. See
+      // auto-compact.ts.
+      const { startCompactRun } = await import("./compactRun.ts");
+      await startCompactRun({ userId, conversationId: convId, model, surface: ctx.surface, auto: true });
+    } catch (err) {
+      // Best-effort. A refused lock (the user sent again the instant the turn
+      // ended) or a backend hiccup must not surface as a failure of the turn
+      // that already succeeded — the threshold will simply be met again next
+      // time.
+      console.warn(`auto-compaction skipped for ${convId}: ${(err as Error).message}`);
+    }
   }
 }
 
@@ -498,6 +660,7 @@ async function recordUsage(input: {
   messageId: string;
   model: string;
   result: CompletionResult;
+  reuse: PromptReuse;
   context?: ContextBreakdown;
 }): Promise<void> {
   const { result } = input;
@@ -512,7 +675,9 @@ async function recordUsage(input: {
     model: input.model,
     origin: "server",
     inputTokens: result.usage.prompt_tokens,
-    cachedTokens: result.timings?.cache_n ?? 0,
+    // Null, not 0, when the backend says nothing — see the column's comment.
+    cachedTokens: result.cachedTokens,
+    reusableTokens: input.reuse.tokens,
     outputTokens: result.usage.completion_tokens,
     ttftMs: result.ttftMs,
     promptMs: result.timings?.prompt_ms ?? null,
@@ -526,9 +691,15 @@ async function recordUsage(input: {
 
 /**
  * Rebuilds the OpenAI message list from stored content blocks. Thinking
- * blocks are dropped (display-only), and assistant tool calls with no
- * matching tool_result are stripped — an interrupted run would otherwise
- * leave a dangling call that most servers reject.
+ * blocks are dropped (display-only), and tool calls and results that lost
+ * their partner are stripped in both directions — an interrupted run leaves a
+ * dangling call, and the window's oldest edge can orphan a result; most
+ * servers reject either.
+ *
+ * The replayed window is anchored, not sliding: its oldest edge is quantised
+ * to HISTORY_STEP so that consecutive turns send a prompt the previous turn's
+ * prompt is a *prefix* of, which is the whole basis of the backend's KV
+ * cache. See HISTORY_STEP for what a per-message slide costs.
  */
 export async function loadHistory(
   conversationId: string,
@@ -551,24 +722,55 @@ export async function loadHistory(
     .find((r) => r.text.length > 0);
   const summaryText = summaryRow?.text ?? null;
 
-  // One over the limit, so we can tell the client whether older turns were
-  // already dropped. Cheaper than a second COUNT(*).
-  const rows = await db.query.messages.findMany({
-    where: summaryRow
-      ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
-      : eq(messages.conversationId, conversationId),
-    orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
-    columns: { authorType: true, content: true, status: true, lamport: true },
-    limit: HISTORY_LIMIT + 1,
-  });
-  const truncated = rows.length > HISTORY_LIMIT;
-  const ordered = rows.slice(0, HISTORY_LIMIT).reverse();
+  const replayable = summaryRow
+    ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
+    : eq(messages.conversationId, conversationId);
 
+  // A real COUNT(*), where the old code inferred "is there more?" from a
+  // limit+1 fetch. The window's oldest edge has to be a stable function of
+  // how long the conversation is (historyAnchor), and that needs the actual
+  // length — an over-fetch by one can only answer the yes/no. One indexed
+  // count per run (not per tool iteration) is a fair price for a prompt
+  // prefix the backend can cache.
+  const [{ total }] = await db
+    .select({ total: count() })
+    .from(messages)
+    .where(replayable);
+
+  const anchor = historyAnchor(total);
+  const windowSize = total - anchor;
+  const truncated = anchor > 0;
+
+  const rows = windowSize > 0
+    ? await db.query.messages.findMany({
+        where: replayable,
+        orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
+        columns: { authorType: true, content: true, status: true, lamport: true },
+        limit: windowSize,
+      })
+    : [];
+  const ordered = rows.reverse();
+
+  // Call ids in both directions. `resolvedCallIds` strips an assistant's
+  // dangling tool_call (an interrupted run) — but the window's oldest edge
+  // can equally cut the other way, leaving a tool_result whose assistant
+  // tool_call fell outside it. A `role: "tool"` message with no preceding
+  // call is rejected outright by most backends, so `presentCallIds` drops
+  // those too. Both sets are collected before anything is emitted, because
+  // the rows they describe are interleaved.
   const resolvedCallIds = new Set<string>();
+  const presentCallIds = new Set<string>();
+  // A tool_result block stores no tool name, but the live loop puts one on the
+  // message it sends — so the name has to come from the assistant's matching
+  // tool_call block or the two shapes diverge.
+  const callNames = new Map<string, string>();
   for (const row of ordered) {
-    if (row.authorType !== "tool") continue;
     for (const block of row.content as ContentBlock[]) {
-      if (block.kind === "tool_result") resolvedCallIds.add(block.call_id);
+      if (row.authorType === "tool" && block.kind === "tool_result") resolvedCallIds.add(block.call_id);
+      if (row.authorType === "assistant" && block.kind === "tool_call") {
+        presentCallIds.add(block.call_id);
+        callNames.set(block.call_id, block.tool);
+      }
     }
   }
 
@@ -608,23 +810,22 @@ export async function loadHistory(
 
     if (row.authorType === "assistant") {
       const text = textOf(blocks);
-      const calls: ToolCall[] = blocks
-        .filter((b): b is Extract<ContentBlock, { kind: "tool_call" }> => b.kind === "tool_call")
-        .filter((b) => resolvedCallIds.has(b.call_id))
-        .map((b) => ({
-          id: b.call_id,
-          type: "function" as const,
-          function: { name: b.tool, arguments: JSON.stringify(b.args ?? {}) },
-        }));
+      const calls = toolCallsForPrompt(
+        blocks
+          .filter((b): b is Extract<ContentBlock, { kind: "tool_call" }> => b.kind === "tool_call")
+          .filter((b) => resolvedCallIds.has(b.call_id))
+          .map((b) => ({ id: b.call_id, name: b.tool, args: b.args })),
+      );
       if (!text && calls.length === 0) continue;
-      out.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
+      out.push(assistantMessageForPrompt(text, calls));
       continue;
     }
 
     if (row.authorType === "tool") {
       for (const block of blocks) {
         if (block.kind !== "tool_result") continue;
-        out.push({ role: "tool", tool_call_id: block.call_id, content: block.output });
+        if (!presentCallIds.has(block.call_id)) continue;
+        out.push(toolResultMessageForPrompt(block.call_id, callNames.get(block.call_id), block.output));
       }
     }
   }

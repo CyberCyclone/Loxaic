@@ -1,4 +1,5 @@
-import Svg, { Polyline, Polygon, Line } from 'react-native-svg';
+import React from 'react';
+import Svg, { Polyline, Polygon, Line, Circle } from 'react-native-svg';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
 import type { CacheRatePoint } from '@loxaic/api-client';
@@ -11,28 +12,46 @@ interface CacheRateChartProps {
 }
 
 export function CacheRateChart({ points, height = 180 }: CacheRateChartProps) {
-  if (points.length === 0) {
-    return (
-      <Box className="items-center justify-center" style={{ height }}>
-        <Text size="xs" className="text-muted-foreground">
-          No usage yet
-        </Text>
-      </Box>
-    );
-  }
-
+  // A bucket with no measured reuse figure is a gap, not a zero — plotting it
+  // as 0% is exactly the kind of fabricated data point this whole change is
+  // about. Drop those buckets and keep their x position, so a run of
+  // unmeasured buckets reads as a gap in the series rather than a dive to the
+  // floor.
   const width = 320;
   const padding = { top: 10, right: 10, bottom: 10, left: 28 };
   const plotW = width - padding.left - padding.right;
   const plotH = height - padding.top - padding.bottom;
 
-  const values = points.map((p) => p.cacheHitRate);
-  const max = Math.max(...values, 1);
   const x = (i: number) => padding.left + (points.length > 1 ? (i / (points.length - 1)) * plotW : plotW / 2);
+  const measured = points
+    .map((p, i) => ({ rate: p.cacheHitRate, i }))
+    .filter((p): p is { rate: number; i: number } => p.rate != null);
+
+  if (measured.length === 0) {
+    return (
+      <Box className="items-center justify-center" style={{ height }}>
+        <Text size="xs" className="text-muted-foreground">
+          {points.length === 0 ? 'No usage yet' : 'Not measured for this period'}
+        </Text>
+      </Box>
+    );
+  }
+
+  const max = Math.max(...measured.map((p) => p.rate), 1);
   const y = (v: number) => padding.top + plotH - (v / max) * plotH;
 
-  const linePoints = points.map((p, i) => `${String(x(i))},${String(y(p.cacheHitRate))}`).join(' ');
-  const areaPoints = `${String(padding.left)},${String(padding.top + plotH)} ${linePoints} ${String(x(points.length - 1))},${String(padding.top + plotH)}`;
+  // Split into runs of *contiguous* measured buckets, one polyline each.
+  // Dropping the unmeasured buckets from a single polyline does not draw a
+  // gap — it draws one straight segment across it, which reads as a confident
+  // measured trend through a stretch where nothing was measured. That is the
+  // same fabricated data point the rest of this screen exists to remove.
+  const runs: { rate: number; i: number }[][] = [];
+  for (const p of measured) {
+    const last = runs.at(-1);
+    if (last?.[last.length - 1].i === p.i - 1) last.push(p);
+    else runs.push([p]);
+  }
+  const floorY = padding.top + plotH;
 
   return (
     <Svg width="100%" height={height} viewBox={`0 0 ${String(width)} ${String(height)}`}>
@@ -47,8 +66,25 @@ export function CacheRateChart({ points, height = 180 }: CacheRateChartProps) {
           strokeWidth={1}
         />
       ))}
-      <Polygon points={areaPoints} fill={COLOR} fillOpacity={0.12} />
-      <Polyline points={linePoints} fill="none" stroke={COLOR} strokeWidth={2} />
+      {runs.map((run) => {
+        const line = run.map((p) => `${String(x(p.i))},${String(y(p.rate))}`).join(' ');
+        // A one-point polyline draws nothing at all, so an isolated measured
+        // bucket would otherwise be invisible — a dot is both correct and more
+        // informative than a missing point.
+        if (run.length === 1) {
+          return <Circle key={run[0].i} cx={x(run[0].i)} cy={y(run[0].rate)} r={2.5} fill={COLOR} />;
+        }
+        return (
+          <React.Fragment key={run[0].i}>
+            <Polygon
+              points={`${String(x(run[0].i))},${String(floorY)} ${line} ${String(x(run[run.length - 1].i))},${String(floorY)}`}
+              fill={COLOR}
+              fillOpacity={0.12}
+            />
+            <Polyline points={line} fill="none" stroke={COLOR} strokeWidth={2} />
+          </React.Fragment>
+        );
+      })}
     </Svg>
   );
 }

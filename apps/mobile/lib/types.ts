@@ -32,11 +32,25 @@ export interface MessageUsage {
   out: number
   /** Generation speed (tokens/sec). */
   tps: number
-  /** Prompt-processing speed (tokens/sec) — null when the backend didn't report timings. */
+  /**
+   * Prompt-evaluation speed (tokens/sec) over the tokens actually evaluated.
+   * Null whenever the backend doesn't report how many that was — LM Studio
+   * never does. It must not be derived from `in / ttftMs`: on a cache hit that
+   * produces a number like 47,742 tok/s, which is not a speed. Show `in`
+   * against `ttftMs` instead.
+   */
   promptTps?: number | null
   /** Total wall-clock duration (ms) of the response: model load (if any), prompt eval, and generation. */
   totalMs?: number | null
-  cache: number
+  /** Time to first token (ms) — the prompt-evaluation cost. */
+  ttftMs?: number | null
+  /** Tokens the backend reported reusing from its cache. Null = the backend
+   * doesn't report it, which is not the same as nothing being cached. */
+  cachedTokens?: number | null
+  /** Tokens of the prompt that repeated the previous request's prompt exactly
+   * — what the server offered the backend to reuse. Available on every
+   * backend. */
+  reusableTokens?: number | null
   /** What this turn's prompt was made of. Computed server-side — the agent's
    * tool schemas never appear in the message list, so this can't be derived
    * here. Absent on turns predating the feature, and when usage wasn't reported. */
@@ -174,7 +188,8 @@ export interface PerModelStat {
   model: string
   conversations: number
   tokens: number
-  cachePct: number
+  /** Null when no turn in the window carried a reuse figure. */
+  cachePct: number | null
   ppSpeed: number
   tgSpeed: number
   ttftP50: number
@@ -186,7 +201,8 @@ export interface PerConvStat {
   title: string
   model: string
   tokens: number
-  cachePct: number
+  /** Null when no turn in the window carried a reuse figure. */
+  cachePct: number | null
   time: string
 }
 
