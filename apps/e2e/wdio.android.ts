@@ -40,6 +40,12 @@ export const config: WebdriverIO.Config = {
       'appium:automationName': 'UiAutomator2',
       'appium:app': androidApkPath(),
       'appium:appPackage': 'com.loxaic.app',
+      // Reinstall the app every session even when its version code/bundle
+      // version is unchanged. Appium otherwise keeps whatever is already on
+      // the device, so a rebuilt app with the same version — every local
+      // rebuild — silently never reaches the suite (found when a fixed
+      // upload still "failed": the emulator was running the previous build).
+      'appium:enforceAppInstall': true,
       // Cold start on an emulator is slow, and slow is not the same as broken.
       'appium:appWaitDuration': 60_000,
       'appium:newCommandTimeout': 300,

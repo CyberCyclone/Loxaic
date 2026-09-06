@@ -41,6 +41,12 @@ export const config: WebdriverIO.Config = {
       // not an alert, and is handled by dismissIosSavePasswordPrompt in
       // helpers/app.ts instead.
       'appium:autoDismissAlerts': true,
+      // Reinstall the app every session even when its version code/bundle
+      // version is unchanged. Appium otherwise keeps whatever is already on
+      // the device, so a rebuilt app with the same version — every local
+      // rebuild — silently never reaches the suite (found when a fixed
+      // upload still "failed": the emulator was running the previous build).
+      'appium:enforceAppInstall': true,
       // WDA's default typing rate (60 keys/s) drops characters on the iOS 26
       // simulator — a run signed up "ee+…@example.test" for "e2e+…", and the
       // spec's API sign-in with the intended email then 401'd. Half speed
