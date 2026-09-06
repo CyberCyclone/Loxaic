@@ -232,7 +232,9 @@ describe("history window: anchored, not sliding", () => {
           { id: "call-ok", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "echo hi" }) } },
         ],
       },
-      { role: "tool", tool_call_id: "call-ok", content: "hi" },
+      // `name` is part of the shape the live loop sends, so the replay carries
+      // it too — see the byte-identity test in compaction-history.test.ts.
+      { role: "tool", tool_call_id: "call-ok", name: "bash", content: "hi" },
     ]);
   });
 });

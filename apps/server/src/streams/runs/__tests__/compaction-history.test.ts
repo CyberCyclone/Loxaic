@@ -4,7 +4,22 @@ import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../index.ts";
-import { loadHistory as loadAgentHistory } from "../engine.ts";
+import {
+  assistantMessageForPrompt,
+  loadHistory as loadAgentHistory,
+  toolCallsForPrompt,
+  toolResultMessageForPrompt,
+} from "../engine.ts";
+
+/** Mirrors the engine's own arg parsing, which isn't exported. */
+function safeParseArgsLike(raw: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(raw || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
 import { startCompactRun } from "../compactRun.ts";
 
 /**
@@ -100,12 +115,71 @@ describe("compaction: history cutoff + no-op guard", () => {
         role: "assistant",
         content: "Running it.",
         tool_calls: [
-          { id: "call-ok", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "echo hi" }) } },
+          { id: "call-ok", type: "function", function: { name: "bash", arguments: '{"command":"echo hi"}' } },
         ],
       },
-      { role: "tool", tool_call_id: "call-ok", content: "hi" },
+      // `name` is part of the shape, not optional decoration: the live loop
+      // sends it, so a replay without it is a different message — see below.
+      { role: "tool", tool_call_id: "call-ok", name: "bash", content: "hi" },
       { role: "assistant", content: "Done." },
     ]);
+  });
+
+  it("replays a tool exchange byte-identically to what the live loop sent", async () => {
+    // The prompt cache works on a *prefix*, and prompt fingerprints hash each
+    // message with JSON.stringify — so a replay that differs from the live
+    // message by a key, a key's order, or the spacing inside `arguments`
+    // breaks the prefix at the first tool call and records reusable_tokens: 0
+    // for every turn after it. Both divergences below were real: the loop sent
+    // the model's verbatim `arguments` string and a `name` the replay omitted.
+    const convId = await newConv();
+    let lamport = 5000;
+    // Deliberately *not* canonical JSON: odd spacing, and keys in an order
+    // Postgres jsonb will not give back (it re-sorts by length, so "cwd"
+    // returns before "command"). Both paths must still agree.
+    const rawArguments = '{ "command" : "echo hi",  "cwd": "/tmp" }';
+    const parsed = JSON.parse(rawArguments) as Record<string, unknown>;
+
+    await db.insert(messages).values([
+      { id: uuid(), conversationId: convId, authorType: "user", origin: "server", lamport: lamport++, content: textBlock("go"), status: "complete", createdAt: new Date() },
+      {
+        id: uuid(),
+        conversationId: convId,
+        authorType: "assistant",
+        origin: "server",
+        lamport: lamport++,
+        content: [
+          { kind: "text", text: "Running." },
+          { kind: "tool_call", call_id: "c1", tool: "bash", args: parsed },
+        ] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      },
+      {
+        id: uuid(),
+        conversationId: convId,
+        authorType: "tool",
+        origin: "server",
+        lamport: lamport++,
+        content: [{ kind: "tool_result", call_id: "c1", output: "hi" }] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      },
+    ]);
+
+    // What the live loop appends for that same exchange, through the shared
+    // builders. If these constructors ever stop being the only way either path
+    // makes a message, this test stops meaning anything — hence the direct use.
+    const liveCalls = toolCallsForPrompt([{ id: "c1", name: "bash", args: safeParseArgsLike(rawArguments) }]);
+    const live = [
+      assistantMessageForPrompt("Running.", liveCalls),
+      toolResultMessageForPrompt("c1", "bash", "hi"),
+    ];
+
+    const replayed = (await loadAgentHistory(convId)).messages.slice(1);
+    // JSON.stringify, not toEqual: key order is what the fingerprint hashes,
+    // and toEqual would happily accept a reordered object.
+    expect(replayed.map((m) => JSON.stringify(m))).toEqual(live.map((m) => JSON.stringify(m)));
   });
 
   it("loadHistory (agent) replays only what came after the newest summary, by lamport — not createdAt", async () => {

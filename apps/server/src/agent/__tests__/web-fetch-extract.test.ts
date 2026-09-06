@@ -12,21 +12,58 @@ import { extractFetchText, htmlToText } from "../executor.ts";
  * the truncation cut in half.
  */
 describe("web_fetch text extraction", () => {
-  it("strips a <style> block that has no closing tag", () => {
+  it("strips a <style> block that has no closing tag, when the body was truncated", () => {
     const cut = `<html><body><p>Top story</p><style>${"body,html{height:100%;overflow:hidden}".repeat(50)}`;
-    const text = htmlToText(cut);
+    const text = htmlToText(cut, true);
     expect(text).toBe("Top story");
     expect(text).not.toMatch(/overflow:hidden/);
   });
 
   it("strips an unterminated <script> the same way", () => {
     const cut = `<html><body><p>Headline</p><script>${"var a=1;window.x=function(){};".repeat(50)}`;
-    expect(htmlToText(cut)).toBe("Headline");
+    expect(htmlToText(cut, true)).toBe("Headline");
+  });
+
+  it("does NOT eat the rest of a complete page that merely looks unterminated", () => {
+    // The cleanup above is only sound for a body cut mid-block. On a whole
+    // page an opener without a close is malformed, not severed, and eating to
+    // end-of-input silently reduces the page to "" — a wrong answer with no
+    // sign anything went wrong.
+    const page = '<html><body><p>Real content</p><div title="<style"></div></body></html>';
+    expect(htmlToText(page, false)).toContain("Real content");
+  });
+
+  it("accepts whitespace before the > in a closing tag", () => {
+    // `</script >` and `</SCRIPT\n>` are valid HTML5. Requiring the exact
+    // bytes `</script>` made a complete page look unterminated, which then
+    // handed the whole document to the truncation cleanup.
+    const page = '<html><body><script>var a=1;</script >\n<p>Body text</p></body></html>';
+    expect(htmlToText(page, true)).toBe("Body text");
+    const upper = '<html><body><SCRIPT>var a=1;</SCRIPT\n>\n<p>Body text</p></body></html>';
+    expect(htmlToText(upper, true)).toBe("Body text");
+  });
+
+  it("strips unclosed-script input in linear time, not quadratically", () => {
+    // Regression guard for a remote event-loop stall. The paired
+    // `/<script[\s\S]*?<\/script>/g` form this replaced backtracks O(bytes ×
+    // openers): measured 66 ms at 50 KB, 254 ms at 100 KB, 1.0 s at 200 KB,
+    // 4.0 s at 400 KB — and WEB_FETCH_MAX_RAW_BYTES is 2 MB, which
+    // extrapolates to ~100 s of synchronous stall on a model-chosen URL.
+    const hostile = "<script".repeat(Math.floor((2 * 1024 * 1024) / 7));
+    const started = Date.now();
+    htmlToText(hostile, true);
+    // Generous on purpose — the point is orders of magnitude, not a stopwatch.
+    expect(Date.now() - started).toBeLessThan(2000);
   });
 
   it("still strips normal, properly closed blocks", () => {
     const html = "<html><head><style>.a{color:red}</style><script>var a=1;</script></head><body><p>Body text</p></body></html>";
     expect(htmlToText(html)).toBe("Body text");
+  });
+
+  it("strips several blocks in one pass, keeping the text between them", () => {
+    const html = "<p>one</p><script>a</script><p>two</p><style>b</style><p>three</p>";
+    expect(htmlToText(html)).toBe("one two three");
   });
 
   it("leaves a bare < in prose alone", () => {

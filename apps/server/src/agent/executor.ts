@@ -312,31 +312,128 @@ export async function assertPublicUrl(url: URL): Promise<void> {
   }
 }
 
+const BLOCK_TAGS = ["script", "style"] as const;
+
+/** The block element opening at `i`, or null. Mirrors `\b`: the character
+ * after the name must not continue it, so `<script<` counts and `<scripty>`
+ * does not. */
+function blockTagAt(lower: string, i: number): string | null {
+  for (const tag of BLOCK_TAGS) {
+    if (!lower.startsWith(`<${tag}`, i)) continue;
+    const after = lower[i + tag.length + 1] ?? "";
+    if (!/[a-z0-9]/.test(after)) return tag;
+  }
+  return null;
+}
+
 /**
- * Markup to readable text.
+ * Index just past the matching close tag, or -1 if there isn't one.
  *
- * The trailing-unterminated pass is load-bearing, not defensive: a body cut
- * off at WEB_FETCH_MAX_RAW_BYTES can end *inside* a <style> or <script>, and
- * the paired patterns above — non-greedy, and requiring a closing tag — then
- * match nothing at all, leaving the entire tail of CSS or JS in place for the
- * generic tag strip to hand straight to the model. That is exactly how one
- * news fetch put 100 KB of raw CSS into a prompt. Once the paired blocks are
- * gone, any remaining opening tag has no partner and can only be the start of
- * a block truncation cut short, so everything from it to the end is markup.
+ * `</script >` and `</SCRIPT\n>` are valid HTML5, so whitespace before the `>`
+ * has to be tolerated — requiring the exact bytes `</script>` is what made a
+ * complete page look unterminated, which then let the truncation cleanup eat
+ * it. indexOf rather than a regex: the scan positions advance monotonically,
+ * so the whole loop is linear and there is no backtracking to exploit.
  */
-export function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<(?:script|style)\b[\s\S]*$/i, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\s+\n/g, "\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
+function closeTagEnd(lower: string, tag: string, from: number): number {
+  const needle = `</${tag}`;
+  for (let at = lower.indexOf(needle, from); at !== -1; at = lower.indexOf(needle, at + 1)) {
+    let i = at + needle.length;
+    while (i < lower.length && /\s/.test(lower[i])) i++;
+    if (lower[i] === ">") return i + 1;
+  }
+  return -1;
+}
+
+/**
+ * Strips `<script>`/`<style>` blocks and every remaining tag, in one forward
+ * pass.
+ *
+ * **Deliberately not regex replacements.** Every obvious pattern here is
+ * quadratic on hostile input, and `WEB_FETCH_MAX_RAW_BYTES` (2 MB) is the
+ * multiplier:
+ *
+ *   - `/<script[\s\S]*?<\/script>/g` — for every unclosed `<script` the engine
+ *     expands the lazy quantifier to end-of-input hunting for a close tag that
+ *     never comes. Measured on `'<script'.repeat(n)`: 66 ms at 50 KB, 254 ms at
+ *     100 KB, 1.0 s at 200 KB, 4.0 s at 400 KB — roughly 100 s extrapolated to
+ *     the cap.
+ *   - `/<[^>]+>/g` — the same shape, and reachable even when the block patterns
+ *     match nothing: input full of `<` with no `>` makes it scan to end-of-input
+ *     from every one of them. This one hung a 2 MB test outright.
+ *
+ * Either is synchronous on the single Node thread, neither is covered by
+ * WEB_FETCH_TIMEOUT_MS (the timeout aborts the fetch, not the CPU-bound strip
+ * that follows), and the URL is chosen by the model — so a page of `<` repeats
+ * would stall every user's stream at once. Everything below is indexOf-based
+ * and linear.
+ *
+ * `dropUnterminated` is the truncation cleanup, and it is deliberately *not*
+ * unconditional. A body cut at the raw cap can end inside a block, and
+ * everything from that opener on is markup — that is how one news fetch put
+ * 100 KB of raw CSS into a prompt. But on a *complete* page an opener with no
+ * close is malformed rather than severed, and eating to end-of-input there
+ * silently reduces the page to nothing. Only the caller knows which it is.
+ */
+export function stripMarkup(html: string, dropUnterminated: boolean): string {
+  const lower = html.toLowerCase();
+  // Once a close tag can't be found from one position it can't be found from
+  // any later one either — remembering that is what keeps a page full of
+  // unclosed openers from re-scanning to the end for each of them.
+  const exhausted = new Set<string>();
+  let out = "";
+  let cursor = 0;
+  let scan = 0;
+
+  for (;;) {
+    const lt = html.indexOf("<", scan);
+    if (lt === -1) break;
+
+    const tag = blockTagAt(lower, lt);
+    if (tag !== null) {
+      const end = exhausted.has(tag) ? -1 : closeTagEnd(lower, tag, lt + tag.length + 1);
+      if (end !== -1) {
+        out += `${html.slice(cursor, lt)} `;
+        cursor = end;
+        scan = end;
+        continue;
+      }
+      exhausted.add(tag);
+      if (dropUnterminated) return `${out}${html.slice(cursor, lt)} `;
+      // Otherwise fall through and treat the opener as an ordinary tag.
+    }
+
+    const gt = html.indexOf(">", lt + 1);
+    // No `>` left anywhere, so nothing after this can be a tag.
+    if (gt === -1) break;
+    out += `${html.slice(cursor, lt)} `;
+    cursor = gt + 1;
+    scan = gt + 1;
+  }
+
+  return out + html.slice(cursor);
+}
+
+/**
+ * Markup to readable text. `rawTruncated` says whether the body was cut at
+ * WEB_FETCH_MAX_RAW_BYTES, which is what licenses the unterminated-block
+ * cleanup — see stripMarkup.
+ */
+export function htmlToText(html: string, rawTruncated = false): string {
+  return (
+    stripMarkup(html, rawTruncated)
+      .replace(/&nbsp;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      // Whitespace tidying, in forms with nothing to backtrack over. The
+      // previous `/\s+\n/g` was quadratic on a long run of spaces with no
+      // newline — which is exactly what stripping a large page leaves behind.
+      .replace(/[^\S\n]+/g, " ")
+      .replace(/ ?\n ?/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  );
 }
 
 /**
@@ -351,7 +448,7 @@ export function htmlToText(html: string): string {
  * asserted without a network round-trip.
  */
 export function extractFetchText(body: string, contentType: string, rawTruncated: boolean): string {
-  const text = contentType.includes("html") ? htmlToText(body) : body;
+  const text = contentType.includes("html") ? htmlToText(body, rawTruncated) : body;
   if (text.length > WEB_FETCH_MAX_BYTES) {
     return `${text.slice(0, WEB_FETCH_MAX_BYTES)}\n… [truncated at ${String(WEB_FETCH_MAX_BYTES)} characters of extracted text]`;
   }
@@ -440,9 +537,13 @@ async function readBoundedText(response: Response): Promise<{ text: string; trun
     }
     if (!truncated) text += decoder.decode();
   } finally {
-    // Releasing the lock lets the runtime tear the (possibly unfinished)
-    // body down; the caller's AbortController covers the rest.
-    reader.releaseLock();
+    // cancel(), not releaseLock(): releasing only detaches the reader, leaving
+    // the body live with nothing draining it, and runWebFetch's `finally`
+    // clears the abort timer the moment this returns — so on the truncation
+    // path nothing would tear the connection down at all. The heap would stay
+    // bounded while the socket and the bandwidth did not. cancel() releases
+    // the lock itself.
+    await reader.cancel().catch(() => undefined);
   }
   return { text, truncated };
 }

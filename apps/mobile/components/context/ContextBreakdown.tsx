@@ -131,7 +131,12 @@ export function ContextBreakdown({
           <Note>Estimated from model max — actual window unknown.</Note>
         )}
         {context.truncated && (
-          <Note>{`Showing last ${String(context.historyLimit)} messages; older turns already dropped.`}</Note>
+          // historyMessages, not historyLimit: the limit stopped being the
+          // window size when the replay was anchored — it is a floor now, and
+          // the window grows to HISTORY_LIMIT + HISTORY_STEP - 1 before
+          // re-anchoring. Reporting the floor would claim "last 50" on a
+          // conversation that actually replayed 74.
+          <Note>{`Showing last ${String(context.historyMessages)} messages; older turns already dropped.`}</Note>
         )}
       </VStack>
 

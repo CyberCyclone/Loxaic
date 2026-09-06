@@ -78,6 +78,58 @@ export function historyAnchor(total: number): number {
 }
 
 /**
+ * The wire shapes for a tool exchange — built here and nowhere else.
+ *
+ * The live loop appends these to `chatMessages` as a run proceeds; `loadHistory`
+ * rebuilds them from stored blocks on the next turn. If the two ever differ by
+ * so much as a key, the next prompt is not a prefix of the last one, the
+ * backend re-evaluates from the first tool call in the window, and
+ * `reusable_tokens` records 0 for every turn after it — the anchored-window
+ * work upstream undone by a serialisation mismatch.
+ *
+ * They *did* differ, in two ways. The loop sent the model's verbatim
+ * `arguments` string and a `name` on the tool message; the replay sent
+ * `JSON.stringify` of the parsed args and no `name`.
+ *
+ * Matching the code was not sufficient on its own: the replayed args come back
+ * through Postgres **jsonb, which does not preserve key order** — it re-sorts
+ * by key length and bytes — so `{"command":…,"cwd":…}` returns as
+ * `{"cwd":…,"command":…}` and re-serialises to different bytes no matter how
+ * carefully both call sites are written. Hence `canonicalJson`: order the keys
+ * deterministically on both paths and the round-trip stops mattering. The JSON
+ * is semantically identical either way, so the model is unaffected.
+ */
+function canonicalJson(value: unknown): string {
+  // undefined can't reach here: object entries are filtered below, and the
+  // top-level caller always passes an object.
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+}
+
+export function toolCallsForPrompt(calls: { id: string; name: string; args: unknown }[]): ToolCall[] {
+  return calls.map((c) => ({
+    id: c.id,
+    type: "function" as const,
+    function: { name: c.name, arguments: canonicalJson(c.args ?? {}) },
+  }));
+}
+
+export function assistantMessageForPrompt(text: string, calls: ToolCall[]): ChatMessage {
+  // Key order matters as well as content: prompt fingerprints hash each
+  // message with JSON.stringify, so two objects that differ only in key order
+  // hash differently.
+  return { role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) };
+}
+
+export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
+  return { role: "tool", tool_call_id: callId, ...(name === undefined ? {} : { name }), content: output };
+}
+
+/**
  * A plain function call rather than a direct `abort.signal.aborted` read:
  * the signal can flip true at any point during the awaits that follow an
  * earlier check in the same iteration, but the type checker doesn't model
@@ -365,7 +417,12 @@ export async function runToolLoop(ctx: {
 
       // toolCalls.length > 0: message.end is deferred — the run continues
       // (tool results still need to land on this message before it's done).
-      chatMessages.push({ role: "assistant", content: text || null, tool_calls: toolCalls });
+      // Normalised through the same builder the replay uses — see
+      // toolCallsForPrompt for what drifting apart costs.
+      const promptCalls = toolCallsForPrompt(
+        toolCalls.map((c) => ({ id: c.id, name: c.function.name, args: safeParseArgs(c.function.arguments) })),
+      );
+      chatMessages.push(assistantMessageForPrompt(text, promptCalls));
       parentId = assistantMsgId;
 
       // ── Run each requested tool ───────────────────────────
@@ -378,12 +435,7 @@ export async function runToolLoop(ctx: {
           output: outcome.output,
           ...(outcome.diff ? { diff: outcome.diff } : {}),
         });
-        chatMessages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          name: call.function.name,
-          content: outcome.output,
-        });
+        chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
       }
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete" });
 
@@ -689,10 +741,17 @@ export async function loadHistory(
   // the rows they describe are interleaved.
   const resolvedCallIds = new Set<string>();
   const presentCallIds = new Set<string>();
+  // A tool_result block stores no tool name, but the live loop puts one on the
+  // message it sends — so the name has to come from the assistant's matching
+  // tool_call block or the two shapes diverge.
+  const callNames = new Map<string, string>();
   for (const row of ordered) {
     for (const block of row.content as ContentBlock[]) {
       if (row.authorType === "tool" && block.kind === "tool_result") resolvedCallIds.add(block.call_id);
-      if (row.authorType === "assistant" && block.kind === "tool_call") presentCallIds.add(block.call_id);
+      if (row.authorType === "assistant" && block.kind === "tool_call") {
+        presentCallIds.add(block.call_id);
+        callNames.set(block.call_id, block.tool);
+      }
     }
   }
 
@@ -732,16 +791,14 @@ export async function loadHistory(
 
     if (row.authorType === "assistant") {
       const text = textOf(blocks);
-      const calls: ToolCall[] = blocks
-        .filter((b): b is Extract<ContentBlock, { kind: "tool_call" }> => b.kind === "tool_call")
-        .filter((b) => resolvedCallIds.has(b.call_id))
-        .map((b) => ({
-          id: b.call_id,
-          type: "function" as const,
-          function: { name: b.tool, arguments: JSON.stringify(b.args ?? {}) },
-        }));
+      const calls = toolCallsForPrompt(
+        blocks
+          .filter((b): b is Extract<ContentBlock, { kind: "tool_call" }> => b.kind === "tool_call")
+          .filter((b) => resolvedCallIds.has(b.call_id))
+          .map((b) => ({ id: b.call_id, name: b.tool, args: b.args })),
+      );
       if (!text && calls.length === 0) continue;
-      out.push({ role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) });
+      out.push(assistantMessageForPrompt(text, calls));
       continue;
     }
 
@@ -749,7 +806,7 @@ export async function loadHistory(
       for (const block of blocks) {
         if (block.kind !== "tool_result") continue;
         if (!presentCallIds.has(block.call_id)) continue;
-        out.push({ role: "tool", tool_call_id: block.call_id, content: block.output });
+        out.push(toolResultMessageForPrompt(block.call_id, callNames.get(block.call_id), block.output));
       }
     }
   }
