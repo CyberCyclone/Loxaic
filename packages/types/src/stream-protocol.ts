@@ -315,6 +315,11 @@ export interface CompactionStats {
   skipped?: "already_compacted" | "too_short";
   /** The user's steering text ("make sure to include …"), verbatim. */
   guidance?: string;
+  /** True when the server started this compaction itself, because the prompt
+   * crossed AUTO_COMPACT_THRESHOLD of the model's window. Surfaced so the card
+   * can say so: a summary nobody asked for, appearing mid-conversation, is
+   * confusing unless it explains itself. */
+  auto?: boolean;
 }
 
 /**

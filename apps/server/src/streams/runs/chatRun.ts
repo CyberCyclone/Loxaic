@@ -131,6 +131,7 @@ export async function startChatRun(input: {
     model,
     mode: "manual",
     basePrompt: chatSystemPrompt(),
+    surface: "chat",
     abort,
     producer,
   });

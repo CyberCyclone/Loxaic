@@ -129,6 +129,7 @@ export async function startAgentRun(input: {
     model,
     mode,
     basePrompt: mode === "planning" ? planningSystemPrompt() : baseSystemPrompt(),
+    surface: "agent",
     abort,
     producer,
   });

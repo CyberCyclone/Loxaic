@@ -29,6 +29,7 @@ import {
   markOverflowWritten,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { shouldAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 
@@ -129,10 +130,18 @@ export async function runToolLoop(ctx: {
   /** Surface-appropriate system prompt, or null for none. The engine appends
    * the MCP untrusted-content addendum when MCP tools are offered. */
   basePrompt: string | null;
+  /** Which surface started this run. Only needed so an automatic compaction
+   * opens its stream on the same one. */
+  surface: "chat" | "agent";
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
+
+  // Decided inside the loop, acted on outside it: startCompactRun takes the
+  // per-conversation lock this run is still holding until `finally` releases
+  // it, so triggering in place would refuse itself with "already in progress".
+  let autoCompact = false;
 
   try {
     const toolset = await buildToolset(userId, { mode, conversationId: convId });
@@ -339,6 +348,16 @@ export async function runToolLoop(ctx: {
               ),
             }
           : undefined;
+        // Checked here rather than before the next turn starts: this is the
+        // one point where the *measured* size of the prompt and the window it
+        // was assembled against are both in hand. The threshold leaves room
+        // for the turn that follows, which is what makes acting after the
+        // fact safe.
+        autoCompact = shouldAutoCompact({
+          usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
+          windowTokens: breakdownMeta.windowTokens ?? null,
+          historyMessages: history.messages.length,
+        });
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
         await producer.end("complete", { usage });
         break;
@@ -410,6 +429,26 @@ export async function runToolLoop(ctx: {
     }
   } finally {
     unregisterRun(streamId);
+  }
+
+  // Past the `finally`, so the lock is free. Deliberately not reached by the
+  // error and cancel paths above, which `return` — a run that failed has not
+  // established what the prompt costs, and compacting after a user pressed
+  // stop would be the opposite of what they asked for.
+  if (autoCompact) {
+    try {
+      // Dynamic on purpose: compactRun imports this module's history loader,
+      // so a static import here would close a cycle between the two. See
+      // auto-compact.ts.
+      const { startCompactRun } = await import("./compactRun.ts");
+      await startCompactRun({ userId, conversationId: convId, model, surface: ctx.surface, auto: true });
+    } catch (err) {
+      // Best-effort. A refused lock (the user sent again the instant the turn
+      // ended) or a backend hiccup must not surface as a failure of the turn
+      // that already succeeded — the threshold will simply be met again next
+      // time.
+      console.warn(`auto-compaction skipped for ${convId}: ${(err as Error).message}`);
+    }
   }
 }
 

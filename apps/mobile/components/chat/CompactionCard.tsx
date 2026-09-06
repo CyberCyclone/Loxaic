@@ -64,7 +64,7 @@ export function CompactionCard({ stats, summaryText }: CompactionCardProps) {
             <>
               <Icon as={Scissors} size="2xs" className="text-muted-foreground" />
               <Text size="xs" className="text-muted-foreground">
-                {`Compacted · ${String(stats.messages_compacted)} message${stats.messages_compacted === 1 ? '' : 's'} → summary · `}
+                {`${stats.auto ? 'Auto-compacted' : 'Compacted'} · ${String(stats.messages_compacted)} message${stats.messages_compacted === 1 ? '' : 's'} → summary · `}
                 {stats.before_estimated ? '~' : ''}
                 {fmt(stats.before_tokens)} → {fmt(stats.after_tokens)} tokens · saved{' '}
                 {stats.before_estimated ? '~' : ''}
@@ -80,6 +80,15 @@ export function CompactionCard({ stats, summaryText }: CompactionCardProps) {
           )}
         </HStack>
       </Pressable>
+
+      {stats?.auto && !stats.skipped && (
+        // A summary nobody asked for, appearing mid-conversation, needs to say
+        // why it is there — otherwise it reads as the app having lost the
+        // thread rather than deliberately condensing it.
+        <Text size="2xs" className="mt-1 text-center text-muted-foreground">
+          The conversation reached the model's context limit — earlier messages are now summarised.
+        </Text>
+      )}
 
       {stats?.guidance && (
         <Text size="2xs" className="mt-1 text-center text-muted-foreground">

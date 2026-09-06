@@ -308,6 +308,43 @@ screenshots showing that behaviour working. Writing those tests is the implement
   can equally orphan a `tool_result` whose call fell outside it (`presentCallIds`). Most
   backends reject either.
 
+### Automatic compaction
+
+- **The server compacts on its own** once a finished turn's `prompt + completion` crosses
+  `AUTO_COMPACT_THRESHOLD` (default 0.85) of the model's window, provided the replay holds at
+  least `AUTO_COMPACT_MIN_MESSAGES` (8). Policy lives in `streams/runs/auto-compact.ts`;
+  `/compact` is the same machinery with `auto: false` and no threshold.
+- **The trigger sits past `runToolLoop`'s `finally`, and must stay there.** `startCompactRun`
+  takes the per-conversation lock the run holds until `unregisterRun`, so triggering one line
+  earlier makes the run refuse itself with "already in progress" — silently, forever. There is
+  a test that fails (by timing out) if it is moved back inside the `try`.
+- **Only the success path fires it.** The error and cancel paths `return` before reaching it:
+  a failed turn never established what the prompt costs, and compacting straight after a user
+  pressed stop is the opposite of what they asked for. A refused lock or a backend hiccup is
+  caught and logged, never surfaced as a failure of the turn that already succeeded.
+- **The check is deliberately *after* a turn, not before the next one** — that is the one point
+  where the measured prompt size and the window it was assembled against are both in hand.
+  What makes acting after the fact safe is the headroom: the threshold has to be low enough
+  that the following turn still fits.
+- **`AUTO_COMPACT_MIN_MESSAGES` is an anti-thrash guard, not a nicety.** After a compaction the
+  replay restarts at zero, so without a floor a conversation whose *summary alone* sits near
+  the threshold would re-compact every turn, burning a model call and a full prompt
+  re-evaluation each time to save nothing.
+- **An unknown window disables it.** A fraction of null is not a number, and compacting on a
+  guess rewrites a conversation for no established reason.
+- **`auto-compact.ts` exists to break a cycle.** The engine needs the policy and `compactRun`
+  needs the engine's `loadHistory`, so keeping the policy in `compactRun.ts` would have the two
+  importing each other — working only by the accident that every binding crossing it is a
+  hoisted function declaration. The engine reaches `startCompactRun` itself through a dynamic
+  `import()` for the same reason.
+- **Compaction always costs one full prompt re-evaluation**, because the whole prefix changes
+  (see the prompt-caching section). That is the trade being made: one expensive turn to make
+  every subsequent one cheap. It is also why the threshold is not lower.
+- The summarisation prompt **weights recency** — recent exchanges kept in near-full detail,
+  older material compressed harder — with section 6 ("All User Messages") the deliberate
+  exception, since nothing else survives verbatim. `stats.auto` reaches the client so the card
+  can explain a summary nobody asked for.
+
 ### Reporting cache figures honestly
 
 - **Only llama.cpp reports what it actually reused** (`timings.cache_n`). LM Studio reports
