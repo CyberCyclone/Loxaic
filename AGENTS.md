@@ -359,6 +359,23 @@ screenshots showing that behaviour working. Writing those tests is the implement
   older material compressed harder — with section 6 ("All User Messages") the deliberate
   exception, since nothing else survives verbatim. `stats.auto` reaches the client so the card
   can explain a summary nobody asked for.
+- **`prompt-prefix.test.ts` is the guard for all of this, and it is the only
+  test that can see this class of bug.** It records the actual `messages` array
+  handed to `streamCompletion` on every request and asserts each is an
+  element-wise extension of the one before. Four separate defects broke that
+  invariant and every one was found by inspection after shipping: a sliding
+  window; the replay dropping `name` from tool messages; the replay
+  re-serialising tool `arguments` (with jsonb reordering keys underneath it);
+  and the live loop sending untrimmed assistant text where the replay trimmed.
+  All four are *serialisation mismatches between two paths that must agree*, so
+  no unit test on either path alone can catch them. Each was re-introduced and
+  confirmed to fail this test before it was committed.
+- **MOCK_INFERENCE's untidiness is load-bearing.** Its tool-call text ends in a
+  newline and its tool arguments are in an order Postgres jsonb will not
+  preserve — because a mock tidier than a real model is *why* two of those four
+  defects stayed invisible. `prompt-prefix.test.ts` has a canary case that fails
+  if either property is cleaned up, since the other cases would otherwise just
+  quietly stop covering anything.
 
 ### Reporting cache figures honestly
 

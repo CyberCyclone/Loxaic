@@ -1,0 +1,209 @@
+import "./force-prompt-prefix.ts";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { v4 as uuid } from "uuid";
+import { db, eq } from "@loxaic/db";
+import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
+import type { ChatMessage } from "../../../inference/provider.ts";
+
+/**
+ * The invariant the whole prompt-caching effort rests on, asserted end to end
+ * against real runs rather than against either side's idea of what it sends.
+ *
+ * llama.cpp and LM Studio cache the KV state of a prompt **prefix**: a turn is
+ * cheap only when the previous request's prompt is a literal prefix of this
+ * one. Every request the server makes for a conversation must therefore extend
+ * the last, message for message and byte for byte.
+ *
+ * Four separate bugs have broken exactly this, each in its own way, and each
+ * was found by inspection *after* shipping:
+ *
+ *   1. a history window that slid by one message per turn;
+ *   2. the replay dropping `name` from tool messages the live loop sent;
+ *   3. the replay re-serialising tool `arguments` — and Postgres jsonb not
+ *      preserving key order, so the round-trip changed the bytes on its own;
+ *   4. the live loop sending untrimmed assistant text where the replay trimmed.
+ *
+ * Every one of those is a *serialisation* mismatch between two code paths that
+ * must agree, and no unit test on either path alone can see it. This one does:
+ * it records the actual `messages` array handed to `streamCompletion` on every
+ * request and asserts each is an element-wise extension of the one before.
+ * Reproduced against all four defects before being committed.
+ */
+
+/** Every request's messages, JSON-encoded per message, in call order. */
+const requests: string[][] = [];
+
+vi.mock("../../../inference/provider.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../inference/provider.ts")>();
+  return {
+    ...actual,
+    streamCompletion: (model: string, msgs: ChatMessage[], options?: unknown) => {
+      // Snapshot at call time. `chatMessages` is the live array the tool loop
+      // keeps appending to, so holding a reference would record what it looked
+      // like at the *end* of the run and quietly assert nothing.
+      requests.push(msgs.map((m) => JSON.stringify(m)));
+      return actual.streamCompletion(model, msgs, options as never);
+    },
+  };
+});
+
+const { startChatRun } = await import("../chatRun.ts");
+const { getRunByConversation } = await import("../../registry.ts");
+const { initStreamBroker } = await import("../../index.ts");
+
+const userId = `test-prefix-${uuid()}`;
+const convIds: string[] = [];
+
+beforeAll(async () => {
+  await initStreamBroker();
+  await db.insert(user).values({
+    id: userId,
+    name: "Test Prefix",
+    email: `${userId}@example.test`,
+    emailVerified: true,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+});
+
+afterAll(async () => {
+  for (const id of convIds) {
+    await db.delete(messages).where(eq(messages.conversationId, id));
+    await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
+    await db.delete(conversations).where(eq(conversations.id, id));
+  }
+  await db.delete(user).where(eq(user.id, userId));
+  delete process.env.AUTO_COMPACT_THRESHOLD;
+});
+
+afterEach(() => {
+  requests.length = 0;
+});
+
+/** Sends one turn and resolves when the run has fully finished. */
+async function turn(content: string, conversationId?: string): Promise<string> {
+  const result = await startChatRun({
+    userId,
+    content,
+    model: "llama-3.1-8b-instruct",
+    ...(conversationId === undefined ? {} : { conversationId }),
+  });
+  const convId = result.conversationId;
+  if (!convIds.includes(convId)) convIds.push(convId);
+
+  const deadline = Date.now() + 20_000;
+  // The run is detached from the caller, and the registry entry is what says
+  // it is still going — polling the message rows would race the tool loop,
+  // which completes an assistant message and then keeps iterating.
+  while (getRunByConversation(convId)) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the run to finish");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return convId;
+}
+
+/**
+ * Asserts request N is an element-wise prefix of request N+1, for every
+ * consecutive pair.
+ *
+ * Compares the JSON of each message rather than the objects, because key order
+ * is part of what the backend renders and what `fingerprintPrompt` hashes —
+ * `toEqual` would accept a reordered object, which is precisely the bug the
+ * jsonb round-trip produced.
+ */
+function expectEachRequestExtendsTheLast(): void {
+  expect(requests.length).toBeGreaterThan(1);
+  for (let n = 1; n < requests.length; n++) {
+    const previous = requests[n - 1];
+    const current = requests[n];
+    expect(current.length).toBeGreaterThanOrEqual(previous.length);
+    for (let i = 0; i < previous.length; i++) {
+      // Named in the failure so a regression says *which* message diverged.
+      expect({ request: n, message: i, json: current[i] }).toEqual({
+        request: n,
+        message: i,
+        json: previous[i],
+      });
+    }
+  }
+}
+
+describe("every prompt extends the previous one", () => {
+  it("holds across a plain two-turn conversation", async () => {
+    const convId = await turn("first question");
+    await turn("second question", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("holds across a run that called a tool, and the turn after it", async () => {
+    // "todo" triggers the mock's todo_write call, which needs no approval and
+    // no sandbox — so the loop really does run a second iteration, persist an
+    // assistant message with a tool_call and a tool message with its result,
+    // and replay both on the next turn. That replay boundary is where three of
+    // the four historical defects lived.
+    const convId = await turn("make a todo list for this work");
+    expect(requests.length).toBeGreaterThan(1); // the tool loop iterated
+
+    await turn("thanks, what is next?", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("holds on a conversation long enough for the replay window to be anchored", async () => {
+    // 74 seeded messages puts the next two turns at 75 and 77 rows, both of
+    // which anchor at offset 25 — so the window is genuinely truncating and
+    // genuinely holding still. A window that slid with the conversation (the
+    // original defect) would start at 25 for one turn and 27 for the next,
+    // and the prefix would break at the very first replayed message.
+    const [conv] = await db
+      .insert(conversations)
+      .values({ ownerId: userId, title: "prefix window test" })
+      .returning();
+    convIds.push(conv.id);
+    const seeded: (typeof messages.$inferInsert)[] = Array.from({ length: 74 }, (_, i) => ({
+        id: uuid(),
+        conversationId: conv.id,
+        authorType: i % 2 === 0 ? "user" : "assistant",
+        origin: "server",
+        lamport: 1000 + i,
+        content: [{ kind: "text", text: `seeded ${String(i)}` }],
+        status: "complete",
+        createdAt: new Date(1_700_000_000_000 + i),
+    }));
+    await db.insert(messages).values(seeded);
+
+    await turn("first real question", conv.id);
+    await turn("second real question", conv.id);
+    // The window is doing its job, not quietly replaying everything.
+    expect(requests[0].length).toBeLessThan(74);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("keeps the fixture able to expose these bugs at all", async () => {
+    // A canary, not a behaviour test. Two of the four defects above were
+    // invisible for as long as they were because MOCK_INFERENCE was tidier
+    // than a real model: its text had no trailing whitespace, and its tool
+    // arguments happened to be in the same order Postgres jsonb returns them.
+    // Both tests above depend on the mock *not* being tidy, and neither would
+    // fail loudly if someone cleaned it up — they would just silently stop
+    // covering anything. So the fixture's two load-bearing properties are
+    // pinned here, where a change to them fails with a reason.
+    const convId = await turn("make a todo list for this work");
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+
+    const assistant = rows.find(
+      (r) => r.authorType === "assistant" && (r.content as { kind: string }[]).some((b) => b.kind === "tool_call"),
+    );
+    if (!assistant) throw new Error("expected an assistant message carrying a tool call");
+    const blocks = assistant.content as { kind: string; text?: string; args?: Record<string, unknown> }[];
+
+    const text = blocks.find((b) => b.kind === "text")?.text ?? "";
+    expect(text).not.toBe(text.trim()); // untrimmed, as a real model leaves it
+
+    // Round-tripped through jsonb, so this is the order the replay actually
+    // sees — and it must differ from the order the live loop sent, or the
+    // canonicalisation this relies on is never exercised.
+    const todos = (blocks.find((b) => b.kind === "tool_call")?.args?.todos ?? []) as Record<string, unknown>[];
+    expect(todos.length).toBeGreaterThan(0);
+    expect(Object.keys(todos[0])).not.toEqual(["status", "id", "text"]);
+  });
+});

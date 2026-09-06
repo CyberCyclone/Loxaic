@@ -154,10 +154,16 @@ const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, un
   { match: /\bmcp evil\b/i, name: "mockmcp__evil", args: {} },
   { match: /\bmcp bad args\b/i, name: "mockmcp__echo", args: { wrong: 1 } },
   { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
+  // Object keys deliberately NOT in an order Postgres jsonb preserves: it
+  // re-sorts by key length then bytes, so these come back as id/text/status.
+  // A real model emits keys in whatever order it likes, and a mock that
+  // happened to match jsonb's ordering is why a prompt-prefix bug — the replay
+  // re-serialising tool arguments into different bytes than the live loop sent
+  // — stayed invisible to every test we had.
   { match: /\btodo|\bplan\b/i, name: "todo_write", args: { todos: [
-    { id: "1", text: "Investigate the request", status: "completed" },
-    { id: "2", text: "Apply the change", status: "in_progress" },
-    { id: "3", text: "Verify", status: "pending" },
+    { status: "completed", id: "1", text: "Investigate the request" },
+    { status: "in_progress", id: "2", text: "Apply the change" },
+    { status: "pending", id: "3", text: "Verify" },
   ] } },
   { match: /\bfetch\b|\bhttps?:\/\//i, name: "web_fetch", args: { url: "https://example.com" } },
   { match: /\bwrite\b|\bcreate a file\b/i, name: "fs_write", args: { path: "notes.txt", content: "written by the mock agent\n" } },
@@ -202,7 +208,12 @@ async function* mockStream(
   const toolCalls: ToolCall[] = [];
 
   if (trigger) {
-    const preamble = `[Mock] I'll use the ${trigger.name} tool.`;
+    // Trailing newline on purpose. Real models routinely end their text with
+    // one before a tool call, the history loader trims it on replay, and the
+    // live loop did not — so the two disagreed at that message and broke the
+    // prompt prefix. A mock that emitted perfectly trimmed text could never
+    // show that.
+    const preamble = `[Mock] I'll use the ${trigger.name} tool.\n`;
     fullText = preamble;
     yield* emit(preamble);
     ttftMs ??= Date.now() - startTime;
