@@ -312,8 +312,23 @@ screenshots showing that behaviour working. Writing those tests is the implement
 
 - **The server compacts on its own** once a finished turn's `prompt + completion` crosses
   `AUTO_COMPACT_THRESHOLD` (default 0.85) of the model's window, provided the replay holds at
-  least `AUTO_COMPACT_MIN_MESSAGES` (8). Policy lives in `streams/runs/auto-compact.ts`;
-  `/compact` is the same machinery with `auto: false` and no threshold.
+  least `AUTO_COMPACT_MIN_MESSAGES` (8) and the user hasn't turned it off. Policy lives in
+  `streams/runs/auto-compact.ts`; `/compact` is the same machinery with `auto: false`, no
+  threshold, and no pref check — asking for it is a decision.
+- **It is a per-user pref (`user_prefs.auto_compact`, default true), read only after the
+  threshold has already been crossed** — so an ordinary turn costs no extra query. A failed
+  prefs lookup **fails closed** (no compaction): not compacting costs one long prompt, whereas
+  compacting against someone's wishes costs a conversation they can't get back.
+- **`PATCH /v1/prefs` is partial.** It used to require `toolAllowlist` on every call; a second
+  field on a route shaped like that is how one setting silently reverts another, since any
+  client writing one key would have had to send the other, and a client holding stale prefs
+  would write back the old value. Absent keys are left alone, present ones are still validated,
+  and an empty patch is a 400 rather than an empty row.
+- **The settings toggle spells out both outcomes, not just the one being enabled**
+  (`components/settings/AutoCompactToggle.tsx`). The trade is between two unlike costs — losing
+  detail from old turns versus a conversation that eventually stops replying — and neither is
+  guessable from a switch label. The inactive branch stays on screen, dimmed, so the
+  consequence of flipping it is visible before it is flipped.
 - **The trigger sits past `runToolLoop`'s `finally`, and must stay there.** `startCompactRun`
   takes the per-conversation lock the run holds until `unregisterRun`, so triggering one line
   earlier makes the run refuse itself with "already in progress" — silently, forever. There is

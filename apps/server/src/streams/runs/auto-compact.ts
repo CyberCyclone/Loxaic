@@ -1,7 +1,10 @@
+import { db, eq } from "@loxaic/db";
+import { userPrefs } from "@loxaic/db/schema";
+
 /**
  * When the server compacts a conversation without being asked.
  *
- * Deliberately its own module, importing nothing from either side. The engine
+ * Deliberately its own module, importing neither the engine nor compactRun. The engine
  * needs the policy and `compactRun` needs the engine's history loader, so
  * putting the policy in `compactRun.ts` would make those two modules import
  * each other. That cycle happens to work today only because every binding
@@ -55,6 +58,30 @@ export interface AutoCompactInput {
   windowTokens: number | null;
   /** Messages the next prompt would replay, i.e. since any existing summary. */
   historyMessages: number;
+}
+
+/**
+ * Whether this user permits the server to compact for them. Defaults to true,
+ * matching the column — a user with no prefs row must read the same as one
+ * whose row says nothing, or the feature would appear off until the first time
+ * they changed some unrelated setting.
+ *
+ * Read only once the threshold has already been crossed, so an ordinary turn
+ * costs no query at all.
+ */
+export async function userAllowsAutoCompact(userId: string): Promise<boolean> {
+  try {
+    const row = await db.query.userPrefs.findFirst({
+      where: eq(userPrefs.userId, userId),
+      columns: { autoCompact: true },
+    });
+    return row?.autoCompact ?? true;
+  } catch {
+    // A prefs lookup that fails must not compact on the user's behalf: the
+    // cost of not compacting is one long prompt, the cost of compacting
+    // against their wishes is a conversation they cannot get back.
+    return false;
+  }
 }
 
 /**

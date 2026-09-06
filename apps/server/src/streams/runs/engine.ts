@@ -29,7 +29,7 @@ import {
   markOverflowWritten,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
-import { shouldAutoCompact } from "./auto-compact.ts";
+import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 
@@ -435,7 +435,10 @@ export async function runToolLoop(ctx: {
   // error and cancel paths above, which `return` — a run that failed has not
   // established what the prompt costs, and compacting after a user pressed
   // stop would be the opposite of what they asked for.
-  if (autoCompact) {
+  // The pref is checked here rather than beside shouldAutoCompact so an
+  // ordinary turn never pays for the query — only a turn that has already
+  // decided it wants to compact asks whether it may.
+  if (autoCompact && (await userAllowsAutoCompact(userId))) {
     try {
       // Dynamic on purpose: compactRun imports this module's history loader,
       // so a static import here would close a cycle between the two. See

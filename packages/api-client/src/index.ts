@@ -685,6 +685,9 @@ export interface UserPrefs {
   /** Builtin tool names allowlisted globally — skip approval anywhere the
    * tool loop runs. MCP tools have their own per-server allowlist instead. */
   toolAllowlist: string[];
+  /** Whether the server may compact this user's conversations on its own once
+   * a turn approaches the model's context window. Defaults to true. */
+  autoCompact: boolean;
 }
 
 export async function getPrefs(): Promise<UserPrefs> {

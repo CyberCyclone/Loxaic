@@ -2,7 +2,7 @@ import "./force-auto-compact.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
-import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
+import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import type { CompactionStats, ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../index.ts";
 import { startChatRun } from "../chatRun.ts";
@@ -46,6 +46,7 @@ describe("automatic compaction", () => {
       await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
       await db.delete(conversations).where(eq(conversations.id, id));
     }
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
     await db.delete(user).where(eq(user.id, userId));
     // See force-auto-compact.ts: process.env is shared across the worker.
     delete process.env.AUTO_COMPACT_THRESHOLD;
@@ -128,6 +129,32 @@ describe("automatic compaction", () => {
     // Everything before the summary is still in Postgres and still on screen —
     // it is simply no longer replayed.
     expect(after.messages.length).toBeLessThan(before.messages.length);
+  });
+
+  it("does not compact for a user who turned it off", async () => {
+    // The gate is a per-user preference, checked only once the threshold has
+    // already been crossed — so this conversation is identical to the one in
+    // the first case, and the only difference is the row below.
+    await db
+      .insert(userPrefs)
+      .values({ userId, autoCompact: false, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { autoCompact: false } });
+    try {
+      const convId = await seedConversation(8);
+      await startChatRun({ userId, content: "another question", model: "llama-3.1-8b-instruct", conversationId: convId });
+
+      await waitFor(async () => {
+        const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+        const assistants = rows.filter((r) => r.authorType === "assistant" && r.status === "complete");
+        return assistants.length > 0 ? assistants : null;
+      });
+      // The turn finished; give the trigger (which runs after the run's
+      // `finally`) room to have fired if the pref were being ignored.
+      await new Promise((r) => setTimeout(r, 1000));
+      expect(await summaryRow(convId)).toBeNull();
+    } finally {
+      await db.update(userPrefs).set({ autoCompact: true }).where(eq(userPrefs.userId, userId));
+    }
   });
 
   it("leaves a short conversation alone even when it is proportionally full", async () => {

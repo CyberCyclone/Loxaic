@@ -370,6 +370,15 @@ export const userPrefs = pgTable("user_prefs", {
    * manual mode alike). MCP tools have their own per-server toolPolicies
    * allowlist instead. */
   toolAllowlist: jsonb("tool_allowlist").notNull().default([]),
+  /**
+   * Whether the server may compact this user's conversations on its own once
+   * a turn crosses AUTO_COMPACT_THRESHOLD of the model's window. On by
+   * default: the alternative for a long thread is running into the window,
+   * which fails the turn outright rather than degrading. Turning it off is a
+   * deliberate choice to keep every message verbatim and manage length by
+   * hand — see streams/runs/auto-compact.ts.
+   */
+  autoCompact: boolean("auto_compact").notNull().default(true),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

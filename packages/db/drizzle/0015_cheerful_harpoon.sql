@@ -1,0 +1,1 @@
+ALTER TABLE "user_prefs" ADD COLUMN "auto_compact" boolean DEFAULT true NOT NULL;
