@@ -182,6 +182,58 @@ describe("compaction: history cutoff + no-op guard", () => {
     expect(replayed.map((m) => JSON.stringify(m))).toEqual(live.map((m) => JSON.stringify(m)));
   });
 
+  it("replays assistant text identically when the model left whitespace around it", async () => {
+    // The live loop pushes the raw accumulated deltas; textOf trims. A model
+    // ending its text with "\n" before a tool call is routine, and the two
+    // paths then disagreed at that message — breaking the prefix and recording
+    // reusable_tokens: 0 for the turn after it. The builder trims for both.
+    const convId = await newConv();
+    let lamport = 7000;
+    await db.insert(messages).values([
+      { id: uuid(), conversationId: convId, authorType: "user", origin: "server", lamport: lamport++, content: textBlock("go"), status: "complete", createdAt: new Date() },
+      {
+        id: uuid(),
+        conversationId: convId,
+        authorType: "assistant",
+        origin: "server",
+        lamport: lamport++,
+        // Stored exactly as the model produced it, trailing newlines included.
+        content: [
+          { kind: "text", text: "Running it.\n\n" },
+          { kind: "tool_call", call_id: "w1", tool: "bash", args: { command: "ls" } },
+        ] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      },
+      {
+        id: uuid(),
+        conversationId: convId,
+        authorType: "tool",
+        origin: "server",
+        lamport: lamport++,
+        content: [{ kind: "tool_result", call_id: "w1", output: "ok" }] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
+      },
+    ]);
+
+    const live = assistantMessageForPrompt(
+      "Running it.\n\n",
+      toolCallsForPrompt([{ id: "w1", name: "bash", args: { command: "ls" } }]),
+    );
+    const replayed = (await loadAgentHistory(convId)).messages[1];
+    expect(JSON.stringify(replayed)).toBe(JSON.stringify(live));
+  });
+
+  it("collapses whitespace-only assistant text to null on both paths", () => {
+    // Live sent "\n" (truthy) where the replay sent null — the same divergence
+    // in its nastiest form, since it changes the field's type as well.
+    const calls = toolCallsForPrompt([{ id: "w2", name: "bash", args: {} }]);
+    expect(JSON.stringify(assistantMessageForPrompt("\n  ", calls))).toBe(
+      JSON.stringify(assistantMessageForPrompt("", calls)),
+    );
+  });
+
   it("loadHistory (agent) replays only what came after the newest summary, by lamport — not createdAt", async () => {
     const convId = await newConv();
     // Every row gets the SAME createdAt on purpose: if the cutoff were

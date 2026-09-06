@@ -56,6 +56,24 @@ describe("web_fetch text extraction", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
+  it("strips blocks on a page whose characters change length when lowercased", () => {
+    // Regression guard. The scan used to index into `html.toLowerCase()`, and
+    // toLowerCase() does NOT preserve length — "İ" (U+0130, everywhere in
+    // Turkish) becomes two code units, shifting every later index so the
+    // offsets no longer addressed the same bytes. A single one of them let a
+    // whole <script> block through into the prompt.
+    const page = "<p>İstanbul news</p><script>var SECRET_TOKEN='leak';</script><p>after</p>";
+    expect(htmlToText(page)).toBe("İstanbul news after");
+    // Identical to the plain-ASCII rendering, modulo the character itself.
+    expect(htmlToText(page.replace("İ", "I"))).toBe("Istanbul news after");
+  });
+
+  it("matches tag names case-insensitively without a lowercased copy", () => {
+    expect(htmlToText("<P>Hi</P><SCRIPT>x=1</SCRIPT ><p>bye</p>")).toBe("Hi bye");
+    // Non-ASCII that is *not* a case-folding hazard must survive untouched.
+    expect(htmlToText("<p>Straße 🎉</p><style>a{b:c}</style><p>end</p>")).toBe("Straße 🎉 end");
+  });
+
   it("still strips normal, properly closed blocks", () => {
     const html = "<html><head><style>.a{color:red}</style><script>var a=1;</script></head><body><p>Body text</p></body></html>";
     expect(htmlToText(html)).toBe("Body text");

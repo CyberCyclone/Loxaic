@@ -314,14 +314,45 @@ export async function assertPublicUrl(url: URL): Promise<void> {
 
 const BLOCK_TAGS = ["script", "style"] as const;
 
+/**
+ * ASCII-only case folding, applied per character against the original string.
+ *
+ * The obvious `html.toLowerCase()` and then index into it is **wrong**:
+ * `toLowerCase()` does not preserve length. `'\u0130'.toLowerCase()` (U+0130, and
+ * every Turkish `İ`) is two code units, so one such character anywhere in a page
+ * shifts every subsequent index and the offsets taken from the lowercased copy
+ * no longer address the same bytes in the original. The observed result was a
+ * `<script>` block escaping the strip entirely and its source going into the
+ * prompt — the exact failure this whole path exists to prevent. Every needle
+ * here is ASCII, so folding per character sidesteps it (and saves allocating a
+ * second copy of the body).
+ */
+function foldAscii(code: number): number {
+  return code >= 65 && code <= 90 ? code + 32 : code;
+}
+
+/** True when the lowercase ASCII `needle` matches `s` at `at`, case-insensitively. */
+function matchesAt(s: string, at: number, needle: string): boolean {
+  if (at + needle.length > s.length) return false;
+  for (let k = 0; k < needle.length; k++) {
+    if (foldAscii(s.charCodeAt(at + k)) !== needle.charCodeAt(k)) return false;
+  }
+  return true;
+}
+
+/** Letters and digits, i.e. characters that would continue a tag name. */
+function isNameChar(code: number): boolean {
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
 /** The block element opening at `i`, or null. Mirrors `\b`: the character
  * after the name must not continue it, so `<script<` counts and `<scripty>`
  * does not. */
-function blockTagAt(lower: string, i: number): string | null {
+function blockTagAt(html: string, i: number): string | null {
   for (const tag of BLOCK_TAGS) {
-    if (!lower.startsWith(`<${tag}`, i)) continue;
-    const after = lower[i + tag.length + 1] ?? "";
-    if (!/[a-z0-9]/.test(after)) return tag;
+    if (!matchesAt(html, i, `<${tag}`)) continue;
+    const after = html.charCodeAt(i + tag.length + 1);
+    if (Number.isNaN(after) || !isNameChar(after)) return tag;
   }
   return null;
 }
@@ -332,15 +363,16 @@ function blockTagAt(lower: string, i: number): string | null {
  * `</script >` and `</SCRIPT\n>` are valid HTML5, so whitespace before the `>`
  * has to be tolerated — requiring the exact bytes `</script>` is what made a
  * complete page look unterminated, which then let the truncation cleanup eat
- * it. indexOf rather than a regex: the scan positions advance monotonically,
- * so the whole loop is linear and there is no backtracking to exploit.
+ * it. Scans `<` positions with indexOf, which advance monotonically, so the
+ * whole loop is linear and there is no backtracking to exploit.
  */
-function closeTagEnd(lower: string, tag: string, from: number): number {
+function closeTagEnd(html: string, tag: string, from: number): number {
   const needle = `</${tag}`;
-  for (let at = lower.indexOf(needle, from); at !== -1; at = lower.indexOf(needle, at + 1)) {
+  for (let at = html.indexOf("<", from); at !== -1; at = html.indexOf("<", at + 1)) {
+    if (!matchesAt(html, at, needle)) continue;
     let i = at + needle.length;
-    while (i < lower.length && /\s/.test(lower[i])) i++;
-    if (lower[i] === ">") return i + 1;
+    while (i < html.length && /\s/.test(html[i])) i++;
+    if (html[i] === ">") return i + 1;
   }
   return -1;
 }
@@ -376,7 +408,6 @@ function closeTagEnd(lower: string, tag: string, from: number): number {
  * silently reduces the page to nothing. Only the caller knows which it is.
  */
 export function stripMarkup(html: string, dropUnterminated: boolean): string {
-  const lower = html.toLowerCase();
   // Once a close tag can't be found from one position it can't be found from
   // any later one either — remembering that is what keeps a page full of
   // unclosed openers from re-scanning to the end for each of them.
@@ -389,9 +420,9 @@ export function stripMarkup(html: string, dropUnterminated: boolean): string {
     const lt = html.indexOf("<", scan);
     if (lt === -1) break;
 
-    const tag = blockTagAt(lower, lt);
+    const tag = blockTagAt(html, lt);
     if (tag !== null) {
-      const end = exhausted.has(tag) ? -1 : closeTagEnd(lower, tag, lt + tag.length + 1);
+      const end = exhausted.has(tag) ? -1 : closeTagEnd(html, tag, lt + tag.length + 1);
       if (end !== -1) {
         out += `${html.slice(cursor, lt)} `;
         cursor = end;

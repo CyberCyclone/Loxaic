@@ -70,15 +70,31 @@ function sha(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
 }
 
+/**
+ * `carried` lets a caller reuse hashes it already computed for the first N
+ * messages, and exists for one reason: image turns carry their whole base64
+ * data URI inline, so hashing every message on every tool iteration costs CPU
+ * proportional to the entire attachment budget, repeatedly, on the single Node
+ * thread. Measured at ~18 ms per 10 MB image per call, against a 32 MB image
+ * budget and up to MAX_ITERATIONS iterations per run — a diagnostic that could
+ * add seconds of synchronous work and hundreds of MB of transient strings.
+ *
+ * **The caller must guarantee those first N messages are unchanged.** The tool
+ * loop can: `chatMessages` is only ever appended to within a run. Anything that
+ * rewrote an earlier message and passed its old hashes would silently report
+ * reuse that isn't there — so this is an explicit parameter rather than an
+ * internal cache that could be reached from somewhere with weaker guarantees.
+ */
 export function fingerprintPrompt(
   model: string,
   messages: ChatMessage[],
   tools: OpenAiTool[] | undefined,
+  carried?: readonly string[],
 ): PromptFingerprint {
   return {
     model,
     toolsHash: sha(JSON.stringify(tools ?? [])),
-    messageHashes: messages.map((m) => sha(JSON.stringify(m))),
+    messageHashes: messages.map((m, i) => carried?.[i] ?? sha(JSON.stringify(m))),
   };
 }
 

@@ -119,10 +119,19 @@ export function toolCallsForPrompt(calls: { id: string; name: string; args: unkn
 }
 
 export function assistantMessageForPrompt(text: string, calls: ToolCall[]): ChatMessage {
+  // Trimmed *here*, in the shared builder, rather than by one caller.
+  // `loadHistory` reads assistant text through `textOf`, which trims; the live
+  // loop passes the raw accumulated deltas, which do not. A model ending its
+  // text with "\n" before a tool call — routine — therefore sent
+  // `content: "Running it.\n"` during the run and `content: "Running it."` on
+  // the next one, breaking the prefix at that message and recording
+  // reusable_tokens: 0 for the turn after it. Whitespace-only text was worse:
+  // live sent "\n" (truthy) where the replay sent null.
+  const content = text.trim();
   // Key order matters as well as content: prompt fingerprints hash each
   // message with JSON.stringify, so two objects that differ only in key order
   // hash differently.
-  return { role: "assistant", content: text || null, ...(calls.length ? { tool_calls: calls } : {}) };
+  return { role: "assistant", content: content || null, ...(calls.length ? { tool_calls: calls } : {}) };
 }
 
 export function toolResultMessageForPrompt(callId: string, name: string | undefined, output: string): ChatMessage {
@@ -220,6 +229,10 @@ export async function runToolLoop(ctx: {
     // assistant and tool messages — so this holds for every iteration.
     const hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
 
+    // Per-message hashes from the previous iteration; safe to reuse because
+    // `chatMessages` is only ever appended to below.
+    let carriedHashes: readonly string[] | undefined;
+
     let parentId = ctx.userMsgId;
     let lastAssistantId: string | null = null;
     let finished = false;
@@ -286,7 +299,13 @@ export async function runToolLoop(ctx: {
       // is taken here rather than once per run: `chatMessages` grows as tool
       // calls and results are appended, and each iteration is its own request
       // with its own prefix relationship to the one before it.
-      const fingerprint = fingerprintPrompt(model, chatMessages, tools);
+      //
+      // Hashes from the previous iteration are carried forward: `chatMessages`
+      // is append-only within a run, and re-hashing it whole each time meant
+      // re-reading every inlined image data URI on every iteration. See
+      // fingerprintPrompt for the guarantee this relies on.
+      const fingerprint = fingerprintPrompt(model, chatMessages, tools, carriedHashes);
+      carriedHashes = fingerprint.messageHashes;
       const reuse = measureReuse(convId, fingerprint);
       if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
       const breakdownMeta = {
