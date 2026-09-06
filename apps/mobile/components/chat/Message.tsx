@@ -29,6 +29,13 @@ interface MessageProps {
   elapsedSince?: number | null;
 }
 
+/** "photo.png" when the server knew a name, "An image"/"A file" when it didn't
+ * — a bare ref would mean nothing to anyone. */
+function describeOmitted(a: { mime: string; name?: string }): string {
+  if (a.name) return `"${a.name}"`;
+  return attachmentClass(a.mime) === 'image' ? 'An image' : 'A file';
+}
+
 function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
@@ -36,6 +43,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<NonNullable<MessageType['attachments']>[number] | null>(null);
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
+  const omitted = msg.usage?.omittedAttachments ?? [];
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -155,6 +163,24 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince }: MessageProps)
                   </Text>
                 )}
               </HStack>
+            )}
+
+            {!isUser && omitted.length > 0 && (
+              // Next to the answer it explains, rather than on the thumbnail
+              // upstream: this is a fact about *this* turn's prompt, and the
+              // moment it matters is when a reply looks like it ignored a
+              // file. The transcript still shows the attachment, because it
+              // was genuinely sent — the model just could not be given it.
+              <Box
+                testID="chat.usage.omittedAttachments"
+                className="mt-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5"
+              >
+                <Text size="2xs" className="text-muted-foreground">
+                  {omitted.length === 1
+                    ? `${describeOmitted(omitted[0])} wasn't sent to the model — this conversation is over its attachment budget. Re-attach it to a new message to bring it back.`
+                    : `${String(omitted.length)} attachments weren't sent to the model — this conversation is over its attachment budget. Re-attach the ones you need to a new message.`}
+                </Text>
+              </Box>
             )}
 
             {!isUser && (

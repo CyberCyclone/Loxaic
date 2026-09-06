@@ -51,6 +51,10 @@ export interface MessageUsage {
    * — what the server offered the backend to reuse. Available on every
    * backend. */
   reusableTokens?: number | null
+  /** Attachments this turn's prompt left out because the budget was full.
+   * Only ever populated from a live turn, so an empty list means "this turn
+   * dropped nothing" and an absent one means we were not told. */
+  omittedAttachments?: { ref: string; mime: string; name?: string }[]
   /** What this turn's prompt was made of. Computed server-side — the agent's
    * tool schemas never appear in the message list, so this can't be derived
    * here. Absent on turns predating the feature, and when usage wasn't reported. */

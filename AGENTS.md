@@ -308,6 +308,35 @@ screenshots showing that behaviour working. Writing those tests is the implement
   can equally orphan a `tool_result` whose call fell outside it (`presentCallIds`). Most
   backends reject either.
 
+### Telling the user what the prompt actually carried
+
+- **An attachment dropped for budget reasons is reported to the user, not just to
+  the model.** `attachmentContentParts` has always substituted a marker naming the file, but
+  nothing reached the client — so the chip sat in the transcript looking exactly like one the
+  model could see, and someone whose file was dropped got a reply that ignored it with no way
+  to connect the two. `loadHistory` now returns `omittedAttachments` from the *same* verdict
+  the prompt acted on, so the claim and the prompt cannot disagree.
+- **It is a fact about the turn, deliberately, not a prediction about the next one.** It rides
+  on that turn's `TurnUsage`, so it is exactly what was sent and appears beside the answer it
+  explains. It is not persisted: after a reload the notice is absent, and **absence must be
+  read as "we were not told", never as "nothing was dropped"** — which is why the client only
+  renders it on positive information.
+- The notice names the file and says what to do (re-attach it), because re-attaching puts the
+  ref in the current turn, where the reserve guarantees it. A bare "some attachments were
+  omitted" would leave the user no better off than silence.
+
+### The agent step limit
+
+- **`user_prefs.max_iterations` (default 20, clamped 1-50) bounds the tool loop**, replacing a
+  hard-coded constant. Worth exposing because in auto mode it is the *only* brake — nothing
+  else asks permission — and people genuinely differ on how long they want the agent working
+  unattended.
+- **Clamped on read as well as validated on write.** The route rejects out-of-range values
+  rather than silently clamping (a client that asked for 500 should be told it did not get
+  500), and `userMaxIterations` clamps anyway, because the column is plain data and a value
+  that arrived by some other route must not be able to remove the brake. A failed lookup falls
+  back to the default, never to "unlimited".
+
 ### Automatic compaction
 
 - **The server compacts on its own** once a finished turn's `prompt + completion` crosses

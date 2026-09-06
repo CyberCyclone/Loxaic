@@ -291,6 +291,17 @@ export interface TurnUsage {
    * present on every backend; null only when there was no previous request.
    * Evidence about our own prompt, not proof the backend reused it. */
   reusable_tokens?: number | null;
+  /**
+   * Attachments this turn's prompt left out because their class's budget was
+   * full. Absent when nothing was dropped — and absence must be read as "this
+   * turn dropped nothing", never as "nothing is ever dropped", since a turn
+   * that reported no usage at all carries no answer either way.
+   *
+   * A fact about this turn, deliberately, rather than a prediction about the
+   * next one: it is exactly what was sent, so it cannot be wrong, and it
+   * appears next to the answer it explains.
+   */
+  omitted_attachments?: AttachmentRef[];
   context?: ContextBreakdown;
 }
 

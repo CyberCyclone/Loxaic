@@ -157,6 +157,53 @@ describe("automatic compaction", () => {
     }
   });
 
+  it("stops at the user's step limit rather than the built-in default", async () => {
+    // The ceiling used to be a constant. In auto mode nothing else asks
+    // permission, so this is the only brake there is — and what matters is
+    // that the *user's* number bounds the loop, not merely that some number
+    // does. So the same prompt is run twice and the two are compared: the
+    // terminal error itself never reaches the durable log (producer.end
+    // finalizes the stream and emits in-process), so the assertion is on what
+    // the loop actually did.
+    const promptText = "make a todo list";
+
+    const withDefault = await seedConversation(2);
+    await startChatRun({ userId, content: promptText, model: "llama-3.1-8b-instruct", conversationId: withDefault });
+    await waitFor(async () => {
+      // `model` is set only on assistant rows the tool loop created, which is
+      // what separates them from the seeded ones this conversation starts with.
+      const done = (await db.query.messages.findMany({ where: eq(messages.conversationId, withDefault) }))
+        .filter((r) => r.authorType === "assistant" && r.model !== null && r.status === "complete");
+      // The loop takes a second iteration to turn the tool result into an
+      // answer, so an unbounded run produces two assistant turns.
+      return done.length >= 2 ? done : null;
+    });
+
+    await db
+      .insert(userPrefs)
+      .values({ userId, maxIterations: 1, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: 1 } });
+    try {
+      const limited = await seedConversation(2);
+      await startChatRun({ userId, content: promptText, model: "llama-3.1-8b-instruct", conversationId: limited });
+      await waitFor(async () => {
+        const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, limited) });
+        return rows.some((r) => r.authorType === "tool") ? rows : null;
+      });
+      // Give the loop room to take a second iteration if the limit were being
+      // ignored — otherwise this would pass simply by asserting too early.
+      await new Promise((r) => setTimeout(r, 1000));
+
+      const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, limited) });
+      // One iteration's worth: the tool ran, and the loop was cut off before
+      // it could turn the result into an answer.
+      expect(rows.filter((r) => r.authorType === "assistant" && r.model !== null)).toHaveLength(1);
+      expect(rows.some((r) => r.authorType === "tool")).toBe(true);
+    } finally {
+      await db.update(userPrefs).set({ maxIterations: 20 }).where(eq(userPrefs.userId, userId));
+    }
+  });
+
   it("leaves a short conversation alone even when it is proportionally full", async () => {
     // AUTO_COMPACT_MIN_MESSAGES is what stops a thread whose summary alone
     // sits near the threshold from re-compacting on every single turn.

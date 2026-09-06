@@ -20,6 +20,7 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { AutoCompactToggle } from './AutoCompactToggle';
+import { AgentStepLimit } from './AgentStepLimit';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
@@ -195,6 +196,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 ))}
               </HStack>
             </VStack>
+
+            <Box className="h-px bg-border" />
+
+            <AgentStepLimit />
 
             <Box className="h-px bg-border" />
 

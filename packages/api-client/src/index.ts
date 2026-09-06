@@ -688,6 +688,9 @@ export interface UserPrefs {
   /** Whether the server may compact this user's conversations on its own once
    * a turn approaches the model's context window. Defaults to true. */
   autoCompact: boolean;
+  /** Tool round-trips the agent may take for one message before stopping and
+   * handing back. 1-50; defaults to 20. */
+  maxIterations: number;
 }
 
 export async function getPrefs(): Promise<UserPrefs> {

@@ -1,6 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { and, count, db, eq, gt } from "@loxaic/db";
-import { conversations, messages, usageRecords } from "@loxaic/db/schema";
+import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@loxaic/types";
 import {
   countDocumentParts,
@@ -33,8 +33,15 @@ import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 
-/** Hard ceiling on tool round-trips per user message. */
-const MAX_ITERATIONS = 20;
+/**
+ * Tool round-trips one user message may take, when the user has expressed no
+ * preference. Also the ceiling the API clamps to — in auto mode nothing else
+ * asks permission, so this is the only thing standing between a confused model
+ * and an unbounded amount of work.
+ */
+export const DEFAULT_MAX_ITERATIONS = 20;
+export const MIN_MAX_ITERATIONS = 1;
+export const MAX_MAX_ITERATIONS = 50;
 /** An approval request left unanswered this long is treated as a denial. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 /**
@@ -139,6 +146,27 @@ export function toolResultMessageForPrompt(callId: string, name: string | undefi
 }
 
 /**
+ * This user's tool-iteration ceiling, clamped to the supported range.
+ *
+ * Clamped on read as well as on write: the column is plain data, and a value
+ * that arrived any other way (a migration, a hand-edited row, a future admin
+ * tool) must not be able to remove the only brake auto mode has. A failed
+ * lookup falls back to the default rather than to "unlimited".
+ */
+async function userMaxIterations(userId: string): Promise<number> {
+  try {
+    const row = await db.query.userPrefs.findFirst({
+      where: eq(userPrefs.userId, userId),
+      columns: { maxIterations: true },
+    });
+    const value = row?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
+    return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, value));
+  } catch {
+    return DEFAULT_MAX_ITERATIONS;
+  }
+}
+
+/**
  * A plain function call rather than a direct `abort.signal.aborted` read:
  * the signal can flip true at any point during the awaits that follow an
  * earlier check in the same iteration, but the type checker doesn't model
@@ -205,6 +233,7 @@ export async function runToolLoop(ctx: {
   let autoCompact = false;
 
   try {
+    const maxIterations = await userMaxIterations(userId);
     const toolset = await buildToolset(userId, { mode, conversationId: convId });
     const tools = toolset.openAiTools;
     // History is loaded before the system prompt is assembled, because whether
@@ -240,9 +269,9 @@ export async function runToolLoop(ctx: {
     // and with it the context window — can be dropped before the client refreshes.
     let jitLoaded = false;
 
-    for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
+    for (let iteration = 1; iteration <= maxIterations; iteration++) {
       if (abort.signal.aborted) break;
-      producer.emit({ kind: "iteration", n: iteration, max: MAX_ITERATIONS });
+      producer.emit({ kind: "iteration", n: iteration, max: maxIterations });
 
       const assistantMsgId = uuid();
       lastAssistantId = assistantMsgId;
@@ -409,6 +438,9 @@ export async function runToolLoop(ctx: {
               ttft_ms: doneResult.ttftMs,
               cached_tokens: doneResult.cachedTokens,
               reusable_tokens: reuse.tokens,
+              ...(history.omittedAttachments.length
+                ? { omitted_attachments: history.omittedAttachments }
+                : {}),
               // This is the terminating iteration, so `tally` and `doneResult`
               // describe the same call — the breakdown lines up exactly.
               context: apportion(
@@ -495,7 +527,7 @@ export async function runToolLoop(ctx: {
           .where(eq(conversations.id, convId));
       }
       await producer.end("error", {
-        error: `Stopped after ${String(MAX_ITERATIONS)} tool iterations without a final answer.`,
+        error: `Stopped after ${String(maxIterations)} tool iterations without a final answer.`,
       });
     }
   } finally {
@@ -703,7 +735,16 @@ async function recordUsage(input: {
  */
 export async function loadHistory(
   conversationId: string,
-): Promise<{ messages: ChatMessage[]; truncated: boolean; summaryText: string | null }> {
+): Promise<{
+  messages: ChatMessage[];
+  truncated: boolean;
+  summaryText: string | null;
+  /** Attachments this prompt left out because their class's budget was full.
+   * The model is told (`attachmentContentParts` substitutes a marker), and
+   * this is how the *user* gets told too — without it the thumbnail sits in
+   * the transcript looking exactly like one the model can see. */
+  omittedAttachments: AttachmentRef[];
+}> {
   // The newest real compaction point, keyed on lamport — the same ordering
   // the main query below uses. Rows at or before it are represented by the
   // summary text and excluded from the replay.
@@ -785,6 +826,17 @@ export async function loadHistory(
   const affordable = attachmentTurns.some((t) => t.length > 0)
     ? await selectAffordableAttachments(attachmentTurns)
     : undefined;
+  // Same verdict `attachmentContentParts` acts on below, so the two can't
+  // disagree about what was sent. De-duplicated by ref: one file dropped is
+  // one thing to tell the user, however many turns repeated it.
+  const omittedAttachments = affordable
+    ? [...new Map(
+        attachmentTurns
+          .flat()
+          .filter((a) => !affordable.has(a.ref))
+          .map((a) => [a.ref, a] as const),
+      ).values()]
+    : [];
 
   const out: ChatMessage[] = [];
   for (const row of complete) {
@@ -829,7 +881,7 @@ export async function loadHistory(
       }
     }
   }
-  return { messages: out, truncated, summaryText };
+  return { messages: out, truncated, summaryText, omittedAttachments };
 }
 
 /** Attachment blocks in stored order — which is the order they were sent in,

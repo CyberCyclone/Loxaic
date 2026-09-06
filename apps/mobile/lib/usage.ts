@@ -38,6 +38,7 @@ export function usageFromTurn(u: TurnUsage): MessageUsage {
     ttftMs: u.ttft_ms ?? null,
     cachedTokens: u.cached_tokens ?? null,
     reusableTokens: u.reusable_tokens ?? null,
+    ...(u.omitted_attachments ? { omittedAttachments: u.omitted_attachments } : {}),
     context: u.context,
   };
 }
