@@ -321,9 +321,22 @@ screenshots showing that behaviour working. Writing those tests is the implement
   explains. It is not persisted: after a reload the notice is absent, and **absence must be
   read as "we were not told", never as "nothing was dropped"** — which is why the client only
   renders it on positive information.
-- The notice names the file and says what to do (re-attach it), because re-attaching puts the
-  ref in the current turn, where the reserve guarantees it. A bare "some attachments were
-  omitted" would leave the user no better off than silence.
+- **It names every file, and does not advise re-attaching.** A bare "2 attachments weren't
+  sent" leaves the user unable to tell whether it dropped the spreadsheet that mattered. And
+  re-attaching, which looks like the obvious fix, is not one: it brings that file back via the
+  current-turn reserve while pushing another out of the history pool in its place. Measured on
+  four over-budget documents, the dropped file simply alternates (C → D → C) and the notice
+  never clears. Compaction genuinely frees the budget, because the replay then starts after the
+  summary and the older attachment turns stop being counted — so that is what it recommends.
+- **Rendered on the newest message only.** Being over budget is a standing condition,
+  re-derived over the whole replay every turn, so a per-message notice staples the same
+  sentence to every subsequent reply — including ones the user attached nothing to.
+- **Unreadable is not unaffordable.** `selectAffordableAttachments` admits an image whose bytes
+  are missing (costing no budget) rather than skipping it, so it reaches
+  `attachmentContentParts`' `[image unavailable]` branch instead of being described — to the
+  model *and* now to the user — as over a budget it has nothing to do with. The document branch
+  always drew this distinction; the image branch did not, which meant the prompt itself was
+  already saying the wrong thing whenever bytes outlived their row.
 
 ### The agent step limit
 

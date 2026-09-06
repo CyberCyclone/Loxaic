@@ -19,6 +19,7 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { $$ } from '@wdio/globals';
 import { adminCreds, provisionAdmin } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { byTestId, isVisible, waitForVisible } from '../../helpers/selectors.ts';
@@ -68,10 +69,29 @@ describe('attachment budget', () => {
 
     await waitForVisible('chat.usage.omittedAttachments');
     const notice = await byTestId('chat.usage.omittedAttachments').getText();
-    // Names the file and says what to do about it — a bare "some attachments
-    // were omitted" would leave the user no better off than silence.
-    expect(notice).toContain('attachment budget');
-    expect(notice).toMatch(/Re-attach/);
+    // Names the file. A bare "some attachments were omitted" would leave the
+    // user unable to tell whether it dropped the one that mattered.
+    expect(notice).toMatch(/\.txt/);
+    expect(notice).toContain("wasn't sent to the model");
+    // Advice that actually works. Re-attaching brings that file back by
+    // pushing another out in its place — measured, the dropped file simply
+    // alternates — so the notice must not recommend it.
+    expect(notice).toContain('Compacting');
+    expect(notice).not.toMatch(/Re-attach/i);
     await shot('budget-exceeded-names-the-dropped-file');
+  });
+
+  it('shows the notice once, on the newest reply, not on every later one', async () => {
+    // Being over budget is a standing condition, re-derived over the whole
+    // replay each turn — so a per-message notice would staple the same
+    // sentence to every subsequent reply, including ones the user attached
+    // nothing to.
+    await sendMessage('just a question, no attachment');
+    await waitForVisible('chat.usage.reuse');
+    await waitForVisible('chat.usage.omittedAttachments');
+
+    const notices = $$('[data-testid="chat.usage.omittedAttachments"]');
+    expect(await notices.length).toBe(1);
+    await shot('budget-notice-does-not-repeat');
   });
 });

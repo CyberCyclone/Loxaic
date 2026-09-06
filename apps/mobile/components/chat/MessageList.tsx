@@ -136,6 +136,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
             msg={item}
             liveThinking={originalIndex === liveThinkingIndex}
             elapsedSince={originalIndex === liveElapsedIndex ? responseStartedAt : null}
+            isNewest={originalIndex === lastRenderIndex}
           />
         </Box>
       );

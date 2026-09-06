@@ -146,23 +146,31 @@ export function toolResultMessageForPrompt(callId: string, name: string | undefi
 }
 
 /**
- * This user's tool-iteration ceiling, clamped to the supported range.
+ * The `user_prefs` fields a run needs up front, in one read.
  *
- * Clamped on read as well as on write: the column is plain data, and a value
- * that arrived any other way (a migration, a hand-edited row, a future admin
- * tool) must not be able to remove the only brake auto mode has. A failed
- * lookup falls back to the default rather than to "unlimited".
+ * `maxIterations` is clamped on read as well as on write: the column is plain
+ * data, and a value that arrived any other way (a migration, a hand-edited
+ * row, a future admin tool) must not be able to remove the only brake auto
+ * mode has. A failed lookup falls back to the default, never to "unlimited".
  */
-async function userMaxIterations(userId: string): Promise<number> {
+export function clampMaxIterations(value: number): number {
+  return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, value));
+}
+
+async function loadRunPrefs(userId: string): Promise<{ maxIterations: number; allowlist: Set<string> }> {
   try {
     const row = await db.query.userPrefs.findFirst({
       where: eq(userPrefs.userId, userId),
-      columns: { maxIterations: true },
+      columns: { maxIterations: true, toolAllowlist: true },
     });
-    const value = row?.maxIterations ?? DEFAULT_MAX_ITERATIONS;
-    return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, value));
+    return {
+      maxIterations: clampMaxIterations(row?.maxIterations ?? DEFAULT_MAX_ITERATIONS),
+      allowlist: new Set(Array.isArray(row?.toolAllowlist) ? row.toolAllowlist.map(String) : []),
+    };
   } catch {
-    return DEFAULT_MAX_ITERATIONS;
+    // Both halves fail safe: the default ceiling rather than "unlimited", and
+    // an empty allowlist, which means every write tool asks rather than none.
+    return { maxIterations: DEFAULT_MAX_ITERATIONS, allowlist: new Set() };
   }
 }
 
@@ -233,8 +241,13 @@ export async function runToolLoop(ctx: {
   let autoCompact = false;
 
   try {
-    const maxIterations = await userMaxIterations(userId);
-    const toolset = await buildToolset(userId, { mode, conversationId: convId });
+    // One read for both: the iteration ceiling and the builtin allowlist live
+    // in the same `user_prefs` row, and buildToolset would otherwise fetch it
+    // again on the next line. (`userAllowsAutoCompact` is a third reader, and
+    // deliberately not folded in — it is deferred until the compaction
+    // threshold is actually crossed, so most turns never pay for it.)
+    const { maxIterations, allowlist } = await loadRunPrefs(userId);
+    const toolset = await buildToolset(userId, { mode, conversationId: convId, allowlist });
     const tools = toolset.openAiTools;
     // History is loaded before the system prompt is assembled, because whether
     // this turn carries a document decides whether the document addendum goes

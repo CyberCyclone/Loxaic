@@ -4,6 +4,7 @@ import { userPrefs } from "@loxaic/db/schema";
 import { isToolName } from "@loxaic/agent";
 import { authenticate } from "../auth/middleware";
 import {
+  clampMaxIterations,
   DEFAULT_MAX_ITERATIONS,
   MAX_MAX_ITERATIONS,
   MIN_MAX_ITERATIONS,
@@ -19,7 +20,13 @@ function toApi(row: { toolAllowlist: unknown; autoCompact?: boolean; maxIteratio
   return {
     toolAllowlist: allowlist,
     autoCompact: row.autoCompact ?? true,
-    maxIterations: row.maxIterations ?? DEFAULT_MAX_ITERATIONS,
+    // Clamped with the *same* function the engine enforces with, not a
+    // parallel one. `?? DEFAULT` covers a missing value but not an
+    // out-of-range one, and the "plain data" argument cuts both ways: if the
+    // column can't be trusted to be in range for the loop, it can't be
+    // trusted for the response either — otherwise the settings screen shows
+    // one number while the agent enforces another.
+    maxIterations: clampMaxIterations(row.maxIterations ?? DEFAULT_MAX_ITERATIONS),
   };
 }
 

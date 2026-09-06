@@ -31,7 +31,12 @@ export function AgentStepLimit() {
     void (async () => {
       try {
         const prefs = await getPrefs();
-        if (live.current) setValue(prefs.maxIterations);
+        // `?? null`, because a server predating this field does not throw —
+        // it answers 200 with the key simply absent, and `undefined` would
+        // sail past the `=== null` guard below and render a control with
+        // nothing selected. A newer client against an older host is a
+        // supported configuration (desktop Client mode, any remote host).
+        if (live.current) setValue(prefs.maxIterations ?? null);
       } catch {
         // Offline, or a server that predates this setting: show nothing rather
         // than a value that might not be the server's.
@@ -43,7 +48,7 @@ export function AgentStepLimit() {
     };
   }, []);
 
-  if (value === null) return null;
+  if (value == null) return null;
 
   const choose = (next: number) => {
     const previous = value;

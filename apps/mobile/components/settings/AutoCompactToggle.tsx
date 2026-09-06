@@ -31,7 +31,10 @@ export function AutoCompactToggle() {
     void (async () => {
       try {
         const prefs = await getPrefs();
-        if (live.current) setEnabled(prefs.autoCompact);
+        // `?? null` hides the control against a server that predates the
+        // field: it answers 200 without the key rather than erroring, and a
+        // toggle whose PATCH the server ignores is worse than no toggle.
+        if (live.current) setEnabled(prefs.autoCompact ?? null);
       } catch {
         // Offline or an old server: leave the control out entirely rather than
         // showing a state that might not be the server's.
@@ -43,7 +46,7 @@ export function AutoCompactToggle() {
     };
   }, []);
 
-  if (enabled === null) return null;
+  if (enabled == null) return null;
 
   const change = (next: boolean) => {
     const previous = enabled;

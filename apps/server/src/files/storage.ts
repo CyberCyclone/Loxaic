@@ -174,6 +174,17 @@ export async function selectAffordableAttachments(turns: AttachmentRef[][]): Pro
         try {
           ({ size } = await stat(attachmentPath(a.ref)));
         } catch {
+          // Missing bytes are unreadable, not unaffordable — the same
+          // distinction the document branch below makes, and for a stronger
+          // reason now that this verdict is shown to the *user*. Skipping
+          // instead of admitting would put the file in `omittedAttachments`
+          // and tell someone their image is over a budget, about a file that
+          // is not on disk; the advice that follows ("re-attach it") cannot
+          // help and the budget was never the problem. Admitting it costs
+          // nothing (there are no bytes to charge) and lets
+          // attachmentContentParts reach its own "[image unavailable]"
+          // branch, which is the true statement.
+          allowed.add(a.ref);
           continue;
         }
         if (size > imageBytes) continue;

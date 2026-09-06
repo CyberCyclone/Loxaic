@@ -130,6 +130,37 @@ describe("omitted attachments are reported alongside the prompt that dropped the
     expect(verdicts.filter((v) => v.reported).map((v) => v.file)).toEqual([dropped.name]);
   });
 
+  it("does not call a file that isn't on disk 'over budget'", async () => {
+    // An unreadable attachment is a different thing from an unaffordable one,
+    // and only the second is a budget problem. Reporting the first here would
+    // tell someone their image is over a budget — about a file that is not on
+    // disk — and then advise an action that cannot possibly help. Reachable
+    // whenever bytes outlive their row: a pruned UPLOADS_DIR, a DB restored
+    // against a newer volume, a partially-failed upload.
+    const missing = { ref: uuid(), mime: "image/png", name: "gone.png" };
+    const convId = await conversationOf([writeDocument("a.pdf")]);
+    await db.insert(messages).values({
+      id: uuid(),
+      conversationId: convId,
+      authorType: "user",
+      origin: "server",
+      lamport: 2000,
+      content: [
+        { kind: "attachment", ref: missing.ref, mime: missing.mime, name: missing.name },
+        { kind: "text", text: "and this one" },
+      ] as ContentBlock[],
+      status: "complete",
+      createdAt: new Date(),
+    });
+
+    const history = await loadHistory(convId);
+    expect(history.omittedAttachments.map((a) => a.ref)).not.toContain(missing.ref);
+    // And the prompt says the true thing rather than the budget thing.
+    expect(promptMarksAsOmitted(history.messages, missing.name)).toBe(false);
+    const text = JSON.stringify(history.messages);
+    expect(text).toContain("[image unavailable]");
+  });
+
   it("reports a repeated ref once, however many turns carried it", async () => {
     // One file dropped is one thing to tell the user; three copies of the same
     // sentence is not more informative.

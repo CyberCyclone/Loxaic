@@ -685,12 +685,19 @@ export interface UserPrefs {
   /** Builtin tool names allowlisted globally — skip approval anywhere the
    * tool loop runs. MCP tools have their own per-server allowlist instead. */
   toolAllowlist: string[];
-  /** Whether the server may compact this user's conversations on its own once
-   * a turn approaches the model's context window. Defaults to true. */
-  autoCompact: boolean;
+  /**
+   * Optional because a server that predates the field simply omits it — it
+   * does not error — and the client talks to servers it was not shipped with
+   * (desktop Client mode, any remote host). Typing these as always-present
+   * made `undefined` sail past a `=== null` guard and render a settings
+   * control with nothing selected, which would then PATCH a field the old
+   * server ignores. Callers must treat absence as "this server has no such
+   * setting", not as a value.
+   */
+  autoCompact?: boolean;
   /** Tool round-trips the agent may take for one message before stopping and
-   * handing back. 1-50; defaults to 20. */
-  maxIterations: number;
+   * handing back. 1-50; defaults to 20. Optional — see `autoCompact`. */
+  maxIterations?: number;
 }
 
 export async function getPrefs(): Promise<UserPrefs> {
