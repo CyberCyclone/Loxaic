@@ -125,7 +125,7 @@ export function ThreadList({
 
       <Actionsheet isOpen={!!actionsFor} onClose={() => { setActionsFor(null); }}>
         <ActionsheetBackdrop />
-        <ActionsheetContent>
+        <ActionsheetContent testID="threadList.actions">
           <ActionsheetDragIndicatorWrapper>
             <ActionsheetDragIndicator />
           </ActionsheetDragIndicatorWrapper>

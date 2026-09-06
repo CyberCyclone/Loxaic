@@ -17,7 +17,7 @@ jobs:
           version: 10.4.1
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22 # Expo SDK 57 needs >= 22.13; the `22` alias resolves to the latest 22.x
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
@@ -83,3 +83,6 @@ jobs:
       # migration step is never exercised by any test, see apps/server/src/index.ts).
       - run: pnpm --filter @loxaic/db db:migrate
       - run: pnpm --filter @loxaic/server test
+      # No database needed; guards the native upload part (attachmentUpload.test.ts)
+      # among others, which nothing else on CI exercises.
+      - run: pnpm --filter @loxaic/mobile test

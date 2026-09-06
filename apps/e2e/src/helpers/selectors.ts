@@ -98,6 +98,17 @@ export async function typeInto(id: string, text: string): Promise<void> {
   const el = byTestId(id);
   await el.waitForDisplayed();
   await el.setValue(text);
+  // XCUITest typing on the iOS 26 simulator can drop characters (see the
+  // maxTypingFrequency note in wdio.ios.ts). Read the field back and retype
+  // when it disagrees — except secure fields, whose value reads as bullets.
+  if (platform() !== 'ios') return;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const value = await el.getValue().catch(() => '');
+    if (value === text || /^[•*]+$/.test(value)) return;
+    await el.clearValue();
+    await el.setValue(text);
+  }
+  throw new Error(`typeInto(${id}): field still disagrees with the intended text after 3 attempts`);
 }
 
 export async function waitForVisible(id: string, timeout = 20_000): Promise<void> {

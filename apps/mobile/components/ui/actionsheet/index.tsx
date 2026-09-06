@@ -4,12 +4,6 @@ import { createActionsheet } from '@gluestack-ui/core/actionsheet/creator';
 import { UIIcon } from '@gluestack-ui/core/icon/creator';
 import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { tva } from '@gluestack-ui/utils/nativewind-utils';
-import {
-  AnimatePresence,
-  createMotionAnimatedComponent,
-  Motion,
-  MotionComponentProps,
-} from '@legendapp/motion';
 import { withUniwind } from 'uniwind';
 import React from 'react';
 import {
@@ -20,9 +14,10 @@ import {
   SectionList,
   Text,
   View,
-  ViewStyle,
   VirtualizedList,
 } from 'react-native';
+import { Easing, FadeIn, FadeOut } from 'react-native-reanimated';
+import { AnimatedPressable, SheetView } from './animated';
 
 const ItemWrapper = React.forwardRef<
   React.ComponentRef<typeof Pressable>,
@@ -31,23 +26,11 @@ const ItemWrapper = React.forwardRef<
   return <Pressable {...props} ref={ref} />;
 });
 
-type IMotionViewProps = React.ComponentProps<typeof View> &
-  MotionComponentProps<typeof View, ViewStyle, unknown, unknown, unknown>;
-
-const MotionView = Motion.View as React.ComponentType<IMotionViewProps>;
-
-type IAnimatedPressableProps = React.ComponentProps<typeof Pressable> &
-  MotionComponentProps<typeof Pressable, ViewStyle, unknown, unknown, unknown>;
-
-const AnimatedPressable = createMotionAnimatedComponent(
-  Pressable
-) as React.ComponentType<IAnimatedPressableProps>;
-
 const StyledUIIcon = withUniwind(UIIcon);
 
 export const UIActionsheet = createActionsheet({
   Root: View,
-  Content: MotionView,
+  Content: SheetView,
   Item: ItemWrapper,
   ItemText: Text,
   DragIndicator: View,
@@ -59,13 +42,12 @@ export const UIActionsheet = createActionsheet({
   SectionList: SectionList,
   SectionHeaderText: H4,
   Icon: StyledUIIcon,
-  AnimatePresence: AnimatePresence,
 });
 
 const actionsheetStyle = tva({ base: 'w-full h-full web:pointer-events-none' });
 
 const actionsheetContentStyle = tva({
-  base: 'items-center rounded-t-lg p-4 bg-background web:pointer-events-auto web:select-none border-t border-border dark:border-border/10 max-h-[80vh] pb-safe',
+  base: 'absolute bottom-0 left-0 right-0 items-center rounded-t-lg p-4 bg-background web:pointer-events-auto web:select-none border-t border-border dark:border-border/10 max-h-[80vh] pb-safe',
 });
 
 const actionsheetItemStyle = tva({
@@ -312,19 +294,8 @@ const ActionsheetBackdrop = React.forwardRef<
 >(function ActionsheetBackdrop({ className, ...props }, ref) {
   return (
     <UIActionsheet.Backdrop
-      initial={{
-        opacity: 0,
-      }}
-      animate={{
-        opacity: 1,
-      }}
-      exit={{
-        opacity: 0,
-      }}
-      transition={{
-        type: 'timing',
-        duration: 200,
-      }}
+      entering={FadeIn.duration(200).easing(Easing.linear)}
+      exiting={FadeOut.duration(200).easing(Easing.linear)}
       {...props}
       className={actionsheetBackdropStyle({
         class: className,

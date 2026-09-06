@@ -14,7 +14,7 @@
 import { provisionUser, apiToken, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, longPress, platform, waitForVisible, isVisible } from '../helpers/selectors.ts';
+import { tap, longPress, platform, waitForVisible, waitForGone, isVisible } from '../helpers/selectors.ts';
 import { openThreadList, sendAndAwaitReply, signIn, signOut, signUp, mockEcho } from '../helpers/app.ts';
 
 interface ApiConversation {
@@ -95,8 +95,17 @@ describe('conversation sharing', () => {
     // Long-press is the cross-platform route to the row actions — web's hover
     // actions have no touch fallback (see ThreadList's own comment).
     await longPress(row);
+    // The sheet itself, not just an item in it: this is the Actionsheet's
+    // enter animation (reanimated SlideInDown since SDK 57) landing at the
+    // bottom of the viewport, and the screenshot is what would look wrong if
+    // it ever slid off-screen or stayed transparent.
+    await waitForVisible('threadList.actions');
     await waitForVisible('threadList.share');
+    await shot('sharing-thread-actions-sheet');
     await tap('threadList.share');
+    // Choosing an item closes the sheet; without an AnimatePresence the
+    // overlay unmounts outright, so it must be gone, not merely faded.
+    await waitForGone('threadList.actions');
     // "Only you can see this" is the honest empty state, and its presence
     // proves the sheet read the (empty) share list rather than failing open.
     await waitForVisible('share.empty');
