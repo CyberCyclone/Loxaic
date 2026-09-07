@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, Plug } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, Plug } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -115,14 +115,21 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     <>
     <Modal isOpen={open} onClose={onClose} size="md">
       <ModalBackdrop />
-      <ModalContent>
+      {/* Bounded height, matching McpServerModal.tsx: this modal has grown a
+          settings row at a time (theme, thinking level, step limit,
+          auto-compact, MCP, sandbox, GitHub) and unlike a short dialog it
+          routinely overflows the viewport. Without a cap here the overflow
+          just extends past the window edge with nothing to scroll — reachable
+          with a trackpad by luck, unreachable to a click (real or
+          WebDriver's) on whatever row that pushes below the fold. */}
+      <ModalContent className="max-h-[85%]">
         <ModalHeader>
           <Heading size="sm">Settings</Heading>
           <ModalCloseButton>
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody>
+        <ModalBody scrollEnabled>
           <VStack space="lg">
             <VStack space="xs">
               <Text size="xs" className="text-muted-foreground">
@@ -208,6 +215,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <Box className="h-px bg-border" />
 
             <Pressable
+              testID="settings.nav.mcp"
               onPress={() => {
                 onClose();
                 router.push('/mcp');
@@ -222,6 +230,28 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </Text>
                   <Text size="2xs" className="text-muted-foreground">
                     Connect external tools for the agent
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable
+              testID="settings.nav.github"
+              onPress={() => {
+                onClose();
+                router.push('/github');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={GitBranch} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    GitHub
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Connect a repo for the agent to work in
                   </Text>
                 </VStack>
               </HStack>

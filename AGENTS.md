@@ -135,6 +135,16 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `EXPO_PUBLIC_USE_RN_FETCH=1` to paper over this — it is inlined at bundle time, so it would
   have to be set in every build shell forever, and it silently changes fetch semantics for the
   whole app.
+- **`SettingsModal`'s `ModalContent` is height-bounded (`max-h-[85%]`) and its `ModalBody` has
+  `scrollEnabled` on**, because the vendored `ModalBody` (`components/ui/modal/index.tsx`)
+  hardcodes `scrollEnabled={false}` and the modal has no max-height by default — content past
+  the fold simply extends past the viewport edge with nothing to scroll it into view. Adding
+  one more settings row (GitHub, alongside MCP/Sandbox) pushed the Sandbox row off-screen and
+  broke three e2e specs that clicked it, none of which had ever exercised the modal's actual
+  height. `McpServerModal.tsx` already carries the `max-h-[85%]` half of this fix; `scrollEnabled`
+  is a caller override on `<ModalBody>` (the creator spreads `{...props}` after its own
+  hardcoded default, so passing the prop wins) — **any modal expected to grow past a handful of
+  rows needs both**, not just the height cap.
 
 ### testIDs and e2e selectors
 
@@ -772,6 +782,31 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
+
+### GitHub connection
+
+- One personal access token per user (`github_connections`, `userId` primary key like
+  `user_prefs` — a user has at most one). A PAT, not OAuth: no app registration, no callback
+  URL, and it works identically for a self-hosted deployment nobody outside it can reach.
+- `apps/server/src/github/client.ts` is a thin plain-`fetch` wrapper — no octokit — and reads
+  `GITHUB_API_URL` (default `https://api.github.com`) **at call time**, the same test/operator
+  seam every other backend URL in this codebase uses. `apps/e2e/scripts/mock-github.ts` points
+  it at a fixture server so no e2e spec ever reaches real GitHub.
+- Encrypted at rest with the **same aes-256-gcm scheme** `mcp/secrets.ts` uses (`github/
+  connection.ts`, its own module rather than importing that one — it stores one string, not a
+  `Record<string,string>`), keyed off the same `MCP_ENCRYPTION_KEY` (fallback
+  `BETTER_AUTH_SECRET`). `getOwnerToken()` is the only decrypt site outside tests.
+- **Disconnecting hard-deletes the row**, matching MCP server credentials for the same reason:
+  stored credentials must not outlive the user's intent to remove them.
+- Fine-grained PATs return no `X-OAuth-Scopes` header at all — stored as `null`, which must
+  read as "unknown," never as "no access." A classic PAT's `repo` scope is reported and shown.
+- Every route redacts the token out of error messages **twice**: once inside `github/client.ts`
+  (a network error or a non-2xx body might echo it back) and again in `routes/github.ts` before
+  the message reaches the response, since defense at one layer failing silently is exactly how
+  a token ends up in a log or a client error toast.
+- `PUT /v1/github/connection` validates the token against GitHub (`getViewer`) before storing
+  anything — a bad token fails at connect time, not on the first clone three steps later (a
+  later stage).
 
 ### Electron
 

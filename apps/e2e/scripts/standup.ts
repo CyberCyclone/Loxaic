@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { createConnection } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startMockGithub } from './mock-github.ts';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(E2E_DIR, '../..');
@@ -88,6 +89,9 @@ function writeAdminCreds(): { email: string; password: string } {
 
 /** Kept so onComplete can stop exactly the server onPrepare started. */
 let spawnedServer: ChildProcess | null = null;
+/** Stop function for the in-process mock GitHub API server, or null when this
+ * run didn't start the spawned server (and so never started this either). */
+let stopMockGithub: (() => Promise<void>) | null = null;
 
 interface Health {
   status: string;
@@ -238,6 +242,8 @@ async function ensureServer(): Promise<void> {
   mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
   mkdirSync(UPLOADS_DIR, { recursive: true });
   const { email: adminEmail } = writeAdminCreds();
+  const mockGithub = await startMockGithub();
+  stopMockGithub = mockGithub.stop;
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
@@ -267,6 +273,7 @@ async function ensureServer(): Promise<void> {
       ADMIN_EMAILS: adminEmail,
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
+      GITHUB_API_URL: mockGithub.url,
       // The idle-stop reaper's real tick is five minutes.
       // sandbox-lifecycle.spec.ts has to watch it actually pause a workspace,
       // and reaching past the timer to stop a container by hand would assert
@@ -337,6 +344,10 @@ export async function teardown(): Promise<void> {
     rmSync(SANDBOX_HOST_ROOT, { recursive: true, force: true });
     rmSync(UPLOADS_DIR, { recursive: true, force: true });
     rmSync(ADMIN_FILE, { force: true });
+  }
+  if (stopMockGithub) {
+    await stopMockGithub();
+    stopMockGithub = null;
   }
   // Postgres is deliberately left running: it is slow to start, holds no
   // per-run state worth clearing, and is very often not ours to stop.

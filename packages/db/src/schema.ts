@@ -410,6 +410,31 @@ export const userPrefs = pgTable("user_prefs", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// ── GitHub connections ──
+/**
+ * One personal access token per user, for cloning a workspace repo and
+ * committing/pushing/opening a PR on their behalf (see agent/workspace.ts,
+ * a later stage). `userId` is the primary key rather than a generated one —
+ * a user has at most one GitHub connection, the same shape `userPrefs` uses.
+ */
+export const githubConnections = pgTable("github_connections", {
+  userId: text("user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
+  /** Encrypted blob (see server/src/github/secrets.ts); never returned raw. */
+  encryptedToken: text("encrypted_token").notNull(),
+  login: text("login").notNull(),
+  /** For `git config user.name`/`user.email` at clone time (a later stage) —
+   * captured now so the connection doesn't need re-fetching for it then. */
+  name: text("name"),
+  email: text("email"),
+  /** `X-OAuth-Scopes` off the validating request. Null for a fine-grained PAT,
+   * which the GitHub API does not report scopes for — null must read as
+   * "unknown", never as "no access". */
+  scopes: text("scopes"),
+  validatedAt: timestamp("validated_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // ── Relations ──
 export const conversationsRelations = relations(conversations, ({ many }) => ({
   messages: many(messages),
