@@ -17,8 +17,35 @@
  * be exercised honestly.
  */
 import { createServer, type Server } from 'node:http';
+import type { IncomingMessage } from 'node:http';
 
 export const VALID_TOKEN = 'e2e-github-token';
+
+interface RecordedPull {
+  number: number;
+  html_url: string;
+  owner: string;
+  repo: string;
+  head: string;
+  base: string;
+  title: string;
+  body?: string;
+}
+
+/** Every PR the mock has "opened", in call order. Module-scoped: a fresh
+ * server per stand-up starts empty, and a spec reads this back through
+ * `GET /__e2e/pulls` to confirm a push through the Inspector's panel reached
+ * (the fixture standing in for) GitHub with the right head and base — proof
+ * independent of whatever the UI claims happened. */
+let pulls: RecordedPull[] = [];
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+    req.on('end', () => { resolve(data); });
+  });
+}
 
 /**
  * Clone URLs point at the harness's own git server (git-server.ts) when one
@@ -48,14 +75,40 @@ let server: Server | null = null;
 export async function startMockGithub(opts?: {
   cloneUrlFor?: (name: string) => string;
 }): Promise<{ url: string; stop: () => Promise<void> }> {
+  pulls = [];
   const REPOS = repos(opts?.cloneUrlFor ?? ((name) => `https://example.test/e2e/${name}.git`));
   server = createServer((req, res) => {
-    const auth = req.headers.authorization ?? '';
-    const token = auth.replace(/^Bearer /, '');
+    void (async () => {
     const url = new URL(req.url ?? '/', 'http://localhost');
 
+    // Unauthenticated and outside the token gate below: this is the harness
+    // itself asking what was recorded, not a call GitHub would ever receive.
+    if (url.pathname === '/__e2e/pulls') {
+      json(res, 200, pulls);
+      return;
+    }
+
+    const auth = req.headers.authorization ?? '';
+    const token = auth.replace(/^Bearer /, '');
     if (token !== VALID_TOKEN) {
       json(res, 401, { message: 'Bad credentials' });
+      return;
+    }
+
+    const pullsMatch = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(url.pathname);
+    if (pullsMatch && req.method === 'POST') {
+      const owner = pullsMatch[1];
+      const repo = pullsMatch[2];
+      const raw = await readBody(req);
+      const input = JSON.parse(raw) as { head: string; base: string; title: string; body?: string };
+      const number = pulls.length + 1;
+      const pull: RecordedPull = {
+        number,
+        html_url: `https://github.example/${owner}/${repo}/pull/${String(number)}`,
+        owner, repo, head: input.head, base: input.base, title: input.title, body: input.body,
+      };
+      pulls.push(pull);
+      json(res, 201, { number: pull.number, html_url: pull.html_url });
       return;
     }
 
@@ -84,6 +137,7 @@ export async function startMockGithub(opts?: {
       return;
     }
     json(res, 404, { message: 'not found in e2e github fixture' });
+    })();
   });
 
   await new Promise<void>((resolve) => { server?.listen(0, '127.0.0.1', resolve); });
