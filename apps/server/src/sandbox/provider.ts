@@ -7,8 +7,18 @@
 
 import { getSandboxSettings } from "../settings.ts";
 
-export type SandboxKind = "container" | "host";
-export type SandboxMode = SandboxKind | "off";
+/**
+ * Which provider owns a sandbox. `container` and `host` are the two the
+ * server itself can run; `executor` is a directory on a *user's own machine*,
+ * driven over `/ws/executor` by the desktop app there (sandbox/executor-
+ * provider.ts). It is deliberately absent from `SandboxMode`: it is chosen by
+ * a conversation's `local` workspace, never by the deployment's SANDBOX_MODE
+ * or an admin setting, and nothing may let a caller pick it per request —
+ * `POST /v1/sandboxes` derives its kind from the mode and so can never mint
+ * one (sandbox/__tests__/executor-provider.test.ts).
+ */
+export type SandboxKind = "container" | "host" | "executor";
+export type SandboxMode = "container" | "host" | "off";
 
 export interface ExecOptions {
   workdir?: string;
@@ -123,6 +133,20 @@ export interface CreateSandboxConfig {
     token?: string;
     identity?: { name: string; email: string };
   };
+  /**
+   * A `local` workspace: the directory `path` on the machine whose desktop
+   * app registered as `executorId`. Only the executor provider reads this;
+   * the path is re-validated against that machine's own approved roots on
+   * every call, so a value here is a request, not an authorization.
+   */
+  local?: {
+    executorId: string;
+    path: string;
+    isolation: "direct" | "container";
+    /** The conversation owner — the machine must be registered by them,
+     * whoever's tool call is creating the sandbox. */
+    ownerId: string;
+  };
 }
 
 export interface SandboxProvider {
@@ -151,6 +175,10 @@ let hostModeWarned = false;
  * a mode switch), where the provider that must own the operation is fixed by
  * the sandbox's own history, not today's env. */
 export async function getProviderByKind(kind: SandboxKind): Promise<SandboxProvider> {
+  if (kind === "executor") {
+    const { getExecutorProvider } = await import("./executor-provider.ts");
+    return getExecutorProvider();
+  }
   if (kind === "host") {
     if (!hostModeWarned) {
       hostModeWarned = true;

@@ -906,6 +906,74 @@ screenshots showing that behaviour working. Writing those tests is the implement
   and narrow layouts both wrap `InspectorBody` in a plain React Native `ScrollView` now
   (`style={{flex:1, minHeight:0}}`) instead of a bare `Box`.
 
+### Local workspaces (the desktop's executor)
+
+- **A `local` workspace runs on the user's own machine, never on the server.** The desktop
+  app spawns `dist/executor.js` (`apps/server/src/executor/main.ts`, a second tsup entry of
+  the server package), which dials `/ws/executor?token=` and registers itself under the user
+  (`executor/registry.ts`, process-local like the run registry). The sandbox provider for it
+  (`sandbox/executor-provider.ts`, `kind: "executor"`) is chosen by the conversation's
+  workspace in `getConversationSandbox` — **never** by `SANDBOX_MODE`, an admin setting, or a
+  request field. `SandboxMode` deliberately does not include it, so `POST /v1/sandboxes`
+  cannot mint one and `invalidatedKinds()` can never return it. Local workspaces ignore the
+  server's whole sandbox posture: `mode: off`, `allowNetwork`, `hostingBlockedReason()`.
+  Executor rows are excluded from the per-user running cap for the same reason — they hold
+  no server resources.
+- **Trust runs one way.** The executor authenticates to the server (session token, ban
+  re-checked every 60s in `ws/executor.ts`), but does **not** trust the server: a host may be
+  someone else's machine, and it can send any `call` it likes. `executor/service.ts` re-checks
+  every `ref` and every path in every call against the roots the user chose, *by `realpath`* —
+  the server's own `resolvePath` is lexical, and a repo can contain a symlink out to `/`. A
+  not-yet-existing file is judged by its nearest existing ancestor's real path. Removing a
+  folder in the desktop revokes it on the next call, not when the conversation ends.
+- **Paths reach the executor only from that machine's native dialog.** `loxaic:pickDirectory`
+  takes no argument; `loxaic:executor.removeRoot` only narrows; the roots file
+  (`<dataDir>/executor-roots.json`, 0600) is written by nothing else. The renderer cannot name
+  a path, and neither can a server the renderer is talking to. `LOXAIC_E2E_PICK_DIR` stands in
+  for the dialog under test, read from the app's own environment with a loud one-time warning.
+- **The token goes down the executor's stdin, first line, and nowhere else** — not env
+  (`ps -E`), not argv (shell history), never persisted, never logged (the socket URL carries
+  it and is never printed). `supervisor/executor.js` builds the child env from scratch, and
+  `executor.test.js` proves the token is absent from it. On a 4001 the executor **exits**
+  rather than retrying a token that will be refused again; the desktop starts a fresh one when
+  it has a fresh session. `useLocalExecutorSync` lives in the root layout, above the auth gate,
+  because AppShell unmounts the instant the token clears and would never send the null.
+- **Offline is a failed tool call with a reason, never a hang.** `callExecutor` decides
+  offline up front (a machine that is not connected does not become connected by waiting)
+  and every call has a deadline; `exec`'s is the command's own timeout plus a margin, so the
+  executor's timeout — a real exit code with captured output — fires first. The provider's
+  `attach()` *throws* when the machine is offline so `createEntry`'s existing-row path
+  surfaces the message instead of recording the directory as destroyed; `exists()` throws for
+  the same reason (`markDeadRowsDestroyed`: "cannot ask" is never "destroyed"); `stop()` and
+  `destroy()` never reach the executor's filesystem at all — the directory is the user's own.
+- **The executor's module graph must not reach the database, settings, the server entry,
+  fastify, or dockerode** — it runs on a laptop with none of them, and a laptop process that
+  can open the server's database is a laptop process with the server's secrets in it.
+  `executor/__tests__/isolation.test.ts` walks the import graph statically (`import type`
+  edges excluded) and fails on any of them. `provider.ts` is only ever `import type`d there.
+- **The executor's id is the desktop's `instanceId`** (one identity per machine, shared with the
+  `hosts` table), falling back to `<dataDir>/executor.json` only for a launch that env/flags
+  pointed somewhere and that never wrote a config. `executorName` in a workspace comes from the
+  live executor at creation, never the client — it goes into the system prompt.
+  `describeWorkspace` for `local` ignores the server's mode entirely (a fact about the server
+  is not a fact about the user's machine), which `workspace.test.ts` asserts.
+- **Closing a paused `ws` socket never completes.** `ws/executor.ts`'s early rejections
+  `resume()` before `close()`: the close handshake needs the peer's answering frame *read*,
+  and a paused socket reads nothing, so the client sat in CLOSING for its full 30s timeout —
+  found by the WS test timing out on the very first case. The other handlers' reject paths
+  pause-then-close too (ws/chat.ts, ws/agent.ts, ws/sandbox.ts); a browser client eventually
+  gives up, which is why it never showed.
+- **Two e2e process facts.** Values every process must agree on — the pick dir, the app's
+  data dir — travel as env vars minted with `??=` in `scripts/electron-env.ts`, because a
+  module-level `mkdtempSync` runs once *per process* (launcher, worker, and the app each get
+  their own — see the Stage 5 note on WebdriverIO's process model). And the Electron suite now
+  passes `--loxaic-data-dir` in **every** mode: the executor writes picked folders into the
+  data dir, and without a throwaway one a test run appended temp paths to the developer's real
+  Loxaic config.
+- Not yet: a terminal over the executor (the terminal panel stage), container isolation for a
+  local folder (refused with a reason by both the chooser and `parseWorkspaceInput`), Windows
+  executors (`agent/executor.ts`'s `resolvePath` is POSIX, as the host provider always was).
+
 ### Electron
 
 - **Instance mode lives in `<dataDir>/config.json`** (`supervisor/config.js`), read by both
@@ -935,8 +1003,11 @@ screenshots showing that behaviour working. Writing those tests is the implement
   log. An external database's password lives in `secrets.json` (0600) beside the auth secret,
   and the supervisor injects it into the URL at spawn time.
 - **The IPC contract is the app's only one** (`loxaic:getState/setMode/probeEngine/
-  probeHost/testDb/detach`, plus a pushed `loxaic:stackState`). Every channel is a fixed
-  name and none takes a path or command from the renderer. The `stackState` listener is
+  probeHost/testDb/detach`, the executor's `loxaic:executor.setSession/getState/removeRoot`
+  and `loxaic:pickDirectory`, plus pushed `loxaic:stackState` and `loxaic:executorState`).
+  Every channel is a fixed name and none takes a path or command from the renderer —
+  `pickDirectory` opens the native dialog and `removeRoot` only accepts a path already on
+  the list. The `stackState` listener is
   wrapped in `preload.cjs` so the renderer never receives Electron's `IpcRendererEvent`,
   which carries a live `sender` handle back into the main process.
 - **A mode switch stops the old stack before starting the new one.** Both bind the same port,

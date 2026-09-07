@@ -15,6 +15,7 @@ import type { SandboxMode } from "../sandbox/provider.ts";
 import { getConnection } from "../github/connection.ts";
 import { getOwnerToken } from "../github/connection.ts";
 import { getRepo } from "../github/client.ts";
+import { getExecutor } from "../executor/registry.ts";
 
 export class WorkspaceError extends Error {
   constructor(message: string) {
@@ -102,13 +103,51 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
   }
 
   if (input.kind === "local") {
-    // Kept as a rejection rather than an unknown kind so the client gets a
-    // reason it can show, and so the type stays closed for when the desktop
-    // executor lands.
-    throw new WorkspaceError("Local workspaces are not available yet");
+    if (typeof input.executorId !== "string" || input.executorId.length === 0) {
+      throw new WorkspaceError("workspace.executorId must name one of your connected machines");
+    }
+    // The machine must be connected *now* and be this user's: a workspace
+    // can only be created against a live executor, so "which folders are
+    // allowed" is answered by that machine rather than taken on trust.
+    const executor = getExecutor(input.executorId);
+    if (executor?.userId !== ctx.userId) {
+      throw new WorkspaceError("That machine is not connected — open the Loxaic desktop app on it and sign in there");
+    }
+    if (typeof input.path !== "string" || !isUnderAnnouncedRoot(input.path, executor.roots)) {
+      throw new WorkspaceError("workspace.path must be a folder you have chosen on that machine");
+    }
+    const isolation = input.isolation === undefined ? "direct" : input.isolation;
+    if (isolation === "container") {
+      throw new WorkspaceError("Container isolation on a local workspace is not available yet");
+    }
+    if (isolation !== "direct") throw new WorkspaceError("workspace.isolation must be direct");
+    // `executorName` comes from the live executor, never the client: it
+    // goes into the system prompt, and a client naming the machine could
+    // put anything there.
+    return { kind: "local", executorId: input.executorId, executorName: executor.name, path: input.path, isolation };
   }
 
-  throw new WorkspaceError("workspace.kind must be one of scratch, github");
+  throw new WorkspaceError("workspace.kind must be one of scratch, github, local");
+}
+
+/**
+ * Lexically under one of the roots the executor announced. Advisory: the
+ * executor's own realpath check (executor/service.ts) is what actually
+ * decides, on every call, and it does not trust this server's answer. What
+ * this buys is a 400 at creation instead of a failed first tool call — and a
+ * refusal to even *store* a path the machine has not agreed to. Separator
+ * follows the root, since the executor may not run on this OS.
+ */
+export function isUnderAnnouncedRoot(candidate: string, roots: string[]): boolean {
+  if (candidate.length === 0 || candidate.includes("\0")) return false;
+  const segments = candidate.split(/[\\/]/);
+  if (segments.includes("..")) return false;
+  for (const root of roots) {
+    const sep = root.startsWith("/") ? "/" : "\\";
+    const base = root.endsWith(sep) ? root.slice(0, -1) : root;
+    if (candidate === base || candidate === root || candidate.startsWith(base + sep)) return true;
+  }
+  return false;
 }
 
 /** A stored row's workspace, with the pre-workspace null read as scratch. */

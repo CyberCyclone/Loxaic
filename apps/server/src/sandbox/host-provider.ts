@@ -102,8 +102,25 @@ function openHostTerminal(cwd: string): TerminalSession {
   };
 }
 
-function makeHandle(sandboxDir: string): SandboxHandle {
-  const workdir = path.join(sandboxDir, "repo");
+/**
+ * A handle over a directory the *user* owns, for the local executor
+ * (executor/service.ts): root and workdir are the directory itself, and
+ * `stop()`/`destroy()` only ever forget — nothing here may delete a folder
+ * this process did not create. Contrast `makeHandle`, whose directory is a
+ * throwaway the provider made and whose `destroy()` removes it.
+ */
+export function attachDirectory(dir: string): SandboxHandle {
+  return makeHandle(dir, { workdir: dir, destroy: () => Promise.resolve() });
+}
+
+function makeHandle(
+  sandboxDir: string,
+  opts: { workdir?: string; destroy?: () => Promise<void> } = {},
+): SandboxHandle {
+  const workdir = opts.workdir ?? path.join(sandboxDir, "repo");
+  const destroy = opts.destroy ?? (async () => {
+    await rm(sandboxDir, { recursive: true, force: true }).catch(() => undefined);
+  });
   return {
     provider: "host",
     ref: sandboxDir,
@@ -170,9 +187,7 @@ function makeHandle(sandboxDir: string): SandboxHandle {
       // deleted work someone was coming back to. Reclaiming is destroy()'s job.
     },
 
-    async destroy() {
-      await rm(sandboxDir, { recursive: true, force: true }).catch(() => undefined);
-    },
+    destroy,
   };
 }
 
