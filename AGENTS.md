@@ -783,6 +783,54 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
 
+### Agent workspaces
+
+- **`conversations.workspace` (jsonb, `Workspace` in `packages/types`) says where an agent
+  conversation's files live: `scratch` (stored as null — indistinguishable from every
+  pre-workspace row), `github` (a clone on a fresh branch), or `local` (the user's own
+  machine; a later stage, rejected until then). Set once by `POST /v1/conversations
+  {kind:"agent", workspace}` and **never patched** — there is no PATCH path, deliberately.
+- **The system prompt is a pure function of the workspace and the sandbox mode**
+  (`agent/workspace.ts`'s `describeWorkspace`). Nothing live may go in it — not whether a PR has
+  been opened, not whether the sandbox is paused — because the prompt is the front of every
+  request's prefix and any variation between turns costs a full re-evaluation. `prompt-
+  prefix.test.ts` has a github-workspace case that asserts two turns produce a byte-identical
+  system message. The container path is quoted literally because it is fixed; the host path is
+  described rather than named because it is only known once the sandbox exists.
+- **The old prompt lied.** It told every conversation "the repository checked out at
+  /home/loxaic/repo" when nothing was ever checked out. Scratch now says so.
+- **`cloneUrl` and the default branch come from GitHub, never the client.** `parseWorkspaceInput`
+  looks the repo up with the *owner's* token (so a repo they cannot see is a 400 at creation,
+  not a clone failure on the first tool call), takes `clone_url` from the answer, and ignores any
+  `pr` the client sends. A client that could name the clone URL could point the checkout
+  anywhere.
+- **Clone credentials belong to the conversation owner, never the sender.** Sandboxes are
+  created lazily on first tool use, which may be a shared editor's; the row's `ownerId` is the
+  owner's for the same reason (`sandbox-manager.ts`'s `createConfigFor`).
+- **A GitHub token meets git in exactly one place: `sandbox/git.ts`.** It rides in
+  `ExecOptions.env` for one command, read by a `credential.helper` passed with `-c` — never in
+  argv, never in the clone URL (which git writes into `.git/config`, where the model can `cat`
+  it and `web_fetch` it out), never in a file, never logged. `git.test.ts` greps the whole
+  `.git` directory for it after a clone. The previous code embedded it in the URL.
+- **Full clone, not `--depth=1`.** Shallow made `git log`, `blame` and `diff <base>` — the first
+  things a model reaches for — empty or wrong. Paid once per conversation; the checkout is kept
+  (stop-and-resume).
+- **GitHub workspaces need sandbox networking**, which containers lack unless an admin enabled
+  it. The chooser reads `GET /v1/config` and refuses GitHub *with the reason and the fix* rather
+  than hiding it; a coding agent that cannot `npm install` is not one. `SANDBOX_EXTRA_HOSTS`
+  (`host:ip`, comma-separated → `HostConfig.ExtraHosts`) exists so a networked sandbox can
+  reach a service on the host by name on Linux/Podman.
+- **Client: create-then-send when a workspace was chosen; the implicit path stays.** A plain
+  send with no conversation still opens a scratch one on the server, for clients that predate
+  the chooser. `titleIfUnnamed` names a pre-created conversation from its first message, gated
+  on the message count so a thread a user renamed to literally "New conversation" is never
+  overwritten.
+- **e2e:** `apps/e2e/scripts/git-server.ts` runs `git daemon` over the fixture repos and the
+  mock GitHub API hands out its `git://host.docker.internal:<port>/…` URLs as `clone_url`, so
+  the spec exercises the server's real workspace path with nothing stubbed. Specs that clone
+  turn `allowNetwork` on through the admin API and reset it after — the env pin would make
+  `resetSandboxSettings()` 409.
+
 ### GitHub connection
 
 - One personal access token per user (`github_connections`, `userId` primary key like

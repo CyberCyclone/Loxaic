@@ -95,6 +95,13 @@ ones), and it does not apply to host mode, where sandboxes always have the
 host's own network. `web_fetch` is unaffected either way — it always runs on
 the server, behind an SSRF guard, never in the sandbox.
 
+**Starting an agent chat in a GitHub repository requires this.** The clone
+happens inside the sandbox, so a deployment with network off cannot offer it;
+the workspace chooser says so and points at this setting. `SANDBOX_EXTRA_HOSTS`
+(`name:ip`, comma-separated; `host-gateway` is accepted as an ip) adds
+`/etc/hosts` entries to networked sandboxes, for reaching a service on the host
+machine by name from Linux or Podman.
+
 ### How long a workspace lasts
 
 An agent's sandbox is where its work actually lives — the files it edited, the

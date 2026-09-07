@@ -9,6 +9,7 @@ import {
   setAgentMode,
   approveTool,
   denyTool,
+  createConversation,
   getConversations,
   getMessages,
   updateConversation,
@@ -20,9 +21,11 @@ import {
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
-import type { Conversation, Message, ChangedFile } from '@/lib/types';
+import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
+
+export type { WorkspaceChoice } from '@/lib/types';
 
 /** `queued` means the run exists and is waiting for an inference slot —
  * distinct from `running`, because nothing is happening yet and the user is
@@ -50,6 +53,18 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  /**
+   * The workspace the *next* run will be created with. Only meaningful while
+   * no run is active — once a conversation exists its workspace is fixed, and
+   * the chooser is not offered. A ref alongside the state because handleSend
+   * reads it from inside a callback that must not re-bind on every choice.
+   */
+  const [pendingWorkspace, setPendingWorkspaceState] = useState<WorkspaceChoice>({ kind: 'scratch' });
+  const pendingWorkspaceRef = useRef<WorkspaceChoice>({ kind: 'scratch' });
+  const setPendingWorkspace = useCallback((ws: WorkspaceChoice) => {
+    pendingWorkspaceRef.current = ws;
+    setPendingWorkspaceState(ws);
+  }, []);
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   const { showToast } = useToastHelper();
@@ -168,7 +183,10 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     setIteration(null);
     setQueuePosition(null);
     setLiveTodos([]);
-  }, [setActiveId]);
+    // Each new run starts from scratch: a repo chosen for the last one must
+    // not silently carry over to a conversation the user thinks is fresh.
+    setPendingWorkspace({ kind: 'scratch' });
+  }, [setActiveId, setPendingWorkspace]);
 
   // Load real runs + latest run's history on mount / token change.
   useEffect(() => {
@@ -187,6 +205,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           location: 'server' as const,
           msgs: [],
           role: c.role ?? 'owner',
+          workspace: c.workspace ?? null,
         }));
         setRuns((prev) => {
           const existing = new Set(prev.map((r) => r.id));
@@ -274,6 +293,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         pendingModelRef.current = null;
         setRuns((prev) => {
           if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
+            // The optimistic run already carries the chosen workspace; only
+            // the id changes.
             return prev.map((r) => (r.id === localId ? { ...r, id: realId } : r));
           }
           if (prev.some((r) => r.id === realId)) return prev;
@@ -444,6 +465,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
+        const chosen = pendingWorkspaceRef.current;
         const newRun: Conversation = {
           id: localId,
           title: text.slice(0, 40) || (attachments?.[0]?.name ?? 'Attachment'),
@@ -452,10 +474,32 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           model,
           location: 'server',
           msgs: [{ id: localMsgId, role: 'user', text, attachments }],
+          workspace: chosen.kind === 'scratch' ? null : chosen,
         };
         setRuns((prev) => [newRun, ...prev]);
         setActiveId(localId);
-        sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, refs);
+        if (chosen.kind === 'scratch') {
+          // The implicit path: the server opens a scratch conversation on the
+          // first send. Unchanged from before workspaces existed.
+          sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, refs);
+        } else {
+          // Anything else is created first, so the server can validate the
+          // choice (does the repo exist under your token?) and refuse it
+          // before a message is persisted against a conversation that cannot
+          // do what it claims. `turn.started` then swaps the optimistic id for
+          // the real one exactly as it does on the implicit path.
+          const ws = wsRef.current;
+          createConversation({ kind: 'agent', workspace: chosen })
+            .then((created) => {
+              sendAgentMessage(ws, text, mode, created.id, undefined, model, refs);
+            })
+            .catch((err: unknown) => {
+              setRuns((prev) => prev.filter((r) => r.id !== localId));
+              setActiveId(null);
+              pendingLocalIdRef.current = null;
+              showToast(err instanceof Error ? err.message : 'Could not start the conversation', 5000);
+            });
+        }
       } else {
         setRuns((prev) =>
           prev.map((r) =>
@@ -467,7 +511,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, refs);
       }
     },
-    [mode, setActiveId],
+    [mode, setActiveId, showToast],
   );
 
   const handleStop = useCallback(() => {
@@ -557,6 +601,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     pendingApproval,
     iteration,
     queuePosition,
+    pendingWorkspace,
+    setPendingWorkspace,
     todos: liveTodos,
     changedFiles,
     handleSend,

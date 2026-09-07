@@ -83,6 +83,22 @@ export interface ConfigResponse {
   };
 }
 
+/** `GET /v1/cluster`, projected to what a client shows: which host it is
+ * talking to, by the name its owner chose. Unauthenticated on the server —
+ * the onboarding join screen reads it before an account exists. */
+export interface ClusterInfo {
+  cluster: { id: string; name: string };
+  hosts: { id: string; name: string; online: boolean; self: boolean }[];
+}
+
+export async function getCluster(): Promise<ClusterInfo | null> {
+  const res = await fetch(`${BASE_URL}/v1/cluster`);
+  // 503 while identity is still being minted at boot — not an error, just
+  // "not yet". A dev server with no LOXAIC_INSTANCE_ID has an empty host list.
+  if (!res.ok) return null;
+  return res.json() as Promise<ClusterInfo>;
+}
+
 export async function getConfig(): Promise<ConfigResponse> {
   const res = await fetch(`${BASE_URL}/v1/config`);
   if (!res.ok) throw new Error(`GET /v1/config ${String(res.status)}`);
@@ -283,6 +299,11 @@ export interface Conversation {
   activeLeafId: string | null;
   modelPref: import("@loxaic/types").ModelPref | null;
   mcpOverrides: { disabledServerIds?: string[] } | null;
+  /** Where an agent conversation's files live. Null is scratch. Fixed at
+   * creation — see `createConversation`. */
+  workspace?: import("@loxaic/types").Workspace | null;
+  /** Only on the single-conversation read: whether a run is going right now. */
+  active_run?: boolean;
   createdAt: string;
   updatedAt: string;
   /** What the caller may do here. Present on list and single-conversation
@@ -393,6 +414,30 @@ export async function getSandboxes(conversationId?: string): Promise<SandboxRow[
   const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
   const res = await authedFetch(`/v1/sandboxes${query}`);
   return res.json() as Promise<SandboxRow[]>;
+}
+
+/**
+ * Creates a conversation up front, so an agent chat can choose its workspace
+ * before its first message. The workspace is immutable afterwards: the agent's
+ * system prompt is built from it. A plain send with no conversation still
+ * opens a scratch one implicitly, for clients that predate the chooser.
+ */
+export async function createConversation(input: {
+  title?: string;
+  kind?: "chat" | "agent";
+  workspace?: import("@loxaic/types").Workspace | { kind: "github"; repo: string; baseBranch?: string; branch?: string };
+}): Promise<Conversation> {
+  const res = await authedFetch("/v1/conversations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  return res.json() as Promise<Conversation>;
+}
+
+export async function getConversation(id: string): Promise<Conversation> {
+  const res = await authedFetch(`/v1/conversations/${id}`);
+  return res.json() as Promise<Conversation>;
 }
 
 export async function getConversations(): Promise<Conversation[]> {

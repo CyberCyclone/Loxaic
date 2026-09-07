@@ -6,6 +6,8 @@ import type { ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
+import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
+import { getRunByConversation } from "../streams/registry.ts";
 import { atLeast, type ConversationRole, resolveAccess } from "../streams/authz";
 
 /**
@@ -80,17 +82,61 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    return { ...row, role: grant.role };
+    // Whether a run is going right now, from the registry — exact, and the
+    // signal a test (or a client) polls for "has the agent finished" rather
+    // than guessing from message statuses. Process-local, like the registry.
+    return { ...row, role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
   });
 
-  // Create conversation
+  /**
+   * Create a conversation.
+   *
+   * An agent conversation may carry a `workspace` — where its files live —
+   * which is fixed here and never patched, because the agent's system prompt
+   * is built from it (see agent/workspace.ts). Chat conversations have no
+   * workspace; sending one is a 400 rather than a silent drop, since a client
+   * that asked for a repo and got a scratch directory would only find out
+   * three tool calls later.
+   */
   app.post("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { title } = request.body as { title?: string };
+    const { title, kind, workspace } = (request.body ?? {}) as {
+      title?: string;
+      kind?: unknown;
+      workspace?: unknown;
+    };
+    // Only the two kinds a client may open. Routines create their own rows
+    // server-side and are not something a client creates by name.
+    if (kind !== undefined && kind !== "chat" && kind !== "agent") {
+      reply.code(400);
+      return { error: "kind must be chat or agent" };
+    }
+    const resolvedKind = kind ?? "chat";
+    if (workspace !== undefined && workspace !== null && resolvedKind !== "agent") {
+      reply.code(400);
+      return { error: "only agent conversations have a workspace" };
+    }
+    let parsed;
+    try {
+      parsed = resolvedKind === "agent" ? await parseWorkspaceInput(workspace, { userId }) : null;
+    } catch (err) {
+      if (err instanceof WorkspaceError) {
+        reply.code(400);
+        return { error: err.message };
+      }
+      throw err;
+    }
     const [row] = await db
       .insert(conversations)
-      // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty title must still fall back to the default; ?? would store "".
-      .values({ ownerId: userId, title: title || "New conversation" })
+      .values({
+        ownerId: userId,
+        // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty title must still fall back to the default; ?? would store "".
+        title: title || "New conversation",
+        kind: resolvedKind,
+        // Scratch is stored as null, the same value every pre-workspace row
+        // has, so the two are indistinguishable everywhere they are read.
+        workspace: parsed && parsed.kind !== "scratch" ? parsed : null,
+      })
       .returning();
     return row;
   });

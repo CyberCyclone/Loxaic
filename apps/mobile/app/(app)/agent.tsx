@@ -18,6 +18,8 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { AgentStream } from '@/components/agent/AgentStream';
 import { Inspector } from '@/components/agent/Inspector';
 import { ModeSelector } from '@/components/agent/ModeSelector';
+import { WorkspaceChooser } from '@/components/agent/WorkspaceChooser';
+import { WorkspacePill } from '@/components/agent/WorkspacePill';
 import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
@@ -53,6 +55,8 @@ export default function AgentScreen() {
     pendingApproval,
     iteration,
     queuePosition,
+    pendingWorkspace,
+    setPendingWorkspace,
     todos,
     changedFiles,
     handleSend,
@@ -101,7 +105,13 @@ export default function AgentScreen() {
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
   const { sandbox } = useWorkspaceStatus(activeId, runState);
-  const workspace = config ? { retention: config.sandbox.retention, sandbox } : null;
+  // Before a run exists the pill and Inspector show the *pending* choice;
+  // once it does, they show the run's own, which is fixed.
+  const currentWorkspace = activeRun ? (activeRun.workspace ?? null) : pendingWorkspace;
+  const workspace = config
+    ? { retention: config.sandbox.retention, sandbox, workspace: currentWorkspace }
+    : null;
+  const [chooserOpen, setChooserOpen] = useState(false);
   const mcpControls =
     mcpOverrides.servers.length > 0
       ? { servers: mcpOverrides.servers, disabledIds: mcpOverrides.disabledIds, onToggle: mcpOverrides.toggle }
@@ -218,7 +228,14 @@ export default function AgentScreen() {
                 onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
                 onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
               />
-              <ModeSelector mode={mode} onChange={handleModeChange} />
+              <HStack className="items-center justify-between pr-3">
+                <ModeSelector mode={mode} onChange={handleModeChange} />
+                <WorkspacePill
+                  workspace={currentWorkspace}
+                  editable={!activeRun}
+                  onPress={() => { setChooserOpen(true); }}
+                />
+              </HStack>
               <Composer
                 onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
                 onStop={handleStop}
@@ -279,6 +296,14 @@ export default function AgentScreen() {
         />
       )}
 
+      <WorkspaceChooser
+        open={chooserOpen}
+        onClose={() => { setChooserOpen(false); }}
+        value={pendingWorkspace}
+        onChange={setPendingWorkspace}
+        config={config}
+        token={token}
+      />
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal
         open={modelModalOpen}
