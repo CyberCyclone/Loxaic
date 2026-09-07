@@ -399,25 +399,37 @@ async function createEntry(provider: SandboxProvider, userId: string): Promise<E
   return { handle, lastUsedAt: Date.now() };
 }
 
-/** Stops and forgets every extraction sandbox idle for longer than IDLE_TTL_MS. */
+/**
+ * Destroys and forgets every extraction sandbox idle for longer than
+ * IDLE_TTL_MS.
+ *
+ * `destroy`, not `stop`, and unlike a conversation sandbox that is the right
+ * call: these hold no work anyone returns to. An extraction sandbox exists for
+ * the seconds it takes to read one uploaded document, is keyed by user rather
+ * than by conversation, and there is no row recording it — nothing could ever
+ * resume one. Pausing them would leave stopped containers no code path
+ * reclaims. The scratch copy of someone's document going away with it is a
+ * feature.
+ */
 export async function reapIdleExtractionSandboxes(now = Date.now()): Promise<number> {
   let reaped = 0;
   for (const [userId, entry] of [...active]) {
     if (now - entry.lastUsedAt < IDLE_TTL_MS) continue;
     active.delete(userId);
-    await entry.handle.stop().catch(() => undefined);
+    await entry.handle.destroy().catch(() => undefined);
     reaped++;
   }
   return reaped;
 }
 
-/** Stops every extraction sandbox — shutdown, and the settings change that
- * invalidates containers created by a previous engine. */
+/** Destroys every extraction sandbox — shutdown, and the settings change that
+ * invalidates containers created by a previous engine. See above for why these
+ * are torn down rather than paused. */
 export async function stopAllExtractionSandboxes(): Promise<number> {
   let stopped = 0;
   for (const [userId, entry] of [...active]) {
     active.delete(userId);
-    await entry.handle.stop().catch(() => undefined);
+    await entry.handle.destroy().catch(() => undefined);
     stopped++;
   }
   return stopped;

@@ -26,6 +26,7 @@ import { useModels } from '@/hooks/useModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useServerConfig } from '@/hooks/useServerConfig';
+import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { canEdit } from '@/lib/types';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
@@ -95,6 +96,11 @@ export default function AgentScreen() {
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
   const mcpOverrides = useMcpOverrides(token, activeId);
+  // Refetched whenever a run ends: a turn that used a tool is exactly what
+  // creates a workspace, or brings a paused one back, and nothing else in the
+  // stream says so.
+  const { sandbox } = useWorkspaceStatus(activeId, runState);
+  const workspace = config ? { retention: config.sandbox.retention, sandbox } : null;
   const mcpControls =
     mcpOverrides.servers.length > 0
       ? { servers: mcpOverrides.servers, disabledIds: mcpOverrides.disabledIds, onToggle: mcpOverrides.toggle }
@@ -152,6 +158,7 @@ export default function AgentScreen() {
             <HStack space="sm" className="items-center">
               {activeRun && (
                 <Pressable
+                  testID="agent.inspector.toggle"
                   onPress={() => { setInspectorOpen((o) => !o); }}
                   className="flex-row items-center gap-1 rounded-sm p-1.5 web:hover:bg-muted/50"
                 >
@@ -239,6 +246,7 @@ export default function AgentScreen() {
                 changedFiles={changedFiles}
                 context={context}
                 mcp={mcpControls}
+                workspace={workspace}
                 onCompact={handleCompactFromInspector}
                 busy={busy}
               />
@@ -263,6 +271,7 @@ export default function AgentScreen() {
           changedFiles={changedFiles}
           context={context}
           mcp={mcpControls}
+          workspace={workspace}
           onCompact={handleCompactFromInspector}
           busy={busy}
         />

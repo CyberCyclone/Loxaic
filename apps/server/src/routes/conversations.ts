@@ -5,6 +5,7 @@ import { conversationShares, conversations, messages, usageRecords } from "@loxa
 import type { ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
+import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
 import { atLeast, type ConversationRole, resolveAccess } from "../streams/authz";
 
 /**
@@ -143,6 +144,20 @@ export function conversationRoutes(app: FastifyInstance) {
         .update(conversations)
         .set({ deletedAt: new Date() })
         .where(eq(conversations.id, request.params.id));
+      // The conversation row is only soft-deleted, but its sandbox is not
+      // soft-anything: sandboxes now persist across idle periods rather than
+      // being cleaned up by a 30-minute timer, so without this a deleted
+      // conversation would leave a container holding its files running on the
+      // host with nothing left that could ever reach it — the user cannot
+      // open the conversation, and the abandoned reaper would take weeks.
+      // Deliberately not awaited into the response: reclaiming disk is not
+      // something the user's delete should wait on, or fail on.
+      void destroyConversationSandboxes(request.params.id).catch((err: unknown) => {
+        request.log.warn(
+          { err, conversationId: request.params.id },
+          "failed to destroy sandboxes for a deleted conversation",
+        );
+      });
     }
     return { ok: true };
   });

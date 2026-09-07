@@ -14,9 +14,14 @@ import { getHostProvider } from "../../sandbox/host-provider.ts";
  * `stopAllSandboxes()` with no filter is global by design — that is the point
  * of it when an admin changes the engine — but test files share one Postgres
  * and run in parallel, so an unfiltered sweep here would stop the container
- * sandbox the MCP end-to-end suite is using. Host sandboxes are plain
- * directories no other suite creates, which makes them a safe subject for the
- * same code path.
+ * sandbox the MCP end-to-end suite is using.
+ *
+ * The same sharing is why nothing here asserts on the sweep's **return
+ * count**. Host sandboxes were once this file's exclusive property; they are
+ * not any more (lifecycle.test.ts creates them too), so the number of rows a
+ * global sweep touches at any instant is not a fact this file can predict.
+ * Every case asserts on the rows it created instead, which is the property it
+ * actually means.
  */
 const userId = `test-stopall-${uuid()}`;
 let root: string;
@@ -63,8 +68,10 @@ async function insertRow(ref: string, status = "running", provider = "host") {
 }
 
 describe("stopAllSandboxes", () => {
-  it("stops a live host sandbox and marks its row stopped", async () => {
+  it("stops a live host sandbox and marks its row stopped, without destroying it", async () => {
     const handle = await getHostProvider().create(userId, {});
+    const file = path.join(handle.workdir, "wip.txt");
+    await handle.writeFile(file, "unsaved work");
     const row = await insertRow(handle.ref);
     await expect(handle.isRunning()).resolves.toBe(true);
 
@@ -74,7 +81,12 @@ describe("stopAllSandboxes", () => {
     const after = await db.query.sandboxes.findFirst({ where: eq(sandboxes.id, row.id) });
     expect(after?.status).toBe("stopped");
     expect(after?.stoppedAt).not.toBeNull();
-    await expect(handle.isRunning()).resolves.toBe(false);
+    // The point of the sweep is to retire sandboxes built under settings that
+    // no longer apply — not to throw away what is in them. An admin toggling
+    // the network switch must not cost every user their working directory,
+    // which is exactly what this did while stop() deleted.
+    await expect(handle.exists()).resolves.toBe(true);
+    await expect(handle.readFile(file)).resolves.toBe("unsaved work");
   });
 
   it("clears a row left behind by a previous mode, which normal recovery skips", async () => {
@@ -105,15 +117,24 @@ describe("stopAllSandboxes", () => {
   });
 
   it("ignores rows that are already stopped", async () => {
-    await insertRow(path.join(root, "already-done"), "stopped");
-    const stopped = await stopAllSandboxes("host");
-    expect(stopped).toBe(0);
+    const row = await insertRow(path.join(root, "already-done"), "stopped");
+    const before = await db.query.sandboxes.findFirst({ where: eq(sandboxes.id, row.id) });
+
+    await stopAllSandboxes("host");
+
+    // Asserted on the row rather than on the sweep's count: the count is
+    // global (see the file header) and another suite's live sandbox would
+    // inflate it. "Already stopped" means untouched — same status, same
+    // stoppedAt, not re-stamped with a fresh timestamp.
+    const after = await db.query.sandboxes.findFirst({ where: eq(sandboxes.id, row.id) });
+    expect(after?.status).toBe("stopped");
+    expect(after?.stoppedAt?.getTime()).toBe(before?.stoppedAt?.getTime());
   });
 
   it("does not touch host sandboxes when only container settings changed", async () => {
-    // The guard against real data loss: a host sandbox's stop() DELETES its
-    // working directory, so a container-only change (engine, socket, network
-    // toggle) sweeping globally would destroy other users' in-progress work.
+    // A container-only change (engine, socket, network toggle) must not
+    // interrupt host sandboxes: stopping one no longer destroys it, but it
+    // still costs whoever is using it their session mid-task.
     // invalidatedKinds() narrows the sweep; this asserts the narrowing holds.
     const handle = await getHostProvider().create(userId, {});
     await handle.writeFile(path.join(handle.workdir, "work.txt"), "user's work");
@@ -130,13 +151,22 @@ describe("stopAllSandboxes", () => {
     await insertRow(path.join(root, "one"));
     await insertRow(path.join(root, "two"));
 
-    expect(await stopAllSandboxes("host")).toBe(2);
-    expect(await stopAllSandboxes("host")).toBe(0);
-
+    // Asserted on this suite's own rows rather than the sweep's return value.
+    // stopAllSandboxes() is global by design, so the count also includes
+    // whatever another suite happens to have running in the shared database at
+    // that instant — a number this test cannot predict and has no opinion
+    // about. What it is actually asserting is that a sweep leaves nothing of
+    // its own behind, and that a second one has nothing to do.
+    await stopAllSandboxes("host");
     const remaining = await db.query.sandboxes.findMany({
       where: and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running")),
     });
     expect(remaining).toHaveLength(0);
+
+    const before = await db.query.sandboxes.findMany({ where: eq(sandboxes.ownerId, userId) });
+    await stopAllSandboxes("host");
+    const after = await db.query.sandboxes.findMany({ where: eq(sandboxes.ownerId, userId) });
+    expect(after.map((r) => r.status).sort()).toEqual(before.map((r) => r.status).sort());
   });
 });
 

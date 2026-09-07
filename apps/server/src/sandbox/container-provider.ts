@@ -459,7 +459,34 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       }
     },
 
+    async exists() {
+      try {
+        await container.inspect();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+
+    async start() {
+      // inspect() first, so a container the engine has never heard of throws
+      // here rather than being silently created or ignored: this call is the
+      // manager's "paused or gone?" discriminator, and answering "fine" for a
+      // container that no longer exists would hand back a handle whose every
+      // later exec fails one at a time instead.
+      const info = await container.inspect();
+      if (info.State.Running) return;
+      await container.start();
+    },
+
     async stop() {
+      // Stop only. The container — and with it the conversation's edits, its
+      // repo checkout and anything installed into it — stays on disk until
+      // something explicitly destroys it. This is why AutoRemove is off.
+      await container.stop({ t: 10 }).catch(() => undefined);
+    },
+
+    async destroy() {
       await container.stop({ t: 10 }).catch(() => undefined);
       await container.remove({ force: true }).catch(() => undefined);
     },
@@ -532,15 +559,25 @@ export async function probeEngines(): Promise<EngineProbe[]> {
   );
 }
 
-/** IDs of every running container this provider ever creates (all sandboxes
- * carry the loxaic.sandbox label). Used by the boot-time orphan sweep.
- * Empty when no engine is reachable — a sweep on a host-mode or engineless
- * machine is a no-op, not an error. */
+/**
+ * IDs of every container this provider ever created (all sandboxes carry the
+ * loxaic.sandbox label), **running or stopped**. Used by the boot-time orphan
+ * sweep. Empty when no engine is reachable — a sweep on a host-mode or
+ * engineless machine is a no-op, not an error.
+ *
+ * `all: true` is load-bearing. dockerode lists only running containers by
+ * default, which was complete while a stopped sandbox was a removed one. Now
+ * that stopping is a pause, an orphan — a container whose row is gone — comes
+ * to rest *stopped*, i.e. exactly the state the default listing cannot see, and
+ * every one of them would accumulate on the host forever with nothing able to
+ * find it. Observed directly: an afternoon of test runs left two dozen.
+ */
 export async function listSandboxContainers(): Promise<string[]> {
   const found = await getDocker();
   if (!found) return [];
   try {
     const containers = await found.docker.listContainers({
+      all: true,
       filters: { label: ["loxaic.sandbox"] },
     });
     return containers.map((c) => c.Id);
@@ -581,7 +618,26 @@ export function getContainerProvider(): SandboxProvider {
           Memory: config.limits?.memory ?? DEFAULT_LIMITS.Memory,
           NanoCpus: config.limits?.cpu ?? DEFAULT_LIMITS.NanoCpus,
           PidsLimit: config.limits?.pids ?? DEFAULT_LIMITS.PidsLimit,
-          AutoRemove: true,
+          // Off, deliberately. A sandbox is a coding session's working
+          // directory, and AutoRemove would delete it the moment the
+          // container stopped — including the idle pause an untouched
+          // conversation gets, and a host reboot. Reclaim is explicit
+          // instead: deleting the conversation, or the abandoned reaper.
+          AutoRemove: false,
+          // Run tini as PID 1. Both halves of this matter once sandboxes are
+          // long-lived and stopping them is routine:
+          //
+          // - **Signals.** PID 1 gets no default handlers, so `tail -f` as
+          //   PID 1 simply ignores SIGTERM: every `stop()` waited out the full
+          //   10-second grace period and was then SIGKILLed (`Exited (137)`).
+          //   That was tolerable when stopping meant deleting; it is not when
+          //   an idle pause is a normal, frequent event. tini forwards the
+          //   signal and exits immediately.
+          // - **Zombies.** A container that now lives for days accumulates
+          //   orphaned children from every `bash -c` the agent runs, and PID 1
+          //   is the only thing that can reap them. Without this they pile up
+          //   against PidsLimit until the sandbox can no longer fork.
+          Init: true,
           NetworkMode: allowNetwork ? "bridge" : "none",
           // Everything below runs model-directed commands, so the container
           // gets no capability it cannot demonstrate a need for.
@@ -623,7 +679,9 @@ export function getContainerProvider(): SandboxProvider {
           "/home/loxaic/repo",
         ]);
         if (clone.exitCode !== 0) {
-          await handle.stop();
+          // destroy, not stop: create() is throwing, so no row will ever
+          // claim this container and nothing could resume it.
+          await handle.destroy();
           throw new Error(`Repo clone failed (exit ${String(clone.exitCode)}): ${clone.stderr.trim()}`);
         }
       } else {

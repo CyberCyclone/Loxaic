@@ -30,8 +30,22 @@ export const TOOL_PROMPT = 'write a file called notes';
 export const BASH_PROMPT = 'run a bash command';
 
 /** Substring of the bash trigger's stdout, echoed back inside the mock's
- * `[Mock] Done. The tool returned: …` wrap-up once the tool call resolves. */
+ * `[Mock] Done. The tool returned: …` wrap-up once the tool call resolves.
+ *
+ * **Not sufficient on its own to prove the tool ran.** It is also part of the
+ * command the tool-call card displays (`echo hello from the sandbox`), which
+ * is on screen from the moment approval is *requested* — so a wait for this
+ * alone can pass while the run is still sitting at the permission bar. Wait
+ * for {@link MOCK_TOOL_DONE} first; that text exists only after a tool result
+ * comes back. */
 export const MOCK_BASH_OUTPUT = 'hello from the sandbox';
+
+/** Waits for a tool call to have actually executed, then for its output.
+ * The ordering is the point — see MOCK_BASH_OUTPUT. */
+export async function waitForToolResult(output: string): Promise<void> {
+  await waitForTextIn('chat.messageList', MOCK_TOOL_DONE);
+  await waitForTextIn('chat.messageList', output);
+}
 
 /**
  * The sidebar is permanently visible on wide layouts and a slide-over
@@ -218,6 +232,52 @@ export async function setSandboxMode(mode: 'container' | 'host' | 'off'): Promis
   await waitForTextIn('sandbox.status', `(${mode})`);
 }
 
+/** Patches sandbox settings straight through the admin API. The UI has no
+ * control for a one-second idle window (deliberately — the picker offers hours),
+ * so a spec that needs to *observe* a pause has to ask for one this way. */
+export async function patchSandboxSettings(patch: Record<string, unknown>): Promise<void> {
+  const token = await apiToken(adminCreds());
+  const res = await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new Error(`[e2e] sandbox settings patch failed (${String(res.status)}): ${await res.text()}`);
+  }
+}
+
+/** The caller's sandboxes, newest first — the same rows the Inspector reads. */
+export async function listSandboxes(
+  token: string,
+  conversationId?: string,
+): Promise<{ id: string; status: string; containerId: string; provider: string; reap_at: string | null }[]> {
+  const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : '';
+  const res = await fetch(`${BASE_URL}/v1/sandboxes${query}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing sandboxes failed (${String(res.status)})`);
+  return (await res.json()) as { id: string; status: string; containerId: string; provider: string; reap_at: string | null }[];
+}
+
+/** Runs a command inside a sandbox through the same API a client would use.
+ * The pass/fail bar for anything about a workspace's *contents*: it reads what
+ * is actually on disk rather than what the model said about it. */
+export async function execInSandbox(
+  token: string,
+  sandboxId: string,
+  command: string,
+  workdir?: string,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const res = await fetch(`${BASE_URL}/v1/sandboxes/${sandboxId}/exec`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ command, ...(workdir ? { workdir } : {}) }),
+  });
+  if (!res.ok) throw new Error(`[e2e] exec failed (${String(res.status)}): ${await res.text()}`);
+  return (await res.json()) as { exitCode: number; stdout: string; stderr: string };
+}
+
 /**
  * Restores the sandbox settings a spec changed, straight through the API
  * rather than the UI — so cleanup still runs (and still works) if the test
@@ -234,7 +294,17 @@ export async function resetSandboxSettings(): Promise<void> {
   const res = await fetch(`${BASE_URL}/v1/admin/settings/sandbox`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ mode: 'container', engine: 'auto', allowNetwork: false }),
+    // Retention is reset too: a spec that pins a one-second idle stop to
+    // force a pause would otherwise leave every later spec's sandbox being
+    // stopped out from under it mid-run.
+    body: JSON.stringify({
+      mode: 'container',
+      engine: 'auto',
+      allowNetwork: false,
+      idleStopMs: 4 * 60 * 60 * 1000,
+      reapEnabled: true,
+      reapAfterMs: 30 * 24 * 60 * 60 * 1000,
+    }),
   });
   if (!res.ok) {
     throw new Error(

@@ -16,6 +16,8 @@ import {
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { ChangedFile } from '@/lib/types';
+import { describeRetention, formatDeadline } from '@/lib/retention';
+import type { SandboxRetention, SandboxRow } from '@loxaic/api-client';
 import type { Todo } from '@loxaic/api-client';
 
 const TODO_ICON: Record<Todo['status'], typeof Check> = {
@@ -30,6 +32,57 @@ const TODO_TINT: Record<Todo['status'], string> = {
   pending: 'text-muted-foreground',
 };
 
+export interface WorkspaceView {
+  retention: SandboxRetention;
+  /** The conversation's sandbox, or null when it has not run a tool yet. */
+  sandbox: SandboxRow | null;
+}
+
+/**
+ * What the user is told about where their work lives, and for how long.
+ *
+ * Shown before anything is at stake rather than after: the retention line is
+ * present from the first message, so someone deciding whether to spend an
+ * afternoon in an agent chat can see the terms first. Once a workspace exists
+ * and has been paused, it also says when it would actually be deleted — the
+ * in-app half of the warning that issue #5 will eventually also push.
+ */
+function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
+  const { retention, sandbox } = workspace;
+  const paused = sandbox?.status === 'stopped';
+  return (
+    <VStack space="xs">
+      <Text size="sm" className="font-semibold text-foreground">
+        Workspace
+      </Text>
+      {sandbox ? (
+        <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
+          {paused
+            ? 'Paused — your files are kept. The next message starts it again.'
+            : 'Running on the server.'}
+        </Text>
+      ) : (
+        <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
+          No workspace yet — one is created the first time a tool runs.
+        </Text>
+      )}
+      {/* `size="xs"`, not the `2xs` the rest of this panel uses: `text-2xs` has
+          no token in the Tailwind v4 theme, so on web it compiles to nothing at
+          all — no font size and no line height — and a wrapping paragraph of it
+          overlaps whatever follows. Harmless for the one-line hints elsewhere,
+          not for these. */}
+      <Text testID="agent.inspector.workspace.retention" size="xs" className="text-muted-foreground">
+        {describeRetention(retention)}
+      </Text>
+      {sandbox?.reap_at && (
+        <Text testID="agent.inspector.workspace.deadline" size="xs" className="text-warning">
+          Deleted {formatDeadline(sandbox.reap_at)} unless this conversation is used again.
+        </Text>
+      )}
+    </VStack>
+  );
+}
+
 export interface McpOverrideControls {
   servers: { id: string; name: string }[];
   disabledIds: string[];
@@ -41,13 +94,16 @@ interface InspectorBodyProps {
   changedFiles: ChangedFile[];
   context: ContextView | null;
   mcp?: McpOverrideControls | null;
+  workspace?: WorkspaceView | null;
   onCompact?: () => void;
   busy?: boolean;
 }
 
-function InspectorBody({ todos, changedFiles, context, mcp, onCompact, busy }: InspectorBodyProps) {
+function InspectorBody({ todos, changedFiles, context, mcp, workspace, onCompact, busy }: InspectorBodyProps) {
   return (
     <VStack space="lg">
+      {workspace && <WorkspaceSection workspace={workspace} />}
+
       <VStack space="xs">
         <Text size="sm" className="font-semibold text-foreground">
           Todo List
@@ -142,6 +198,7 @@ interface InspectorProps {
   changedFiles: ChangedFile[];
   context: ContextView | null;
   mcp?: McpOverrideControls | null;
+  workspace?: WorkspaceView | null;
   /** Absent in the wide (persistent side-panel) layout's own contract — both
    * layouts accept it identically, it's the caller (agent.tsx) that decides
    * whether pressing it should also dismiss the narrow-layout Actionsheet. */
@@ -149,7 +206,7 @@ interface InspectorProps {
   busy?: boolean;
 }
 
-export function Inspector({ open, onClose, wide, todos, changedFiles, context, mcp, onCompact, busy }: InspectorProps) {
+export function Inspector({ open, onClose, wide, todos, changedFiles, context, mcp, workspace, onCompact, busy }: InspectorProps) {
   if (!open) return null;
 
   if (wide) {
@@ -164,7 +221,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
           </Pressable>
         </HStack>
         <Box className="p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} onCompact={onCompact} busy={busy} />
         </Box>
       </Box>
     );
@@ -178,7 +235,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
         <Box className="w-full p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} onCompact={onCompact} busy={busy} />
         </Box>
       </ActionsheetContent>
     </Actionsheet>

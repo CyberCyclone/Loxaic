@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CappedSink } from "./exec-common.ts";
@@ -136,11 +137,35 @@ function makeHandle(sandboxDir: string): SandboxHandle {
       }
     },
 
+    // A host sandbox has no process, so existing and running are the same
+    // question — unlike a container, which can be present but stopped.
+    async exists() {
+      try {
+        return (await stat(sandboxDir)).isDirectory();
+      } catch {
+        return false;
+      }
+    },
+
+    // eslint-disable-next-line @typescript-eslint/require-await -- interface is async; a host sandbox has no process to start.
+    async start() {
+      // A host sandbox has nothing to restart — commands are spawned per
+      // exec — so "resumable" here means the directory is still there. Throwing
+      // when it isn't keeps this provider's start() answering the same
+      // question the container one does: paused, or gone?
+      if (!existsSync(sandboxDir)) {
+        throw new Error(`host sandbox directory is gone: ${sandboxDir}`);
+      }
+    },
+
     async stop() {
-      // Ephemeral by design, matching the container provider: a host
-      // sandbox is scratch space for one conversation, not a place to keep
-      // anything. Deleting it on stop (idle reap or explicit DELETE) is the
-      // same lifecycle a container gets with AutoRemove.
+      // Nothing to do, and that is the point: a host sandbox holds the
+      // conversation's files, so pausing it must not touch them. It used to
+      // `rm -rf` here, which meant an idle reap (or a settings change) silently
+      // deleted work someone was coming back to. Reclaiming is destroy()'s job.
+    },
+
+    async destroy() {
       await rm(sandboxDir, { recursive: true, force: true }).catch(() => undefined);
     },
   };
@@ -173,7 +198,9 @@ export function getHostProvider(): SandboxProvider {
           workdir,
         ]);
         if (clone.exitCode !== 0) {
-          await handle.stop();
+          // destroy, not stop: create() is throwing, so nothing will ever
+          // claim this directory.
+          await handle.destroy();
           throw new Error(`Repo clone failed (exit ${String(clone.exitCode)}): ${clone.stderr.trim()}`);
         }
       }

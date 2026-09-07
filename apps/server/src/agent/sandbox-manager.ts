@@ -1,14 +1,28 @@
-import { and, db, eq } from "@loxaic/db";
+import { and, db, eq, inArray, lt, ne } from "@loxaic/db";
 import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
 import { seedSandbox } from "../sandbox/seed.ts";
+import { getSandboxRetention } from "../settings.ts";
 
-/** How long a conversation's sandbox may sit unused before it's reaped. */
-const IDLE_TTL_MS = 30 * 60 * 1000;
-/** How often the reaper looks for idle sandboxes. */
-const REAP_INTERVAL_MS = 5 * 60 * 1000;
+/**
+ * How often the reapers run.
+ *
+ * Both timers are measured in hours or days, so the tick only has to be small
+ * relative to them — it is also what bounds how stale `last_used_at` gets for
+ * a sandbox in active use (see the flush below).
+ *
+ * Overridable because a five-minute tick is longer than any end-to-end test
+ * can wait, and the alternative — a test that reaches past the timer and stops
+ * a container itself — would assert nothing about the timer that is the actual
+ * subject. Read at call time like every other sandbox env var.
+ */
+function reapIntervalMs(): number {
+  const raw = process.env.SANDBOX_REAP_INTERVAL_MS;
+  const value = raw === undefined ? NaN : Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : 5 * 60 * 1000;
+}
 
 let seedWarned = false;
 
@@ -82,6 +96,37 @@ export async function getConversationSandbox(
   return entryProvider.attach(entry.ref);
 }
 
+/**
+ * Attaches to a sandbox recorded by a row, resuming it if it is paused.
+ *
+ * The counterpart of `getConversationSandbox` for the paths that reach a
+ * sandbox by *row* rather than by conversation — the REST exec/file routes and
+ * the terminal WebSocket. They previously attached and used the handle
+ * directly, which was fine while "stopped" meant "gone": the attach simply
+ * failed and the row was a tombstone. Now that a stopped sandbox is a paused
+ * one holding real work, those routes have to be able to wake it, or a user
+ * whose workspace paused overnight gets `container … is not running` from
+ * every one of them with no way back short of sending a chat message.
+ *
+ * Returns null when the sandbox is genuinely gone, which callers render as the
+ * same 404 a missing row gets.
+ */
+export async function attachRunningSandbox(row: {
+  id: string;
+  containerId: string;
+  provider: string;
+}): Promise<SandboxHandle | null> {
+  const provider = await getProviderByKind(row.provider as SandboxKind);
+  const handle = await provider.attach(row.containerId).catch(() => null);
+  if (!handle) return null;
+  if (!(await resume(handle))) {
+    await markDestroyed(row.id);
+    return null;
+  }
+  await markRunning(row.id);
+  return handle;
+}
+
 /** True when this process already has a live sandbox for this conversation.
  * Never creates one — callers that must not spin up a container just because
  * they might want to write to it (e.g. attachment overflow handling) check
@@ -117,12 +162,12 @@ async function resolveEntry(
     // must not make a perfectly live container/host-dir look vanished.
     const owner = cached.provider === currentProvider.kind ? currentProvider : await getProviderByKind(cached.provider);
     const handle = await owner.attach(cached.ref);
-    if (await handle.isRunning()) return cached;
-    // Either vanished (crash, engine restart, manual `docker rm`), or the
-    // mode changed since it was created — either way it's no longer usable.
+    if (await resume(handle)) return cached;
+    // Genuinely gone (crash, engine restart, manual `docker rm`), rather than
+    // merely stopped — `resume` already tried that. Nothing to recover.
     active.delete(conversationId);
     forgetOverflowWrites(cached.ref);
-    await markStopped(cached.rowId);
+    await markStopped(cached.rowId, cached.lastUsedAt);
   }
 
   const inFlight = pending.get(conversationId);
@@ -136,7 +181,14 @@ async function resolveEntry(
 }
 
 /**
- * How many sandboxes one user may hold at once.
+ * How many *running* sandboxes one user may hold at once.
+ *
+ * Running, not existing, and that stayed true when stopping became a pause:
+ * the resources this cap protects — memory, CPU, pids — are per running
+ * container, and a paused one holds none of them. A user with twenty paused
+ * conversations is spending disk, which is the abandoned reaper's department,
+ * not this one's. Counting paused sandboxes here would instead mean a user
+ * being refused a new one until they went and deleted old conversations.
  *
  * Env-backed with a default rather than a `server_settings` field: it is a
  * capacity guard rather than a security posture (the isolation itself is not
@@ -195,7 +247,7 @@ export async function assertUnderUserLimit(userId: string): Promise<void> {
   const reserved = inFlight.get(userId) ?? 0;
   let rows = await runningRowsFor(userId);
   if (rows.length + reserved >= limit) {
-    await markDeadRowsStopped(rows);
+    await markDeadRowsDestroyed(rows);
     rows = await runningRowsFor(userId);
   }
   if (rows.length + reserved >= limit) throw new SandboxLimitError(limit);
@@ -219,19 +271,30 @@ async function runningRowsFor(userId: string) {
  * answer; a throw means the engine could not be reached, and the row is left
  * alone rather than marked stopped on no evidence.
  */
-async function markDeadRowsStopped(
-  rows: { id: string; containerId: string; provider: string }[],
+/**
+ * Reconciles rows whose sandbox the engine no longer has.
+ *
+ * Asks `exists()`, never `start()`: a merely *stopped* container is perfectly
+ * recoverable and must not be recorded as gone, but this runs on read-only
+ * paths — the per-user cap check among them — where resuming every stopped
+ * container as a side effect of counting would be its own bug.
+ *
+ * An unreachable engine leaves rows alone, which is the conservative
+ * direction: "cannot ask" must never be recorded as "destroyed".
+ */
+async function markDeadRowsDestroyed(
+  rows: { id: string; containerId: string; provider: string; status?: string }[],
 ): Promise<number> {
   let marked = 0;
   for (const row of rows) {
     try {
       const provider = await getProviderByKind(row.provider as SandboxKind);
       const handle = await provider.attach(row.containerId);
-      if (await handle.isRunning()) continue;
+      if (await handle.exists()) continue;
     } catch {
       continue;
     }
-    await markStopped(row.id);
+    await markDestroyed(row.id);
     marked++;
   }
   return marked;
@@ -252,21 +315,31 @@ async function createEntry(
   // *second* container for the same conversation — the first still running,
   // no longer in `active`, and invisible to the orphan sweep because a row
   // still claimed it.
+  //
+  // "stopped" counts as recoverable, and that is the whole point of the
+  // stop/destroy split: a paused sandbox still holds the conversation's edits,
+  // its checkout, and whatever it installed, so the right answer to someone
+  // returning the next morning is to start it again rather than hand them an
+  // empty directory and a re-clone. Only "destroyed" is terminal.
   const existing = await db.query.sandboxes.findFirst({
     where: and(
       eq(sandboxes.conversationId, conversationId),
-      eq(sandboxes.status, "running"),
+      inArray(sandboxes.status, ["running", "stopped"]),
       eq(sandboxes.provider, provider.kind),
     ),
   });
   if (existing) {
     const handle = await provider.attach(existing.containerId);
-    if (await handle.isRunning()) {
+    if (await resume(handle)) {
       const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
+      await markRunning(existing.id);
       active.set(conversationId, entry);
       return entry;
     }
-    await markStopped(existing.id);
+    // Attached to a ref the engine no longer knows: the row is a tombstone for
+    // something already gone, so record that rather than leaving it as a
+    // "stopped" sandbox the user could be told still holds their work.
+    await markDestroyed(existing.id);
   }
 
   // Per-user ceiling on live sandboxes.
@@ -341,28 +414,189 @@ async function createEntryReserved(
   return entry;
 }
 
-async function markStopped(rowId: string): Promise<void> {
+/**
+ * Make a handle usable, whether it was running or merely paused.
+ *
+ * Returns false only when the sandbox is really gone. `isRunning()` cannot
+ * distinguish "stopped" from "removed" — both are false — so `start()` is the
+ * discriminator: it is a no-op on a live sandbox, resumes a paused one, and
+ * throws when there is nothing left to resume.
+ */
+async function resume(handle: SandboxHandle): Promise<boolean> {
+  try {
+    await handle.start();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function markRunning(rowId: string): Promise<void> {
   await db
     .update(sandboxes)
-    .set({ status: "stopped", stoppedAt: new Date() })
+    .set({ status: "running", stoppedAt: null, lastUsedAt: new Date() })
     .where(eq(sandboxes.id, rowId))
     .catch(() => undefined);
 }
 
-/** Stops and forgets every sandbox idle for longer than IDLE_TTL_MS. */
-export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
-  let reaped = 0;
+/** Records a sandbox as paused-but-intact. `lastUsedAt` is written here from
+ * the in-memory entry, because that is the moment the row's own copy stops
+ * being able to go stale — and it is what both the reap deadline and the
+ * "last used" the user sees are computed from. */
+async function markStopped(rowId: string, lastUsedAt?: number): Promise<void> {
+  await db
+    .update(sandboxes)
+    .set({
+      status: "stopped",
+      stoppedAt: new Date(),
+      ...(lastUsedAt !== undefined ? { lastUsedAt: new Date(lastUsedAt) } : {}),
+    })
+    .where(eq(sandboxes.id, rowId))
+    .catch(() => undefined);
+}
+
+async function markDestroyed(rowId: string): Promise<void> {
+  await db
+    .update(sandboxes)
+    .set({ status: "destroyed", stoppedAt: new Date() })
+    .where(eq(sandboxes.id, rowId))
+    .catch(() => undefined);
+}
+
+/**
+ * Writes the in-memory `lastUsedAt` of every live sandbox back to its row.
+ *
+ * Tool calls bump the in-memory value only — a database write per `bash` would
+ * be absurd — so without this a sandbox in constant use would look, to a fresh
+ * process reading the table, like one nobody had touched since it was created.
+ * That matters because the abandoned reaper reads exactly this column.
+ */
+async function flushLastUsed(): Promise<void> {
+  for (const entry of [...active.values()]) {
+    await db
+      .update(sandboxes)
+      .set({ lastUsedAt: new Date(entry.lastUsedAt) })
+      .where(eq(sandboxes.id, entry.rowId))
+      .catch(() => undefined);
+  }
+}
+
+/**
+ * **Pauses** every sandbox idle for longer than the configured idle-stop
+ * window, keeping its contents.
+ *
+ * The rename from "reap" is the substance of this function, not tidying: it
+ * used to delete, so a conversation left alone over lunch came back to an
+ * empty workspace and a model that had no idea why. Now it stops the
+ * container, marks the row `stopped`, and the next tool call starts it again
+ * with everything as it was.
+ */
+export async function stopIdleSandboxes(now = Date.now(), kind?: SandboxKind): Promise<number> {
+  const { idleStopMs } = getSandboxRetention();
+  let stopped = 0;
   for (const [conversationId, entry] of [...active.entries()]) {
-    if (now - entry.lastUsedAt < IDLE_TTL_MS) continue;
+    // Unfiltered in production — the idle timer is server-wide. The parameter
+    // exists so a test can aim it at host sandboxes only: this walks every
+    // live sandbox in the process, so a suite forcing a one-millisecond idle
+    // window would otherwise pause the container another suite is mid-run in.
+    // Same reasoning as stopAllSandboxes() and reapAbandonedSandboxes().
+    if (kind && entry.provider !== kind) continue;
+    if (now - entry.lastUsedAt < idleStopMs) continue;
     active.delete(conversationId);
     const provider = await getProviderByKind(entry.provider);
-    const handle = await provider.attach(entry.ref);
-    await handle.stop().catch(() => undefined);
+    const handle = await provider.attach(entry.ref).catch(() => null);
+    await handle?.stop().catch(() => undefined);
     forgetOverflowWrites(entry.ref);
-    await markStopped(entry.rowId);
-    reaped++;
+    await markStopped(entry.rowId, entry.lastUsedAt);
+    stopped++;
   }
-  return reaped;
+  return stopped;
+}
+
+/**
+ * **Destroys** sandboxes nobody has used for the configured retention window.
+ *
+ * The only timer in the system that deletes a user's work, which is why it is
+ * separately switchable, defaults to a month rather than hours, and reads
+ * `last_used_at` from the row rather than from this process's memory — the
+ * sandbox it is deciding about has, by definition, not been touched by anyone
+ * for weeks and will not be in `active` at all.
+ *
+ * Rows still marked `running` are eligible too. After a crash or a host reboot
+ * a row can stay `running` forever with nothing that would ever move it on;
+ * excluding those would make an abandoned sandbox permanently unreclaimable
+ * precisely because the server died while it was in use. Anything genuinely in
+ * use is in `active`, has a fresh `last_used_at` (see the flush above), and so
+ * cannot match this window.
+ */
+export async function reapAbandonedSandboxes(now = Date.now(), kind?: SandboxKind): Promise<number> {
+  const { reapEnabled, reapAfterMs } = getSandboxRetention();
+  if (!reapEnabled) return 0;
+
+  const cutoff = new Date(now - reapAfterMs);
+  const rows = await db.query.sandboxes
+    .findMany({
+      where: and(
+        ne(sandboxes.status, "destroyed"),
+        lt(sandboxes.lastUsedAt, cutoff),
+        // Unfiltered in production — this is a server-wide janitor. The
+        // parameter exists so a test can aim it at host sandboxes only:
+        // suites share one Postgres, and an unscoped destroy with a
+        // deliberately tiny retention window would delete the container
+        // another suite is mid-run in. Same reasoning as stopAllSandboxes().
+        ...(kind ? [eq(sandboxes.provider, kind)] : []),
+      ),
+      columns: { id: true, containerId: true, provider: true, conversationId: true },
+    })
+    .catch(() => []);
+
+  let destroyed = 0;
+  for (const row of rows) {
+    // A sandbox this process is holding open cannot be abandoned, whatever the
+    // row says — the row may simply predate the next flush.
+    if (row.conversationId && active.has(row.conversationId)) continue;
+    const provider = await getProviderByKind(row.provider as SandboxKind);
+    const handle = await provider.attach(row.containerId).catch(() => null);
+    if (handle) {
+      await handle.destroy().catch(() => undefined);
+    }
+    forgetOverflowWrites(row.containerId);
+    await markDestroyed(row.id);
+    destroyed++;
+  }
+  return destroyed;
+}
+
+/**
+ * Destroys every sandbox belonging to a conversation. The deliberate reclaim
+ * path: deleting the conversation is the user saying the work is finished with,
+ * and it is the only thing besides the abandoned reaper that may delete one.
+ */
+export async function destroyConversationSandboxes(conversationId: string): Promise<number> {
+  const cached = active.get(conversationId);
+  if (cached) active.delete(conversationId);
+  // An in-flight creation would otherwise insert its row *after* the query
+  // below and outlive the deletion of the conversation it belongs to.
+  const inFlight = pending.get(conversationId);
+  if (inFlight) await inFlight.catch(() => undefined);
+
+  const rows = await db.query.sandboxes
+    .findMany({
+      where: and(eq(sandboxes.conversationId, conversationId), ne(sandboxes.status, "destroyed")),
+      columns: { id: true, containerId: true, provider: true },
+    })
+    .catch(() => []);
+
+  let destroyed = 0;
+  for (const row of rows) {
+    const provider = await getProviderByKind(row.provider as SandboxKind);
+    const handle = await provider.attach(row.containerId).catch(() => null);
+    await handle?.destroy().catch(() => undefined);
+    forgetOverflowWrites(row.containerId);
+    await markDestroyed(row.id);
+    destroyed++;
+  }
+  return destroyed;
 }
 
 /**
@@ -379,6 +613,11 @@ export async function reapIdleSandboxes(now = Date.now()): Promise<number> {
  * "running" forever.
  */
 export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
+  // Nothing here destroys anything, and after the stop/destroy split that is
+  // now literally true rather than merely intended: a settings change used to
+  // delete every host sandbox's working directory through stop(), which is
+  // what the narrow invalidatedKinds() scoping in settings.ts existed to limit
+  // the damage of.
   let stopped = 0;
 
   // A creation already in flight captured the old settings, is not in
@@ -393,7 +632,8 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
     const provider = await getProviderByKind(entry.provider);
     const handle = await provider.attach(entry.ref).catch(() => null);
     await handle?.stop().catch(() => undefined);
-    await markStopped(entry.rowId);
+    forgetOverflowWrites(entry.ref);
+    await markStopped(entry.rowId, entry.lastUsedAt);
     stopped++;
   }
 
@@ -429,43 +669,92 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
  * process to stop, and the identifying label only exists on containers.
  */
 export async function sweepOrphanSandboxes(): Promise<number> {
-  const rows = await db.query.sandboxes
+  // Every row that still claims a sandbox — **including paused ones**. That
+  // distinction matters twice below: a paused sandbox is a live claim on its
+  // container, so treating it as unclaimed would delete a user's work at every
+  // boot; and it is equally a row to reconcile when the container really has
+  // gone.
+  const claimed = await db.query.sandboxes
     .findMany({
-      where: eq(sandboxes.status, "running"),
-      columns: { id: true, containerId: true, provider: true },
+      where: ne(sandboxes.status, "destroyed"),
+      columns: { id: true, containerId: true, provider: true, status: true },
     })
     .catch(() => []);
 
-  // Direction two: rows whose container is gone. Not gated on the container
-  // listing being non-empty — after a daemon restart the listing *is* empty
-  // and every row is stale, which is exactly the case to reconcile. The
-  // per-row liveness check leaves rows alone when the engine is unreachable.
-  await markDeadRowsStopped(rows.filter((r) => r.provider === "container"));
+  // Direction two: rows whose container is genuinely gone. Not gated on the
+  // container listing being non-empty — after a daemon restart the listing
+  // *is* empty and every row is stale, which is exactly the case to
+  // reconcile. The per-row check leaves rows alone when the engine is
+  // unreachable.
+  await markDeadRowsDestroyed(claimed.filter((r) => r.provider === "container"));
 
-  // Direction one: containers no row claims.
+  // Direction three, new with stop-and-resume: rows still marked "running"
+  // whose container really is running, left by a previous process.
+  //
+  // Containers now outlive the server (AutoRemove is off), so a restart leaves
+  // every one of them running with nothing tracking it: this process has an
+  // empty `active` map, so its idle timer will never see them, and the row
+  // would advertise "running" indefinitely. Pausing them costs nothing — the
+  // next tool call on that conversation resumes it — and makes the table
+  // honest again.
+  await stopStrayRunning(claimed.filter((r) => r.status === "running"));
+
+  // Direction one: containers no row claims. Destroyed rather than stopped:
+  // nothing can ever reach them again, since the only handle back to a sandbox
+  // is its row.
   const ids = await listSandboxContainers();
   if (ids.length === 0) return 0;
   const known = new Set<string>();
   for (const entry of active.values()) known.add(entry.ref);
-  for (const row of rows) known.add(row.containerId);
+  for (const row of claimed) known.add(row.containerId);
 
   const provider = await getProviderByKind("container");
   let swept = 0;
   for (const id of ids) {
     if (known.has(id)) continue;
     const handle = await provider.attach(id);
-    await handle.stop().catch(() => undefined);
+    await handle.destroy().catch(() => undefined);
     swept++;
   }
   return swept;
 }
 
+/** Pauses sandboxes a previous process left running — see direction three. */
+async function stopStrayRunning(
+  rows: { id: string; containerId: string; provider: string; status?: string }[],
+): Promise<number> {
+  let stopped = 0;
+  for (const row of rows) {
+    if ([...active.values()].some((e) => e.ref === row.containerId)) continue;
+    const provider = await getProviderByKind(row.provider as SandboxKind);
+    const handle = await provider.attach(row.containerId).catch(() => null);
+    if (!handle) continue;
+    if (!(await handle.isRunning().catch(() => false))) continue;
+    await handle.stop().catch(() => undefined);
+    await markStopped(row.id);
+    stopped++;
+  }
+  return stopped;
+}
+
+/**
+ * One timer drives all three periodic jobs, in a fixed order.
+ *
+ * The order is load-bearing: the flush is what makes `last_used_at` current,
+ * the idle stop then writes its own final value for anything it pauses, and
+ * only then does the destroying reaper read the column. Running the reaper
+ * first would let it judge a live sandbox by a `last_used_at` written when it
+ * was created.
+ */
 export function startSandboxReaper(onReap?: (count: number) => void): NodeJS.Timeout {
   const timer = setInterval(() => {
-    reapIdleSandboxes()
-      .then((n) => { if (n > 0) onReap?.(n); })
-      .catch(() => undefined);
-  }, REAP_INTERVAL_MS);
+    void (async () => {
+      await flushLastUsed().catch(() => undefined);
+      const stopped = await stopIdleSandboxes().catch(() => 0);
+      if (stopped > 0) onReap?.(stopped);
+      await reapAbandonedSandboxes().catch(() => 0);
+    })();
+  }, reapIntervalMs());
   timer.unref();
   return timer;
 }

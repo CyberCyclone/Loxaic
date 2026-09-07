@@ -34,12 +34,38 @@ export interface SandboxSettings {
    * model produces runs in there, so an outbound network is an exfiltration
    * path. Host-mode sandboxes always have the host's network regardless. */
   allowNetwork: boolean;
+  /**
+   * How long a conversation's sandbox may sit unused before it is **stopped**
+   * — paused with its filesystem intact, resumed by the next tool call.
+   *
+   * Generous by default (4h) because stopping is the cheap half of the
+   * lifecycle: a stopped container costs disk, not memory or CPU, and the cost
+   * of stopping too eagerly is a container start on the user's next message.
+   */
+  idleStopMs: number;
+  /**
+   * Whether long-unused sandboxes are eventually **destroyed**.
+   *
+   * This is the only timer in the system that can delete someone's work, so it
+   * is separately switchable: an admin who would rather buy disks than lose a
+   * checkout turns it off, and nothing else changes.
+   */
+  reapEnabled: boolean;
+  /** How long a sandbox may go unused before {@link reapEnabled} destroys it. */
+  reapAfterMs: number;
 }
 
 export interface SandboxSettingsView extends SandboxSettings {
   /** Fields pinned by an environment variable. The GUI shows these as
    * "set by environment" and disables their controls; PATCH rejects them. */
-  envOverrides: { mode: boolean; socket: boolean; allowNetwork: boolean };
+  envOverrides: {
+    mode: boolean;
+    socket: boolean;
+    allowNetwork: boolean;
+    idleStop: boolean;
+    reapEnabled: boolean;
+    reapAfter: boolean;
+  };
 }
 
 export type SandboxSettingsPatch = Partial<{
@@ -47,16 +73,34 @@ export type SandboxSettingsPatch = Partial<{
   engine: SandboxEngine;
   customSocket: string | null;
   allowNetwork: boolean;
+  idleStopMs: number;
+  reapEnabled: boolean;
+  reapAfterMs: number;
 }>;
 
 /** Row key for the sandbox settings group. */
 const SANDBOX_KEY = "sandbox";
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** Accepted range for `idleStopMs` through the API. A minute is the floor
+ * because anything shorter would stop a sandbox mid-task on a slow model;
+ * a month is the ceiling, which is "effectively never" without giving the
+ * field an unbounded value to store. Env pins are not bounded — a harness
+ * that wants an immediate stop is the reason they exist. */
+const IDLE_STOP_RANGE = { min: 60_000, max: 30 * DAY_MS };
+/** Accepted range for `reapAfterMs`: an hour to ten years. */
+const REAP_AFTER_RANGE = { min: HOUR_MS, max: 3650 * DAY_MS };
 
 const DEFAULTS: SandboxSettings = {
   mode: "container",
   engine: "auto",
   customSocket: null,
   allowNetwork: false,
+  idleStopMs: 4 * HOUR_MS,
+  reapEnabled: true,
+  reapAfterMs: 30 * DAY_MS,
 };
 
 export class SettingsError extends Error {
@@ -148,12 +192,44 @@ function envAllowNetwork(): boolean | null {
   return value === "1" || value === "true" || value === "yes";
 }
 
+/** Durations are pinned in milliseconds rather than the hours/days the GUI
+ * shows, so a test harness can ask for a one-second idle stop — the whole
+ * reason these pins exist. Deliberately not range-checked the way the API is:
+ * an env pin is the operator speaking directly. */
+function envPositiveInt(name: string): number | null {
+  const raw = envStr(name);
+  if (raw === undefined) return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    warnOnce(name, `[settings] ignoring ${name}="${raw}" (expected a positive integer of milliseconds)`);
+    return null;
+  }
+  return value;
+}
+
+function envReapEnabled(): boolean | null {
+  const value = envStr("SANDBOX_REAP_ENABLED")?.toLowerCase();
+  if (value === undefined) return null;
+  return value === "1" || value === "true" || value === "yes";
+}
+
+const warned = new Set<string>();
+
+function warnOnce(key: string, message: string): void {
+  if (warned.has(key)) return;
+  warned.add(key);
+  console.warn(message);
+}
+
 // ── Resolution ────────────────────────────────────────────
 
 export function getSandboxSettings(): SandboxSettingsView {
   const mode = envMode();
   const socket = envSocket();
   const allowNetwork = envAllowNetwork();
+  const idleStopMs = envPositiveInt("SANDBOX_IDLE_STOP_MS");
+  const reapEnabled = envReapEnabled();
+  const reapAfterMs = envPositiveInt("SANDBOX_REAP_AFTER_MS");
 
   // Fail *closed* when the settings row couldn't be read: falling through to
   // DEFAULTS.mode ("container") would silently restart agent execution that
@@ -169,12 +245,52 @@ export function getSandboxSettings(): SandboxSettingsView {
     engine: socket !== null ? "custom" : (persisted.engine ?? DEFAULTS.engine),
     customSocket: socket ?? persisted.customSocket ?? DEFAULTS.customSocket,
     allowNetwork: allowNetwork ?? persisted.allowNetwork ?? DEFAULTS.allowNetwork,
+    idleStopMs: idleStopMs ?? persisted.idleStopMs ?? DEFAULTS.idleStopMs,
+    reapEnabled: reapEnabled ?? persisted.reapEnabled ?? DEFAULTS.reapEnabled,
+    reapAfterMs: reapAfterMs ?? persisted.reapAfterMs ?? DEFAULTS.reapAfterMs,
     envOverrides: {
       mode: mode !== null,
       socket: socket !== null,
       allowNetwork: allowNetwork !== null,
+      idleStop: idleStopMs !== null,
+      reapEnabled: reapEnabled !== null,
+      reapAfter: reapAfterMs !== null,
     },
   };
+}
+
+/**
+ * The retention terms, as a conversation's owner needs to read them.
+ *
+ * A single accessor rather than three call sites reaching into settings,
+ * because these three numbers only mean anything together: "paused after 4h,
+ * deleted after 30 days unused" is the sentence a user has to be shown before
+ * they start putting work somewhere.
+ */
+export interface SandboxRetention {
+  idleStopMs: number;
+  reapEnabled: boolean;
+  reapAfterMs: number;
+}
+
+export function getSandboxRetention(): SandboxRetention {
+  const { idleStopMs, reapEnabled, reapAfterMs } = getSandboxSettings();
+  return { idleStopMs, reapEnabled, reapAfterMs };
+}
+
+/**
+ * When a sandbox last used at `lastUsedAt` would be destroyed, or null when
+ * reaping is off.
+ *
+ * Derived on read, never stored. A stored date would be a promise the settings
+ * screen can silently break: an admin moving the policy from 30 days to 7
+ * would leave every existing row still advertising the old date, and the row
+ * the user was shown would not be the one the reaper acts on.
+ */
+export function sandboxReapAt(lastUsedAt: Date): Date | null {
+  const { reapEnabled, reapAfterMs } = getSandboxRetention();
+  if (!reapEnabled) return null;
+  return new Date(lastUsedAt.getTime() + reapAfterMs);
 }
 
 // ── Load / persist ────────────────────────────────────────
@@ -189,6 +305,13 @@ function coerce(raw: unknown): Partial<SandboxSettings> {
   }
   if (typeof value.customSocket === "string") out.customSocket = value.customSocket;
   if (typeof value.allowNetwork === "boolean") out.allowNetwork = value.allowNetwork;
+  if (typeof value.idleStopMs === "number" && Number.isFinite(value.idleStopMs) && value.idleStopMs > 0) {
+    out.idleStopMs = value.idleStopMs;
+  }
+  if (typeof value.reapEnabled === "boolean") out.reapEnabled = value.reapEnabled;
+  if (typeof value.reapAfterMs === "number" && Number.isFinite(value.reapAfterMs) && value.reapAfterMs > 0) {
+    out.reapAfterMs = value.reapAfterMs;
+  }
   return out;
 }
 
@@ -225,6 +348,31 @@ export function sandboxDisabledReason(): string {
   if (envMode() !== null) return "sandboxes are disabled by the SANDBOX_MODE environment variable";
   if (loadFailed) return "server settings could not be read — sandboxes are disabled until the database is reachable";
   return "sandboxes are disabled in server settings";
+}
+
+/** Shared narrowing for the two duration fields: same shape of error, same
+ * env-pin refusal, and a range check so the GUI cannot store a value the
+ * reapers would treat as pathological. Rejects rather than clamping — a
+ * client that asked for a two-second idle stop should be told it did not get
+ * one. */
+function duration(
+  raw: unknown,
+  field: string,
+  range: { min: number; max: number },
+  pinned: boolean,
+  envName: string,
+): number {
+  if (typeof raw !== "number" || !Number.isInteger(raw)) {
+    throw new SettingsError(`${field} must be an integer number of milliseconds`, "invalid");
+  }
+  if (raw < range.min || raw > range.max) {
+    throw new SettingsError(
+      `${field} must be between ${String(range.min)} and ${String(range.max)} ms`,
+      "invalid",
+    );
+  }
+  if (pinned) throw new SettingsError(`${field} is pinned by the ${envName} environment variable`, "envOverride");
+  return raw;
 }
 
 /** Narrows untrusted JSON (straight off the wire) into a patch we're willing
@@ -288,11 +436,42 @@ function validate(input: unknown): SandboxSettingsPatch {
     patch.allowNetwork = raw.allowNetwork;
   }
 
+  if (raw.idleStopMs !== undefined) {
+    patch.idleStopMs = duration(raw.idleStopMs, "idleStopMs", IDLE_STOP_RANGE, env.idleStop, "SANDBOX_IDLE_STOP_MS");
+  }
+
+  if (raw.reapEnabled !== undefined) {
+    if (typeof raw.reapEnabled !== "boolean") {
+      throw new SettingsError("reapEnabled must be a boolean", "invalid");
+    }
+    if (env.reapEnabled) {
+      throw new SettingsError("reapEnabled is pinned by the SANDBOX_REAP_ENABLED environment variable", "envOverride");
+    }
+    patch.reapEnabled = raw.reapEnabled;
+  }
+
+  if (raw.reapAfterMs !== undefined) {
+    patch.reapAfterMs = duration(raw.reapAfterMs, "reapAfterMs", REAP_AFTER_RANGE, env.reapAfter, "SANDBOX_REAP_AFTER_MS");
+  }
+
+  // Destroying a sandbox sooner than it is paused would mean deleting one that
+  // is still in active use — the two timers would be racing over the same
+  // sandbox. Checked against the *resolved* pair, not just the patch, so
+  // lowering one to below the other's existing value is caught too.
+  const resolved = getSandboxSettings();
+  const idleStop = patch.idleStopMs ?? resolved.idleStopMs;
+  const reapAfter = patch.reapAfterMs ?? resolved.reapAfterMs;
+  if (reapAfter <= idleStop) {
+    throw new SettingsError(
+      "reapAfterMs must be longer than idleStopMs — sandboxes are paused before they are ever deleted",
+      "invalid",
+    );
+  }
+
   // "custom" without a socket would silently fall back to auto-discovery,
   // which is not what picking Custom in the GUI means.
-  const current = getSandboxSettings();
-  const engine = patch.engine ?? current.engine;
-  const socket = patch.customSocket !== undefined ? patch.customSocket : current.customSocket;
+  const engine = patch.engine ?? resolved.engine;
+  const socket = patch.customSocket !== undefined ? patch.customSocket : resolved.customSocket;
   if (engine === "custom" && !socket) {
     throw new SettingsError("customSocket is required when engine is custom", "invalid");
   }
@@ -349,10 +528,10 @@ async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
 /**
  * Which sandbox kinds a change actually invalidates.
  *
- * Deliberately narrow. A host sandbox's `stop()` deletes its working
- * directory, so sweeping a kind the change cannot affect would destroy other
- * users' in-progress work for no reason — the engine, socket, and network
- * toggle are all container-only concerns.
+ * Deliberately narrow. Stopping a sandbox no longer destroys it, so the stakes
+ * are lower than they were — but sweeping a kind the change cannot affect
+ * still interrupts other users mid-task and costs them a container start, and
+ * the engine, socket, and network toggle are all container-only concerns.
  */
 function invalidatedKinds(before: SandboxSettingsView, after: SandboxSettingsView): SandboxKind[] {
   const kinds = new Set<SandboxKind>();

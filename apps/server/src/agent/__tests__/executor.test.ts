@@ -43,7 +43,12 @@ function makeFakeHandle() {
     async isRunning() {
       return true;
     },
+    async exists() {
+      return true;
+    },
+    async start() {},
     async stop() {},
+    async destroy() {},
   };
 
   return {
@@ -100,7 +105,10 @@ describe("resolvePath", () => {
       writeFileBinary: async () => {},
       fileTree: async () => [],
       isRunning: async () => true,
+      exists: async () => true,
+      start: async () => {},
       stop: async () => {},
+      destroy: async () => {},
     };
     expect(resolvePath(hostHandle, "notes.txt")).toBe("/data/sandboxes/abc123/repo/notes.txt");
     expect(() => resolvePath(hostHandle, "/home/loxaic/repo/notes.txt")).toThrow(/escapes the sandbox/);

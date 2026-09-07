@@ -1,0 +1,1 @@
+ALTER TABLE "sandboxes" ADD COLUMN "last_used_at" timestamp DEFAULT now() NOT NULL;

@@ -141,7 +141,7 @@ afterAll(async () => {
     for (const row of rows) {
       const provider = await getProviderByKind(row.provider as "container" | "host");
       const handle = await provider.attach(row.containerId);
-      await handle.stop().catch(() => undefined);
+      await handle.destroy().catch(() => undefined);
     }
     await db.delete(sandboxes).where(inArray(sandboxes.conversationId, convIds));
     await db.delete(messages).where(inArray(messages.conversationId, convIds));

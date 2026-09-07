@@ -252,7 +252,7 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   startRoutineScheduler().catch((e: unknown) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
-  reaperTimer = startSandboxReaper((n) => { app.log.info(`Reaped ${String(n)} idle agent sandbox(es)`); });
+  reaperTimer = startSandboxReaper((n) => { app.log.info(`Paused ${String(n)} idle agent sandbox(es) — their contents are kept`); });
   // A crashed process's leftover sandbox containers outlive their DB rows;
   // the label sweep is what finds them.
   sweepOrphanSandboxes()

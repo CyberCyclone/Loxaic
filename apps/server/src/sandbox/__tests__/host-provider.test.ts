@@ -88,10 +88,49 @@ describe("host provider", () => {
     expect(names).toContain("deep");
   });
 
-  it("stop() removes the sandbox directory entirely", async () => {
+  it("stop() keeps the sandbox directory — it is a pause, not a teardown", async () => {
+    // The behaviour this test asserted before was the bug: stopping deleted
+    // the directory, so an idle conversation came back to an empty workspace.
+    const handle = await getHostProvider().create("user-1", {});
+    const file = path.join(handle.workdir, "keep.txt");
+    await handle.writeFile(file, "x");
+
+    await handle.stop();
+
+    await expect(handle.exists()).resolves.toBe(true);
+    await expect(handle.readFile(file)).resolves.toBe("x");
+  });
+
+  it("start() resumes a stopped sandbox with its files intact", async () => {
+    const handle = await getHostProvider().create("user-1", {});
+    const file = path.join(handle.workdir, "work.txt");
+    await handle.writeFile(file, "in progress");
+    await handle.stop();
+
+    await handle.start();
+
+    const result = await handle.exec(["cat", file]);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("in progress");
+  });
+
+  it("start() throws once the sandbox is destroyed, which is how gone is told from paused", async () => {
+    const handle = await getHostProvider().create("user-1", {});
+    await handle.destroy();
+
+    // Both are false for a stopped sandbox too, so neither can answer the
+    // question on its own — start() throwing is the discriminator.
+    await expect(handle.isRunning()).resolves.toBe(false);
+    await expect(handle.exists()).resolves.toBe(false);
+    await expect(handle.start()).rejects.toThrow(/gone/);
+  });
+
+  it("destroy() removes the sandbox directory entirely", async () => {
     const handle = await getHostProvider().create("user-1", {});
     await handle.writeFile(path.join(handle.workdir, "keep.txt"), "x");
-    await handle.stop();
+
+    await handle.destroy();
+
     await expect(handle.isRunning()).resolves.toBe(false);
   });
 

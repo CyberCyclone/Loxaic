@@ -95,6 +95,33 @@ ones), and it does not apply to host mode, where sandboxes always have the
 host's own network. `web_fetch` is unaffected either way — it always runs on
 the server, behind an SSRF guard, never in the sandbox.
 
+### How long a workspace lasts
+
+An agent's sandbox is where its work actually lives — the files it edited, the
+repo it checked out, the dependencies it installed — so it is kept, not
+cleaned up:
+
+| After | What happens | Default | Setting |
+|---|---|---|---|
+| Idle for a while | The container **stops**. Nothing is lost; the next message starts it again exactly as it was | 4 hours | `idleStopMs` / `SANDBOX_IDLE_STOP_MS` |
+| Unused for a long time | The workspace is **deleted**, along with anything uncommitted in it | 30 days | `reapAfterMs` / `SANDBOX_REAP_AFTER_MS` |
+| The conversation is deleted | The workspace is deleted immediately | — | — |
+
+Deleting on the long timer can be switched off entirely (`reapEnabled` /
+`SANDBOX_REAP_ENABLED`), in which case workspaces are kept until their
+conversation is. That trades disk for certainty, and which way to trade is a
+deployment decision — a machine hosting a team accumulates a stopped container
+per conversation that ever ran a tool.
+
+Stopped workspaces cost disk, not memory or CPU, and do not count against the
+per-user sandbox cap (`SANDBOX_MAX_PER_USER`), which is about running ones. The
+retention terms are shown to users in the agent Inspector before they start
+work, and a workspace nearing deletion says when.
+
+Durations are stored and pinned in **milliseconds**; the settings screen shows
+hours and days. `reapAfterMs` must be longer than `idleStopMs` — a workspace is
+always paused before it can be deleted — and the API rejects a pair that isn't.
+
 ### Hosting for others requires a container engine
 
 The desktop app runs in one of three modes, chosen at first launch and stored
@@ -127,7 +154,8 @@ default**:
 - **Stored** — what an admin sets in **Settings → Agent Sandbox**, saved in the
   `server_settings` table and applied at runtime (no restart). Requires the
   admin role; other users see a read-only status view.
-- **Environment** — `SANDBOX_MODE`, `CONTAINER_SOCKET`, `SANDBOX_ALLOW_NETWORK`
+- **Environment** — `SANDBOX_MODE`, `CONTAINER_SOCKET`, `SANDBOX_ALLOW_NETWORK`,
+  `SANDBOX_IDLE_STOP_MS`, `SANDBOX_REAP_ENABLED`, `SANDBOX_REAP_AFTER_MS`
   pin their field. A pinned field is rejected by the API (`409`) and shown as
   "set by environment" in the GUI, so a Compose file, systemd unit, or the
   desktop supervisor stays authoritative when it sets something explicitly.
