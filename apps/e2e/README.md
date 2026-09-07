@@ -229,10 +229,14 @@ carries a `testID` (`composer.attach.camera`) and is verified by hand.
    on the server's boot-time migration (that one is cwd-sensitive and only logs on failure).
 3. **Web export** — built if `apps/mobile/dist/index.html` is missing. Must happen *before* the
    server starts: static serving is only registered at boot, and only if the export exists.
-4. **Server** — started with `MOCK_INFERENCE=true`, or reused if one is already healthy.
-   Attachment uploads are pointed at `artifacts/.run/uploads` (`UPLOADS_DIR`) rather than
-   `apps/server`'s default `./uploads`, so a run never leaves image files in the working tree;
-   `teardown()` removes it alongside the sandbox root.
+4. **Server** — started with `MOCK_INFERENCE=true` (or `INFERENCE_BASE_URL` under
+   `E2E_REAL_MODEL=1`). **Never reused**, even if something is already healthy at `E2E_BASE_URL`:
+   a health check can't confirm that server was wired with *this* run's `GITHUB_API_URL`,
+   `MOCK_SCENARIOS_FILE`, or sandbox network settings, so stand-up always starts its own —
+   `E2E_NO_STANDUP=1` is the documented way to point a run at a server on purpose. Attachment
+   uploads are pointed at `artifacts/.run/uploads` (`UPLOADS_DIR`) rather than `apps/server`'s
+   default `./uploads`, so a run never leaves image files in the working tree; `teardown()`
+   removes it alongside the sandbox root.
 5. **Readiness gate** — polls `GET /health` until it reports both `database: "ok"` and
    `inference: "mock"`. That one check proves the DB is up *and* migrated (the endpoint runs a
    real query) and that the server booted in mock mode.
@@ -279,12 +283,44 @@ AGENTS.md's "GitHub connection" section). No spec ever reaches real GitHub. The 
 exactly one token (`VALID_TOKEN`, exported from `mock-github.ts`); anything else 401s, so the
 "bad token" case exercises the server's real validation path rather than a canned rejection.
 
+## What the GitHub-workspace and mock-scenario specs cover
+
+`agent-github-workspace.spec.ts` and `agent-git-actions.spec.ts` clone a real repository through
+the server's ordinary workspace path with nothing stubbed server-side: `scripts/git-server.ts`
+turns each fixture directory under `fixtures/` (`bugfix-app`, `other-repo`, `seeded-app`) into a
+bare repo with one commit on `main`, served over `git://` by `git daemon --enable=receive-pack`,
+and `scripts/mock-github.ts` hands out that URL as the repo's `clone_url`. A sandbox reaches the
+harness machine as `host.docker.internal` — Docker Desktop resolves that on its own; Linux and
+Podman need the `SANDBOX_EXTRA_HOSTS=host.docker.internal:host-gateway` entry `standup.ts` passes
+to the server it spawns, mapped to `HostConfig.ExtraHosts`. Cloning needs sandbox network access,
+which is off by default: a spec that clones turns `allowNetwork` on through the admin API in
+`before` and resets it in `after`, the same discipline every sandbox-mode spec follows — this is
+deliberately *not* a global `standup.ts` setting, since pinning it would 409 every spec's own
+`patchSandboxSettings`/`resetSandboxSettings` calls (an env-pinned setting is read-only) and would
+break the specs that specifically test the network-off and degraded states.
+
+`agent-bugfix.spec.ts` and `agent-new-project.spec.ts` drive a realistic multi-step coding task
+end to end under `MOCK_INFERENCE` — clone (or start from scratch), run the real tests, fix a real
+bug, rerun them, commit, push, open a PR — using the **mock scenario engine**
+(`apps/server/src/inference/mock-scenarios.ts`) rather than the single-tool-call
+`MOCK_TOOL_TRIGGERS` every other mock-driven spec uses. `MOCK_SCENARIOS_FILE`
+(`fixtures/scenarios.json`, passed by `standup.ts` unconditionally — it's inert under
+`E2E_REAL_MODEL=1`) is a JSON array of `{match, steps: [{tool, args}], finalText}` scenarios: the
+prompt is matched against `match` (a case-insensitive regex source), and one step fires per tool
+message already in the current turn — bypassing `MOCK_TOOL_TRIGGERS`'s one-call-per-turn rule,
+which is the entire reason a scenario exists, since a scenario is defined by needing more than
+one real tool call in a turn. A step only fires when its tool is actually offered, matching the
+ordinary trigger rule; once every step has run, `finalText` replaces the generic
+"`[Mock] Done. The tool returned: …`" wrap-up. Every tool call is executed for real against the
+sandbox — the JSON only scripts *which* tool runs with *which* arguments, not the result.
+
 ## Real-model task suite
 
 Everything above runs on `MOCK_INFERENCE`, which is exactly why it can't prove an agent can
-actually get real work done — it only ever replays a canned tool call. This suite is different:
-a real OpenAI-compatible endpoint drives the agent through a genuine multi-step coding task with
-no scripted tool sequence standing in for it.
+actually get real work done — even the scenario-driven specs above script which tools run, not
+whether the model would have chosen them. This suite is different: a real OpenAI-compatible
+endpoint drives the agent through a genuine multi-step coding task with no scripted tool sequence
+standing in for any of it.
 
 ```bash
 E2E_REAL_MODEL=1 E2E_INFERENCE_URL=http://localhost:1234 pnpm --filter @loxaic/e2e test:web:real-model
@@ -300,29 +336,50 @@ GPU-bound) inference endpoint CI doesn't have, takes minutes rather than seconds
 model's output isn't deterministic the way the mock's is — it's a manual, on-demand suite you run
 before a release or when touching the tool loop, not a check that gates every push.
 
-### The task
+### The three tasks
 
-`fixtures/seeded-app/` is a minimal Vite + React + TypeScript app, seeded into the agent's
-sandbox by `standup.ts` (`E2E_SANDBOX_SEED_DIR`, consumed by `seedSandbox()` in
-`apps/server/src/sandbox/seed.ts`) instead of a bare empty working directory. `INSTRUCTIONS.md`
-tells the agent to `npm install`, then fix `src/App.tsx` — which is seeded in a state that
-**doesn't compile** (it references a `count`/`setCount` that were never declared) — and get
-`npm run build` passing. That's deliberate: a stub that already builds would make "the build
-passed" prove nothing about whether the agent did anything. The spec runs the agent in **auto**
-mode (no per-tool approval prompt — see `toolRequiresApproval()` in `packages/agent`, required
-for an autonomous multi-step task to finish unattended) and gives it the network access
-(`SANDBOX_ALLOW_NETWORK=1`, set automatically by `standup.ts` in this mode) that `npm install`
-needs and sandboxes don't have by default.
+- **`real-model-build.spec.ts`** clones `fixtures/seeded-app/` — a minimal Vite + React +
+  TypeScript app — through the same GitHub-workspace path the mock lane's specs use (repo id 3 in
+  `mock-github.ts`'s catalog). `INSTRUCTIONS.md` tells the agent to `npm install`, then fix
+  `src/App.tsx` — seeded in a state that **doesn't compile** (it references a `count`/`setCount`
+  that were never declared) — and get `npm run build` passing. That's deliberate: a stub that
+  already builds would make "the build passed" prove nothing about whether the agent did
+  anything. Cloning replaced an earlier `E2E_SANDBOX_SEED_DIR` hook that pre-populated *every*
+  sandbox any user created for the life of the server — a repo the spec chooses per-conversation
+  is the same mechanism the mock lane already proves out, and it means this suite no longer needs
+  a server-wide flag nobody else may set.
+- **`real-model-bugfix.spec.ts`** clones `fixtures/bugfix-app/` (repo id 1 — the same fixture and
+  git server the mock lane's `agent-bugfix.spec.ts` drives with a scripted scenario) and gives the
+  model a plain natural-language instruction: find the failing test, fix the real off-by-one,
+  confirm `node --test` passes, and commit. No scenario file is involved — the model decides which
+  tools to call.
+- **`real-model-new-project.spec.ts`** starts from an empty scratch workspace with a
+  natural-language instruction to build a small Node project (a `package.json` with a `test`
+  script, a source file, a test file) and get its own tests passing. The prompt pins the test
+  command so the pass bar is checkable; file names and content are the model's own decision.
+
+All three run the agent in **auto** mode (no per-tool approval prompt — see
+`toolRequiresApproval()` in `packages/agent`, required for an autonomous multi-step task to finish
+unattended). The two GitHub-workspace tasks get the network access (`SANDBOX_ALLOW_NETWORK=1`, set
+automatically by `standup.ts` under `E2E_REAL_MODEL=1`) that cloning and `npm install` need and
+sandboxes don't have by default.
 
 ### What "pass" means
 
-The spec waits for the agent run's own status to read "Done" (`agent.run.status`), then resolves
-the sandbox the run actually used (`GET /v1/sandboxes`) and runs `npm run build` against it
+Every check happens **after** `waitForRunDone` — the agent's *entire* turn finishing, not the
+moment a polled command happens to exit 0. Polling the target command directly and returning as
+soon as it passed was tried first for the bugfix task and is a genuine race: the model's last two
+steps are "see tests pass" then "commit", and an external poller reading the same sandbox can
+observe the passing tests after the model's own test run but before its commit — catching the
+model one step short of what it was asked to do isn't a finding about the model, it's a bug in the
+harness. Once the run has finished, each spec resolves the sandbox it actually used
+(`GET /v1/sandboxes`) and runs its pass/fail command (`npm run build`, `node --test`, `npm test`)
 **through the same sandbox exec API a client would use** — not by trusting the model's account of
 what it did, and not by scraping its wording for a specific phrase the way the mock-driven specs
 can (a real model's phrasing isn't deterministic). A non-zero exit fails the test with the
-build's real stdout/stderr and a file listing, so a failure says what actually went wrong rather
-than just "timed out".
+command's real stdout/stderr, so a failure says what actually went wrong rather than just
+"timed out". The bugfix spec additionally checks `git rev-list --count` for a real commit, not
+whether the Inspector's Git panel says so.
 
 ## Screenshots
 

@@ -128,6 +128,11 @@ export const GIT_SERVER_DIR = path.join(RUN_DIR, 'git');
  * which needs no cross-process handoff because it is a fixed, computable path. */
 let gitServer: GitServer | null = null;
 const FIXTURES_DIR = path.join(E2E_DIR, 'fixtures');
+/** The mock scenario engine's fixture — see mock-scenarios.ts. Passed
+ * unconditionally: it is inert under real-model mode (only mockStream reads
+ * it), and every mock-lane spec that drives a multi-step scenario needs it
+ * wired, not just the ones that happen to be running today. */
+const SCENARIOS_FIXTURE = path.join(FIXTURES_DIR, 'scenarios.json');
 
 interface Health {
   status: string;
@@ -250,27 +255,22 @@ async function ensureServer(): Promise<void> {
 
   const existing = await fetchHealth();
   if (existing) {
-    // Real-model mode needs more of the server than /health can show:
-    // SANDBOX_ALLOW_NETWORK (for `npm install`) and E2E_SANDBOX_SEED_DIR (the
-    // fixture the task is defined by), neither of which is observable from
-    // outside. Reusing a server without them yields an agent staring at an
-    // empty workspace with no network, and the failure reads as the model
-    // being bad rather than the harness being misconfigured — so refuse.
-    if (REAL_MODEL) {
-      throw new Error(
-        `[e2e:standup] a server is already listening at ${BASE_URL}, and real-model mode cannot ` +
-          'reuse it: it needs SANDBOX_ALLOW_NETWORK and E2E_SANDBOX_SEED_DIR, which this harness ' +
-          'only sets on a server it starts itself. Stop it, or use a different E2E_PORT.',
-      );
-    }
-    if (existing.services.inference === expectedInference) {
-      log(`reusing server already healthy at ${BASE_URL}`);
-      return;
-    }
+    // Neither lane's wiring is observable from /health: GITHUB_API_URL,
+    // MOCK_SCENARIOS_FILE, SANDBOX_ALLOW_NETWORK, and SANDBOX_EXTRA_HOSTS all
+    // decide whether a spec's workspace/scenario/network actually works, and a
+    // health check that only
+    // sees `inference: "mock"` or `"ok"` cannot tell this harness's own server
+    // apart from `pnpm dev`, a previous run's leftover, or a server standing
+    // up a *different* set of fixtures. Reusing blind turns a harness
+    // misconfiguration into a failure that reads as a real bug (an agent
+    // silently missing network, a scenario nobody wrote). So this always
+    // insists on a server it started itself — E2E_NO_STANDUP=1 is the
+    // documented way to point a run at one on purpose.
     throw new Error(
-      `[e2e:standup] something is already listening at ${BASE_URL} but reports ` +
-        `inference="${existing.services.inference}" (expected "${expectedInference}"). Stop it, or point ` +
-        `this run elsewhere with E2E_PORT / E2E_BASE_URL.`,
+      `[e2e:standup] a server is already listening at ${BASE_URL}, and this harness always starts ` +
+        'its own rather than trust a health check to prove someone else\'s server is wired the way ' +
+        'this run needs (GitHub API URL, mock scenarios, sandbox network). Stop it, use a ' +
+        'different E2E_PORT / E2E_BASE_URL, or set E2E_NO_STANDUP=1 if that server is intentionally yours.',
     );
   }
 
@@ -285,6 +285,7 @@ async function ensureServer(): Promise<void> {
     fixtures: {
       'bugfix-app': path.join(FIXTURES_DIR, 'bugfix-app'),
       'other-repo': path.join(FIXTURES_DIR, 'bugfix-app'),
+      'seeded-app': SEED_DIR,
     },
   });
   const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
@@ -306,7 +307,6 @@ async function ensureServer(): Promise<void> {
             // The real-model suite's whole point is an agent that installs
             // dependencies, which needs the network sandboxes lack by default.
             SANDBOX_ALLOW_NETWORK: '1',
-            E2E_SANDBOX_SEED_DIR: SEED_DIR,
           }
         : {}),
       PORT: String(PORT),
@@ -320,6 +320,7 @@ async function ensureServer(): Promise<void> {
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
       GITHUB_API_URL: mockGithub.url,
+      MOCK_SCENARIOS_FILE: SCENARIOS_FIXTURE,
       // Lets a networked sandbox reach this machine's git server by name on
       // Linux and Podman; Docker Desktop resolves it without help. Network
       // itself stays off by default — a spec that clones turns it on through

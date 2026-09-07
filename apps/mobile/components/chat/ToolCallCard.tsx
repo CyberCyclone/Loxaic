@@ -56,7 +56,10 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
   const tint = mcp ? 'text-primary bg-primary/15' : (TOOL_TINT[tool.tool] ?? 'text-muted-foreground bg-muted');
 
   return (
-    <Box className="my-1.5 rounded-md border border-border bg-card">
+    <Box
+      testID={tool.callId ? `chat.toolCall.${tool.callId}` : undefined}
+      className="my-1.5 rounded-md border border-border bg-card"
+    >
       <Pressable onPress={() => { setOpen((o) => !o); }}>
         <HStack className="items-center gap-2 px-3 py-2">
           <Box className={`h-5 w-5 items-center justify-center rounded-sm ${tint}`}>
@@ -90,7 +93,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
       {open && (
         <Box className="border-t border-border">
           {tool.diff ? (
-            <ScrollView style={{ maxHeight: 200 }}>
+            <ScrollView testID="chat.toolCall.result" style={{ maxHeight: 200 }}>
               {tool.diff.map((line, i) => (
                 <Text
                   key={i}
@@ -109,7 +112,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
               ))}
             </ScrollView>
           ) : (
-            <ScrollView style={{ maxHeight: 200 }}>
+            <ScrollView testID="chat.toolCall.result" style={{ maxHeight: 200 }}>
               <Text
                 className="p-3 text-muted-foreground"
                 style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 18 }}

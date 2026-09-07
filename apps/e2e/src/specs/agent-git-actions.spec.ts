@@ -111,10 +111,13 @@ describe("git actions from the Inspector", () => {
 
     // And the mock GitHub server's own record of the call — proof the
     // request the panel fired actually reached it, with the right head and
-    // base, independent of whatever the UI displays.
+    // base, independent of whatever the UI displays. Found by branch, not by
+    // being the only entry: the mock's pull list is shared server-wide, and
+    // another spec exercising the same PR flow concurrently (agent-bugfix.spec.ts
+    // does) legitimately adds its own entry to the same list.
     const res = await fetch(`${mockGithubUrl()}/__e2e/pulls`);
     const recorded = (await res.json()) as RecordedPull[];
-    expect(recorded).toHaveLength(1);
-    expect(recorded[0]).toMatchObject({ owner: "e2e", repo: "bugfix-app", head: branch, base: "main", title: "Add notes" });
+    const mine = recorded.find((p) => p.head === branch);
+    expect(mine).toMatchObject({ owner: "e2e", repo: "bugfix-app", head: branch, base: "main", title: "Add notes" });
   });
 });
