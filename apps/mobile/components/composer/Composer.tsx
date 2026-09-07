@@ -23,6 +23,8 @@ import { ContextRing } from './ContextRing';
 interface ComposerProps {
   onSend: (text: string, attachments?: AttachmentRef[]) => void;
   onStop?: () => void;
+  /** The user pressed Stop and the run has not ended yet. */
+  stopping?: boolean;
   streaming?: boolean;
   modelName: string;
   /** Null until a conversation exists — the indicator hides entirely. */
@@ -50,6 +52,7 @@ interface ComposerProps {
 export function Composer({
   onSend,
   onStop,
+  stopping = false,
   streaming,
   modelName,
   context,
@@ -297,11 +300,16 @@ export function Composer({
           )}
 
           {streaming ? (
+            // Disabled once pressed: the run takes a moment to wind up (it may
+            // be mid-tool-call), and a button that still looks pressable is
+            // what made Stop read as broken. The testID changes with it, so a
+            // test can tell "asked to stop" from "can be stopped" (#113).
             <Button
-              testID="composer.stop"
+              testID={stopping ? 'composer.stopping' : 'composer.stop'}
               size="sm"
-              className="rounded-full bg-destructive px-3"
+              className={`rounded-full px-3 ${stopping ? 'bg-destructive/50' : 'bg-destructive'}`}
               onPress={onStop}
+              isDisabled={stopping}
             >
               <ButtonIcon as={Square} className="text-white" />
             </Button>

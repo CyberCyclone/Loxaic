@@ -52,6 +52,7 @@ export default function AgentScreen() {
     mode,
     runState,
     busy,
+    stopping,
     loadingModel,
     responseStartedAt,
     pendingApproval,
@@ -317,6 +318,7 @@ export default function AgentScreen() {
               <Composer
                 onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
                 onStop={handleStop}
+                stopping={stopping}
                 streaming={busy}
                 modelName={selectedModel ? getName(selectedModel) : 'Select model'}
                 context={context}
