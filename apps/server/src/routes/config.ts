@@ -39,7 +39,9 @@ export function configRoutes(app: FastifyInstance) {
     // reads. It consumes exactly {id, name, online}.
     return {
       cluster: { id: cluster.id, name: cluster.name },
-      hosts: hosts.map((h) => ({ id: h.id, name: h.name, online: h.online })),
+      // `self` lets a client name the host it is talking to ("Remote — the
+      // GPU box") without inferring it from the URL it happened to connect by.
+      hosts: hosts.map((h) => ({ id: h.id, name: h.name, online: h.online, self: h.self })),
     };
   });
 }

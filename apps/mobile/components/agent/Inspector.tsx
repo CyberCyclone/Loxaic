@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/actionsheet';
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import type { ContextView } from '@/hooks/useContextUsage';
-import type { ChangedFile } from '@/lib/types';
+import type { ChangedFile, Workspace, WorkspaceChoice } from '@/lib/types';
 import { describeRetention, formatDeadline } from '@/lib/retention';
 import type { SandboxRetention, SandboxRow } from '@loxaic/api-client';
 import type { Todo } from '@loxaic/api-client';
@@ -36,6 +36,9 @@ export interface WorkspaceView {
   retention: SandboxRetention;
   /** The conversation's sandbox, or null when it has not run a tool yet. */
   sandbox: SandboxRow | null;
+  /** What the workspace is — the run's fixed one, or the pending choice for
+   * a run not yet started. Null/undefined is scratch. */
+  workspace?: Workspace | WorkspaceChoice | null;
 }
 
 /**
@@ -49,12 +52,24 @@ export interface WorkspaceView {
  */
 function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
   const { retention, sandbox } = workspace;
+  const ws = workspace.workspace ?? { kind: 'scratch' as const };
   const paused = sandbox?.status === 'stopped';
   return (
     <VStack space="xs">
       <Text size="sm" className="font-semibold text-foreground">
         Workspace
       </Text>
+      {ws.kind === 'github' ? (
+        <Text testID="agent.inspector.workspace.kind" size="xs" className="text-foreground">
+          {ws.repo}
+          {'branch' in ws && ws.branch ? ` · ${ws.branch}` : ''}
+          {'baseBranch' in ws && ws.baseBranch ? ` (from ${ws.baseBranch})` : ''}
+        </Text>
+      ) : (
+        <Text testID="agent.inspector.workspace.kind" size="xs" className="text-foreground">
+          Empty workspace
+        </Text>
+      )}
       {sandbox ? (
         <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
           {paused

@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { v4 as uuid } from "uuid";
 import { CappedSink } from "./exec-common.ts";
 import { getSandboxSettings } from "../settings.ts";
+import { cloneInto } from "./git.ts";
 import type {
   CreateSandboxConfig,
   ExecOptions,
@@ -321,6 +322,10 @@ async function execInContainer(
     AttachStdout: true,
     AttachStderr: true,
     WorkingDir: options?.workdir ?? "/home/loxaic",
+    // Per-command only: it lands in this exec's process and nowhere else in
+    // the container, which is what lets a git credential ride here rather
+    // than in a URL or a file. See sandbox/git.ts.
+    ...(options?.env ? { Env: Object.entries(options.env).map(([k, v]) => `${k}=${v}`) } : {}),
   });
 
   const stream = await exec.start({ hijack: true, stdin: false });
@@ -611,6 +616,16 @@ export function getContainerProvider(): SandboxProvider {
       // toggle takes effect on the next one.
       const { allowNetwork } = getSandboxSettings();
 
+      // Extra `/etc/hosts` entries, for reaching a service on the host machine
+      // from inside a networked sandbox — `host.docker.internal:host-gateway`
+      // is what the e2e harness needs on Linux/Podman for its git server
+      // (Docker Desktop resolves that name by itself). Operator/test seam, read
+      // at call time like every other sandbox env var.
+      const extraHosts = (process.env.SANDBOX_EXTRA_HOSTS ?? "")
+        .split(",")
+        .map((h) => h.trim())
+        .filter(Boolean);
+
       const container = await docker.createContainer({
         Image: sandboxImage(),
         Cmd: ["tail", "-f", "/dev/null"],
@@ -639,6 +654,7 @@ export function getContainerProvider(): SandboxProvider {
           //   against PidsLimit until the sandbox can no longer fork.
           Init: true,
           NetworkMode: allowNetwork ? "bridge" : "none",
+          ...(extraHosts.length > 0 ? { ExtraHosts: extraHosts } : {}),
           // Everything below runs model-directed commands, so the container
           // gets no capability it cannot demonstrate a need for.
           //
@@ -670,19 +686,13 @@ export function getContainerProvider(): SandboxProvider {
       // admin enabled it (NetworkMode: "none" by default). We surface the
       // clone failure rather than silently producing an empty repo.
       if (config.repoUrl) {
-        let url = config.repoUrl;
-        if (config.token) url = url.replace("https://", `https://x-access-token:${config.token}@`);
-        const clone = await handle.exec([
-          "git", "clone", "--depth=1",
-          ...(config.branch ? [`--branch=${config.branch}`] : []),
-          url,
-          "/home/loxaic/repo",
-        ]);
-        if (clone.exitCode !== 0) {
+        try {
+          await cloneInto(handle, config, "/home/loxaic/repo");
+        } catch (err) {
           // destroy, not stop: create() is throwing, so no row will ever
           // claim this container and nothing could resume it.
           await handle.destroy();
-          throw new Error(`Repo clone failed (exit ${String(clone.exitCode)}): ${clone.stderr.trim()}`);
+          throw err;
         }
       } else {
         // Every sandbox gets the working directory the agent tools default to.

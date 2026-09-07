@@ -1,3 +1,4 @@
+import type { Workspace } from '@loxaic/types'
 export type SurfaceId = 'chat' | 'agent' | 'routines' | 'mcp' | 'stats' | 'launcher' | 'admin'
 
 export type ModelLocation = 'server' | 'device' | 'remote'
@@ -22,10 +23,18 @@ import type { ContextBreakdown, CompactionStats, AttachmentRef } from '@loxaic/a
 
 export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
 
-export interface Workspace {
-  name: string
-  path: string
-}
+export type { Workspace } from '@loxaic/types'
+
+/**
+ * What the client asks for when it starts an agent run. The github form is a
+ * *request*: the server looks the repo up, fills in `cloneUrl` and the
+ * default branch itself, and refuses anything it cannot verify — so this is
+ * deliberately narrower than the stored `Workspace`. An optimistic run holds
+ * one of these until the server's row replaces it.
+ */
+export type WorkspaceChoice =
+  | { kind: 'scratch' }
+  | { kind: 'github'; repo: string; baseBranch?: string; branch?: string }
 
 export interface MessageUsage {
   in: number
@@ -118,6 +127,9 @@ export interface Conversation {
   /** The owner's display name, for a thread shared with this user. Absent on
    * their own conversations, which is what the sidebar keys on to badge. */
   sharedBy?: string
+  /** Where an agent conversation's files live. Absent or null means scratch.
+   * Fixed at creation; the chooser is only offered before the first run. */
+  workspace?: Workspace | WorkspaceChoice | null
 }
 
 export type ConversationRole = 'viewer' | 'editor' | 'owner'

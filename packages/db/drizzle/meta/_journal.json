@@ -134,6 +134,13 @@
       "when": 1788749796016,
       "tag": "0018_classy_triathlon",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788752599530,
+      "tag": "0019_premium_krista_starr",
+      "breakpoints": true
     }
   ]
 }

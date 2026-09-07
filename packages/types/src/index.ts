@@ -12,6 +12,44 @@ export type ConversationKind = "chat" | "agent" | "routine";
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
+/**
+ * Where an agent conversation's files live and what is in them. Chosen when
+ * the conversation is created and **immutable afterwards** — the agent's
+ * system prompt is derived from it, and a prompt that changed mid-conversation
+ * would invalidate the backend's cached prefix from the first token onward
+ * (see AGENTS.md, "Prompt caching").
+ *
+ * - `scratch`: an empty directory in a sandbox on the server. The default, and
+ *   what every conversation created before workspaces existed resolves to.
+ * - `github`: a clone of a repo the user's GitHub connection can reach, on a
+ *   fresh branch cut from `baseBranch`. `cloneUrl` is what GitHub reported for
+ *   the repo, never something the client supplied. `pr` is written by the
+ *   server once a pull request has been opened (a later stage) and is never
+ *   client-settable.
+ * - `local`: a directory on the user's own machine, executed by that machine's
+ *   desktop app (a later stage). Rejected until then.
+ */
+export type WorkspaceIsolation = "direct" | "container";
+export type Workspace =
+  | { kind: "scratch" }
+  | {
+      kind: "github";
+      /** `owner/name`. */
+      repo: string;
+      baseBranch: string;
+      /** The branch the agent works on, created from `baseBranch` at clone time. */
+      branch: string;
+      cloneUrl: string;
+      pr?: { number: number; url: string };
+    }
+  | {
+      kind: "local";
+      executorId: string;
+      executorName: string;
+      path: string;
+      isolation: WorkspaceIsolation;
+    };
+
 export type MessageStatus = "streaming" | "complete" | "error" | "cancelled";
 
 export type AuthorType = "user" | "assistant" | "system" | "tool" | "summary";

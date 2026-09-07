@@ -257,6 +257,64 @@ export async function patchSandboxSettings(patch: Record<string, unknown>): Prom
   }
 }
 
+/** Connects GitHub for `creds` straight through the API, with the token the
+ * mock GitHub server accepts. For specs whose subject is what a connection
+ * *enables*, not the connection screen itself (github-settings.spec.ts). */
+export async function connectGithub(creds: Pick<Credentials, 'email' | 'password'>, token: string): Promise<void> {
+  const session = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/github/connection`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${session}` },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) throw new Error(`[e2e] connecting GitHub failed (${String(res.status)}): ${await res.text()}`);
+}
+
+/**
+ * Polls until the conversation has no active run. The signal is the server's
+ * own registry (`active_run` on GET /v1/conversations/:id), not a guess from
+ * message statuses — and polled with plain fetch rather than a WebDriver loop,
+ * for the reason real-model-build.spec.ts documents: a headless tab left idle
+ * in a long waitUntil can stop answering.
+ */
+export async function waitForRunDone(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+  timeoutMs = 120_000,
+): Promise<void> {
+  const session = await apiToken(creds);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}`, {
+      headers: { authorization: `Bearer ${session}` },
+    });
+    if (!res.ok) throw new Error(`[e2e] GET conversation failed (${String(res.status)})`);
+    const row = (await res.json()) as { active_run?: boolean };
+    if (row.active_run === false) return;
+    if (Date.now() > deadline) throw new Error(`[e2e] run on ${conversationId} did not finish in ${String(timeoutMs)}ms`);
+    await new Promise((r) => setTimeout(r, 1_000));
+  }
+}
+
+/**
+ * Drives the workspace chooser on the agent screen to a GitHub repo. Assumes
+ * no run is active (the pill is only a control before the first message) and
+ * that GitHub is connected. Returns the branch name the chooser generated, so
+ * the caller can assert the clone landed on it.
+ */
+export async function chooseGithubWorkspace(repoId: number): Promise<string> {
+  await tap('agent.workspace.button');
+  await waitForVisible('agent.workspace.dialog');
+  await tap('agent.workspace.source.github');
+  await waitForVisible(`agent.workspace.repo.${String(repoId)}`);
+  await tap(`agent.workspace.repo.${String(repoId)}`);
+  await waitForVisible('agent.workspace.branchName');
+  const branch = await byTestId('agent.workspace.branchName').getValue();
+  await tap('agent.workspace.confirm');
+  await waitForTextIn('agent.workspace.button', branch);
+  return branch;
+}
+
 /** Opens Settings and navigates to the GitHub connection screen. Waits for
  * either state the screen can load into — connected (`github.status`) or not
  * (`github.token`, the connect form) — since which one appears depends on

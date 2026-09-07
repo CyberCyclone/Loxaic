@@ -82,7 +82,14 @@ export function sandboxRoutes(app: FastifyInstance) {
 
     try {
       const provider = await getProviderByKind(kind);
-      const handle = await provider.create(userId, { repoUrl: repo_url, branch, token });
+      // The body's `token` is kept for compatibility, mapped onto the config
+      // shape sandbox/git.ts reads — it now travels through the exec
+      // environment rather than the clone URL.
+      const handle = await provider.create(userId, {
+        repoUrl: repo_url,
+        branch,
+        ...(token ? { git: { token } } : {}),
+      });
 
       const [row] = await db
         .insert(sandboxes)
