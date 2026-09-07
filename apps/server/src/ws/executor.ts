@@ -15,6 +15,7 @@ import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
 import {
   handleExecutorResult,
+  handleExecutorTerminalMessage,
   registerExecutor,
   updateExecutorRoots,
 } from "../executor/registry.ts";
@@ -170,6 +171,8 @@ export function executorWsHandler(app: FastifyInstance) {
         if (roots && executorId) updateExecutorRoots(executorId, roots);
       } else if (msg.type === "result") {
         if (executorId && typeof msg.id === "string") handleExecutorResult(executorId, msg);
+      } else if (msg.type === "terminal.data" || msg.type === "terminal.exit") {
+        if (executorId && typeof msg.terminalId === "string") handleExecutorTerminalMessage(executorId, msg);
       }
       // A second hello, or an unknown type, is ignored rather than fatal.
     });

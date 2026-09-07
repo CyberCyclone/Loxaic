@@ -177,6 +177,36 @@ its filesystem and network), and `off` leaves no isolation story for a later
 switch. Neither is defensible once the work isn't yours. A Solo install is
 your own machine running your own commands, so it keeps the choice.
 
+### The terminal
+
+The agent screen has a terminal panel (the `>_` button in its header, once a
+conversation has a workspace). It opens a shell **in that workspace**, wherever
+it is: a container sandbox on the server, a host-mode directory, or a folder on
+your own machine.
+
+What you get depends on where it opened, and the panel says which:
+
+| Workspace | Shell | What that means |
+|---|---|---|
+| Container sandbox | Real terminal (PTY) | Prompt, colour, `Ctrl-C`, arrow keys, `vim` — click into it and type |
+| Host mode, or a local workspace | Bash over pipes | Commands run and output comes back, but there is **no prompt and nothing echoes**; use the line input at the bottom |
+
+The pipe-mode limitation is deliberate rather than unfinished: a real terminal
+on those two would need a native module (`node-pty`), and the packaged desktop
+app runs its server and executor under Electron's own Node, where a binding
+built for system Node will not load. A container gets a PTY for free because
+the terminal lives inside the container.
+
+Two more things worth knowing:
+
+- The terminal opens where the agent's own commands run — the checkout, not the
+  home directory above it. Under container mode that changed in #62; a
+  `POST /v1/sandboxes/:id/exec` with no `workdir` now lands in
+  `/home/loxaic/repo` too, matching host mode and the documented contract.
+- Opening the panel never *creates* a workspace. If the conversation has not run
+  a tool yet there is nothing to open, and it says so; a paused workspace is
+  resumed.
+
 ### Local workspaces: an agent working in a folder on *your* machine
 
 From the desktop app, an agent conversation can run in a folder on the machine

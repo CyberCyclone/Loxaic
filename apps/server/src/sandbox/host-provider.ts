@@ -83,11 +83,22 @@ async function walk(dir: string, base: string, depth: number, out: FileNode[]): 
   }
 }
 
-/** Bash over plain pipes — no PTY, so no colors/job-control/prompt shaping,
- * but it works everywhere with no native dependency. Good enough as a
- * baseline for a feature (host-mode terminal) that's already an explicit
- * no-isolation opt-in. */
-function openHostTerminal(cwd: string): TerminalSession {
+/**
+ * Bash over plain pipes — no PTY, so no prompt, no echo, no colours and no
+ * job control, and `tty: false` says so rather than leaving the client to
+ * infer it from a window that looks dead. A PTY here would mean node-pty, a
+ * native module: the packaged desktop runs this code under Electron's own
+ * Node with `npmRebuild: false`, so a binding built for system Node would not
+ * load, and the executor (same code, the user's machine) has the same
+ * constraint. The container provider gets a real PTY for free because Docker
+ * allocates it inside the container.
+ *
+ * Exported for the executor, which runs exactly this on the user's own
+ * machine — a shell there is the same authority `exec` already has (direct
+ * mode is explicitly not isolation), so it is the approved directory that
+ * gates opening one, not the shell's own reach afterwards.
+ */
+export function openPipeTerminal(cwd: string): TerminalSession {
   const child = spawn("bash", [], { cwd, stdio: ["pipe", "pipe", "pipe"] });
   const dataListeners: ((data: string) => void)[] = [];
   const closeListeners: (() => void)[] = [];
@@ -95,6 +106,7 @@ function openHostTerminal(cwd: string): TerminalSession {
   child.stderr.on("data", (chunk: Buffer) => { for (const l of dataListeners) l(chunk.toString()); });
   child.on("close", () => { for (const l of closeListeners) l(); });
   return {
+    tty: false,
     write: (data) => { child.stdin.write(data); },
     onData: (listener) => { dataListeners.push(listener); },
     onClose: (listener) => { closeListeners.push(listener); },
@@ -149,7 +161,7 @@ function makeHandle(
       return out;
     },
 
-    openTerminal: () => Promise.resolve(openHostTerminal(workdir)),
+    openTerminal: () => Promise.resolve(openPipeTerminal(workdir)),
 
     async isRunning() {
       try {

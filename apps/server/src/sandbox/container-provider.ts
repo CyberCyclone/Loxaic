@@ -28,6 +28,13 @@ const DEFAULT_LIMITS = {
   PidsLimit: 100,
 };
 const DEFAULT_EXEC_TIMEOUT_MS = 60_000;
+
+/** The sandbox user's home, and the checkout inside it that is the handle's
+ * `workdir`. Both are fixed by the image (infra/docker/sandbox.Dockerfile,
+ * which creates the second), so they are constants rather than configuration
+ * — and naming them keeps the exec default and the image in step. */
+const CONTAINER_ROOT = "/home/loxaic";
+const CONTAINER_WORKDIR = `${CONTAINER_ROOT}/repo`;
 /** Ceiling on one binary write into a container. Generous — a multi-megabyte
  * document over a local socket is fast — but finite, because the caller is an
  * HTTP request handler. */
@@ -49,7 +56,7 @@ let imageTag: string | null = null;
  * SANDBOX_IMAGE still overrides for anyone supplying their own prebuilt image;
  * they are then responsible for its contents.
  */
-function sandboxImage(): string {
+export function sandboxImage(): string {
   if (process.env.SANDBOX_IMAGE) return process.env.SANDBOX_IMAGE;
   if (imageTag) return imageTag;
   let digest = "base";
@@ -321,7 +328,9 @@ async function execInContainer(
     Cmd: command,
     AttachStdout: true,
     AttachStderr: true,
-    WorkingDir: options?.workdir ?? "/home/loxaic",
+    // The handle's workdir, not the root: #62. The image creates it, so it is
+    // always there to be exec'd in — including for the clone that fills it.
+    WorkingDir: options?.workdir ?? CONTAINER_WORKDIR,
     // Per-command only: it lands in this exec's process and nowhere else in
     // the container, which is what lets a git credential ride here rather
     // than in a URL or a file. See sandbox/git.ts.
@@ -375,8 +384,8 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
   return {
     provider: "container",
     ref: containerId,
-    root: "/home/loxaic",
-    workdir: "/home/loxaic/repo",
+    root: CONTAINER_ROOT,
+    workdir: CONTAINER_WORKDIR,
 
     exec: (command, options) => execInContainer(container, command, options),
 
@@ -401,7 +410,7 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
 
     writeFileBinary: (filePath, data) => writeBinaryToContainer(container, filePath, data),
 
-    async fileTree(treePath = "/home/loxaic") {
+    async fileTree(treePath = CONTAINER_ROOT) {
       const { stdout } = await execInContainer(container, [
         "find", treePath, "-maxdepth", "3", "-printf", "%y %P\n",
       ]);
@@ -425,6 +434,12 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
         AttachStdout: true,
         AttachStderr: true,
         Tty: true,
+        // Same default as every other exec (#62): a terminal opens where the
+        // work is, not at the home directory above it.
+        WorkingDir: CONTAINER_WORKDIR,
+        // Without this bash announces `TERM=dumb` and emits no colour or
+        // cursor control at all, which wastes the one thing a real PTY buys.
+        Env: ["TERM=xterm-256color"],
       });
       const stream = await exec.start({ hijack: true, stdin: true });
 
@@ -448,7 +463,13 @@ function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       modem.demuxStream(stream, sink, sink);
 
       return {
+        tty: true,
         write: (data) => { stream.write(Buffer.from(data)); },
+        // The PTY's window size, which is what makes `vim`, `less` and line
+        // wrapping agree with what the user actually sees. Failures are
+        // swallowed: a resize arriving after the shell exited is ordinary,
+        // and losing the session over it would be absurd.
+        resize: (cols, rows) => { void exec.resize({ w: cols, h: rows }).catch(() => undefined); },
         onData: (listener) => { dataListeners.push(listener); },
         onClose: (listener) => { stream.on("close", listener); },
         close: () => { stream.end(); },
@@ -687,7 +708,7 @@ export function getContainerProvider(): SandboxProvider {
       // clone failure rather than silently producing an empty repo.
       if (config.repoUrl) {
         try {
-          await cloneInto(handle, config, "/home/loxaic/repo");
+          await cloneInto(handle, config, CONTAINER_WORKDIR);
         } catch (err) {
           // destroy, not stop: create() is throwing, so no row will ever
           // claim this container and nothing could resume it.
@@ -696,7 +717,10 @@ export function getContainerProvider(): SandboxProvider {
         }
       } else {
         // Every sandbox gets the working directory the agent tools default to.
-        await handle.exec(["mkdir", "-p", "/home/loxaic/repo"]);
+        // Redundant against the current image, which creates it — kept so a
+        // container from any image still gets the directory its handle
+        // promises, rather than failing on the first exec that defaults to it.
+        await handle.exec(["mkdir", "-p", CONTAINER_WORKDIR]);
       }
 
       return handle;

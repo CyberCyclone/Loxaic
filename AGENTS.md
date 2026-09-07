@@ -980,9 +980,84 @@ screenshots showing that behaviour working. Writing those tests is the implement
   passes `--loxaic-data-dir` in **every** mode: the executor writes picked folders into the
   data dir, and without a throwaway one a test run appended temp paths to the developer's real
   Loxaic config.
-- Not yet: a terminal over the executor (the terminal panel stage), container isolation for a
-  local folder (refused with a reason by both the chooser and `parseWorkspaceInput`), Windows
-  executors (`agent/executor.ts`'s `resolvePath` is POSIX, as the host provider always was).
+- **A label whose width comes from data can cover the control beside it.** React Native
+  defaults every view to `flexShrink: 0`, so `WorkspacePill` — which renders the workspace's
+  path — grew past its share of the row and sat on top of the mode selector, making "Manual"
+  unclickable. It reached `main` in the local-executor stage and only failed a run later, when
+  this machine's hostname happened to be eight characters longer: the overlap was always there,
+  and the *click point* crossed the boundary. The fix is both halves — the pill shrinks
+  (`min-w-0 shrink`) and truncates while the mode selector is `shrink-0`, and the pill shows the
+  folder's *name* with the full path left to the Inspector. Anywhere a data-derived string sits
+  next to a control, both are needed: truncation alone still lets it win the space, and
+  `shrink-0` on the neighbour alone still lets it overflow the row.
+- Not yet: container isolation for a local folder (refused with a reason by both the chooser and
+  `parseWorkspaceInput`), Windows executors (`agent/executor.ts`'s `resolvePath` is POSIX, as the
+  host provider always was).
+
+### The terminal panel
+
+- **`handle.workdir` is the default working directory, for real now (#62).** `exec` and
+  `openTerminal` both land there in **every** provider when the caller names no directory. It
+  was documented as that and wasn't: the container provider ran execs in the *root* while the
+  host provider used the workdir, so `POST /v1/sandboxes/:id/exec` and the terminal landed
+  somewhere different depending on the deployment's sandbox mode. It had already cost a real
+  debugging session — a build command hard-coded to `cd …/repo` failed under host mode and was
+  reported as a failing build (#55). **This is a behaviour change to the REST exec endpoint and
+  the terminal for container deployments**: they used to land in `/home/loxaic`, now
+  `/home/loxaic/repo`. The agent loop is unaffected (`executor.ts` always passed `workdir`
+  explicitly), which is why it went unnoticed for so long.
+- **The image creates `/home/loxaic/repo`.** Docker refuses an exec whose `WorkingDir` is
+  missing, so once every exec defaults to the workdir, the *first* one — the clone that fills
+  it, or the mkdir standing in for it — would fail without this. Creating it in the image is
+  what makes the default unconditional rather than true-after-some-other-call. Changing the
+  Dockerfile changes the content-hash tag, so this rebuilt itself exactly once, as designed.
+- **No `node-pty`, and that is not a shortcut.** A PTY on *our* side would be a native module,
+  and the packaged desktop runs both the server and the executor under Electron's own Node with
+  `npmRebuild: false` — a binding built for system Node does not load there. So: a **container**
+  session gets a real PTY (Docker allocates it *inside* the container, costing us no
+  dependency), and **host and executor** sessions are bash over plain pipes.
+- **The client is told which it got** (`terminal.ready {tty, workdir}`) rather than left to
+  infer it. A pipe session has no prompt, no echo and no colour, so an emulator pointed at one
+  looks broken; the panel says so in a sentence and line-edits locally instead. Local echo
+  happens **only** when `tty` is false — a real PTY echoes for itself, and doing both shows
+  every keystroke twice.
+- **Input is raw in both directions.** The protocol used to append `"\n"` to every
+  `terminal.input`, which silently turned each frame into a submitted line: that corrupts arrow
+  keys, Ctrl-C, and anything typed a character at a time. `sandbox-ws.test.ts` splits one
+  command across two frames, which is the only way to state that from outside.
+- **`terminal.error` rides as a message, not a close reason.** A WebSocket close reason is
+  capped at 123 bytes and a machine name can be 64 of them; the code (`4503` for an offline
+  machine) is for the client, the sentence is for the person. An offline *executor* is
+  distinguished from a gone workspace by asking the registry, so "your machine is offline" is
+  never rendered as "not found".
+- **Executor terminals stream over the executor's existing socket**, keyed by a `terminalId`,
+  beside the request/response `call` path — a shell is a conversation, not a question. Opening
+  one requires an approved directory, re-checked at open time. Where the shell goes *afterwards*
+  is not bounded and does not need to be: `exec` already runs arbitrary commands on that machine,
+  which is exactly what "Direct — commands run as you, with no sandbox" says in the chooser. The
+  roots decide where work happens, not what a shell the owner is typing into may reach. A lost
+  server connection closes every shell — a server that has gone away must not leave bash
+  processes running on someone's laptop.
+- **The panel holds a socket only while it is open**, and never *creates* a workspace: it opens
+  into the one the tool loop already made (a paused one is resumed, which is what someone
+  opening a terminal after lunch wants). Opening a terminal is not a reason to start a container.
+- **Client: xterm on web/Electron, a text view on native.** `@xterm/xterm` has no React or
+  React Native peer at all, so it cannot pull in a second React island (the `nativewind` hazard
+  above); its CSS import emits its own small bundle in the Expo web export. The **DOM renderer
+  is the default and the canvas/WebGL addons are deliberately not loaded**, so what is on screen
+  is real DOM text — selectable, readable by a screen reader, and assertable by a test. Both
+  panels carry a line input as well (`agent.terminal.input`): it is the only way in on a touch
+  screen or a pipe session, and it is what the e2e drives, since a hidden textarea inside an
+  emulator is not something to select on.
+- **`sandboxImageReady()` checks the current *tag*, not the name.** Tags are a content hash, so
+  right after a Dockerfile change the old image is still present while the one the suite needs
+  has never been built — precisely when a name-only check would wave it into the multi-minute
+  build the helper exists to avoid. Editing the Dockerfile for #62 is the first time that came up.
+- **`pwd` reports the physical path.** macOS puts temp directories under a `/var` →
+  `/private/var` symlink, so a host-provider test comparing `pwd` against `handle.workdir`
+  is asserting on that symlink rather than on anything it meant to. Compare against a
+  `realpathSync`, and keep the logical path for what `terminal.ready` reports — they are
+  genuinely different answers.
 
 ### Electron
 

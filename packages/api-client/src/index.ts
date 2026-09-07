@@ -1134,6 +1134,70 @@ export function createAgentSocket(token: string, onEvent: (event: ServerMessage)
   return createStreamSocket("/ws/agent", token, onEvent);
 }
 
+// ── Sandbox terminal (`/ws/sandbox/:id`) ──────────────────
+// Its own small protocol rather than the chat/agent envelope: this carries
+// raw keystrokes and terminal bytes, which have nothing to do with runs.
+
+/** Sent once, before anything else. `tty` is the one thing a client cannot
+ * work out for itself: a container sandbox gets a real PTY (prompt, echo,
+ * colour, a size worth resizing), a host or local-machine one is bash over
+ * pipes and has none of that. Render accordingly rather than guessing. */
+export interface TerminalReadyEvent {
+  type: "terminal.ready";
+  tty: boolean;
+  /** Where the shell opened — the same directory the agent's own commands
+   * land in, whichever provider this is. */
+  workdir: string;
+}
+export interface TerminalOutputEvent {
+  type: "terminal.output";
+  data: string;
+}
+/** The shell ended. Distinct from the socket dropping, which is why it is
+ * said before the close rather than left to be inferred from it. */
+export interface TerminalExitEvent {
+  type: "terminal.exit";
+}
+/** Why the terminal could not be opened, in words worth showing. Rides as a
+ * message because a WebSocket close reason is capped at 123 bytes. */
+export interface TerminalErrorEvent {
+  type: "terminal.error";
+  message: string;
+}
+
+export type TerminalServerEvent =
+  | TerminalReadyEvent
+  | TerminalOutputEvent
+  | TerminalExitEvent
+  | TerminalErrorEvent;
+
+export function createSandboxTerminalSocket(
+  sandboxId: string,
+  token: string,
+  onEvent: (event: TerminalServerEvent) => void,
+): WebSocket {
+  const wsBase = BASE_URL.replace("http", "ws");
+  const ws = new WebSocket(`${wsBase}/ws/sandbox/${encodeURIComponent(sandboxId)}?token=${token}`);
+  ws.onmessage = (msg) => {
+    try {
+      onEvent(JSON.parse(msg.data as string) as TerminalServerEvent);
+    } catch {
+      // ignore
+    }
+  };
+  return ws;
+}
+
+/** Raw — no newline is added at either end. Enter is `\r` from a real
+ * terminal and `\n` from a line input, and both mean what they say. */
+export function sendTerminalInput(ws: WebSocket, data: string): boolean {
+  return trySend(ws, { type: "terminal.input", data });
+}
+
+export function sendTerminalResize(ws: WebSocket, cols: number, rows: number): boolean {
+  return trySend(ws, { type: "terminal.resize", cols, rows });
+}
+
 export function sendChatMessage(
   ws: WebSocket,
   content: string,
