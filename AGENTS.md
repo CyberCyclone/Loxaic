@@ -887,8 +887,12 @@ screenshots showing that behaviour working. Writing those tests is the implement
   suite ran in parallel — it now scopes by its own `ownerId`, matching every other sandbox
   test file's convention. The same class of bug existed the other direction, already latent
   in Stage 1: `reapAbandonedSandboxes()` queries the `sandboxes` table directly (unlike
-  `stopIdleSandboxes`/`stopAllSandboxes`, which only ever touch this *process's* own
-  in-memory `active` map), so two host-mode suites running in different worker processes are
+  `stopIdleSandboxes`, which only ever touches this *process's* own in-memory `active` map —
+  **`stopAllSandboxes` is not in that company**: after walking the map it also sweeps every row
+  whose status is `running`, so calling it from one suite's cleanup stops the sandbox another
+  suite is asserting on, which is exactly what the terminal test's first draft did. Scoped test
+  cleanup is `destroyConversationSandboxes(id)`), so two host-mode suites in different worker
+  processes are
   visible to each other there even though neither can see the other's in-memory state. Adding
   `git.test.ts` as a second host-mode suite exposed it: `lifecycle.test.ts`'s deliberately
   tiny reap windows destroyed a sandbox `git.test.ts` was mid-request in. `reapAbandonedSandboxes`
