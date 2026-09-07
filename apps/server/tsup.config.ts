@@ -1,7 +1,13 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  // Two entries, one process each: the server, and the local executor the
+  // desktop app spawns on the user's own machine (src/executor/main.ts). The
+  // executor is built from this package because it reuses the host sandbox
+  // provider, but it is a separate program — it never imports the database,
+  // settings, or the server entry, and executor/__tests__/isolation.test.ts
+  // fails the build if that ever changes.
+  entry: { index: "src/index.ts", executor: "src/executor/main.ts" },
   format: ["esm"],
   clean: true,
   // The packaged desktop build runs this output under Electron's Node

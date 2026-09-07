@@ -1,0 +1,223 @@
+/**
+ * The server's view of which local executors are connected right now, and
+ * the request/response layer over their sockets.
+ *
+ * Process-local, like the run registry (#78 owns multi-process). An executor
+ * is keyed by its own id — the desktop's `instanceId` — and remembered under
+ * its user so the chooser can list "your machines"; a `local` workspace
+ * records the id, and the executor provider reaches the socket through
+ * `callExecutor` with nothing but that id.
+ *
+ * Every call has a deadline. An executor that has gone quiet — laptop lid
+ * closed, the socket half-open — must surface as a failed tool call with a
+ * reason, never as a run that hangs until someone notices. The executor's
+ * own `exec` timeout is deliberately the shorter one (protocol.ts), so a
+ * command that overruns comes back as a real exit code with its output.
+ */
+import { randomUUID } from "node:crypto";
+import {
+  DEFAULT_CALL_TIMEOUT_MS,
+  executorOfflineMessage,
+  type ExecutorCapabilities,
+  type ExecutorMethod,
+  type ResultMessage,
+  type ServerToExecutor,
+} from "./protocol.ts";
+
+export class ExecutorOfflineError extends Error {
+  constructor(name: string | null) {
+    super(executorOfflineMessage(name));
+    this.name = "ExecutorOfflineError";
+  }
+}
+
+/** The executor answered, and the answer was a refusal or a failure — a path
+ * outside its roots, a command that could not spawn. The message is the
+ * executor's own, so a user reading a tool result sees what their machine
+ * actually objected to. */
+export class ExecutorCallError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ExecutorCallError";
+  }
+}
+
+export class ExecutorTimeoutError extends Error {
+  constructor(method: string, name: string | null, timeoutMs: number) {
+    super(
+      `${name ? `Your machine ${name}` : "The machine this workspace lives on"} did not answer ` +
+        `(${method}) within ${String(Math.round(timeoutMs / 1000))}s — is the Loxaic desktop app still running there?`,
+    );
+    this.name = "ExecutorTimeoutError";
+  }
+}
+
+export interface ExecutorInfo {
+  executorId: string;
+  userId: string;
+  name: string;
+  platform: string;
+  capabilities: ExecutorCapabilities;
+  roots: string[];
+  connectedAt: number;
+}
+
+/** What `ws/executor.ts` hands over once a hello has been validated. */
+export interface ExecutorConnection extends Omit<ExecutorInfo, "connectedAt"> {
+  send(message: ServerToExecutor): void;
+  close(code: number, reason: string): void;
+}
+
+interface Pending {
+  resolve(value: unknown): void;
+  reject(err: Error): void;
+  timer: NodeJS.Timeout;
+}
+
+interface Registered {
+  info: ExecutorInfo;
+  conn: ExecutorConnection;
+  pending: Map<string, Pending>;
+}
+
+const byId = new Map<string, Registered>();
+const byUser = new Map<string, Set<string>>();
+/** Survives disconnects, so an offline message can still name the machine. */
+const lastKnownName = new Map<string, string>();
+
+function failPending(entry: Registered, reason: string): void {
+  for (const [id, p] of entry.pending) {
+    clearTimeout(p.timer);
+    p.reject(new ExecutorCallError(reason));
+    entry.pending.delete(id);
+  }
+}
+
+/**
+ * Registers a freshly-connected executor. Returns the unregister function
+ * its socket's close handler calls.
+ *
+ * A second connection claiming an id that is already registered *replaces*
+ * the first — a desktop that restarted before the server noticed its old
+ * socket die is the common case, and refusing it would lock that machine
+ * out until a TCP timeout. The old socket is closed and its in-flight calls
+ * fail, which is the truth: that process is gone.
+ */
+export function registerExecutor(conn: ExecutorConnection): () => void {
+  const existing = byId.get(conn.executorId);
+  if (existing) {
+    failPending(existing, "the machine reconnected before this call completed");
+    unlink(existing);
+    existing.conn.close(4000, "Replaced by a newer connection");
+  }
+  const entry: Registered = {
+    info: {
+      executorId: conn.executorId,
+      userId: conn.userId,
+      name: conn.name,
+      platform: conn.platform,
+      capabilities: conn.capabilities,
+      roots: [...conn.roots],
+      connectedAt: Date.now(),
+    },
+    conn,
+    pending: new Map(),
+  };
+  byId.set(conn.executorId, entry);
+  lastKnownName.set(conn.executorId, conn.name);
+  let ids = byUser.get(conn.userId);
+  if (!ids) {
+    ids = new Set();
+    byUser.set(conn.userId, ids);
+  }
+  ids.add(conn.executorId);
+
+  return () => {
+    // Only this connection may unregister itself: if it was already
+    // replaced, the id now belongs to the newer socket.
+    if (byId.get(conn.executorId) !== entry) return;
+    failPending(entry, "the machine disconnected before this call completed");
+    unlink(entry);
+  };
+}
+
+function unlink(entry: Registered): void {
+  byId.delete(entry.info.executorId);
+  const ids = byUser.get(entry.info.userId);
+  ids?.delete(entry.info.executorId);
+  if (ids?.size === 0) byUser.delete(entry.info.userId);
+}
+
+export function updateExecutorRoots(executorId: string, roots: string[]): void {
+  const entry = byId.get(executorId);
+  if (entry) entry.info.roots = [...roots];
+}
+
+export function handleExecutorResult(executorId: string, msg: ResultMessage): void {
+  const entry = byId.get(executorId);
+  const p = entry?.pending.get(msg.id);
+  if (!entry || !p) return; // late answer to a call that already timed out
+  entry.pending.delete(msg.id);
+  clearTimeout(p.timer);
+  if (msg.ok) p.resolve(msg.value);
+  else p.reject(new ExecutorCallError(msg.error));
+}
+
+export function listExecutors(userId: string): ExecutorInfo[] {
+  const ids = byUser.get(userId);
+  if (!ids) return [];
+  const out: ExecutorInfo[] = [];
+  for (const id of ids) {
+    const entry = byId.get(id);
+    if (entry) out.push({ ...entry.info, roots: [...entry.info.roots] });
+  }
+  return out;
+}
+
+export function getExecutor(executorId: string): ExecutorInfo | null {
+  const entry = byId.get(executorId);
+  return entry ? { ...entry.info, roots: [...entry.info.roots] } : null;
+}
+
+export function executorName(executorId: string): string | null {
+  return lastKnownName.get(executorId) ?? null;
+}
+
+/**
+ * One request to one executor, answered or failed within `timeoutMs`.
+ * Offline is decided up front rather than discovered by timeout: a machine
+ * that is not connected cannot become connected by waiting fifteen seconds.
+ */
+export async function callExecutor<T>(
+  executorId: string,
+  method: ExecutorMethod,
+  params: unknown,
+  opts: { timeoutMs?: number } = {},
+): Promise<T> {
+  const entry = byId.get(executorId);
+  if (!entry) throw new ExecutorOfflineError(executorName(executorId));
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  const id = randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      entry.pending.delete(id);
+      reject(new ExecutorTimeoutError(method, entry.info.name, timeoutMs));
+    }, timeoutMs);
+    entry.pending.set(id, { resolve, reject, timer });
+    try {
+      entry.conn.send({ type: "call", id, method, params });
+    } catch (err) {
+      entry.pending.delete(id);
+      clearTimeout(timer);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
+/** Test seam. */
+export function __resetExecutorsForTest(): void {
+  for (const entry of byId.values()) failPending(entry, "reset");
+  byId.clear();
+  byUser.clear();
+  lastKnownName.clear();
+}

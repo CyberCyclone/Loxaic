@@ -13,10 +13,13 @@ import {
 } from '@expo-google-fonts/public-sans';
 import { SessionProvider, useSession } from '@/lib/session';
 import { useThemePreference } from '@/hooks/useTheme';
+import { useLocalExecutorSync } from '@/hooks/useLocalExecutor';
 
 function ThemedApp() {
   const [themePref] = useThemePreference();
-  const { ready } = useSession();
+  const { ready, token } = useSession();
+  // Above the auth gate on purpose — see useLocalExecutorSync.
+  useLocalExecutorSync(ready ? token : null);
   if (!ready) return null;
   return (
     <GluestackUIProvider mode={themePref}>

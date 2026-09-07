@@ -177,6 +177,34 @@ its filesystem and network), and `off` leaves no isolation story for a later
 switch. Neither is defensible once the work isn't yours. A Solo install is
 your own machine running your own commands, so it keeps the choice.
 
+### Local workspaces: an agent working in a folder on *your* machine
+
+From the desktop app, an agent conversation can run in a folder on the machine
+you are sitting at — even when the model and the server are somewhere else.
+The desktop app keeps a small **executor** process connected to the server
+(`/ws/executor`), and a conversation whose workspace is **Local** sends its
+tool calls there instead of to a server sandbox.
+
+- It works in every desktop mode, **Client included**: a laptop joined to a GPU
+  box can have the agent edit a project on the laptop.
+- Folders are chosen with the OS's own folder dialog, in the workspace chooser
+  ("Choose a folder on this machine…"). Nothing else can add one — not the
+  server, not a page. The executor refuses anything outside those folders,
+  resolving symlinks, on every request.
+- **Direct** isolation is the only option today: commands run as you, in that
+  folder, with no sandbox. Container isolation for a local folder is a later
+  stage. Anyone you share the chat with as an editor is running commands on
+  your machine — the chooser says so.
+- The server's own sandbox settings (`SANDBOX_MODE`, network access, the Host
+  requirement above) do not apply: nothing runs on the server.
+- Close the desktop app and the machine goes offline; a tool call then fails
+  with "Your machine … is offline — open the Loxaic desktop app there and try
+  again" rather than waiting. Nothing in the folder is ever deleted by Loxaic.
+- Where things live: chosen folders in `<dataDir>/executor-roots.json`; the
+  executor itself is `dist/executor.js` beside the bundled server, so a dev
+  launch needs `pnpm --filter @loxaic/desktop build:server` first (the chooser
+  says so if it is missing).
+
 ### Where settings live
 
 Sandbox configuration resolves **environment variable > stored setting >

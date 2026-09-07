@@ -52,4 +52,26 @@ contextBridge.exposeInMainWorld("loxaic", {
       return () => { ipcRenderer.off("loxaic:stackState", listener); };
     },
   },
+
+  /**
+   * The local executor: this machine running agent commands in a folder the
+   * user chose. Same rule as `instance`: fixed channels, and the one that
+   * involves a path (`pickDirectory`) takes none from the renderer — the
+   * main process opens the *native* folder dialog and records what the user
+   * picked there. `removeRoot` only accepts a path that is already a root,
+   * so it can only ever narrow the list.
+   */
+  executor: {
+    /** Hand the executor the signed-in session (null on sign-out). The token
+     * goes main-process → executor stdin and is never persisted. */
+    setSession: (token) => ipcRenderer.invoke("loxaic:executor.setSession", token),
+    getState: () => ipcRenderer.invoke("loxaic:executor.getState"),
+    pickDirectory: () => ipcRenderer.invoke("loxaic:pickDirectory"),
+    removeRoot: (dir) => ipcRenderer.invoke("loxaic:executor.removeRoot", dir),
+    onState: (callback) => {
+      const listener = (_event, state) => { callback(state); };
+      ipcRenderer.on("loxaic:executorState", listener);
+      return () => { ipcRenderer.off("loxaic:executorState", listener); };
+    },
+  },
 });

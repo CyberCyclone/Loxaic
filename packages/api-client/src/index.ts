@@ -422,10 +422,18 @@ export async function getSandboxes(conversationId?: string): Promise<SandboxRow[
  * system prompt is built from it. A plain send with no conversation still
  * opens a scratch one implicitly, for clients that predate the chooser.
  */
+/** What a client may ask for when creating an agent conversation. The server
+ * fills in everything it refuses to take on trust: GitHub's clone URL and
+ * default branch, and a local machine's name. */
+export type WorkspaceRequest =
+  | import("@loxaic/types").Workspace
+  | { kind: "github"; repo: string; baseBranch?: string; branch?: string }
+  | { kind: "local"; executorId: string; path: string; isolation?: import("@loxaic/types").WorkspaceIsolation };
+
 export async function createConversation(input: {
   title?: string;
   kind?: "chat" | "agent";
-  workspace?: import("@loxaic/types").Workspace | { kind: "github"; repo: string; baseBranch?: string; branch?: string };
+  workspace?: WorkspaceRequest;
 }): Promise<Conversation> {
   const res = await authedFetch("/v1/conversations", {
     method: "POST",
@@ -863,6 +871,23 @@ export async function getGithubBranches(
   repo: string,
 ): Promise<{ default_branch: string; branches: string[] }> {
   return githubFetch(`/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
+}
+
+// ── Local executors (the user's own machines, via the desktop app) ────
+/** One of the caller's machines with the desktop app open and signed in,
+ * from `GET /v1/executors`. `roots` are the folders chosen on it. */
+export interface ExecutorView {
+  id: string;
+  name: string;
+  platform: string;
+  capabilities: { direct: boolean; container: boolean };
+  roots: string[];
+  connectedAt: string;
+}
+
+export async function getExecutors(): Promise<ExecutorView[]> {
+  const res = await authedFetch("/v1/executors");
+  return res.json() as Promise<ExecutorView[]>;
 }
 
 // ── Git actions on an agent conversation's GitHub workspace ────

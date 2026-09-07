@@ -35,6 +35,9 @@ export type { Workspace } from '@loxaic/types'
 export type WorkspaceChoice =
   | { kind: 'scratch' }
   | { kind: 'github'; repo: string; baseBranch?: string; branch?: string }
+  /** `executorName` is for the pill before the server has answered; the
+   * server takes the name from the live machine, never from this. */
+  | { kind: 'local'; executorId: string; executorName: string; path: string; isolation: 'direct' | 'container' }
 
 export interface MessageUsage {
   in: number

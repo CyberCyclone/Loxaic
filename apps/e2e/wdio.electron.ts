@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Must come before the standup import: it allocates the free port a
 // self-contained run serves on, which standup reads at module load.
-import { SELF_CONTAINED, selfContainedDataDir } from './scripts/electron-env.ts';
+import { SELF_CONTAINED, appDataDir } from './scripts/electron-env.ts';
 import { BASE_URL } from './scripts/standup.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
@@ -102,16 +102,14 @@ export const config: WebdriverIO.Config = {
       browserVersion: electronVersion(),
       'wdio:electronServiceOptions': {
         appBinaryPath: appBinaryPath(),
-        // Self-contained: the app runs its own stack on this run's free port,
-        // with a throwaway data dir so runs never share state.
-        ...(SELF_CONTAINED && selfContainedDataDir
-          ? {
-              appArgs: [
-                `--loxaic-port=${process.env.E2E_PORT ?? ''}`,
-                `--loxaic-data-dir=${selfContainedDataDir}`,
-              ],
-            }
-          : {}),
+        // A throwaway data dir in every mode, so runs never share state with
+        // each other or with the developer's own install (the executor
+        // records picked folders there). Self-contained runs additionally
+        // pin the embedded stack to this run's free port.
+        appArgs: [
+          `--loxaic-data-dir=${appDataDir}`,
+          ...(SELF_CONTAINED ? [`--loxaic-port=${process.env.E2E_PORT ?? ''}`] : []),
+        ],
       },
     },
   ],

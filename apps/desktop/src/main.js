@@ -29,12 +29,14 @@ if (process.argv.includes("--headless")) {
 }
 
 async function runGui() {
-  const { app, BrowserWindow, ipcMain, shell } = await import("electron");
+  const { app, BrowserWindow, dialog, ipcMain, shell } = await import("electron");
   const { createInterface } = await import("node:readline");
   const { existsSync, rmSync } = await import("node:fs");
   const { default: serve } = await import("electron-serve");
   const { startStack } = await import("./supervisor/index.js");
-  const { defaultDataDir } = await import("./supervisor/paths.js");
+  const { defaultDataDir, resolveRuntimePaths } = await import("./supervisor/paths.js");
+  const { startExecutor } = await import("./supervisor/executor.js");
+  const { addRoot, loadOrCreateExecutorId, loadRoots, removeRoot, rootsPath } = await import("./supervisor/executor-store.js");
   const {
     DEFAULT_HOST_PORT,
     buildConfig,
@@ -225,12 +227,103 @@ async function runGui() {
       defaultHostName: defaultHostName(),
       defaultPort: DEFAULT_HOST_PORT,
       lanAddress: firstLanAddress(),
+      // This machine's identity, so the renderer can tell "this machine"
+      // from the user's other executors in the workspace chooser.
+      instanceId: executorIdentity().executorId,
       ...(startupError ? { error: startupError } : {}),
     };
   }
 
   function pushStackState() {
     mainWindow?.webContents.send("loxaic:stackState", stackState());
+    // The executor follows the API URL, so any stack change is its cue.
+    void syncExecutor();
+  }
+
+  // ── Local executor ──────────────────────────────────────
+  // Runs in every instance mode: a Client is exactly the machine whose owner
+  // wants an agent on a remote host working in a folder here. The session
+  // token lives in this variable and the executor's stdin, nowhere else.
+  let executor = null;
+  let sessionToken = null;
+  let executorState = { state: "offline", reason: "not signed in" };
+  let pickDirWarned = false;
+
+  /** `instanceId` when the install has a config; a stable per-install
+   * fallback otherwise (a launch pointed somewhere by env/flags never writes
+   * config.json). The name is what the user called this host, else the
+   * machine's own. */
+  function executorIdentity() {
+    const config = loadConfig(dataDir());
+    return {
+      executorId: config?.instanceId ?? loadOrCreateExecutorId(dataDir()),
+      name: config?.host?.name ?? defaultHostName(),
+    };
+  }
+
+  function executorEntry() {
+    return path.join(resolveRuntimePaths().serverDir, "dist/executor.js");
+  }
+
+  function executorStateView() {
+    const identity = executorIdentity();
+    return { ...executorState, executorId: identity.executorId, name: identity.name, roots: loadRoots(dataDir()) };
+  }
+
+  function pushExecutorState() {
+    mainWindow?.webContents.send("loxaic:executorState", executorStateView());
+  }
+
+  /**
+   * Bring the executor in line with the current session and API URL: stop
+   * whatever is running, and start one only when there is a token to
+   * connect with and a server to connect to. Serialised so a sign-in racing
+   * a mode switch cannot leave two children behind.
+   */
+  let executorSync = Promise.resolve();
+  function syncExecutor() {
+    executorSync = executorSync.then(async () => {
+      if (executor) {
+        const previous = executor;
+        executor = null;
+        await previous.stop().catch(() => undefined);
+      }
+      if (!sessionToken) {
+        executorState = { state: "offline", reason: "not signed in" };
+        pushExecutorState();
+        return;
+      }
+      if (!apiBaseUrl) {
+        executorState = { state: "offline", reason: "no server to connect to" };
+        pushExecutorState();
+        return;
+      }
+      const entry = executorEntry();
+      if (!existsSync(entry)) {
+        executorState = {
+          state: "unavailable",
+          reason: `no executor payload at ${entry} — run \`pnpm --filter @loxaic/desktop build:server\``,
+        };
+        pushExecutorState();
+        return;
+      }
+      const identity = executorIdentity();
+      executor = startExecutor({
+        entry,
+        cwd: path.dirname(entry),
+        apiBaseUrl,
+        executorId: identity.executorId,
+        name: identity.name,
+        rootsFile: rootsPath(dataDir()),
+        token: sessionToken,
+        log: (line) => { console.log(`[loxaic] ${line}`); },
+        onState: (state) => {
+          executorState = state;
+          pushExecutorState();
+        },
+      });
+    });
+    return executorSync;
   }
 
   /**
@@ -335,6 +428,57 @@ async function runGui() {
       pushStackState();
       return stackState();
     });
+
+    // ── Executor ──
+    // The renderer tells the main process about the session it holds; the
+    // main process never reads the renderer's storage. Null on sign-out.
+    ipcMain.handle("loxaic:executor.setSession", async (_event, token) => {
+      sessionToken = typeof token === "string" && token.trim() ? token.trim() : null;
+      await syncExecutor();
+      return executorStateView();
+    });
+
+    ipcMain.handle("loxaic:executor.getState", () => executorStateView());
+
+    // The only way a folder becomes available to an agent: the user picks it
+    // in the OS's own dialog. Takes no argument — the renderer cannot name
+    // a path, and neither can any server the renderer is talking to.
+    //
+    // LOXAIC_E2E_PICK_DIR stands in for the dialog under test automation,
+    // which cannot drive a native window. Loud on first use, and read from
+    // the app's own environment, so it cannot be reached from a page.
+    ipcMain.handle("loxaic:pickDirectory", async () => {
+      let chosen = null;
+      const preset = process.env.LOXAIC_E2E_PICK_DIR;
+      if (preset) {
+        if (!pickDirWarned) {
+          pickDirWarned = true;
+          console.warn(`[loxaic] LOXAIC_E2E_PICK_DIR is set: the folder dialog is bypassed and ${preset} is used. Test harness only.`);
+        }
+        chosen = preset;
+      } else {
+        const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
+          title: "Choose a folder for Loxaic to work in",
+          properties: ["openDirectory", "createDirectory"],
+        });
+        if (result.canceled || result.filePaths.length === 0) return { canceled: true };
+        chosen = result.filePaths[0];
+      }
+      addRoot(dataDir(), chosen);
+      executor?.reloadRoots();
+      pushExecutorState();
+      return { path: chosen, roots: loadRoots(dataDir()) };
+    });
+
+    // Narrowing only: a path that is not already a root is a no-op.
+    ipcMain.handle("loxaic:executor.removeRoot", (_event, dir) => {
+      if (typeof dir === "string" && loadRoots(dataDir()).includes(dir)) {
+        removeRoot(dataDir(), dir);
+        executor?.reloadRoots();
+        pushExecutorState();
+      }
+      return executorStateView();
+    });
   }
 
   async function createWindow() {
@@ -396,9 +540,13 @@ async function runGui() {
   // kill here would leave the cluster to crash-recover on next launch.
   let quitting = false;
   app.on("before-quit", (event) => {
-    if (!stack || quitting) return;
+    if (quitting) return;
+    if (!stack && !executor) return;
     event.preventDefault();
     quitting = true;
-    stack.stop().finally(() => { app.exit(0); });
+    const stops = [];
+    if (executor) stops.push(executor.stop().catch(() => undefined));
+    if (stack) stops.push(stack.stop());
+    Promise.all(stops).finally(() => { app.exit(0); });
   });
 }

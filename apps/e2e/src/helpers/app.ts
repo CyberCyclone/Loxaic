@@ -315,6 +315,27 @@ export async function chooseGithubWorkspace(repoId: number): Promise<string> {
   return branch;
 }
 
+/**
+ * Drives the workspace chooser to a folder on *this* machine. Desktop only:
+ * the Local option is disabled everywhere else, and "choose a folder" opens
+ * the OS dialog — which under test is stood in for by LOXAIC_E2E_PICK_DIR
+ * (scripts/electron-env.ts), so the folder that appears is `dir`. Assumes
+ * the desktop's executor has already connected (the spec waits for that).
+ */
+export async function chooseLocalWorkspace(dir: string): Promise<void> {
+  await tap('agent.workspace.button');
+  await waitForVisible('agent.workspace.dialog');
+  await waitForVisible('agent.workspace.local');
+  await tap('agent.workspace.local');
+  await waitForVisible('agent.workspace.pickDirectory');
+  await tap('agent.workspace.pickDirectory');
+  // The chooser selects the folder itself once the server has heard of it.
+  await waitForVisible(`agent.workspace.root.${encodeURIComponent(dir)}`);
+  await waitForTextIn('agent.workspace.dialog', dir);
+  await tap('agent.workspace.confirm');
+  await waitForTextIn('agent.workspace.button', dir);
+}
+
 /** Opens Settings and navigates to the GitHub connection screen. Waits for
  * either state the screen can load into — connected (`github.status`) or not
  * (`github.token`, the connect form) — since which one appears depends on

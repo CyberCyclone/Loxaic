@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Check, Server, Laptop, FolderGit2, FolderOpen } from 'lucide-react-native';
+import { Check, Server, Laptop, Monitor, FolderGit2, FolderOpen, FolderPlus, ShieldOff, Container, X } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -22,14 +22,17 @@ import { Icon, CloseIcon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import {
   getCluster,
+  getExecutors,
   getGithubBranches,
   getGithubConnection,
   getGithubRepos,
   type ConfigResponse,
+  type ExecutorView,
   type GithubRepo,
 } from '@loxaic/api-client';
 import type { WorkspaceChoice } from '@/lib/types';
 import { describeRetention } from '@/lib/retention';
+import { useLocalExecutor } from '@/hooks/useLocalExecutor';
 
 interface WorkspaceChooserProps {
   open: boolean;
@@ -45,23 +48,37 @@ interface WorkspaceChooserProps {
 type Where = 'remote' | 'local';
 type Source = 'scratch' | 'github';
 
+/** How long to wait for the server to learn about a folder just picked
+ * here: the desktop tells the executor, the executor tells the server, and
+ * only then will the server accept a workspace in it. */
+const ROOT_SYNC_TIMEOUT_MS = 5_000;
+
 /**
  * Where the next agent conversation runs, and what is in it.
  *
- * Two questions, asked in order. *Where* is the machine — this server, or (a
- * later stage) the user's own desktop. *Source* is what the working directory
- * starts as — empty, or a clone of one of their GitHub repos. The choice is
- * made before the first message and fixed for the life of the conversation,
- * because the agent's system prompt is derived from it.
+ * Two questions, asked in order. *Where* is the machine — this server, or
+ * one of the user's own machines with the desktop app open. *Source* is
+ * what the working directory starts as — empty, or a clone of one of their
+ * GitHub repos — and only applies to the server: a local workspace *is* a
+ * folder they already have. The choice is made before the first message
+ * and fixed for the life of the conversation, because the agent's system
+ * prompt is derived from it.
  *
- * GitHub is refused, with the reason, rather than hidden when it cannot work:
- * a clone needs a network the sandbox does not have unless an admin enabled
- * it, and a coding agent that cannot `npm install` is not one. Saying so here
- * beats a clone failure on the first tool call.
+ * GitHub is refused, with the reason, rather than hidden when it cannot
+ * work: a clone needs a network the sandbox does not have unless an admin
+ * enabled it, and a coding agent that cannot `npm install` is not one.
+ * Local is refused the same way — no desktop app, not signed in there, the
+ * executor still connecting — so the fix is always on screen.
+ *
+ * Folders on this machine come from the OS's own folder dialog and nowhere
+ * else: there is no text field for a path anywhere in here, and folders on
+ * the user's *other* machines can only be chosen from what those machines
+ * announced. A server (or a page) cannot point the desktop at a folder.
  */
 export function WorkspaceChooser({ open, onClose, value, onChange, config, token }: WorkspaceChooserProps) {
   const router = useRouter();
-  const [where, setWhere] = useState<Where>('remote');
+  const local = useLocalExecutor();
+  const [where, setWhere] = useState<Where>(value.kind === 'local' ? 'local' : 'remote');
   const [source, setSource] = useState<Source>(value.kind === 'github' ? 'github' : 'scratch');
   const [hostName, setHostName] = useState<string | null>(null);
   const [connected, setConnected] = useState<boolean | null>(null);
@@ -72,15 +89,34 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const [branches, setBranches] = useState<string[]>([]);
   const [baseBranch, setBaseBranch] = useState<string>('');
   const [branchName, setBranchName] = useState<string>('');
+  const [executors, setExecutors] = useState<ExecutorView[]>([]);
+  const [executorId, setExecutorId] = useState<string | null>(value.kind === 'local' ? value.executorId : null);
+  const [localPath, setLocalPath] = useState<string | null>(value.kind === 'local' ? value.path : null);
+  const [picking, setPicking] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
 
   const allowNetwork = config?.sandbox.allowNetwork ?? false;
   const sandboxAvailable = config?.sandbox.available ?? false;
 
+  const loadExecutors = useCallback(async () => {
+    try {
+      const list = await getExecutors();
+      setExecutors(list);
+      return list;
+    } catch {
+      setExecutors([]);
+      return [];
+    }
+  }, []);
+
   // Reset to the current value each time it opens, and refresh what it
-  // depends on: which host this is, and whether GitHub is connected.
+  // depends on: which host this is, whether GitHub is connected, and which
+  // of the user's machines are connected.
   useEffect(() => {
     if (!open || !token) return;
     setSearch('');
+    setPickError(null);
+    setWhere(value.kind === 'local' ? 'local' : 'remote');
     setSource(value.kind === 'github' ? 'github' : 'scratch');
     void getCluster().then((c) => {
       setHostName(c?.hosts.find((h) => h.self)?.name ?? null);
@@ -88,18 +124,26 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     void getGithubConnection()
       .then((c) => { setConnected(c !== null); })
       .catch(() => { setConnected(false); });
+    void loadExecutors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, token]);
 
+  // The executor coming online while the dialog is open is exactly the
+  // moment the list should refresh — it is what the user is waiting for.
+  useEffect(() => {
+    if (!open || local.state !== 'online') return;
+    void loadExecutors();
+  }, [open, local.state, loadExecutors]);
+
   // Repos load once the GitHub source is chosen and a connection exists.
   useEffect(() => {
-    if (!open || source !== 'github' || !connected) return;
+    if (!open || where !== 'remote' || source !== 'github' || !connected) return;
     setReposLoading(true);
     getGithubRepos()
       .then(setRepos)
       .catch(() => { setRepos([]); })
       .finally(() => { setReposLoading(false); });
-  }, [open, source, connected]);
+  }, [open, where, source, connected]);
 
   // Branches follow the chosen repo; the base defaults to the repo's default.
   useEffect(() => {
@@ -115,6 +159,14 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
       .catch(() => { setBranches([repo.default_branch]); });
   }, [repo]);
 
+  // Default the machine to this one when it is connected, else the first.
+  useEffect(() => {
+    if (executorId && executors.some((e) => e.id === executorId)) return;
+    const mine = executors.find((e) => e.id === local.executorId) ?? executors.at(0);
+    setExecutorId(mine?.id ?? null);
+    setLocalPath(null);
+  }, [executors, executorId, local.executorId]);
+
   const filtered = useMemo(
     () => repos.filter((r) => r.full_name.toLowerCase().includes(search.toLowerCase())),
     [repos, search],
@@ -128,10 +180,67 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
         ? 'GitHub is not connected.'
         : null;
 
-  const canConfirm = source === 'scratch' || (repo !== null && baseBranch !== '' && branchName.trim() !== '');
+  // Local is offered whenever *any* of the user's machines is connected —
+  // this one, or another one running the desktop app. The reason shown when
+  // none is names what to do about it.
+  const localBlockedReason =
+    executors.length > 0
+      ? null
+      : !local.available
+        ? 'Only from the Loxaic desktop app: open this chat there to work in a folder on that machine.'
+        : local.state === 'unavailable'
+          ? (local.reason ?? 'The desktop app has no executor built.')
+          : local.state === 'unauthorized'
+            ? 'This machine could not sign in to the server — sign out and back in.'
+            : local.state === 'online'
+              ? 'Connecting your machine to the server…'
+              : `Your machine is ${local.state === 'connecting' ? 'reconnecting to the server' : local.reason ?? 'not connected'}…`;
+
+  const selectedExecutor = executors.find((e) => e.id === executorId) ?? null;
+  const isThisMachine = selectedExecutor !== null && selectedExecutor.id === local.executorId;
+
+  const pickFolder = async () => {
+    setPicking(true);
+    setPickError(null);
+    try {
+      const picked = await local.pickDirectory();
+      if (!picked) return;
+      // The path is only usable once the server has heard about it from the
+      // executor; wait for that rather than letting a send fail with "not a
+      // folder you have chosen" a moment later.
+      const deadline = Date.now() + ROOT_SYNC_TIMEOUT_MS;
+      for (;;) {
+        const list = await loadExecutors();
+        const mine = list.find((e) => e.id === local.executorId);
+        if (mine?.roots.includes(picked)) {
+          setExecutorId(mine.id);
+          setLocalPath(picked);
+          return;
+        }
+        if (Date.now() > deadline) {
+          setPickError('The server has not heard about that folder yet — try again in a moment.');
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    } catch (err) {
+      setPickError(err instanceof Error ? err.message : 'Could not choose a folder');
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const canConfirm =
+    where === 'local'
+      ? selectedExecutor !== null && localPath !== null
+      : source === 'scratch' || (repo !== null && baseBranch !== '' && branchName.trim() !== '');
 
   const confirm = () => {
-    if (source === 'scratch') {
+    if (where === 'local') {
+      if (selectedExecutor && localPath) {
+        onChange({ kind: 'local', executorId: selectedExecutor.id, executorName: selectedExecutor.name, path: localPath, isolation: 'direct' });
+      }
+    } else if (source === 'scratch') {
       onChange({ kind: 'scratch' });
     } else if (repo) {
       onChange({ kind: 'github', repo: repo.full_name, baseBranch, branch: branchName.trim() });
@@ -166,51 +275,163 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
               <OptionRow
                 testID="agent.workspace.local"
                 icon={Laptop}
-                title="Local — this machine"
-                detail="Coming soon: run directly on your own computer, in a folder you choose."
+                title="Local — one of your machines"
+                detail={localBlockedReason ?? 'Directly in a folder on a machine of yours that has the desktop app open.'}
                 selected={where === 'local'}
-                disabled
-                onPress={() => undefined}
+                disabled={localBlockedReason !== null}
+                onPress={() => { setWhere('local'); }}
               />
             </VStack>
 
-            <VStack space="xs">
-              <Text size="xs" className="text-muted-foreground">
-                Start from
-              </Text>
-              <OptionRow
-                testID="agent.workspace.source.scratch"
-                icon={FolderOpen}
-                title="Empty workspace"
-                detail="A fresh directory. Good for experiments and new projects."
-                selected={source === 'scratch'}
-                onPress={() => { setSource('scratch'); }}
-              />
-              <OptionRow
-                testID="agent.workspace.source.github"
-                icon={FolderGit2}
-                title="A GitHub repository"
-                detail={githubBlockedReason ?? 'Cloned onto a new branch. Commit as you go; push and open a PR from the Inspector.'}
-                selected={source === 'github'}
-                disabled={githubBlockedReason !== null}
-                onPress={() => { setSource('github'); }}
-              />
-              {githubBlockedReason !== null && connected === false && sandboxAvailable && allowNetwork && (
-                <Pressable
-                  testID="agent.workspace.connectGithub"
-                  onPress={() => {
-                    onClose();
-                    router.push('/github');
-                  }}
-                >
-                  <Text size="xs" className="text-primary">
-                    Connect GitHub in Settings →
+            {where === 'local' && (
+              <VStack space="sm">
+                <Text size="xs" className="text-muted-foreground">
+                  Which machine
+                </Text>
+                <VStack space="xs">
+                  {executors.map((e) => (
+                    <OptionRow
+                      key={e.id}
+                      testID={`agent.workspace.executor.${e.id}`}
+                      icon={e.id === local.executorId ? Laptop : Monitor}
+                      title={e.id === local.executorId ? `${e.name} — this machine` : e.name}
+                      detail={e.roots.length === 0 ? 'No folders chosen yet.' : `${String(e.roots.length)} folder${e.roots.length === 1 ? '' : 's'} available`}
+                      selected={executorId === e.id}
+                      onPress={() => {
+                        setExecutorId(e.id);
+                        setLocalPath(null);
+                      }}
+                    />
+                  ))}
+                </VStack>
+
+                {selectedExecutor && (
+                  <VStack space="xs">
+                    <Text size="xs" className="text-muted-foreground">
+                      Folder
+                    </Text>
+                    {selectedExecutor.roots.length === 0 && !isThisMachine && (
+                      <Text size="xs" className="text-muted-foreground">
+                        Folders are chosen on that machine, in its own desktop app.
+                      </Text>
+                    )}
+                    {selectedExecutor.roots.map((root) => (
+                      <Pressable
+                        key={root}
+                        testID={`agent.workspace.root.${encodeURIComponent(root)}`}
+                        onPress={() => { setLocalPath(root); }}
+                        className={`flex-row items-center justify-between rounded-md border px-3 py-2 ${
+                          localPath === root ? 'border-primary bg-primary/10' : 'border-border bg-card'
+                        }`}
+                      >
+                        <Text size="sm" className="flex-1 text-foreground" numberOfLines={1}>
+                          {root}
+                        </Text>
+                        <HStack space="sm" className="items-center">
+                          {localPath === root && <Icon as={Check} size="sm" className="text-primary" />}
+                          {isThisMachine && (
+                            <Pressable
+                              testID={`agent.workspace.root.remove.${encodeURIComponent(root)}`}
+                              onPress={() => {
+                                void local.removeRoot(root).then(() => loadExecutors());
+                                if (localPath === root) setLocalPath(null);
+                              }}
+                              className="rounded-sm p-1 web:hover:bg-muted/50"
+                            >
+                              <Icon as={X} size="xs" className="text-muted-foreground" />
+                            </Pressable>
+                          )}
+                        </HStack>
+                      </Pressable>
+                    ))}
+                    {isThisMachine && (
+                      <Button
+                        testID="agent.workspace.pickDirectory"
+                        variant="outline"
+                        size="sm"
+                        isDisabled={picking}
+                        onPress={() => { void pickFolder(); }}
+                      >
+                        <Icon as={FolderPlus} size="sm" className="text-foreground" />
+                        <ButtonText>{picking ? 'Choosing…' : 'Choose a folder on this machine…'}</ButtonText>
+                      </Button>
+                    )}
+                    {pickError && (
+                      <Text testID="agent.workspace.pickError" size="xs" className="text-destructive">
+                        {pickError}
+                      </Text>
+                    )}
+                  </VStack>
+                )}
+
+                <VStack space="xs">
+                  <Text size="xs" className="text-muted-foreground">
+                    Isolation
                   </Text>
-                </Pressable>
-              )}
-            </VStack>
+                  <OptionRow
+                    testID="agent.workspace.isolation.direct"
+                    icon={ShieldOff}
+                    title="Direct"
+                    detail="Commands run as you, in that folder, with no sandbox. Every change is immediate and real."
+                    selected
+                    onPress={() => undefined}
+                  />
+                  <OptionRow
+                    testID="agent.workspace.isolation.container"
+                    icon={Container}
+                    title="Container"
+                    detail="Coming soon: the folder mounted into a container on that machine. Needs Docker or Podman there."
+                    selected={false}
+                    disabled
+                    onPress={() => undefined}
+                  />
+                </VStack>
 
-            {source === 'github' && connected && (
+                <Text testID="agent.workspace.localWarning" size="xs" className="text-warning">
+                  Anyone you share this chat with as an editor will be running commands on your machine.
+                </Text>
+              </VStack>
+            )}
+
+            {where === 'remote' && (
+              <VStack space="xs">
+                <Text size="xs" className="text-muted-foreground">
+                  Start from
+                </Text>
+                <OptionRow
+                  testID="agent.workspace.source.scratch"
+                  icon={FolderOpen}
+                  title="Empty workspace"
+                  detail="A fresh directory. Good for experiments and new projects."
+                  selected={source === 'scratch'}
+                  onPress={() => { setSource('scratch'); }}
+                />
+                <OptionRow
+                  testID="agent.workspace.source.github"
+                  icon={FolderGit2}
+                  title="A GitHub repository"
+                  detail={githubBlockedReason ?? 'Cloned onto a new branch. Commit as you go; push and open a PR from the Inspector.'}
+                  selected={source === 'github'}
+                  disabled={githubBlockedReason !== null}
+                  onPress={() => { setSource('github'); }}
+                />
+                {githubBlockedReason !== null && connected === false && sandboxAvailable && allowNetwork && (
+                  <Pressable
+                    testID="agent.workspace.connectGithub"
+                    onPress={() => {
+                      onClose();
+                      router.push('/github');
+                    }}
+                  >
+                    <Text size="xs" className="text-primary">
+                      Connect GitHub in Settings →
+                    </Text>
+                  </Pressable>
+                )}
+              </VStack>
+            )}
+
+            {where === 'remote' && source === 'github' && connected && (
               <VStack space="sm">
                 <Text size="xs" className="text-muted-foreground">
                   Repository
@@ -294,7 +515,7 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
               </VStack>
             )}
 
-            {config && (
+            {where === 'remote' && config && (
               <Text testID="agent.workspace.retention" size="xs" className="text-muted-foreground">
                 {describeRetention(config.sandbox.retention)}
               </Text>
