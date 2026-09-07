@@ -5,8 +5,15 @@
  */
 import { adminCreds, provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { goToSurface, openSandboxSettings, resetSandboxSettings, setSandboxMode, signIn } from '../helpers/app.ts';
+import { tap, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import {
+  goToSurface,
+  openSandboxSettings,
+  patchSandboxSettings,
+  resetSandboxSettings,
+  setSandboxMode,
+  signIn,
+} from '../helpers/app.ts';
 
 describe('sandbox degraded UX', () => {
   before(async () => {
@@ -40,5 +47,35 @@ describe('sandbox degraded UX', () => {
     await tap('agent.sandbox.banner');
     await waitForVisible('sandbox.status');
     await waitForTextIn('sandbox.status', '(off)');
+  });
+
+  it('banners a workspace with no network, names the consequence and the fix, and clears once network is on', async () => {
+    // The default posture: sandboxes work, but they are created with
+    // NetworkMode: none. Nothing else in the agent UI said so, and the model
+    // discovered it by watching `npm install` fail — see #112.
+    await resetSandboxSettings();
+    await goToSurface('chat');
+    await goToSurface('agent');
+
+    await waitForVisible('agent.network.banner');
+    // The consequence and the fix, not just that something rendered: a banner
+    // saying only "no network" leaves the user with nowhere to go.
+    await waitForTextIn('agent.network.banner', 'no network access');
+    await waitForTextIn('agent.network.banner', 'npm install');
+    await waitForTextIn('agent.network.banner', 'Agent Sandbox settings');
+    await shot('sandbox-no-network-banner');
+
+    // Same fix path as the banner above.
+    await tap('agent.network.banner');
+    await waitForVisible('sandbox.status');
+
+    // And it is not a permanent fixture: it goes when an admin turns the
+    // network on. The agent screen reads /v1/config on mount, so leave and
+    // return for it to see the changed setting.
+    await patchSandboxSettings({ allowNetwork: true });
+    await goToSurface('chat');
+    await goToSurface('agent');
+    await waitForGone('agent.network.banner');
+    await shot('sandbox-network-on-no-banner');
   });
 });
