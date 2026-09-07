@@ -93,10 +93,40 @@ let spawnedServer: ChildProcess | null = null;
 /** Stop function for the in-process mock GitHub API server, or null when this
  * run didn't start the spawned server (and so never started this either). */
 let stopMockGithub: (() => Promise<void>) | null = null;
+/**
+ * `standup()` runs in WebdriverIO's launcher process (the `onPrepare` hook);
+ * a spec file runs in a separate worker process it forks — a different
+ * Node process with its own module cache. So `mockGithubUrl`'s port (chosen
+ * at random each run) cannot be read back as a plain exported variable the
+ * way `BASE_URL` can (that one is recomputed identically from `E2E_PORT` in
+ * every process). It goes through a file instead, the same way `ADMIN_FILE`
+ * carries the per-run admin credentials across the same boundary.
+ */
+const MOCK_GITHUB_FILE = path.join(RUN_DIR, 'mock-github.json');
+
+/** Reads the mock GitHub API server's URL back, from whichever process asks —
+ * a spec's own worker process, not the one that started it. */
+export function mockGithubUrl(): string {
+  if (!existsSync(MOCK_GITHUB_FILE)) {
+    throw new Error(`[e2e] no mock GitHub server recorded at ${MOCK_GITHUB_FILE} — was standup() run?`);
+  }
+  const { url } = JSON.parse(readFileSync(MOCK_GITHUB_FILE, 'utf8')) as { url: string };
+  return url;
+}
+
+/**
+ * Where the harness's git daemon keeps its bare repositories. Unlike the
+ * mock GitHub port, this needs no file: it is a fixed path under this run's
+ * own artifacts directory, computable identically in any process without
+ * having to ask the one that created it.
+ */
+export const GIT_SERVER_DIR = path.join(RUN_DIR, 'git');
 /** The harness's git server, for specs that clone a workspace. Started with
  * the spawned server, stopped with it. */
-export let gitServer: GitServer | null = null;
-const GIT_DIR = path.join(RUN_DIR, 'git');
+/** Internal to this module — a spec runs in a different process (see
+ * `mockGithubUrl`'s doc comment above) and must use `GIT_SERVER_DIR` instead,
+ * which needs no cross-process handoff because it is a fixed, computable path. */
+let gitServer: GitServer | null = null;
 const FIXTURES_DIR = path.join(E2E_DIR, 'fixtures');
 
 interface Health {
@@ -251,7 +281,7 @@ async function ensureServer(): Promise<void> {
   // The git server first, because the mock GitHub API hands out its URLs as
   // each repo's clone_url.
   gitServer = await startGitServer({
-    dir: GIT_DIR,
+    dir: GIT_SERVER_DIR,
     fixtures: {
       'bugfix-app': path.join(FIXTURES_DIR, 'bugfix-app'),
       'other-repo': path.join(FIXTURES_DIR, 'bugfix-app'),
@@ -259,6 +289,7 @@ async function ensureServer(): Promise<void> {
   });
   const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
   stopMockGithub = mockGithub.stop;
+  writeFileSync(MOCK_GITHUB_FILE, JSON.stringify({ url: mockGithub.url }), 'utf8');
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
@@ -369,10 +400,11 @@ export async function teardown(): Promise<void> {
     await stopMockGithub();
     stopMockGithub = null;
   }
+  rmSync(MOCK_GITHUB_FILE, { force: true });
   if (gitServer) {
     gitServer.stop();
     gitServer = null;
-    if (owned) rmSync(GIT_DIR, { recursive: true, force: true });
+    if (owned) rmSync(GIT_SERVER_DIR, { recursive: true, force: true });
   }
   // Postgres is deliberately left running: it is slow to start, holds no
   // per-run state worth clearing, and is very often not ours to stop.

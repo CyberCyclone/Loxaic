@@ -69,6 +69,27 @@ export async function assertConversationAccess(
 /** The grant itself, or null. Separate from the assert so callers that need
  * to *decide* rather than *reject* (the attachment reader, the sidebar) don't
  * have to catch an exception to ask a question. */
+/**
+ * Does this user hold at least `minimum` on this conversation?
+ *
+ * The REST counterpart of `assertConversationAccess`'s WS use. It exists
+ * because the same ownership predicate was inlined into five conversation
+ * routes and seven sandbox ones — twelve places that all had to learn about
+ * sharing at once, and twelve chances to miss one. Routes ask this instead.
+ *
+ * Returns a boolean rather than throwing: every caller answers a refusal with
+ * the same 404 the resource-not-found path uses, so there is no existence
+ * oracle to leak.
+ */
+export async function hasRole(
+  userId: string,
+  conversationId: string,
+  minimum: ConversationRole,
+): Promise<boolean> {
+  const grant = await resolveAccess(userId, conversationId);
+  return !!grant && atLeast(grant.role, minimum);
+}
+
 export async function resolveAccess(
   userId: string,
   conversationId: string,

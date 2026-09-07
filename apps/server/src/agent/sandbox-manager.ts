@@ -585,7 +585,11 @@ export async function stopIdleSandboxes(now = Date.now(), kind?: SandboxKind): P
  * use is in `active`, has a fresh `last_used_at` (see the flush above), and so
  * cannot match this window.
  */
-export async function reapAbandonedSandboxes(now = Date.now(), kind?: SandboxKind): Promise<number> {
+export async function reapAbandonedSandboxes(
+  now = Date.now(),
+  kind?: SandboxKind,
+  ownerId?: string,
+): Promise<number> {
   const { reapEnabled, reapAfterMs } = getSandboxRetention();
   if (!reapEnabled) return 0;
 
@@ -595,12 +599,17 @@ export async function reapAbandonedSandboxes(now = Date.now(), kind?: SandboxKin
       where: and(
         ne(sandboxes.status, "destroyed"),
         lt(sandboxes.lastUsedAt, cutoff),
-        // Unfiltered in production — this is a server-wide janitor. The
-        // parameter exists so a test can aim it at host sandboxes only:
-        // suites share one Postgres, and an unscoped destroy with a
-        // deliberately tiny retention window would delete the container
-        // another suite is mid-run in. Same reasoning as stopAllSandboxes().
+        // Unfiltered in production — this is a server-wide janitor. `kind`
+        // exists so a test can aim it at host sandboxes only, and `ownerId`
+        // narrows further still: suites share one Postgres and this is a
+        // DB-wide query (unlike stopIdleSandboxes/stopAllSandboxes, which
+        // only ever touch this process's own in-memory `active` map), so
+        // two host-mode suites running in different worker processes are
+        // otherwise still visible to each other here. An unscoped call with
+        // one of these suites' deliberately tiny retention windows would
+        // destroy the sandbox the other one is mid-run in.
         ...(kind ? [eq(sandboxes.provider, kind)] : []),
+        ...(ownerId ? [eq(sandboxes.ownerId, ownerId)] : []),
       ),
       columns: { id: true, containerId: true, provider: true, conversationId: true },
     })

@@ -16,18 +16,18 @@ import { resetServerSettingsCache } from "../../settings.ts";
 
 /**
  * Every reaper call here passes `kind: "host"`, and nothing asserts on a
- * reaper's **return count**. Both reapers walk every sandbox in the process,
- * so an unscoped call with the deliberately tiny windows below would pause or
- * destroy the container another suite is mid-run in — observed, as a 409 from
- * a container this file had quietly stopped.
- *
- * `reapAbandonedSandboxes()` is global by design — it is the server's janitor
- * — but suites share one Postgres, and these cases deliberately set a
- * one-millisecond retention window, which without the filter would destroy the
- * container another suite is mid-run in. Same precaution stop-all-sandboxes
- * .test.ts takes for the same reason — and, like that file, the counts these
- * global sweeps return include rows other suites own, so every case asserts on
- * the row it created instead.
+ * reaper's **return count**. `stopIdleSandboxes` only ever walks this
+ * process's own in-memory `active` map, so it cannot see another suite's
+ * sandbox — but `reapAbandonedSandboxes` queries the table directly, and
+ * suites share one Postgres. A one-millisecond retention window there,
+ * unscoped, destroyed a host-mode sandbox `git.test.ts` was mid-request in
+ * when both files' tests happened to run at once — two different worker
+ * processes, so its own in-memory guard against exactly this never saw it.
+ * Passing this file's own `userId` as `reapAbandonedSandboxes`'s third
+ * argument scopes the sweep to the rows this file created. Same precaution
+ * stop-all-sandboxes.test.ts takes for the same reason — and, like that
+ * file, the counts these global sweeps return include rows other suites
+ * own, so every case asserts on the row it created instead.
  *
  * The sandbox lifecycle, end to end: paused rather than destroyed when idle,
  * resumed with its contents when touched again, and destroyed only by the two
@@ -200,7 +200,7 @@ describe("the abandoned reaper is the only timer that deletes", () => {
 
     process.env.SANDBOX_REAP_AFTER_MS = "1";
     resetServerSettingsCache();
-    await reapAbandonedSandboxes(Date.now() + 60_000, "host");
+    await reapAbandonedSandboxes(Date.now() + 60_000, "host", userId);
 
     expect((await rowFor(conversationId))?.status).toBe("destroyed");
     await expect(handle.exists()).resolves.toBe(false);
@@ -217,7 +217,7 @@ describe("the abandoned reaper is the only timer that deletes", () => {
     process.env.SANDBOX_REAP_ENABLED = "false";
     resetServerSettingsCache();
 
-    await reapAbandonedSandboxes(Date.now() + 10 * 365 * 86_400_000, "host");
+    await reapAbandonedSandboxes(Date.now() + 10 * 365 * 86_400_000, "host", userId);
     expect((await rowFor(conversationId))?.status).toBe("stopped");
     await expect(handle.exists()).resolves.toBe(true);
   });
@@ -239,7 +239,7 @@ describe("the abandoned reaper is the only timer that deletes", () => {
     process.env.SANDBOX_REAP_AFTER_MS = String(86_400_000);
     resetServerSettingsCache();
 
-    await reapAbandonedSandboxes(Date.now(), "host");
+    await reapAbandonedSandboxes(Date.now(), "host", userId);
     expect((await rowFor(conversationId))?.status).toBe("running");
     await expect(handle.exists()).resolves.toBe(true);
   });
@@ -266,7 +266,7 @@ describe("the abandoned reaper is the only timer that deletes", () => {
     process.env.SANDBOX_REAP_AFTER_MS = String(86_400_000);
     resetServerSettingsCache();
 
-    await reapAbandonedSandboxes(Date.now(), "host");
+    await reapAbandonedSandboxes(Date.now(), "host", userId);
     expect((await rowFor(conversationId))?.status).toBe("destroyed");
     await expect(handle.exists()).resolves.toBe(false);
   });
