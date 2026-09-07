@@ -156,6 +156,31 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Admin: how many runs may hold the inference backend at once. */
+export interface InferenceSettings {
+  /** null = follow the backend's own slot count. */
+  maxConcurrentRuns: number | null;
+  envOverrides: { maxConcurrentRuns: boolean };
+  /** What `maxConcurrentRuns` actually resolves to right now — the number null
+   * stands for. Shown alongside the setting because the two routinely differ
+   * and the resolved one is what an admin needs to see. */
+  effectiveMaxConcurrentRuns: number;
+}
+
+export async function getInferenceSettings(): Promise<InferenceSettings> {
+  return adminFetch("/v1/admin/settings/inference");
+}
+
+export async function updateInferenceSettings(
+  patch: { maxConcurrentRuns: number | null },
+): Promise<InferenceSettings> {
+  return adminFetch("/v1/admin/settings/inference", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
 export async function getSandboxSettings(): Promise<SandboxSettings> {
   return adminFetch("/v1/admin/settings/sandbox");
 }

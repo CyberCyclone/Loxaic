@@ -119,6 +119,7 @@ export class StreamBroker {
   foldSnapshot(records: StreamRecord[]): StreamSnapshot {
     const messages = new Map<string, StreamSnapshotMessage>();
     const orderedMessages: StreamSnapshotMessage[] = [];
+    let queued: StreamSnapshot["queued"];
     let iteration: StreamSnapshot["iteration"];
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
@@ -168,8 +169,16 @@ export class StreamBroker {
         case "model.loading":
           // Transient-only — not meaningful to fold into a catch-up snapshot.
           break;
+        case "run.queued":
+          queued = { position: event.position };
+          break;
         case "iteration":
           iteration = { n: event.n, max: event.max };
+          // Reaching an iteration *is* the run starting, so the wait is over.
+          // Folded rather than relying on a separate "dequeued" event: a
+          // reconnecting client must never be shown a queue position the run
+          // has already left.
+          queued = undefined;
           break;
         case "tool.call":
           ensure(event.message_id).tool_calls.push({
@@ -206,6 +215,7 @@ export class StreamBroker {
 
     return {
       messages: orderedMessages,
+      ...(queued ? { queued } : {}),
       ...(iteration ? { iteration } : {}),
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),

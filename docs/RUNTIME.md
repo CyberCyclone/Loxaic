@@ -122,6 +122,30 @@ Durations are stored and pinned in **milliseconds**; the settings screen shows
 hours and days. `reapAfterMs` must be longer than `idleStopMs` — a workspace is
 always paused before it can be deleted — and the API rejects a pair that isn't.
 
+### How many chats can use the model at once
+
+Local model servers cache the *prompt prefix* of the last request they served.
+Two conversations taking turns therefore evict each other's cache and both pay
+a full prompt re-evaluation on every message — on a 14.5k-token thread that is
+the difference between 312 ms and 14.5 seconds, per step.
+
+So runs queue. A chat beyond the limit waits and is shown its place ("Queued ·
+#2") rather than appearing stuck. A run that stops to ask permission for a tool
+gives its place up while it waits for you and takes it back first afterwards.
+
+The limit follows the model server by default:
+
+| Backend | Resolved limit |
+|---|---|
+| `llama.cpp --parallel N` | N — it really does keep N prompt caches |
+| LM Studio | 1 — it reports nothing about slots |
+| Anything else | 1 |
+
+An admin can pin a number in **Settings → Agent Sandbox → Concurrent runs**, or
+a deployment can pin it with `INFERENCE_MAX_CONCURRENT_RUNS`. Setting it higher
+than the server can actually hold makes *every* conversation slower and reports
+no error, so raise it only to match a `--parallel` you actually configured.
+
 ### Hosting for others requires a container engine
 
 The desktop app runs in one of three modes, chosen at first launch and stored
@@ -155,8 +179,8 @@ default**:
   `server_settings` table and applied at runtime (no restart). Requires the
   admin role; other users see a read-only status view.
 - **Environment** — `SANDBOX_MODE`, `CONTAINER_SOCKET`, `SANDBOX_ALLOW_NETWORK`,
-  `SANDBOX_IDLE_STOP_MS`, `SANDBOX_REAP_ENABLED`, `SANDBOX_REAP_AFTER_MS`
-  pin their field. A pinned field is rejected by the API (`409`) and shown as
+  `SANDBOX_IDLE_STOP_MS`, `SANDBOX_REAP_ENABLED`, `SANDBOX_REAP_AFTER_MS`,
+  `INFERENCE_MAX_CONCURRENT_RUNS` pin their field. A pinned field is rejected by the API (`409`) and shown as
   "set by environment" in the GUI, so a Compose file, systemd unit, or the
   desktop supervisor stays authoritative when it sets something explicitly.
 

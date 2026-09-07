@@ -61,6 +61,9 @@ interface LmStudioModelsResponse {
 
 interface LlamaCppPropsResponse {
   default_generation_settings?: { n_ctx?: number };
+  /** How many requests llama.cpp can hold prefixes for at once — its
+   * `--parallel`. Absent on every other backend. */
+  total_slots?: number;
 }
 
 /** A model entry from the OpenAI-compatible `/v1/models`. */
@@ -130,6 +133,30 @@ async function fetchLoadedCtx(): Promise<number | null> {
     return typeof ctx === "number" && ctx > 0 ? ctx : null;
   } catch {
     // Not llama.cpp, older build, or unreachable — degrade to the training bound.
+    return null;
+  }
+}
+
+/**
+ * How many concurrent requests the backend can serve **without evicting each
+ * other's cached prompt prefix**.
+ *
+ * Only llama.cpp answers this, via `/props`'s `total_slots` (its `--parallel`).
+ * That number is exactly the right one: llama.cpp keeps one KV cache per slot
+ * and picks a slot by longest common prefix, so N slots really do mean N
+ * conversations can stay warm at once.
+ *
+ * Null means "the backend does not say", which the scheduler reads as one —
+ * the truth for LM Studio, which exposes nothing about slots on any endpoint,
+ * and for llama.cpp's own default. Never guessed upward: over-estimating
+ * silently restores the prefix thrashing the queue exists to prevent.
+ */
+export async function probeTotalSlots(): Promise<number | null> {
+  try {
+    const props = await fetchJson<LlamaCppPropsResponse>(`${BASE_URL()}/props`);
+    const slots = props.total_slots;
+    return typeof slots === "number" && slots > 0 ? slots : null;
+  } catch {
     return null;
   }
 }

@@ -2,7 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { requireAdmin } from "../auth/middleware";
 import { getSandboxStatus } from "../sandbox/status.ts";
 import { probeEngines } from "../sandbox/container-provider.ts";
-import { getSandboxSettings, SettingsError, updateSandboxSettings } from "../settings.ts";
+import {
+  getInferenceSettings,
+  getSandboxSettings,
+  SettingsError,
+  updateInferenceSettings,
+  updateSandboxSettings,
+} from "../settings.ts";
+import { resolveMaxConcurrent } from "../inference/scheduler.ts";
 
 /**
  * Server-level settings, admin-only.
@@ -16,6 +23,26 @@ export function adminSettingsRoutes(app: FastifyInstance) {
   app.get("/v1/admin/settings/sandbox", async (request, reply) => {
     await requireAdmin(request, reply);
     return sandboxView();
+  });
+
+  app.get("/v1/admin/settings/inference", async (request, reply) => {
+    await requireAdmin(request, reply);
+    return inferenceView();
+  });
+
+  app.patch("/v1/admin/settings/inference", async (request, reply) => {
+    await requireAdmin(request, reply);
+    try {
+      await updateInferenceSettings(request.body ?? {});
+    } catch (err) {
+      if (err instanceof SettingsError) {
+        return reply
+          .code(err.code === "envOverride" ? 409 : 400)
+          .send({ error: err.message, ...(err.code === "envOverride" ? { envOverride: true } : {}) });
+      }
+      throw err;
+    }
+    return inferenceView();
   });
 
   app.patch("/v1/admin/settings/sandbox", async (request, reply) => {
@@ -36,6 +63,19 @@ export function adminSettingsRoutes(app: FastifyInstance) {
     }
     return sandboxView();
   });
+}
+
+/**
+ * The run-queue setting plus the number actually in force.
+ *
+ * Both, because they routinely differ and the difference is the whole point:
+ * the stored value is usually null ("follow the backend"), and what an admin
+ * needs to see is the number that null resolved to — 4 because llama.cpp was
+ * started with `--parallel 4`, or 1 because LM Studio says nothing.
+ */
+async function inferenceView() {
+  const settings = getInferenceSettings();
+  return { ...settings, effectiveMaxConcurrentRuns: await resolveMaxConcurrent() };
 }
 
 /** Settings plus the live facts a GUI needs to render them: which engines are

@@ -78,8 +78,34 @@ export type SandboxSettingsPatch = Partial<{
   reapAfterMs: number;
 }>;
 
-/** Row key for the sandbox settings group. */
+/**
+ * How many agent/chat runs may hold the inference backend at once.
+ *
+ * Its own settings group rather than a field on the sandbox one: it is about
+ * the model server, not about where tool calls execute, and the two are
+ * routinely different machines.
+ */
+export interface InferenceSettings {
+  /**
+   * Null means "follow the backend" — ask llama.cpp how many slots it has and
+   * assume one when it will not say. A number pins it.
+   *
+   * Null is the default because the right answer is a property of the backend
+   * rather than a preference: it is exactly `--parallel`, and claiming more
+   * slots than the backend has restores the prompt-cache thrashing the queue
+   * exists to prevent — invisibly, as "everything is slow" rather than as an
+   * error.
+   */
+  maxConcurrentRuns: number | null;
+}
+
+export interface InferenceSettingsView extends InferenceSettings {
+  envOverrides: { maxConcurrentRuns: boolean };
+}
+
+/** Row keys for the two settings groups. */
 const SANDBOX_KEY = "sandbox";
+const INFERENCE_KEY = "inference";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -117,6 +143,7 @@ export class SettingsError extends Error {
 }
 
 let persisted: Partial<SandboxSettings> = {};
+let persistedInference: Partial<InferenceSettings> = {};
 /**
  * True when this server is hosting for other users (the desktop supervisor
  * sets `LOXAIC_HOSTING=1` for Host mode).
@@ -259,6 +286,71 @@ export function getSandboxSettings(): SandboxSettingsView {
   };
 }
 
+// ── Inference settings ────────────────────────────────────
+
+/**
+ * Resolved run-concurrency setting: env pin > persisted > null ("ask the
+ * backend"). Sync like the sandbox reads, and for the same reason — the
+ * scheduler consults it on every acquire.
+ */
+export function getInferenceSettings(): InferenceSettingsView {
+  const pinned = envPositiveInt("INFERENCE_MAX_CONCURRENT_RUNS");
+  return {
+    maxConcurrentRuns: pinned ?? persistedInference.maxConcurrentRuns ?? null,
+    envOverrides: { maxConcurrentRuns: pinned !== null },
+  };
+}
+
+function coerceInference(raw: unknown): Partial<InferenceSettings> {
+  if (typeof raw !== "object" || raw === null) return {};
+  const value = (raw as Record<string, unknown>).maxConcurrentRuns;
+  if (value === null) return { maxConcurrentRuns: null };
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+    return { maxConcurrentRuns: value };
+  }
+  return {};
+}
+
+/** Accepted range. The ceiling is not a resource limit — it is a sanity bound
+ * on a field whose whole point is to match a backend's slot count, and no
+ * local backend has dozens. */
+const MAX_CONCURRENT_RANGE = { min: 1, max: 64 };
+
+export async function updateInferenceSettings(input: unknown): Promise<InferenceSettingsView> {
+  if (typeof input !== "object" || input === null) {
+    throw new SettingsError("body must be an object", "invalid");
+  }
+  const raw = (input as Record<string, unknown>).maxConcurrentRuns;
+  if (raw === undefined) throw new SettingsError("nothing to update", "invalid");
+  if (getInferenceSettings().envOverrides.maxConcurrentRuns) {
+    throw new SettingsError(
+      "maxConcurrentRuns is pinned by the INFERENCE_MAX_CONCURRENT_RUNS environment variable",
+      "envOverride",
+    );
+  }
+  // null is a real value here, not an absent one: it is how an admin says
+  // "go back to following the backend".
+  if (raw !== null) {
+    if (typeof raw !== "number" || !Number.isInteger(raw)) {
+      throw new SettingsError("maxConcurrentRuns must be an integer or null", "invalid");
+    }
+    if (raw < MAX_CONCURRENT_RANGE.min || raw > MAX_CONCURRENT_RANGE.max) {
+      throw new SettingsError(
+        `maxConcurrentRuns must be between ${String(MAX_CONCURRENT_RANGE.min)} and ${String(MAX_CONCURRENT_RANGE.max)}`,
+        "invalid",
+      );
+    }
+  }
+
+  const next: InferenceSettings = { maxConcurrentRuns: raw };
+  await db
+    .insert(serverSettings)
+    .values({ key: INFERENCE_KEY, value: next, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
+  persistedInference = next;
+  return getInferenceSettings();
+}
+
 /**
  * The retention terms, as a conversation's owner needs to read them.
  *
@@ -330,6 +422,14 @@ export async function loadServerSettings(): Promise<void> {
   try {
     const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
     persisted = coerce(row?.value);
+    // Read in the same pass. A failure here is deliberately *not* fail-closed
+    // the way the sandbox read is: unreadable settings leave run concurrency
+    // null, which means "ask the backend", which is what a fresh install gets
+    // anyway. There is nothing here to disable.
+    const inferenceRow = await db.query.serverSettings.findFirst({
+      where: eq(serverSettings.key, INFERENCE_KEY),
+    });
+    persistedInference = coerceInference(inferenceRow?.value);
     loadFailed = false;
   } catch (err) {
     persisted = {};
@@ -588,6 +688,7 @@ async function applySandboxSettings(
  * env-and-defaults path without a database. */
 export function resetServerSettingsCache(): void {
   persisted = {};
+  persistedInference = {};
   loadFailed = false;
 }
 

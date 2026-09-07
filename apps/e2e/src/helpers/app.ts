@@ -23,6 +23,16 @@ export const MOCK_TOOL_DONE = '[Mock] Done. The tool returned:';
  */
 export const TOOL_PROMPT = 'write a file called notes';
 
+/**
+ * A prompt the mock provider deliberately takes several seconds to answer.
+ *
+ * The run queue only shows itself when two runs overlap, and every other mock
+ * response lands in milliseconds — so a spec that wants to *see* a queue has
+ * to be able to ask for a slow one rather than race the harness against
+ * itself. See MOCK_SLOW_MATCH in apps/server/src/inference/provider.ts.
+ */
+export const SLOW_PROMPT = 'take your time and think about this';
+
 /** A prompt the mock provider answers with a `bash` tool call — the probe
  * used to check that a sandbox actually executes, in whichever mode is
  * currently configured (container or host). See MOCK_TOOL_TRIGGERS in
@@ -244,6 +254,22 @@ export async function patchSandboxSettings(patch: Record<string, unknown>): Prom
   });
   if (!res.ok) {
     throw new Error(`[e2e] sandbox settings patch failed (${String(res.status)}): ${await res.text()}`);
+  }
+}
+
+/** Restores run concurrency to "follow the backend". Global server state, so
+ * a spec that pins it must reset in an `after()` hook — the same rule the
+ * sandbox settings carry, and for the same reason: every later spec inherits
+ * whatever this one left. */
+export async function resetInferenceSettings(): Promise<void> {
+  const token = await apiToken(adminCreds());
+  const res = await fetch(`${BASE_URL}/v1/admin/settings/inference`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ maxConcurrentRuns: null }),
+  });
+  if (!res.ok) {
+    throw new Error(`[e2e] inference settings reset failed (${String(res.status)}): ${await res.text()}`);
   }
 }
 
