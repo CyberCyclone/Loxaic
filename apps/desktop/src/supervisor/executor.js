@@ -27,7 +27,7 @@ const RESTART_MAX_MS = 30_000;
  * `onState` is called with `{ state, reason }` on every transition:
  *   starting → online ⇄ connecting → offline | unauthorized
  */
-export function startExecutor({ entry, cwd, apiBaseUrl, executorId, name, rootsFile, token, log = console.log, onState = () => {} }) {
+export function startExecutor({ entry, cwd, apiBaseUrl, executorId, name, rootsFile, buildContext, token, log = console.log, onState = () => {} }) {
   let child = null;
   let stopped = false;
   let restartTimer = null;
@@ -53,6 +53,14 @@ export function startExecutor({ entry, cwd, apiBaseUrl, executorId, name, rootsF
         LOXAIC_EXECUTOR_ID: executorId,
         LOXAIC_EXECUTOR_NAME: name,
         LOXAIC_EXECUTOR_ROOTS_FILE: rootsFile,
+        // Container isolation for a local workspace builds the same sandbox
+        // image the server does, and a packaged install has no repo to build
+        // it from — build-server.mjs stages a copy beside the server payload.
+        ...(buildContext ? { SANDBOX_BUILD_CONTEXT: buildContext } : {}),
+        // A machine whose engine is not on a well-known socket. Passed
+        // through rather than re-derived, so it means the same here as for
+        // the server child.
+        ...(process.env.CONTAINER_SOCKET ? { CONTAINER_SOCKET: process.env.CONTAINER_SOCKET } : {}),
       },
       stdio: ["pipe", "pipe", "pipe"],
     });

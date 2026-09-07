@@ -998,6 +998,72 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `parseWorkspaceInput`), Windows executors (`agent/executor.ts`'s `resolvePath` is POSIX, as the
   host provider always was).
 
+### Container isolation for a local workspace
+
+- **The executor can run the agent in a container on the user's own machine**, with only their
+  chosen folder bind-mounted at `/home/loxaic/repo` — the same image the server uses, so the
+  agent's view is an ordinary workspace. Chosen at chat start alongside Direct, immutable
+  after, and offered only when that machine reports a container engine
+  (`capabilities.container`, probed per connection so starting Docker later needs a reconnect
+  rather than a restart).
+- **`container-provider.ts` was split into policy and mechanics** to make this possible without
+  giving a laptop process the server's database. `sandbox/container-engine.ts` holds everything
+  mechanical — engine discovery, the image, `createSandboxContainer`, the handle — and reads no
+  settings; `container-provider.ts` is the settings-aware `SandboxProvider` on top of it. The
+  executor imports only the engine. This is not tidiness: `settings.ts` imports `@loxaic/db`,
+  tsup inlines every `@loxaic/*` package, so the old shape would have put the database driver
+  inside the shipped `dist/executor.js`. `executor/__tests__/isolation.test.ts` is what holds
+  the line — put `getSandboxSettings` back into the engine and it fails.
+- **Two checks gate attaching to a local container, and they answer different questions.** The
+  `loxaic.executor` label stops a server from naming *any* container id on the machine — a
+  database, a production service — and getting an `exec` in it. The `loxaic.localFolder` label
+  is re-checked against the roots *as they are now*, so un-approving a folder revokes the
+  container mounted on it rather than leaving a live door into it.
+- **Paths inside a container are not host paths**, so the executor's realpath confinement
+  applies to direct refs only (`confined` in service.ts). Inside a container the container *is*
+  the boundary: the server's own `resolvePath` already keeps paths under `/home/loxaic`, and a
+  path there resolves in the image, not on the laptop.
+- **The network is on**, unlike the server's default. There it is off because a sandbox runs
+  model-directed commands on someone else's machine and egress is an exfiltration path. Here
+  the user has already agreed to run those commands on their own machine, and the alternative
+  they would otherwise pick — Direct — has their whole network *and* their whole filesystem.
+  Denying it would make the safer choice the less useful one.
+- **Linux runs the container as the desktop user's uid:gid** so files written into the mount
+  keep their owner; Docker Desktop maps ownership itself on macOS and Windows, where forcing a
+  uid would only break it. Overriding the user costs the image's home directory, hence
+  `HOME=/tmp` — not the mounted folder, which would scatter tool dotfiles through someone's
+  project. **Implemented but unverified**: this machine is macOS, so the uid path has never
+  actually run.
+- **`create` gets a 10-minute timeout** (`CREATE_TIMEOUT_MS`), because the first
+  container-isolated workspace on a machine builds the image. Every other call keeps the 15s
+  default. A machine that has genuinely gone away still fails immediately — `callExecutor`
+  refuses up front when nothing is connected — so this only bounds one that is answering slowly.
+- **`stop` pauses the container and `destroy` removes it; neither touches the folder.** For a
+  direct workspace both remain no-ops. The folder is the user's and predates us, which is the
+  same rule the host provider learned the hard way.
+- The desktop passes `SANDBOX_BUILD_CONTEXT` to the executor as well as the server: a packaged
+  install has no repo to build the image from, and `build-server.mjs` stages a copy.
+- **A local container carries `loxaic.executor`, and the server's orphan sweep must skip it.**
+  Both kinds carry `loxaic.sandbox`, but an executor's container is claimed by no row in the
+  server's database — so the sweep, whose whole job is destroying containers no row claims,
+  deleted them. Not a corner case: the engine is shared the moment someone runs a Solo or Host
+  instance on the machine they also use as their own executor. Caught because the container
+  test failed only in a full suite run, alongside `container-lifecycle.test.ts`'s own sweep.
+- **A container terminal is a real PTY, a direct one is pipes**, and the server derives which
+  from the ref (`isContainerRef`) rather than asking — `openTerminal` returns before the far
+  side has answered anything, and `terminal.ready` is sent at that moment. Same reasoning as
+  the layout above.
+- **Three packaged-only defects surfaced here, all pre-existing and all invisible until
+  something asked a *packaged* app to build the image** — which nothing did until the executor
+  gained container isolation (the e2e's packaged app is otherwise a client of a repo-run
+  server). `build-server.mjs` shipped `sandbox.Dockerfile` without the `sandbox/extract.py` it
+  `COPY`s; `sandboxImage()` collapsed its whole digest to `:base` when that directory was
+  missing, so every packaged install shared one tag no edit could change; and `ensureImage()`
+  treated a failed build as success, because the daemon reports a failed *step* as an ordinary
+  progress entry with `errorDetail` rather than as dockerode's `err`. The last one is why this
+  presented as an undiagnosable "No such image" from `createContainer` instead of the real
+  reason.
+
 ### The terminal panel
 
 - **`handle.workdir` is the default working directory, for real now (#62).** `exec` and

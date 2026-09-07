@@ -28,6 +28,7 @@ import { realpathSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { attachDirectory } from "../sandbox/host-provider.ts";
+import { attachLocalContainer, ContainerRefError, createLocalContainer, isContainerRef } from "./container.ts";
 import type { ExecOptions, SandboxHandle } from "../sandbox/provider.ts";
 import type {
   CreateParams,
@@ -56,6 +57,9 @@ export class ExecutorRequestError extends Error {
 export interface ExecutorServiceOptions {
   /** The approved roots, read on every call — never captured once. */
   roots: () => string[];
+  /** This machine's id, so a container can be labelled as ours and refused
+   * when a server names one that is not. */
+  executorId: string;
 }
 
 export interface ExecutorService {
@@ -63,17 +67,37 @@ export interface ExecutorService {
 }
 
 /**
- * The root check on its own, for the parts of the executor that are not
- * request/response. Terminals need exactly this and nothing else from the
- * service: a shell may only be opened in a directory the user approved, and
- * "approved" has to be re-read at open time rather than captured once.
+ * A ref turned into something to act on, with the caller's right to it
+ * checked first. Shared with the parts of the executor that are not
+ * request/response — terminals need exactly this and nothing else — so that
+ * "may the server have this?" is answered in one place for both.
+ *
+ * `confined` says whether paths still have to be resolved against the ref on
+ * *this* filesystem. For a container they do not: the container is the
+ * boundary, and the paths in a call are inside it rather than here.
  */
-export interface RootGuard {
-  approvedDir(candidate: string): Promise<string>;
+export interface ResolvedRef {
+  handle: SandboxHandle;
+  ref: string;
+  confined: boolean;
 }
 
-export function createRootGuard(opts: ExecutorServiceOptions): RootGuard {
-  return { approvedDir: (candidate) => approvedDirIn(opts.roots(), candidate) };
+export interface RefResolver {
+  resolve(ref: string, executorId: string): Promise<ResolvedRef>;
+}
+
+export function createRefResolver(opts: ExecutorServiceOptions): RefResolver {
+  const isApproved = async (dir: string) =>
+    approvedDirIn(opts.roots(), dir).then(() => true, () => false);
+  return {
+    async resolve(ref) {
+      if (isContainerRef(ref)) {
+        return { handle: await attachLocalContainer(ref, opts.executorId, isApproved), ref, confined: false };
+      }
+      const dir = await approvedDirIn(opts.roots(), ref);
+      return { handle: attachDirectory(dir), ref: dir, confined: true };
+    },
+  };
 }
 
 function isInsideAny(roots: string[], candidateReal: string): boolean {
@@ -154,11 +178,16 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
     return resolved;
   }
 
-  async function handleFor(params: unknown, method: string): Promise<{ handle: SandboxHandle; ref: string }> {
+  const resolver = createRefResolver(opts);
+
+  async function handleFor(params: unknown, method: string): Promise<ResolvedRef> {
     const obj = requireObject(params, method);
-    const ref = await approvedDir(requireString(obj, "ref", method));
-    return { handle: attachDirectory(ref), ref };
+    return resolver.resolve(requireString(obj, "ref", method), opts.executorId);
   }
+
+  /** A path as the far side should see it: resolved and bounded against the
+   * ref for a directory on this machine, taken as given inside a container. */
+  const pathIn = async (ref: string, confined: boolean, p: string) => (confined ? resolveInside(ref, p) : p);
 
   return {
     async handle(method, params) {
@@ -168,60 +197,64 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
 
         case "create": {
           const obj = requireObject(params, method) as Partial<CreateParams>;
-          if (obj.isolation !== "direct") {
-            throw new ExecutorRequestError("Container isolation on a local workspace is not available yet");
+          const dir = await approvedDir(requireString(obj, "path", method));
+          if (obj.isolation === "container") {
+            const { ref } = await createLocalContainer(dir, opts.executorId);
+            return { ref };
           }
-          const ref = await approvedDir(requireString(obj, "path", method));
-          return { ref };
+          if (obj.isolation !== "direct") {
+            throw new ExecutorRequestError("isolation must be direct or container");
+          }
+          return { ref: dir };
         }
 
         case "attach": {
-          const { ref } = await handleFor(params, method);
-          return { ref, root: ref, workdir: ref };
+          const { handle, ref } = await handleFor(params, method);
+          return { ref, root: handle.root, workdir: handle.workdir };
         }
 
         case "exec": {
-          const { handle, ref } = await handleFor(params, method);
+          const { handle, ref, confined } = await handleFor(params, method);
           const obj = params as ExecParams;
           if (!Array.isArray(obj.command) || obj.command.some((c) => typeof c !== "string")) {
             throw new ExecutorRequestError("exec: command must be a string array");
           }
           const options: ExecOptions = {};
-          if (obj.options?.workdir !== undefined) options.workdir = await resolveInside(ref, obj.options.workdir);
+          if (obj.options?.workdir !== undefined) options.workdir = await pathIn(ref, confined, obj.options.workdir);
           if (typeof obj.options?.timeoutMs === "number") options.timeoutMs = obj.options.timeoutMs;
           if (obj.options?.env && typeof obj.options.env === "object") options.env = obj.options.env;
           return handle.exec(obj.command, options);
         }
 
         case "readFile": {
-          const { handle, ref } = await handleFor(params, method);
+          const { handle, ref, confined } = await handleFor(params, method);
           const obj = params as ReadFileParams;
-          return handle.readFile(await resolveInside(ref, requireString(obj as unknown as Record<string, unknown>, "path", method)));
+          return handle.readFile(await pathIn(ref, confined, requireString(obj as unknown as Record<string, unknown>, "path", method)));
         }
 
         case "writeFile": {
-          const { handle, ref } = await handleFor(params, method);
+          const { handle, ref, confined } = await handleFor(params, method);
           const obj = params as WriteFileParams;
           if (typeof obj.content !== "string") throw new ExecutorRequestError("writeFile: content must be a string");
-          await handle.writeFile(await resolveInside(ref, requireString(obj as unknown as Record<string, unknown>, "path", method)), obj.content);
+          await handle.writeFile(await pathIn(ref, confined, requireString(obj as unknown as Record<string, unknown>, "path", method)), obj.content);
           return { ok: true };
         }
 
         case "writeFileBinary": {
-          const { handle, ref } = await handleFor(params, method);
+          const { handle, ref, confined } = await handleFor(params, method);
           const obj = params as WriteFileBinaryParams;
           if (typeof obj.dataBase64 !== "string") throw new ExecutorRequestError("writeFileBinary: dataBase64 must be a string");
           await handle.writeFileBinary(
-            await resolveInside(ref, requireString(obj as unknown as Record<string, unknown>, "path", method)),
+            await pathIn(ref, confined, requireString(obj as unknown as Record<string, unknown>, "path", method)),
             Buffer.from(obj.dataBase64, "base64"),
           );
           return { ok: true };
         }
 
         case "fileTree": {
-          const { handle, ref } = await handleFor(params, method);
+          const { handle, ref, confined } = await handleFor(params, method);
           const obj = params as FileTreeParams;
-          const target = obj.path === undefined ? ref : await resolveInside(ref, obj.path);
+          const target = obj.path === undefined ? handle.root : await pathIn(ref, confined, obj.path);
           return handle.fileTree(target);
         }
 
@@ -229,13 +262,16 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
         case "exists": {
           // A directory the user has un-approved is, to the server, gone:
           // false here makes the manager record the row as destroyed and
-          // re-validate the path on the next use instead of trusting it.
+          // re-validate the path on the next use instead of trusting it. A
+          // container answers for itself — it can be paused, or removed.
           try {
-            const obj = requireObject(params, method);
-            await approvedDir(requireString(obj, "ref", method));
-            return true;
+            const { handle } = await handleFor(params, method);
+            // Awaited inside the try, not returned unresolved: a container
+            // whose folder is no longer approved rejects, and the catch below
+            // is what turns that into the `false` the server expects.
+            return await (method === "exists" ? handle.exists() : handle.isRunning());
           } catch (err) {
-            if (err instanceof RootViolationError) return false;
+            if (err instanceof RootViolationError || err instanceof ContainerRefError) return false;
             throw err;
           }
         }
@@ -243,16 +279,28 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
         case "start": {
           // "Resumable" for a plain directory means "still there and still
           // approved" — the throw is how the manager tells paused from gone.
-          await handleFor(params, method);
+          // A container is genuinely started again.
+          const { handle } = await handleFor(params, method);
+          await handle.start();
           return { ok: true };
         }
 
-        case "stop":
-        case "destroy":
-          // Never touches the directory: it is the user's own, not something
-          // this process created. The row on the server is forgotten; the
-          // folder stays exactly as it was.
+        case "stop": {
+          // A container is paused, keeping everything in it. A directory has
+          // nothing to pause: it is the user's own, not something this
+          // process created, so the row on the server is simply forgotten.
+          const { handle, confined } = await handleFor(params, method);
+          if (!confined) await handle.stop();
           return { ok: true };
+        }
+
+        case "destroy": {
+          // Removes the *container*, never the folder that was mounted into
+          // it — that belongs to the user and predates us.
+          const { handle, confined } = await handleFor(params, method);
+          if (!confined) await handle.destroy();
+          return { ok: true };
+        }
 
         default: {
           const unknown: never = method;

@@ -144,13 +144,13 @@ describe("parseWorkspaceInput", () => {
   describe("local", () => {
     afterEach(() => { __resetExecutorsForTest(); });
 
-    function connectMachine(owner = userId) {
+    function connectMachine(owner = userId, container = false) {
       return registerExecutor({
         executorId: "laptop-1",
         userId: owner,
         name: "Casey's laptop",
         platform: "darwin",
-        capabilities: { direct: true, container: false },
+        capabilities: { direct: true, container },
         roots: ["/Users/casey/code", "C:\\work"],
         send: () => undefined,
         close: () => undefined,
@@ -200,11 +200,25 @@ describe("parseWorkspaceInput", () => {
       await expect(parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "C:\\work\\app" }, { userId })).resolves.toMatchObject({ path: "C:\\work\\app" });
     });
 
-    it("refuses container isolation until it exists", async () => {
-      connectMachine();
+    it("refuses container isolation on a machine with no container engine, and names the fix", async () => {
+      connectMachine(userId, false);
       await expect(
         parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app", isolation: "container" }, { userId }),
-      ).rejects.toThrow(/not available yet/);
+      ).rejects.toThrow(/no container engine running/);
+    });
+
+    it("accepts it when the machine says it has one", async () => {
+      connectMachine(userId, true);
+      await expect(
+        parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app", isolation: "container" }, { userId }),
+      ).resolves.toMatchObject({ isolation: "container" });
+    });
+
+    it("refuses an isolation it has never heard of", async () => {
+      connectMachine();
+      await expect(
+        parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app", isolation: "vm" }, { userId }),
+      ).rejects.toThrow(/direct or container/);
     });
   });
 });
@@ -260,6 +274,23 @@ describe("describeWorkspace", () => {
     expect(describeWorkspace({ ...github, pr: { number: 9, url: "x" } }, "container")).toBe(
       describeWorkspace(github, "container"),
     );
+  });
+
+  it("says a container-isolated local workspace is one, and where the folder is mounted", () => {
+    const local = {
+      kind: "local" as const,
+      executorId: "id",
+      executorName: "Casey's laptop",
+      path: "/Users/casey/code/app",
+      isolation: "container" as const,
+    };
+    const text = describeWorkspace(local, "container");
+    expect(text).toContain("Casey's laptop");
+    expect(text).toContain("/Users/casey/code/app");
+    expect(text).toContain("/home/loxaic/repo");
+    // The direct-mode sentence would be a lie here, and the model acts on it.
+    expect(text).not.toMatch(/no sandbox/);
+    expect(text).toMatch(/nothing else on their machine is visible/);
   });
 
   it("describes a local workspace by the machine and directory fixed at creation, whatever the server's mode", () => {

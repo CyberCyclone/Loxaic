@@ -24,7 +24,9 @@ export const EXECUTOR_PROTOCOL_VERSION = 1;
 export interface ExecutorCapabilities {
   /** Run commands directly in the chosen directory, no isolation. Always true. */
   direct: boolean;
-  /** Run them in a container with the directory bind-mounted (a later stage). */
+  /** Run them in a container on that machine with the directory bind-mounted,
+   * so the agent sees the folder and nothing else of the filesystem. False
+   * when no container engine is running there. */
   container: boolean;
 }
 
@@ -141,12 +143,23 @@ export type ExecutorMethod =
 
 // ── Per-method params and results ──────────────────────────
 // `ref` is the sandbox's identity on the executor: for direct mode it is the
-// real (symlink-resolved) path of the approved directory itself.
+// real (symlink-resolved) path of the approved directory itself. A
+// container-isolated one is `container:<id>` instead.
+/**
+ * How a container-isolated local sandbox's ref is spelled, so both ends agree
+ * without a round trip: `container:<id>` rather than a bare directory. The
+ * server needs to tell the two apart to know a handle's root and workdir —
+ * a direct sandbox *is* the folder, a container one has the image's layout
+ * with that folder mounted inside it.
+ */
+export const LOCAL_CONTAINER_PREFIX = "container:";
+
 
 export interface CreateParams {
   path: string;
   isolation: "direct" | "container";
 }
+
 export interface CreateResult {
   ref: string;
 }
@@ -193,6 +206,15 @@ export type FileTreeResult = FileNode[];
  * one that fires first; everything else is a quick filesystem operation. */
 export const DEFAULT_CALL_TIMEOUT_MS = 15_000;
 export const EXEC_TIMEOUT_MARGIN_MS = 5_000;
+/**
+ * `create` gets far longer than everything else: the first container-isolated
+ * workspace on a machine has to build the sandbox image, which is an apt and
+ * pip install measured in minutes. Every other call is a filesystem operation.
+ * A machine that has actually gone away fails immediately either way —
+ * `callExecutor` refuses up front when nothing is connected — so this only
+ * bounds a machine that is answering but slow.
+ */
+export const CREATE_TIMEOUT_MS = 10 * 60_000;
 
 /** The default `exec` timeout when the caller sets none — mirrors the host
  * provider's own, since that is what runs the command on the far side. */

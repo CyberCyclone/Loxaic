@@ -14,6 +14,9 @@ import { createExecutorService, RootViolationError } from "../service.ts";
  * (agent/executor.ts's resolvePath) is lexical; a repository can contain a
  * link that points at `/`, and only realpath sees through it.
  */
+/** This machine's id, which a container-isolated sandbox is labelled with. */
+const EXECUTOR_ID = "test-executor";
+
 let base: string;
 let root: string;
 let roots: string[];
@@ -30,7 +33,7 @@ afterEach(() => {
 });
 
 function service() {
-  return createExecutorService({ roots: () => roots });
+  return createExecutorService({ roots: () => roots, executorId: EXECUTOR_ID });
 }
 
 describe("create", () => {
@@ -72,8 +75,15 @@ describe("create", () => {
     await expect(svc.handle("create", { path: path.join(root, "nope"), isolation: "direct" })).rejects.toBeInstanceOf(RootViolationError);
   });
 
-  it("refuses container isolation until it exists", async () => {
-    await expect(service().handle("create", { path: root, isolation: "container" })).rejects.toThrow(/not available yet/);
+  it("checks the folder before anything else, container isolation included", async () => {
+    // Refused for the same reason and at the same point as direct mode: the
+    // folder is not one the user chose. Asserted here rather than in the
+    // Docker-gated container suite because it must hold on a machine with no
+    // engine at all — the refusal comes first.
+    const elsewhere = path.join(base, "elsewhere");
+    mkdirSync(elsewhere);
+    await expect(service().handle("create", { path: elsewhere, isolation: "container" })).rejects.toBeInstanceOf(RootViolationError);
+    await expect(service().handle("create", { path: root, isolation: "sideways" })).rejects.toThrow(/direct or container/);
   });
 
   it("refuses everything when the user has chosen no folder at all", async () => {
