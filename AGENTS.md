@@ -963,6 +963,16 @@ screenshots showing that behaviour working. Writing those tests is the implement
   found by the WS test timing out on the very first case. The other handlers' reject paths
   pause-then-close too (ws/chat.ts, ws/agent.ts, ws/sandbox.ts); a browser client eventually
   gives up, which is why it never showed.
+- **Every Loxaic server on this machine shares the dev Postgres, and each one's boot sweep and
+  reaper act on *all* sandbox rows** — so a `pnpm dev` server (`tsx watch`, which restarts on
+  any `apps/server/src` edit), an e2e harness server on :4055, and the server vitest suite must
+  never overlap. A restart's `stopStrayRunning` pauses every row it does not hold in memory,
+  vitest's own `docker rm -f` of every `loxaic.sandbox` container kills a live e2e sandbox, and
+  the symptoms are indirect: `hardening` 409 "container is not running", `lifecycle` "expected
+  running got stopped", a whole Electron run stalling for minutes on unrelated specs. One full
+  Electron run of this stage failed exactly that way and was green on re-run; do not edit a
+  watched server file while a harness run is in flight, and run the suites strictly one at a
+  time.
 - **Two e2e process facts.** Values every process must agree on — the pick dir, the app's
   data dir — travel as env vars minted with `??=` in `scripts/electron-env.ts`, because a
   module-level `mkdtempSync` runs once *per process* (launcher, worker, and the app each get
