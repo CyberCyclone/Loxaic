@@ -191,6 +191,10 @@ What you get depends on where it opened, and the panel says which:
 | Container sandbox | Real terminal (PTY) | Prompt, colour, `Ctrl-C`, arrow keys, `vim` — click into it and type |
 | Host mode, or a local workspace | Bash over pipes | Commands run and output comes back, but there is **no prompt and nothing echoes**; use the line input at the bottom |
 
+A local workspace with container isolation opens its shell *inside* that
+container, so `pwd` is `/home/loxaic/repo` rather than the folder's path on
+your machine — the folder is mounted there.
+
 The pipe-mode limitation is deliberate rather than unfinished: a real terminal
 on those two would need a native module (`node-pty`), and the packaged desktop
 app runs its server and executor under Electron's own Node, where a binding
@@ -221,10 +225,15 @@ tool calls there instead of to a server sandbox.
   ("Choose a folder on this machine…"). Nothing else can add one — not the
   server, not a page. The executor refuses anything outside those folders,
   resolving symlinks, on every request.
-- **Direct** isolation is the only option today: commands run as you, in that
-  folder, with no sandbox. Container isolation for a local folder is a later
-  stage. Anyone you share the chat with as an editor is running commands on
-  your machine — the chooser says so.
+- Two isolation choices, made at chat start and fixed afterwards:
+  - **Direct** — commands run as you, in that folder, with no sandbox. Fast,
+    and everything on your machine is reachable.
+  - **Container** — the folder is mounted into a container on your machine and
+    the agent sees it and nothing else of your filesystem. Offered only when
+    Docker or Podman is running there; the first one builds the sandbox image,
+    which takes a few minutes.
+  Either way, anyone you share the chat with as an editor is running commands
+  on your machine — the chooser says so.
 - The server's own sandbox settings (`SANDBOX_MODE`, network access, the Host
   requirement above) do not apply: nothing runs on the server.
 - Close the desktop app and the machine goes offline; a tool call then fails

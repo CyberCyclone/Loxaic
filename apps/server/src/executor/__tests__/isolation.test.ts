@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
  * would fail loudly (packages/db creates its client lazily, so an import
  * would even *succeed*), but because a laptop process that can be made to
  * open the server's database, or read its settings, is a laptop process with
- * the server's secrets in it.
+ * the server's secrets in it. tsup inlines every `@loxaic/*` package, so an
+ * import here is not theoretical: the database driver would be *in* the
+ * shipped `dist/executor.js`.
  *
  * Checked statically over the source rather than by importing under vitest,
  * whose module registry would hide the very thing this asserts. `import
@@ -23,7 +25,14 @@ const FORBIDDEN = [
   { match: (spec: string, from: string) => path.resolve(path.dirname(from), spec) === path.join(srcRoot, "settings.ts"), why: "server settings" },
   { match: (spec: string, from: string) => path.resolve(path.dirname(from), spec) === path.join(srcRoot, "index.ts"), why: "the server entry" },
   { match: (spec: string) => spec === "fastify" || spec.startsWith("@fastify/"), why: "fastify" },
-  { match: (spec: string) => spec === "dockerode", why: "dockerode" },
+  // `dockerode` was on this list until container isolation for local
+  // workspaces existed; the executor now genuinely creates containers on the
+  // user's own machine, so a container client is part of what it is. The
+  // rules that matter are unchanged, and it is the `settings.ts` rule that
+  // keeps them honest here: reaching a container engine has to go through
+  // sandbox/container-engine.ts, which is settings-free precisely so that
+  // this walk stays green. Put `getSandboxSettings` back into that module and
+  // this test fails, which is the point of the split.
 ];
 
 const IMPORT_RE = /^\s*import\s+(?!type\s)(?:[^'"]*?\s+from\s+)?["']([^"']+)["']/gm;
@@ -60,10 +69,14 @@ function walk(entry: string): { visited: Set<string>; offences: string[] } {
 }
 
 describe("the executor's module graph", () => {
-  it("never reaches the database, settings, the server entry, fastify, or dockerode", () => {
+  it("never reaches the database, server settings, the server entry, or fastify", () => {
     const { visited, offences } = walk(path.join(srcRoot, "executor/main.ts"));
-    // Sanity: the walk really did traverse into the sandbox layer.
+    // Sanity: the walk really did traverse into the sandbox layer — both the
+    // directory provider and the container mechanics, which are the two
+    // things the executor reaches into and the two places a settings import
+    // would most plausibly reappear.
     expect([...visited].some((f) => f.endsWith("sandbox/host-provider.ts"))).toBe(true);
+    expect([...visited].some((f) => f.endsWith("sandbox/container-engine.ts"))).toBe(true);
     expect(offences).toEqual([]);
   });
 });

@@ -117,10 +117,17 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
       throw new WorkspaceError("workspace.path must be a folder you have chosen on that machine");
     }
     const isolation = input.isolation === undefined ? "direct" : input.isolation;
-    if (isolation === "container") {
-      throw new WorkspaceError("Container isolation on a local workspace is not available yet");
+    if (isolation !== "direct" && isolation !== "container") {
+      throw new WorkspaceError("workspace.isolation must be direct or container");
     }
-    if (isolation !== "direct") throw new WorkspaceError("workspace.isolation must be direct");
+    // Asked of the machine, not assumed: it reports whether a container engine
+    // is actually running there, and a workspace that cannot be created is
+    // better refused now than on the first tool call.
+    if (isolation === "container" && !executor.capabilities.container) {
+      throw new WorkspaceError(
+        "That machine has no container engine running — start Docker or Podman there, or choose Direct.",
+      );
+    }
     // `executorName` comes from the live executor, never the client: it
     // goes into the system prompt, and a client naming the machine could
     // put anything there.
@@ -225,10 +232,17 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
         "pull requests — the user does that from the interface."
       );
     case "local":
-      return (
-        `directly on the user's own machine (${workspace.executorName}), in their directory ` +
-        `${workspace.path}, with no sandbox. Every change you make is immediate and real.`
-      );
+      return workspace.isolation === "container"
+        ? (
+            `on the user's own machine (${workspace.executorName}), inside an isolated container ` +
+            `with their directory ${workspace.path} mounted at /home/loxaic/repo (your working ` +
+            "directory; relative paths resolve there). Changes to that directory are real and " +
+            "immediate; nothing else on their machine is visible to you."
+          )
+        : (
+            `directly on the user's own machine (${workspace.executorName}), in their directory ` +
+            `${workspace.path}, with no sandbox. Every change you make is immediate and real.`
+          );
   }
 }
 

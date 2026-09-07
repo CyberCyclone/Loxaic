@@ -323,7 +323,10 @@ export async function chooseGithubWorkspace(repoId: number): Promise<string> {
  * (scripts/electron-env.ts), so the folder that appears is `dir`. Assumes
  * the desktop's executor has already connected (the spec waits for that).
  */
-export async function chooseLocalWorkspace(dir: string): Promise<void> {
+export async function chooseLocalWorkspace(
+  dir: string,
+  isolation: 'direct' | 'container' = 'direct',
+): Promise<void> {
   await tap('agent.workspace.button');
   await waitForVisible('agent.workspace.dialog');
   await waitForVisible('agent.workspace.local');
@@ -333,6 +336,9 @@ export async function chooseLocalWorkspace(dir: string): Promise<void> {
   // The chooser selects the folder itself once the server has heard of it.
   await waitForVisible(`agent.workspace.root.${encodeURIComponent(dir)}`);
   await waitForTextIn('agent.workspace.dialog', dir);
+  // Only offered when that machine reports a container engine, so tapping it
+  // is itself the assertion that the capability reached the chooser.
+  if (isolation === 'container') await tap('agent.workspace.isolation.container');
   await tap('agent.workspace.confirm');
   // The pill shows the folder's name, not its whole path — a temp directory
   // spelled out in full would crowd the mode selector off the row.

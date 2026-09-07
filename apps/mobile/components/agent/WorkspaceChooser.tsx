@@ -92,6 +92,7 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const [executors, setExecutors] = useState<ExecutorView[]>([]);
   const [executorId, setExecutorId] = useState<string | null>(value.kind === 'local' ? value.executorId : null);
   const [localPath, setLocalPath] = useState<string | null>(value.kind === 'local' ? value.path : null);
+  const [isolation, setIsolation] = useState<'direct' | 'container'>(value.kind === 'local' ? value.isolation : 'direct');
   const [picking, setPicking] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
 
@@ -165,6 +166,9 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     const mine = executors.find((e) => e.id === local.executorId) ?? executors.at(0);
     setExecutorId(mine?.id ?? null);
     setLocalPath(null);
+    // A choice made against one machine must not survive onto another that
+    // cannot honour it.
+    if (!mine?.capabilities.container) setIsolation('direct');
   }, [executors, executorId, local.executorId]);
 
   const filtered = useMemo(
@@ -238,7 +242,7 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const confirm = () => {
     if (where === 'local') {
       if (selectedExecutor && localPath) {
-        onChange({ kind: 'local', executorId: selectedExecutor.id, executorName: selectedExecutor.name, path: localPath, isolation: 'direct' });
+        onChange({ kind: 'local', executorId: selectedExecutor.id, executorName: selectedExecutor.name, path: localPath, isolation });
       }
     } else if (source === 'scratch') {
       onChange({ kind: 'scratch' });
@@ -373,22 +377,28 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
                     icon={ShieldOff}
                     title="Direct"
                     detail="Commands run as you, in that folder, with no sandbox. Every change is immediate and real."
-                    selected
-                    onPress={() => undefined}
+                    selected={isolation === 'direct'}
+                    onPress={() => { setIsolation('direct'); }}
                   />
                   <OptionRow
                     testID="agent.workspace.isolation.container"
                     icon={Container}
                     title="Container"
-                    detail="Coming soon: the folder mounted into a container on that machine. Needs Docker or Podman there."
-                    selected={false}
-                    disabled
-                    onPress={() => undefined}
+                    detail={
+                      selectedExecutor?.capabilities.container
+                        ? 'The folder is mounted into a container on that machine. The agent sees it and nothing else of the filesystem.'
+                        : 'Needs Docker or Podman running on that machine.'
+                    }
+                    selected={isolation === 'container'}
+                    disabled={!selectedExecutor?.capabilities.container}
+                    onPress={() => { setIsolation('container'); }}
                   />
                 </VStack>
 
                 <Text testID="agent.workspace.localWarning" size="xs" className="text-warning">
-                  Anyone you share this chat with as an editor will be running commands on your machine.
+                  {isolation === 'container'
+                    ? 'Anyone you share this chat with as an editor will be running commands on your machine, inside that container.'
+                    : 'Anyone you share this chat with as an editor will be running commands on your machine.'}
                 </Text>
               </VStack>
             )}

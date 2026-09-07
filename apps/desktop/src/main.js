@@ -315,6 +315,7 @@ async function runGui() {
         executorId: identity.executorId,
         name: identity.name,
         rootsFile: rootsPath(dataDir()),
+        buildContext: path.join(resolveRuntimePaths().serverDir, "sandbox"),
         token: sessionToken,
         log: (line) => { console.log(`[loxaic] ${line}`); },
         onState: (state) => {
