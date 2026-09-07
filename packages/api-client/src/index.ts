@@ -750,6 +750,76 @@ export async function testMcpServer(id: string): Promise<McpTestResult> {
   return mcpFetch(`/v1/mcp/servers/${id}/test`, { method: "POST" });
 }
 
+// ── GitHub connection ────────────────────────────────────
+export interface GithubConnection {
+  login: string;
+  name: string | null;
+  email: string | null;
+  /** Null for a fine-grained PAT — GitHub does not report scopes for those,
+   * so null means "unknown", never "no access". */
+  scopes: string | null;
+  validatedAt: string;
+}
+
+export interface GithubRepo {
+  id: number;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+}
+
+/** Carries the server's error body, same shape as McpApiError — a bad token
+ * or an unreachable GitHub both need a message the connection screen can show
+ * directly. */
+export class GithubApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function githubFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAuthToken();
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${String(token)}`);
+  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new GithubApiError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+/** Null when nothing is connected. */
+export async function getGithubConnection(): Promise<GithubConnection | null> {
+  return githubFetch("/v1/github/connection");
+}
+
+export async function putGithubConnection(token: string): Promise<GithubConnection> {
+  return githubFetch("/v1/github/connection", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+}
+
+export async function deleteGithubConnection(): Promise<{ ok: true }> {
+  return githubFetch("/v1/github/connection", { method: "DELETE" });
+}
+
+export async function getGithubRepos(q?: string): Promise<GithubRepo[]> {
+  const query = q ? `?q=${encodeURIComponent(q)}` : "";
+  return githubFetch(`/v1/github/repos${query}`);
+}
+
+export async function getGithubBranches(
+  owner: string,
+  repo: string,
+): Promise<{ default_branch: string; branches: string[] }> {
+  return githubFetch(`/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
+}
+
 // ── User prefs (builtin tool "allow always") ────────────────
 export interface UserPrefs {
   /** Builtin tool names allowlisted globally — skip approval anywhere the

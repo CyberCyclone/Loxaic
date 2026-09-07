@@ -269,6 +269,16 @@ Because mode is server-wide state, every sandbox spec restores it to the default
 the API rather than the UI, so restoration still runs (and still works) if the test itself failed
 partway through a UI flow — see `resetSandboxSettings()` in `helpers/app.ts`.
 
+## What the GitHub connection spec covers
+
+`github-settings.spec.ts` drives connecting/disconnecting a GitHub personal access token
+against `apps/e2e/scripts/mock-github.ts` — a minimal in-process HTTP server standing in for
+`api.github.com`, started by `standup.ts` before the test server and passed to it as
+`GITHUB_API_URL` (the same env var `apps/server/src/github/client.ts` reads at call time; see
+AGENTS.md's "GitHub connection" section). No spec ever reaches real GitHub. The mock accepts
+exactly one token (`VALID_TOKEN`, exported from `mock-github.ts`); anything else 401s, so the
+"bad token" case exercises the server's real validation path rather than a canned rejection.
+
 ## Real-model task suite
 
 Everything above runs on `MOCK_INFERENCE`, which is exactly why it can't prove an agent can
