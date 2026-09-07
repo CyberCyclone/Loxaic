@@ -32,6 +32,7 @@ import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
+import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 
 /**
  * Tool round-trips one user message may take, when the user has expressed no
@@ -240,6 +241,10 @@ export async function runToolLoop(ctx: {
   // it, so triggering in place would refuse itself with "already in progress".
   let autoCompact = false;
 
+  // Held from just before the first model call until the run ends, and handed
+  // back only while waiting on a human — see acquireRunSlot.
+  let slot: RunSlot | null = null;
+
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
@@ -274,6 +279,25 @@ export async function runToolLoop(ctx: {
     // Per-message hashes from the previous iteration; safe to reuse because
     // `chatMessages` is only ever appended to below.
     let carriedHashes: readonly string[] | undefined;
+
+    // Everything above is database and bookkeeping work that touches no
+    // backend, so it happens before queueing: a run should not hold a slot
+    // while it loads its own history.
+    //
+    // The slot covers the whole run rather than each model call. Rotating
+    // between runs per call would keep the queue fair and destroy the prompt
+    // cache on every iteration, which is the entire problem — see
+    // inference/scheduler.ts.
+    slot = await acquireRunSlot({
+      signal: abort.signal,
+      onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
+    });
+    if (!slot) {
+      // Stopped while waiting in line. Nothing ran, so there is nothing to
+      // record beyond ending the stream the way any cancelled turn ends.
+      await producer.end("cancelled");
+      return;
+    }
 
     let parentId = ctx.userMsgId;
     let lastAssistantId: string | null = null;
@@ -492,7 +516,10 @@ export async function runToolLoop(ctx: {
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
       for (const call of toolCalls) {
-        const outcome = await runOneToolCall({ streamId, convId, userId, mode, toolset, producer, assistantMsgId }, call);
+        const outcome = await runOneToolCall(
+          { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot },
+          call,
+        );
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
@@ -543,7 +570,19 @@ export async function runToolLoop(ctx: {
         error: `Stopped after ${String(maxIterations)} tool iterations without a final answer.`,
       });
     }
+  } catch (err) {
+    // The one error this function is allowed to expect. It means the user
+    // pressed stop while the run was waiting to get back into the queue after
+    // an approval, and the right response is the same one every other cancel
+    // gets. Anything else keeps propagating rather than being flattened into a
+    // cancelled turn that hides a real fault.
+    if (!(err instanceof RunSlotAbortedError)) throw err;
+    await producer.end("cancelled").catch(() => undefined);
+    return;
   } finally {
+    // Before unregisterRun, so the next run in line starts against a registry
+    // that no longer thinks this conversation is busy.
+    slot?.release();
     unregisterRun(streamId);
   }
 
@@ -573,7 +612,16 @@ export async function runToolLoop(ctx: {
 
 /** Approval gate + execution for a single model-requested tool call. */
 async function runOneToolCall(
-  ctx: { streamId: string; convId: string; userId: string; mode: PermissionMode; toolset: Toolset; producer: StreamProducer; assistantMsgId: string },
+  ctx: {
+    streamId: string;
+    convId: string;
+    userId: string;
+    mode: PermissionMode;
+    toolset: Toolset;
+    producer: StreamProducer;
+    assistantMsgId: string;
+    slot: RunSlot;
+  },
   call: ToolCall,
 ): Promise<{ output: string; diff?: { path: string; oldContent: string | null; newContent: string | null }[] }> {
   const { convId, userId, mode, toolset, producer, assistantMsgId } = ctx;
@@ -596,7 +644,12 @@ async function runOneToolCall(
 
   if (toolset.requiresApproval(resolved, mode)) {
     producer.emit({ kind: "approval.request", call_id: call.id, tool: toolName, args });
-    const approved = await waitForApproval(ctx.streamId, call.id);
+    // The slot goes back while the question is on screen. A manual-mode
+    // approval routinely sits for minutes, and holding an inference slot
+    // through it would stall every other conversation on the deployment for
+    // exactly as long as the user takes to click. Re-taken at the front of the
+    // queue afterwards, so approving does not cost the user their place.
+    const approved = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id));
     if (!approved) {
       const output = "User denied this tool call.";
       producer.emit({

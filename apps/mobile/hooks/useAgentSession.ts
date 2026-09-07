@@ -24,7 +24,10 @@ import type { Conversation, Message, ChangedFile } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 
-export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error';
+/** `queued` means the run exists and is waiting for an inference slot —
+ * distinct from `running`, because nothing is happening yet and the user is
+ * owed the reason. */
+export type RunState = 'queued' | 'running' | 'awaiting_approval' | 'done' | 'error';
 
 export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
 
@@ -46,6 +49,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const [runState, setRunState] = useState<RunState>('done');
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   const { showToast } = useToastHelper();
@@ -151,6 +155,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       setRunState('done');
       setPendingApproval(null);
       setIteration(null);
+      setQueuePosition(null);
       setLiveTodos([]);
     },
     [setActiveId],
@@ -161,6 +166,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     setRunState('done');
     setPendingApproval(null);
     setIteration(null);
+    setQueuePosition(null);
     setLiveTodos([]);
   }, [setActiveId]);
 
@@ -247,8 +253,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           ? { callId: snapshot.pending_approval.call_id, tool: snapshot.pending_approval.tool, args: snapshot.pending_approval.args }
           : null,
       );
-      if (status === 'active') setRunState(snapshot.pending_approval ? 'awaiting_approval' : 'running');
-      else setRunState(status === 'error' ? 'error' : 'done');
+      setQueuePosition(snapshot.queued?.position ?? null);
+      if (status === 'active') {
+        // Order matters: a snapshot can carry both a queue position and a
+        // pending approval (a run that yielded its slot to ask, then had to
+        // queue to get it back). The approval is what the user can act on, so
+        // it wins.
+        if (snapshot.pending_approval) setRunState('awaiting_approval');
+        else if (snapshot.queued) setRunState('queued');
+        else setRunState('running');
+      } else setRunState(status === 'error' ? 'error' : 'done');
     };
 
     const onEvent = (event: ServerMessage) => {
@@ -323,10 +337,17 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
-        if (inner.kind === 'iteration') {
+        if (inner.kind === 'run.queued') {
+          if (isActive) {
+            setRunState('queued');
+            setQueuePosition(inner.position);
+          }
+        } else if (inner.kind === 'iteration') {
           if (isActive) {
             setRunState('running');
             setIteration({ n: inner.n, max: inner.max });
+            // Reaching an iteration is the run starting, so the wait is over.
+            setQueuePosition(null);
           }
           setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
         } else if (inner.kind === 'model.loading') {
@@ -351,6 +372,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         if (event.conversation_id === activeIdRef.current) {
           setRunState(event.status === 'error' ? 'error' : 'done');
           setIteration(null);
+          setQueuePosition(null);
           setPendingApproval(null);
         }
         // A run may have JIT-loaded the model, changing the context window.
@@ -518,7 +540,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
-  const busy = runState === 'running' || runState === 'awaiting_approval';
+  // Queued counts as busy: the composer must offer Stop, not Send — the run
+  // is real, it simply has not started.
+  const busy = runState === 'queued' || runState === 'running' || runState === 'awaiting_approval';
 
   return {
     runs,
@@ -532,6 +556,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     iteration,
+    queuePosition,
     todos: liveTodos,
     changedFiles,
     handleSend,

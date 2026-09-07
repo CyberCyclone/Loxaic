@@ -80,6 +80,21 @@ afterEach(() => {
   requests.length = 0;
 });
 
+/** Starts a turn without waiting for it, for the concurrency case below. */
+async function startTurn(content: string): Promise<string> {
+  const result = await startChatRun({ userId, content, model: "llama-3.1-8b-instruct" });
+  if (!convIds.includes(result.conversationId)) convIds.push(result.conversationId);
+  return result.conversationId;
+}
+
+async function waitForRun(convId: string): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  while (getRunByConversation(convId)) {
+    if (Date.now() > deadline) throw new Error("timed out waiting for the run to finish");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
 /** Sends one turn and resolves when the run has fully finished. */
 async function turn(content: string, conversationId?: string): Promise<string> {
   const result = await startChatRun({
@@ -127,6 +142,39 @@ function expectEachRequestExtendsTheLast(): void {
     }
   }
 }
+
+describe("two conversations do not interleave their requests", () => {
+  it("finishes one run's requests before starting the other's", async () => {
+    // The prefix invariant every other case here asserts is *per conversation*
+    // and says nothing about this: two runs can each extend their own previous
+    // request perfectly while alternating, which is exactly what evicts the
+    // backend's single cached prefix on every call. On a 14.5k-token thread
+    // that is the difference between 312 ms and 14,551 ms — per iteration.
+    //
+    // Both prompts trigger the mock's todo_write call, so each run makes two
+    // requests and there is a real window to interleave in.
+    const alpha = await startTurn("make a todo list for alpha");
+    const bravo = await startTurn("make a todo list for bravo");
+    await waitForRun(alpha);
+    await waitForRun(bravo);
+
+    // Which conversation each request belonged to, in the order they went out.
+    const owners = requests.map((msgs) => {
+      const joined = msgs.join("");
+      if (joined.includes("alpha")) return "alpha";
+      if (joined.includes("bravo")) return "bravo";
+      throw new Error("a request belonged to neither conversation");
+    });
+
+    expect(owners.length).toBeGreaterThanOrEqual(4);
+    // Contiguous: every run's requests form one unbroken block. Asserted as
+    // "the owner changes at most once" rather than by comparing to a fixed
+    // order, because which run wins the slot first is a race and does not
+    // matter — only that the loser waits.
+    const switches = owners.filter((o, i) => i > 0 && o !== owners[i - 1]).length;
+    expect({ owners, switches }).toEqual({ owners, switches: 1 });
+  });
+});
 
 describe("every prompt extends the previous one", () => {
   it("holds across a plain two-turn conversation", async () => {

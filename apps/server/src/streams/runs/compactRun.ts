@@ -9,6 +9,7 @@ import { assertConversationAccess } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
+import { acquireRunSlot, type RunSlot } from "../../inference/scheduler.ts";
 import { announceNewRun } from "../watchers.ts";
 import { loadHistory, HISTORY_LIMIT } from "./engine.ts";
 
@@ -303,8 +304,21 @@ async function runCompactGeneration(ctx: {
   // if a JIT load is about to happen, so re-resolve afterwards.
   let windowTokens: number | null = null;
   let jitLoaded = false;
+  let slot: RunSlot | null = null;
 
   try {
+    // Compaction is an ordinary inference request and queues like one. It is
+    // also the one run a user did not ask for (auto-compaction), so jumping
+    // the queue with it would let a background job stall somebody's chat.
+    slot = await acquireRunSlot({
+      signal: abort.signal,
+      onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
+    });
+    if (!slot) {
+      await producer.end("cancelled");
+      return;
+    }
+
     try {
       const backendModels = await listBackendModels();
       const targetModel = backendModels.find((m) => m.id === model);
@@ -430,6 +444,7 @@ async function runCompactGeneration(ctx: {
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status, error: eventError });
     await producer.end(status, { error: eventError }).catch(() => undefined);
   } finally {
+    slot?.release();
     unregisterRun(streamId);
   }
 }

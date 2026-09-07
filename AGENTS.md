@@ -474,6 +474,54 @@ screenshots showing that behaviour working. Writing those tests is the implement
   if either property is cleaned up, since the other cases would otherwise just
   quietly stop covering anything.
 
+### The run queue (what actually protects the prompt cache)
+
+- **The prefix invariant is per conversation, and on its own it is not enough.**
+  `prompt-prefix.test.ts` proves each conversation's requests extend its own previous one —
+  and two conversations can each do that perfectly while alternating, which evicts the
+  backend's single cached prefix on every call. `streams/registry.ts` only ever enforced one
+  run per *conversation*. `inference/scheduler.ts` is what stops two of them interleaving.
+- **The unit of scheduling is the run, never the model call.** One user turn including all of
+  its tool iterations holds one slot from its first request to its last. Rotating between
+  runs per call would keep the queue fair and destroy the cache on every iteration, which is
+  the whole problem.
+- **A run waiting for a human gives the slot back** (`slot.yieldWhile`, wrapped around
+  `waitForApproval`). A manual-mode approval can sit for minutes and would otherwise stall
+  every other conversation for exactly that long. It re-enters at the **front**: it has
+  already been admitted once, its prefix is the one the backend most likely still holds, and
+  charging a user for approving is backwards.
+- **Concurrency follows the backend, not a number we invent.** Precedence is
+  `INFERENCE_MAX_CONCURRENT_RUNS` > the admin setting > llama.cpp's `/props` `total_slots`
+  (its `--parallel`, which is literally how many prefixes it keeps) > **1**. The floor is 1
+  because over-estimating restores the thrashing invisibly — the symptom is "everything is
+  slow", not an error. LM Studio reports nothing about slots anywhere, so it resolves to 1,
+  which is the truth.
+- **`acquireRunSlot` returns null on abort rather than throwing.** Both run starters call
+  `runToolLoop` fire-and-forget, so a rejection would surface as an unhandled rejection
+  instead of a cancelled turn. The one place that *does* throw is `yieldWhile`
+  (`RunSlotAbortedError`), which `runToolLoop` catches by type — anything else keeps
+  propagating rather than being flattened into a cancelled turn that hides a real fault.
+- **`enter()` re-checks `signal.aborted` after its await and again after registering the
+  listener.** An abort that fires during `resolveMaxConcurrent()` has already run its
+  listeners, so a waiter registered afterwards never hears it and sits in the queue forever —
+  the run then never ends at all. Read through a function call, not the property directly:
+  the type checker narrows it to false after the first check and cannot see that the await
+  changes it.
+- **Compaction queues like any other run**, including automatic compaction — a background job
+  jumping the queue would stall somebody's chat.
+- **`run.queued` carries one number, a 1-based place in line.** Re-emitted as the queue moves
+  so a client counts down instead of showing a stale figure, folded into the snapshot so a
+  reconnecting client sees the wait, and cleared by `iteration` — reaching an iteration *is*
+  the run starting.
+- **The mock's `take your time` prompt** (`MOCK_SLOW_MATCH`) is the only way to observe a
+  queue end to end: every other mock response lands in milliseconds, so without it a test
+  would be racing the harness against itself. Keyed on the prompt rather than an env var so
+  it slows exactly the conversation that asked.
+- **Test isolation:** `resetServerSettingsCache()` is process-global and vitest shares one
+  worker across files. Clearing it mid-run made another suite's `updateSandboxSettings` see a
+  changed value, sweep every live sandbox, and fail four unrelated container tests. Prefer an
+  env pin read at call time.
+
 ### Reporting cache figures honestly
 
 - **Only llama.cpp reports what it actually reused** (`timings.cache_n`). LM Studio reports

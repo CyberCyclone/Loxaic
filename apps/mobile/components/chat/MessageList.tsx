@@ -15,6 +15,8 @@ interface MessageListProps {
   responseStartedAt?: number | null;
   /** True when the backend reported the target model isn't loaded yet. */
   loadingModel?: boolean;
+  /** Place in the inference queue while this run waits for a slot. */
+  queuePosition?: number | null;
   /** Model the in-flight send targeted — shown on the typing indicator before any assistant message exists yet. */
   model?: string;
 }
@@ -34,7 +36,7 @@ interface MessageListProps {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, model }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
 
@@ -162,6 +164,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, mod
           <Box className="mx-auto w-full max-w-[820px]">
             <TypingIndicator
               loadingModel={loadingModel}
+              queuePosition={queuePosition}
               since={responseStartedAt}
               model={model}
               compacting={lastMsg?.role === 'summary'}
