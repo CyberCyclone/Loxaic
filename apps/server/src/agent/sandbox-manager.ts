@@ -6,7 +6,6 @@ import type { Workspace } from "@loxaic/types";
 import { loadWorkspace } from "./workspace.ts";
 import { getConnection, getOwnerToken } from "../github/connection.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
-import { seedSandbox } from "../sandbox/seed.ts";
 import { getSandboxRetention } from "../settings.ts";
 
 /**
@@ -25,21 +24,6 @@ function reapIntervalMs(): number {
   const raw = process.env.SANDBOX_REAP_INTERVAL_MS;
   const value = raw === undefined ? NaN : Number(raw);
   return Number.isInteger(value) && value > 0 ? value : 5 * 60 * 1000;
-}
-
-let seedWarned = false;
-
-/** Seeding fires for every sandbox any user creates, purely because the env
- * var is set — so it gets the same one-time visibility SANDBOX_MODE=host
- * does, rather than silently reshaping every workspace if the variable ever
- * leaks into a non-test configuration. */
-function warnSeedingOnce(dir: string): void {
-  if (seedWarned) return;
-  seedWarned = true;
-  console.warn(
-    `[sandbox] E2E_SANDBOX_SEED_DIR is set: every new sandbox is being pre-populated from ${dir}. ` +
-      "This is a test-harness hook and should not be set in a real deployment.",
-  );
 }
 
 
@@ -440,24 +424,6 @@ async function createEntryReserved(
   const ownerId = conversation?.ownerId ?? userId;
   const config = await createConfigFor(ownerId, workspace);
   const handle = await provider.create(userId, config);
-  // Test-only hook for the real-model e2e suite: seeds a fixture repo (an
-  // INSTRUCTIONS.md + a small app) into every freshly-created sandbox, so
-  // the agent has something to read and build against. Named E2E_-prefixed
-  // and read at call time like every other sandbox env var, so it's inert
-  // unless a harness explicitly sets it — see apps/e2e's real-model suite.
-  if (process.env.E2E_SANDBOX_SEED_DIR) {
-    warnSeedingOnce(process.env.E2E_SANDBOX_SEED_DIR);
-    try {
-      await seedSandbox(handle, process.env.E2E_SANDBOX_SEED_DIR);
-    } catch (err) {
-      // The handle exists but nothing tracks it yet — no row, not in
-      // `active` — and a container runs `tail -f /dev/null`, so it would
-      // never exit on its own. Left alone, a seed dir that fails repeatedly
-      // piles up orphans only the next boot sweep can reclaim.
-      await handle.stop().catch(() => undefined);
-      throw err;
-    }
-  }
   // Every sandbox route — terminal, exec, file read/write — authorizes on
   // `sandboxes.ownerId`, and terminal access is arbitrary code execution
   // rather than participation in a chat. Recording the sender here meant a

@@ -1,9 +1,13 @@
 import "./force-prompt-prefix.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
 import type { ChatMessage } from "../../../inference/provider.ts";
+import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 
 /**
  * The invariant the whole prompt-caching effort rests on, asserted end to end
@@ -288,5 +292,61 @@ describe("every prompt extends the previous one", () => {
     const todos = (blocks.find((b) => b.kind === "tool_call")?.args?.todos ?? []) as Record<string, unknown>[];
     expect(todos.length).toBeGreaterThan(0);
     expect(Object.keys(todos[0])).not.toEqual(["status", "id", "text"]);
+  });
+});
+
+describe("a mock scenario's steps replay identically too", () => {
+  // A scenario step bypasses the single-call rule by design (that is the
+  // whole reason it exists), which makes it a new way for the live loop and
+  // the replay to disagree — the same class of bug the four-defects comment
+  // at the top of this file describes, just from a second code path capable
+  // of producing a multi-tool-call turn.
+  let dir: string;
+  let file: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "mock-scenarios-"));
+    file = path.join(dir, "scenarios.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        {
+          match: "run scenario alpha",
+          steps: [
+            { tool: "todo_write", args: { todos: [{ status: "pending", id: "1", text: "step one" }] } },
+            { tool: "todo_write", args: { todos: [{ status: "completed", id: "1", text: "step one" }] } },
+          ],
+          finalText: "[Mock] scenario alpha finished.\n",
+        },
+      ]),
+    );
+  });
+
+  afterAll(() => {
+    delete process.env.MOCK_SCENARIOS_FILE;
+    __resetMockScenariosForTest();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("drives two tool calls in one turn, then a byte-identical next turn", async () => {
+    process.env.MOCK_SCENARIOS_FILE = file;
+    __resetMockScenariosForTest();
+
+    const convId = await turn("run scenario alpha");
+    // Two scenario steps plus the wrap-up request: three requests, where the
+    // single-call rule alone would have allowed only two (one tool call, one
+    // wrap-up).
+    expect(requests.length).toBe(3);
+
+    await turn("thanks, what is next?", convId);
+    expectEachRequestExtendsTheLast();
+
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    const finalAssistant = rows.find(
+      (r) =>
+        r.authorType === "assistant" &&
+        (r.content as { kind: string; text?: string }[]).some((b) => b.kind === "text" && b.text?.includes("scenario alpha finished")),
+    );
+    expect(finalAssistant).toBeTruthy();
   });
 });

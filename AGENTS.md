@@ -1192,6 +1192,76 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `4000`/`5432`/compose volumes. The packaged app never reads the repo's `.env` — its child
   env is built entirely by the supervisor. See `docs/DEPLOY.md`'s ports/data-dir table.
 
+### The mock scenario engine, and a real lamport-collision bug it found
+
+- **`apps/server/src/inference/mock-scenarios.ts` drives multi-step tool calls in one turn**,
+  which `MOCK_TOOL_TRIGGERS` (one call per turn, by design) cannot. `MOCK_SCENARIOS_FILE` (a JSON
+  array of `{match, steps: [{tool, args}], finalText}`) is read at call time and cached by path;
+  `scenarioDecisionFor(prompt, toolNames, stepIndex)` matches `match` against the prompt and
+  returns the step at `stepIndex` — the count of tool messages the current turn already holds,
+  computed once in `mockStream` and handed in rather than recomputed, so the two can never
+  disagree about which step an iteration is on. A step **bypasses** the single-call rule
+  entirely (that bypass is the reason a scenario exists) but still only fires when its tool is
+  actually offered, matching the ordinary trigger rule — a scenario written against a disabled
+  tool falls through to generic mock behavior instead of calling a tool nothing asked for. Once
+  every step has run, `finalText` replaces the generic `"[Mock] Done. The tool returned: …"`
+  wrap-up.
+- **Finding this needed a real prompt-prefix bug fixed first.** The first scenario canary (two
+  `todo_write` steps in one turn) failed `prompt-prefix.test.ts` — not because of the scenario
+  engine, but because `runToolLoop` gave each iteration's assistant and tool-result message
+  `lamport: Date.now()` independently. Two inserts from the *same* run landing in the same
+  millisecond — routine for a tool with no real work to do, like `todo_write` or a scripted
+  scenario step — collide, and `loadHistory`'s `ORDER BY lamport, createdAt` breaks the tie
+  arbitrarily rather than by insertion order, occasionally handing the next turn's replay the
+  same two messages swapped. No prior test caught this because nothing before had exercised two
+  real tool round-trips in one turn with negligible latency between them — the single-call rule
+  made that impossible outside a scenario. Fixed by `monotonicLamport(previous, now)` in
+  `engine.ts`: `Math.max(now, previous + 1)`, threaded through a per-run counter so two inserts
+  from the same run can never tie. Deliberately scoped to just those two insert sites — it says
+  nothing about `chatRun.ts`/`agentRun.ts`'s own `Date.now()` lamports or the cross-device LWW
+  semantics `packages/sync`'s `resolveLWW` relies on, which compare lamports from genuinely
+  different, slower-paced actors.
+- **The mock lane's realistic specs (`agent-bugfix.spec.ts`, `agent-new-project.spec.ts`) run in
+  auto mode** so the scenario's write tools (`bash`, `fs_edit`, `fs_write`) never block on an
+  approval tap — a scenario is defined by needing several tool calls to run unattended in one
+  turn. They do **not** turn `SANDBOX_ALLOW_NETWORK` on globally in `standup.ts`, even though
+  `agent-bugfix.spec.ts` needs it to clone: doing so would 409 every other spec's own
+  `patchSandboxSettings`/`resetSandboxSettings` calls (env-pinned settings are read-only) and
+  would break `agent-github-workspace.spec.ts`'s and the sandbox specs' network-off/degraded
+  assertions. It stays the established per-spec toggle-in-`before`/reset-in-`after` pattern
+  `agent-git-actions.spec.ts` already used.
+- **`standup.ts`'s "never reuse a running server" refusal now covers the mock lane too**, not
+  just `E2E_REAL_MODEL=1`. A health check cannot prove a reused server was wired with *this*
+  run's `GITHUB_API_URL`, `MOCK_SCENARIOS_FILE`, or sandbox network/extra-hosts settings — it can
+  only tell mock from real. `E2E_NO_STANDUP=1`'s early return (bypassing `ensureServer()`
+  entirely) is unaffected and stays the documented way to point a run at a server on purpose.
+- **The real-model lane's `E2E_SANDBOX_SEED_DIR` hook is gone** — `apps/server/src/sandbox/
+  seed.ts` and its call site in `sandbox-manager.ts` were deleted. `real-model-build.spec.ts` now
+  clones `fixtures/seeded-app/` through the same GitHub-workspace path the mock lane's specs use
+  (repo id 3 in `mock-github.ts`'s catalog; `git-server.ts`'s fixture map gained a `seeded-app`
+  entry) instead of a server-wide flag that pre-populated *every* sandbox any user created —
+  latent, but only ever harmless because this suite never ran two things at once.
+- **A real-model spec must check its pass bar *after* `waitForRunDone`, never by polling the
+  target command and returning the instant it exits 0.** `real-model-bugfix.spec.ts` hit this
+  directly: polling `node --test` and declaring success on the first passing run raced the
+  model's own next step (`git commit`) — an external poller sharing the sandbox can observe the
+  tests passing after the model's own test run but before its commit, so the check would pass a
+  turn the model hadn't actually finished. This is a harness bug, not a finding about the model;
+  every real-model spec now waits for the whole turn to end first and checks its exec-API assertions once.
+- **New testIDs**: `agent.inspector.panel` (the wide `Box` and narrow `ActionsheetContent` that
+  wrap `InspectorBody` — there was previously no way to wait for the panel itself, only its
+  toggle button), `agent.inspector.changedFiles.count` (the "Changed Files (N)" heading — was a
+  bare `Text` with no testID), and `chat.toolCall.<callId>` / `chat.toolCall.result` on
+  `ToolCallCard` (root box keyed by the tool call's own `callId`; the diff/plain-result
+  `ScrollView`, whichever renders).
+- **A stale `apps/mobile/dist` web export is invisible until you look for it.** `ensureServer()`
+  reuses a healthy server and `ensureWebExport()` reuses an existing export unless
+  `E2E_FRESH_WEB=1` — so a spec asserting on a testID just added to `apps/mobile` can fail with
+  "still not displayed" while a screenshot taken at the same failure shows the feature rendering
+  *correctly*, because the served bundle predates the change. The symptom (`isDisplayed()` false,
+  `data-testid` absent from the DOM, feature visibly working in a screenshot) means "rebuild the
+  export," not "debug the component."
+
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.

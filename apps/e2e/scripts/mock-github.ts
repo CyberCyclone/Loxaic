@@ -57,12 +57,17 @@ function repos(cloneUrlFor: (name: string) => string) {
   return [
     { id: 1, full_name: 'e2e/bugfix-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('bugfix-app') },
     { id: 2, full_name: 'e2e/other-repo', private: true, default_branch: 'trunk', clone_url: cloneUrlFor('other-repo') },
+    // Real-model lane only (apps/e2e/fixtures/seeded-app): a repo, not a
+    // pre-seeded sandbox, so the real-model suite exercises the same clone
+    // path the mock lane's GitHub-workspace specs do. See real-model-build.spec.ts.
+    { id: 3, full_name: 'e2e/seeded-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('seeded-app') },
   ];
 }
 
 const BRANCHES = new Map<string, string[]>([
   ['e2e/bugfix-app', ['main', 'feature/one']],
   ['e2e/other-repo', ['trunk']],
+  ['e2e/seeded-app', ['main']],
 ]);
 
 function json(res: import('node:http').ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {

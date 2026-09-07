@@ -34,6 +34,31 @@ export const TOOL_PROMPT = 'write a file called notes';
  */
 export const SLOW_PROMPT = 'take your time and think about this';
 
+/**
+ * Matches the `scenarios.json` fixture's bugfix scenario: run the tests (they
+ * fail on the fixture's real off-by-one), fix it for real with `fs_edit`, and
+ * rerun them (they pass) — three genuine tool calls in one turn, driven by
+ * the mock scenario engine rather than a single trigger. See
+ * apps/e2e/fixtures/scenarios.json and apps/server/src/inference/mock-scenarios.ts.
+ */
+export const BUGFIX_SCENARIO_PROMPT = 'The tests are failing — please find and fix the bug, then confirm they pass.';
+
+/** Substring of the bugfix scenario's own wrap-up text, once all three of its
+ * steps have run. */
+export const BUGFIX_SCENARIO_DONE = 'node --test now passes';
+
+/**
+ * Matches the `scenarios.json` fixture's new-project scenario: three real
+ * `fs_write` calls (a package.json, a source file, a passing test for it)
+ * followed by a `bash` call that actually runs `node --test` — a scratch
+ * workspace with no repo, built from nothing by the scenario itself.
+ */
+export const NEW_PROJECT_SCENARIO_PROMPT = 'Create a new project with three files, then run its tests.';
+
+/** Substring of the new-project scenario's wrap-up text, once its four steps
+ * have run. */
+export const NEW_PROJECT_SCENARIO_DONE = 'node --test passes';
+
 /** A prompt the mock provider answers with a `bash` tool call — the probe
  * used to check that a sandbox actually executes, in whichever mode is
  * currently configured (container or host). See MOCK_TOOL_TRIGGERS in
@@ -298,6 +323,19 @@ export async function waitForRunDone(
 }
 
 /**
+ * Confirms the workspace chooser on "Empty workspace" — the same scratch
+ * workspace an implicit send already creates, but explicit and observable for
+ * a spec that wants to assert the chooser itself works, not just infer scratch
+ * from the absence of a repo.
+ */
+export async function chooseScratchWorkspace(): Promise<void> {
+  await tap('agent.workspace.button');
+  await waitForVisible('agent.workspace.dialog');
+  await tap('agent.workspace.source.scratch');
+  await tap('agent.workspace.confirm');
+}
+
+/**
  * Drives the workspace chooser on the agent screen to a GitHub repo. Assumes
  * no run is active (the pill is only a control before the first message) and
  * that GitHub is connected. Returns the branch name the chooser generated, so
@@ -343,6 +381,15 @@ export async function chooseLocalWorkspace(
   // The pill shows the folder's name, not its whole path — a temp directory
   // spelled out in full would crowd the mode selector off the row.
   await waitForTextIn('agent.workspace.button', path.basename(dir));
+}
+
+/** Opens the agent Inspector panel (todos, changed files, git, context) and
+ * waits for it to actually be on screen — the toggle only appears once a run
+ * has started, which is what makes waiting for the panel itself, not just the
+ * tap, matter here. */
+export async function openInspector(): Promise<void> {
+  await tap('agent.inspector.toggle');
+  await waitForVisible('agent.inspector.panel');
 }
 
 /** Opens Settings and navigates to the GitHub connection screen. Waits for
