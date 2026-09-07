@@ -205,12 +205,18 @@ async function* mockStream(
   const toolStepIndex = currentTurn.filter((m) => m.role === "tool").length;
   const scenarioDecision = scenarioDecisionFor(prompt, toolNames, toolStepIndex);
 
-  const trigger: { name: string; args: Record<string, unknown> } | undefined =
+  // A list, because a scenario step may carry several calls for one assistant
+  // message — what a real model does routinely, and what the tool loop's
+  // per-call abort check needs in order to be testable at all (#113).
+  const triggered: { name: string; args: Record<string, unknown> }[] =
     scenarioDecision?.type === "step"
-      ? { name: scenarioDecision.step.tool, args: scenarioDecision.step.args }
+      ? scenarioDecision.calls.map((c) => ({ name: c.tool, args: c.args }))
       : alreadyRanTools
-        ? undefined
-        : MOCK_TOOL_TRIGGERS.find((t) => toolNames.has(t.name) && t.match.test(prompt));
+        ? []
+        : (() => {
+            const t = MOCK_TOOL_TRIGGERS.find((x) => toolNames.has(x.name) && x.match.test(prompt));
+            return t ? [{ name: t.name, args: t.args }] : [];
+          })();
 
   // A prompt that takes long enough to still be running when the next one
   // arrives. The run queue is only observable when two runs overlap, and every
@@ -220,7 +226,23 @@ async function* mockStream(
   // it affects exactly the conversation that asked, leaving every other spec's
   // timing alone. See MOCK_TOOL_TRIGGERS above for the same idiom.
   if (MOCK_SLOW_MATCH.test(prompt)) {
-    await new Promise((r) => setTimeout(r, MOCK_SLOW_MS));
+    // Interruptible, because a real backend's fetch is: `signal` aborts the
+    // live HTTP request in liveStream, so a mock that slept through a stop
+    // would make the mock lane the *only* place where stopping mid-response
+    // does nothing — precisely the bug being tested (#113).
+    await new Promise<void>((resolve) => {
+      const signal = options.signal;
+      if (signal?.aborted) { resolve(); return; }
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, MOCK_SLOW_MS);
+      function onAbort() {
+        clearTimeout(timer);
+        resolve();
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   let ttftMs: number | null = null;
@@ -236,21 +258,25 @@ async function* mockStream(
   let fullText = "";
   const toolCalls: ToolCall[] = [];
 
-  if (trigger) {
+  if (triggered.length > 0) {
     // Trailing newline on purpose. Real models routinely end their text with
     // one before a tool call, the history loader trims it on replay, and the
     // live loop did not — so the two disagreed at that message and broke the
     // prompt prefix. A mock that emitted perfectly trimmed text could never
     // show that.
-    const preamble = `[Mock] I'll use the ${trigger.name} tool.\n`;
+    const preamble = `[Mock] I'll use the ${triggered.map((t) => t.name).join(", ")} tool.\n`;
     fullText = preamble;
     yield* emit(preamble);
     ttftMs ??= Date.now() - startTime;
-    toolCalls.push({
-      id: `mock_call_${Date.now().toString(36)}`,
-      type: "function",
-      function: { name: trigger.name, arguments: JSON.stringify(trigger.args) },
-    });
+    for (const [i, t] of triggered.entries()) {
+      toolCalls.push({
+        // Distinct per call: ids collide otherwise when a batch is emitted
+        // inside one millisecond, and the loop keys results by call id.
+        id: `mock_call_${Date.now().toString(36)}_${String(i)}`,
+        type: "function",
+        function: { name: t.name, arguments: JSON.stringify(t.args) },
+      });
+    }
   } else if (scenarioDecision?.type === "final") {
     // A finished scenario's own wrap-up text, in place of the generic one —
     // it can describe what the steps actually did (e.g. name the bug fixed).

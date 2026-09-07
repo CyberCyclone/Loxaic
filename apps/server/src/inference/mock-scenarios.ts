@@ -19,9 +19,22 @@
  */
 import { readFileSync } from "node:fs";
 
-export interface ScenarioStep {
+export interface ScenarioCall {
   tool: string;
   args: Record<string, unknown>;
+}
+
+/**
+ * One turn of the scenario. Either a single tool call — the common case, and
+ * the shape the fixtures were written in — or several in **one assistant
+ * message** via `calls`, which is what a real model routinely emits (five in
+ * one message was an ordinary turn in the session behind #113) and what
+ * nothing else in the suite could produce.
+ */
+export type ScenarioStep = ScenarioCall | { calls: ScenarioCall[] };
+
+function callsOf(step: ScenarioStep): ScenarioCall[] {
+  return "calls" in step ? step.calls : [step];
 }
 
 export interface Scenario {
@@ -33,7 +46,9 @@ export interface Scenario {
   finalText?: string;
 }
 
-export type ScenarioDecision = { type: "step"; step: ScenarioStep } | { type: "final"; text: string };
+/** Always a list, however the step was written — so callers have one shape to
+ * handle rather than branching on the fixture's spelling. */
+export type ScenarioDecision = { type: "step"; calls: ScenarioCall[] } | { type: "final"; text: string };
 
 let cache: { path: string; scenarios: Scenario[] } | null = null;
 
@@ -59,8 +74,10 @@ export function scenarioDecisionFor(
   const scenario = loadScenarios().find((s) => new RegExp(s.match, "i").test(prompt));
   if (!scenario) return null;
   if (stepIndex < scenario.steps.length) {
-    const step = scenario.steps[stepIndex];
-    return toolNames.has(step.tool) ? { type: "step", step } : null;
+    const calls = callsOf(scenario.steps[stepIndex]);
+    // Every call in the step has to be offered, not just the first: a step
+    // half-fired would be a batch the fixture never described.
+    return calls.every((c) => toolNames.has(c.tool)) ? { type: "step", calls } : null;
   }
   return scenario.finalText ? { type: "final", text: scenario.finalText } : null;
 }

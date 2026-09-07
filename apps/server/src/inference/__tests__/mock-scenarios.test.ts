@@ -45,12 +45,50 @@ describe("scenarioDecisionFor", () => {
     ]);
     expect(scenarioDecisionFor("please fix the bug", new Set(["bash", "fs_edit"]), 0)).toEqual({
       type: "step",
-      step: { tool: "bash", args: { command: "node --test" } },
+      calls: [{ tool: "bash", args: { command: "node --test" } }],
     });
     expect(scenarioDecisionFor("please fix the bug", new Set(["bash", "fs_edit"]), 1)).toEqual({
       type: "step",
-      step: { tool: "fs_edit", args: { path: "a.js" } },
+      calls: [{ tool: "fs_edit", args: { path: "a.js" } }],
     });
+  });
+
+  it("returns every call of a multi-call step, as one assistant message would", () => {
+    // What a real model does routinely and no other mock path can produce —
+    // the tool loop's per-call abort check is untestable without it (#113).
+    withScenarios([
+      {
+        match: "scaffold it",
+        steps: [
+          {
+            calls: [
+              { tool: "fs_write", args: { path: "a.js", content: "a" } },
+              { tool: "fs_write", args: { path: "b.js", content: "b" } },
+              { tool: "bash", args: { command: "node --test" } },
+            ],
+          },
+        ],
+      },
+    ]);
+    const decision = scenarioDecisionFor("scaffold it", new Set(["fs_write", "bash"]), 0);
+    expect(decision).toEqual({
+      type: "step",
+      calls: [
+        { tool: "fs_write", args: { path: "a.js", content: "a" } },
+        { tool: "fs_write", args: { path: "b.js", content: "b" } },
+        { tool: "bash", args: { command: "node --test" } },
+      ],
+    });
+  });
+
+  it("does not half-fire a multi-call step when one of its tools is missing", () => {
+    withScenarios([
+      {
+        match: "scaffold it",
+        steps: [{ calls: [{ tool: "fs_write", args: {} }, { tool: "bash", args: {} }] }],
+      },
+    ]);
+    expect(scenarioDecisionFor("scaffold it", new Set(["fs_write"]), 0)).toBeNull();
   });
 
   it("falls through to null when the step's tool isn't offered, rather than firing anyway", () => {
