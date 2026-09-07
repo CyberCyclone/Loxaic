@@ -24,6 +24,7 @@
  * Never imports the database, settings, or the server entry — see
  * __tests__/isolation.test.ts. This runs on a user's laptop with no Postgres.
  */
+import { realpathSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { attachDirectory } from "../sandbox/host-provider.ts";
@@ -61,6 +62,52 @@ export interface ExecutorService {
   handle(method: ExecutorMethod, params: unknown): Promise<unknown>;
 }
 
+/**
+ * The root check on its own, for the parts of the executor that are not
+ * request/response. Terminals need exactly this and nothing else from the
+ * service: a shell may only be opened in a directory the user approved, and
+ * "approved" has to be re-read at open time rather than captured once.
+ */
+export interface RootGuard {
+  approvedDir(candidate: string): Promise<string>;
+}
+
+export function createRootGuard(opts: ExecutorServiceOptions): RootGuard {
+  return { approvedDir: (candidate) => approvedDirIn(opts.roots(), candidate) };
+}
+
+function isInsideAny(roots: string[], candidateReal: string): boolean {
+  for (const root of roots) {
+    let rootReal: string;
+    try {
+      rootReal = realpathSync(root);
+    } catch {
+      continue;
+    }
+    if (isInside(rootReal, candidateReal)) return true;
+  }
+  return false;
+}
+
+/**
+ * The real path of `candidate` iff it is an existing directory inside one of
+ * `roots`. Roots that no longer exist are skipped — a user who deleted a
+ * folder they had approved has not thereby approved anything else.
+ */
+async function approvedDirIn(roots: string[], candidate: string): Promise<string> {
+  if (!path.isAbsolute(candidate)) throw new RootViolationError(candidate);
+  let candidateReal: string;
+  try {
+    candidateReal = await realpath(candidate);
+    if (!(await stat(candidateReal)).isDirectory()) throw new RootViolationError(candidate);
+  } catch (err) {
+    if (err instanceof RootViolationError) throw err;
+    throw new RootViolationError(candidate);
+  }
+  if (!isInsideAny(roots, candidateReal)) throw new RootViolationError(candidate);
+  return candidateReal;
+}
+
 function isInside(rootReal: string, candidateReal: string): boolean {
   const rel = path.relative(rootReal, candidateReal);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
@@ -80,33 +127,7 @@ function requireString(obj: Record<string, unknown>, key: string, method: string
 }
 
 export function createExecutorService(opts: ExecutorServiceOptions): ExecutorService {
-  /**
-   * The real path of `candidate` iff it is an existing directory inside one
-   * of the current roots. Roots that no longer exist are simply skipped — a
-   * user who deleted a folder they had approved has not approved anything
-   * else by doing so.
-   */
-  async function approvedDir(candidate: string): Promise<string> {
-    if (!path.isAbsolute(candidate)) throw new RootViolationError(candidate);
-    let candidateReal: string;
-    try {
-      candidateReal = await realpath(candidate);
-      if (!(await stat(candidateReal)).isDirectory()) throw new RootViolationError(candidate);
-    } catch (err) {
-      if (err instanceof RootViolationError) throw err;
-      throw new RootViolationError(candidate);
-    }
-    for (const root of opts.roots()) {
-      let rootReal: string;
-      try {
-        rootReal = await realpath(root);
-      } catch {
-        continue;
-      }
-      if (isInside(rootReal, candidateReal)) return candidateReal;
-    }
-    throw new RootViolationError(candidate);
-  }
+  const approvedDir = (candidate: string) => approvedDirIn(opts.roots(), candidate);
 
   /**
    * `p` resolved against an approved `refReal`, required to land inside it.

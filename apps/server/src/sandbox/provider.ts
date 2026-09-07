@@ -47,9 +47,26 @@ export interface FileNode {
   path: string;
 }
 
-/** A live interactive shell session, for the `/ws/sandbox/:id` terminal. */
+/**
+ * A live interactive shell session, for the `/ws/sandbox/:id` terminal.
+ *
+ * `tty` is the one thing a client cannot work out for itself and must not
+ * guess. A container session gets a real PTY (Docker allocates it *inside*
+ * the container, so it costs no dependency here) and behaves like a terminal:
+ * a prompt, echoed keystrokes, colours, job control, and a size worth
+ * resizing. A host or executor session is bash over plain pipes — no prompt,
+ * no echo, line-buffered — because a PTY on *this* side would mean a native
+ * module (node-pty), and the packaged desktop runs this code under Electron's
+ * own Node with `npmRebuild: false`, where a native binding built for system
+ * Node does not load. The client renders the two differently rather than
+ * showing a dead-looking window (see components/agent/TerminalPanel).
+ */
 export interface TerminalSession {
+  /** True only when the far side is a real PTY — see above. */
+  readonly tty: boolean;
   write(data: string): void;
+  /** Absent when there is nothing to resize (a pipe has no window size). */
+  resize?(cols: number, rows: number): void;
   onData(listener: (data: string) => void): void;
   onClose(listener: () => void): void;
   close(): void;
@@ -62,7 +79,16 @@ export interface SandboxHandle {
   readonly ref: string;
   /** Root directory everything must resolve under. */
   readonly root: string;
-  /** Default working directory (the repo checkout, if any). */
+  /**
+   * Default working directory (the repo checkout, if any) — and, since #62,
+   * genuinely the default: `exec` and `openTerminal` land here when the
+   * caller names no directory, in **every** provider. It used to be the
+   * documented default that the container provider never used (its execs
+   * landed in the root instead), so the same REST call or terminal opened in
+   * a different place depending on the deployment's sandbox mode. The
+   * container image now creates this directory itself, so it exists from the
+   * moment the container starts and an exec can always be given it.
+   */
   readonly workdir: string;
   exec(command: string[], options?: ExecOptions): Promise<ExecResult>;
   readFile(path: string): Promise<string>;

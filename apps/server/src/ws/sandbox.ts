@@ -1,14 +1,36 @@
+/**
+ * `/ws/sandbox/:id` — the interactive terminal behind the agent screen's
+ * terminal panel.
+ *
+ * Owner-only, like every other sandbox route: a terminal is arbitrary code
+ * execution in someone's workspace, not participation in a chat, so a shared
+ * editor never reaches it.
+ *
+ * The protocol carries **raw keystrokes**, in both directions. It used to
+ * append a newline to every `terminal.input`, which made sense when the only
+ * client was a line-oriented debug page and makes none now: xterm sends `\r`
+ * for Enter, arrow keys as escape sequences, and Ctrl-C as `\x03` — appending
+ * to any of those corrupts them. What the client must know to render any of
+ * this correctly is whether it got a real PTY, which is what `terminal.ready`
+ * answers (see provider.ts's TerminalSession: containers yes, host and
+ * executor no).
+ */
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { resolveSessionFromToken } from "../auth/middleware";
 import { attachRunningSandbox } from "../agent/sandbox-manager.ts";
+import { decodeExecutorRef } from "../sandbox/executor-provider.ts";
+import { executorName, getExecutor } from "../executor/registry.ts";
+import { executorOfflineMessage } from "../executor/protocol.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
  * this, everything @fastify/websocket hands us as `socket` resolves to `any`. */
 interface WsConnection {
+  readonly readyState: number;
+  readonly OPEN: number;
   pause(): void;
   resume(): void;
   close(code?: number, reason?: string): void;
@@ -17,9 +39,39 @@ interface WsConnection {
   on(event: "close", listener: () => void): void;
 }
 
-interface TerminalInputMessage {
+interface ClientMessage {
   type: string;
-  data: string;
+  data?: unknown;
+  cols?: unknown;
+  rows?: unknown;
+}
+
+/**
+ * A window size a terminal could plausibly have. Bounded because these
+ * numbers are handed to the container engine's resize call, and because a
+ * client is free to send anything: NaN, 0, or a million columns are all
+ * either meaningless or a way to make something else unhappy.
+ */
+function windowSize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
+  if (typeof cols !== "number" || typeof rows !== "number") return null;
+  if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
+  if (cols < 1 || rows < 1 || cols > 1000 || rows > 1000) return null;
+  return { cols, rows };
+}
+
+/** Why a sandbox could not be attached, in words the panel can show. Null
+ * when the ordinary "gone" answer is the right one. */
+function offlineReason(row: { provider: string; containerId: string }): string | null {
+  if (row.provider !== "executor") return null;
+  try {
+    const { executorId } = decodeExecutorRef(row.containerId);
+    // Online but unattachable means the directory is gone or no longer
+    // approved, which is a different fact and gets the ordinary 404.
+    if (getExecutor(executorId)) return null;
+    return executorOfflineMessage(executorName(executorId));
+  } catch {
+    return null;
+  }
 }
 
 export function sandboxTerminalWs(app: FastifyInstance) {
@@ -27,17 +79,31 @@ export function sandboxTerminalWs(app: FastifyInstance) {
     // See ws/chat.ts for why this must happen before the async auth check.
     socket.pause();
 
+    // A close on a paused socket never completes its handshake — nothing is
+    // reading the peer's answering frame — so the client waits out its own
+    // timeout instead of learning why. Resume first on every refusal.
+    const send = (message: unknown) => {
+      if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
+    };
+    const refuse = (code: number, reason: string, message?: string) => {
+      socket.resume();
+      // The full explanation rides as a message: a WebSocket close reason is
+      // capped at 123 bytes and a machine's name can be 64 of them.
+      if (message) send({ type: "terminal.error", message });
+      socket.close(code, reason);
+    };
+
     const url = new URL(request.url, `http://${request.headers.host ?? ""}`);
     const token = url.searchParams.get("token");
     const { id } = request.params as { id: string };
     if (!token) {
-      socket.close(4001, "Missing token");
+      refuse(4001, "Missing token");
       return;
     }
 
     const session = await resolveSessionFromToken(token);
     if (!session) {
-      socket.close(4001, "Invalid session");
+      refuse(4001, "Invalid session");
       return;
     }
 
@@ -45,41 +111,51 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       where: and(eq(sandboxes.id, id), eq(sandboxes.ownerId, session.user.id)),
     });
     if (!sandbox) {
-      socket.close(4004, "Not found");
+      refuse(4004, "Not found", "That workspace no longer exists.");
       return;
     }
 
     // Resumes a paused sandbox rather than failing on it: a workspace stopped
     // by the idle timer is intact and is exactly what someone opening a
     // terminal wants to get back into. Null means genuinely gone, which gets
-    // the same 4004 a missing row does.
+    // the same 4004 a missing row does — unless the machine it lives on is
+    // merely offline, which is a different thing to be told.
     const handle = await attachRunningSandbox(sandbox);
     if (!handle) {
-      socket.close(4004, "Not found");
+      const offline = offlineReason(sandbox);
+      if (offline) refuse(4503, "Machine offline", offline);
+      else refuse(4004, "Not found", "That workspace could not be opened.");
       return;
     }
     if (!handle.openTerminal) {
-      socket.close(4400, "Terminal not supported for this sandbox");
+      refuse(4400, "No terminal", "This workspace does not support a terminal.");
       return;
     }
     const terminal = await handle.openTerminal();
 
-    terminal.onData((data) => {
-      socket.send(JSON.stringify({ type: "terminal.output", data }));
-    });
+    terminal.onData((data) => { send({ type: "terminal.output", data }); });
     terminal.onClose(() => {
+      // Said before the socket goes, so the panel can show "session ended"
+      // rather than an indistinguishable "connection lost".
+      send({ type: "terminal.exit" });
       socket.close();
     });
 
     socket.on("message", (raw: Buffer) => {
-      let msg: TerminalInputMessage;
+      let msg: ClientMessage;
       try {
-        msg = JSON.parse(raw.toString()) as TerminalInputMessage;
+        msg = JSON.parse(raw.toString()) as ClientMessage;
       } catch {
         return;
       }
       if (msg.type === "terminal.input") {
-        terminal.write(msg.data + "\n");
+        // Raw: no newline appended. See the module comment.
+        if (typeof msg.data === "string") terminal.write(msg.data);
+        return;
+      }
+      if (msg.type === "terminal.resize") {
+        const size = windowSize(msg.cols, msg.rows);
+        if (size) terminal.resize?.(size.cols, size.rows);
       }
     });
 
@@ -87,6 +163,10 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       terminal.close();
     });
 
+    // Everything the client needs to decide how to render: whether this is a
+    // real terminal, and where it opened (#62 — the same directory the agent's
+    // own commands land in, whichever provider this is).
+    send({ type: "terminal.ready", tty: terminal.tty, workdir: handle.workdir });
     socket.resume();
   });
 }

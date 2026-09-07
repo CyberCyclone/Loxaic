@@ -16,7 +16,9 @@ interface ModeSelectorProps {
 
 export function ModeSelector({ mode, onChange }: ModeSelectorProps) {
   return (
-    <HStack space="xs" className="px-3 pt-2">
+    // Never gives way: the workspace pill beside it shrinks instead, because
+    // these are the controls that have to stay clickable.
+    <HStack space="xs" className="shrink-0 px-3 pt-2">
       {MODES.map((m) => (
         <Pressable
           key={m.value}

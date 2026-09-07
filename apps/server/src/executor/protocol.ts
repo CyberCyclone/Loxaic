@@ -55,7 +55,54 @@ export type ResultMessage =
   | { type: "result"; id: string; ok: true; value: unknown }
   | { type: "result"; id: string; ok: false; error: string };
 
-export type ExecutorToServer = HelloMessage | RootsMessage | ResultMessage;
+// ── Terminals ──────────────────────────────────────────────
+// A terminal is the one thing here that is not request/response: it is a
+// long-lived stream in both directions, so it rides the same socket keyed by
+// its own `terminalId` rather than through `call`/`result`. Opening one is
+// still gated on the directory being approved (executor/terminal.ts); what
+// happens *inside* the shell afterwards is the user's own, exactly as `exec`
+// already is — direct mode is not isolation, and says so everywhere.
+
+export interface TerminalOpenMessage {
+  type: "terminal.open";
+  terminalId: string;
+  /** The sandbox's ref — the approved directory the shell starts in. */
+  ref: string;
+}
+export interface TerminalInputMessage {
+  type: "terminal.input";
+  terminalId: string;
+  data: string;
+}
+export interface TerminalResizeMessage {
+  type: "terminal.resize";
+  terminalId: string;
+  cols: number;
+  rows: number;
+}
+export interface TerminalCloseMessage {
+  type: "terminal.close";
+  terminalId: string;
+}
+
+export interface TerminalDataMessage {
+  type: "terminal.data";
+  terminalId: string;
+  data: string;
+}
+/** The shell ended, or never started. `error` distinguishes the two. */
+export interface TerminalExitMessage {
+  type: "terminal.exit";
+  terminalId: string;
+  error?: string;
+}
+
+export type ExecutorToServer =
+  | HelloMessage
+  | RootsMessage
+  | ResultMessage
+  | TerminalDataMessage
+  | TerminalExitMessage;
 
 /** Sent once the hello was accepted and the executor is registered. */
 export interface WelcomeMessage {
@@ -69,7 +116,13 @@ export interface CallMessage {
   params: unknown;
 }
 
-export type ServerToExecutor = WelcomeMessage | CallMessage;
+export type ServerToExecutor =
+  | WelcomeMessage
+  | CallMessage
+  | TerminalOpenMessage
+  | TerminalInputMessage
+  | TerminalResizeMessage
+  | TerminalCloseMessage;
 
 export type ExecutorMethod =
   | "ping"

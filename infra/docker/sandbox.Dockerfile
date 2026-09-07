@@ -32,6 +32,15 @@ RUN chmod 0755 /usr/local/bin/loxaic-extract
 
 RUN useradd -m -s /bin/bash loxaic
 USER loxaic
+
+# The handle's `workdir`, created here rather than on first use so it exists
+# from the moment the container starts. Docker refuses an `exec` whose
+# WorkingDir is missing, and since #62 every exec that names no directory is
+# given this one — including the very first, which is the clone (git is happy
+# to clone into an existing empty directory) or the mkdir that stands in for
+# it. Creating it in the image is what makes "the default working directory"
+# true unconditionally instead of after some other call has been made.
+RUN mkdir -p /home/loxaic/repo
 WORKDIR /home/loxaic
 
 CMD ["bash"]

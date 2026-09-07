@@ -24,7 +24,8 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import { createInterface } from "node:readline";
 import WebSocket from "ws";
-import { createExecutorService } from "./service.ts";
+import { createExecutorService, createRootGuard } from "./service.ts";
+import { createExecutorTerminals } from "./terminal.ts";
 import {
   EXECUTOR_PROTOCOL_VERSION,
   EXECUTOR_STDOUT,
@@ -64,6 +65,10 @@ function loadRoots(): string[] {
 
 let roots = loadRoots();
 const service = createExecutorService({ roots: () => roots });
+const terminals = createExecutorTerminals({
+  guard: createRootGuard({ roots: () => roots }),
+  send: (message) => { send(message); },
+});
 
 let token: string | null = null;
 let ws: WebSocket | null = null;
@@ -112,6 +117,23 @@ function connect(): void {
       console.log(EXECUTOR_STDOUT.connected);
       return;
     }
+    if (msg.type === "terminal.open") {
+      void terminals.open(msg.terminalId, msg.ref);
+      return;
+    }
+    if (msg.type === "terminal.input") {
+      terminals.input(msg.terminalId, msg.data);
+      return;
+    }
+    if (msg.type === "terminal.resize") {
+      // Nothing to resize without a PTY; accepted and ignored so the server
+      // needs no per-provider special case for a message every client sends.
+      return;
+    }
+    if (msg.type === "terminal.close") {
+      terminals.close(msg.terminalId);
+      return;
+    }
     const { id, method, params } = msg;
     void service
       .handle(method, params)
@@ -128,6 +150,9 @@ function connect(): void {
 
   socket.on("close", (code) => {
     if (ws === socket) ws = null;
+    // Shells belong to the connection that asked for them: a server that has
+    // gone away must not leave bash processes running on someone's laptop.
+    terminals.closeAll();
     console.log(EXECUTOR_STDOUT.disconnected);
     if (exiting) return;
     if (code === 4001) {
