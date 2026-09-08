@@ -242,7 +242,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
 
     const scope = cacheScope();
     if (scope) {
-      const cached = readCachedConversations(scope.endpoint, scope.userId);
+      // Filtered on read as well as on fetch: the cache was written from the
+      // same unfiltered list, so one already on disk holds agent runs. The
+      // fetch rewrites it, but this render happens first — and on an offline
+      // start there is no fetch to rewrite anything (#117).
+      const cached = readCachedConversations(scope.endpoint, scope.userId)
+        .filter((c) => c.kind !== 'agent');
       if (cached.length > 0) {
         // Remembered so the history fetch knows these came from the cache and
         // may overwrite them — see loadHistory.
@@ -263,17 +268,28 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     getConversations()
       .then((convs) => {
         setConnectionState('online');
-        const apiConversations: Conversation[] = convs.map((c) => ({
-          id: c.id,
-          title: c.title,
-          kind: (c.kind || 'chat') as Conversation['kind'],
-          time: 'recent',
-          model: c.modelPref?.model ?? '',
-          location: 'server' as const,
-          msgs: [],
-          updatedAt: c.updatedAt,
-          role: c.role ?? 'owner',
-        }));
+        // Agent runs belong to the agent surface, which keeps its own list off
+        // the same unfiltered endpoint (useAgentSession filters to
+        // kind === 'agent'). Only that side used to filter, so every agent run
+        // also showed up as a chat thread — #117.
+        //
+        // Excluding 'agent' rather than keeping only 'chat': `kind` is also
+        // 'routine', and a row predating the column carries none. Both belong
+        // to whatever this list showed before, and quietly dropping them while
+        // fixing the agent leak would be a second, unasked-for change.
+        const apiConversations: Conversation[] = convs
+          .filter((c) => c.kind !== 'agent')
+          .map((c) => ({
+            id: c.id,
+            title: c.title,
+            kind: (c.kind || 'chat') as Conversation['kind'],
+            time: 'recent',
+            model: c.modelPref?.model ?? '',
+            location: 'server' as const,
+            msgs: [],
+            updatedAt: c.updatedAt,
+            role: c.role ?? 'owner',
+          }));
         // Built outside the updater so the *merged* list — cached messages
         // kept — is what reaches the cache. Passing `apiConversations` (every
         // entry `msgs: []`) wrote an empty message list over every cached

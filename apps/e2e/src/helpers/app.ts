@@ -237,13 +237,16 @@ export async function selectThread(
  * for specs that need a real conversation id to select or assert against. */
 export async function listConversations(
   creds: Pick<Credentials, 'email' | 'password'>,
-): Promise<{ id: string; title: string }[]> {
+): Promise<{ id: string; title: string; kind?: 'chat' | 'agent' }[]> {
   const token = await apiToken(creds);
   const res = await fetch(`${BASE_URL}/v1/conversations`, {
     headers: { authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`[e2e] listing conversations failed (${String(res.status)})`);
-  return (await res.json()) as { id: string; title: string }[];
+  // `kind` is on the wire already; typed here so a spec can tell an agent run
+  // from a chat thread without matching on titles. Optional because rows
+  // predating the column don't carry one.
+  return (await res.json()) as { id: string; title: string; kind?: 'chat' | 'agent' }[];
 }
 
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and
