@@ -247,7 +247,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       // fetch rewrites it, but this render happens first — and on an offline
       // start there is no fetch to rewrite anything (#117).
       const cached = readCachedConversations(scope.endpoint, scope.userId)
-        .filter((c) => c.kind !== 'agent');
+        .filter((c) => c.kind === 'chat');
       if (cached.length > 0) {
         // Remembered so the history fetch knows these came from the cache and
         // may overwrite them — see loadHistory.
@@ -268,17 +268,17 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     getConversations()
       .then((convs) => {
         setConnectionState('online');
-        // Agent runs belong to the agent surface, which keeps its own list off
-        // the same unfiltered endpoint (useAgentSession filters to
-        // kind === 'agent'). Only that side used to filter, so every agent run
-        // also showed up as a chat thread — #117.
+        // Each surface shows only its own kind: general chats here, coding
+        // sessions under Agent, routine runs under Routines. All three read
+        // conversations from this one endpoint, and only the agent side
+        // filtered it, so every agent run — and every routine run, which the
+        // scheduler also creates as a conversation (kind: "routine") — showed
+        // up as a chat thread too. See #117.
         //
-        // Excluding 'agent' rather than keeping only 'chat': `kind` is also
-        // 'routine', and a row predating the column carries none. Both belong
-        // to whatever this list showed before, and quietly dropping them while
-        // fixing the agent leak would be a second, unasked-for change.
+        // An empty `kind` is a chat: the column postdates some rows, and the
+        // mapping below has always defaulted it that way.
         const apiConversations: Conversation[] = convs
-          .filter((c) => c.kind !== 'agent')
+          .filter((c) => (c.kind || 'chat') === 'chat')
           .map((c) => ({
             id: c.id,
             title: c.title,
