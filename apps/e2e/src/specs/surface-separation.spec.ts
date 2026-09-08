@@ -1,5 +1,6 @@
 /**
- * Chat threads belong to Chat, agent runs belong to Agent — #117.
+ * Each surface shows only its own kind — #117. General chats under Chat,
+ * coding sessions under Agent, routine runs under Routines.
  *
  * Both surfaces read the same unfiltered `GET /v1/conversations`, and only
  * the agent side filtered it, so every agent run also appeared as a chat
@@ -9,6 +10,12 @@
  *
  * Selected by `threadList.item.<id>` rather than by title, so this cannot be
  * fooled by two conversations that happen to read alike.
+ *
+ * Routine runs are the third kind — the scheduler creates a conversation with
+ * kind "routine" for each one — and they are excluded by the same filter. Not
+ * covered here: making one needs the scheduler to fire on its cron, and the
+ * create route only accepts "chat" | "agent", so a spec cannot mint one
+ * through the API the way it can the two below.
  */
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
@@ -39,7 +46,7 @@ describe('chat and agent surfaces keep their own conversations', () => {
     await sendMessage('a run that belongs to agent');
 
     const convs = await listConversations(creds);
-    chatId = convs.find((c) => c.kind !== 'agent')?.id ?? '';
+    chatId = convs.find((c) => (c.kind ?? 'chat') === 'chat')?.id ?? '';
     agentId = convs.find((c) => c.kind === 'agent')?.id ?? '';
     expect(chatId).not.toBe('');
     expect(agentId).not.toBe('');
