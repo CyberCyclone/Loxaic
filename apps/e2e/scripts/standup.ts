@@ -24,6 +24,7 @@ import { createConnection } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockGithub } from './mock-github.ts';
+import { startGitServer, type GitServer } from './git-server.ts';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(E2E_DIR, '../..');
@@ -92,6 +93,11 @@ let spawnedServer: ChildProcess | null = null;
 /** Stop function for the in-process mock GitHub API server, or null when this
  * run didn't start the spawned server (and so never started this either). */
 let stopMockGithub: (() => Promise<void>) | null = null;
+/** The harness's git server, for specs that clone a workspace. Started with
+ * the spawned server, stopped with it. */
+export let gitServer: GitServer | null = null;
+const GIT_DIR = path.join(RUN_DIR, 'git');
+const FIXTURES_DIR = path.join(E2E_DIR, 'fixtures');
 
 interface Health {
   status: string;
@@ -242,7 +248,16 @@ async function ensureServer(): Promise<void> {
   mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
   mkdirSync(UPLOADS_DIR, { recursive: true });
   const { email: adminEmail } = writeAdminCreds();
-  const mockGithub = await startMockGithub();
+  // The git server first, because the mock GitHub API hands out its URLs as
+  // each repo's clone_url.
+  gitServer = await startGitServer({
+    dir: GIT_DIR,
+    fixtures: {
+      'bugfix-app': path.join(FIXTURES_DIR, 'bugfix-app'),
+      'other-repo': path.join(FIXTURES_DIR, 'bugfix-app'),
+    },
+  });
+  const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
   stopMockGithub = mockGithub.stop;
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
@@ -274,6 +289,11 @@ async function ensureServer(): Promise<void> {
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
       GITHUB_API_URL: mockGithub.url,
+      // Lets a networked sandbox reach this machine's git server by name on
+      // Linux and Podman; Docker Desktop resolves it without help. Network
+      // itself stays off by default — a spec that clones turns it on through
+      // the admin API and resets it after, like every other sandbox setting.
+      SANDBOX_EXTRA_HOSTS: 'host.docker.internal:host-gateway',
       // The idle-stop reaper's real tick is five minutes.
       // sandbox-lifecycle.spec.ts has to watch it actually pause a workspace,
       // and reaching past the timer to stop a container by hand would assert
@@ -348,6 +368,11 @@ export async function teardown(): Promise<void> {
   if (stopMockGithub) {
     await stopMockGithub();
     stopMockGithub = null;
+  }
+  if (gitServer) {
+    gitServer.stop();
+    gitServer = null;
+    if (owned) rmSync(GIT_DIR, { recursive: true, force: true });
   }
   // Postgres is deliberately left running: it is slow to start, holds no
   // per-run state worth clearing, and is very often not ours to stop.

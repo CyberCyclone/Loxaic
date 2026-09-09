@@ -13,6 +13,12 @@ export type SandboxMode = SandboxKind | "off";
 export interface ExecOptions {
   workdir?: string;
   timeoutMs?: number;
+  /**
+   * Extra environment for this one command, merged over the sandbox's own.
+   * Exists so a credential can reach exactly one process and nothing else —
+   * see sandbox/git.ts. **Never logged.**
+   */
+  env?: Record<string, string>;
 }
 
 export interface ExecResult {
@@ -101,9 +107,22 @@ export interface CreateSandboxConfig {
     cpu?: number;    // nano CPUs (container provider only)
     pids?: number;
   };
+  /** Clone this into the workdir. Needs network, which containers lack unless
+   * an admin enabled it — the clone failure is surfaced, never an empty repo. */
   repoUrl?: string;
+  /** Branch to clone (`--branch`). The remote's default when absent. */
   branch?: string;
-  token?: string;
+  /** Create and check out this branch from `branch` after cloning — the branch
+   * an agent works on, so its commits never land on the base directly. */
+  newBranch?: string;
+  /** Credentials and identity for the clone. The token reaches git through
+   * the exec environment for exactly that command (sandbox/git.ts), never
+   * through the URL — a URL-embedded token persists in `.git/config` inside a
+   * model-directed environment. */
+  git?: {
+    token?: string;
+    identity?: { name: string; email: string };
+  };
 }
 
 export interface SandboxProvider {

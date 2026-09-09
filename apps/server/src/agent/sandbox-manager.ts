@@ -1,7 +1,10 @@
 import { and, db, eq, inArray, lt, ne } from "@loxaic/db";
 import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
-import type { SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
+import type { CreateSandboxConfig, SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
+import type { Workspace } from "@loxaic/types";
+import { loadWorkspace } from "./workspace.ts";
+import { getConnection, getOwnerToken } from "../github/connection.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
 import { seedSandbox } from "../sandbox/seed.ts";
 import { getSandboxRetention } from "../settings.ts";
@@ -87,10 +90,20 @@ export async function getConversationSandbox(
   userId: string,
   conversationId: string,
 ): Promise<SandboxHandle> {
+  // The workspace decides the provider, not the other way round: a `local`
+  // workspace runs on the user's own machine regardless of what this server's
+  // SANDBOX_MODE says (a later stage). Everything else uses the configured
+  // provider. Loaded here, once per tool call, rather than per creation —
+  // resolveEntry's cached path needs it too, to know which provider to ask.
+  const loaded = await loadWorkspace(conversationId);
+  const workspace: Workspace = loaded?.workspace ?? { kind: "scratch" };
+  if (workspace.kind === "local") {
+    throw new Error("Local workspaces are not available yet");
+  }
   const provider = await getSandboxProvider();
   if (!provider) throw new Error("sandboxes are disabled (SANDBOX_MODE=off)");
 
-  const entry = await resolveEntry(provider, userId, conversationId);
+  const entry = await resolveEntry(provider, userId, conversationId, workspace);
   entry.lastUsedAt = Date.now();
   const entryProvider = entry.provider === provider.kind ? provider : await getProviderByKind(entry.provider);
   return entryProvider.attach(entry.ref);
@@ -154,6 +167,7 @@ async function resolveEntry(
   currentProvider: SandboxProvider,
   userId: string,
   conversationId: string,
+  workspace: Workspace,
 ): Promise<Entry> {
   const cached = active.get(conversationId);
   if (cached) {
@@ -173,7 +187,7 @@ async function resolveEntry(
   const inFlight = pending.get(conversationId);
   if (inFlight) return inFlight;
 
-  const creation = createEntry(currentProvider, userId, conversationId).finally(() => {
+  const creation = createEntry(currentProvider, userId, conversationId, workspace).finally(() => {
     pending.delete(conversationId);
   });
   pending.set(conversationId, creation);
@@ -304,6 +318,7 @@ async function createEntry(
   provider: SandboxProvider,
   userId: string,
   conversationId: string,
+  workspace: Workspace,
 ): Promise<Entry> {
   // A previous process may have left a usable sandbox recorded in the DB —
   // but only if it was created under the *same* provider kind as the one
@@ -355,18 +370,62 @@ async function createEntry(
   // what a crash left behind.
   await assertUnderUserLimit(userId);
   try {
-    return await createEntryReserved(provider, userId, conversationId);
+    return await createEntryReserved(provider, userId, conversationId, workspace);
   } finally {
     releaseSandboxSlot(userId);
   }
+}
+
+/**
+ * What to hand `provider.create` for this workspace.
+ *
+ * A github workspace clones with the **conversation owner's** token and
+ * identity — never the sender's. Sandboxes are created lazily on first tool
+ * use, which may well be a shared editor's, and the row's `ownerId` is the
+ * owner's for the same reason (see below). The token reaches git through the
+ * exec environment only (sandbox/git.ts).
+ */
+async function createConfigFor(ownerId: string, workspace: Workspace): Promise<CreateSandboxConfig> {
+  if (workspace.kind !== "github") return {};
+  const [token, connection] = await Promise.all([getOwnerToken(ownerId), getConnection(ownerId)]);
+  if (!token || !connection) {
+    throw new Error(
+      `This conversation's workspace is a GitHub repository (${workspace.repo}), but the owner's GitHub ` +
+        "connection is gone. Reconnect GitHub in Settings, or start a new conversation.",
+    );
+  }
+  return {
+    repoUrl: workspace.cloneUrl,
+    branch: workspace.baseBranch,
+    newBranch: workspace.branch,
+    git: {
+      token,
+      identity: {
+        name: connection.name ?? connection.login,
+        // GitHub's noreply form is what its own web UI commits as for a user
+        // with a private email; it attributes correctly without exposing one.
+        email: connection.email ?? `${connection.login}@users.noreply.github.com`,
+      },
+    },
+  };
 }
 
 async function createEntryReserved(
   provider: SandboxProvider,
   userId: string,
   conversationId: string,
+  workspace: Workspace,
 ): Promise<Entry> {
-  const handle = await provider.create(userId, {});
+  // The row's owner is the *conversation's* owner, never whoever triggered
+  // the tool call — see the insert below for why. Loaded first because the
+  // clone credentials are the owner's too.
+  const conversation = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+    columns: { ownerId: true },
+  });
+  const ownerId = conversation?.ownerId ?? userId;
+  const config = await createConfigFor(ownerId, workspace);
+  const handle = await provider.create(userId, config);
   // Test-only hook for the real-model e2e suite: seeds a fixture repo (an
   // INSTRUCTIONS.md + a small app) into every freshly-created sandbox, so
   // the agent has something to read and build against. Named E2E_-prefixed
@@ -385,26 +444,23 @@ async function createEntryReserved(
       throw err;
     }
   }
-  // The row's owner is the *conversation's* owner, never whoever triggered
-  // the tool call. Every sandbox route — terminal, exec, file read/write —
-  // authorizes on `sandboxes.ownerId`, and terminal access is arbitrary code
-  // execution rather than participation in a chat. Recording the sender here
-  // meant a shared editor who happened to trigger the first tool call took
-  // ownership of the sandbox and the terminal with it, while the real owner
-  // was 404'd out of their own conversation's sandbox.
-  const conversation = await db.query.conversations.findFirst({
-    where: eq(conversations.id, conversationId),
-    columns: { ownerId: true },
-  });
+  // Every sandbox route — terminal, exec, file read/write — authorizes on
+  // `sandboxes.ownerId`, and terminal access is arbitrary code execution
+  // rather than participation in a chat. Recording the sender here meant a
+  // shared editor who happened to trigger the first tool call took ownership
+  // of the sandbox and the terminal with it, while the real owner was 404'd
+  // out of their own conversation's sandbox.
   const [row] = await db
     .insert(sandboxes)
     .values({
-      ownerId: conversation?.ownerId ?? userId,
+      ownerId,
       conversationId,
       containerId: handle.ref,
       provider: provider.kind,
       image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : "host",
       status: "running",
+      repoUrl: config.repoUrl ?? null,
+      branch: config.newBranch ?? config.branch ?? null,
       limits: { memory: 512, cpu: 1 },
     })
     .returning();

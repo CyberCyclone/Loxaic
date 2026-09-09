@@ -75,6 +75,10 @@ export const conversations = pgTable("conversations", {
   modelPref: jsonb("model_pref"),
   /** Per-conversation MCP overrides, e.g. { disabledServerIds: string[] }. */
   mcpOverrides: jsonb("mcp_overrides"),
+  /** A `Workspace` (packages/types). Null means scratch — every row that
+   * predates the column, and every conversation created without choosing. Set
+   * once at creation and never patched: the system prompt is built from it. */
+  workspace: jsonb("workspace"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   deletedAt: timestamp("deleted_at"),

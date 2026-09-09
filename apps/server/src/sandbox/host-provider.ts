@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CappedSink } from "./exec-common.ts";
+import { cloneInto } from "./git.ts";
 import type {
   CreateSandboxConfig,
   ExecOptions,
@@ -30,6 +31,10 @@ async function execHost(cwd: string, command: string[], options?: ExecOptions): 
   const child = spawn(command[0], command.slice(1), {
     cwd: options?.workdir ?? cwd,
     stdio: ["ignore", "pipe", "pipe"],
+    // The host's own environment plus whatever this one command was given —
+    // a git credential, most likely (sandbox/git.ts). Only set when asked, so
+    // the default stays exactly what spawn would have done on its own.
+    ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
   });
 
   const out = new CappedSink();
@@ -189,19 +194,13 @@ export function getHostProvider(): SandboxProvider {
       const handle = makeHandle(sandboxDir);
 
       if (config.repoUrl) {
-        let url = config.repoUrl;
-        if (config.token) url = url.replace("https://", `https://x-access-token:${config.token}@`);
-        const clone = await handle.exec([
-          "git", "clone", "--depth=1",
-          ...(config.branch ? [`--branch=${config.branch}`] : []),
-          url,
-          workdir,
-        ]);
-        if (clone.exitCode !== 0) {
+        try {
+          await cloneInto(handle, config, workdir);
+        } catch (err) {
           // destroy, not stop: create() is throwing, so nothing will ever
           // claim this directory.
           await handle.destroy();
-          throw new Error(`Repo clone failed (exit ${String(clone.exitCode)}): ${clone.stderr.trim()}`);
+          throw err;
         }
       }
       void userId; // Unlike the container provider, host mode has no per-user isolation to label.

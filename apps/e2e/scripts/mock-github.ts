@@ -20,10 +20,18 @@ import { createServer, type Server } from 'node:http';
 
 export const VALID_TOKEN = 'e2e-github-token';
 
-const REPOS = [
-  { id: 1, full_name: 'e2e/bugfix-app', private: false, default_branch: 'main', clone_url: 'https://example.test/e2e/bugfix-app.git' },
-  { id: 2, full_name: 'e2e/other-repo', private: true, default_branch: 'trunk', clone_url: 'https://example.test/e2e/other-repo.git' },
-];
+/**
+ * Clone URLs point at the harness's own git server (git-server.ts) when one
+ * is running, so the server's real workspace path — look the repo up, clone
+ * exactly what GitHub reported — is what a spec exercises. Without a git
+ * server (the settings spec alone) they are inert placeholders.
+ */
+function repos(cloneUrlFor: (name: string) => string) {
+  return [
+    { id: 1, full_name: 'e2e/bugfix-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('bugfix-app') },
+    { id: 2, full_name: 'e2e/other-repo', private: true, default_branch: 'trunk', clone_url: cloneUrlFor('other-repo') },
+  ];
+}
 
 const BRANCHES = new Map<string, string[]>([
   ['e2e/bugfix-app', ['main', 'feature/one']],
@@ -37,7 +45,10 @@ function json(res: import('node:http').ServerResponse, status: number, body: unk
 
 let server: Server | null = null;
 
-export async function startMockGithub(): Promise<{ url: string; stop: () => Promise<void> }> {
+export async function startMockGithub(opts?: {
+  cloneUrlFor?: (name: string) => string;
+}): Promise<{ url: string; stop: () => Promise<void> }> {
+  const REPOS = repos(opts?.cloneUrlFor ?? ((name) => `https://example.test/e2e/${name}.git`));
   server = createServer((req, res) => {
     const auth = req.headers.authorization ?? '';
     const token = auth.replace(/^Bearer /, '');

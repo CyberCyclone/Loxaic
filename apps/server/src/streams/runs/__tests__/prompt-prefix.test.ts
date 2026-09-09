@@ -143,6 +143,41 @@ function expectEachRequestExtendsTheLast(): void {
   }
 }
 
+describe("a github workspace produces a byte-identical system prompt every turn", () => {
+  it("holds across two turns", async () => {
+    // The workspace description is the very first thing in every request. If
+    // anything in it varied between turns — a live "is a PR open" flag, the
+    // sandbox's current state — the prefix would break at token one and every
+    // turn would re-evaluate the whole history. No sandbox is created here:
+    // the todo trigger needs none, and the prompt is built before any would be.
+    const [conv] = await db
+      .insert(conversations)
+      .values({
+        ownerId: userId,
+        title: "github prefix test",
+        kind: "agent",
+        workspace: {
+          kind: "github", repo: "octo/real", baseBranch: "main", branch: "loxaic/abcd1234",
+          cloneUrl: "https://github.example/octo/real.git",
+        },
+      })
+      .returning();
+    convIds.push(conv.id);
+    const { startAgentRun } = await import("../agentRun.ts");
+    const run = async (content: string) => {
+      await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "auto", conversationId: conv.id });
+      await waitForRun(conv.id);
+    };
+    await run("make a todo list for alpha");
+    await run("make a todo list for bravo");
+
+    expectEachRequestExtendsTheLast();
+    // And it is the workspace prompt, not a leftover generic one.
+    expect(requests[0][0]).toContain("octo/real");
+    expect(requests[0][0]).toContain("loxaic/abcd1234");
+  });
+});
+
 describe("two conversations do not interleave their requests", () => {
   it("finishes one run's requests before starting the other's", async () => {
     // The prefix invariant every other case here asserts is *per conversation*
