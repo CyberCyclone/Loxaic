@@ -317,6 +317,17 @@ export async function runToolLoop(ctx: {
     // between runs per call would keep the queue fair and destroy the prompt
     // cache on every iteration, which is the entire problem — see
     // inference/scheduler.ts.
+    //
+    // The trade-off, stated plainly: the slot is held across everything
+    // *between* the model calls too — every sandboxed `bash`, up to
+    // max_iterations of them — and is only handed back while a human is
+    // asked for approval. At concurrency 1 (LM Studio, llama.cpp without
+    // --parallel: the common case) one auto-mode run can therefore hold a
+    // shared deployment for the length of its tool work with the backend
+    // idle. Yielding around tool execution would not recover that for free:
+    // another run admitted in the gap evicts the prefix, and this run then
+    // pays a full re-evaluation when it comes back, which is the cost the
+    // queue exists to avoid. Fairness beyond FIFO is a follow-up.
     slot = await acquireRunSlot({
       signal: abort.signal,
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },

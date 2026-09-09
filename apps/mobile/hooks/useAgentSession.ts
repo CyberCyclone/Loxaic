@@ -377,6 +377,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
+        // Anything that is not itself a queue update means the run is past
+        // the queue. Cleared here, up front, rather than on `iteration`
+        // alone: a compaction run never emits one, and an agent run re-queued
+        // after an approval emits its tool results before its next iteration
+        // — both left "Queued · #N" on screen with the response streaming
+        // underneath it.
+        if (isActive && inner.kind !== 'run.queued') {
+          setQueuePosition(null);
+          setRunState((s) => (s === 'queued' ? 'running' : s));
+        }
         if (inner.kind === 'run.queued') {
           if (isActive) {
             setRunState('queued');
@@ -386,8 +396,6 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           if (isActive) {
             setRunState('running');
             setIteration({ n: inner.n, max: inner.max });
-            // Reaching an iteration is the run starting, so the wait is over.
-            setQueuePosition(null);
           }
           setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
         } else if (inner.kind === 'model.loading') {

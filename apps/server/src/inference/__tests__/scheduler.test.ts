@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   __resetSchedulerForTest,
   acquireRunSlot,
+  kickScheduler,
   RunSlotAbortedError,
   resolveMaxConcurrent,
   resetSlotProbe,
@@ -190,6 +191,31 @@ describe("a stopped run does not hold up the queue", () => {
       return other;
     });
     await expect(blocker).rejects.toBeInstanceOf(RunSlotAbortedError);
+  });
+});
+
+describe("raising the limit applies at once", () => {
+  // The queue used to re-check its limit only when a slot was released, so
+  // an admin raising it to unstick waiting chats changed nothing until the
+  // one run holding the slot finished — from the settings screen, a dead
+  // control for exactly as long as the slow run they reached for it over.
+  it("admits a waiter when the limit goes up, without waiting for a release", async () => {
+    const first = await acquireRunSlot({ signal: live(), onQueued: noop });
+    expect(first).not.toBeNull();
+
+    let secondAdmitted = false;
+    const second = acquireRunSlot({ signal: live(), onQueued: noop }).then((s) => {
+      secondAdmitted = true;
+      return s;
+    });
+    await Promise.resolve();
+    expect(secondAdmitted).toBe(false);
+
+    pin(2);
+    kickScheduler();
+    expect(await second).not.toBeNull();
+    expect(schedulerState()).toEqual({ running: 2, waiting: 0 });
+    first?.release();
   });
 });
 

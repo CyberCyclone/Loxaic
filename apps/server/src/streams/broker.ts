@@ -143,6 +143,13 @@ export class StreamBroker {
     };
 
     for (const { event } of records) {
+      // Any event that is not itself a queue update means the run is past the
+      // queue, so the position is dropped *before* the fold: `iteration` used
+      // to be the only clear-point, and a compaction run never emits one — a
+      // client catching up mid-summary was shown a queue position the run had
+      // long left. (The same held for an agent run re-queued after an
+      // approval, between its tool calls and its next iteration.)
+      if (event.kind !== "run.queued") queued = undefined;
       switch (event.kind) {
         case "message.start": {
           const m = ensure(event.message_id);
@@ -174,11 +181,6 @@ export class StreamBroker {
           break;
         case "iteration":
           iteration = { n: event.n, max: event.max };
-          // Reaching an iteration *is* the run starting, so the wait is over.
-          // Folded rather than relying on a separate "dequeued" event: a
-          // reconnecting client must never be shown a queue position the run
-          // has already left.
-          queued = undefined;
           break;
         case "tool.call":
           ensure(event.message_id).tool_calls.push({

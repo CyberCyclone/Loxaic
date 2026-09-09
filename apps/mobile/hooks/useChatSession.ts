@@ -450,7 +450,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
-                    queuePosition: null,
+                    // `run.queued` is only re-emitted when the queue moves, so
+                    // a client that (re)connects while its run sits at a stable
+                    // position hears nothing further until the run ahead ends —
+                    // the snapshot is its only source for the wait.
+                    queuePosition: event.snapshot.queued?.position ?? null,
                     responseStartedAt: Date.now(),
                     model: assistantMsg?.model ?? '',
                   },

@@ -422,14 +422,6 @@ export async function loadServerSettings(): Promise<void> {
   try {
     const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, SANDBOX_KEY) });
     persisted = coerce(row?.value);
-    // Read in the same pass. A failure here is deliberately *not* fail-closed
-    // the way the sandbox read is: unreadable settings leave run concurrency
-    // null, which means "ask the backend", which is what a fresh install gets
-    // anyway. There is nothing here to disable.
-    const inferenceRow = await db.query.serverSettings.findFirst({
-      where: eq(serverSettings.key, INFERENCE_KEY),
-    });
-    persistedInference = coerceInference(inferenceRow?.value);
     loadFailed = false;
     warnOnRetentionPair();
   } catch (err) {
@@ -437,6 +429,26 @@ export async function loadServerSettings(): Promise<void> {
     loadFailed = true;
     console.error(
       "[settings] could not read server_settings — agent sandboxes are disabled until this is fixed: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+  }
+  // Read in the same pass, but not the same `try`. A failure here is
+  // deliberately *not* fail-closed the way the sandbox read is: unreadable
+  // settings leave run concurrency null, which means "ask the backend", which
+  // is what a fresh install gets anyway. There is nothing here to disable —
+  // and in particular it must not disable sandboxes, whose row has already
+  // been read by this point. Sharing the sandbox read's `catch` did exactly
+  // that: a blip on this second query forced sandbox mode to "off" until the
+  // next restart.
+  try {
+    const inferenceRow = await db.query.serverSettings.findFirst({
+      where: eq(serverSettings.key, INFERENCE_KEY),
+    });
+    persistedInference = coerceInference(inferenceRow?.value);
+  } catch (err) {
+    persistedInference = {};
+    console.error(
+      "[settings] could not read inference settings — run concurrency falls back to the backend probe: " +
         (err instanceof Error ? err.message : String(err)),
     );
   }

@@ -32,6 +32,16 @@
  * so sending it to the back would both punish the user for approving and throw
  * away the cache the queue exists to protect.
  *
+ * ## The cost
+ *
+ * A run holds its slot across its tool executions as well as its model calls
+ * — a sandboxed `bash` included — and gives it up only while waiting for a
+ * human. With one slot, one long auto-mode run holds everyone else for the
+ * length of its tool work while the backend sits idle. That is accepted
+ * rather than fixed by yielding around tool calls, because a run admitted in
+ * that gap evicts the prefix and the yielding run then re-evaluates its whole
+ * prompt on return. Per-user fairness and a cap on hold time are follow-ups.
+ *
  * Process-local, like the run registry beside it. #78 owns making this work
  * across a cluster.
  */
@@ -201,6 +211,21 @@ function pump(): void {
     }
     notifyPositions();
   })();
+}
+
+/**
+ * Re-examines the queue against the *current* limit.
+ *
+ * `pump()` otherwise runs only when a slot is released, so an admin raising
+ * the limit from 1 to 4 to unstick three waiting chats changed nothing until
+ * the run holding the one slot finished — from the settings screen the
+ * control looked dead for exactly as long as the slow run it was reached for.
+ * Called by the settings route after the write lands. Also invalidates the
+ * backend probe, so lowering back to "follow the backend" re-asks it.
+ */
+export function kickScheduler(): void {
+  probed = null;
+  pump();
 }
 
 /** Tells every waiter where it now stands. 1-based: "#1" is next to run.
