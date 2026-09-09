@@ -37,6 +37,32 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
 
+  # The tsnet sidecar is the one Go module in the repo, so it needs its own
+  # job — `pnpm test` cannot see it, and nothing else would ever compile it
+  # for a platform other than whoever last ran build.sh by hand.
+  sidecar:
+    name: sidecar (go)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/tsnet-proxy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: infra/tsnet-proxy/go.mod
+          cache-dependency-path: infra/tsnet-proxy/go.sum
+      - name: gofmt
+        # `gofmt -l` prints unformatted files and exits 0 either way, so the
+        # output is what has to be checked, not the status.
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; echo "run gofmt -w ."; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      # Cross-compiles every platform the desktop ships to (no
+      # TSNET_PROXY_HOST_ONLY here, deliberately), so a change that only builds
+      # on the developer's own machine fails here rather than at release time.
+      - run: ./build.sh "$RUNNER_TEMP/tsnet-proxy"
+
   test:
     name: test
     runs-on: ubuntu-latest
@@ -86,3 +112,8 @@ jobs:
       # No database needed; guards the native upload part (attachmentUpload.test.ts)
       # among others, which nothing else on CI exercises.
       - run: pnpm --filter @loxaic/mobile test
+      # Likewise no database, no Docker, no display: the supervisor suite binds
+      # loopback ports and writes temp dirs, and the executor one spawns a Node
+      # child. It had never run here, which left the instance-config validation
+      # every desktop install depends on covered only by whoever ran it locally.
+      - run: pnpm --filter @loxaic/desktop test
