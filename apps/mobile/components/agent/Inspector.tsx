@@ -79,8 +79,12 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
   const paused = sandbox?.status === 'stopped';
 
   // A local workspace is the user's own folder on their own machine: no
-  // server sandbox, no pause, and nothing Loxaic will ever delete — so none
-  // of the retention copy below applies, and saying it would be a lie.
+  // server sandbox and nothing Loxaic will ever delete — so none of the
+  // retention copy below applies, and saying it would be a lie. It *is*
+  // under the idle timer like any other (a container-isolated one is really
+  // paused; a direct one has nothing to pause and is simply marked so), and
+  // the copy says which state it is in rather than claiming "running" for
+  // a folder nothing has touched since yesterday.
   if (ws.kind === 'local') {
     return (
       <VStack space="xs">
@@ -92,7 +96,9 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
         </Text>
         <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
           {sandbox
-            ? `Running directly on ${ws.executorName}, with no sandbox.`
+            ? paused
+              ? `Paused — nothing is running on ${ws.executorName} right now. Your files are untouched; the next message picks it up again.`
+              : `Running directly on ${ws.executorName}, with no sandbox.`
             : `Commands will run directly on ${ws.executorName}, with no sandbox, the first time a tool runs.`}
         </Text>
         <Text testID="agent.inspector.workspace.retention" size="xs" className="text-muted-foreground">

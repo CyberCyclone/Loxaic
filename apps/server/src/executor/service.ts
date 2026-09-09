@@ -4,9 +4,16 @@
  *
  * The one job here besides forwarding to the host provider is *refusing*.
  * The server on the other end of the socket may be someone else's machine,
- * and it can name any path it likes in any call; the only thing that stops a
- * hostile host from asking this machine for `~/.ssh/id_ed25519` is the check
- * in `approvedDir` below. So:
+ * and it can name any path it likes in any call. The roots list bounds the
+ * **file verbs** — `create`, `attach`, `readFile`, `writeFile`, `fileTree`
+ * — and the directory a shell or command *starts* in. It does not, and
+ * cannot, bound what `exec` runs: a direct workspace runs the model's shell
+ * commands as the user, and `cat ~/.ssh/id_ed25519` is a shell command. That
+ * is what the chooser's "Direct — commands run as you, with no sandbox" means,
+ * and it is why a local workspace on a server one does not trust with one's
+ * login session should be a *container* one (executor/container.ts), where
+ * the container is the boundary and the folder is all of the machine it sees.
+ * So, for the file verbs:
  *
  * - `create` is the only way a directory becomes a sandbox, and it is
  *   accepted only when the directory resolves — through symlinks, via

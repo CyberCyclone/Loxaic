@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Check, Server, Laptop, Monitor, FolderGit2, FolderOpen, FolderPlus, ShieldOff, Container, X } from 'lucide-react-native';
 import {
@@ -99,14 +99,19 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const allowNetwork = config?.sandbox.allowNetwork ?? false;
   const sandboxAvailable = config?.sandbox.available ?? false;
 
+  // The last list that loaded. A failed load keeps it: this runs on open, on
+  // the executor coming online, and repeatedly while a folder is being
+  // picked, and treating one blip as "no machines" reset the machine and the
+  // folder the user had already chosen, with nothing on screen to say why.
+  const executorsRef = useRef<ExecutorView[]>([]);
   const loadExecutors = useCallback(async () => {
     try {
       const list = await getExecutors();
+      executorsRef.current = list;
       setExecutors(list);
       return list;
     } catch {
-      setExecutors([]);
-      return [];
+      return executorsRef.current;
     }
   }, []);
 

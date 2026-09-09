@@ -45,7 +45,10 @@ const MAX_ROOT_LENGTH = 4096;
 const EXECUTOR_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
 // eslint-disable-next-line no-control-regex -- stripping them is the point.
+/** Global, for `replace`; never `.test()` this one — a `g` regex is stateful
+ * and a rejected test leaves `lastIndex` mid-string for the next call. */
 const CONTROL_RE = /[\x00-\x1f\x7f]/g;
+const HAS_CONTROL_RE = /[\x00-\x1f\x7f]/;
 
 function cleanName(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -61,8 +64,7 @@ export function validateRoots(raw: unknown): string[] | null {
   const out: string[] = [];
   for (const r of raw) {
     if (typeof r !== "string" || r.length === 0 || r.length > MAX_ROOT_LENGTH) return null;
-    if (CONTROL_RE.test(r)) return null;
-    CONTROL_RE.lastIndex = 0;
+    if (HAS_CONTROL_RE.test(r)) return null;
     out.push(r);
   }
   return out;
@@ -128,9 +130,15 @@ export function executorWsHandler(app: FastifyInstance) {
     // has since been revoked or banned drops the executor within a minute,
     // and its in-flight calls fail rather than complete on a dead session.
     const recheck = setInterval(() => {
-      void resolveSessionFromToken(token).then((fresh) => {
-        if (fresh?.user.id !== userId) socket.close(4001, "Session expired");
-      });
+      void resolveSessionFromToken(token)
+        .then((fresh) => {
+          if (fresh?.user.id !== userId) socket.close(4001, "Session expired");
+        })
+        // Failing to *ask* whether the session is still valid is not evidence
+        // that it is not — the next tick asks again. Left unhandled, a
+        // database blip while any executor was connected was an unhandled
+        // rejection, which terminates the process.
+        .catch(() => undefined);
     }, SESSION_RECHECK_MS);
 
     socket.on("message", (raw: Buffer) => {
@@ -141,6 +149,15 @@ export function executorWsHandler(app: FastifyInstance) {
         socket.close(4002, "Invalid JSON");
         return;
       }
+      // `JSON.parse("null")` succeeds. Dereferencing `.type` on it — or on
+      // any scalar — threw synchronously inside this listener, which the
+      // parse guard above does not cover, and an exception out of an
+      // EventEmitter listener is an uncaughtException: one frame from any
+      // authenticated client took the whole server down.
+      if (typeof msg !== "object" || msg === null) {
+        socket.close(4002, "Invalid message");
+        return;
+      }
 
       if (!unregister) {
         const hello = validateHello(msg);
@@ -149,8 +166,7 @@ export function executorWsHandler(app: FastifyInstance) {
           return;
         }
         clearTimeout(helloTimer);
-        executorId = hello.executorId;
-        unregister = registerExecutor({
+        const registered = registerExecutor({
           executorId: hello.executorId,
           userId,
           name: hello.name,
@@ -162,6 +178,11 @@ export function executorWsHandler(app: FastifyInstance) {
           },
           close: (code, reason) => { socket.close(code, reason); },
         });
+        // Refused: the id belongs to another user's machine. The registry has
+        // already closed this socket with its own code; nothing is welcomed.
+        if (!registered) return;
+        unregister = registered;
+        executorId = hello.executorId;
         socket.send(JSON.stringify({ type: "welcome" }));
         return;
       }

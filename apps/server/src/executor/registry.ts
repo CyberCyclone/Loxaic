@@ -119,8 +119,18 @@ function failPending(entry: Registered, reason: string): void {
  * out until a TCP timeout. The old socket is closed and its in-flight calls
  * fail, which is the truth: that process is gone.
  */
-export function registerExecutor(conn: ExecutorConnection): () => void {
+export function registerExecutor(conn: ExecutorConnection): (() => void) | null {
   const existing = byId.get(conn.executorId);
+  // Replacement is for the *same user's* restarted desktop, and no one else.
+  // The id is the desktop's instanceId — a UUID in a config file, not a
+  // secret — and without this check a signed-in user who learned another's
+  // could connect under it, evict the real machine, and become the
+  // destination for that user's local-workspace commands and terminal
+  // keystrokes. Refused with its own close code; the caller sends nothing.
+  if (existing && existing.info.userId !== conn.userId) {
+    conn.close(4003, "That executor id is registered to another user");
+    return null;
+  }
   if (existing) {
     failPending(existing, "the machine reconnected before this call completed");
     unlink(existing);

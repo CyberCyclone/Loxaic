@@ -1077,6 +1077,13 @@ async function writeOverflowToSandbox(
   try {
     const handle = await attachActiveSandbox(convId);
     if (!handle) return null;
+    // Not into a local workspace. Its workdir is a folder the user chose in
+    // their own repository (a container-isolated one mounts that same folder
+    // at the workdir), and nothing ever cleans these up — stop() and
+    // destroy() never touch the user's filesystem — so an `attachments/`
+    // directory of extracted text would accumulate in a real checkout, where
+    // it shows up in `git status` and can end up committed.
+    if (handle.provider === "executor") return null;
     // This file's content is the extracted text, not the original bytes — a
     // PDF's overflow file is plain text, not a PDF. Stripping the original
     // extension before appending ".txt" keeps that honest (report.pdf ->

@@ -134,7 +134,7 @@ describe("a local workspace runs on the executor", () => {
     unregister = registerExecutor(inProcessExecutor("laptop", ownerId, () => [root]));
     const convId = await localConversation("laptop", root);
     await getConversationSandbox(ownerId, convId);
-    unregister();
+    unregister?.();
     unregister = null;
 
     await expect(getConversationSandbox(ownerId, convId)).rejects.toThrow(/Your machine Casey's laptop is offline — open the Loxaic desktop app/);
