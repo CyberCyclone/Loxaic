@@ -270,23 +270,54 @@ export async function callExecutor<T>(
   executorId: string,
   method: ExecutorMethod,
   params: unknown,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   const entry = byId.get(executorId);
   if (!entry) throw new ExecutorOfflineError(executorName(executorId));
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const id = randomUUID();
+  // Captured after the guard above: a hoisted function declaration does not
+  // keep the narrowing, and `onAbort` is one.
+  const conn = entry.conn;
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       entry.pending.delete(id);
+      opts.signal?.removeEventListener("abort", onAbort);
       reject(new ExecutorTimeoutError(method, entry.info.name, timeoutMs));
     }, timeoutMs);
-    entry.pending.set(id, { resolve, reject, timer });
+    // Cancelling asks the executor to stop; it does **not** settle this
+    // promise. The executor kills the command and then answers the original
+    // call as normal, so the partial output it produced still comes back and
+    // the result arrives through the path it already had. The timeout above
+    // stays the backstop for an executor too old to know the message.
+    function onAbort() {
+      try {
+        conn.send({ type: "exec.cancel", id });
+      } catch {
+        // A socket that has gone: the call will time out, which is the right
+        // answer for a machine that stopped listening mid-command.
+      }
+    }
+    // Both paths tear down the timer *and* the abort listener: a listener
+    // left on a run's signal outlives the call, and would later send a cancel
+    // for an id the executor has long forgotten.
+    const cleanup = () => {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+    };
+    entry.pending.set(id, {
+      resolve: (value) => { cleanup(); resolve(value as T); },
+      reject: (err) => { cleanup(); reject(err); },
+      timer,
+    });
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       entry.conn.send({ type: "call", id, method, params });
     } catch (err) {
       entry.pending.delete(id);
       clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
       reject(err instanceof Error ? err : new Error(String(err)));
     }
   });

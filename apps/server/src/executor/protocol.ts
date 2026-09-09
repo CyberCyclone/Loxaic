@@ -87,6 +87,23 @@ export interface TerminalCloseMessage {
   terminalId: string;
 }
 
+/**
+ * Cancel an in-flight `call` — in practice an `exec`, since nothing else runs
+ * long enough to be worth interrupting.
+ *
+ * Deliberately *not* a field on the original call: an AbortSignal cannot be
+ * serialised (JSON renders it as `{}`), so cancellation has to be its own
+ * message arriving later. The executor answers the original call as normal
+ * afterwards — with whatever output the command produced and a cancelled exit
+ * code — rather than the server abandoning it, so partial output survives and
+ * the pending request settles through the path it already had.
+ */
+export interface ExecCancelMessage {
+  type: "exec.cancel";
+  /** The `call` id being cancelled. */
+  id: string;
+}
+
 export interface TerminalDataMessage {
   type: "terminal.data";
   terminalId: string;
@@ -121,6 +138,7 @@ export interface CallMessage {
 export type ServerToExecutor =
   | WelcomeMessage
   | CallMessage
+  | ExecCancelMessage
   | TerminalOpenMessage
   | TerminalInputMessage
   | TerminalResizeMessage
