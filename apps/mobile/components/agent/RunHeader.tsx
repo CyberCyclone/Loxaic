@@ -9,6 +9,7 @@ const STATE_LABEL: Record<RunState, string> = {
   queued: 'Queued',
   running: 'Running',
   awaiting_approval: 'Awaiting approval',
+  stopping: 'Stopping…',
   done: 'Done',
   error: 'Error',
 };
@@ -19,6 +20,8 @@ const STATE_DOT: Record<RunState, string> = {
   queued: 'bg-warning',
   running: 'bg-primary',
   awaiting_approval: 'bg-warning',
+  // Amber too: asked to stop, but not stopped — the run is still winding up.
+  stopping: 'bg-warning',
   done: 'bg-success',
   error: 'bg-destructive',
 };

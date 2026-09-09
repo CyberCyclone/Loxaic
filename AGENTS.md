@@ -1262,6 +1262,49 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `data-testid` absent from the DOM, feature visibly working in a screenshot) means "rebuild the
   export," not "debug the component."
 
+### Stopping a run
+
+- **A stop is only as good as the places that check the signal.** `stream.stop` calls
+  `run.abort.abort()` and nothing else; every part of the loop that can block has to notice.
+  Two did not, and between them made "the stop button does nothing" the *ordinary* experience
+  (#113): `waitForApproval` settled only on approve/deny or the five-minute
+  `APPROVAL_TIMEOUT_MS`, so a stop at a permission prompt — manual mode, the default — parked
+  the run for up to five minutes; and the per-call loop never re-checked, so a stop during a
+  batch still ran every remaining call. A real session issued **five calls in one assistant
+  message** and took 6m39s over them.
+- **Tool calls in one message run in series, so abort is checked per call, not per iteration.**
+  A skipped call still emits and persists a `tool_result` saying it was stopped — an
+  assistant `tool_call` with no partner is the orphan case `loadHistory` has to strip, and
+  most backends reject it outright.
+- **Aborting at an approval unwinds through `slot.yieldWhile`, not through the skip path.**
+  The approval hands the inference slot back; re-entering the queue for an aborted run throws
+  `RunSlotAbortedError`, which ends the turn before any tool executes — so that run keeps its
+  calls with *no* results at all, which is the orphan case again and is why the stripping
+  matters. Do not "fix" it by persisting partial results there; the run is over.
+- **What is still not cancellable is an in-flight `exec`.** Killing a running `bash` inside a
+  container means teaching all three providers to cancel, which this did not do. The bound is
+  therefore one tool call (`bash` is capped at 60s), not a whole batch, and not five minutes.
+- **`stopping` is a client-side run state with no server counterpart.** The run really is
+  still running until its stream ends; the state exists because pressing Stop changed nothing
+  on screen, so a correct-but-not-instant stop looked broken. Keyed by conversation id (not a
+  boolean) so switching threads and back still shows it, and cleared by `clearStream` — the
+  stream ending is the only honest end, covering a stop that landed, a run that finished on
+  its own first, and an error. `handleStop` with no tracked stream now says so instead of
+  returning silently, which was indistinguishable from a dead button.
+- **The mock's slow path honours the abort signal**, because `liveStream` passes it to `fetch`
+  and a mock that slept through a stop would make the mock lane the one place where stopping
+  mid-response does nothing — exactly the bug under test.
+- **A mock scenario step may carry several `calls` in one assistant message.** Nothing else in
+  the suite can produce a batch, and the per-call abort check is untestable without one. Every
+  call in a step must be offered or the step does not fire — a half-fired batch is one the
+  fixture never described.
+- **Testing this needs a genuinely slow tool, so the batch case is Docker-gated** (`bash` with
+  `sleep`, `it.skipIf(!dockerReady)`). It is also keyed on the sandbox row appearing rather
+  than a wall-clock sleep: a fixed 2s wait passed alone and failed in a full suite run, where
+  Docker is contended. It asserts *nothing behind the stop ran* rather than an exact count of
+  skipped calls, because whether the stop lands before or during the first call is a real race
+  and both outcomes are correct.
+
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.

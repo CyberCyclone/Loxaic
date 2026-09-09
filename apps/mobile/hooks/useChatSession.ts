@@ -99,6 +99,9 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   // never show its dialog over whatever conversation the user has switched
   // to, and switching back to it should find the dialog still there.
   const [pendingApprovalByConv, setPendingApprovalByConv] = useState<Partial<Record<string, PendingApproval>>>({});
+  /** Which conversation the user asked to stop — see useAgentSession for why
+   * this is keyed by id and why it exists at all (#113). */
+  const [stoppingConvId, setStoppingConvId] = useState<string | null>(null);
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -155,6 +158,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         if (!(id in prev)) return prev;
         return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id));
       });
+      setStoppingConvId((prev) => (prev === id ? null : prev));
     },
     [setStreamingByConv],
   );
@@ -641,8 +645,15 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   const handleStop = useCallback(() => {
     const id = activeIdRef.current;
     const stream = id ? streamingByConvRef.current[id] : undefined;
-    if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
-  }, []);
+    if (!wsRef.current || !id || !stream) {
+      // See useAgentSession: silence here is indistinguishable from a broken
+      // button, and the run carries on either way (#113).
+      showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
+    setStoppingConvId(id);
+    stopStream(wsRef.current, stream.streamId);
+  }, [showToast]);
 
   const clearApproval = useCallback((convId: string) => {
     setPendingApprovalByConv((prev) => {
@@ -763,6 +774,9 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     activeConv,
     setActiveId,
     streaming: !!activeStream,
+    // Overlaid on the live stream state, not replacing it: the run is still
+    // streaming until it actually ends.
+    stopping: activeId !== null && stoppingConvId === activeId,
     loadingModel: activeStream?.loadingModel ?? false,
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,

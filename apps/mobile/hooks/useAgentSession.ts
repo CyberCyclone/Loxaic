@@ -27,10 +27,19 @@ import { useToastHelper } from './useToastHelper';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
-/** `queued` means the run exists and is waiting for an inference slot —
+/**
+ * `queued` means the run exists and is waiting for an inference slot —
  * distinct from `running`, because nothing is happening yet and the user is
- * owed the reason. */
-export type RunState = 'queued' | 'running' | 'awaiting_approval' | 'done' | 'error';
+ * owed the reason.
+ *
+ * `stopping` is client-side only: the server has no such status, and the run
+ * really is still running until its stream ends. It exists because pressing
+ * Stop used to change nothing on screen — the run kept saying "Running" until
+ * it actually wound up, which for a run mid-tool-call is not instant — so the
+ * button read as broken (#113). This is the acknowledgement, not a claim that
+ * anything has stopped yet.
+ */
+export type RunState = 'queued' | 'running' | 'awaiting_approval' | 'stopping' | 'done' | 'error';
 
 export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
 
@@ -53,6 +62,13 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
+  /**
+   * Which conversation the user has asked to stop, keyed by id rather than a
+   * bare boolean so switching away and back keeps showing it — the run being
+   * stopped is a fact about that conversation, not about what is on screen.
+   * Cleared by `clearStream`, i.e. when the run's stream actually ends.
+   */
+  const [stoppingConvId, setStoppingConvId] = useState<string | null>(null);
   /**
    * The workspace the *next* run will be created with. Only meaningful while
    * no run is active — once a conversation exists its workspace is fixed, and
@@ -115,6 +131,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         if (!(id in prev)) return prev;
         return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id));
       });
+      // The stream ending is the only honest end of "stopping": it covers a
+      // stop that landed, a run that finished on its own first, and an error.
+      setStoppingConvId((prev) => (prev === id ? null : prev));
     },
     [setStreamingByConv],
   );
@@ -517,8 +536,19 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const handleStop = useCallback(() => {
     const id = activeIdRef.current;
     const stream = id ? streamingByConvRef.current[id] : undefined;
-    if (wsRef.current && stream) stopStream(wsRef.current, stream.streamId);
-  }, []);
+    if (!wsRef.current || !id || !stream) {
+      // This used to return silently, which is indistinguishable from a
+      // broken button: no tracked stream means the socket dropped or this
+      // client never subscribed, and the run carries on regardless. Say so
+      // rather than swallow the press (#113).
+      showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
+    // Set before the frame goes out, so the acknowledgement is immediate
+    // rather than waiting on a round trip the run may take a while to answer.
+    setStoppingConvId(id);
+    stopStream(wsRef.current, stream.streamId);
+  }, [showToast]);
 
   /** See useChatSession's handleCommand: no optimistic bubble, since a
    * command has no user-authored message of its own. */
@@ -584,9 +614,19 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
+  // Overlaid on whatever the server last said, rather than replacing it: the
+  // run genuinely is still running until its stream ends, and the events that
+  // keep arriving until then would otherwise overwrite this the moment the
+  // next one lands.
+  const stopping = activeId !== null && stoppingConvId === activeId;
+  const effectiveRunState: RunState = stopping && runState !== 'done' && runState !== 'error'
+    ? 'stopping'
+    : runState;
   // Queued counts as busy: the composer must offer Stop, not Send — the run
-  // is real, it simply has not started.
-  const busy = runState === 'queued' || runState === 'running' || runState === 'awaiting_approval';
+  // is real, it simply has not started. Stopping counts too: it has not ended
+  // yet, and offering Send again would let a second turn race the first.
+  const busy = effectiveRunState === 'queued' || effectiveRunState === 'running'
+    || effectiveRunState === 'awaiting_approval' || effectiveRunState === 'stopping';
 
   return {
     runs,
@@ -594,8 +634,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     activeRun,
     selectRun,
     mode,
-    runState,
+    runState: effectiveRunState,
     busy,
+    stopping,
     loadingModel: activeStream?.loadingModel ?? false,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,

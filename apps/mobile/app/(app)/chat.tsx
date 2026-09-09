@@ -39,6 +39,7 @@ export default function ChatScreen() {
     activeConv,
     setActiveId,
     streaming,
+    stopping,
     loadingModel,
     queuePosition,
     responseStartedAt,
@@ -165,6 +166,7 @@ export default function ChatScreen() {
         <Composer
           onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
           onStop={handleStop}
+          stopping={stopping}
           streaming={streaming}
           modelName={selectedModel ? getName(selectedModel) : 'Select model'}
           context={context}

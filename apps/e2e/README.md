@@ -389,6 +389,43 @@ order. Failures are captured automatically as `NN-FAILED-<test title>.png`.
 **`artifacts/` is gitignored and screenshots are never committed.** They are evidence for the
 PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end tests".
 
+## "tab crashed": a pruned browser cache, not your change
+
+Every spec failing identically at session creation — `0 passed, N failed`, each one
+`WebDriverError: tab crashed`, before a single test runs — is almost always the cached browser,
+not the suite:
+
+```
+✖ Failed to create a session:
+WebDriverError: tab crashed (Session info: chrome=152.0.7977.82)
+```
+
+WebdriverIO caches Chrome for Testing under `$TMPDIR` (`/var/folders/…` on macOS), and macOS
+prunes that directory **by file age**. It deletes files while leaving the directory tree, so the
+install goes hollow: the 240 MB framework binary survives and the helper executables do not
+(`Helpers/…/Google Chrome for Testing Helper (GPU).app/Contents/MacOS` ends up empty). Chrome's
+parent process then starts fine and every child dies — `GPU process exited unexpectedly:
+exit_code=5`, then `GPU process isn't usable. Goodbye.` — which chromedriver reports only as
+"tab crashed".
+
+Confirm it in two commands rather than guessing at memory or disk (both are red herrings this
+looks exactly like):
+
+```bash
+ls -la "$TMPDIR/chrome/mac_arm-"*/chrome-mac-arm64/"Google Chrome for Testing.app"/Contents/Frameworks/*/Versions/*/Helpers/*"(GPU).app"/Contents/MacOS
+"$TMPDIR/chrome/mac_arm-"*/chrome-mac-arm64/"Google Chrome for Testing.app"/Contents/MacOS/"Google Chrome for Testing" --headless=new --dump-dom about:blank
+```
+
+An empty `MacOS` directory, or that launch printing the GPU/network child errors above, is the
+diagnosis. The fix is to delete the cache and let wdio re-download it:
+
+```bash
+rm -rf "$TMPDIR/chrome" "$TMPDIR"/com.google.chrome.for.testing.*
+```
+
+The second path is the per-launch profile dirs, which accumulate (610 of them by the time this
+was found) — harmless, but they are what the crashed sessions leave behind.
+
 ## Environment variables
 
 | Variable | Default | Purpose |

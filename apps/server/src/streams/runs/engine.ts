@@ -545,8 +545,31 @@ export async function runToolLoop(ctx: {
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
       for (const call of toolCalls) {
+        // Checked per call, not just per iteration. A model routinely emits
+        // several calls in one message — five was an ordinary turn in the
+        // session that prompted #113 — and they run in series, `bash` capped
+        // at 60s each. Without this, Stop pressed on the first of them still
+        // ran the other four: 6m39s of a button that visibly does nothing.
+        //
+        // Still emitted and persisted rather than dropped: every tool_call
+        // needs its tool_result partner, or the next turn's replay carries an
+        // orphan that most backends reject outright.
+        if (isAborted(abort)) {
+          const output = "Stopped by the user before this tool call ran.";
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output,
+            ok: false,
+          });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
+          continue;
+        }
         const outcome = await runOneToolCall(
-          { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot },
+          { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot, signal: abort.signal },
           call,
         );
         resultBlocks.push({
@@ -650,6 +673,8 @@ async function runOneToolCall(
     producer: StreamProducer;
     assistantMsgId: string;
     slot: RunSlot;
+    /** The run's abort signal, so a stop reaches the approval wait. */
+    signal: AbortSignal;
   },
   call: ToolCall,
 ): Promise<{ output: string; diff?: { path: string; oldContent: string | null; newContent: string | null }[] }> {
@@ -678,7 +703,7 @@ async function runOneToolCall(
     // through it would stall every other conversation on the deployment for
     // exactly as long as the user takes to click. Re-taken at the front of the
     // queue afterwards, so approving does not cost the user their place.
-    const approved = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id));
+    const approved = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id, ctx.signal));
     if (!approved) {
       const output = "User denied this tool call.";
       producer.emit({
@@ -749,23 +774,48 @@ async function runOneToolCall(
 
 /** Approvals are run-scoped (registry), not connection-scoped — a different
  * device/socket than the one that started the run can approve or deny. */
-function waitForApproval(streamId: string, callId: string): Promise<boolean> {
+/**
+ * Waits for a human to approve or deny one tool call.
+ *
+ * Takes the run's abort signal, and that is the whole point: without it, Stop
+ * pressed at a permission prompt flipped `aborted` and then changed nothing
+ * observable, because this promise only ever settled on approve/deny or the
+ * five-minute `APPROVAL_TIMEOUT_MS`. Manual mode is the default, so "the stop
+ * button does nothing" was the *ordinary* experience of stopping an agent
+ * that was waiting on you — see #113.
+ *
+ * An abort resolves `false`, which is the same answer a timeout gives: the
+ * call is denied, the loop unwinds through the paths that already exist for a
+ * cancelled run. Registered after the `aborted` re-check rather than before,
+ * so an abort that fired while this was being set up cannot be missed.
+ */
+function waitForApproval(streamId: string, callId: string, signal: AbortSignal): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
-    const timer = setTimeout(() => {
-      const run = getRun(streamId);
-      run?.approvals.delete(callId);
-      resolve(false);
-    }, APPROVAL_TIMEOUT_MS);
-    const run = getRun(streamId);
-    if (!run) {
-      clearTimeout(timer);
+    if (signal.aborted) {
       resolve(false);
       return;
     }
-    run.approvals.set(callId, (approved) => {
+    const run = getRun(streamId);
+    if (!run) {
+      resolve(false);
+      return;
+    }
+    // Every path below goes through `settle`, so the timer and the abort
+    // listener are always torn down — a listener left on a long-lived signal
+    // is a leak, and a stray timer would delete a *later* call's approval.
+    let done = false;
+    const settle = (approved: boolean) => {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      run.approvals.delete(callId);
       resolve(approved);
-    });
+    };
+    const onAbort = () => { settle(false); };
+    const timer = setTimeout(() => { settle(false); }, APPROVAL_TIMEOUT_MS);
+    run.approvals.set(callId, settle);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
 }
 
