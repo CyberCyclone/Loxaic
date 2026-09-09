@@ -14,6 +14,7 @@
  */
 import Docker from "dockerode";
 import { SandboxGoneError } from "./errors.ts";
+import { StringDecoder } from "node:string_decoder";
 import { pack } from "tar-fs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -549,9 +550,15 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       // frames back into one ordered stream, which is what a real terminal
       // shows and what a raw `stream.on("data", ...)` listener assumed but
       // never actually got.
+      //
+      // Decoded, not `chunk.toString()`: a PTY carries box-drawing and emoji
+      // routinely and the stream splits wherever it likes, so a multi-byte
+      // character arriving as 1 + 2 bytes became two replacement characters.
+      const decoder = new StringDecoder("utf8");
       const sink = new Writable({
         write(chunk: Buffer, _enc, cb) {
-          for (const l of dataListeners) l(chunk.toString());
+          const text = decoder.write(chunk);
+          if (text) for (const l of dataListeners) l(text);
           cb();
         },
       });

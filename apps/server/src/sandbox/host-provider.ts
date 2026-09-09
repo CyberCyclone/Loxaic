@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { existsSync } from "node:fs";
 import { SandboxGoneError } from "./errors.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -138,9 +139,26 @@ export function openPipeTerminal(cwd: string): TerminalSession {
   const child = spawn("bash", [], { cwd, stdio: ["pipe", "pipe", "pipe"] });
   const dataListeners: ((data: string) => void)[] = [];
   const closeListeners: (() => void)[] = [];
-  child.stdout.on("data", (chunk: Buffer) => { for (const l of dataListeners) l(chunk.toString()); });
-  child.stderr.on("data", (chunk: Buffer) => { for (const l of dataListeners) l(chunk.toString()); });
+  // Pipe reads land wherever the kernel split them, so a multi-byte character
+  // can arrive as 1 + 2 bytes; `chunk.toString()` turned each half into a
+  // replacement character. The decoder holds the partial sequence.
+  const out = new StringDecoder("utf8");
+  const err = new StringDecoder("utf8");
+  const emit = (text: string) => { if (text) for (const l of dataListeners) l(text); };
+  child.stdout.on("data", (chunk: Buffer) => { emit(out.write(chunk)); });
+  child.stderr.on("data", (chunk: Buffer) => { emit(err.write(chunk)); });
   child.on("close", () => { for (const l of closeListeners) l(); });
+  // spawn() reports failure asynchronously as `error`, and an `error` with no
+  // listener is an uncaught exception: a machine with no `bash` on PATH took
+  // down the executor on the user's laptop — or, in host mode, the server.
+  // Routed to the close listeners so the panel gets its terminal.exit rather
+  // than a socket that goes quiet. stdin can EPIPE the same way after the
+  // shell exits.
+  child.on("error", (e) => {
+    emit(`\r\n[${e.message}]\r\n`);
+    for (const l of closeListeners) l();
+  });
+  child.stdin.on("error", () => undefined);
   return {
     tty: false,
     write: (data) => { child.stdin.write(data); },

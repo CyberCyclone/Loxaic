@@ -16,21 +16,41 @@
  * executor no).
  */
 import type { FastifyInstance } from "fastify";
+import type { TerminalSession } from "../sandbox/provider.ts";
 import { and, eq, ne } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { resolveSessionFromToken } from "../auth/middleware";
 import { attachRunningSandbox } from "../agent/sandbox-manager.ts";
 import { decodeExecutorRef } from "../sandbox/executor-provider.ts";
-import { executorName, getExecutor } from "../executor/registry.ts";
+import { executorName, ExecutorOfflineError, getExecutor } from "../executor/registry.ts";
 import { executorOfflineMessage } from "../executor/protocol.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
  * this, everything @fastify/websocket hands us as `socket` resolves to `any`. */
+/**
+ * Two bounds on what one owner's terminals can cost the server. Neither is a
+ * cross-user concern — a terminal is owner-only and the shell already runs
+ * arbitrary commands — but the rest of the sandbox layer caps what one user
+ * can consume (the running cap, PidsLimit, MAX_OUTPUT_BYTES), and this
+ * endpoint capped nothing. The executor's own shells carry the same limit
+ * (executor/terminal.ts), so the server now imposes on itself what it
+ * imposes on a laptop.
+ */
+const MAX_TERMINALS_PER_USER = 8;
+/** Output past this much unsent socket buffer is dropped, not queued: a
+ * `yes` or a `cat` of a big file outruns a phone on mobile data indefinitely,
+ * and `ws` would hold the difference in server memory without limit. A
+ * terminal is a live view, so losing backlog is the right answer where a file
+ * transfer's would not be. */
+const MAX_BUFFERED_BYTES = 1024 * 1024;
+const openTerminalsByUser = new Map<string, number>();
+
 interface WsConnection {
   readonly readyState: number;
   readonly OPEN: number;
+  readonly bufferedAmount: number;
   pause(): void;
   resume(): void;
   close(code?: number, reason?: string): void;
@@ -134,9 +154,43 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       refuse(4400, "No terminal", "This workspace does not support a terminal.");
       return;
     }
-    const terminal = await handle.openTerminal();
+    const held = openTerminalsByUser.get(session.user.id) ?? 0;
+    if (held >= MAX_TERMINALS_PER_USER) {
+      refuse(4429, "Too many terminals", `You already have ${String(MAX_TERMINALS_PER_USER)} terminals open — close one first.`);
+      return;
+    }
+    // Reserved *before* the await below, or N opens racing through it would
+    // all see the same count (the executor's cap had exactly that gap).
+    openTerminalsByUser.set(session.user.id, held + 1);
+    const releaseSlot = () => {
+      const now = openTerminalsByUser.get(session.user.id) ?? 1;
+      if (now <= 1) openTerminalsByUser.delete(session.user.id);
+      else openTerminalsByUser.set(session.user.id, now - 1);
+    };
 
-    terminal.onData((data) => { send({ type: "terminal.output", data }); });
+    // The one await in this handler that used to be unguarded, while the
+    // socket was still paused: an executor dropping between the attach and
+    // this call (ExecutorOfflineError — the case the 4503 exists for), or a
+    // Docker exec failure, escaped past every refuse() and left the client
+    // on a paused socket waiting out its own timeout for a bare 1006.
+    let terminal: TerminalSession;
+    try {
+      terminal = await handle.openTerminal();
+    } catch (err) {
+      releaseSlot();
+      const offline = err instanceof ExecutorOfflineError;
+      refuse(
+        offline ? 4503 : 4500,
+        offline ? "Machine offline" : "Terminal failed",
+        err instanceof Error ? err.message : "That workspace could not open a terminal.",
+      );
+      return;
+    }
+
+    terminal.onData((data) => {
+      if (socket.bufferedAmount > MAX_BUFFERED_BYTES) return;
+      send({ type: "terminal.output", data });
+    });
     terminal.onClose(() => {
       // Said before the socket goes, so the panel can show "session ended"
       // rather than an indistinguishable "connection lost".
@@ -163,6 +217,7 @@ export function sandboxTerminalWs(app: FastifyInstance) {
     });
 
     socket.on("close", () => {
+      releaseSlot();
       terminal.close();
     });
 
