@@ -135,16 +135,11 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
           No workspace yet — one is created the first time a tool runs.
         </Text>
       )}
-      {/* `size="xs"`, not the `2xs` the rest of this panel uses: `text-2xs` has
-          no token in the Tailwind v4 theme, so on web it compiles to nothing at
-          all — no font size and no line height — and a wrapping paragraph of it
-          overlaps whatever follows. Harmless for the one-line hints elsewhere,
-          not for these. */}
-      <Text testID="agent.inspector.workspace.retention" size="xs" className="text-muted-foreground">
+      <Text testID="agent.inspector.workspace.retention" size="2xs" className="text-muted-foreground">
         {describeRetention(retention)}
       </Text>
       {sandbox?.reap_at && (
-        <Text testID="agent.inspector.workspace.deadline" size="xs" className="text-warning">
+        <Text testID="agent.inspector.workspace.deadline" size="2xs" className="text-warning">
           Deleted {formatDeadline(sandbox.reap_at)} unless this conversation is used again.
         </Text>
       )}
