@@ -56,6 +56,9 @@ export const EXECUTOR_LABEL = "loxaic.executor";
  * document over a local socket is fast — but finite, because the caller is an
  * HTTP request handler. */
 const BINARY_WRITE_TIMEOUT_MS = 120_000;
+/** Longest killExecGroup waits for its own exec to finish: the marker wait
+ * (3s) plus the TERM→KILL grace, with room for a slow engine. */
+const KILL_WAIT_MS = 10_000;
 
 let imageTag: string | null = null;
 
@@ -379,7 +382,15 @@ async function writeBinaryToContainer(
  * re-checked.
  */
 async function killExecGroup(container: Docker.Container, pgidFile: string): Promise<void> {
+  // The marker is *waited for*, bounded, not read once: `exec.start()`
+  // resolves as soon as the stream is hijacked, which can be before the
+  // wrapper shell has been scheduled inside the container and written its
+  // PGID — an abort landing in that window (a loaded engine makes it wide)
+  // found an empty file and silently left the command running. Thirty
+  // tenths of a second is well past any exec start-up; a marker that never
+  // appears means the command already exited and its trap removed it.
   const script =
+    `for i in $(seq 1 30); do [ -s ${pgidFile} ] && break; sleep 0.1; done; ` +
     `PGID=$(cat ${pgidFile} 2>/dev/null); ` +
     `[ -n "$PGID" ] || exit 0; ` +
     `kill -TERM -"$PGID" 2>/dev/null; sleep 0.2; kill -KILL -"$PGID" 2>/dev/null; ` +
@@ -387,15 +398,21 @@ async function killExecGroup(container: Docker.Container, pgidFile: string): Pro
   try {
     const killer = await container.exec({
       Cmd: ["bash", "-c", script],
-      AttachStdout: false,
+      AttachStdout: true,
       AttachStderr: false,
     });
     const s = await killer.start({ hijack: true, stdin: false });
-    // Drained and given a moment to land: without reading it the socket can
-    // be closed before the daemon has run the command.
+    // Drained, and awaited until the killer itself finishes — so "the
+    // command is gone" is true when this returns, which is what the caller
+    // relies on. Bounded, since a wedged engine must not hold the run.
     s.resume();
-    await new Promise((r) => setTimeout(r, 250));
-    s.destroy();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { s.destroy(); resolve(); }, KILL_WAIT_MS);
+      const done = () => { clearTimeout(timer); resolve(); };
+      s.on("end", done);
+      s.on("close", done);
+      s.on("error", done);
+    });
   } catch {
     // A dead container, or an engine that refused the exec — nothing left to
     // kill either way, and the caller has already stopped waiting.
@@ -407,23 +424,35 @@ async function execInContainer(
   command: string[],
   options?: ExecOptions,
 ): Promise<ExecResult> {
-  // Only wrapped when the caller can actually cancel, so every other exec runs
-  // exactly as before. `setsid -w` waits for the child and returns its exit
-  // status, so the wrapper is invisible in the result; the inner shell records
-  // its own PGID (it is the new session's leader, so `$$` *is* the group) for
-  // killExecGroup to find, and clears the file on the way out whether the
-  // command succeeded, failed, or was killed.
+  // A signal that is already aborted means nothing should start — and after
+  // a Stop, every remaining call in a batch arrives here in that state.
+  // Starting the exec and settling "cancelled" at once used to race the
+  // wrapper: the killer read a PGID file the shell had not yet written,
+  // found nothing, and the caller was told exit 130 for a command that then
+  // ran to completion inside the container.
+  if (options?.signal?.aborted) {
+    return { stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false };
+  }
+
+  // Every exec is wrapped, not only a cancellable one: the *timeout* needs
+  // the same marker, and gating it on a signal left a timed-out clone, a
+  // wedged document extraction — the one exec whose input is genuinely
+  // untrusted — or a REST exec merely detached, running until the container
+  // was reaped. `setsid -w` waits for the child and returns its exit status,
+  // so the wrapper is invisible in the result (exec-cancel.test.ts asserts
+  // that); the inner shell records its own PGID (it is the new session's
+  // leader, so `$$` *is* the group) for killExecGroup to find, and clears
+  // the file on the way out whether the command succeeded, failed, or was
+  // killed.
   //
   // Not `exec "$@"`: that replaces the shell, which drops the wrapper — and
   // with it any chance of recording the group before the command starts.
-  const pgidFile = options?.signal ? `/tmp/loxaic-exec-${randomUUID()}.pgid` : null;
-  const cmd = pgidFile
-    ? [
-        "setsid", "-w", "bash", "-c",
-        `trap 'rm -f ${pgidFile}' EXIT; echo $$ > ${pgidFile}; "$@"`,
-        "_", ...command,
-      ]
-    : command;
+  const pgidFile = `/tmp/loxaic-exec-${randomUUID()}.pgid`;
+  const cmd = [
+    "setsid", "-w", "bash", "-c",
+    `trap 'rm -f ${pgidFile}' EXIT; echo $$ > ${pgidFile}; "$@"`,
+    "_", ...command,
+  ];
 
   const exec = await container.exec({
     Cmd: cmd,
@@ -471,8 +500,7 @@ async function execInContainer(
       stream.destroy();
       settle("cancelled");
     }
-    if (signal?.aborted) { onAbort(); }
-    else signal?.addEventListener("abort", onAbort, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     stream.on("end", () => { settle("done"); });
     stream.on("close", () => { settle("done"); });
@@ -490,7 +518,7 @@ async function execInContainer(
   // Kills what the detach above only stopped listening to. Awaited so the
   // command is actually gone before the sandbox is reported free — a
   // cancelled `npm install` still holding the CPU is the bug being fixed.
-  if (pgidFile && outcome !== "done") await killExecGroup(container, pgidFile);
+  if (outcome !== "done") await killExecGroup(container, pgidFile);
 
   let exitCode = timedOut ? 124 : outcome === "cancelled" ? 130 : 0;
   if (outcome === "done") {

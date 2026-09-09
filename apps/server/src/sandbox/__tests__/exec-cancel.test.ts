@@ -124,3 +124,66 @@ describe("cancelling an exec kills the command", () => {
     }, 90_000);
   });
 });
+
+/**
+ * The already-aborted-signal path — after a Stop, every remaining call in a
+ * batch enters exec with `signal.aborted` already true — and the timeout
+ * with no signal at all. Both got the least attention the first time: the
+ * host provider spawned and returned before attending the child's `error`
+ * event, and the container provider started the exec, settled "cancelled"
+ * before the wrapper had written its PGID, and let the command run.
+ */
+describe("a signal that is already aborted never starts the command", () => {
+  it("host provider: returns a stopped result without spawning", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "exec-preaborted-host-"));
+    try {
+      const handle = attachDirectory(dir);
+      const marker = path.join(dir, "ran.txt");
+      const controller = new AbortController();
+      controller.abort();
+      const result = await handle.exec(["bash", "-lc", `echo ran > ${marker}`], { signal: controller.signal });
+      expect(result.exitCode).toBe(130);
+      expect(result.stderr).toContain("stopped by the user");
+      await new Promise((r) => setTimeout(r, 300));
+      const after = await handle.exec(["bash", "-lc", `test -f ${marker} && echo LEAKED || echo clean`], {});
+      expect(after.stdout).toContain("clean");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe.skipIf(!dockerReady)("container provider", () => {
+    let handle: SandboxHandle;
+    beforeAll(async () => {
+      handle = await getContainerProvider().create("exec-preaborted", {});
+    }, 120_000);
+    afterAll(async () => {
+      await handle.destroy().catch(() => undefined);
+    });
+
+    it("returns a stopped result without starting an exec", async () => {
+      const marker = "/tmp/preaborted-ran.txt";
+      const controller = new AbortController();
+      controller.abort();
+      const result = await handle.exec(["bash", "-lc", `echo ran > ${marker}`], { signal: controller.signal });
+      expect(result.exitCode).toBe(130);
+      await new Promise((r) => setTimeout(r, 500));
+      const after = await handle.exec(["bash", "-lc", `test -f ${marker} && echo LEAKED || echo clean`], {});
+      expect(after.stdout).toContain("clean");
+    }, 60_000);
+
+    it("kills a timed-out command that carried no signal at all", async () => {
+      // Document extraction, a clone, the REST exec endpoint: none passes a
+      // signal, and the timeout used to merely detach from them.
+      const marker = "/tmp/timeout-survived.txt";
+      const result = await handle.exec(
+        ["bash", "-lc", `sleep ${String(SLEEP_SECONDS)}; echo survived > ${marker}`],
+        { timeoutMs: 1_000 },
+      );
+      expect(result.exitCode).toBe(124);
+      await new Promise((r) => setTimeout(r, (SLEEP_SECONDS + 2) * 1000));
+      const after = await handle.exec(["bash", "-lc", `test -f ${marker} && echo LEAKED || echo clean`], {});
+      expect(after.stdout).toContain("clean");
+    }, 90_000);
+  });
+});
