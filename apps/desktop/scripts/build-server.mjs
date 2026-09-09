@@ -49,15 +49,20 @@ cpSync(drizzleSrc, path.join(outDir, "drizzle"), { recursive: true });
 // sandbox image on first use — see SANDBOX_BUILD_CONTEXT in
 // container-provider.ts. Podman/Docker still need to be installed
 // separately; this only ships the recipe.
-mkdirSync(path.join(outDir, "sandbox"), { recursive: true });
-cpSync(
-  path.join(repoRoot, "infra/docker/sandbox.Dockerfile"),
-  path.join(outDir, "sandbox/sandbox.Dockerfile"),
-);
+// The *whole* context, not just the Dockerfile: it `COPY`s sandbox/extract.py,
+// and container-provider hashes every file here into the image tag. Shipping
+// the Dockerfile alone produced a context that could not build (the COPY
+// failed) and a tag that silently degraded to `:base` — which is what a
+// packaged app hit the first time anything asked it to build the image, in
+// the local container-isolation stage.
+cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
+  recursive: true,
+  filter: (src) => !src.endsWith("server.Dockerfile"),
+});
 
 // dist/executor.js is the local executor the desktop spawns for Local
 // workspaces (supervisor/executor.js); `ws` is its one runtime dependency.
-for (const required of ["dist/index.js", "dist/executor.js", "node_modules/fastify", "node_modules/ws", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile"]) {
+for (const required of ["dist/index.js", "dist/executor.js", "node_modules/fastify", "node_modules/ws", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }

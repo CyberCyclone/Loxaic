@@ -31,7 +31,7 @@ let unregister: (() => void) | null = null;
 
 /** An "executor" wired straight to a service, answering on the next tick. */
 function inProcessExecutor(executorId: string, userId: string, roots: () => string[]): ExecutorConnection {
-  const service = createExecutorService({ roots });
+  const service = createExecutorService({ roots, executorId });
   return {
     executorId,
     userId,

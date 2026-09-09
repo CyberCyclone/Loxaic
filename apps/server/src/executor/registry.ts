@@ -182,6 +182,7 @@ export function handleExecutorResult(executorId: string, msg: ResultMessage): vo
 /** One open shell on a machine, from the server's side. */
 export interface ExecutorTerminalHandle {
   write(data: string): void;
+  resize(cols: number, rows: number): void;
   close(): void;
 }
 
@@ -211,6 +212,10 @@ export function openExecutorTerminal(
     write(data) {
       if (!entry.terminals.has(terminalId)) return;
       entry.conn.send({ type: "terminal.input", terminalId, data });
+    },
+    resize(cols, rows) {
+      if (!entry.terminals.has(terminalId)) return;
+      entry.conn.send({ type: "terminal.resize", terminalId, cols, rows });
     },
     close() {
       if (!entry.terminals.has(terminalId)) return;

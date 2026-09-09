@@ -10,10 +10,11 @@
  * server's own sandbox posture entirely — `allowNetwork`, host mode,
  * `hostingBlockedReason()` — because nothing here executes on the server.
  *
- * A persisted ref is `<executorId>:<path>`: the id names the socket, the
- * path is the directory's real path on that machine. Split on the first
- * colon, which ws/executor.ts forbids in an id and a Windows drive letter
- * puts second.
+ * A persisted ref is `<executorId>:<ref>`: the id names the socket, and the
+ * rest is what that machine calls the sandbox — the directory's real path for
+ * a direct workspace, or `container:<id>` for a container-isolated one. Split
+ * on the first colon, which ws/executor.ts forbids in an id and a Windows
+ * drive letter puts second.
  */
 import {
   callExecutor,
@@ -23,12 +24,15 @@ import {
   openExecutorTerminal,
 } from "../executor/registry.ts";
 import {
+  CREATE_TIMEOUT_MS,
   DEFAULT_EXEC_TIMEOUT_MS,
   EXEC_TIMEOUT_MARGIN_MS,
+  LOCAL_CONTAINER_PREFIX,
   type CreateResult,
   type ExecCallResult,
   type FileTreeResult,
 } from "../executor/protocol.ts";
+import { CONTAINER_ROOT, CONTAINER_WORKDIR } from "./container-engine.ts";
 import type { CreateSandboxConfig, SandboxHandle, SandboxProvider, TerminalSession } from "./provider.ts";
 
 export function encodeExecutorRef(executorId: string, ref: string): string {
@@ -45,15 +49,37 @@ function isOnline(executorId: string): boolean {
   return getExecutor(executorId) !== null;
 }
 
+/**
+ * Where the sandbox's files sit, from the ref alone. A direct workspace *is*
+ * the folder; a container-isolated one has the image's layout with that
+ * folder mounted at the workdir. Derived here rather than asked for, so an
+ * attach stays a local operation — the executor would otherwise have to be
+ * round-tripped before the handle could say anything about itself.
+ */
+function layoutOf(ref: string): { root: string; workdir: string } {
+  if (isContainerRef(ref)) return { root: CONTAINER_ROOT, workdir: CONTAINER_WORKDIR };
+  return { root: ref, workdir: ref };
+}
+
+/** Whether a shell on this ref will be a real terminal. Derived rather than
+ * asked, for the same reason the layout is: `openTerminal` returns before the
+ * far side has answered anything, and the client is told at that moment. A
+ * container's terminal is a PTY (Docker allocates one inside it); a
+ * directory's is bash over pipes. */
+function isContainerRef(ref: string): boolean {
+  return ref.startsWith(LOCAL_CONTAINER_PREFIX);
+}
+
 function makeHandle(executorId: string, ref: string): SandboxHandle {
+  const layout = layoutOf(ref);
   const call = <T>(method: Parameters<typeof callExecutor>[1], params: object, timeoutMs?: number) =>
     callExecutor<T>(executorId, method, { ref, ...params }, timeoutMs === undefined ? {} : { timeoutMs });
 
   return {
     provider: "executor",
     ref: encodeExecutorRef(executorId, ref),
-    root: ref,
-    workdir: ref,
+    root: layout.root,
+    workdir: layout.workdir,
 
     exec: (command, options) =>
       call<ExecCallResult>(
@@ -92,10 +118,11 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
         },
       });
       return {
-        // Pipe mode, like the host provider it runs: same reason, same
-        // client-side treatment.
-        tty: false,
+        // A container on that machine gives a real PTY; a plain directory is
+        // bash over pipes, like the host provider it runs.
+        tty: isContainerRef(ref),
         write: (data) => { terminal.write(data); },
+        resize: (cols, rows) => { terminal.resize(cols, rows); },
         onData: (listener) => { dataListeners.push(listener); },
         onClose: (listener) => { closeListeners.push(listener); },
         close: () => { terminal.close(); },
@@ -123,10 +150,12 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
       await call("start", {});
     },
 
-    // Neither ever deletes anything on the user's machine (executor/
-    // service.ts returns without touching the directory), so an idle stop or
-    // a reap of an *offline* executor's row has nothing to reach it for:
-    // forgetting the row is the whole operation.
+    // Neither ever touches the user's *folder* — it is theirs and predates
+    // us. For a direct workspace there is nothing else to act on, so
+    // forgetting the row is the whole operation; a container-isolated one has
+    // a container to pause and, for destroy, to remove. Either way an offline
+    // machine has nothing reachable, and skipping is right: the container is
+    // still there when it comes back.
     async stop() {
       if (!isOnline(executorId)) return;
       await call("stop", {}).catch(() => undefined);
@@ -164,10 +193,14 @@ export function getExecutorProvider(): SandboxProvider {
       if (executor.userId !== local.ownerId) {
         throw new Error("This workspace's machine is registered to a different user");
       }
-      const { ref } = await callExecutor<CreateResult>(local.executorId, "create", {
-        path: local.path,
-        isolation: local.isolation,
-      });
+      const { ref } = await callExecutor<CreateResult>(
+        local.executorId,
+        "create",
+        { path: local.path, isolation: local.isolation },
+        // The first container-isolated workspace on a machine builds the
+        // sandbox image, which is minutes rather than seconds.
+        { timeoutMs: CREATE_TIMEOUT_MS },
+      );
       return makeHandle(local.executorId, ref);
     },
 

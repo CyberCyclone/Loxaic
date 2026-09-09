@@ -24,7 +24,8 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import { createInterface } from "node:readline";
 import WebSocket from "ws";
-import { createExecutorService, createRootGuard } from "./service.ts";
+import { containerCapability } from "./container.ts";
+import { createExecutorService, createRefResolver } from "./service.ts";
 import { createExecutorTerminals } from "./terminal.ts";
 import {
   EXECUTOR_PROTOCOL_VERSION,
@@ -48,6 +49,8 @@ const executorId = required("LOXAIC_EXECUTOR_ID");
 const rootsFile = required("LOXAIC_EXECUTOR_ROOTS_FILE");
 const name = process.env.LOXAIC_EXECUTOR_NAME ?? os.hostname();
 
+/** Well inside the server's 10s hello deadline. */
+const CAPABILITY_PROBE_MS = 3_000;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
@@ -64,9 +67,10 @@ function loadRoots(): string[] {
 }
 
 let roots = loadRoots();
-const service = createExecutorService({ roots: () => roots });
+const service = createExecutorService({ roots: () => roots, executorId });
 const terminals = createExecutorTerminals({
-  guard: createRootGuard({ roots: () => roots }),
+  resolver: createRefResolver({ roots: () => roots, executorId }),
+  executorId,
   send: (message) => { send(message); },
 });
 
@@ -94,15 +98,27 @@ function connect(): void {
   ws = socket;
 
   socket.on("open", () => {
-    send({
-      type: "hello",
-      version: EXECUTOR_PROTOCOL_VERSION,
-      executorId,
-      name,
-      platform: process.platform,
-      capabilities: { direct: true, container: false },
-      roots,
-    });
+    // Probed per connection rather than once at startup: someone who starts
+    // Docker after opening the app should get container isolation offered on
+    // the next reconnect rather than after a restart. Bounded, and false on
+    // timeout — a wedged socket must not hold up the hello the server is
+    // waiting for.
+    void Promise.race([
+      containerCapability(),
+      new Promise<boolean>((resolve) => setTimeout(() => { resolve(false); }, CAPABILITY_PROBE_MS)),
+    ])
+      .catch(() => false)
+      .then((container) => {
+        send({
+          type: "hello",
+          version: EXECUTOR_PROTOCOL_VERSION,
+          executorId,
+          name,
+          platform: process.platform,
+          capabilities: { direct: true, container },
+          roots,
+        });
+      });
   });
 
   socket.on("message", (data) => {
@@ -126,8 +142,9 @@ function connect(): void {
       return;
     }
     if (msg.type === "terminal.resize") {
-      // Nothing to resize without a PTY; accepted and ignored so the server
-      // needs no per-provider special case for a message every client sends.
+      // Acted on for a container's PTY, ignored for a pipe session — the
+      // server sends this for either, and does not need to know which.
+      terminals.resize(msg.terminalId, msg.cols, msg.rows);
       return;
     }
     if (msg.type === "terminal.close") {
