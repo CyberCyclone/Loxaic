@@ -236,6 +236,9 @@ export async function runToolLoop(ctx: {
   convId: string;
   userId: string;
   userMsgId: string;
+  /** The user message's lamport, so the run's own inserts are ordered
+   * strictly after it — see `lastLamport` below. */
+  userLamport?: number;
   model: string;
   mode: PermissionMode;
   /** Surface-appropriate system prompt, or null for none. The engine appends
@@ -303,7 +306,11 @@ export async function runToolLoop(ctx: {
     // prompt-prefix break on the conversation's very next turn. Scoped to this
     // one run — only the two inserts below share this counter — so it changes
     // nothing about the cross-device LWW ordering packages/sync relies on.
-    let lastLamport = 0;
+    // Seeded from the user message rather than zero: with a zero seed the
+    // first insert was a bare Date.now(), unguarded against the user message
+    // that had just been written with one — the same tie, at the one
+    // boundary the counter did not cover.
+    let lastLamport = ctx.userLamport ?? 0;
     const nextLamport = (): number => {
       lastLamport = monotonicLamport(lastLamport);
       return lastLamport;
