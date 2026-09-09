@@ -198,7 +198,12 @@ export async function createPull(
       body: JSON.stringify(input),
     });
   } catch (err) {
-    if (err instanceof GithubApiError && err.status === 422) {
+    // 422 is GitHub's whole validation family for this endpoint — "No commits
+    // between base and head", an unknown head, base equal to head — and only
+    // one of them is "already exists". The message is the discriminator
+    // (`errors[].message`, which the error text carries), so the rest reach
+    // the caller as the GithubApiError they are.
+    if (err instanceof GithubApiError && err.status === 422 && /already exists/i.test(err.message)) {
       throw new GithubPullExistsError(err.message);
     }
     throw err;

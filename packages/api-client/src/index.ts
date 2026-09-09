@@ -918,8 +918,10 @@ export interface GitStatus {
   baseBranch: string;
   pr: { number: number; url: string } | null;
   changed?: { path: string; status: string }[];
-  ahead?: number;
-  behind?: number;
+  /** Null when the server could not count — the base ref was never fetched —
+   * which the panel shows as unknown rather than as 0. */
+  ahead?: number | null;
+  behind?: number | null;
 }
 
 export class GitActionError extends Error {

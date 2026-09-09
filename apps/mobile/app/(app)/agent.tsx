@@ -125,9 +125,12 @@ export default function AgentScreen() {
       ? {
           status: gitPanel.status,
           disabled: gitPanel.busy || busy,
-          onCommit: (message: string) => { void gitPanel.commit(message); },
+          gitBusy: gitPanel.busy,
+          // useGitPanel resolves null on failure (it has shown the toast);
+          // the boolean is what lets the panel clear a field on success only.
+          onCommit: (message: string) => gitPanel.commit(message).then((r) => r !== null),
           onPush: () => { void gitPanel.push(); },
-          onOpenPr: (title: string) => { void gitPanel.openPr(title); },
+          onOpenPr: (title: string) => gitPanel.openPr(title).then((r) => r !== null),
         }
       : null;
   const [chooserOpen, setChooserOpen] = useState(false);

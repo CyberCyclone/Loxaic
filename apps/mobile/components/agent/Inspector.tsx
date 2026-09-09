@@ -31,10 +31,16 @@ import type { Todo } from '@loxaic/api-client';
  * -tripping to a server that would refuse it anyway. */
 export interface GitPanelControls {
   status: GitStatus | null;
+  /** No action may start: a git action is in flight *or* the agent is
+   * running (the server 409s then). */
   disabled: boolean;
-  onCommit: (message: string) => void;
+  /** A git action is in flight — the only thing the spinner may mean. */
+  gitBusy: boolean;
+  /** Resolve true on success, so the field can be cleared then and not
+   * before: a failed commit used to empty the message the user typed. */
+  onCommit: (message: string) => Promise<boolean>;
   onPush: () => void;
-  onOpenPr: (title: string) => void;
+  onOpenPr: (title: string) => Promise<boolean>;
 }
 
 const TODO_ICON: Record<Todo['status'], typeof Check> = {
@@ -153,11 +159,13 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
 function GitSection({ git }: { git: GitPanelControls }) {
   const [message, setMessage] = useState('');
   const [prTitle, setPrTitle] = useState('');
-  const { status, disabled, onCommit, onPush, onOpenPr } = git;
+  const { status, disabled, gitBusy, onCommit, onPush, onOpenPr } = git;
   if (!status) return null;
 
   const changed = status.changed ?? [];
-  const ahead = status.ahead ?? 0;
+  // Null is "could not count" (the base ref was never fetched), shown as
+  // unknown; only a real 0 disables Push.
+  const ahead = status.ahead ?? null;
 
   return (
     <VStack space="xs">
@@ -170,7 +178,7 @@ function GitSection({ git }: { git: GitPanelControls }) {
         </Text>
         {status.cloned && (
           <Text testID="agent.inspector.git.aheadBehind" size="xs" className="text-muted-foreground">
-            {ahead} ahead · {status.behind ?? 0} behind {status.baseBranch}
+            {ahead ?? '?'} ahead · {status.behind ?? '?'} behind {status.baseBranch}
           </Text>
         )}
       </HStack>
@@ -190,7 +198,9 @@ function GitSection({ git }: { git: GitPanelControls }) {
               placeholder="Commit message"
               value={message}
               onChangeText={setMessage}
-              editable={!disabled && changed.length > 0}
+              // Drafting is allowed while the agent works — that is when a
+              // message is most naturally composed; only *committing* waits.
+              editable={!gitBusy}
             />
           </Input>
           <HStack space="xs">
@@ -200,11 +210,13 @@ function GitSection({ git }: { git: GitPanelControls }) {
               className="flex-1"
               isDisabled={disabled || changed.length === 0 || message.trim().length === 0}
               onPress={() => {
-                onCommit(message.trim());
-                setMessage('');
+                void onCommit(message.trim()).then((ok) => { if (ok) setMessage(''); });
               }}
             >
-              {disabled ? <ButtonSpinner /> : <ButtonText>Commit</ButtonText>}
+              {/* The spinner means a commit is happening — not that the
+                  agent is, which `disabled` also covers and which can last
+                  minutes. */}
+              {gitBusy ? <ButtonSpinner /> : <ButtonText>Commit</ButtonText>}
             </Button>
             <Button
               testID="agent.inspector.git.push"
@@ -241,7 +253,7 @@ function GitSection({ git }: { git: GitPanelControls }) {
                 placeholder="Pull request title"
                 value={prTitle}
                 onChangeText={setPrTitle}
-                editable={!disabled}
+                editable={!gitBusy}
               />
             </Input>
             <Button
@@ -249,7 +261,9 @@ function GitSection({ git }: { git: GitPanelControls }) {
               size="sm"
               variant="outline"
               isDisabled={disabled || prTitle.trim().length === 0}
-              onPress={() => { onOpenPr(prTitle.trim()); }}
+              onPress={() => {
+                void onOpenPr(prTitle.trim()).then((ok) => { if (ok) setPrTitle(''); });
+              }}
             >
               <ButtonText>Open pull request</ButtonText>
             </Button>
