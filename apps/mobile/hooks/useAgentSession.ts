@@ -560,8 +560,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     }
     // Set before the frame goes out, so the acknowledgement is immediate
     // rather than waiting on a round trip the run may take a while to answer.
+    // `wsRef.current` is never nulled on close (a reconnect just re-assigns
+    // it), so the guard above passes with a CLOSED socket in hand during a
+    // reconnect. stopStream refuses to send on one and says so; without
+    // reading that, the header showed "Stopping…" with the button disabled
+    // until the run ended on its own — the shape of #113 again.
+    if (!stopStream(wsRef.current, stream.streamId)) {
+      showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
     setStoppingConvId(id);
-    stopStream(wsRef.current, stream.streamId);
   }, [showToast]);
 
   /** See useChatSession's handleCommand: no optimistic bubble, since a

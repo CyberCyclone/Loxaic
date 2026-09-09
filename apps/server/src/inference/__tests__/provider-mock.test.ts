@@ -36,6 +36,27 @@ describe("mockStream (via streamCompletion, MOCK_INFERENCE=true)", () => {
     expect(finalText).toContain("describe it");
   });
 
+  it("aborts the slow path the way a real backend's fetch does, rather than replying in full", async () => {
+    // The signal used to only cut the sleep short; the whole reply then
+    // streamed and the turn ended *complete* — the user got the answer they
+    // asked to stop, and the mock lane could not observe cancellation.
+    const controller = new AbortController();
+    setTimeout(() => { controller.abort(); }, 100);
+    const started = Date.now();
+    const events: string[] = [];
+    await expect(
+      (async () => {
+        for await (const event of streamCompletion("mock-model", [{ role: "user" as const, content: "take your time" }], {
+          signal: controller.signal,
+        })) {
+          events.push(event.type);
+        }
+      })(),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    expect(events).not.toContain("done");
+  });
+
   it("says nothing about images for a plain text-only message", async () => {
     const messages = [{ role: "user" as const, content: "hello" }];
 

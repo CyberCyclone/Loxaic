@@ -586,10 +586,38 @@ export async function runToolLoop(ctx: {
           chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
-        const outcome = await runOneToolCall(
-          { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot, signal: abort.signal },
-          call,
-        );
+        let outcome: Awaited<ReturnType<typeof runOneToolCall>>;
+        try {
+          outcome = await runOneToolCall(
+            { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot, signal: abort.signal },
+            call,
+          );
+        } catch (err) {
+          if (!(err instanceof RunSlotAbortedError)) throw err;
+          // Stopped at this call's approval prompt: the approval handed the
+          // inference slot back, and re-entering the queue for an aborted run
+          // throws. Nothing ran for *this* call, so it is recorded exactly
+          // like a skipped one — which is what keeps the calls before it,
+          // which did run and did write, in the transcript and the prompt.
+          // Letting the throw escape the loop used to skip the insert below
+          // and discard those results: the model then had no record that a
+          // file it had written existed, and the user watched a result
+          // arrive live that was gone after a reload. The per-call check
+          // above skips the rest; the abort branch after the insert ends the
+          // turn.
+          const output = "Stopped by the user before this tool call ran.";
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output,
+            ok: false,
+          });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
+          continue;
+        }
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
