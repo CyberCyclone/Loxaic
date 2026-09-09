@@ -306,7 +306,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           return [...inFlight, ...merged];
         });
         if (scope) writeCachedList(scope.endpoint, scope.userId, merged);
-        if (convs.length > 0 && !activeIdRef.current) setActiveId(convs[0].id);
+        // From the *filtered* list, not the raw one. Selecting `convs[0]`
+        // meant Chat could open — and then send into — an agent run: the list
+        // hid it, but the active id still pointed at it, so a message typed
+        // under Chat was written to an agent conversation. Worse than the
+        // display leak it accompanied, because it misroutes user content
+        // rather than just showing an extra row (#117).
+        if (merged.length > 0 && !activeIdRef.current) setActiveId(merged[0].id);
       })
       .catch((err: unknown) => {
         if (isUnreachableError(err)) setConnectionState('offline');
