@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
@@ -171,6 +171,32 @@ describe("a local workspace runs on the executor", () => {
     } finally {
       Reflect.deleteProperty(process.env, "SANDBOX_MODE");
     }
+  });
+});
+
+describe("cancellation on the executor path", () => {
+  it("sends nothing at all for a signal that is already aborted", async () => {
+    // After a Stop every remaining call in a batch arrives so; the other two
+    // providers do not start the command, and neither should a call to the
+    // user's machine — a cancel racing the call it names was the old shape.
+    const calls: string[] = [];
+    const inner = inProcessExecutor("laptop-preaborted", ownerId, () => [root]);
+    unregister = registerExecutor({
+      ...inner,
+      send(message) {
+        if (message.type === "call") calls.push(message.method);
+        inner.send(message);
+      },
+    });
+    const convId = await localConversation("laptop-preaborted", root);
+    const handle = await getConversationSandbox(ownerId, convId);
+    const before = calls.length;
+    const controller = new AbortController();
+    controller.abort();
+    const result = await handle.exec(["bash", "-lc", `echo ran > ${path.join(root, "ran.txt")}`], { signal: controller.signal });
+    expect(result.exitCode).toBe(130);
+    expect(calls.length).toBe(before);
+    expect(existsSync(path.join(root, "ran.txt"))).toBe(false);
   });
 });
 

@@ -152,6 +152,22 @@ describe("calls", () => {
 });
 
 describe("cancelling a call", () => {
+  it("sends the call before the cancel that names it, for a signal already aborted", async () => {
+    // A cancel that arrived first landed in an empty map on the executor
+    // and was dropped; the call then ran to completion on the user's
+    // machine — the batch-Stop case, still open on this path.
+    const controller = new AbortController();
+    controller.abort();
+    const conn = fakeConnection({});
+    registerExecutor(conn);
+    const pending = callExecutor("machine-a", "exec", { command: ["sleep", "5"] }, { timeoutMs: 50, signal: controller.signal });
+    expect(conn.sent.map((m) => m.type)).toEqual(["call", "exec.cancel"]);
+    const call = conn.sent[0];
+    const cancel = conn.sent[1];
+    expect(cancel.type === "exec.cancel" && call.type === "call" && cancel.id === call.id).toBe(true);
+    await expect(pending).rejects.toBeInstanceOf(ExecutorTimeoutError);
+  });
+
   it("sends exec.cancel naming the call, and still settles on the executor's own answer", async () => {
     // Cancellation deliberately does not settle the promise here: the
     // executor kills the command and then answers the original call, so the

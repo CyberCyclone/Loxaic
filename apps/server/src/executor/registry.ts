@@ -322,16 +322,21 @@ export async function callExecutor<T>(
       reject: (err) => { cleanup(); reject(err); },
       timer,
     });
-    if (opts.signal?.aborted) onAbort();
-    else opts.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       entry.conn.send({ type: "call", id, method, params });
     } catch (err) {
       entry.pending.delete(id);
       clearTimeout(timer);
-      opts.signal?.removeEventListener("abort", onAbort);
       reject(err instanceof Error ? err : new Error(String(err)));
+      return;
     }
+    // After the call, never before it: a cancel names an id the executor
+    // only learns from the `call` frame, so one sent first landed in an empty
+    // map and was dropped — and the command then ran to completion on the
+    // user's machine. (The providers short-circuit an already-aborted signal
+    // before reaching here; this ordering is the second lock.)
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

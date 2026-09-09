@@ -88,6 +88,12 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
       // group on its own machine and answers the original call normally, so
       // partial output survives (#119).
       const { signal, ...wireOptions } = options ?? {};
+      // Nothing is sent for a signal that is already aborted — after a Stop
+      // every remaining call in a batch arrives so — matching the container
+      // and host providers, which do not start the command either.
+      if (signal?.aborted) {
+        return Promise.resolve({ stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false });
+      }
       return callExecutor<ExecCallResult>(
         executorId,
         "exec",
