@@ -257,6 +257,20 @@ export async function patchSandboxSettings(patch: Record<string, unknown>): Prom
   }
 }
 
+/** Opens Settings and navigates to the GitHub connection screen. Waits for
+ * either state the screen can load into — connected (`github.status`) or not
+ * (`github.token`, the connect form) — since which one appears depends on
+ * whether an earlier step in the same spec already connected. */
+export async function openGithubSettings(timeout = 20_000): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.settings');
+  await tap('settings.nav.github');
+  await browser.waitUntil(
+    async () => (await isVisible('github.status')) || (await isVisible('github.token')),
+    { timeout, interval: 300, timeoutMsg: `neither github.status nor github.token appeared within ${String(timeout)}ms` },
+  );
+}
+
 /** Restores run concurrency to "follow the backend". Global server state, so
  * a spec that pins it must reset in an `after()` hook — the same rule the
  * sandbox settings carry, and for the same reason: every later spec inherits
