@@ -68,6 +68,10 @@ export async function executeTool(
   handle: SandboxHandle | null,
   tool: ToolName,
   args: Record<string, unknown>,
+  /** The run's abort signal, so Stop reaches a command already executing —
+   * only `bash` is long-running enough for it to matter, but it costs nothing
+   * to offer and a future slow tool gets it for free (#119). */
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
     if (toolNeedsSandbox(tool)) {
@@ -78,7 +82,7 @@ export async function executeTool(
         case "fs_read":  return await runFsRead(handle, args);
         case "fs_write": return await runFsWrite(handle, args);
         case "fs_edit":  return await runFsEdit(handle, args);
-        case "bash":     return await runBash(handle, args);
+        case "bash":     return await runBash(handle, args, signal);
         case "grep":     return await runGrep(handle, args);
         case "glob":     return await runGlob(handle, args);
       }
@@ -192,11 +196,16 @@ async function runFsEdit(handle: SandboxHandle, args: Record<string, unknown>): 
 
 // ── Shell / search ────────────────────────────────────────
 
-async function runBash(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
+async function runBash(
+  handle: SandboxHandle,
+  args: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<ToolResult> {
   const command = requireString(args, "command");
   const res = await handle.exec(["bash", "-lc", command], {
     workdir: handle.workdir,
     timeoutMs: 60_000,
+    ...(signal ? { signal } : {}),
   });
   const body = [res.stdout, res.stderr].filter((s) => s.trim() !== "").join("\n");
   return {

@@ -1262,6 +1262,40 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `data-testid` absent from the DOM, feature visibly working in a screenshot) means "rebuild the
   export," not "debug the component."
 
+### Killing a command inside a container
+
+- **The Docker Engine API has no kill-exec call**, and that is the API we speak to *every*
+  engine through dockerode — `Exec` offers `start`, `resize`, `inspect` and nothing else. So
+  Docker, Podman, OrbStack and Colima all behave identically here; it is not a Docker quirk to
+  work around by preferring another engine (verified directly: Podman leaves an exec's process
+  running after the client detaches, exactly as Docker does).
+- **So the kill happens inside the container's own userspace.** A cancellable exec runs as
+  `setsid -w bash -c 'trap … EXIT; echo $$ > <pgidfile>; "$@"' _ <command>`, and cancelling is an
+  ordinary second exec that reads the file and signals the **process group**. Engine-agnostic by
+  construction, because nothing is asked of the engine beyond running a command.
+- **`setsid -w`, not bare `setsid`.** Plain `setsid` forks and the parent exits immediately, so
+  the exec would report success the instant the command *started*. `-w` waits and returns the
+  child's status, which is what keeps the wrapper invisible in the result.
+- **Not `exec "$@"`.** That replaces the wrapper shell, so anything it was holding — the marker,
+  the chance to record the group — is gone before the command runs.
+- **A PGID file, not `pgrep -f <marker>`.** The marker appears in `setsid`'s own argv too, and
+  `setsid` is *not* in the new group — so pgrep's first match leads to killing the wrong group
+  and leaving the real tree alive. `$$` recorded from inside the new session is unambiguous.
+- **Kill the group, not the pid**: `bash -lc "npm install"` has grandchildren and they are what
+  hold the CPU. The host provider spawns `detached: true` for the same reason — its old timeout
+  `SIGKILL`ed only the direct child and left the rest running.
+- **This fixed the timeout as much as it fixed Stop.** A container command that blew its 60s cap
+  was never killed, only detached from; it kept running until the container was reaped. Both
+  paths now go through the same kill.
+- **Only wrapped when a signal is passed**, so every other exec's argv is untouched — and
+  `exec-cancel.test.ts` guards the wrapper itself: an uncancelled wrapped command must still
+  return its own stdout, stderr and exit code, since every `bash` tool call now carries a signal
+  and a wrapper that swallowed those would break the product while the cancellation cases stayed
+  green.
+- Needs `setsid -w` from util-linux: present in the Ubuntu-based sandbox image, **absent from
+  busybox**, so a base-image change needs this re-checked. (Alpine's `ps` also lacks `-o pgid`,
+  which is how the first draft was caught.)
+
 ### Stopping a run
 
 - **A stop is only as good as the places that check the signal.** `stream.stop` calls
@@ -1281,9 +1315,11 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `RunSlotAbortedError`, which ends the turn before any tool executes — so that run keeps its
   calls with *no* results at all, which is the orphan case again and is why the stripping
   matters. Do not "fix" it by persisting partial results there; the run is over.
-- **What is still not cancellable is an in-flight `exec`.** Killing a running `bash` inside a
-  container means teaching all three providers to cancel, which this did not do. The bound is
-  therefore one tool call (`bash` is capped at 60s), not a whole batch, and not five minutes.
+- **An in-flight `exec` is cancellable on the container and host providers, not the executor.**
+  `ExecOptions.signal` carries the run's abort signal; the executor provider **strips it** before
+  putting options on the wire (an `AbortSignal` serialises to `{}`, which would look like support
+  and not be) — cancelling on someone else's machine needs an `exec.cancel` message and is a
+  separate change. A command there is still bounded by `timeoutMs`.
 - **`stopping` is a client-side run state with no server counterpart.** The run really is
   still running until its stream ends; the state exists because pressing Stop changed nothing
   on screen, so a correct-but-not-instant stop looked broken. Keyed by conversation id (not a
