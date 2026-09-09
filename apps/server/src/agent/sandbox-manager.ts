@@ -2,6 +2,7 @@ import { and, db, eq, inArray, lt, ne } from "@loxaic/db";
 import { conversations, sandboxes } from "@loxaic/db/schema";
 import { getProviderByKind, getSandboxProvider } from "../sandbox/provider.ts";
 import type { CreateSandboxConfig, SandboxHandle, SandboxKind, SandboxProvider } from "../sandbox/provider.ts";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import type { Workspace } from "@loxaic/types";
 import { loadWorkspace } from "./workspace.ts";
 import { getConnection, getOwnerToken } from "../github/connection.ts";
@@ -110,15 +111,47 @@ export async function attachRunningSandbox(row: {
   id: string;
   containerId: string;
   provider: string;
+  status?: string;
+  ownerId?: string;
+  conversationId?: string | null;
 }): Promise<SandboxHandle | null> {
   const provider = await getProviderByKind(row.provider as SandboxKind);
   const handle = await provider.attach(row.containerId).catch(() => null);
   if (!handle) return null;
-  if (!(await resume(handle))) {
+  // Waking a paused sandbox is the transition the per-user cap guards — it is
+  // what makes one *running* again — so the cap applies here exactly as it
+  // does in createEntry. A row with no owner in hand cannot be counted, and
+  // executor sandboxes hold nothing this server pays for.
+  const wakes = row.status === "stopped" && row.provider !== "executor" && row.ownerId !== undefined;
+  if (wakes) await assertUnderUserLimit(row.ownerId as string);
+  let resumed: boolean;
+  try {
+    resumed = await resume(handle);
+  } finally {
+    if (wakes) releaseSandboxSlot(row.ownerId as string);
+  }
+  if (!resumed) {
     await markDestroyed(row.id);
     return null;
   }
   await markRunning(row.id);
+  // Under the idle timer like any other live sandbox. `stopIdleSandboxes`
+  // walks only this process's `active` map, so a sandbox woken through the
+  // terminal or the files API and never registered here would run for the
+  // life of the process however long it sat untouched — and occupy a slot of
+  // the running cap the whole time. Registered only when no *other* sandbox
+  // is already active for the conversation, since the map is keyed by it.
+  if (row.conversationId) {
+    const current = active.get(row.conversationId);
+    if (!current || current.ref === row.containerId) {
+      active.set(row.conversationId, {
+        rowId: row.id,
+        provider: row.provider as SandboxKind,
+        ref: row.containerId,
+        lastUsedAt: Date.now(),
+      });
+    }
+  }
   return handle;
 }
 
@@ -305,6 +338,15 @@ async function createEntry(
   conversationId: string,
   workspace: Workspace,
 ): Promise<Entry> {
+  // The row's owner is the *conversation's* owner, never whoever triggered
+  // the tool call — see createEntryReserved for why. Loaded here, first,
+  // because the recovery query below is scoped to it too.
+  const conversation = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+    columns: { ownerId: true },
+  });
+  const ownerId = conversation?.ownerId ?? userId;
+
   // A previous process may have left a usable sandbox recorded in the DB —
   // but only if it was created under the *same* provider kind as the one
   // active now; a row left over from a prior SANDBOX_MODE is dead weight.
@@ -321,23 +363,47 @@ async function createEntry(
   // its checkout, and whatever it installed, so the right answer to someone
   // returning the next morning is to start it again rather than hand them an
   // empty directory and a re-clone. Only "destroyed" is terminal.
+  //
+  // It *is* scoped to the conversation owner's rows, though. `POST
+  // /v1/sandboxes` takes a `conversation_id`, and until it checked the
+  // caller's role on that conversation (routes/sandbox.ts) any signed-in user
+  // could plant a row here naming someone else's conversation — this lookup
+  // would then hand the victim's agent a sandbox the attacker owned and could
+  // exec into. The route check closes the door; this predicate is what keeps
+  // a planted row harmless should another door ever open, since every
+  // legitimate row is written with the owner's id (createEntryReserved).
   const existing = await db.query.sandboxes.findFirst({
     where: and(
       eq(sandboxes.conversationId, conversationId),
+      eq(sandboxes.ownerId, ownerId),
       inArray(sandboxes.status, ["running", "stopped"]),
       eq(sandboxes.provider, provider.kind),
     ),
   });
   if (existing) {
     const handle = await provider.attach(existing.containerId);
-    if (await resume(handle)) {
+    // Waking a paused sandbox is the transition the per-user cap is about — it
+    // is what makes one *running* again — so it is checked here as well as on
+    // creation. Without this the cap was defeatable by cycling: pause N
+    // sandboxes, create N more, then resume the first N.
+    const wakes = existing.status === "stopped" && provider.kind !== "executor";
+    if (wakes) await assertUnderUserLimit(ownerId);
+    let resumed: boolean;
+    try {
+      resumed = await resume(handle);
+    } finally {
+      if (wakes) releaseSandboxSlot(ownerId);
+    }
+    if (resumed) {
       const entry: Entry = { rowId: existing.id, provider: provider.kind, ref: existing.containerId, lastUsedAt: Date.now() };
       await markRunning(existing.id);
       active.set(conversationId, entry);
       return entry;
     }
-    // Attached to a ref the engine no longer knows: the row is a tombstone for
-    // something already gone, so record that rather than leaving it as a
+    // resume() answers false only for a sandbox that is *definitely* gone;
+    // anything else — an engine that did not answer — threw above and reached
+    // the caller as an error to retry. So this row is a tombstone for
+    // something already gone, and recording that beats leaving it as a
     // "stopped" sandbox the user could be told still holds their work.
     await markDestroyed(existing.id);
   }
@@ -357,13 +423,15 @@ async function createEntry(
   // Not for executor sandboxes: those run on the user's own machine and
   // cost this server nothing to hold open.
   if (provider.kind === "executor") {
-    return createEntryReserved(provider, userId, conversationId, workspace);
+    return createEntryReserved(provider, userId, ownerId, conversationId, workspace);
   }
-  await assertUnderUserLimit(userId);
+  // Counted against the owner, whose row this becomes — the same id the
+  // resume path above reserves against, so the two agree.
+  await assertUnderUserLimit(ownerId);
   try {
-    return await createEntryReserved(provider, userId, conversationId, workspace);
+    return await createEntryReserved(provider, userId, ownerId, conversationId, workspace);
   } finally {
-    releaseSandboxSlot(userId);
+    releaseSandboxSlot(ownerId);
   }
 }
 
@@ -411,17 +479,13 @@ async function createConfigFor(ownerId: string, workspace: Workspace): Promise<C
 async function createEntryReserved(
   provider: SandboxProvider,
   userId: string,
+  ownerId: string,
   conversationId: string,
   workspace: Workspace,
 ): Promise<Entry> {
-  // The row's owner is the *conversation's* owner, never whoever triggered
-  // the tool call — see the insert below for why. Loaded first because the
-  // clone credentials are the owner's too.
-  const conversation = await db.query.conversations.findFirst({
-    where: eq(conversations.id, conversationId),
-    columns: { ownerId: true },
-  });
-  const ownerId = conversation?.ownerId ?? userId;
+  // `ownerId` is the *conversation's* owner, never whoever triggered the tool
+  // call — see the insert below for why, and createEntry for where it is
+  // loaded. The clone credentials are the owner's too.
   const config = await createConfigFor(ownerId, workspace);
   const handle = await provider.create(userId, config);
   // Every sandbox route — terminal, exec, file read/write — authorizes on
@@ -462,8 +526,14 @@ async function resume(handle: SandboxHandle): Promise<boolean> {
   try {
     await handle.start();
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // Only the provider's own "gone" answer is false. Everything else — the
+    // engine unreachable, the user's machine offline, a timeout — is rethrown
+    // as itself: this used to swallow every error, and a transient failure
+    // then marked a paused workspace destroyed, after which the boot sweep
+    // deleted the container that was still holding the work.
+    if (err instanceof SandboxGoneError) return false;
+    throw err;
   }
 }
 
@@ -618,12 +688,14 @@ export async function reapAbandonedSandboxes(
  * and it is the only thing besides the abandoned reaper that may delete one.
  */
 export async function destroyConversationSandboxes(conversationId: string): Promise<number> {
-  const cached = active.get(conversationId);
-  if (cached) active.delete(conversationId);
   // An in-flight creation would otherwise insert its row *after* the query
-  // below and outlive the deletion of the conversation it belongs to.
+  // below and outlive the deletion of the conversation it belongs to — and it
+  // ends by putting its entry in `active`, so it is awaited *before* the map
+  // is cleared. Clearing first left the map holding an entry whose row and
+  // container had just been destroyed.
   const inFlight = pending.get(conversationId);
   if (inFlight) await inFlight.catch(() => undefined);
+  active.delete(conversationId);
 
   const rows = await db.query.sandboxes
     .findMany({
@@ -774,8 +846,14 @@ async function stopStrayRunning(
     const provider = await getProviderByKind(row.provider as SandboxKind);
     const handle = await provider.attach(row.containerId).catch(() => null);
     if (!handle) continue;
-    if (!(await handle.isRunning().catch(() => false))) continue;
-    await handle.stop().catch(() => undefined);
+    // A sandbox that exists but is not running is exactly `stopped`, and the
+    // row is corrected to say so. It used to be skipped, which after a host
+    // reboot — every container down, every row still "running" — left the
+    // user counted at the cap by rows nothing would ever reconcile. Not
+    // existing is different: that can be gone or merely unreachable, and the
+    // row is left alone on no evidence (markDeadRowsDestroyed decides).
+    if (!(await handle.exists().catch(() => false))) continue;
+    if (await handle.isRunning().catch(() => false)) await handle.stop().catch(() => undefined);
     await markStopped(row.id);
     stopped++;
   }

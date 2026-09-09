@@ -431,12 +431,27 @@ export async function loadServerSettings(): Promise<void> {
     });
     persistedInference = coerceInference(inferenceRow?.value);
     loadFailed = false;
+    warnOnRetentionPair();
   } catch (err) {
     persisted = {};
     loadFailed = true;
     console.error(
       "[settings] could not read server_settings — agent sandboxes are disabled until this is fixed: " +
         (err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
+/** The one place an env-pinned `SANDBOX_REAP_AFTER_MS <= SANDBOX_IDLE_STOP_MS`
+ * is reported: the API refuses to write either field while pinned, so a
+ * warning at load is the only message an operator can act on. The reaper
+ * still runs — deleting sooner than pausing is wrong, not fatal. */
+function warnOnRetentionPair(): void {
+  const s = getSandboxSettings();
+  if (s.reapAfterMs <= s.idleStopMs) {
+    console.warn(
+      `[settings] SANDBOX_REAP_AFTER_MS (${String(s.reapAfterMs)}) is not longer than SANDBOX_IDLE_STOP_MS ` +
+        `(${String(s.idleStopMs)}) — sandboxes may be deleted before they are paused`,
     );
   }
 }
@@ -558,14 +573,23 @@ function validate(input: unknown): SandboxSettingsPatch {
   // is still in active use — the two timers would be racing over the same
   // sandbox. Checked against the *resolved* pair, not just the patch, so
   // lowering one to below the other's existing value is caught too.
+  //
+  // Only when the patch touches one of the two, though. An inconsistent pair
+  // pinned by the environment cannot be fixed through this API (both fields
+  // 409), and checking it on every write would then reject unrelated ones —
+  // including `{ mode: "off" }`, the one call an admin makes to stop
+  // execution while sorting the misconfiguration out. That pair is reported
+  // at load time instead (loadServerSettings).
   const resolved = getSandboxSettings();
-  const idleStop = patch.idleStopMs ?? resolved.idleStopMs;
-  const reapAfter = patch.reapAfterMs ?? resolved.reapAfterMs;
-  if (reapAfter <= idleStop) {
-    throw new SettingsError(
-      "reapAfterMs must be longer than idleStopMs — sandboxes are paused before they are ever deleted",
-      "invalid",
-    );
+  if (patch.idleStopMs !== undefined || patch.reapAfterMs !== undefined) {
+    const idleStop = patch.idleStopMs ?? resolved.idleStopMs;
+    const reapAfter = patch.reapAfterMs ?? resolved.reapAfterMs;
+    if (reapAfter <= idleStop) {
+      throw new SettingsError(
+        "reapAfterMs must be longer than idleStopMs — sandboxes are paused before they are ever deleted",
+        "invalid",
+      );
+    }
   }
 
   // "custom" without a socket would silently fall back to auto-discovery,

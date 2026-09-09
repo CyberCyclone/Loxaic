@@ -24,6 +24,7 @@ import {
   makeHandle,
 } from "../sandbox/container-engine.ts";
 import type { SandboxHandle } from "../sandbox/provider.ts";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import { LOCAL_CONTAINER_PREFIX } from "./protocol.ts";
 
 /** The bind source, kept on the container so an attach can re-check it
@@ -146,8 +147,12 @@ export async function attachLocalContainer(
   try {
     const info = await docker.getContainer(id).inspect();
     labels = info.Config.Labels;
-  } catch {
-    throw new ContainerRefError("That container no longer exists on this machine.");
+  } catch (err) {
+    // Only a 404 is "gone"; an engine that did not answer is not evidence of
+    // anything, and the server must not record it as destroyed.
+    const status = (err as { statusCode?: unknown } | null)?.statusCode;
+    if (status === 404) throw new SandboxGoneError("That container no longer exists on this machine.");
+    throw err;
   }
   if (labels[EXECUTOR_LABEL] !== executorId) {
     throw new ContainerRefError("That container was not created by Loxaic on this machine.");

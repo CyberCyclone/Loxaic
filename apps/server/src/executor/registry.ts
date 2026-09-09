@@ -15,6 +15,7 @@
  * command that overruns comes back as a real exit code with its output.
  */
 import { randomUUID } from "node:crypto";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
   executorOfflineMessage,
@@ -176,6 +177,7 @@ export function handleExecutorResult(executorId: string, msg: ResultMessage): vo
   entry.pending.delete(msg.id);
   clearTimeout(p.timer);
   if (msg.ok) p.resolve(msg.value);
+  else if (msg.code === "gone") p.reject(new SandboxGoneError(msg.error));
   else p.reject(new ExecutorCallError(msg.error));
 }
 

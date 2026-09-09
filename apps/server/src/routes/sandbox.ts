@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq } from "@loxaic/db";
+import { and, desc, eq, ne } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
+import { hasRole } from "../streams/authz";
 import { resolvePath } from "../agent/executor.ts";
 import {
   assertUnderUserLimit,
@@ -57,6 +58,18 @@ export function sandboxRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: sandboxDisabledReason() });
     }
     const kind: SandboxKind = mode;
+    // A row that names a conversation is the one the tool loop will adopt for
+    // it (sandbox-manager's createEntry), so naming one is a claim on that
+    // conversation's execution — owner-only, like every other sandbox route.
+    // This field used to be stored unchecked, which let any signed-in user
+    // plant a sandbox they owned under someone else's conversation and have
+    // that person's agent run inside it. Not-found and not-yours are the same
+    // 404, matching the conversation routes.
+    if (conversation_id !== undefined) {
+      if (typeof conversation_id !== "string" || !(await hasRole(userId, conversation_id, "owner"))) {
+        return reply.code(404).send({ error: "Not found" });
+      }
+    }
     // Host mode has real network access unlike a container's NetworkMode:
     // none, so it *could* clone — but the REST surface is broad (any
     // signed-in user, no per-repo scoping), and giving host execution a
@@ -142,7 +155,7 @@ export function sandboxRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>("/v1/sandboxes/:id/exec", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const sandbox = await db.query.sandboxes.findFirst({
-      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId)),
+      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId), ne(sandboxes.status, "destroyed")),
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
@@ -156,7 +169,7 @@ export function sandboxRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/v1/sandboxes/:id/files", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const sandbox = await db.query.sandboxes.findFirst({
-      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId)),
+      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId), ne(sandboxes.status, "destroyed")),
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
@@ -174,7 +187,7 @@ export function sandboxRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/v1/sandboxes/:id/files/read", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const sandbox = await db.query.sandboxes.findFirst({
-      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId)),
+      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId), ne(sandboxes.status, "destroyed")),
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
@@ -194,7 +207,7 @@ export function sandboxRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>("/v1/sandboxes/:id/files/write", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const sandbox = await db.query.sandboxes.findFirst({
-      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId)),
+      where: and(eq(sandboxes.id, request.params.id), eq(sandboxes.ownerId, userId), ne(sandboxes.status, "destroyed")),
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 

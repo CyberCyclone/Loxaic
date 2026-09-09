@@ -55,7 +55,16 @@ export interface RootsMessage {
 
 export type ResultMessage =
   | { type: "result"; id: string; ok: true; value: unknown }
-  | { type: "result"; id: string; ok: false; error: string };
+  | {
+      type: "result";
+      id: string;
+      ok: false;
+      error: string;
+      /** "gone": the sandbox this call named no longer exists on the machine
+       * (sandbox/errors.ts). The one failure the server may record as
+       * destroyed; every other error is "could not do it", not "it is gone". */
+      code?: "gone";
+    };
 
 // ── Terminals ──────────────────────────────────────────────
 // A terminal is the one thing here that is not request/response: it is a

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import os from "node:os";
 import path from "node:path";
 import { createExecutorService, RootViolationError } from "../service.ts";
+import { SandboxGoneError } from "../../sandbox/errors.ts";
 
 /**
  * The executor's one security property: nothing outside a folder the user
@@ -135,7 +136,10 @@ describe("file operations stay inside the ref", () => {
     // server learns to stop trusting the row.
     expect(await svc.handle("exists", { ref })).toBe(false);
     expect(await svc.handle("isRunning", { ref })).toBe(false);
-    await expect(svc.handle("start", { ref })).rejects.toBeInstanceOf(RootViolationError);
+    // start is the manager's "paused or gone?" question, and an un-approved
+    // directory is "gone" to the server — reported as exactly that, so the
+    // row is dropped rather than the refusal surfacing as a retryable error.
+    await expect(svc.handle("start", { ref })).rejects.toBeInstanceOf(SandboxGoneError);
   });
 });
 

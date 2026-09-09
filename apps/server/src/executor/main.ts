@@ -25,6 +25,7 @@ import os from "node:os";
 import { createInterface } from "node:readline";
 import WebSocket from "ws";
 import { containerCapability } from "./container.ts";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import { createExecutorService, createRefResolver } from "./service.ts";
 import { createExecutorTerminals } from "./terminal.ts";
 import {
@@ -179,7 +180,13 @@ function connect(): void {
       .handle(method, params, controller.signal)
       .then((value) => { settle({ type: "result", id, ok: true, value }); })
       .catch((err: unknown) => {
-        settle({ type: "result", id, ok: false, error: err instanceof Error ? err.message : String(err) });
+        settle({
+          type: "result",
+          id,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof SandboxGoneError ? { code: "gone" as const } : {}),
+        });
       });
   });
 

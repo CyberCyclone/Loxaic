@@ -28,6 +28,7 @@ import { realpathSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { attachDirectory } from "../sandbox/host-provider.ts";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import { attachLocalContainer, ContainerRefError, createLocalContainer, isContainerRef } from "./container.ts";
 import type { ExecOptions, SandboxHandle } from "../sandbox/provider.ts";
 import type {
@@ -282,7 +283,9 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
             // is what turns that into the `false` the server expects.
             return await (method === "exists" ? handle.exists() : handle.isRunning());
           } catch (err) {
-            if (err instanceof RootViolationError || err instanceof ContainerRefError) return false;
+            if (err instanceof RootViolationError || err instanceof ContainerRefError || err instanceof SandboxGoneError) {
+              return false;
+            }
             throw err;
           }
         }
@@ -291,8 +294,21 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
           // "Resumable" for a plain directory means "still there and still
           // approved" — the throw is how the manager tells paused from gone.
           // A container is genuinely started again.
-          const { handle } = await handleFor(params, method);
-          await handle.start();
+          //
+          // Both "gone" shapes are reported as exactly that, and nothing else
+          // is: an un-approved directory, a removed container, and a folder
+          // that vanished all mean the server should stop trusting its row,
+          // whereas a refusal for any other reason must reach it as an error
+          // it can show, not as a tombstone (sandbox/errors.ts).
+          try {
+            const { handle } = await handleFor(params, method);
+            await handle.start();
+          } catch (err) {
+            if (err instanceof RootViolationError || err instanceof ContainerRefError) {
+              throw new SandboxGoneError(err.message);
+            }
+            throw err;
+          }
           return { ok: true };
         }
 

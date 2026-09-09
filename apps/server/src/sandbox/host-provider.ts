@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { SandboxGoneError } from "./errors.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CappedSink } from "./exec-common.ts";
@@ -223,7 +224,7 @@ function makeHandle(
       // when it isn't keeps this provider's start() answering the same
       // question the container one does: paused, or gone?
       if (!existsSync(sandboxDir)) {
-        throw new Error(`host sandbox directory is gone: ${sandboxDir}`);
+        throw new SandboxGoneError(`host sandbox directory is gone: ${sandboxDir}`);
       }
     },
 

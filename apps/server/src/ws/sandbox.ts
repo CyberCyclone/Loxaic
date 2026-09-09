@@ -16,7 +16,7 @@
  * executor no).
  */
 import type { FastifyInstance } from "fastify";
-import { and, eq } from "@loxaic/db";
+import { and, eq, ne } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { resolveSessionFromToken } from "../auth/middleware";
@@ -108,7 +108,10 @@ export function sandboxTerminalWs(app: FastifyInstance) {
     }
 
     const sandbox = await db.query.sandboxes.findFirst({
-      where: and(eq(sandboxes.id, id), eq(sandboxes.ownerId, session.user.id)),
+      // Destroyed rows are excluded because attaching now *resumes*: a
+      // container that outlived a swallowed destroy() failure must not be
+      // brought back to life by opening a terminal into it.
+      where: and(eq(sandboxes.id, id), eq(sandboxes.ownerId, session.user.id), ne(sandboxes.status, "destroyed")),
     });
     if (!sandbox) {
       refuse(4004, "Not found", "That workspace no longer exists.");

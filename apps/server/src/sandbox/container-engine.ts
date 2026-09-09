@@ -13,6 +13,7 @@
  * `executor/__tests__/isolation.test.ts` exists to prevent.
  */
 import Docker from "dockerode";
+import { SandboxGoneError } from "./errors.ts";
 import { pack } from "tar-fs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -595,9 +596,28 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       // manager's "paused or gone?" discriminator, and answering "fine" for a
       // container that no longer exists would hand back a handle whose every
       // later exec fails one at a time instead.
-      const info = await container.inspect();
+      //
+      // Only a 404 means gone. Anything else — the engine unreachable, a
+      // timeout — is rethrown as itself, so the manager surfaces an error the
+      // user can retry rather than tombstoning a paused workspace that is
+      // still sitting on disk (sandbox/errors.ts).
+      let info: Docker.ContainerInspectInfo;
+      try {
+        info = await container.inspect();
+      } catch (err) {
+        if (statusCodeOf(err) === 404) throw new SandboxGoneError(`container ${container.id} no longer exists`);
+        throw err;
+      }
       if (info.State.Running) return;
-      await container.start();
+      try {
+        await container.start();
+      } catch (err) {
+        // 304: something else resumed it between the inspect and the start —
+        // the inspect→start race — which is success, not failure.
+        if (statusCodeOf(err) === 304) return;
+        if (statusCodeOf(err) === 404) throw new SandboxGoneError(`container ${container.id} no longer exists`);
+        throw err;
+      }
     },
 
     async stop() {
@@ -612,6 +632,13 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       await container.remove({ force: true }).catch(() => undefined);
     },
   };
+}
+
+/** dockerode reports the engine's HTTP status on its errors; anything else is
+ * a transport failure with no status at all. */
+function statusCodeOf(err: unknown): number | null {
+  const code = (err as { statusCode?: unknown } | null)?.statusCode;
+  return typeof code === "number" ? code : null;
 }
 
 // ── Per-engine probing (admin settings UI) ────────────────
