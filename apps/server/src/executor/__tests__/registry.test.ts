@@ -137,3 +137,46 @@ describe("calls", () => {
     await expect(callExecutor("machine-a", "ping", {})).rejects.toBeInstanceOf(ExecutorOfflineError);
   });
 });
+
+describe("cancelling a call", () => {
+  it("sends exec.cancel naming the call, and still settles on the executor's own answer", async () => {
+    // Cancellation deliberately does not settle the promise here: the
+    // executor kills the command and then answers the original call, so the
+    // partial output it produced still comes back rather than being thrown
+    // away for a synthetic "cancelled" result (#119).
+    const controller = new AbortController();
+    let callId = "";
+    const conn = fakeConnection({ onCall: (call) => { callId = call.id; } });
+    registerExecutor(conn);
+
+    const pending = callExecutor("machine-a", "exec", { command: ["sleep", "5"] }, {
+      timeoutMs: 5_000,
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    const cancel = conn.sent.find((m) => m.type === "exec.cancel");
+    expect(cancel).toEqual({ type: "exec.cancel", id: callId });
+
+    // The executor answers as it always would; the caller sees that result.
+    handleExecutorResult("machine-a", { type: "result", id: callId, ok: true, value: { exitCode: 130, stdout: "partial" } });
+    await expect(pending).resolves.toEqual({ exitCode: 130, stdout: "partial" });
+  });
+
+  it("does nothing for a signal that aborts after the call has answered", async () => {
+    const controller = new AbortController();
+    let callId = "";
+    const conn = fakeConnection({ onCall: (call) => { callId = call.id; } });
+    registerExecutor(conn);
+
+    const pending = callExecutor("machine-a", "exec", {}, { timeoutMs: 5_000, signal: controller.signal });
+    handleExecutorResult("machine-a", { type: "result", id: callId, ok: true, value: "done" });
+    await expect(pending).resolves.toBe("done");
+
+    // The listener is removed when the call settles, so a later abort — the
+    // run ending for some other reason — cannot send a cancel for an id the
+    // executor has already forgotten.
+    controller.abort();
+    expect(conn.sent.some((m) => m.type === "exec.cancel")).toBe(false);
+  });
+});

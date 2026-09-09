@@ -82,17 +82,20 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
     workdir: layout.workdir,
 
     exec: (command, options) => {
-      // `signal` is dropped rather than forwarded: it is an AbortSignal, which
-      // JSON.stringify renders as `{}`, so sending it would put a field on the
-      // wire that looks like cancellation support and is not. Cancelling a
-      // command on someone else's machine needs a real `exec.cancel` message
-      // and the executor killing its own child — a separate change (#119).
-      // Until then this machine's commands are bounded by timeoutMs, as before.
-      const { signal: _signal, ...wireOptions } = options ?? {};
-      return call<ExecCallResult>(
+      // The signal never goes *on* the wire — an AbortSignal serialises to
+      // `{}` — it rides beside the call, and aborting sends `exec.cancel`
+      // naming this call's id. The executor then kills the command's process
+      // group on its own machine and answers the original call normally, so
+      // partial output survives (#119).
+      const { signal, ...wireOptions } = options ?? {};
+      return callExecutor<ExecCallResult>(
+        executorId,
         "exec",
-        { command, ...(Object.keys(wireOptions).length > 0 ? { options: wireOptions } : {}) },
-        (options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS) + EXEC_TIMEOUT_MARGIN_MS,
+        { ref, command, ...(Object.keys(wireOptions).length > 0 ? { options: wireOptions } : {}) },
+        {
+          timeoutMs: (options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS) + EXEC_TIMEOUT_MARGIN_MS,
+          ...(signal ? { signal } : {}),
+        },
       );
     },
 

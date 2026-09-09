@@ -1315,11 +1315,16 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `RunSlotAbortedError`, which ends the turn before any tool executes — so that run keeps its
   calls with *no* results at all, which is the orphan case again and is why the stripping
   matters. Do not "fix" it by persisting partial results there; the run is over.
-- **An in-flight `exec` is cancellable on the container and host providers, not the executor.**
-  `ExecOptions.signal` carries the run's abort signal; the executor provider **strips it** before
-  putting options on the wire (an `AbortSignal` serialises to `{}`, which would look like support
-  and not be) — cancelling on someone else's machine needs an `exec.cancel` message and is a
-  separate change. A command there is still bounded by `timeoutMs`.
+- **An in-flight `exec` is cancellable on all three providers.** `ExecOptions.signal` carries the
+  run's abort signal. It never goes *on* the wire for the executor — an `AbortSignal` serialises
+  to `{}` — it rides beside the call, and aborting sends `exec.cancel {id}`, which the executor
+  turns back into a signal for that call's `handle.exec`. So the kill happens by the same
+  process-group machinery on the user's own machine.
+- **`exec.cancel` does not settle the pending call.** The executor kills the command and then
+  answers the original call as normal, so the partial output survives and the promise resolves
+  through the path it already had; the existing timeout stays the backstop for an executor too
+  old to know the message. The abort listener is removed when the call settles, or a later abort
+  would send a cancel for an id the executor has already forgotten.
 - **`stopping` is a client-side run state with no server counterpart.** The run really is
   still running until its stream ends; the state exists because pressing Stop changed nothing
   on screen, so a correct-but-not-instant stop looked broken. Keyed by conversation id (not a

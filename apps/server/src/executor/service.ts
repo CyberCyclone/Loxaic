@@ -63,7 +63,14 @@ export interface ExecutorServiceOptions {
 }
 
 export interface ExecutorService {
-  handle(method: ExecutorMethod, params: unknown): Promise<unknown>;
+  /**
+   * `signal` cancels a long-running call — only `exec` honours it, which is
+   * the only method that runs long enough to matter. It is created by the
+   * caller (main.ts, per call id) and aborted when the server sends
+   * `exec.cancel`; the underlying handle then kills the command's process
+   * group, so this reaches the *command*, not just this promise.
+   */
+  handle(method: ExecutorMethod, params: unknown, signal?: AbortSignal): Promise<unknown>;
 }
 
 /**
@@ -190,7 +197,7 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
   const pathIn = async (ref: string, confined: boolean, p: string) => (confined ? resolveInside(ref, p) : p);
 
   return {
-    async handle(method, params) {
+    async handle(method, params, signal) {
       switch (method) {
         case "ping":
           return { ok: true, at: Date.now() };
@@ -223,6 +230,10 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
           if (obj.options?.workdir !== undefined) options.workdir = await pathIn(ref, confined, obj.options.workdir);
           if (typeof obj.options?.timeoutMs === "number") options.timeoutMs = obj.options.timeoutMs;
           if (obj.options?.env && typeof obj.options.env === "object") options.env = obj.options.env;
+          // Never from the wire: the server cannot serialise a signal, so
+          // this is the executor's own, aborted by an `exec.cancel` naming
+          // this call.
+          if (signal) options.signal = signal;
           return handle.exec(obj.command, options);
         }
 
