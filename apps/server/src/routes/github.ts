@@ -1,7 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth/middleware";
 import { getRepo, getViewer, listBranches, listRepos, GithubApiError } from "../github/client.ts";
-import { deleteConnection, getConnection, getOwnerToken, redactToken, toApi, upsertConnection } from "../github/connection.ts";
+import {
+  deleteConnection,
+  getConnection,
+  getOwnerToken,
+  GithubTokenUnreadableError,
+  redactToken,
+  toApi,
+  upsertConnection,
+} from "../github/connection.ts";
 
 /** Turns a client failure into the response shape the connection screen
  * needs: a message safe to show (redacted, though a viewer/listing call can
@@ -16,6 +24,29 @@ function connectionError(err: unknown): { status: number; message: string } {
     return { status, message: err.message };
   }
   return { status: 502, message: (err as Error).message };
+}
+
+/**
+ * The owner's token, or `null` when nothing is connected — or `undefined`
+ * after a 409 has been sent, for a token that is stored but can no longer be
+ * decrypted. That case used to escape as a bare 500 from outside the `try`,
+ * with the settings screen still saying "Connected as …" and nothing telling
+ * the user to reconnect.
+ */
+async function tokenOr409(
+  userId: string,
+  reply: { code(status: number): unknown; send(body: unknown): unknown },
+): Promise<string | null | undefined> {
+  try {
+    return await getOwnerToken(userId);
+  } catch (err) {
+    if (err instanceof GithubTokenUnreadableError) {
+      reply.code(409);
+      reply.send({ error: err.message });
+      return undefined;
+    }
+    throw err;
+  }
 }
 
 export function githubRoutes(app: FastifyInstance) {
@@ -57,7 +88,8 @@ export function githubRoutes(app: FastifyInstance) {
 
   app.get("/v1/github/repos", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const token = await getOwnerToken(userId);
+    const token = await tokenOr409(userId, reply);
+    if (token === undefined) return;
     if (!token) {
       reply.code(404);
       return { error: "GitHub is not connected" };
@@ -82,7 +114,8 @@ export function githubRoutes(app: FastifyInstance) {
     "/v1/github/repos/:owner/:repo/branches",
     async (request, reply) => {
       const userId = await authenticate(request, reply);
-      const token = await getOwnerToken(userId);
+      const token = await tokenOr409(userId, reply);
+      if (token === undefined) return;
       if (!token) {
         reply.code(404);
         return { error: "GitHub is not connected" };

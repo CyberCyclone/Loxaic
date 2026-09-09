@@ -550,8 +550,26 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
-  if (!res.ok) throw new ApiError(`${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
+  if (!res.ok) throw new ApiError(await describeFailure(res, init?.method ?? "GET", path), res.status);
   return res;
+}
+
+/**
+ * The server's own explanation when it gave one, else the status line. Every
+ * route that validates spells out *why* — "workspace.repo must be owner/name",
+ * "GitHub is not connected", a branch name git would refuse — and all of it
+ * used to collapse into `POST /v1/conversations failed: 400` at exactly the
+ * moment the user could have acted on the reason.
+ */
+async function describeFailure(res: Response, method: string, path: string): Promise<string> {
+  const fallback = `${method} ${path} failed: ${String(res.status)}`;
+  try {
+    const body = (await res.json()) as { error?: unknown; message?: unknown };
+    const detail = typeof body.error === "string" ? body.error : typeof body.message === "string" ? body.message : null;
+    return detail && detail.length > 0 ? detail : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 // ── Attachments ───────────────────────────────────────────

@@ -117,6 +117,15 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     if (!open || !token) return;
     setSearch('');
     setPickError(null);
+    // The repo half resets too. Leaving it meant the previous conversation's
+    // repo came up already checked with its branch name still in the input —
+    // confirmable without ever being chosen this time — and because the
+    // branch generator keys on `repo`, a second conversation on the same repo
+    // got the *identical* `loxaic/<suffix>` and its `checkout -b` failed.
+    setRepo(null);
+    setBranches([]);
+    setBaseBranch('');
+    setBranchName('');
     setWhere(value.kind === 'local' ? 'local' : 'remote');
     setSource(value.kind === 'github' ? 'github' : 'scratch');
     void getCluster().then((c) => {
@@ -304,6 +313,12 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
                       onPress={() => {
                         setExecutorId(e.id);
                         setLocalPath(null);
+                        // Same rule as the default-machine effect above: a
+                        // container choice must not carry onto a machine
+                        // without an engine, where it would render selected
+                        // *and* disabled and then be refused after the
+                        // workspace was already fixed.
+                        if (!e.capabilities.container) setIsolation('direct');
                       }}
                     />
                   ))}

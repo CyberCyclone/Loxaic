@@ -515,10 +515,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           // before a message is persisted against a conversation that cannot
           // do what it claims. `turn.started` then swaps the optimistic id for
           // the real one exactly as it does on the implicit path.
-          const ws = wsRef.current;
+          // The socket is read *after* the round-trip, not captured before
+          // it: creation includes a GitHub lookup (seconds), and a reconnect
+          // in that window left the send on a closed socket — silently, since
+          // trySend's false was discarded — with the optimistic run pending
+          // forever. A lost socket is now the error the rollback below shows.
           createConversation({ kind: 'agent', workspace: chosen })
             .then((created) => {
-              sendAgentMessage(ws, text, mode, created.id, undefined, model, refs);
+              const ws = wsRef.current;
+              const sent = ws !== null && sendAgentMessage(ws, text, mode, created.id, undefined, model, refs);
+              if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
             })
             .catch((err: unknown) => {
               setRuns((prev) => prev.filter((r) => r.id !== localId));
