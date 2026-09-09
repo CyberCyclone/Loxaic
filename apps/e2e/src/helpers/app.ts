@@ -249,6 +249,28 @@ export async function listConversations(
   return (await res.json()) as { id: string; title: string; kind?: 'chat' | 'agent' }[];
 }
 
+/**
+ * The text of every message in a conversation, straight from the API.
+ *
+ * For assertions about *where a message landed*, which the screen cannot
+ * settle: a misrouted message renders perfectly well in the thread it was
+ * wrongly written to (#117).
+ */
+export async function getMessageTexts(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<string[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] getting messages failed (${String(res.status)})`);
+  const body = (await res.json()) as { messages: { content: { kind: string; text?: string }[] }[] };
+  return body.messages.flatMap((m) =>
+    m.content.filter((b) => b.kind === 'text').map((b) => b.text ?? ''),
+  );
+}
+
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and
  * non-admin sessions alike — the screen itself branches on role. */
 export async function openSandboxSettings(): Promise<void> {
