@@ -242,7 +242,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
 
     const scope = cacheScope();
     if (scope) {
-      const cached = readCachedConversations(scope.endpoint, scope.userId);
+      // Filtered on read as well as on fetch: the cache was written from the
+      // same unfiltered list, so one already on disk holds agent runs. The
+      // fetch rewrites it, but this render happens first — and on an offline
+      // start there is no fetch to rewrite anything (#117).
+      const cached = readCachedConversations(scope.endpoint, scope.userId)
+        .filter((c) => c.kind === 'chat');
       if (cached.length > 0) {
         // Remembered so the history fetch knows these came from the cache and
         // may overwrite them — see loadHistory.
@@ -263,17 +268,28 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     getConversations()
       .then((convs) => {
         setConnectionState('online');
-        const apiConversations: Conversation[] = convs.map((c) => ({
-          id: c.id,
-          title: c.title,
-          kind: (c.kind || 'chat') as Conversation['kind'],
-          time: 'recent',
-          model: c.modelPref?.model ?? '',
-          location: 'server' as const,
-          msgs: [],
-          updatedAt: c.updatedAt,
-          role: c.role ?? 'owner',
-        }));
+        // Each surface shows only its own kind: general chats here, coding
+        // sessions under Agent, routine runs under Routines. All three read
+        // conversations from this one endpoint, and only the agent side
+        // filtered it, so every agent run — and every routine run, which the
+        // scheduler also creates as a conversation (kind: "routine") — showed
+        // up as a chat thread too. See #117.
+        //
+        // An empty `kind` is a chat: the column postdates some rows, and the
+        // mapping below has always defaulted it that way.
+        const apiConversations: Conversation[] = convs
+          .filter((c) => (c.kind || 'chat') === 'chat')
+          .map((c) => ({
+            id: c.id,
+            title: c.title,
+            kind: (c.kind || 'chat') as Conversation['kind'],
+            time: 'recent',
+            model: c.modelPref?.model ?? '',
+            location: 'server' as const,
+            msgs: [],
+            updatedAt: c.updatedAt,
+            role: c.role ?? 'owner',
+          }));
         // Built outside the updater so the *merged* list — cached messages
         // kept — is what reaches the cache. Passing `apiConversations` (every
         // entry `msgs: []`) wrote an empty message list over every cached
@@ -290,7 +306,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           return [...inFlight, ...merged];
         });
         if (scope) writeCachedList(scope.endpoint, scope.userId, merged);
-        if (convs.length > 0 && !activeIdRef.current) setActiveId(convs[0].id);
+        // From the *filtered* list, not the raw one. Selecting `convs[0]`
+        // meant Chat could open — and then send into — an agent run: the list
+        // hid it, but the active id still pointed at it, so a message typed
+        // under Chat was written to an agent conversation. Worse than the
+        // display leak it accompanied, because it misroutes user content
+        // rather than just showing an extra row (#117).
+        if (merged.length > 0 && !activeIdRef.current) setActiveId(merged[0].id);
       })
       .catch((err: unknown) => {
         if (isUnreachableError(err)) setConnectionState('offline');
