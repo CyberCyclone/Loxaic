@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
-import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert } from 'lucide-react-native';
+import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
 import { OfflineBanner } from '@/components/shell/OfflineBanner';
 import { useConnection } from '@/lib/connection';
@@ -40,7 +40,7 @@ import { useToastHelper } from '@/hooks/useToastHelper';
 export default function AgentScreen() {
   const connection = useConnection();
   const shell = useShell();
-  const { token } = useSession();
+  const { token, isAdmin } = useSession();
   const router = useRouter();
   const { config } = useServerConfig();
   const breakpoint = useBreakpoint();
@@ -239,6 +239,44 @@ export default function AgentScreen() {
             </Text>
             <Text size="xs" className="text-destructive underline">
               Fix
+            </Text>
+          </Pressable>
+        )}
+        {/* Sandboxes are created with no network unless an admin turns it on,
+            and nothing else says so — the model finds out by watching
+            `npm install` fail, which costs a tool call and reads to the user
+            as the agent being broken. Warning rather than destructive: tools
+            do work, they just cannot reach the internet.
+
+            Same `local` exclusion as the banner above, for the same reason,
+            plus one of its own: a local container deliberately *has* the
+            network (the user already agreed to run these commands on their own
+            machine), so the server's setting would be doubly wrong here. */}
+        {config && config.sandbox.available && !config.sandbox.allowNetwork
+          && currentWorkspace?.kind !== 'local' && (
+          <Pressable
+            testID="agent.network.banner"
+            onPress={() => { router.push('/sandbox'); }}
+            className="flex-row items-center gap-2 border-b border-border bg-warning/10 px-3 py-2 web:hover:bg-warning/15"
+          >
+            <Icon as={WifiOff} size="xs" className="text-warning" />
+            {/* Both lines are `size="xs"`, not xs + 2xs: the Text component
+                maps size="2xs" to a `text-2xs` class that global.css never
+                defines, so on web it silently falls back to the 16px default
+                and the *secondary* line renders larger than the primary one.
+                Weight and opacity carry the hierarchy instead. */}
+            <VStack className="flex-1">
+              <Text size="xs" className="font-medium text-warning">
+                This workspace has no network access — npm install, git clone and other downloads will fail.
+              </Text>
+              <Text size="xs" className="text-warning/80">
+                {isAdmin
+                  ? 'Turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'
+                  : 'An admin can turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'}
+              </Text>
+            </VStack>
+            <Text size="xs" className="text-warning underline">
+              {isAdmin ? 'Fix' : 'Details'}
             </Text>
           </Pressable>
         )}
