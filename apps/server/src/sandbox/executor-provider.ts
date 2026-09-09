@@ -20,6 +20,7 @@ import {
   ExecutorOfflineError,
   executorName,
   getExecutor,
+  openExecutorTerminal,
 } from "../executor/registry.ts";
 import {
   DEFAULT_EXEC_TIMEOUT_MS,
@@ -28,7 +29,7 @@ import {
   type ExecCallResult,
   type FileTreeResult,
 } from "../executor/protocol.ts";
-import type { CreateSandboxConfig, SandboxHandle, SandboxProvider } from "./provider.ts";
+import type { CreateSandboxConfig, SandboxHandle, SandboxProvider, TerminalSession } from "./provider.ts";
 
 export function encodeExecutorRef(executorId: string, ref: string): string {
   return `${executorId}:${ref}`;
@@ -73,8 +74,33 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
 
     fileTree: (treePath) => call<FileTreeResult>("fileTree", treePath === undefined ? {} : { path: treePath }),
 
-    // No openTerminal yet: the terminal panel (a later stage) streams over
-    // the executor socket rather than wrapping a request/response call.
+    // Streamed over the executor's own socket rather than wrapped in a
+    // request/response call — a shell is a conversation, not a question.
+    // eslint-disable-next-line @typescript-eslint/require-await -- interface is async; opening is a send, with nothing to await.
+    async openTerminal(): Promise<TerminalSession> {
+      const dataListeners: ((data: string) => void)[] = [];
+      const closeListeners: (() => void)[] = [];
+      const terminal = openExecutorTerminal(executorId, ref, {
+        onData: (data) => { for (const l of dataListeners) l(data); },
+        onExit: (error) => {
+          // A refusal from the far side (an un-approved directory, a machine
+          // that went away mid-session) is the only explanation the user will
+          // get, so it goes into the stream they are looking at rather than
+          // into a log they are not.
+          if (error) for (const l of dataListeners) l(`\r\n[${error}]\r\n`);
+          for (const l of closeListeners) l();
+        },
+      });
+      return {
+        // Pipe mode, like the host provider it runs: same reason, same
+        // client-side treatment.
+        tty: false,
+        write: (data) => { terminal.write(data); },
+        onData: (listener) => { dataListeners.push(listener); },
+        onClose: (listener) => { closeListeners.push(listener); },
+        close: () => { terminal.close(); },
+      };
+    },
 
     async isRunning() {
       if (!isOnline(executorId)) return false;

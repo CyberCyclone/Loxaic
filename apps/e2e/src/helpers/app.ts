@@ -6,6 +6,7 @@
 import { browser } from '@wdio/globals';
 import { byTestId, isVisible, platform, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
+import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
 
 /** Text the mock inference provider echoes back for a plain chat turn. */
@@ -333,7 +334,9 @@ export async function chooseLocalWorkspace(dir: string): Promise<void> {
   await waitForVisible(`agent.workspace.root.${encodeURIComponent(dir)}`);
   await waitForTextIn('agent.workspace.dialog', dir);
   await tap('agent.workspace.confirm');
-  await waitForTextIn('agent.workspace.button', dir);
+  // The pill shows the folder's name, not its whole path — a temp directory
+  // spelled out in full would crowd the mode selector off the row.
+  await waitForTextIn('agent.workspace.button', path.basename(dir));
 }
 
 /** Opens Settings and navigates to the GitHub connection screen. Waits for

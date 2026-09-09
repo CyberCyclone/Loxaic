@@ -11,12 +11,12 @@
  * and shows the run failing *with a reason*, not hanging.
  */
 import { browser } from '@wdio/globals';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { E2E_PICK_DIR } from '../../../scripts/electron-env.ts';
 import { provisionUser, uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { tap, waitForTextIn, waitForVisible } from '../../helpers/selectors.ts';
+import { tap, typeInto, waitForTextIn, waitForVisible } from '../../helpers/selectors.ts';
 import {
   BASH_PROMPT,
   MOCK_TOOL_DONE,
@@ -101,6 +101,29 @@ describe('electron local workspace', () => {
     await tap('agent.inspector.toggle');
     await waitForTextIn('agent.inspector.workspace.kind', E2E_PICK_DIR);
     await shot('local-dir-written');
+  });
+
+  it('opens a terminal in that folder, on this machine', async function () {
+    this.timeout(3 * 60_000);
+
+    await tap('agent.terminal.toggle');
+    await waitForVisible('agent.terminal.panel');
+    // No PTY on a local workspace — bash over pipes, because a real one would
+    // mean a native module the packaged desktop cannot load. The panel says
+    // so rather than looking broken, and that sentence is part of the
+    // contract with the user.
+    await waitForTextIn('agent.terminal.status', 'no TTY here');
+
+    // The shell decides, and answers in one short word. Asserting on the path
+    // itself does not work: a terminal hard-wraps at its column width, and
+    // this one is a temp directory far wider than the panel — the text is all
+    // there, split across two rows, which no substring match will find.
+    // `$PWD` also settles the /var → /private/var symlink macOS puts temp
+    // directories behind, since the shell resolved it on the way in.
+    await typeInto('agent.terminal.input', `test "$PWD" = "${realpathSync(E2E_PICK_DIR)}" && echo pwd-matches`);
+    await browser.keys('Enter');
+    await waitForTextIn('agent.terminal.view', 'pwd-matches');
+    await shot('local-dir-terminal');
   });
 
   it('fails the next tool call with a reason, not a hang, once this machine is gone', async function () {

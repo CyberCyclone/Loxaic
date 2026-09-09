@@ -1,7 +1,7 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
-import { MessagesSquare, PanelRight, TriangleAlert } from 'lucide-react-native';
+import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
 import { OfflineBanner } from '@/components/shell/OfflineBanner';
 import { useConnection } from '@/lib/connection';
@@ -20,6 +20,7 @@ import { Inspector } from '@/components/agent/Inspector';
 import { ModeSelector } from '@/components/agent/ModeSelector';
 import { WorkspaceChooser } from '@/components/agent/WorkspaceChooser';
 import { WorkspacePill } from '@/components/agent/WorkspacePill';
+import { TerminalPanel } from '@/components/agent/TerminalPanel';
 import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
@@ -129,6 +130,10 @@ export default function AgentScreen() {
         }
       : null;
   const [chooserOpen, setChooserOpen] = useState(false);
+  // The terminal opens into the conversation's *existing* workspace, so it is
+  // only offered once there is a run to have one — and it holds a socket (and,
+  // on a local workspace, a shell) only while it is open.
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const mcpControls =
     mcpOverrides.servers.length > 0
       ? { servers: mcpOverrides.servers, disabledIds: mcpOverrides.disabledIds, onToggle: mcpOverrides.toggle }
@@ -184,6 +189,15 @@ export default function AgentScreen() {
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
             <HStack space="sm" className="items-center">
+              {activeRun && (
+                <Pressable
+                  testID="agent.terminal.toggle"
+                  onPress={() => { setTerminalOpen((o) => !o); }}
+                  className={`rounded-sm p-1.5 web:hover:bg-muted/50 ${terminalOpen ? 'bg-muted' : ''}`}
+                >
+                  <Icon as={SquareTerminal} size="sm" className="text-foreground" />
+                </Pressable>
+              )}
               {activeRun && (
                 <Pressable
                   testID="agent.inspector.toggle"
@@ -247,6 +261,12 @@ export default function AgentScreen() {
                 pendingApproval={pendingApproval}
                 onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
                 onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
+              />
+              <TerminalPanel
+                conversationId={activeRun?.id ?? null}
+                token={token}
+                open={terminalOpen && !!activeRun}
+                onClose={() => { setTerminalOpen(false); }}
               />
               <HStack className="items-center justify-between pr-3">
                 <ModeSelector mode={mode} onChange={handleModeChange} />

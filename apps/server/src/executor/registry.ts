@@ -22,6 +22,8 @@ import {
   type ExecutorMethod,
   type ResultMessage,
   type ServerToExecutor,
+  type TerminalDataMessage,
+  type TerminalExitMessage,
 } from "./protocol.ts";
 
 export class ExecutorOfflineError extends Error {
@@ -74,10 +76,17 @@ interface Pending {
   timer: NodeJS.Timeout;
 }
 
+interface TerminalListeners {
+  onData(data: string): void;
+  onExit(error?: string): void;
+}
+
 interface Registered {
   info: ExecutorInfo;
   conn: ExecutorConnection;
   pending: Map<string, Pending>;
+  /** Live terminal streams, by the id the server minted for each. */
+  terminals: Map<string, TerminalListeners>;
 }
 
 const byId = new Map<string, Registered>();
@@ -90,6 +99,12 @@ function failPending(entry: Registered, reason: string): void {
     clearTimeout(p.timer);
     p.reject(new ExecutorCallError(reason));
     entry.pending.delete(id);
+  }
+  // A terminal whose executor is gone must be *told*, or the panel holding it
+  // waits for output from a machine that will never send any.
+  for (const [id, listeners] of entry.terminals) {
+    entry.terminals.delete(id);
+    listeners.onExit(reason);
   }
 }
 
@@ -122,6 +137,7 @@ export function registerExecutor(conn: ExecutorConnection): () => void {
     },
     conn,
     pending: new Map(),
+    terminals: new Map(),
   };
   byId.set(conn.executorId, entry);
   lastKnownName.set(conn.executorId, conn.name);
@@ -161,6 +177,63 @@ export function handleExecutorResult(executorId: string, msg: ResultMessage): vo
   clearTimeout(p.timer);
   if (msg.ok) p.resolve(msg.value);
   else p.reject(new ExecutorCallError(msg.error));
+}
+
+/** One open shell on a machine, from the server's side. */
+export interface ExecutorTerminalHandle {
+  write(data: string): void;
+  close(): void;
+}
+
+/**
+ * Opens a shell on `executorId` in `ref`, streaming both ways over the
+ * executor's existing socket.
+ *
+ * Refuses up front when the machine is offline, for the same reason
+ * `callExecutor` does: waiting cannot make a disconnected laptop connected,
+ * and the panel deserves the real message. Whether the *directory* is
+ * allowed is the executor's own answer, which arrives as an `onExit` with a
+ * reason — the server does not hold a copy of that decision.
+ */
+export function openExecutorTerminal(
+  executorId: string,
+  ref: string,
+  listeners: TerminalListeners,
+): ExecutorTerminalHandle {
+  const entry = byId.get(executorId);
+  if (!entry) throw new ExecutorOfflineError(executorName(executorId));
+  const terminalId = randomUUID();
+  entry.terminals.set(terminalId, listeners);
+  entry.conn.send({ type: "terminal.open", terminalId, ref });
+
+  const forget = () => entry.terminals.delete(terminalId);
+  return {
+    write(data) {
+      if (!entry.terminals.has(terminalId)) return;
+      entry.conn.send({ type: "terminal.input", terminalId, data });
+    },
+    close() {
+      if (!entry.terminals.has(terminalId)) return;
+      forget();
+      entry.conn.send({ type: "terminal.close", terminalId });
+    },
+  };
+}
+
+/** Routes a `terminal.data` / `terminal.exit` frame to whoever opened it. */
+export function handleExecutorTerminalMessage(
+  executorId: string,
+  msg: TerminalDataMessage | TerminalExitMessage,
+): void {
+  const entry = byId.get(executorId);
+  const listeners = entry?.terminals.get(msg.terminalId);
+  if (!entry || !listeners) return; // a stream nobody is holding any more
+  if (msg.type === "terminal.data") {
+    listeners.onData(msg.data);
+    return;
+  }
+  entry.terminals.delete(msg.terminalId);
+  listeners.onExit(msg.error);
 }
 
 export function listExecutors(userId: string): ExecutorInfo[] {
