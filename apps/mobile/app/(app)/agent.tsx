@@ -210,7 +210,10 @@ export default function AgentScreen() {
             </HStack>
           }
         />
-        {config && !config.sandbox.available && (
+        {/* Not for a local workspace: the server's sandbox posture says
+            nothing about the user's own machine, and "tools unavailable"
+            would be wrong exactly when they are about to work. */}
+        {config && !config.sandbox.available && currentWorkspace?.kind !== 'local' && (
           <Pressable
             testID="agent.sandbox.banner"
             onPress={() => { router.push('/sandbox'); }}

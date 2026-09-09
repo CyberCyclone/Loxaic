@@ -20,6 +20,8 @@ import { sandboxRoutes } from "./routes/sandbox";
 import { chatWsHandler } from "./ws/chat";
 import { sandboxTerminalWs } from "./ws/sandbox";
 import { agentWsHandler } from "./ws/agent";
+import { executorWsHandler } from "./ws/executor.ts";
+import { executorRoutes } from "./routes/executors.ts";
 import { startRoutineScheduler, stopRoutineScheduler } from "./routines/scheduler";
 import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manager";
 import { closeDb } from "@loxaic/db";
@@ -170,6 +172,7 @@ adminConversationRoutes(app);
 mcpRoutes(app);
 githubRoutes(app);
 gitRoutes(app);
+executorRoutes(app);
 prefsRoutes(app);
 adminSettingsRoutes(app);
 fileRoutes(app);
@@ -178,6 +181,7 @@ fileRoutes(app);
 chatWsHandler(app);
 sandboxTerminalWs(app);
 agentWsHandler(app);
+executorWsHandler(app);
 
 // ── Web app (Expo static export, same origin as the API) ──
 // Build with: pnpm --filter @loxaic/mobile export:web

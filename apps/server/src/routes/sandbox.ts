@@ -128,7 +128,7 @@ export function sandboxRoutes(app: FastifyInstance) {
     // would mean starting a container purely to remove it a moment later. It
     // also has to keep working when the sandbox is already gone, so that a
     // stale row can still be cleared.
-    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
+    const provider = await getProviderByKind(sandbox.provider as SandboxKind);
     const handle = await provider.attach(sandbox.containerId).catch(() => null);
     await handle?.destroy().catch(() => undefined);
     await db

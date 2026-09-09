@@ -7,10 +7,12 @@ import { upsertConnection } from "../../github/connection.ts";
 import {
   describeWorkspace,
   effectiveWorkspace,
+  isUnderAnnouncedRoot,
   isValidBranchName,
   parseWorkspaceInput,
   WorkspaceError,
 } from "../workspace.ts";
+import { __resetExecutorsForTest, registerExecutor } from "../../executor/registry.ts";
 
 process.env.MCP_ENCRYPTION_KEY ??= "workspace-test-key";
 
@@ -139,10 +141,82 @@ describe("parseWorkspaceInput", () => {
     expect(ws).not.toHaveProperty("pr");
   });
 
-  it("rejects local for now, with a reason a client can show", async () => {
-    await expect(parseWorkspaceInput({ kind: "local", path: "/tmp" }, { userId })).rejects.toThrow(
-      /not available yet/,
-    );
+  describe("local", () => {
+    afterEach(() => { __resetExecutorsForTest(); });
+
+    function connectMachine(owner = userId) {
+      return registerExecutor({
+        executorId: "laptop-1",
+        userId: owner,
+        name: "Casey's laptop",
+        platform: "darwin",
+        capabilities: { direct: true, container: false },
+        roots: ["/Users/casey/code", "C:\\work"],
+        send: () => undefined,
+        close: () => undefined,
+      });
+    }
+
+    it("refuses a machine that is not connected, with a reason a client can show", async () => {
+      await expect(parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app" }, { userId })).rejects.toThrow(
+        /not connected — open the Loxaic desktop app/,
+      );
+    });
+
+    it("refuses another user's machine, indistinguishably from one that is not connected", async () => {
+      connectMachine("someone-else");
+      await expect(parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app" }, { userId })).rejects.toThrow(
+        /not connected/,
+      );
+    });
+
+    it("refuses a path outside every folder the machine announced", async () => {
+      connectMachine();
+      for (const bad of ["/Users/casey/.ssh", "/Users/casey/code-evil/x", "/Users/casey/code/../.ssh", "code/app", ""]) {
+        await expect(parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: bad }, { userId })).rejects.toThrow(
+          /folder you have chosen/,
+        );
+      }
+    });
+
+    it("takes the machine's name from the live executor, never the client, and defaults to direct", async () => {
+      connectMachine();
+      const ws = await parseWorkspaceInput(
+        { kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app", executorName: "Evil Corp" },
+        { userId },
+      );
+      expect(ws).toEqual({
+        kind: "local",
+        executorId: "laptop-1",
+        executorName: "Casey's laptop",
+        path: "/Users/casey/code/app",
+        isolation: "direct",
+      });
+    });
+
+    it("accepts the root itself, and follows the root's own separator", async () => {
+      connectMachine();
+      await expect(parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code" }, { userId })).resolves.toMatchObject({ path: "/Users/casey/code" });
+      await expect(parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "C:\\work\\app" }, { userId })).resolves.toMatchObject({ path: "C:\\work\\app" });
+    });
+
+    it("refuses container isolation until it exists", async () => {
+      connectMachine();
+      await expect(
+        parseWorkspaceInput({ kind: "local", executorId: "laptop-1", path: "/Users/casey/code/app", isolation: "container" }, { userId }),
+      ).rejects.toThrow(/not available yet/);
+    });
+  });
+});
+
+describe("isUnderAnnouncedRoot", () => {
+  it("is lexical, separator-aware, and never fooled by a shared prefix", () => {
+    expect(isUnderAnnouncedRoot("/a/b", ["/a"])).toBe(true);
+    expect(isUnderAnnouncedRoot("/a", ["/a/"])).toBe(true);
+    expect(isUnderAnnouncedRoot("/ab", ["/a"])).toBe(false);
+    expect(isUnderAnnouncedRoot("/a/../b", ["/a"])).toBe(false);
+    expect(isUnderAnnouncedRoot("C:\\w\\x", ["C:\\w"])).toBe(true);
+    expect(isUnderAnnouncedRoot("C:\\wx", ["C:\\w"])).toBe(false);
   });
 });
 
@@ -186,5 +260,16 @@ describe("describeWorkspace", () => {
     expect(describeWorkspace({ ...github, pr: { number: 9, url: "x" } }, "container")).toBe(
       describeWorkspace(github, "container"),
     );
+  });
+
+  it("describes a local workspace by the machine and directory fixed at creation, whatever the server's mode", () => {
+    const local = { kind: "local" as const, executorId: "id", executorName: "Casey's laptop", path: "/Users/casey/code/app", isolation: "direct" as const };
+    const text = describeWorkspace(local, "container");
+    expect(text).toContain("Casey's laptop");
+    expect(text).toContain("/Users/casey/code/app");
+    expect(text).toMatch(/no sandbox/);
+    // The server's own sandbox mode is not a fact about the user's machine.
+    expect(describeWorkspace(local, "off")).toBe(text);
+    expect(describeWorkspace(local, "host")).toBe(text);
   });
 });

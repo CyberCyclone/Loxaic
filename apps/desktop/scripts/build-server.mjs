@@ -55,7 +55,9 @@ cpSync(
   path.join(outDir, "sandbox/sandbox.Dockerfile"),
 );
 
-for (const required of ["dist/index.js", "node_modules/fastify", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile"]) {
+// dist/executor.js is the local executor the desktop spawns for Local
+// workspaces (supervisor/executor.js); `ws` is its one runtime dependency.
+for (const required of ["dist/index.js", "dist/executor.js", "node_modules/fastify", "node_modules/ws", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }

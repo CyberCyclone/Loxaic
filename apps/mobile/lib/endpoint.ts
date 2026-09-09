@@ -36,12 +36,35 @@ export interface InstanceState {
   defaultHostName: string;
   defaultPort: number;
   lanAddress: string | null;
+  /** This machine's executor id — the same id it registers under, so the
+   * chooser can tell "this machine" from the user's others. */
+  instanceId: string;
   error?: string;
+}
+
+/** The local executor as the main process reports it. `roots` is the list
+ * the user chose in the native folder dialog; `unavailable` means the
+ * install has no executor payload (a dev launch without build:server). */
+export interface ExecutorState {
+  state: 'starting' | 'online' | 'connecting' | 'offline' | 'unauthorized' | 'unavailable';
+  reason: string | null;
+  executorId: string;
+  name: string;
+  roots: string[];
 }
 
 export interface LoxaicBridge {
   platform: 'electron';
   apiBaseUrl: string | null;
+  executor: {
+    setSession: (token: string | null) => Promise<ExecutorState>;
+    getState: () => Promise<ExecutorState>;
+    /** Opens the OS folder dialog. Resolves with the chosen folder (now a
+     * root), or `canceled`. Takes no path — that is the whole point. */
+    pickDirectory: () => Promise<{ path: string; roots: string[] } | { canceled: true }>;
+    removeRoot: (dir: string) => Promise<ExecutorState>;
+    onState: (cb: (state: ExecutorState) => void) => () => void;
+  };
   instance: {
     getState: () => Promise<InstanceState>;
     setMode: (config: unknown) => Promise<InstanceState>;

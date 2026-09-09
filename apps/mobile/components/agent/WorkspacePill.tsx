@@ -1,4 +1,4 @@
-import { FolderGit2, FolderOpen, ChevronDown } from 'lucide-react-native';
+import { FolderGit2, FolderOpen, ChevronDown, Laptop } from 'lucide-react-native';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
@@ -19,8 +19,13 @@ interface WorkspacePillProps {
  * has one, so afterwards this is a label, not a control. */
 export function WorkspacePill({ workspace, editable, onPress }: WorkspacePillProps) {
   const ws = workspace ?? { kind: 'scratch' as const };
-  const label = ws.kind === 'github' ? `${ws.repo}${'branch' in ws && ws.branch ? ` · ${ws.branch}` : ''}` : 'Empty workspace';
-  const icon = ws.kind === 'github' ? FolderGit2 : FolderOpen;
+  const label =
+    ws.kind === 'github'
+      ? `${ws.repo}${'branch' in ws && ws.branch ? ` · ${ws.branch}` : ''}`
+      : ws.kind === 'local'
+        ? `${ws.executorName} · ${ws.path}`
+        : 'Empty workspace';
+  const icon = ws.kind === 'github' ? FolderGit2 : ws.kind === 'local' ? Laptop : FolderOpen;
   return (
     <Pressable
       testID="agent.workspace.button"

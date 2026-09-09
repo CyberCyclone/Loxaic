@@ -92,15 +92,13 @@ export async function getConversationSandbox(
 ): Promise<SandboxHandle> {
   // The workspace decides the provider, not the other way round: a `local`
   // workspace runs on the user's own machine regardless of what this server's
-  // SANDBOX_MODE says (a later stage). Everything else uses the configured
+  // SANDBOX_MODE says — off, host, or hosting-blocked, none of it applies to
+  // a command that never executes here. Everything else uses the configured
   // provider. Loaded here, once per tool call, rather than per creation —
   // resolveEntry's cached path needs it too, to know which provider to ask.
   const loaded = await loadWorkspace(conversationId);
   const workspace: Workspace = loaded?.workspace ?? { kind: "scratch" };
-  if (workspace.kind === "local") {
-    throw new Error("Local workspaces are not available yet");
-  }
-  const provider = await getSandboxProvider();
+  const provider = workspace.kind === "local" ? await getProviderByKind("executor") : await getSandboxProvider();
   if (!provider) throw new Error("sandboxes are disabled (SANDBOX_MODE=off)");
 
   const entry = await resolveEntry(provider, userId, conversationId, workspace);
@@ -269,10 +267,13 @@ export async function assertUnderUserLimit(userId: string): Promise<void> {
 }
 
 async function runningRowsFor(userId: string) {
+  // Executor sandboxes are a directory on the user's own machine and hold
+  // none of the server resources this cap protects, so they neither count
+  // against it nor are subject to it (see createEntry).
   return db
     .select({ id: sandboxes.id, containerId: sandboxes.containerId, provider: sandboxes.provider })
     .from(sandboxes)
-    .where(and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running")));
+    .where(and(eq(sandboxes.ownerId, userId), eq(sandboxes.status, "running"), ne(sandboxes.provider, "executor")));
 }
 
 /**
@@ -368,6 +369,12 @@ async function createEntry(
   // because the map is per process and the limit is about the machine. Rows
   // are marked stopped by every teardown path, and the boot sweep reconciles
   // what a crash left behind.
+  //
+  // Not for executor sandboxes: those run on the user's own machine and
+  // cost this server nothing to hold open.
+  if (provider.kind === "executor") {
+    return createEntryReserved(provider, userId, conversationId, workspace);
+  }
   await assertUnderUserLimit(userId);
   try {
     return await createEntryReserved(provider, userId, conversationId, workspace);
@@ -386,6 +393,13 @@ async function createEntry(
  * exec environment only (sandbox/git.ts).
  */
 async function createConfigFor(ownerId: string, workspace: Workspace): Promise<CreateSandboxConfig> {
+  if (workspace.kind === "local") {
+    // The executor re-validates the path against its own roots on every
+    // call; this is the request, and the owner check is the provider's.
+    return {
+      local: { executorId: workspace.executorId, path: workspace.path, isolation: workspace.isolation, ownerId },
+    };
+  }
   if (workspace.kind !== "github") return {};
   const [token, connection] = await Promise.all([getOwnerToken(ownerId), getConnection(ownerId)]);
   if (!token || !connection) {
@@ -457,7 +471,7 @@ async function createEntryReserved(
       conversationId,
       containerId: handle.ref,
       provider: provider.kind,
-      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : "host",
+      image: provider.kind === "container" ? (process.env.SANDBOX_IMAGE ?? "loxaic-sandbox") : provider.kind,
       status: "running",
       repoUrl: config.repoUrl ?? null,
       branch: config.newBranch ?? config.branch ?? null,

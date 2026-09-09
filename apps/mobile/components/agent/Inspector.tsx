@@ -71,6 +71,31 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
   const { retention, sandbox } = workspace;
   const ws = workspace.workspace ?? { kind: 'scratch' as const };
   const paused = sandbox?.status === 'stopped';
+
+  // A local workspace is the user's own folder on their own machine: no
+  // server sandbox, no pause, and nothing Loxaic will ever delete — so none
+  // of the retention copy below applies, and saying it would be a lie.
+  if (ws.kind === 'local') {
+    return (
+      <VStack space="xs">
+        <Text size="sm" className="font-semibold text-foreground">
+          Workspace
+        </Text>
+        <Text testID="agent.inspector.workspace.kind" size="xs" className="text-foreground">
+          Local — {ws.executorName} · {ws.path}
+        </Text>
+        <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
+          {sandbox
+            ? `Running directly on ${ws.executorName}, with no sandbox.`
+            : `Commands will run directly on ${ws.executorName}, with no sandbox, the first time a tool runs.`}
+        </Text>
+        <Text testID="agent.inspector.workspace.retention" size="xs" className="text-muted-foreground">
+          Your files stay on your machine. Loxaic never deletes this folder.
+        </Text>
+      </VStack>
+    );
+  }
+
   return (
     <VStack space="xs">
       <Text size="sm" className="font-semibold text-foreground">
