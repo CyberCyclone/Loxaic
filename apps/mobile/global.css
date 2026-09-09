@@ -95,6 +95,15 @@
   --radius-md: 10px;
   --radius-lg: 16px;
 
+  /* Tailwind's built-in type scale starts at `text-xs`; `2xs` is ours, so it
+     only exists if defined here. It was not, and the consequence was the
+     opposite of silent: `Text`'s size map emits `text-2xs`, the class matched
+     nothing, and the element fell back to the inherited 16px — so `size="2xs"`
+     rendered *larger* than the `size="xs"` (12px) it is meant to sit under.
+     See #114; measured on the agent screen before this was added. */
+  --text-2xs: 0.625rem;      /* 10px, one step under text-xs */
+  --text-2xs--line-height: calc(0.875 / 0.625);  /* 14px, matching xs's ratio */
+
   /* React Native has no font-stack fallback: fontFamily must be ONE family,
      and expo-font registers each weight under its own name. Weight utilities
      (font-medium/semibold/bold) therefore synthesize on native rather than
