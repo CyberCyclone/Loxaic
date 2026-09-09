@@ -124,6 +124,19 @@ describe.skipIf(!dockerReady)("container isolation on a local workspace", () => 
     expect(await svc.handle("exists", { ref })).toBe(false);
   }, 180_000);
 
+  it("can still stop and destroy a container whose folder was un-approved", async () => {
+    // Un-approving revokes reaching *into* the container. It used to revoke
+    // stopping it too — the one path that could remove a container mounted
+    // on the withdrawn folder was gated on exactly the condition that made
+    // removing it urgent, and nothing else ever reclaims these.
+    const { ref, svc } = await createContainerSandbox();
+    const id = ref.slice("container:".length);
+    roots = [];
+    await svc.handle("stop", { ref });
+    await svc.handle("destroy", { ref });
+    await expect(new Docker().getContainer(id).inspect()).rejects.toMatchObject({ statusCode: 404 });
+  }, 180_000);
+
   it("stops and destroys the container without touching the folder", async () => {
     const { ref, svc } = await createContainerSandbox();
     writeFileSync(path.join(root, "keep.txt"), "important");
@@ -140,4 +153,16 @@ describe.skipIf(!dockerReady)("container isolation on a local workspace", () => 
     // The folder is the user's, and predates us.
     expect(readFileSync(path.join(root, "keep.txt"), "utf8")).toBe("important");
   }, 180_000);
+});
+
+describe("container references from the server", () => {
+  it("refuses a malformed id before asking the engine anything", async () => {
+    // The id goes into an Engine API URL path; it is the server's text, and
+    // the server is not trusted. Checked without an engine in the way.
+    const svc = createExecutorService({ roots: () => [], executorId: EXECUTOR_ID });
+    for (const ref of ["container:../../x", "container:", "container:latest", "container:ABCDEF012345"]) {
+      await expect(svc.handle("isRunning", { ref })).resolves.toBe(false);
+      await expect(svc.handle("exec", { ref, command: ["pwd"] })).rejects.toThrow("not a container reference");
+    }
+  });
 });

@@ -55,7 +55,16 @@ export interface RootsMessage {
 
 export type ResultMessage =
   | { type: "result"; id: string; ok: true; value: unknown }
-  | { type: "result"; id: string; ok: false; error: string };
+  | {
+      type: "result";
+      id: string;
+      ok: false;
+      error: string;
+      /** "gone": the sandbox this call named no longer exists on the machine
+       * (sandbox/errors.ts). The one failure the server may record as
+       * destroyed; every other error is "could not do it", not "it is gone". */
+      code?: "gone";
+    };
 
 // ── Terminals ──────────────────────────────────────────────
 // A terminal is the one thing here that is not request/response: it is a
@@ -85,6 +94,23 @@ export interface TerminalResizeMessage {
 export interface TerminalCloseMessage {
   type: "terminal.close";
   terminalId: string;
+}
+
+/**
+ * Cancel an in-flight `call` — in practice an `exec`, since nothing else runs
+ * long enough to be worth interrupting.
+ *
+ * Deliberately *not* a field on the original call: an AbortSignal cannot be
+ * serialised (JSON renders it as `{}`), so cancellation has to be its own
+ * message arriving later. The executor answers the original call as normal
+ * afterwards — with whatever output the command produced and a cancelled exit
+ * code — rather than the server abandoning it, so partial output survives and
+ * the pending request settles through the path it already had.
+ */
+export interface ExecCancelMessage {
+  type: "exec.cancel";
+  /** The `call` id being cancelled. */
+  id: string;
 }
 
 export interface TerminalDataMessage {
@@ -121,6 +147,7 @@ export interface CallMessage {
 export type ServerToExecutor =
   | WelcomeMessage
   | CallMessage
+  | ExecCancelMessage
   | TerminalOpenMessage
   | TerminalInputMessage
   | TerminalResizeMessage

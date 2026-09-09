@@ -202,6 +202,27 @@ describe("/ws/sandbox/:id", () => {
     expect((await done).some((e) => e.type === "terminal.exit")).toBe(true);
   });
 
+  it("caps how many terminals one user may hold open, and frees the slot on close", async () => {
+    // Under SANDBOX_MODE=host each terminal is an unbounded bash on the
+    // server itself; the executor caps its own shells at the same number.
+    const { sandboxId } = await sandboxFor();
+    const held: WebSocket[] = [];
+    for (let i = 0; i < 8; i++) {
+      const ws = open(sandboxId);
+      await new Promise<void>((resolve) => { ws.once("message", () => { resolve(); }); });
+      held.push(ws);
+    }
+    const ninth = open(sandboxId);
+    expect(await closeCode(ninth)).toBe(4429);
+
+    const first = held.shift();
+    first?.close();
+    await new Promise((r) => setTimeout(r, 50));
+    const again = open(sandboxId);
+    await new Promise<void>((resolve) => { again.once("message", () => { resolve(); }); });
+    for (const ws of [...held, again]) ws.close();
+  });
+
   it("is owner-only, and refuses a bad token or an unknown sandbox the same way", async () => {
     const { sandboxId } = await sandboxFor();
 

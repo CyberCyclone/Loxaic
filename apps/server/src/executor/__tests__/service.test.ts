@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createExecutorService, RootViolationError } from "../service.ts";
+import { SandboxGoneError } from "../../sandbox/errors.ts";
 
 /**
  * The executor's one security property: nothing outside a folder the user
@@ -135,7 +136,10 @@ describe("file operations stay inside the ref", () => {
     // server learns to stop trusting the row.
     expect(await svc.handle("exists", { ref })).toBe(false);
     expect(await svc.handle("isRunning", { ref })).toBe(false);
-    await expect(svc.handle("start", { ref })).rejects.toBeInstanceOf(RootViolationError);
+    // start is the manager's "paused or gone?" question, and an un-approved
+    // directory is "gone" to the server — reported as exactly that, so the
+    // row is dropped rather than the refusal surfacing as a retryable error.
+    await expect(svc.handle("start", { ref })).rejects.toBeInstanceOf(SandboxGoneError);
   });
 });
 
@@ -149,4 +153,53 @@ describe("lifecycle verbs never touch the user's files", () => {
     expect(readFileSync(path.join(root, "keep.txt"), "utf8")).toBe("important");
     expect(await svc.handle("exists", { ref })).toBe(true);
   });
+});
+
+describe("cancelling an exec", () => {
+  /**
+   * The executor half of #119. A `local` workspace runs commands on the
+   * user's own machine, and until now nothing could stop one: the server
+   * cannot serialise an AbortSignal, so cancellation had to become its own
+   * `exec.cancel` message, which main.ts turns back into a signal here.
+   *
+   * Asserted on the *filesystem*, not on how fast the promise settled:
+   * returning early is what the old timeout already did while leaving the
+   * command running. The command writes a file only after the point of
+   * cancellation, so a survivor leaves evidence.
+   */
+  it("kills the command's process group, not just the promise", async () => {
+    const marker = path.join(root, "survived.txt");
+    const controller = new AbortController();
+    const started = Date.now();
+
+    const running = service().handle(
+      "exec",
+      { ref: root, command: ["bash", "-lc", `sleep 6; echo survived > ${marker}`], options: { timeoutMs: 30_000 } },
+      controller.signal,
+    );
+    // Long enough that the child is genuinely running, far short of its sleep.
+    await new Promise((r) => setTimeout(r, 500));
+    controller.abort();
+    await running;
+    expect(Date.now() - started).toBeLessThan(3_000);
+
+    // Outlive the sleep: the whole group must be gone, including the
+    // grandchild the `bash -lc` spawned.
+    await new Promise((r) => setTimeout(r, 6_500));
+    expect(existsSync(marker)).toBe(false);
+  }, 30_000);
+
+  it("leaves an uncancelled command's output and exit code alone", async () => {
+    // The wrapper guard: every bash tool call now carries a signal, so a
+    // cancellable exec that mangled ordinary results would break local
+    // workspaces wholesale while the case above still passed.
+    const controller = new AbortController();
+    const ok = await service().handle(
+      "exec",
+      { ref: root, command: ["bash", "-lc", "echo hello; exit 3"] },
+      controller.signal,
+    ) as { stdout: string; exitCode: number };
+    expect(ok.stdout).toContain("hello");
+    expect(ok.exitCode).toBe(3);
+  }, 30_000);
 });

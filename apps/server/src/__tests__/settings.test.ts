@@ -335,6 +335,17 @@ describe("updateSandboxSettings persistence", () => {
     expect(view.customSocket).toBe("/tmp/somewhere.sock");
   });
 
+  it("does not let an env-pinned retention pair block an unrelated write", async () => {
+    // Both fields are read-only while pinned, so the pair cannot be fixed
+    // through the API — and rejecting every write for it would take
+    // `{ mode: "off" }` with it, the one call that stops execution while the
+    // operator sorts the environment out.
+    process.env.SANDBOX_IDLE_STOP_MS = "2";
+    process.env.SANDBOX_REAP_AFTER_MS = "1";
+    const view = await updateSandboxSettings({ mode: "off" });
+    expect(view.mode).toBe("off");
+  });
+
   it("serializes concurrent writes instead of losing one", async () => {
     // Both patches are built from the in-memory `persisted`, so without
     // serialization the later write's object still carries the earlier

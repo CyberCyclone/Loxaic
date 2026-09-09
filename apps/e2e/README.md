@@ -292,7 +292,11 @@ bare repo with one commit on `main`, served over `git://` by `git daemon --enabl
 and `scripts/mock-github.ts` hands out that URL as the repo's `clone_url`. A sandbox reaches the
 harness machine as `host.docker.internal` — Docker Desktop resolves that on its own; Linux and
 Podman need the `SANDBOX_EXTRA_HOSTS=host.docker.internal:host-gateway` entry `standup.ts` passes
-to the server it spawns, mapped to `HostConfig.ExtraHosts`. Cloning needs sandbox network access,
+to the server it spawns, mapped to `HostConfig.ExtraHosts`. The daemon binds to `127.0.0.1` — it
+has no authentication and pushes are enabled, so it must not be reachable from the LAN for the
+length of a run — which Docker Desktop reaches through `host.docker.internal` (it routes to the
+host's loopback); Linux's `host-gateway` lands on the bridge address instead, so set
+`E2E_GIT_LISTEN` to that address (or `0.0.0.0`) there. Cloning needs sandbox network access,
 which is off by default: a spec that clones turns `allowNetwork` on through the admin API in
 `before` and resets it in `after`, the same discipline every sandbox-mode spec follows — this is
 deliberately *not* a global `standup.ts` setting, since pinning it would 409 every spec's own

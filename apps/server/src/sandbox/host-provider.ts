@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 import { existsSync } from "node:fs";
+import { SandboxGoneError } from "./errors.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { CappedSink } from "./exec-common.ts";
@@ -24,9 +26,40 @@ function hostRoot(): string {
     ?? path.join(process.env.LOXAIC_DATA_DIR ?? process.cwd(), "sandboxes");
 }
 
+/**
+ * Process groups this process has spawned and not yet seen exit. `detached:
+ * true` is what lets a cancel or timeout take a command's whole tree, but it
+ * also detaches those trees from *this* process's own death: a Ctrl-C on a
+ * dev server or a desktop quit no longer reaches them, and the only thing
+ * that would have killed them — the timeout timer — dies with the parent.
+ * So they are killed on the way out here. `exit` handlers must be
+ * synchronous, which process.kill is.
+ */
+const liveGroups = new Set<number>();
+process.once("exit", () => {
+  for (const pid of liveGroups) {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+  }
+});
+
 async function execHost(cwd: string, command: string[], options?: ExecOptions): Promise<ExecResult> {
   if (command.length === 0) throw new Error("exec requires a non-empty command");
   const timeoutMs = options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
+
+  // A signal that is already aborted means nothing should start. After a
+  // Stop every remaining call in a batch arrives here in that state (the
+  // loop re-checks per call), and spawning anyway — then returning before
+  // the `error` listener below was attached — meant an async spawn failure
+  // (ENOENT for a command not on PATH, EAGAIN under fork pressure) was an
+  // unhandled `error` event: the server under SANDBOX_MODE=host, or the
+  // user's desktop executor, exiting.
+  if (options?.signal?.aborted) {
+    return { stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false };
+  }
 
   const child = spawn(command[0], command.slice(1), {
     cwd: options?.workdir ?? cwd,
@@ -42,13 +75,28 @@ async function execHost(cwd: string, command: string[], options?: ExecOptions): 
     ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
   });
 
-  /** SIGKILL the group, ignoring the race where it has already exited. */
+  if (child.pid !== undefined) liveGroups.add(child.pid);
+
+  /** SIGKILL the group, falling back to the child alone where process
+   * groups do not exist, and ignoring the race where it has already exited. */
   const killGroup = () => {
     if (child.pid === undefined) return;
     try {
       process.kill(-child.pid, "SIGKILL");
-    } catch {
-      // ESRCH: already gone between the check and the signal.
+    } catch (e) {
+      // ESRCH: already gone between the check and the signal — nothing to
+      // do. Anything else (EINVAL/ENOSYS where there are no process groups:
+      // Windows, where `detached` opens a console instead) means the group
+      // kill is not available here, and killing what we can beats killing
+      // nothing — which is what swallowing every errno used to do, while
+      // reporting exit 130 for a command still running.
+      if ((e as NodeJS.ErrnoException).code !== "ESRCH") {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
     }
   };
 
@@ -82,12 +130,19 @@ async function execHost(cwd: string, command: string[], options?: ExecOptions): 
       signal?.removeEventListener("abort", onAbort);
       resolve(v);
     };
-    if (signal?.aborted) { onAbort(); return; }
-    signal?.addEventListener("abort", onAbort, { once: true });
-    child.on("error", (e) => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); reject(e); });
+    // The emitter is attended before anything can settle the promise: an
+    // `error` with no listener is a thrown exception, whatever else happened.
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (child.pid !== undefined) liveGroups.delete(child.pid);
+      reject(e);
+    });
     child.on("exit", (code, sig) => {
+      if (child.pid !== undefined) liveGroups.delete(child.pid);
       settle({ exitCode: code ?? (sig ? 128 : -1), timedOut: false, cancelled: false });
     });
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 
   return {
@@ -137,9 +192,26 @@ export function openPipeTerminal(cwd: string): TerminalSession {
   const child = spawn("bash", [], { cwd, stdio: ["pipe", "pipe", "pipe"] });
   const dataListeners: ((data: string) => void)[] = [];
   const closeListeners: (() => void)[] = [];
-  child.stdout.on("data", (chunk: Buffer) => { for (const l of dataListeners) l(chunk.toString()); });
-  child.stderr.on("data", (chunk: Buffer) => { for (const l of dataListeners) l(chunk.toString()); });
+  // Pipe reads land wherever the kernel split them, so a multi-byte character
+  // can arrive as 1 + 2 bytes; `chunk.toString()` turned each half into a
+  // replacement character. The decoder holds the partial sequence.
+  const out = new StringDecoder("utf8");
+  const err = new StringDecoder("utf8");
+  const emit = (text: string) => { if (text) for (const l of dataListeners) l(text); };
+  child.stdout.on("data", (chunk: Buffer) => { emit(out.write(chunk)); });
+  child.stderr.on("data", (chunk: Buffer) => { emit(err.write(chunk)); });
   child.on("close", () => { for (const l of closeListeners) l(); });
+  // spawn() reports failure asynchronously as `error`, and an `error` with no
+  // listener is an uncaught exception: a machine with no `bash` on PATH took
+  // down the executor on the user's laptop — or, in host mode, the server.
+  // Routed to the close listeners so the panel gets its terminal.exit rather
+  // than a socket that goes quiet. stdin can EPIPE the same way after the
+  // shell exits.
+  child.on("error", (e) => {
+    emit(`\r\n[${e.message}]\r\n`);
+    for (const l of closeListeners) l();
+  });
+  child.stdin.on("error", () => undefined);
   return {
     tty: false,
     write: (data) => { child.stdin.write(data); },
@@ -223,7 +295,7 @@ function makeHandle(
       // when it isn't keeps this provider's start() answering the same
       // question the container one does: paused, or gone?
       if (!existsSync(sandboxDir)) {
-        throw new Error(`host sandbox directory is gone: ${sandboxDir}`);
+        throw new SandboxGoneError(`host sandbox directory is gone: ${sandboxDir}`);
       }
     },
 

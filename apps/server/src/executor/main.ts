@@ -25,6 +25,7 @@ import os from "node:os";
 import { createInterface } from "node:readline";
 import WebSocket from "ws";
 import { containerCapability } from "./container.ts";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import { createExecutorService, createRefResolver } from "./service.ts";
 import { createExecutorTerminals } from "./terminal.ts";
 import {
@@ -68,6 +69,16 @@ function loadRoots(): string[] {
 
 let roots = loadRoots();
 const service = createExecutorService({ roots: () => roots, executorId });
+
+/**
+ * In-flight calls, so an `exec.cancel` can reach one. Keyed by the server's
+ * call id — the same id its `result` will carry, which is what lets a cancel
+ * name a specific command rather than "whatever is running".
+ *
+ * Cleared when the call settles, so a cancel arriving after the command
+ * finished finds nothing and does nothing, which is the common race.
+ */
+const inFlight = new Map<string, AbortController>();
 const terminals = createExecutorTerminals({
   resolver: createRefResolver({ roots: () => roots, executorId }),
   executorId,
@@ -151,12 +162,31 @@ function connect(): void {
       terminals.close(msg.terminalId);
       return;
     }
+    if (msg.type === "exec.cancel") {
+      // Abort only — the call still answers through its normal path below,
+      // carrying whatever the command produced before it was killed. A
+      // cancel for a call that already finished is an ordinary race.
+      inFlight.get(msg.id)?.abort();
+      return;
+    }
     const { id, method, params } = msg;
+    const controller = new AbortController();
+    inFlight.set(id, controller);
+    const settle = (message: ExecutorToServer) => {
+      inFlight.delete(id);
+      send(message);
+    };
     void service
-      .handle(method, params)
-      .then((value) => { send({ type: "result", id, ok: true, value }); })
+      .handle(method, params, controller.signal)
+      .then((value) => { settle({ type: "result", id, ok: true, value }); })
       .catch((err: unknown) => {
-        send({ type: "result", id, ok: false, error: err instanceof Error ? err.message : String(err) });
+        settle({
+          type: "result",
+          id,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          ...(err instanceof SandboxGoneError ? { code: "gone" as const } : {}),
+        });
       });
   });
 
@@ -167,9 +197,16 @@ function connect(): void {
 
   socket.on("close", (code) => {
     if (ws === socket) ws = null;
-    // Shells belong to the connection that asked for them: a server that has
-    // gone away must not leave bash processes running on someone's laptop.
+    // Shells *and commands* belong to the connection that asked for them: a
+    // server that has gone away must not leave bash processes running on
+    // someone's laptop. Terminals were closed here already; the in-flight
+    // execs were not, so an agent's `npm install` ran on unattended after a
+    // disconnect (an ordinary reconnect included), its result then dropped
+    // for want of a socket while the server had long failed the call on its
+    // side. Aborting takes the whole process group.
     terminals.closeAll();
+    for (const controller of inFlight.values()) controller.abort();
+    inFlight.clear();
     console.log(EXECUTOR_STDOUT.disconnected);
     if (exiting) return;
     if (code === 4001) {

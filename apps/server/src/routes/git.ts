@@ -44,9 +44,19 @@ async function loadContext(
  * tool in it. Never creates one — a git action is not a reason to clone a
  * repository nobody has touched yet, and `GET status` in particular must not
  * have that side effect just because the Inspector was opened. */
-async function findSandboxRow(conversationId: string) {
+async function findSandboxRow(conversationId: string, ownerId: string) {
+  // Scoped to the owner's rows, not just the conversation's. Every action
+  // here runs in whatever sandbox this returns — Push with the owner's PAT
+  // in its environment — so a row that merely *names* the conversation must
+  // not be enough: POST /v1/sandboxes stored its conversation_id unchecked,
+  // and the newest-first order made a planted row win. (That route now
+  // requires owner role too; this predicate is the second lock.)
   return db.query.sandboxes.findFirst({
-    where: and(eq(sandboxes.conversationId, conversationId), ne(sandboxes.status, "destroyed")),
+    where: and(
+      eq(sandboxes.conversationId, conversationId),
+      eq(sandboxes.ownerId, ownerId),
+      ne(sandboxes.status, "destroyed"),
+    ),
     orderBy: desc(sandboxes.createdAt),
   });
 }
@@ -88,7 +98,7 @@ export function gitRoutes(app: FastifyInstance) {
       return { error: ctx.error };
     }
 
-    const row = await findSandboxRow(request.params.id);
+    const row = await findSandboxRow(request.params.id, ctx.ownerId);
     if (!row) {
       // Nothing cloned yet — a fact, not an error. The panel shows the branch
       // names the workspace already committed to and nothing else.
@@ -118,7 +128,20 @@ export function gitRoutes(app: FastifyInstance) {
         { workdir: handle.workdir },
       ),
     ]);
-    const [behindStr, aheadStr] = aheadBehind.stdout.trim().split(/\s+/);
+    // Both exit codes matter, differently. A failed `git status` means the
+    // checkout is broken (half a clone, not a repo), and used to come back as
+    // a confident `changed: []` with Commit greyed out — "everything is
+    // committed" for a workspace that had nothing. A failed rev-list is
+    // ordinary (the base ref was never fetched) and is reported as unknown,
+    // never as 0 ahead — which disabled Push on the strength of nothing.
+    if (changedResult.exitCode !== 0) {
+      reply.code(500);
+      return { error: `git status failed: ${changedResult.stderr.trim() || "not a git repository"}` };
+    }
+    const counts = aheadBehind.exitCode === 0 ? aheadBehind.stdout.trim().split(/\s+/) : null;
+    const count = (raw: string | undefined) => (raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : null);
+    const behind = count(counts?.[0]);
+    const ahead = count(counts?.[1]);
     return {
       cloned: true,
       repo: ctx.workspace.repo,
@@ -126,8 +149,8 @@ export function gitRoutes(app: FastifyInstance) {
       baseBranch: ctx.workspace.baseBranch,
       pr: ctx.workspace.pr ?? null,
       changed: parseStatus(changedResult.stdout),
-      ahead: Number(aheadStr) || 0,
-      behind: Number(behindStr) || 0,
+      ahead,
+      behind,
     };
   });
 
@@ -153,7 +176,7 @@ export function gitRoutes(app: FastifyInstance) {
       return { error: "message must be a non-empty string" };
     }
 
-    const row = await findSandboxRow(request.params.id);
+    const row = await findSandboxRow(request.params.id, ctx.ownerId);
     const handle = row ? await attachRunningSandbox(row) : null;
     if (!handle) {
       reply.code(400);
@@ -203,7 +226,7 @@ export function gitRoutes(app: FastifyInstance) {
       reply.code(ctx.status);
       return { error: ctx.error };
     }
-    const row = await findSandboxRow(request.params.id);
+    const row = await findSandboxRow(request.params.id, ctx.ownerId);
     const handle = row ? await attachRunningSandbox(row) : null;
     if (!handle) {
       reply.code(400);
@@ -215,9 +238,24 @@ export function gitRoutes(app: FastifyInstance) {
       return { error: "GitHub is not connected" };
     }
 
+    // `origin` is read from a `.git/config` the model writes to freely, and
+    // `git remote set-url origin https://attacker/…` is one bash tool call.
+    // The push goes to the URL the workspace was created with, or nowhere:
+    // checked here against the server's own record before anything
+    // credentialed runs. (The credential helper is also scoped to that URL's
+    // host — sandbox/git.ts — so this is the first of two locks.)
+    const remote = await handle.exec(["git", "remote", "get-url", "origin"], { workdir: handle.workdir });
+    if (remote.exitCode !== 0 || remote.stdout.trim() !== ctx.workspace.cloneUrl) {
+      reply.code(409);
+      return {
+        error:
+          "The checkout's origin no longer matches the repository this workspace was created from — " +
+          "refusing to push. Restore it with `git remote set-url origin " + ctx.workspace.cloneUrl + "` first.",
+      };
+    }
     const push = await handle.exec(
       ["git", ...gitCredentialArgs(), "push", "-u", "origin", ctx.workspace.branch],
-      { workdir: handle.workdir, env: gitEnv(token) },
+      { workdir: handle.workdir, env: gitEnv(token, ctx.workspace.cloneUrl) },
     );
     if (push.exitCode !== 0) {
       reply.code(400);
@@ -272,6 +310,9 @@ export function gitRoutes(app: FastifyInstance) {
         reply.code(409);
         return { error: "A pull request for this branch already exists on GitHub, but Loxaic lost track of it." };
       }
+      // Every other 422 — "No commits between main and …" being the common
+      // one, since nothing gates Open PR on having pushed — reaches the user
+      // as GitHub's own words, which say what to do.
       if (err instanceof GithubApiError) {
         reply.code(400);
         return { error: err.message };

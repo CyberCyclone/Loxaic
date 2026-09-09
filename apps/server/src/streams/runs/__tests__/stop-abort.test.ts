@@ -196,7 +196,74 @@ describe("stopping a run", () => {
     // so the assistant message keeps its calls with no results, which is the
     // orphan case `loadHistory` already strips from both directions on the
     // next turn. What matters here is that calls 2 and 3 never ran.
-    expect(blocks.filter((b) => b.kind === "tool_result").length).toBe(0);
+    // Every call gets a result saying it was stopped — none ran — so the
+    // assistant message has no orphan calls for the next turn to strip.
+    const results = blocks.filter((b) => b.kind === "tool_result");
+    expect(results).toHaveLength(3);
+    for (const r of results) expect((r as { output: string }).output).toContain("Stopped by the user");
+  });
+
+  it.skipIf(!dockerReady)("keeps the results of the calls that ran before a stop at a later approval", async () => {
+    // Docker-gated like the batch case below: the approved first call is an
+    // fs_write, which needs a real sandbox — without one, CI spent the whole
+    // timeout trying to build the image.
+    // A batch stopped part-way is a different situation from one stopped
+    // before anything ran: the first call wrote a file. Unwinding through
+    // the aborted approval used to skip the insert that persists results, so
+    // the model had no record the file existed and the transcript lost a
+    // result the user had watched arrive.
+    const file = path.join(dir, "batch-partial.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        {
+          match: "scaffold two files",
+          steps: [
+            {
+              calls: [
+                { tool: "fs_write", args: { path: "first.txt", content: "first\n" } },
+                { tool: "fs_write", args: { path: "second.txt", content: "second\n" } },
+                { tool: "fs_write", args: { path: "third.txt", content: "third\n" } },
+              ],
+            },
+          ],
+          finalText: "[Mock] scaffolded.\n",
+        },
+      ]),
+    );
+    process.env.MOCK_SCENARIOS_FILE = file;
+    __resetMockScenariosForTest();
+
+    const convId = await newConversation();
+    await startAgentRun({
+      userId,
+      content: "scaffold two files",
+      model: "llama-3.1-8b-instruct",
+      mode: "manual",
+      conversationId: convId,
+    });
+
+    await waitFor("the run to register", () => getRunByConversation(convId) !== undefined);
+    const run = getRunByConversation(convId);
+    if (!run) throw new Error("run vanished");
+    await waitFor("the first approval to be pending", () => run.approvals.size > 0);
+    const [firstCallId, approveFirst] = [...run.approvals.entries()][0];
+    approveFirst(true);
+    await waitFor("the second approval to be pending", () => run.approvals.size > 0 && !run.approvals.has(firstCallId));
+    run.abort.abort();
+
+    const took = await waitForRunGone(convId, STOP_DEADLINE_MS);
+    expect(took).toBeLessThan(STOP_DEADLINE_MS);
+
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    const blocks = rows.flatMap((r) => r.content as ContentBlock[]);
+    const results = blocks.filter((b): b is Extract<ContentBlock, { kind: "tool_result" }> => b.kind === "tool_result");
+    expect(results).toHaveLength(3);
+    const first = results.find((r) => r.call_id === firstCallId);
+    expect(first?.output).not.toContain("Stopped by the user");
+    for (const r of results.filter((x) => x.call_id !== firstCallId)) {
+      expect(r.output).toContain("Stopped by the user");
+    }
   });
 
   it.skipIf(!dockerReady)("stops during a batch without running the calls behind it", async () => {

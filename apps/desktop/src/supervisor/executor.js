@@ -68,6 +68,12 @@ export function startExecutor({ entry, cwd, apiBaseUrl, executorId, name, rootsF
     let unauthorized = false;
 
     // First line: the token. The executor connects as soon as it has it.
+    // A child that died between spawn and this write (a missing payload, a
+    // bad Node binary) makes the write emit `error` on stdin, and an `error`
+    // with no listener is an uncaught exception in the main process — the
+    // whole desktop app, for a child it otherwise treats as disposable. The
+    // exit handler below already deals with the death itself.
+    spawned.stdin.on("error", () => undefined);
     spawned.stdin.write(`${token}\n`);
 
     createInterface({ input: spawned.stdout }).on("line", (line) => {

@@ -73,11 +73,23 @@ export function scenarioDecisionFor(
 ): ScenarioDecision | null {
   const scenario = loadScenarios().find((s) => new RegExp(s.match, "i").test(prompt));
   if (!scenario) return null;
-  if (stepIndex < scenario.steps.length) {
-    const calls = callsOf(scenario.steps[stepIndex]);
-    // Every call in the step has to be offered, not just the first: a step
-    // half-fired would be a batch the fixture never described.
-    return calls.every((c) => toolNames.has(c.tool)) ? { type: "step", calls } : null;
+  // `stepIndex` is how many tool *messages* the turn already holds — one per
+  // call, not one per step — so it is walked through the steps' call counts
+  // rather than used as an index. Used directly, a two-call step advanced it
+  // by two and the scenario skipped its next step (or fell straight through
+  // to finalText) while looking perfectly well-formed.
+  let consumed = 0;
+  for (const step of scenario.steps) {
+    if (consumed === stepIndex) {
+      const calls = callsOf(step);
+      // Every call in the step has to be offered, not just the first: a step
+      // half-fired would be a batch the fixture never described.
+      return calls.every((c) => toolNames.has(c.tool)) ? { type: "step", calls } : null;
+    }
+    consumed += callsOf(step).length;
+    // Landing inside a step means a batch was only partly answered, which no
+    // scenario describes; fall through to the generic mock rather than guess.
+    if (consumed > stepIndex) return null;
   }
   return scenario.finalText ? { type: "final", text: scenario.finalText } : null;
 }

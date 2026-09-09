@@ -82,6 +82,15 @@ export async function startGitServer(opts: {
 
   const port = await freePort();
   const host = opts.host ?? process.env.E2E_GIT_HOST ?? 'host.docker.internal';
+  // git daemon has no authentication, and receive-pack is on, so binding every
+  // interface made the fixtures anonymously writable by anyone on the same
+  // network for the length of a run. Loopback is enough on Docker Desktop,
+  // which routes host.docker.internal to the host's own loopback (verified:
+  // a 127.0.0.1-bound listener answers from inside the sandbox image). A
+  // Linux `host-gateway` mapping lands on the bridge address instead, where
+  // loopback is unreachable — set E2E_GIT_LISTEN to that address (or
+  // 0.0.0.0) there.
+  const listen = process.env.E2E_GIT_LISTEN ?? '127.0.0.1';
   const child: ChildProcess = spawn(
     'git',
     [
@@ -91,7 +100,7 @@ export async function startGitServer(opts: {
       // Pushes, for the git-actions stage. Off by default in git daemon.
       '--enable=receive-pack',
       '--reuseaddr',
-      '--listen=0.0.0.0',
+      `--listen=${listen}`,
       `--port=${String(port)}`,
       opts.dir,
     ],

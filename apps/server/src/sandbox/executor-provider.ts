@@ -82,17 +82,26 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
     workdir: layout.workdir,
 
     exec: (command, options) => {
-      // `signal` is dropped rather than forwarded: it is an AbortSignal, which
-      // JSON.stringify renders as `{}`, so sending it would put a field on the
-      // wire that looks like cancellation support and is not. Cancelling a
-      // command on someone else's machine needs a real `exec.cancel` message
-      // and the executor killing its own child — a separate change (#119).
-      // Until then this machine's commands are bounded by timeoutMs, as before.
-      const { signal: _signal, ...wireOptions } = options ?? {};
-      return call<ExecCallResult>(
+      // The signal never goes *on* the wire — an AbortSignal serialises to
+      // `{}` — it rides beside the call, and aborting sends `exec.cancel`
+      // naming this call's id. The executor then kills the command's process
+      // group on its own machine and answers the original call normally, so
+      // partial output survives (#119).
+      const { signal, ...wireOptions } = options ?? {};
+      // Nothing is sent for a signal that is already aborted — after a Stop
+      // every remaining call in a batch arrives so — matching the container
+      // and host providers, which do not start the command either.
+      if (signal?.aborted) {
+        return Promise.resolve({ stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false });
+      }
+      return callExecutor<ExecCallResult>(
+        executorId,
         "exec",
-        { command, ...(Object.keys(wireOptions).length > 0 ? { options: wireOptions } : {}) },
-        (options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS) + EXEC_TIMEOUT_MARGIN_MS,
+        { ref, command, ...(Object.keys(wireOptions).length > 0 ? { options: wireOptions } : {}) },
+        {
+          timeoutMs: (options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS) + EXEC_TIMEOUT_MARGIN_MS,
+          ...(signal ? { signal } : {}),
+        },
       );
     },
 
@@ -206,8 +215,12 @@ export function getExecutorProvider(): SandboxProvider {
         "create",
         { path: local.path, isolation: local.isolation },
         // The first container-isolated workspace on a machine builds the
-        // sandbox image, which is minutes rather than seconds.
-        { timeoutMs: CREATE_TIMEOUT_MS },
+        // sandbox image, which is minutes rather than seconds. A direct one
+        // is a realpath and a stat, and gets the ordinary deadline: the run
+        // holds its inference slot through this call, so a connected-but-
+        // wedged laptop must not be able to stall the queue for ten minutes
+        // over a check that takes milliseconds.
+        local.isolation === "container" ? { timeoutMs: CREATE_TIMEOUT_MS } : {},
       );
       return makeHandle(local.executorId, ref);
     },

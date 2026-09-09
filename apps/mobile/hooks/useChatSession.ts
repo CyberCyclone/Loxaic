@@ -450,7 +450,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
-                    queuePosition: null,
+                    // `run.queued` is only re-emitted when the queue moves, so
+                    // a client that (re)connects while its run sits at a stable
+                    // position hears nothing further until the run ahead ends —
+                    // the snapshot is its only source for the wait.
+                    queuePosition: event.snapshot.queued?.position ?? null,
                     responseStartedAt: Date.now(),
                     model: assistantMsg?.model ?? '',
                   },
@@ -673,8 +677,16 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       showToast('Not connected to this run — reload the page and try again', 4000);
       return;
     }
+    // `wsRef.current` is never nulled on close (a reconnect just re-assigns
+    // it), so the guard above passes with a CLOSED socket in hand during a
+    // reconnect. stopStream refuses to send on one and says so; without
+    // reading that, the header showed "Stopping…" with the button disabled
+    // until the run ended on its own — the shape of #113 again.
+    if (!stopStream(wsRef.current, stream.streamId)) {
+      showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
     setStoppingConvId(id);
-    stopStream(wsRef.current, stream.streamId);
   }, [showToast]);
 
   const clearApproval = useCallback((convId: string) => {

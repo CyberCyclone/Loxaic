@@ -15,6 +15,7 @@
  * command that overruns comes back as a real exit code with its output.
  */
 import { randomUUID } from "node:crypto";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
   executorOfflineMessage,
@@ -118,8 +119,18 @@ function failPending(entry: Registered, reason: string): void {
  * out until a TCP timeout. The old socket is closed and its in-flight calls
  * fail, which is the truth: that process is gone.
  */
-export function registerExecutor(conn: ExecutorConnection): () => void {
+export function registerExecutor(conn: ExecutorConnection): (() => void) | null {
   const existing = byId.get(conn.executorId);
+  // Replacement is for the *same user's* restarted desktop, and no one else.
+  // The id is the desktop's instanceId — a UUID in a config file, not a
+  // secret — and without this check a signed-in user who learned another's
+  // could connect under it, evict the real machine, and become the
+  // destination for that user's local-workspace commands and terminal
+  // keystrokes. Refused with its own close code; the caller sends nothing.
+  if (existing && existing.info.userId !== conn.userId) {
+    conn.close(4003, "That executor id is registered to another user");
+    return null;
+  }
   if (existing) {
     failPending(existing, "the machine reconnected before this call completed");
     unlink(existing);
@@ -176,6 +187,7 @@ export function handleExecutorResult(executorId: string, msg: ResultMessage): vo
   entry.pending.delete(msg.id);
   clearTimeout(p.timer);
   if (msg.ok) p.resolve(msg.value);
+  else if (msg.code === "gone") p.reject(new SandboxGoneError(msg.error));
   else p.reject(new ExecutorCallError(msg.error));
 }
 
@@ -270,25 +282,61 @@ export async function callExecutor<T>(
   executorId: string,
   method: ExecutorMethod,
   params: unknown,
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
   const entry = byId.get(executorId);
   if (!entry) throw new ExecutorOfflineError(executorName(executorId));
   const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const id = randomUUID();
+  // Captured after the guard above: a hoisted function declaration does not
+  // keep the narrowing, and `onAbort` is one.
+  const conn = entry.conn;
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       entry.pending.delete(id);
+      opts.signal?.removeEventListener("abort", onAbort);
       reject(new ExecutorTimeoutError(method, entry.info.name, timeoutMs));
     }, timeoutMs);
-    entry.pending.set(id, { resolve, reject, timer });
+    // Cancelling asks the executor to stop; it does **not** settle this
+    // promise. The executor kills the command and then answers the original
+    // call as normal, so the partial output it produced still comes back and
+    // the result arrives through the path it already had. The timeout above
+    // stays the backstop for an executor too old to know the message.
+    function onAbort() {
+      try {
+        conn.send({ type: "exec.cancel", id });
+      } catch {
+        // A socket that has gone: the call will time out, which is the right
+        // answer for a machine that stopped listening mid-command.
+      }
+    }
+    // Both paths tear down the timer *and* the abort listener: a listener
+    // left on a run's signal outlives the call, and would later send a cancel
+    // for an id the executor has long forgotten.
+    const cleanup = () => {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+    };
+    entry.pending.set(id, {
+      resolve: (value) => { cleanup(); resolve(value as T); },
+      reject: (err) => { cleanup(); reject(err); },
+      timer,
+    });
     try {
       entry.conn.send({ type: "call", id, method, params });
     } catch (err) {
       entry.pending.delete(id);
       clearTimeout(timer);
       reject(err instanceof Error ? err : new Error(String(err)));
+      return;
     }
+    // After the call, never before it: a cancel names an id the executor
+    // only learns from the `call` frame, so one sent first landed in an empty
+    // map and was dropped — and the command then ran to completion on the
+    // user's machine. (The providers short-circuit an already-aborted signal
+    // before reaching here; this ordering is the second lock.)
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

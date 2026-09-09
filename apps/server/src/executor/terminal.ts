@@ -49,19 +49,27 @@ export function createExecutorTerminals(opts: {
   send: (message: ExecutorToServer) => void;
 }): ExecutorTerminals {
   const sessions = new Map<string, TerminalSession>();
+  /** Terminals past the cap check but not yet in `sessions`. Counted with
+   * them: resolving a container ref is several engine round trips, and N
+   * opens arriving in that window all used to see `sessions.size === 0` and
+   * all pass — the cap bounded terminals that had finished opening, which is
+   * not the thing a server opening them in a loop exhausts. */
+  const opening = new Set<string>();
 
   const exit = (terminalId: string, error?: string) => {
     sessions.delete(terminalId);
+    opening.delete(terminalId);
     opts.send({ type: "terminal.exit", terminalId, ...(error ? { error } : {}) });
   };
 
   return {
     async open(terminalId, ref) {
-      if (sessions.has(terminalId)) return;
-      if (sessions.size >= MAX_TERMINALS) {
+      if (sessions.has(terminalId) || opening.has(terminalId)) return;
+      if (sessions.size + opening.size >= MAX_TERMINALS) {
         exit(terminalId, `too many terminals open on this machine (${String(MAX_TERMINALS)})`);
         return;
       }
+      opening.add(terminalId);
       let session: TerminalSession;
       try {
         const { handle } = await opts.resolver.resolve(ref, opts.executorId);
@@ -73,6 +81,7 @@ export function createExecutorTerminals(opts: {
       }
       // Registered before any listener fires, so output can never arrive for
       // a terminal the map does not know about.
+      opening.delete(terminalId);
       sessions.set(terminalId, session);
       session.onData((data) => { opts.send({ type: "terminal.data", terminalId, data }); });
       session.onClose(() => { exit(terminalId); });

@@ -15,6 +15,7 @@
  * covered server-side in `stop-abort.test.ts`, where the timing can be made
  * deterministic.
  */
+import { browser } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
@@ -30,6 +31,8 @@ import {
   waitForRunDone,
 } from '../helpers/app.ts';
 
+const SLOW_TOOL_PROMPT = 'count slowly in the sandbox';
+
 describe('stopping an agent run', () => {
   const creds = uniqueCreds();
 
@@ -37,27 +40,48 @@ describe('stopping an agent run', () => {
     await signUp(creds);
   });
 
-  it('acknowledges the press immediately and ends a mid-response run', async function () {
+  it('acknowledges the press while a slow command is being killed, and ends the run', async function () {
     this.timeout(2 * 60_000);
 
+    // The acknowledgement — "Stopping…" and the disabled stop control — lasts
+    // from the tap until the stream ends. A mid-response stop is now over in
+    // milliseconds (the mock aborts the way a real backend's fetch does, see
+    // #116), so the only run that holds the state long enough to assert on is
+    // one whose stop has real work to do: killing a command in the sandbox,
+    // which takes the TERM→KILL grace plus two engine round trips.
     await goToSurface('agent');
-    await sendMessage(SLOW_PROMPT);
+    await tap('agent.mode.auto');
+    await sendMessage(SLOW_TOOL_PROMPT);
     await waitForTextIn('agent.run.status', 'Running');
+    const [conversation] = await listConversations(creds);
+    const token = await apiToken(creds);
+    // The command is in flight once the sandbox row exists: the mock's reply
+    // is instant, and creating the container is what takes the time.
+    await browser.waitUntil(async () => (await listSandboxes(token, conversation.id)).length > 0, {
+      timeout: 60_000,
+      timeoutMsg: 'the sandbox never appeared',
+    });
 
     await tap('composer.stop');
-    // The acknowledgement, asserted before the outcome: this is what was
-    // missing, and a stop that only *eventually* shows something is the bug.
-    // The button becomes a distinct, disabled control so a second press
-    // cannot race the first.
     await waitForVisible('composer.stopping');
     await waitForTextIn('agent.run.status', 'Stopping');
     await shot('agent-stop-acknowledged');
 
     await waitForTextIn('agent.run.status', 'Done', 30_000);
-    // Off the server too, not just the badge.
-    const [conversation] = await listConversations(creds);
     await waitForRunDone(creds, conversation.id, 30_000);
     await shot('agent-stop-done');
+  });
+
+  it('ends a mid-response run', async function () {
+    this.timeout(2 * 60_000);
+
+    await startNewAgentRun();
+    await sendMessage(SLOW_PROMPT);
+    await waitForTextIn('agent.run.status', 'Running');
+    await tap('composer.stop');
+    await waitForTextIn('agent.run.status', 'Done', 30_000);
+    const [conversation] = await listConversations(creds);
+    await waitForRunDone(creds, conversation.id, 30_000);
   });
 
   it('stops a run that is waiting at a permission prompt', async function () {

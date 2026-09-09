@@ -13,7 +13,7 @@ import { conversations } from "@loxaic/db/schema";
 import type { Workspace } from "@loxaic/types";
 import type { SandboxMode } from "../sandbox/provider.ts";
 import { getConnection } from "../github/connection.ts";
-import { getOwnerToken } from "../github/connection.ts";
+import { getOwnerToken, GithubTokenUnreadableError } from "../github/connection.ts";
 import { getRepo } from "../github/client.ts";
 import { getExecutor } from "../executor/registry.ts";
 
@@ -26,8 +26,18 @@ export class WorkspaceError extends Error {
 
 const SCRATCH: Workspace = { kind: "scratch" };
 
-/** `owner/name` — the only shape GitHub itself accepts. */
+/**
+ * `owner/name` — the only shape GitHub itself accepts. `.` and `..` are
+ * excluded as whole segments explicitly: `[\w.-]+` admits them, and
+ * `repos/../user` normalises to `/user` in the API URL — a 200 whose body is
+ * the viewer, not a repository, which then persisted a workspace with an
+ * undefined repo and clone URL.
+ */
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+function isRepoSlug(value: string): boolean {
+  if (!REPO_RE.test(value)) return false;
+  return value.split("/").every((segment) => segment !== "." && segment !== "..");
+}
 
 /**
  * A branch name git would accept. The subset of `git check-ref-format` that
@@ -69,11 +79,17 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
   if (input.kind === "scratch") return SCRATCH;
 
   if (input.kind === "github") {
-    if (typeof input.repo !== "string" || !REPO_RE.test(input.repo)) {
+    if (typeof input.repo !== "string" || !isRepoSlug(input.repo)) {
       throw new WorkspaceError("workspace.repo must be owner/name");
     }
     const connection = await getConnection(ctx.userId);
-    const token = await getOwnerToken(ctx.userId);
+    let token: string | null;
+    try {
+      token = await getOwnerToken(ctx.userId);
+    } catch (err) {
+      if (err instanceof GithubTokenUnreadableError) throw new WorkspaceError(err.message);
+      throw err;
+    }
     if (!connection || !token) {
       throw new WorkspaceError("GitHub is not connected — connect it in Settings first");
     }
@@ -83,6 +99,13 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
       repo = await getRepo(token, owner, name);
     } catch (err) {
       throw new WorkspaceError(`GitHub could not find ${input.repo}: ${(err as Error).message}`);
+    }
+    // The answer has to *be* a repository. Anything a lookup surprise hands
+    // back — the viewer object, an error body with a 200 — is refused here,
+    // as a 400 at creation, rather than persisted as a workspace whose system
+    // prompt says "a clone of undefined" over an empty directory.
+    if (typeof repo.full_name !== "string" || typeof repo.clone_url !== "string" || typeof repo.default_branch !== "string") {
+      throw new WorkspaceError(`GitHub did not describe ${input.repo} as a repository`);
     }
 
     const baseBranch = input.baseBranch === undefined ? repo.default_branch : input.baseBranch;

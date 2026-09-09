@@ -122,7 +122,11 @@ export function TerminalPanel({ conversationId, token, open, onClose }: Terminal
   useEffect(() => {
     const term = termRef.current;
     if (terminal.status === 'open' && term) terminal.resize(term.cols, term.rows);
-  }, [terminal.status, terminal]);
+    // `terminal.resize` is a stable useCallback; the hook result is a fresh
+    // object every render, and depending on it re-sent a resize per render —
+    // one Docker exec/resize API call per keystroke in the input below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminal.status, terminal.resize]);
 
   if (!open) return null;
 

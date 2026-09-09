@@ -11,8 +11,10 @@ import {
   openSandboxSettings,
   patchSandboxSettings,
   resetSandboxSettings,
+  sendMessage,
   setSandboxMode,
   signIn,
+  startNewAgentRun,
 } from '../helpers/app.ts';
 
 describe('sandbox degraded UX', () => {
@@ -56,6 +58,10 @@ describe('sandbox degraded UX', () => {
     await resetSandboxSettings();
     await goToSurface('chat');
     await goToSurface('agent');
+    // A fresh run, deliberately: the banner is about the *active* workspace's
+    // own network, and the admin's newest agent conversation here is
+    // sandbox-bash's — a host-mode one, which genuinely has the network.
+    await startNewAgentRun();
 
     await waitForVisible('agent.network.banner');
     // The consequence and the fix, not just that something rendered: a banner
@@ -77,5 +83,32 @@ describe('sandbox degraded UX', () => {
     await goToSurface('agent');
     await waitForGone('agent.network.banner');
     await shot('sandbox-network-on-no-banner');
+  });
+
+  it('keeps the banner on a workspace created without network after the setting is turned on, and says so', async function () {
+    this.timeout(3 * 60_000);
+    // The banner is about *this* workspace, whose container keeps the
+    // NetworkMode it was created with; the setting only says what the next
+    // one gets. Keyed on the setting alone, it vanished from exactly the
+    // workspace it still applied to — the moment an admin pressed Fix.
+    await resetSandboxSettings();
+    await startNewAgentRun();
+    await tap('agent.mode.auto');
+    await sendMessage('write a file called notes');
+    await waitForTextIn('agent.run.status', 'Done', 90_000);
+    await waitForVisible('agent.network.banner');
+
+    await patchSandboxSettings({ allowNetwork: true });
+    await goToSurface('chat');
+    await goToSurface('agent');
+    await waitForVisible('agent.network.banner');
+    await waitForTextIn('agent.network.banner', 'keeps the network it was created with');
+    await waitForTextIn('agent.network.banner', 'start a new conversation');
+    await shot('sandbox-network-on-existing-workspace-banner');
+
+    // A new conversation has no workspace yet, so it gets what the setting
+    // now says: nothing to warn about.
+    await startNewAgentRun();
+    await waitForGone('agent.network.banner');
   });
 });

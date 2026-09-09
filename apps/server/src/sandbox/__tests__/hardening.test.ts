@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
 import { db, eq, inArray } from "@loxaic/db";
-import { sandboxes, user } from "@loxaic/db/schema";
+import { conversations, sandboxes, user } from "@loxaic/db/schema";
 import { getConversationSandbox, SandboxLimitError } from "../../agent/sandbox-manager.ts";
 import type { SandboxHandle } from "../provider.ts";
 import { sandboxImageReady } from "./docker-available.ts";
@@ -201,6 +201,28 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
       expect(errorOf(res)).toContain("per-user limit");
     });
   }, 60_000);
+
+  it("refuses to plant a sandbox under a conversation the caller does not own", async () => {
+    // `conversation_id` used to be stored unchecked. The tool loop adopts the
+    // row that names a conversation, so any signed-in user could make their
+    // own container the one someone else's agent ran in — and then exec into
+    // it. Not-found and not-yours are the same 404, like the conversation
+    // routes.
+    const other = `test-sandbox-plant-other-${uuid()}`;
+    await insertUser(other, "Other");
+    const [theirs] = await db
+      .insert(conversations)
+      .values({ ownerId: other, title: "Theirs", kind: "agent" })
+      .returning();
+    try {
+      const res = await app.inject({ method: "POST", url: "/v1/sandboxes", payload: { conversation_id: theirs.id } });
+      expect(res.statusCode).toBe(404);
+      expect(await db.query.sandboxes.findFirst({ where: eq(sandboxes.conversationId, theirs.id) })).toBeUndefined();
+    } finally {
+      await db.delete(conversations).where(eq(conversations.id, theirs.id));
+      await db.delete(user).where(eq(user.id, other));
+    }
+  });
 
   it("does not count another user's sandboxes against you", async () => {
     // The cap is per user; one heavy user must not lock everyone else out,

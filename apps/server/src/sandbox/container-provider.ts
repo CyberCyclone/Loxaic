@@ -16,6 +16,7 @@ import { cloneInto } from "./git.ts";
 import {
   candidatesFor,
   createSandboxContainer,
+  CONTAINER_ROOT,
   CONTAINER_WORKDIR,
   discoverFrom,
   ensureImage,
@@ -148,6 +149,17 @@ export function getContainerProvider(): SandboxProvider {
         extraHosts,
       });
 
+      // Every sandbox gets the working directory the agent tools default to,
+      // *before* anything is exec'd in it. Redundant against the current image,
+      // which creates it — kept so a container from any image still gets the
+      // directory its handle promises. Run from the root explicitly: exec now
+      // defaults to the workdir, and Docker refuses an exec whose WorkingDir
+      // is missing, so a `mkdir -p` of the workdir that ran *in* the workdir
+      // failed on exactly the image this fallback exists for. The clone
+      // below inherits the same default and needs the directory for the same
+      // reason (an empty one is fine for `git clone`).
+      await handle.exec(["mkdir", "-p", CONTAINER_WORKDIR], { workdir: CONTAINER_ROOT });
+
       // A repo clone needs the network, which the sandbox lacks unless an
       // admin enabled it (NetworkMode: "none" by default). We surface the
       // clone failure rather than silently producing an empty repo.
@@ -160,12 +172,6 @@ export function getContainerProvider(): SandboxProvider {
           await handle.destroy();
           throw err;
         }
-      } else {
-        // Every sandbox gets the working directory the agent tools default to.
-        // Redundant against the current image, which creates it — kept so a
-        // container from any image still gets the directory its handle
-        // promises, rather than failing on the first exec that defaults to it.
-        await handle.exec(["mkdir", "-p", CONTAINER_WORKDIR]);
       }
 
       return handle;

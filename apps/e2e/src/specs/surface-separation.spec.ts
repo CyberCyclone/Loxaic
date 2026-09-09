@@ -20,7 +20,7 @@
 import { browser } from '@wdio/globals';
 import { provisionUser, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { waitForGone, waitForVisible } from '../helpers/selectors.ts';
+import { waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   goToSurface,
   getMessageTexts,
@@ -46,8 +46,14 @@ describe('chat and agent surfaces keep their own conversations', () => {
     // surface assigns.
     await goToSurface('chat');
     await sendMessage('a thread that belongs to chat');
+    // The conversation is created server-side by the turn, so wait for the
+    // mock's reply — its existence, not the optimistic bubble — before
+    // listing: a list that beat the insert left `chatId`/`agentId` empty
+    // and failed both tests on something unrelated to what they assert.
+    await waitForTextIn('chat.messageList', 'Echo: a thread that belongs to chat');
     await goToSurface('agent');
     await sendMessage('a run that belongs to agent');
+    await waitForVisible('agent.run.status');
 
     const convs = await listConversations(creds);
     chatId = convs.find((c) => (c.kind ?? 'chat') === 'chat')?.id ?? '';

@@ -315,8 +315,15 @@ async function runCompactGeneration(ctx: {
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
     });
     if (!slot) {
-      await producer.end("cancelled");
-      return;
+      // Stopped while waiting in line. Unlike the engine's equivalent, a row
+      // already exists here — the summary was inserted as `streaming` before
+      // this function started — so this cannot simply end the stream: the
+      // catch below is what persists a terminal status and emits message.end,
+      // and without it the thread renders an empty summary bubble stuck
+      // mid-stream on every later load.
+      throw Object.assign(new Error("compaction was stopped while it waited for an inference slot"), {
+        name: "AbortError",
+      });
     }
 
     try {

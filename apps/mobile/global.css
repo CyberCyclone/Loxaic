@@ -102,7 +102,7 @@
      rendered *larger* than the `size="xs"` (12px) it is meant to sit under.
      See #114; measured on the agent screen before this was added. */
   --text-2xs: 0.625rem;      /* 10px, one step under text-xs */
-  --text-2xs--line-height: calc(0.875 / 0.625);  /* 14px, matching xs's ratio */
+  --text-2xs--line-height: calc(0.875 / 0.625);  /* 14px — a hair looser than xs's 1.333 ratio (that would be 13.33px), to stay on the 2px grid */
 
   /* React Native has no font-stack fallback: fontFamily must be ONE family,
      and expo-font registers each weight under its own name. Weight utilities

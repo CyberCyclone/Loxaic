@@ -377,6 +377,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
+        // Anything that is not itself a queue update means the run is past
+        // the queue. Cleared here, up front, rather than on `iteration`
+        // alone: a compaction run never emits one, and an agent run re-queued
+        // after an approval emits its tool results before its next iteration
+        // — both left "Queued · #N" on screen with the response streaming
+        // underneath it.
+        if (isActive && inner.kind !== 'run.queued') {
+          setQueuePosition(null);
+          setRunState((s) => (s === 'queued' ? 'running' : s));
+        }
         if (inner.kind === 'run.queued') {
           if (isActive) {
             setRunState('queued');
@@ -386,8 +396,6 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           if (isActive) {
             setRunState('running');
             setIteration({ n: inner.n, max: inner.max });
-            // Reaching an iteration is the run starting, so the wait is over.
-            setQueuePosition(null);
           }
           setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
         } else if (inner.kind === 'model.loading') {
@@ -507,10 +515,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           // before a message is persisted against a conversation that cannot
           // do what it claims. `turn.started` then swaps the optimistic id for
           // the real one exactly as it does on the implicit path.
-          const ws = wsRef.current;
+          // The socket is read *after* the round-trip, not captured before
+          // it: creation includes a GitHub lookup (seconds), and a reconnect
+          // in that window left the send on a closed socket — silently, since
+          // trySend's false was discarded — with the optimistic run pending
+          // forever. A lost socket is now the error the rollback below shows.
           createConversation({ kind: 'agent', workspace: chosen })
             .then((created) => {
-              sendAgentMessage(ws, text, mode, created.id, undefined, model, refs);
+              const ws = wsRef.current;
+              const sent = ws !== null && sendAgentMessage(ws, text, mode, created.id, undefined, model, refs);
+              if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
             })
             .catch((err: unknown) => {
               setRuns((prev) => prev.filter((r) => r.id !== localId));
@@ -546,8 +560,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     }
     // Set before the frame goes out, so the acknowledgement is immediate
     // rather than waiting on a round trip the run may take a while to answer.
+    // `wsRef.current` is never nulled on close (a reconnect just re-assigns
+    // it), so the guard above passes with a CLOSED socket in hand during a
+    // reconnect. stopStream refuses to send on one and says so; without
+    // reading that, the header showed "Stopping…" with the button disabled
+    // until the run ended on its own — the shape of #113 again.
+    if (!stopStream(wsRef.current, stream.streamId)) {
+      showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
     setStoppingConvId(id);
-    stopStream(wsRef.current, stream.streamId);
   }, [showToast]);
 
   /** See useChatSession's handleCommand: no optimistic bubble, since a

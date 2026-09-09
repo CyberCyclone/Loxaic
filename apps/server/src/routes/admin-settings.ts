@@ -9,7 +9,7 @@ import {
   updateInferenceSettings,
   updateSandboxSettings,
 } from "../settings.ts";
-import { resolveMaxConcurrent } from "../inference/scheduler.ts";
+import { kickScheduler, resolveMaxConcurrent } from "../inference/scheduler.ts";
 
 /**
  * Server-level settings, admin-only.
@@ -34,6 +34,11 @@ export function adminSettingsRoutes(app: FastifyInstance) {
     await requireAdmin(request, reply);
     try {
       await updateInferenceSettings(request.body ?? {});
+      // Persisting is not applying: the queue only re-checks its limit when a
+      // slot frees, so without this a raised limit takes effect whenever the
+      // current run happens to finish. Called from the route rather than
+      // from settings.ts, which the scheduler itself imports.
+      kickScheduler();
     } catch (err) {
       if (err instanceof SettingsError) {
         return reply
