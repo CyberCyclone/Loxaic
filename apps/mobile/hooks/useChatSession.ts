@@ -46,7 +46,16 @@ function splitMcpTool(name: string): { slug: string; remoteName: string } | null
  * no reason. It's only ever cleared by an authoritative terminal status —
  * `stream.sync.status !== "active"` (already finished by the time we
  * caught up) or a live `stream.end`. */
-interface StreamState { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string }
+interface StreamState {
+  streamId: string;
+  loadingModel: boolean;
+  /** Place in the inference queue while this run waits for a slot, else null.
+   * Per-conversation like the rest of this state, so switching threads shows
+   * the right one's status rather than the last event's. */
+  queuePosition: number | null;
+  responseStartedAt: number;
+  model: string;
+}
 
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
@@ -415,6 +424,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
+                    queuePosition: null,
                     responseStartedAt: Date.now(),
                     model: assistantMsg?.model ?? '',
                   },
@@ -446,7 +456,18 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
         cursorsRef.current[event.stream_id] = event.seq;
         setStreamingByConv((prev) =>
           prev[convId]?.streamId === event.stream_id
-            ? { ...prev, [convId]: { ...prev[convId], loadingModel: event.event.kind === 'model.loading' } }
+            ? {
+                ...prev,
+                [convId]: {
+                  ...prev[convId],
+                  loadingModel: event.event.kind === 'model.loading',
+                  // Cleared by anything that is not itself a queue update:
+                  // every other event means the run is past the queue, and a
+                  // stale position would keep claiming otherwise.
+                  queuePosition:
+                    event.event.kind === 'run.queued' ? event.event.position : null,
+                },
+              }
             : prev,
         );
         if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
@@ -743,6 +764,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     setActiveId,
     streaming: !!activeStream,
     loadingModel: activeStream?.loadingModel ?? false,
+    queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
     handleSend,

@@ -40,6 +40,7 @@ export default function ChatScreen() {
     setActiveId,
     streaming,
     loadingModel,
+    queuePosition,
     responseStartedAt,
     pendingApproval,
     handleSend,
@@ -155,6 +156,7 @@ export default function ChatScreen() {
             conversation={activeConv}
             responseStartedAt={responseStartedAt}
             loadingModel={loadingModel}
+            queuePosition={queuePosition}
             model={selectedModel ? getName(selectedModel) : undefined}
           />
         ) : (

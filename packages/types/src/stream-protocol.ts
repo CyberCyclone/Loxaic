@@ -362,6 +362,16 @@ export type StreamEventKind =
       error?: string;
     }
   | { kind: "model.loading"; message_id: string }
+  /**
+   * This run is waiting for an inference slot, and is `position` places from
+   * the front (1 = next to run).
+   *
+   * Re-emitted as the queue moves, so a waiting client counts down rather than
+   * showing one number that goes stale. One number, not a place plus a
+   * separate "runs ahead" count: with more than one slot those two differ, and
+   * a client only ever renders the place.
+   */
+  | { kind: "run.queued"; position: number }
   | { kind: "iteration"; n: number; max: number }
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
   | { kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> }
@@ -408,6 +418,10 @@ export interface StreamSnapshotMessage {
  * with `seq` greater than this snapshot's `seq`. */
 export interface StreamSnapshot {
   messages: StreamSnapshotMessage[];
+  /** Present while the run is still waiting for an inference slot. Cleared as
+   * soon as it starts, so a client that reconnects mid-queue sees the wait and
+   * one that reconnects mid-answer does not. */
+  queued?: { position: number };
   // agent-only:
   iteration?: { n: number; max: number };
   todos?: Todo[];

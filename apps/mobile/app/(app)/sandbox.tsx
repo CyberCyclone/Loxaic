@@ -12,9 +12,11 @@ import { ModePicker } from '@/components/sandbox/ModePicker';
 import { EnginePicker } from '@/components/sandbox/EnginePicker';
 import { NetworkToggle } from '@/components/sandbox/NetworkToggle';
 import { RetentionSettings } from '@/components/sandbox/RetentionSettings';
+import { RunQueueSettings } from '@/components/sandbox/RunQueueSettings';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSandboxSettings } from '@/hooks/useSandboxSettings';
+import { useInferenceSettings } from '@/hooks/useInferenceSettings';
 import { useSession } from '@/lib/session';
 import { describeRetention } from '@/lib/retention';
 import type { SandboxEngine, SandboxMode, SandboxRetention } from '@loxaic/api-client';
@@ -26,6 +28,7 @@ export default function SandboxScreen() {
   const { token, isAdmin } = useSession();
   const { config, loading: configLoading, refresh: refreshConfig } = useServerConfig();
   const { settings, loading: settingsLoading, update } = useSandboxSettings(isAdmin ? token : null);
+  const { settings: inference, update: updateInference } = useInferenceSettings(isAdmin ? token : null);
   const [pendingWarning, setPendingWarning] = useState<PendingWarning>(null);
   const [customSocketDraft, setCustomSocketDraft] = useState<string | null>(null);
 
@@ -169,6 +172,13 @@ export default function SandboxScreen() {
           envOverrides={settings.envOverrides}
           onChange={handleRetentionChange}
         />
+
+        {inference && (
+          <RunQueueSettings
+            settings={inference}
+            onChange={(value) => { void updateInference(value); }}
+          />
+        )}
       </VStack>
     );
   };

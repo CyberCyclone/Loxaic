@@ -6,6 +6,7 @@ import type { AgentMode } from '@/lib/types';
 import type { RunState } from '@/hooks/useAgentSession';
 
 const STATE_LABEL: Record<RunState, string> = {
+  queued: 'Queued',
   running: 'Running',
   awaiting_approval: 'Awaiting approval',
   done: 'Done',
@@ -13,6 +14,9 @@ const STATE_LABEL: Record<RunState, string> = {
 };
 
 const STATE_DOT: Record<RunState, string> = {
+  // Amber, like awaiting_approval: both mean "this run exists but is not
+  // doing anything", which is the distinction a status dot is for.
+  queued: 'bg-warning',
   running: 'bg-primary',
   awaiting_approval: 'bg-warning',
   done: 'bg-success',
@@ -24,9 +28,11 @@ interface RunHeaderProps {
   state: RunState;
   mode: AgentMode;
   iteration: { n: number; max: number } | null;
+  /** Place in the inference queue, when this run is waiting for one. */
+  queuePosition?: number | null;
 }
 
-export function RunHeader({ title, state, mode, iteration }: RunHeaderProps) {
+export function RunHeader({ title, state, mode, iteration, queuePosition }: RunHeaderProps) {
   return (
     <HStack space="sm" className="items-center border-b border-border px-4 py-2.5">
       <Text className="flex-1 font-medium text-foreground" numberOfLines={1}>
@@ -37,6 +43,7 @@ export function RunHeader({ title, state, mode, iteration }: RunHeaderProps) {
         <Text testID="agent.run.status" size="xs" className="text-muted-foreground">
           {STATE_LABEL[state]}
           {state === 'running' && iteration ? ` · ${String(iteration.n)}/${String(iteration.max)}` : ''}
+          {state === 'queued' && queuePosition ? ` · #${String(queuePosition)}` : ''}
         </Text>
       </HStack>
       <Badge variant="outline" className="border-border">

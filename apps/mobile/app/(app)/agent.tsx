@@ -52,6 +52,7 @@ export default function AgentScreen() {
     responseStartedAt,
     pendingApproval,
     iteration,
+    queuePosition,
     todos,
     changedFiles,
     handleSend,
@@ -211,6 +212,7 @@ export default function AgentScreen() {
                 mode={mode}
                 iteration={iteration}
                 loadingModel={loadingModel}
+                queuePosition={queuePosition}
                 responseStartedAt={responseStartedAt}
                 pendingApproval={pendingApproval}
                 onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}

@@ -145,6 +145,12 @@ export async function* streamCompletion(
 // tool result comes back it wraps up with text. Otherwise the agent loop
 // would be untestable without a GGUF.
 
+/** Prompts asking the mock to take its time — see the delay in mockStream. */
+const MOCK_SLOW_MATCH = /\btake your time\b/i;
+/** Long enough for a second conversation to be started by hand or by a test
+ * and observed waiting; short enough not to dominate a suite. */
+const MOCK_SLOW_MS = 8_000;
+
 const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
   // MCP entries first — a trigger only fires when the tool is actually in
   // options.tools, so these double as a wiring test of the MCP registry.
@@ -193,6 +199,17 @@ async function* mockStream(
   const trigger = alreadyRanTools
     ? undefined
     : MOCK_TOOL_TRIGGERS.find((t) => toolNames.has(t.name) && t.match.test(prompt));
+
+  // A prompt that takes long enough to still be running when the next one
+  // arrives. The run queue is only observable when two runs overlap, and every
+  // other mock response finishes in milliseconds — so without a way to ask for
+  // a slow one, the only way to test the queue would be to race the harness
+  // against itself. Keyed on the prompt rather than an environment variable so
+  // it affects exactly the conversation that asked, leaving every other spec's
+  // timing alone. See MOCK_TOOL_TRIGGERS above for the same idiom.
+  if (MOCK_SLOW_MATCH.test(prompt)) {
+    await new Promise((r) => setTimeout(r, MOCK_SLOW_MS));
+  }
 
   let ttftMs: number | null = null;
   const emit = async function* (text: string): AsyncGenerator<StreamEvent> {
