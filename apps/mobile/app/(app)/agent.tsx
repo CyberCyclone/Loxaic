@@ -29,6 +29,7 @@ import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
+import { useGitPanel } from '@/hooks/useGitPanel';
 import { canEdit } from '@/lib/types';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
@@ -111,6 +112,22 @@ export default function AgentScreen() {
   const workspace = config
     ? { retention: config.sandbox.retention, sandbox, workspace: currentWorkspace }
     : null;
+  // Only a real (server-assigned) github workspace has anything to fetch —
+  // an optimistic `pending-*`/`lm*` id has never been seen by the server, and
+  // a scratch conversation has no /git/status to ask. Mounted regardless of
+  // which; useGitPanel itself resolves a 404/400 to a null status, which the
+  // Inspector already renders as "show nothing".
+  const gitPanel = useGitPanel(activeId, runState);
+  const gitControls =
+    currentWorkspace?.kind === 'github'
+      ? {
+          status: gitPanel.status,
+          disabled: gitPanel.busy || busy,
+          onCommit: (message: string) => { void gitPanel.commit(message); },
+          onPush: () => { void gitPanel.push(); },
+          onOpenPr: (title: string) => { void gitPanel.openPr(title); },
+        }
+      : null;
   const [chooserOpen, setChooserOpen] = useState(false);
   const mcpControls =
     mcpOverrides.servers.length > 0
@@ -266,6 +283,7 @@ export default function AgentScreen() {
                 context={context}
                 mcp={mcpControls}
                 workspace={workspace}
+                git={gitControls}
                 onCompact={handleCompactFromInspector}
                 busy={busy}
               />
@@ -291,6 +309,7 @@ export default function AgentScreen() {
           context={context}
           mcp={mcpControls}
           workspace={workspace}
+          git={gitControls}
           onCompact={handleCompactFromInspector}
           busy={busy}
         />

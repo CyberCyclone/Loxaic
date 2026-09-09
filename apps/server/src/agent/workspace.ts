@@ -131,6 +131,31 @@ export async function loadWorkspace(
 }
 
 /**
+ * Records that a pull request was opened for this conversation's workspace.
+ * The only way `workspace.pr` is ever written — never from a client, and
+ * never anywhere but here, so "has a PR been opened" always means "did the
+ * server's own createPull call succeed".
+ *
+ * Not a system-prompt input (see describeWorkspace's doc comment): this is
+ * live state, and the prompt may only depend on what was true at creation.
+ */
+export async function setWorkspacePr(
+  conversationId: string,
+  pr: { number: number; url: string },
+): Promise<void> {
+  const row = await db.query.conversations.findFirst({
+    where: eq(conversations.id, conversationId),
+    columns: { workspace: true },
+  });
+  const workspace = effectiveWorkspace(row?.workspace);
+  if (workspace.kind !== "github") return;
+  await db
+    .update(conversations)
+    .set({ workspace: { ...workspace, pr }, updatedAt: new Date() })
+    .where(eq(conversations.id, conversationId));
+}
+
+/**
  * The system-prompt sentence describing where the agent is working.
  *
  * Depends only on the immutable workspace and on which provider kind the

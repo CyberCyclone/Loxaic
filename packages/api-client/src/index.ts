@@ -865,6 +865,68 @@ export async function getGithubBranches(
   return githubFetch(`/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches`);
 }
 
+// ── Git actions on an agent conversation's GitHub workspace ────
+export interface GitStatus {
+  /** Whether the agent has run a tool in this repo yet — false means nothing
+   * below is meaningful, only the workspace's own repo/branch names are. */
+  cloned: boolean;
+  repo: string;
+  branch: string;
+  baseBranch: string;
+  pr: { number: number; url: string } | null;
+  changed?: { path: string; status: string }[];
+  ahead?: number;
+  behind?: number;
+}
+
+export class GitActionError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function gitFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = await getAuthToken();
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${String(token)}`);
+  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new GitActionError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function getGitStatus(conversationId: string): Promise<GitStatus> {
+  return gitFetch(`/v1/conversations/${conversationId}/git/status`);
+}
+
+export async function commitGit(conversationId: string, message: string): Promise<{ ok: true }> {
+  return gitFetch(`/v1/conversations/${conversationId}/git/commit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+}
+
+export async function pushGit(conversationId: string): Promise<{ ok: true }> {
+  return gitFetch(`/v1/conversations/${conversationId}/git/push`, { method: "POST" });
+}
+
+export async function openPullRequest(
+  conversationId: string,
+  title: string,
+  body?: string,
+): Promise<{ number: number; url: string }> {
+  return gitFetch(`/v1/conversations/${conversationId}/git/pr`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, ...(body ? { body } : {}) }),
+  });
+}
+
 // ── User prefs (builtin tool "allow always") ────────────────
 export interface UserPrefs {
   /** Builtin tool names allowlisted globally — skip approval anywhere the

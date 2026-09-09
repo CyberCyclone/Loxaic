@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { Linking, ScrollView } from 'react-native';
 import { X, Check, Circle, Loader } from 'lucide-react-native';
 import { Switch } from '@/components/ui/switch';
 import { Box } from '@/components/ui/box';
@@ -6,6 +8,8 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
+import { Input, InputField } from '@/components/ui/input';
+import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import {
   Actionsheet,
   ActionsheetBackdrop,
@@ -17,8 +21,21 @@ import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { ChangedFile, Workspace, WorkspaceChoice } from '@/lib/types';
 import { describeRetention, formatDeadline } from '@/lib/retention';
-import type { SandboxRetention, SandboxRow } from '@loxaic/api-client';
+import type { GitStatus, SandboxRetention, SandboxRow } from '@loxaic/api-client';
 import type { Todo } from '@loxaic/api-client';
+
+/** What the Inspector's Git section needs — computed by the caller
+ * (`useGitPanel`), same pattern as `McpOverrideControls` below. `disabled`
+ * covers the 409 case (a run is active) as well as an in-flight action of
+ * its own, so a click while either is true fails locally instead of round
+ * -tripping to a server that would refuse it anyway. */
+export interface GitPanelControls {
+  status: GitStatus | null;
+  disabled: boolean;
+  onCommit: (message: string) => void;
+  onPush: () => void;
+  onOpenPr: (title: string) => void;
+}
 
 const TODO_ICON: Record<Todo['status'], typeof Check> = {
   completed: Check,
@@ -98,6 +115,126 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
   );
 }
 
+/**
+ * Commit, push, and open a pull request — without leaving the app or asking
+ * the model to do it. The agent is told to commit as it goes but never to
+ * push or open a PR (see agent/workspace.ts's describeWorkspace): those stay
+ * the user's own actions, taken here.
+ *
+ * Renders nothing until `status` has loaded — there is no useful "empty"
+ * state to show before the first fetch resolves, on a scratch workspace, or
+ * for an optimistic conversation the server has not assigned an id to yet.
+ */
+function GitSection({ git }: { git: GitPanelControls }) {
+  const [message, setMessage] = useState('');
+  const [prTitle, setPrTitle] = useState('');
+  const { status, disabled, onCommit, onPush, onOpenPr } = git;
+  if (!status) return null;
+
+  const changed = status.changed ?? [];
+  const ahead = status.ahead ?? 0;
+
+  return (
+    <VStack space="xs">
+      <Text size="sm" className="font-semibold text-foreground">
+        Git
+      </Text>
+      <HStack space="xs" className="items-center">
+        <Text testID="agent.inspector.git.branch" size="xs" className="font-medium text-foreground" numberOfLines={1}>
+          {status.branch}
+        </Text>
+        {status.cloned && (
+          <Text testID="agent.inspector.git.aheadBehind" size="xs" className="text-muted-foreground">
+            {ahead} ahead · {status.behind ?? 0} behind {status.baseBranch}
+          </Text>
+        )}
+      </HStack>
+
+      {!status.cloned ? (
+        <Text size="xs" className="text-muted-foreground">
+          Nothing cloned yet — send a message to start.
+        </Text>
+      ) : (
+        <>
+          <Text testID="agent.inspector.git.changed" size="xs" className="text-muted-foreground">
+            {changed.length === 0 ? 'No changes' : `${String(changed.length)} file${changed.length === 1 ? '' : 's'} changed`}
+          </Text>
+          <Input className="border-border bg-card">
+            <InputField
+              testID="agent.inspector.git.commitMessage"
+              placeholder="Commit message"
+              value={message}
+              onChangeText={setMessage}
+              editable={!disabled && changed.length > 0}
+            />
+          </Input>
+          <HStack space="xs">
+            <Button
+              testID="agent.inspector.git.commit"
+              size="sm"
+              className="flex-1"
+              isDisabled={disabled || changed.length === 0 || message.trim().length === 0}
+              onPress={() => {
+                onCommit(message.trim());
+                setMessage('');
+              }}
+            >
+              {disabled ? <ButtonSpinner /> : <ButtonText>Commit</ButtonText>}
+            </Button>
+            <Button
+              testID="agent.inspector.git.push"
+              size="sm"
+              variant="outline"
+              className="flex-1"
+              isDisabled={disabled || ahead === 0}
+              onPress={onPush}
+            >
+              <ButtonText>Push</ButtonText>
+            </Button>
+          </HStack>
+        </>
+      )}
+
+      {status.pr ? (
+        <Pressable
+          testID="agent.inspector.git.prLink"
+          onPress={() => {
+            const url = status.pr?.url;
+            if (url) void Linking.openURL(url);
+          }}
+        >
+          <Text size="xs" className="text-primary">
+            Pull request #{status.pr.number} →
+          </Text>
+        </Pressable>
+      ) : (
+        status.cloned && (
+          <VStack space="xs">
+            <Input className="border-border bg-card">
+              <InputField
+                testID="agent.inspector.git.prTitle"
+                placeholder="Pull request title"
+                value={prTitle}
+                onChangeText={setPrTitle}
+                editable={!disabled}
+              />
+            </Input>
+            <Button
+              testID="agent.inspector.git.openPr"
+              size="sm"
+              variant="outline"
+              isDisabled={disabled || prTitle.trim().length === 0}
+              onPress={() => { onOpenPr(prTitle.trim()); }}
+            >
+              <ButtonText>Open pull request</ButtonText>
+            </Button>
+          </VStack>
+        )
+      )}
+    </VStack>
+  );
+}
+
 export interface McpOverrideControls {
   servers: { id: string; name: string }[];
   disabledIds: string[];
@@ -110,14 +247,16 @@ interface InspectorBodyProps {
   context: ContextView | null;
   mcp?: McpOverrideControls | null;
   workspace?: WorkspaceView | null;
+  git?: GitPanelControls | null;
   onCompact?: () => void;
   busy?: boolean;
 }
 
-function InspectorBody({ todos, changedFiles, context, mcp, workspace, onCompact, busy }: InspectorBodyProps) {
+function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorBodyProps) {
   return (
     <VStack space="lg">
       {workspace && <WorkspaceSection workspace={workspace} />}
+      {git && <GitSection git={git} />}
 
       <VStack space="xs">
         <Text size="sm" className="font-semibold text-foreground">
@@ -214,6 +353,7 @@ interface InspectorProps {
   context: ContextView | null;
   mcp?: McpOverrideControls | null;
   workspace?: WorkspaceView | null;
+  git?: GitPanelControls | null;
   /** Absent in the wide (persistent side-panel) layout's own contract — both
    * layouts accept it identically, it's the caller (agent.tsx) that decides
    * whether pressing it should also dismiss the narrow-layout Actionsheet. */
@@ -221,7 +361,7 @@ interface InspectorProps {
   busy?: boolean;
 }
 
-export function Inspector({ open, onClose, wide, todos, changedFiles, context, mcp, workspace, onCompact, busy }: InspectorProps) {
+export function Inspector({ open, onClose, wide, todos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorProps) {
   if (!open) return null;
 
   if (wide) {
@@ -235,9 +375,15 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
             <Icon as={X} size="sm" className="text-muted-foreground" />
           </Pressable>
         </HStack>
-        <Box className="p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} onCompact={onCompact} busy={busy} />
-        </Box>
+        {/* The panel's own height is fixed (h-full), but its content keeps
+            growing (workspace retention copy, the Git section, todos,
+            changed files, context breakdown) — without a scroll container
+            a flex column with the gluestack base classes' `min-h-0` lets
+            each section shrink below its wrapped-text height instead of
+            overflowing, so sections silently render on top of each other. */}
+        <ScrollView style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 12 }}>
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
+        </ScrollView>
       </Box>
     );
   }
@@ -249,9 +395,9 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
         <ActionsheetDragIndicatorWrapper>
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
-        <Box className="w-full p-3">
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} onCompact={onCompact} busy={busy} />
-        </Box>
+        <ScrollView style={{ width: '100%', flex: 1, minHeight: 0 }} contentContainerStyle={{ width: '100%', padding: 12 }}>
+          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
+        </ScrollView>
       </ActionsheetContent>
     </Actionsheet>
   );

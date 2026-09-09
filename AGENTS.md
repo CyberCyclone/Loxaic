@@ -856,6 +856,56 @@ screenshots showing that behaviour working. Writing those tests is the implement
   anything — a bad token fails at connect time, not on the first clone three steps later (a
   later stage).
 
+### Git actions from the Inspector
+
+- `routes/git.ts` (`/v1/conversations/:id/git/{status,commit,push,pr}`) is deliberately the
+  only way to push or open a PR. `agent/workspace.ts`'s system-prompt fragment tells the model
+  to commit as it goes but never to push or open a pull request — those are the user's own
+  actions, taken from the Inspector's Git panel, not the model's.
+- **Owner-only, every route**, matching the sandbox terminal and REST routes: pushing to the
+  user's own GitHub as them, with their token, is not something a shared editor should be able
+  to trigger. **409 while a run is active** (`getRunByConversation`), so a commit/push/PR click
+  never races the agent's own tool calls in the same checkout.
+- Reuses the conversation's already-cloned sandbox (`findSandboxRow` + `attachRunningSandbox`)
+  rather than cloning again — `GET status` in particular must have no side effect just because
+  the Inspector was opened, so a conversation the agent hasn't touched yet reports
+  `cloned: false` from the workspace's own repo/branch fields alone.
+- **Commit identity is resolved at commit time from the live GitHub connection**, not the
+  identity `git.ts` wrote into the clone's config — a connection added or changed after the
+  clone must still be able to commit under the current name/email.
+- **Opening a PR is idempotent by our own memory**: once `workspace.pr` is set
+  (`setWorkspacePr`), every later call returns the stored PR without asking GitHub again,
+  rather than risking a duplicate PR on a retried click.
+- Push errors are redacted a second time in `routes/git.ts` itself (`redact()`, a local
+  module-private helper — it does not import the sandbox git module's own), on top of
+  whatever `sandbox/git.ts` already scrubbed, for the same defense-in-depth reason as the
+  GitHub connection routes above: a token must not reach the client even if one layer's
+  redaction misses it.
+- **A test file that mutates real DB-wide sandbox state must scope its cleanup to its own
+  rows.** `git.test.ts` originally ran an unscoped `db.delete(sandboxes)` in its `afterEach`,
+  which wiped every other suite's sandbox rows out from under them whenever the full server
+  suite ran in parallel — it now scopes by its own `ownerId`, matching every other sandbox
+  test file's convention. The same class of bug existed the other direction, already latent
+  in Stage 1: `reapAbandonedSandboxes()` queries the `sandboxes` table directly (unlike
+  `stopIdleSandboxes`/`stopAllSandboxes`, which only ever touch this *process's* own
+  in-memory `active` map), so two host-mode suites running in different worker processes are
+  visible to each other there even though neither can see the other's in-memory state. Adding
+  `git.test.ts` as a second host-mode suite exposed it: `lifecycle.test.ts`'s deliberately
+  tiny reap windows destroyed a sandbox `git.test.ts` was mid-request in. `reapAbandonedSandboxes`
+  now takes an optional third `ownerId` argument for exactly this — a test aims a destructive
+  global sweep at only its own rows the same way the existing `kind` argument already narrows
+  it to one provider; production's own reaper interval still calls it with neither.
+- **The Inspector's content can now overflow a short viewport, and it must scroll rather than
+  compress.** Before this stage the panel's total content always fit; adding the Git section's
+  commit/push/PR controls was enough to push it past a typical viewport height. gluestack's
+  base classes put `min-h-0` on every `Box`/`VStack`, which is exactly what removes the
+  browser's default flex protection against shrinking a flex item below its content size — so
+  without a scroll container, sections silently compressed and overlapped instead of
+  overflowing, which is invisible in a snapshot of static props (nothing pushes it past the
+  fold) and only appears once the panel's *total* content is tall enough. `Inspector`'s wide
+  and narrow layouts both wrap `InspectorBody` in a plain React Native `ScrollView` now
+  (`style={{flex:1, minHeight:0}}`) instead of a bare `Box`.
+
 ### Electron
 
 - **Instance mode lives in `<dataDir>/config.json`** (`supervisor/config.js`), read by both
