@@ -203,7 +203,10 @@ describe("stopping a run", () => {
     for (const r of results) expect((r as { output: string }).output).toContain("Stopped by the user");
   });
 
-  it("keeps the results of the calls that ran before a stop at a later approval", async () => {
+  it.skipIf(!dockerReady)("keeps the results of the calls that ran before a stop at a later approval", async () => {
+    // Docker-gated like the batch case below: the approved first call is an
+    // fs_write, which needs a real sandbox — without one, CI spent the whole
+    // timeout trying to build the image.
     // A batch stopped part-way is a different situation from one stopped
     // before anything ran: the first call wrote a file. Unwinding through
     // the aborted approval used to skip the insert that persists results, so
