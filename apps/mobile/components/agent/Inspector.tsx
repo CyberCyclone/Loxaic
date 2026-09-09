@@ -307,7 +307,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
       </VStack>
 
       <VStack space="xs">
-        <Text size="sm" className="font-semibold text-foreground">
+        <Text testID="agent.inspector.changedFiles.count" size="sm" className="font-semibold text-foreground">
           Changed Files ({changedFiles.length})
         </Text>
         {changedFiles.length === 0 ? (
@@ -391,7 +391,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
 
   if (wide) {
     return (
-      <Box className="h-full w-[280px] border-l border-border bg-background">
+      <Box testID="agent.inspector.panel" className="h-full w-[280px] border-l border-border bg-background">
         <HStack className="items-center justify-between border-b border-border px-3 py-3">
           <Text size="sm" className="font-semibold text-foreground">
             Inspector
@@ -416,7 +416,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
   return (
     <Actionsheet isOpen={open} onClose={onClose}>
       <ActionsheetBackdrop />
-      <ActionsheetContent className="max-h-[75%]">
+      <ActionsheetContent testID="agent.inspector.panel" className="max-h-[75%]">
         <ActionsheetDragIndicatorWrapper>
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>

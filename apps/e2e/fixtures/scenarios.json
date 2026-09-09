@@ -1,0 +1,21 @@
+[
+  {
+    "match": "the tests are failing.*fix the bug",
+    "steps": [
+      { "tool": "bash", "args": { "command": "node --test" } },
+      { "tool": "fs_edit", "args": { "path": "src/math.js", "oldText": "return a + b + 1;", "newText": "return a + b;" } },
+      { "tool": "bash", "args": { "command": "node --test" } }
+    ],
+    "finalText": "[Mock] Found the off-by-one in add() (it added an extra 1) and fixed it — node --test now passes.\n"
+  },
+  {
+    "match": "create a new project with three files",
+    "steps": [
+      { "tool": "fs_write", "args": { "content": "{\n  \"name\": \"scratch-project\",\n  \"type\": \"module\",\n  \"scripts\": { \"test\": \"node --test\" }\n}\n", "path": "package.json" } },
+      { "tool": "fs_write", "args": { "content": "export function add(a, b) {\n  return a + b;\n}\n", "path": "src/math.js" } },
+      { "tool": "fs_write", "args": { "path": "test/math.test.js", "content": "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add } from '../src/math.js';\n\ntest('add', () => {\n  assert.equal(add(2, 3), 5);\n});\n" } },
+      { "tool": "bash", "args": { "command": "node --test" } }
+    ],
+    "finalText": "[Mock] Created a new project with three files — node --test passes.\n"
+  }
+]

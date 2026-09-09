@@ -86,6 +86,19 @@ export function historyAnchor(total: number): number {
 }
 
 /**
+ * The next lamport value a run's own messages should take, given the last one
+ * it used. `Date.now()` alone collides whenever two of a run's inserts land in
+ * the same millisecond — a real occurrence for an iteration whose tool call
+ * does no genuine work (todo_write, or a mock scenario step) — and a tied
+ * lamport is a coin flip in `loadHistory`'s `ORDER BY lamport, createdAt`,
+ * which is a prompt-prefix break the moment it lands the wrong way. Exported
+ * for the unit test; `runToolLoop` holds the running `previous` value itself.
+ */
+export function monotonicLamport(previous: number, now: number = Date.now()): number {
+  return Math.max(now, previous + 1);
+}
+
+/**
  * The wire shapes for a tool exchange — built here and nowhere else.
  *
  * The live loop appends these to `chatMessages` as a run proceeds; `loadHistory`
@@ -280,6 +293,22 @@ export async function runToolLoop(ctx: {
     // `chatMessages` is only ever appended to below.
     let carriedHashes: readonly string[] | undefined;
 
+    // Two messages persisted less than a millisecond apart both take
+    // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
+    // createdAt) breaks the tie arbitrarily rather than by insertion order.
+    // Not hypothetical: an iteration whose tool call does no real work (e.g.
+    // two todo_write calls back to back, as a mock scenario step can) reliably
+    // lands that iteration's tool-result message and the next iteration's
+    // assistant message in the same millisecond, and a swap there is a genuine
+    // prompt-prefix break on the conversation's very next turn. Scoped to this
+    // one run — only the two inserts below share this counter — so it changes
+    // nothing about the cross-device LWW ordering packages/sync relies on.
+    let lastLamport = 0;
+    const nextLamport = (): number => {
+      lastLamport = monotonicLamport(lastLamport);
+      return lastLamport;
+    };
+
     // Everything above is database and bookkeeping work that touches no
     // backend, so it happens before queueing: a run should not hold a slot
     // while it loads its own history.
@@ -319,7 +348,7 @@ export async function runToolLoop(ctx: {
         authorType: "assistant",
         origin: "server",
         model,
-        lamport: Date.now(),
+        lamport: nextLamport(),
         content: [] as ContentBlock[],
         status: "streaming",
         createdAt: new Date(),
@@ -537,7 +566,7 @@ export async function runToolLoop(ctx: {
         parentId: assistantMsgId,
         authorType: "tool",
         origin: "server",
-        lamport: Date.now(),
+        lamport: nextLamport(),
         content: resultBlocks,
         status: "complete",
         createdAt: new Date(),

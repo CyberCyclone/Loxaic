@@ -1,3 +1,5 @@
+import { scenarioDecisionFor } from "./mock-scenarios.ts";
+
 // Read at call time, not module load — a supervisor sets these in the child's
 // env, and module-scope reads would freeze them before any caller could act.
 const BASE_URL = () => process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
@@ -196,9 +198,19 @@ async function* mockStream(
   const imageCount = countImageParts(lastUser?.content);
   const documentCount = countDocumentParts(lastUser?.content);
 
-  const trigger = alreadyRanTools
-    ? undefined
-    : MOCK_TOOL_TRIGGERS.find((t) => toolNames.has(t.name) && t.match.test(prompt));
+  // A scenario step is looked up by how many tool calls this turn has already
+  // made — not gated by alreadyRanTools, since a scenario's whole point is
+  // running more than one tool in a turn — and takes priority over an
+  // ordinary trigger when it fires.
+  const toolStepIndex = currentTurn.filter((m) => m.role === "tool").length;
+  const scenarioDecision = scenarioDecisionFor(prompt, toolNames, toolStepIndex);
+
+  const trigger: { name: string; args: Record<string, unknown> } | undefined =
+    scenarioDecision?.type === "step"
+      ? { name: scenarioDecision.step.tool, args: scenarioDecision.step.args }
+      : alreadyRanTools
+        ? undefined
+        : MOCK_TOOL_TRIGGERS.find((t) => toolNames.has(t.name) && t.match.test(prompt));
 
   // A prompt that takes long enough to still be running when the next one
   // arrives. The run queue is only observable when two runs overlap, and every
@@ -239,6 +251,11 @@ async function* mockStream(
       type: "function",
       function: { name: trigger.name, arguments: JSON.stringify(trigger.args) },
     });
+  } else if (scenarioDecision?.type === "final") {
+    // A finished scenario's own wrap-up text, in place of the generic one —
+    // it can describe what the steps actually did (e.g. name the bug fixed).
+    fullText = scenarioDecision.text;
+    yield* emit(fullText);
   } else {
     const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
     // Acknowledging attachment parts explicitly makes the full pipeline

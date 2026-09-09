@@ -1,10 +1,19 @@
 /**
- * The real thing: a live inference endpoint reads INSTRUCTIONS.md in the
- * seeded fixture (apps/e2e/fixtures/seeded-app), installs dependencies over
- * the network the sandbox was given for this run, fixes the intentionally
- * broken src/App.tsx, and gets `npm run build` to pass — with no scripted
- * tool-call sequence standing in for it. Guarded by wdio.web.real-model.ts on
+ * The real thing: a live inference endpoint clones the seeded fixture
+ * (apps/e2e/fixtures/seeded-app) through the ordinary GitHub-workspace path —
+ * the harness's own git server and mock GitHub API, nothing stubbed on the
+ * server side — reads INSTRUCTIONS.md, installs dependencies over the network
+ * the sandbox was given for this run, fixes the intentionally broken
+ * src/App.tsx, and gets `npm run build` to pass, with no scripted tool-call
+ * sequence standing in for any of it. Guarded by wdio.web.real-model.ts on
  * E2E_REAL_MODEL=1; never runs in CI. See the README.
+ *
+ * Cloning replaced a global `E2E_SANDBOX_SEED_DIR` hook that pre-populated
+ * *every* sandbox any user created for the life of the server — harmless only
+ * because this suite never ran two things at once. A repo the spec chooses
+ * per-conversation is the same mechanism the mock lane's GitHub-workspace
+ * specs already prove out, and it means this suite no longer needs a
+ * server-wide flag nobody else may set.
  *
  * The pass/fail bar is the build's own exit code, resolved through the same
  * sandbox exec API a client would use — not the model's account of what it
@@ -24,7 +33,8 @@
 import { apiToken, uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { tap } from '../../helpers/selectors.ts';
-import { goToSurface, sendMessage, signUp } from '../../helpers/app.ts';
+import { chooseGithubWorkspace, connectGithub, goToSurface, sendMessage, signUp } from '../../helpers/app.ts';
+import { VALID_TOKEN } from '../../../scripts/mock-github.ts';
 import { BASE_URL } from '../../../scripts/standup.ts';
 
 const PROMPT = 'Read INSTRUCTIONS.md in your working directory and complete the task described there.';
@@ -100,7 +110,12 @@ describe('real-model task: build the seeded app', () => {
 
     const creds = uniqueCreds();
     await signUp(creds);
+    // Network is already on server-wide for this lane (standup.ts pins
+    // SANDBOX_ALLOW_NETWORK=1), so unlike the mock lane's GitHub-workspace
+    // specs there is nothing to toggle here.
+    await connectGithub(creds, VALID_TOKEN);
     await goToSurface('agent');
+    await chooseGithubWorkspace(3);
     // Auto mode: builtin write tools (bash, fs_write, fs_edit) run without a
     // per-call approval prompt — required for an autonomous multi-step task
     // to finish unattended. See toolRequiresApproval() in packages/agent.
