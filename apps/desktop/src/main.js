@@ -42,6 +42,7 @@ async function runGui() {
     buildConfig,
     defaultHostName,
     firstLanAddress,
+    hostSettingsView,
     configPath,
     loadConfig,
     saveConfig,
@@ -218,6 +219,10 @@ async function runGui() {
 
   /** Everything the renderer needs to decide what to show. */
   function stackState() {
+    // Read fresh rather than kept in a variable: this is what lets Settings'
+    // Edit flow show the config that's actually on disk (post-setMode) rather
+    // than whatever the launch-time resolve happened to see.
+    const config = loadConfig(dataDir());
     return {
       mode: instanceMode,
       apiBaseUrl,
@@ -230,6 +235,12 @@ async function runGui() {
       // This machine's identity, so the renderer can tell "this machine"
       // from the user's other executors in the workspace chooser.
       instanceId: executorIdentity().executorId,
+      // Only solo/host have a host section; a client (or an unconfigured
+      // install) reports null so Settings knows there's nothing here to edit.
+      host: hostSettingsView(config?.host ?? null),
+      // The port the server actually bound, which can differ from what was
+      // requested (a stale leftover adopted at a different port, say).
+      listenPort: stack?.port ?? null,
       ...(startupError ? { error: startupError } : {}),
     };
   }

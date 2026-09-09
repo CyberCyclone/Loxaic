@@ -88,7 +88,12 @@ describe('electron onboarding', () => {
     await shot('onboarding-mode-chooser');
 
     // Choosing Solo has to bring a real server up, not just write a file.
+    // Solo has its own (optional) port field since #A1, so choosing it lands
+    // on a step rather than submitting immediately — confirm with the
+    // machine's default port and move on.
     await tap('onboarding.mode.solo');
+    await waitForVisible('onboarding.solo.submit');
+    await tap('onboarding.solo.submit');
     await browser.waitUntil(
       async () => {
         const state = await instanceState();

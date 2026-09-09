@@ -25,8 +25,53 @@ const CURRENT_VERSION = 1;
 
 export const MODES = ["solo", "host", "client"];
 
+export const BINDS = ["lan", "localhost"];
+
 /** The self-contained app's own default, distinct from the dev stack's 4000. */
 export const DEFAULT_HOST_PORT = 4100;
+
+/** Rejects a port outside the unprivileged, non-ephemeral-only range rather
+ * than storing a value that will fail to bind (or silently NaN) at start. */
+function validatePort(value) {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+    throw new Error("Port must be a whole number between 1024 and 65535");
+  }
+  return port;
+}
+
+function validateBind(value) {
+  if (!BINDS.includes(value)) {
+    throw new Error(`Bind must be one of: ${BINDS.join(", ")}`);
+  }
+  return value;
+}
+
+/**
+ * Validates and normalises an advertised address: must parse as a bare
+ * http(s) origin, with no path/query/fragment — those would silently never
+ * be reached (BETTER_AUTH_URL and the cluster listing use this as an origin,
+ * not a full URL) so a mistake here is caught at save time, not discovered
+ * when someone else's sign-in redirect breaks.
+ */
+function normalizeAdvertiseUrl(value) {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = String(value).trim();
+  if (!trimmed) return undefined;
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Public address must be a full URL, e.g. https://loxaic.example.com");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Public address must start with http:// or https://");
+  }
+  if ((parsed.pathname && parsed.pathname !== "/") || parsed.search || parsed.hash) {
+    throw new Error("Public address must not include a path, query, or fragment");
+  }
+  return parsed.origin;
+}
 
 export function configPath(dataDir) {
   return path.join(dataDir, "config.json");
@@ -90,10 +135,10 @@ export function buildConfig(input, previous = null) {
     const previousHost = previous?.host ?? {};
     config.host = {
       name: (host.name ?? previousHost.name ?? defaultHostName()).slice(0, 64),
-      port: Number(host.port ?? previousHost.port ?? DEFAULT_HOST_PORT),
+      port: validatePort(host.port ?? previousHost.port ?? DEFAULT_HOST_PORT),
       // Solo never leaves the machine, so it binds loopback whatever the
       // caller says; only a Host has a reason to accept remote connections.
-      bind: mode === "solo" ? "localhost" : (host.bind ?? previousHost.bind ?? "lan"),
+      bind: mode === "solo" ? "localhost" : validateBind(host.bind ?? previousHost.bind ?? "lan"),
       db: host.db ?? previousHost.db ?? { kind: "embedded" },
     };
     // Solo never inherits a previous Host's advertiseUrl. The loopback bind
@@ -101,7 +146,9 @@ export function buildConfig(input, previous = null) {
     // the advertised URL, so sign-in on a machine that only talks to itself
     // would point at an external address nothing is listening on — and
     // registerHost would keep publishing that dead address into the cluster.
-    const advertiseUrl = mode === "solo" ? host.advertiseUrl : (host.advertiseUrl ?? previousHost.advertiseUrl);
+    const advertiseUrl = normalizeAdvertiseUrl(
+      mode === "solo" ? host.advertiseUrl : (host.advertiseUrl ?? previousHost.advertiseUrl),
+    );
     if (advertiseUrl) config.host.advertiseUrl = advertiseUrl;
   }
 
@@ -114,6 +161,24 @@ export function buildConfig(input, previous = null) {
   }
 
   return config;
+}
+
+/**
+ * What the renderer is allowed to see of a stored host config — never the
+ * database URL or password (those live in secrets.json and in `db.url`
+ * respectively, decrypted only in the supervisor). Returns null for a config
+ * with no host section (client mode, or no config at all), so a caller can
+ * pass `config?.host` through unconditionally.
+ */
+export function hostSettingsView(hostConfig) {
+  if (!hostConfig) return null;
+  return {
+    name: hostConfig.name,
+    port: hostConfig.port,
+    bind: hostConfig.bind,
+    advertiseUrl: hostConfig.advertiseUrl ?? null,
+    db: { kind: hostConfig.db?.kind ?? "embedded" },
+  };
 }
 
 /**

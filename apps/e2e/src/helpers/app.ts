@@ -107,6 +107,13 @@ export async function openSidebar(): Promise<void> {
   );
 }
 
+/** Opens the Settings modal from the sidebar. Leaves the caller on whatever
+ * tab the modal opens to (its top level) — navigate on from there. */
+export async function openSettings(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.settings');
+}
+
 /**
  * Waits for the authenticated shell to be usable.
  *

@@ -9,6 +9,7 @@ import {
   configPath,
   defaultHostName,
   firstLanAddress,
+  hostSettingsView,
   loadConfig,
   saveConfig,
 } from "../config.js";
@@ -116,6 +117,63 @@ describe("buildConfig", () => {
   it("caps a host name rather than storing an unbounded string", () => {
     const config = buildConfig({ mode: "host", host: { name: "x".repeat(500) } });
     expect(config.host.name).toHaveLength(64);
+  });
+
+  it("rejects a non-numeric port rather than storing NaN", () => {
+    expect(() => buildConfig({ mode: "host", host: { port: "banana" } })).toThrow(/Port must be/);
+  });
+
+  it("rejects a port outside the valid range", () => {
+    expect(() => buildConfig({ mode: "host", host: { port: 80 } })).toThrow(/Port must be/);
+    expect(() => buildConfig({ mode: "host", host: { port: 70000 } })).toThrow(/Port must be/);
+    expect(() => buildConfig({ mode: "host", host: { port: 4100.5 } })).toThrow(/Port must be/);
+  });
+
+  it("rejects an unknown bind value for a host", () => {
+    expect(() => buildConfig({ mode: "host", host: { bind: "everywhere" } })).toThrow(/Bind must be/);
+  });
+
+  it("rejects an advertise URL with a path, query, or fragment", () => {
+    expect(() => buildConfig({ mode: "host", host: { advertiseUrl: "https://x.example.com/app" } })).toThrow(
+      /must not include a path/,
+    );
+    expect(() => buildConfig({ mode: "host", host: { advertiseUrl: "https://x.example.com/?a=1" } })).toThrow(
+      /must not include a path/,
+    );
+  });
+
+  it("rejects an advertise URL that isn't http(s)", () => {
+    expect(() => buildConfig({ mode: "host", host: { advertiseUrl: "not a url" } })).toThrow(/must be a full URL/);
+    expect(() => buildConfig({ mode: "host", host: { advertiseUrl: "ftp://x.example.com" } })).toThrow(
+      /must start with http/,
+    );
+  });
+
+  it("normalises a trailing slash on an otherwise bare advertise URL", () => {
+    const config = buildConfig({ mode: "host", host: { advertiseUrl: "https://x.example.com/" } });
+    expect(config.host.advertiseUrl).toBe("https://x.example.com");
+  });
+});
+
+describe("hostSettingsView", () => {
+  it("returns null for no host config", () => {
+    expect(hostSettingsView(null)).toBeNull();
+    expect(hostSettingsView(undefined)).toBeNull();
+  });
+
+  it("never leaks the database URL or password", () => {
+    const config = buildConfig({
+      mode: "host",
+      host: { name: "GPU Box", port: 4100, bind: "lan", db: { kind: "external", url: "postgres://u:p@host/db" } },
+    });
+    const view = hostSettingsView(config.host);
+    expect(view).toEqual({
+      name: "GPU Box",
+      port: 4100,
+      bind: "lan",
+      advertiseUrl: null,
+      db: { kind: "external" },
+    });
   });
 });
 
