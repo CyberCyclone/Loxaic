@@ -58,6 +58,10 @@ describe('sandbox degraded UX', () => {
     await resetSandboxSettings();
     await goToSurface('chat');
     await goToSurface('agent');
+    // A fresh run, deliberately: the banner is about the *active* workspace's
+    // own network, and the admin's newest agent conversation here is
+    // sandbox-bash's — a host-mode one, which genuinely has the network.
+    await startNewAgentRun();
 
     await waitForVisible('agent.network.banner');
     // The consequence and the fix, not just that something rendered: a banner
