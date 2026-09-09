@@ -97,6 +97,14 @@ export default function SandboxScreen() {
           <Text testID="sandbox.retention.summary" size="xs" className="text-muted-foreground">
             {describeRetention(config.sandbox.retention)}
           </Text>
+          {/* The agent screen's no-network banner links here for everyone;
+              without this line a non-admin arrived to a page that never
+              mentioned the network at all. */}
+          <Text testID="sandbox.network.summary" size="xs" className="text-muted-foreground">
+            {config.sandbox.allowNetwork
+              ? 'New workspaces can reach the internet. A workspace keeps the network access it was created with.'
+              : 'Workspaces have no internet access — npm install, git clone and other downloads fail inside them. An administrator can turn this on.'}
+          </Text>
           <Text testID="sandbox.readOnly.notice" size="xs" className="text-muted-foreground">
             Sandbox mode, engine, network access, and workspace retention are set by an
             administrator.

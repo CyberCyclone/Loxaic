@@ -404,6 +404,10 @@ export interface SandboxRow {
   lastUsedAt: string;
   createdAt: string;
   stoppedAt: string | null;
+  /** Resource and posture facts fixed at creation. `network` is whether this
+   * sandbox can reach the internet — recorded then because it cannot change
+   * for the sandbox's life; absent on rows that predate it. */
+  limits?: { memory?: number; cpu?: number; network?: boolean } | null;
   /** When this workspace would be deleted, or null when reaping is off (in
    * which case it is kept until the conversation is). Derived server-side from
    * the live policy, so it never advertises a date an admin has since moved. */

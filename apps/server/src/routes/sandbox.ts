@@ -8,6 +8,7 @@ import { resolvePath } from "../agent/executor.ts";
 import {
   assertUnderUserLimit,
   attachRunningSandbox,
+  networkFor,
   releaseSandboxSlot,
   SandboxLimitError,
 } from "../agent/sandbox-manager.ts";
@@ -115,7 +116,7 @@ export function sandboxRoutes(app: FastifyInstance) {
           status: "running",
           repoUrl: repo_url ?? null,
           branch: branch ?? null,
-          limits: { memory: 512, cpu: 1 },
+          limits: { memory: 512, cpu: 1, network: networkFor(kind) },
         })
         .returning();
 

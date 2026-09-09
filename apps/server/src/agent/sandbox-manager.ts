@@ -7,7 +7,7 @@ import type { Workspace } from "@loxaic/types";
 import { loadWorkspace } from "./workspace.ts";
 import { getConnection, getOwnerToken } from "../github/connection.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
-import { getSandboxRetention } from "../settings.ts";
+import { getSandboxRetention, getSandboxSettings } from "../settings.ts";
 
 /**
  * How often the reapers run.
@@ -505,13 +505,27 @@ async function createEntryReserved(
       status: "running",
       repoUrl: config.repoUrl ?? null,
       branch: config.newBranch ?? config.branch ?? null,
-      limits: { memory: 512, cpu: 1 },
+      limits: { memory: 512, cpu: 1, network: networkFor(provider.kind) },
     })
     .returning();
 
   const entry: Entry = { rowId: row.id, provider: provider.kind, ref: handle.ref, lastUsedAt: Date.now() };
   active.set(conversationId, entry);
   return entry;
+}
+
+/**
+ * Whether this sandbox has the network — recorded on the row at creation,
+ * because it is fixed for the sandbox's life: a container's NetworkMode
+ * cannot change under it, and a paused one resumes with what it was made
+ * with. The client's "no network" banner reads this rather than the
+ * server-wide setting, which says what the *next* sandbox gets — an admin
+ * who turned networking on mid-conversation was otherwise shown the banner
+ * vanish from exactly the workspace it still applied to. Host and executor
+ * sandboxes always have their machine's network.
+ */
+export function networkFor(kind: SandboxKind): boolean {
+  return kind === "container" ? getSandboxSettings().allowNetwork : true;
 }
 
 /**
