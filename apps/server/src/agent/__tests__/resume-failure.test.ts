@@ -86,7 +86,7 @@ async function pausedRow() {
       limits: { memory: 512, cpu: 1 },
     })
     .returning();
-  return row;
+  return { ...row, conversationId: conversation.id };
 }
 
 const statusOf = async (id: string) =>
@@ -103,9 +103,9 @@ describe("a transient failure to resume is not 'gone'", () => {
   it("reaching by conversation: the tool call fails, and no second sandbox is made", async () => {
     const row = await pausedRow();
     behaviour.start = () => Promise.reject(new Error("engine unreachable"));
-    await expect(getConversationSandbox(userId, row.conversationId as string)).rejects.toThrow("engine unreachable");
+    await expect(getConversationSandbox(userId, row.conversationId)).rejects.toThrow("engine unreachable");
     expect(await statusOf(row.id)).toBe("stopped");
-    const rows = await db.query.sandboxes.findMany({ where: eq(sandboxes.conversationId, row.conversationId as string) });
+    const rows = await db.query.sandboxes.findMany({ where: eq(sandboxes.conversationId, row.conversationId) });
     expect(rows).toHaveLength(1);
   });
 

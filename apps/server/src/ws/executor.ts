@@ -44,10 +44,11 @@ const MAX_ROOT_LENGTH = 4096;
  * so a colon is the one character it must never contain. */
 const EXECUTOR_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
-// eslint-disable-next-line no-control-regex -- stripping them is the point.
 /** Global, for `replace`; never `.test()` this one — a `g` regex is stateful
  * and a rejected test leaves `lastIndex` mid-string for the next call. */
+// eslint-disable-next-line no-control-regex -- stripping them is the point.
 const CONTROL_RE = /[\x00-\x1f\x7f]/g;
+// eslint-disable-next-line no-control-regex -- refusing them is the point.
 const HAS_CONTROL_RE = /[\x00-\x1f\x7f]/;
 
 function cleanName(raw: unknown): string | null {
@@ -142,9 +143,9 @@ export function executorWsHandler(app: FastifyInstance) {
     }, SESSION_RECHECK_MS);
 
     socket.on("message", (raw: Buffer) => {
-      let msg: ExecutorToServer;
+      let parsed: unknown;
       try {
-        msg = JSON.parse(raw.toString()) as ExecutorToServer;
+        parsed = JSON.parse(raw.toString());
       } catch {
         socket.close(4002, "Invalid JSON");
         return;
@@ -154,10 +155,11 @@ export function executorWsHandler(app: FastifyInstance) {
       // parse guard above does not cover, and an exception out of an
       // EventEmitter listener is an uncaughtException: one frame from any
       // authenticated client took the whole server down.
-      if (typeof msg !== "object" || msg === null) {
+      if (typeof parsed !== "object" || parsed === null) {
         socket.close(4002, "Invalid message");
         return;
       }
+      const msg = parsed as ExecutorToServer;
 
       if (!unregister) {
         const hello = validateHello(msg);

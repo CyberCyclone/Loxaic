@@ -139,8 +139,9 @@ export function gitRoutes(app: FastifyInstance) {
       return { error: `git status failed: ${changedResult.stderr.trim() || "not a git repository"}` };
     }
     const counts = aheadBehind.exitCode === 0 ? aheadBehind.stdout.trim().split(/\s+/) : null;
-    const behind = counts && counts[0] !== undefined && /^\d+$/.test(counts[0]) ? Number(counts[0]) : null;
-    const ahead = counts && counts[1] !== undefined && /^\d+$/.test(counts[1]) ? Number(counts[1]) : null;
+    const count = (raw: string | undefined) => (raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : null);
+    const behind = count(counts?.[0]);
+    const ahead = count(counts?.[1]);
     return {
       cloned: true,
       repo: ctx.workspace.repo,

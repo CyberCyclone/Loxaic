@@ -248,7 +248,12 @@ screenshots showing that behaviour working. Writing those tests is the implement
   host mode and sandbox networking are deployment-wide security decisions, not per-user
   preferences, and **nothing may let a caller choose them per request**: `POST /v1/sandboxes`
   once accepted a `provider` field in the body, which let any signed-in user get host
-  execution and bypass `mode: "off"` entirely. Derive the kind from `getSandboxMode()`.
+  execution and bypass `mode: "off"` entirely. Derive the kind from `getSandboxMode()`. Its
+  `conversation_id` is likewise a claim — the tool loop adopts whichever row names a
+  conversation — so it requires **owner** role on that conversation (404 otherwise), and
+  `createEntry`'s recovery lookup is scoped to the conversation owner's rows as the second lock.
+  Before both, any signed-in user could plant a sandbox they owned under someone else's
+  conversation and have that person's agent (and, via `routes/git.ts`, their PAT) run inside it.
 - `updateSandboxSettings()` must apply as well as persist, **in this order**: stop the
   affected sandboxes *first*, then `resetEngineCache()`. Stopping a container means
   attaching through the engine that created it, so resetting first sends those calls to the
@@ -318,6 +323,27 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Extraction-pool sandboxes (`files/extract.ts`) are the exception and still destroy on
   idle.** They hold no work anyone returns to, are keyed by user rather than conversation, and
   have no row — nothing could ever resume one, so pausing them would leak containers forever.
+- **Only `SandboxGoneError` may become `destroyed`.** `SandboxHandle.start()` is the manager's
+  "paused or gone?" discriminator, and `sandbox/errors.ts` is the one answer it may give for
+  "gone": a container 404, a host directory that is missing, an executor's un-approved or
+  removed sandbox (carried across the wire as `code: "gone"`). Every other failure — the engine
+  unreachable, the machine offline, a timeout — propagates as itself and the row stays exactly
+  as it was. `resume()` used to swallow everything, so an engine hiccup marked a paused
+  workspace destroyed and the boot sweep then deleted the container still holding the work.
+  `resume-failure.test.ts` mocks a provider to prove the split.
+- **Waking a paused sandbox is a cap transition.** The per-user cap counts *running* rows, so
+  resuming is the thing that spends one; both resume paths (`createEntry`, `attachRunningSandbox`)
+  reserve against it, or the cap was defeatable by cycling (pause N, create N, resume N).
+  `attachRunningSandbox` also registers the woken sandbox in `active` — otherwise a workspace
+  resumed through the terminal or the files API was invisible to the idle timer for the life
+  of the process — and the boot sweep reconciles a `running` row whose container merely exists
+  to `stopped`, rather than leaving it counted at the cap forever after a reboot.
+- **A sandbox row records the network it was created with** (`limits.network`, written by
+  `createEntryReserved` and `POST /v1/sandboxes` from `networkFor(kind)`). A container's
+  `NetworkMode` is fixed for its life and a paused one resumes with it, so the agent screen's
+  no-network banner reads the *row*, not the server-wide setting — which only says what the
+  next sandbox gets. Keyed on the setting, the banner vanished the moment an admin turned
+  networking on, from exactly the workspace it still applied to.
 - **Vitest shares one process across test files, so `process.env` is shared.**
   `settings.test.ts` legitimately pins `SANDBOX_IDLE_STOP_MS=1` to prove the env
   override works; a case elsewhere that means "the default 4-hour window" must pin it
@@ -517,6 +543,23 @@ screenshots showing that behaviour working. Writing those tests is the implement
   the run then never ends at all. Read through a function call, not the property directly:
   the type checker narrows it to false after the first check and cannot see that the await
   changes it.
+- **The slot covers tool execution too**, and that is a stated trade-off: a run holds it across
+  every sandboxed `bash` up to `max_iterations`, giving it back only while a human is asked. At
+  concurrency 1 one long auto-mode run holds a shared deployment for the length of its tool
+  work with the backend idle. Yielding around tool calls would not recover that for free — a
+  run admitted in the gap evicts the prefix, and the yielding run re-evaluates its whole
+  prompt on return. Per-user fairness and a cap on hold time are follow-ups.
+- **Any event that is not `run.queued` clears the queue position** — in `foldSnapshot` and in
+  both client hooks. `iteration` used to be the only clear-point, and a compaction run never
+  emits one, so a client catching up mid-summary saw "Queued · #1" with the summary streaming
+  underneath. Chat also reads `snapshot.queued`, since `run.queued` is only re-emitted when the
+  queue *moves*. And `PATCH /v1/admin/settings/inference` calls `kickScheduler()` after the
+  write: `pump()` otherwise runs only on a release, so a raised limit took effect whenever the
+  run holding the slot happened to finish.
+- **A compaction stopped while queued still persists a terminal status**: its summary row was
+  inserted as `streaming` before the queue wait, so the null-slot early return throws into the
+  catch that writes the status and emits `message.end`, rather than ending the stream around
+  an empty bubble stuck mid-stream on every later load.
 - **Compaction queues like any other run**, including automatic compaction — a background job
   jumping the queue would stall somebody's chat.
 - **`run.queued` carries one number, a 1-based place in line.** Re-emitted as the queue moves
@@ -812,6 +855,17 @@ screenshots showing that behaviour working. Writing those tests is the implement
   argv, never in the clone URL (which git writes into `.git/config`, where the model can `cat`
   it and `web_fetch` it out), never in a file, never logged. `git.test.ts` greps the whole
   `.git` directory for it after a clone. The previous code embedded it in the URL.
+  Three bounds sit around it, because the checkout is one the model writes to freely: the
+  helper list is **reset** first (`-c credential.helper=` — `-c` appends, and a `store` helper
+  in the server account's own gitconfig would otherwise be handed the token by git's
+  post-auth `approve` and write it to `~/.git-credentials`; `file://` clones never consult a
+  helper, which is why the test could not see it); the helper answers **only for the host the
+  token was issued for** (`$LOXAIC_GIT_HOST` from the clone URL, read from the `host=` line git
+  writes to its stdin — `credential.useHttpPath` does *not* scope a custom helper); and hooks,
+  fsmonitor and proxies are off for the credentialed command, which alone carries the token
+  (the checkout/config steps after a clone get none). What this does **not** close is an
+  actively adversarial process in the container — a shim `git` on PATH — which shares the
+  exec's uid; the sturdier shape is pushing from the server against a bundle, a follow-up.
 - **Full clone, not `--depth=1`.** Shallow made `git log`, `blame` and `diff <base>` — the first
   things a model reaches for — empty or wrong. Paid once per conversation; the checkout is kept
   (stop-and-resume).
@@ -820,6 +874,12 @@ screenshots showing that behaviour working. Writing those tests is the implement
   than hiding it; a coding agent that cannot `npm install` is not one. `SANDBOX_EXTRA_HOSTS`
   (`host:ip`, comma-separated → `HostConfig.ExtraHosts`) exists so a networked sandbox can
   reach a service on the host by name on Linux/Podman.
+- **`REPO_RE` alone admits `..`**, and `repos/../user` normalises to `/user` in the API URL — a
+  200 whose body is the viewer, once persisted as a workspace with an undefined repo. Traversal
+  segments are refused, and the lookup's answer must describe a repository. The chooser resets
+  its repo half on open too (or the previous conversation's repo came up pre-selected with the
+  *same* generated branch name), and a container choice does not survive onto a machine
+  without an engine.
 - **Client: create-then-send when a workspace was chosen; the implicit path stays.** A plain
   send with no conversation still opens a scratch one on the server, for clients that predate
   the chooser. `titleIfUnnamed` names a pre-created conversation from its first message, gated
@@ -852,6 +912,14 @@ screenshots showing that behaviour working. Writing those tests is the implement
   (a network error or a non-2xx body might echo it back) and again in `routes/github.ts` before
   the message reaches the response, since defense at one layer failing silently is exactly how
   a token ends up in a log or a client error toast.
+- **A stored token that can no longer be decrypted is `GithubTokenUnreadableError`**, not a
+  500: the key changed after the token was written (the outcome the module's own "set
+  `MCP_ENCRYPTION_KEY`" warning invites). The repo and branch routes answer 409 "disconnect and
+  reconnect"; workspace creation turns it into a 400 with the same words. Derived keys are
+  cached per salt — `scryptSync` on every request that needed the token stalled the whole
+  event loop, every other user's stream included. `listRepos`/`listBranches` follow
+  `rel="next"` up to ten pages on the API's own origin; one page of 100 meant anyone with more
+  repos than that could not pick the older ones.
 - `PUT /v1/github/connection` validates the token against GitHub (`getViewer`) before storing
   anything — a bad token fails at connect time, not on the first clone three steps later (a
   later stage).
@@ -876,6 +944,15 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Opening a PR is idempotent by our own memory**: once `workspace.pr` is set
   (`setWorkspacePr`), every later call returns the stored PR without asking GitHub again,
   rather than risking a duplicate PR on a retried click.
+- **`findSandboxRow` is scoped to the conversation owner's rows**, because every action here
+  runs in whatever it returns — Push with the owner's PAT in its environment — and a row that
+  merely *names* the conversation must not be enough (see the `POST /v1/sandboxes` owner
+  check). **Push refuses (409) unless `git remote get-url origin` matches the workspace's
+  `cloneUrl`**: `origin` lives in a `.git/config` the model writes to, and `set-url` is one
+  bash call away. Status checks both exit codes — a failed `git status` is a 500, not a clean
+  tree with Commit greyed out; a failed rev-list reports `ahead`/`behind` as `null`, which the
+  panel shows as "?" and never treats as 0. Only a 422 whose body says "already exists" is
+  the lost-PR 409; "No commits between base and head" reaches the user as GitHub's own words.
 - Push errors are redacted a second time in `routes/git.ts` itself (`redact()`, a local
   module-private helper — it does not import the sandbox git module's own), on top of
   whatever `sandbox/git.ts` already scrubbed, for the same defense-in-depth reason as the
@@ -930,6 +1007,15 @@ screenshots showing that behaviour working. Writing those tests is the implement
   the server's own `resolvePath` is lexical, and a repo can contain a symlink out to `/`. A
   not-yet-existing file is judged by its nearest existing ancestor's real path. Removing a
   folder in the desktop revokes it on the next call, not when the conversation ends.
+  **The roots bound the file verbs and where a command starts — not what `exec` runs.** A
+  direct workspace runs the model's shell commands as the user, and `cat ~/.ssh/id_ed25519`
+  is a shell command; that is what "Direct — commands run as you, with no sandbox" means, and
+  why a local workspace on a server one does not trust with one's login session should be a
+  *container* one. The header used to claim the roots stopped a hostile host reading the key.
+  **An executor id belongs to the user who first registered it**: `registerExecutor` replaces
+  a same-user connection (a restarted desktop) and refuses a cross-user claim with 4003 — the
+  id is a UUID in a config file, not a secret, and a stranger who learned it could otherwise
+  evict the machine and receive its owner's commands and terminal keystrokes.
 - **Paths reach the executor only from that machine's native dialog.** `loxaic:pickDirectory`
   takes no argument; `loxaic:executor.removeRoot` only narrows; the roots file
   (`<dataDir>/executor-roots.json`, 0600) is written by nothing else. The renderer cannot name
@@ -1043,6 +1129,15 @@ screenshots showing that behaviour working. Writing those tests is the implement
   same rule the host provider learned the hard way.
 - The desktop passes `SANDBOX_BUILD_CONTEXT` to the executor as well as the server: a packaged
   install has no repo to build the image from, and `build-server.mjs` stages a copy.
+- **Un-approving a folder must not make its container unstoppable.** `stop`/`destroy` resolve
+  "for release" — the executor-label check only — while every other verb re-checks the folder.
+  Gating removal on approval meant the one path that could remove a container mounted on a
+  withdrawn folder was refused exactly when removing it was urgent, and nothing else ever
+  reclaims these. The server-supplied id is shape-checked (`[0-9a-f]{12,64}`) *before* it goes
+  into an Engine API path; a machine holds at most eight Loxaic containers (`MAX_LOCAL_CONTAINERS`,
+  counted by label — deleting a conversation is what brings it down); and the engine is
+  cached and re-checked with a bounded ping, since `attachLocalContainer` is on the path of
+  every call and used to re-walk every candidate socket, with no client timeout, per tool call.
 - **A local container carries `loxaic.executor`, and the server's orphan sweep must skip it.**
   Both kinds carry `loxaic.sandbox`, but an executor's container is claimed by no row in the
   server's database — so the sweep, whose whole job is destroying containers no row claims,
@@ -1111,6 +1206,13 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **The panel holds a socket only while it is open**, and never *creates* a workspace: it opens
   into the one the tool loop already made (a paused one is resumed, which is what someone
   opening a terminal after lunch wants). Opening a terminal is not a reason to start a container.
+- **The terminal socket bounds what one owner can cost the server**: eight terminals per user
+  (the executor's own `MAX_TERMINALS`, reserved *before* the open's await so racing opens
+  cannot all pass), and output past 1 MB of unsent socket buffer is dropped rather than
+  queued — a terminal is a live view, so losing backlog is the right answer. `openTerminal()`
+  itself is guarded: it was the one await on the still-paused socket that no `refuse()`
+  covered, so an executor dropping in that window left the client waiting out its own
+  timeout for a bare 1006 instead of the 4503.
 - **Client: xterm on web/Electron, a text view on native.** `@xterm/xterm` has no React or
   React Native peer at all, so it cannot pull in a second React island (the `nativewind` hazard
   above); its CSS import emits its own small bundle in the Expo web export. The **DOM renderer
@@ -1198,9 +1300,11 @@ screenshots showing that behaviour working. Writing those tests is the implement
   which `MOCK_TOOL_TRIGGERS` (one call per turn, by design) cannot. `MOCK_SCENARIOS_FILE` (a JSON
   array of `{match, steps: [{tool, args}], finalText}`) is read at call time and cached by path;
   `scenarioDecisionFor(prompt, toolNames, stepIndex)` matches `match` against the prompt and
-  returns the step at `stepIndex` — the count of tool messages the current turn already holds,
-  computed once in `mockStream` and handed in rather than recomputed, so the two can never
-  disagree about which step an iteration is on. A step **bypasses** the single-call rule
+  walks the steps by their call counts to the one `stepIndex` lands on — `stepIndex` being the
+  count of tool messages the current turn already holds (one per *call*, so a multi-call step
+  consumes several), computed once in `mockStream` and handed in rather than recomputed, so the
+  two can never disagree about which step an iteration is on. Indexing steps by it directly
+  made a two-call step skip the step after it. A step **bypasses** the single-call rule
   entirely (that bypass is the reason a scenario exists) but still only fires when its tool is
   actually offered, matching the ordinary trigger rule — a scenario written against a disabled
   tool falls through to generic mock behavior instead of calling a tool nothing asked for. Once
@@ -1251,9 +1355,10 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **New testIDs**: `agent.inspector.panel` (the wide `Box` and narrow `ActionsheetContent` that
   wrap `InspectorBody` — there was previously no way to wait for the panel itself, only its
   toggle button), `agent.inspector.changedFiles.count` (the "Changed Files (N)" heading — was a
-  bare `Text` with no testID), and `chat.toolCall.<callId>` / `chat.toolCall.result` on
-  `ToolCallCard` (root box keyed by the tool call's own `callId`; the diff/plain-result
-  `ScrollView`, whichever renders).
+  bare `Text` with no testID), and `chat.toolCall.<callId>` / `chat.toolCall.result.<callId>` on
+  `ToolCallCard` (root box and the diff/plain-result `ScrollView`, whichever renders, both keyed
+  by the tool call's own `callId` — a constant id on a per-call element is ambiguous the moment
+  two cards are expanded).
 - **A stale `apps/mobile/dist` web export is invisible until you look for it.** `ensureServer()`
   reuses a healthy server and `ensureWebExport()` reuses an existing export unless
   `E2E_FRESH_WEB=1` — so a spec asserting on a testID just added to `apps/mobile` can fail with
@@ -1287,11 +1392,21 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **This fixed the timeout as much as it fixed Stop.** A container command that blew its 60s cap
   was never killed, only detached from; it kept running until the container was reaped. Both
   paths now go through the same kill.
-- **Only wrapped when a signal is passed**, so every other exec's argv is untouched — and
-  `exec-cancel.test.ts` guards the wrapper itself: an uncancelled wrapped command must still
-  return its own stdout, stderr and exit code, since every `bash` tool call now carries a signal
-  and a wrapper that swallowed those would break the product while the cancellation cases stayed
-  green.
+- **Every exec is wrapped, not only a cancellable one.** The timeout needs the same marker, and
+  gating it on a signal left a timed-out clone, a wedged document extraction (the one exec
+  whose input is untrusted) or a REST exec merely detached. `exec-cancel.test.ts` guards the
+  wrapper itself: an uncancelled wrapped command must still return its own stdout, stderr and
+  exit code, since a wrapper that swallowed those would break every exec while the
+  cancellation cases stayed green.
+- **A signal that is already aborted never starts the command — on all three providers.** After
+  a Stop every remaining call in a batch arrives so. Starting anyway raced the wrapper (the
+  killer read a PGID file the shell had not written, and the caller was told exit 130 for a
+  command that then ran), and on the host provider the early return skipped the child's
+  `error` listener, so an async spawn failure was an uncaught exception. The killer also
+  *waits* for the marker (bounded) rather than reading it once, and is awaited until it
+  finishes, so "the command is gone" is true when it returns. Host-mode children are
+  `detached`, which also detaches them from the parent's death: live groups are killed on
+  process exit.
 - Needs `setsid -w` from util-linux: present in the Ubuntu-based sandbox image, **absent from
   busybox**, so a base-image change needs this re-checked. (Alpine's `ps` also lacks `-o pgid`,
   which is how the first draft was caught.)
@@ -1310,11 +1425,14 @@ screenshots showing that behaviour working. Writing those tests is the implement
   A skipped call still emits and persists a `tool_result` saying it was stopped — an
   assistant `tool_call` with no partner is the orphan case `loadHistory` has to strip, and
   most backends reject it outright.
-- **Aborting at an approval unwinds through `slot.yieldWhile`, not through the skip path.**
+- **Aborting at an approval unwinds through `slot.yieldWhile`, and is recorded like a skip.**
   The approval hands the inference slot back; re-entering the queue for an aborted run throws
-  `RunSlotAbortedError`, which ends the turn before any tool executes — so that run keeps its
-  calls with *no* results at all, which is the orphan case again and is why the stripping
-  matters. Do not "fix" it by persisting partial results there; the run is over.
+  `RunSlotAbortedError`. The per-call loop catches it for *that* call — nothing ran for it —
+  and records the same "stopped" result a skipped call gets, so the calls before it that did
+  run (and did write) keep their results in the transcript and the prompt; the per-call check
+  then skips the rest and the abort branch ends the turn. Letting the throw escape the loop
+  used to skip the insert entirely: a batch stopped at its second approval lost the first
+  call's result, and the model had no record a file it had written existed.
 - **An in-flight `exec` is cancellable on all three providers.** `ExecOptions.signal` carries the
   run's abort signal. It never goes *on* the wire for the executor — an `AbortSignal` serialises
   to `{}` — it rides beside the call, and aborting sends `exec.cancel {id}`, which the executor

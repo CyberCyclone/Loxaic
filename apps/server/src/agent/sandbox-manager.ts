@@ -122,13 +122,13 @@ export async function attachRunningSandbox(row: {
   // what makes one *running* again — so the cap applies here exactly as it
   // does in createEntry. A row with no owner in hand cannot be counted, and
   // executor sandboxes hold nothing this server pays for.
-  const wakes = row.status === "stopped" && row.provider !== "executor" && row.ownerId !== undefined;
-  if (wakes) await assertUnderUserLimit(row.ownerId as string);
+  const capOwner = row.status === "stopped" && row.provider !== "executor" ? row.ownerId : undefined;
+  if (capOwner !== undefined) await assertUnderUserLimit(capOwner);
   let resumed: boolean;
   try {
     resumed = await resume(handle);
   } finally {
-    if (wakes) releaseSandboxSlot(row.ownerId as string);
+    if (capOwner !== undefined) releaseSandboxSlot(capOwner);
   }
   if (!resumed) {
     await markDestroyed(row.id);
