@@ -15,7 +15,7 @@
 import Docker from "dockerode";
 import { pack } from "tar-fs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -315,13 +315,81 @@ async function writeBinaryToContainer(
   }
 }
 
+/**
+ * Kills a command started by `execInContainer`, from *inside* the container.
+ *
+ * The Docker Engine API has no kill-exec call — `Exec` offers only
+ * start/resize/inspect — and that is the API we speak to every engine through
+ * dockerode, so Docker, Podman, OrbStack and Colima all behave the same
+ * (verified: Podman leaves the process running after the client detaches
+ * exactly as Docker does). Detaching the stream, which is all the old timeout
+ * did, leaves the work running until the container is reaped.
+ *
+ * So the kill happens in the container's own userspace: a cancellable command
+ * runs under `setsid -w`, its session leader records its own PGID to a file,
+ * and this reads that file and signals the **group**. The group, not the pid —
+ * `bash -lc "npm install"` has grandchildren, and those are what hold the CPU.
+ *
+ * The PGID file rather than matching the command line: `pgrep -f <marker>`
+ * also matches the `setsid` process itself, which is *not* in the new group,
+ * so killing what it reports leaves the real tree running. Recording `$$` from
+ * inside the new session is unambiguous.
+ *
+ * Best-effort by construction: the process may have exited between the
+ * decision to cancel and this landing, which is an ordinary race and not an
+ * error. Needs `setsid -w` from util-linux — present in the Ubuntu-based
+ * sandbox image, absent from busybox, so a base-image change needs this
+ * re-checked.
+ */
+async function killExecGroup(container: Docker.Container, pgidFile: string): Promise<void> {
+  const script =
+    `PGID=$(cat ${pgidFile} 2>/dev/null); ` +
+    `[ -n "$PGID" ] || exit 0; ` +
+    `kill -TERM -"$PGID" 2>/dev/null; sleep 0.2; kill -KILL -"$PGID" 2>/dev/null; ` +
+    `rm -f ${pgidFile}; exit 0`;
+  try {
+    const killer = await container.exec({
+      Cmd: ["bash", "-c", script],
+      AttachStdout: false,
+      AttachStderr: false,
+    });
+    const s = await killer.start({ hijack: true, stdin: false });
+    // Drained and given a moment to land: without reading it the socket can
+    // be closed before the daemon has run the command.
+    s.resume();
+    await new Promise((r) => setTimeout(r, 250));
+    s.destroy();
+  } catch {
+    // A dead container, or an engine that refused the exec — nothing left to
+    // kill either way, and the caller has already stopped waiting.
+  }
+}
+
 async function execInContainer(
   container: Docker.Container,
   command: string[],
   options?: ExecOptions,
 ): Promise<ExecResult> {
+  // Only wrapped when the caller can actually cancel, so every other exec runs
+  // exactly as before. `setsid -w` waits for the child and returns its exit
+  // status, so the wrapper is invisible in the result; the inner shell records
+  // its own PGID (it is the new session's leader, so `$$` *is* the group) for
+  // killExecGroup to find, and clears the file on the way out whether the
+  // command succeeded, failed, or was killed.
+  //
+  // Not `exec "$@"`: that replaces the shell, which drops the wrapper — and
+  // with it any chance of recording the group before the command starts.
+  const pgidFile = options?.signal ? `/tmp/loxaic-exec-${randomUUID()}.pgid` : null;
+  const cmd = pgidFile
+    ? [
+        "setsid", "-w", "bash", "-c",
+        `trap 'rm -f ${pgidFile}' EXIT; echo $$ > ${pgidFile}; "$@"`,
+        "_", ...command,
+      ]
+    : command;
+
   const exec = await container.exec({
-    Cmd: command,
+    Cmd: cmd,
     AttachStdout: true,
     AttachStderr: true,
     // The handle's workdir, not the root: #62. The image creates it, so it is
@@ -345,22 +413,50 @@ async function execInContainer(
 
   const timeoutMs = options?.timeoutMs ?? DEFAULT_EXEC_TIMEOUT_MS;
 
-  const timedOut = await new Promise<boolean>((resolve, reject) => {
+  const outcome = await new Promise<"done" | "timeout" | "cancelled">((resolve, reject) => {
+    const signal = options?.signal;
+    let settled = false;
+    const settle = (v: "done" | "timeout" | "cancelled") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve(v);
+    };
     const timer = setTimeout(() => {
-      // The Docker API has no "kill exec" call; detaching is all we can do.
-      // The process stays until the container is reaped, bounded by the
-      // container's own memory/CPU/pid limits.
+      // Detaching alone used to be the whole timeout: the process kept running
+      // inside the container until it was reaped. Now the group is killed too
+      // when there is a marker to find it by (#119).
       stream.destroy();
-      resolve(true);
+      settle("timeout");
     }, timeoutMs);
+    function onAbort() {
+      stream.destroy();
+      settle("cancelled");
+    }
+    if (signal?.aborted) { onAbort(); }
+    else signal?.addEventListener("abort", onAbort, { once: true });
 
-    stream.on("end", () => { clearTimeout(timer); resolve(false); });
-    stream.on("close", () => { clearTimeout(timer); resolve(false); });
-    stream.on("error", (e: Error) => { clearTimeout(timer); reject(e); });
+    stream.on("end", () => { settle("done"); });
+    stream.on("close", () => { settle("done"); });
+    stream.on("error", (e: Error) => {
+      // A destroyed stream reports an error on some engines; that is this
+      // function doing its job, not a failure to report upwards.
+      if (settled) return;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(e);
+    });
   });
+  const timedOut = outcome === "timeout";
 
-  let exitCode = timedOut ? 124 : 0;
-  if (!timedOut) {
+  // Kills what the detach above only stopped listening to. Awaited so the
+  // command is actually gone before the sandbox is reported free — a
+  // cancelled `npm install` still holding the CPU is the bug being fixed.
+  if (pgidFile && outcome !== "done") await killExecGroup(container, pgidFile);
+
+  let exitCode = timedOut ? 124 : outcome === "cancelled" ? 130 : 0;
+  if (outcome === "done") {
     const inspected = await exec.inspect().catch(() => null);
     // Running===true means the process outlived its stream; treat as unknown.
     exitCode = inspected?.ExitCode ?? -1;
@@ -368,7 +464,10 @@ async function execInContainer(
 
   return {
     stdout: out.text(),
-    stderr: err.text() + (timedOut ? `\n… [timed out after ${String(timeoutMs)}ms]` : ""),
+    stderr:
+      err.text()
+      + (timedOut ? `\n… [timed out after ${String(timeoutMs)}ms]` : "")
+      + (outcome === "cancelled" ? "\n… [stopped by the user]" : ""),
     exitCode,
     truncated: out.truncated || err.truncated,
     timedOut,

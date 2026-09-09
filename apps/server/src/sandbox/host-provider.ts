@@ -31,36 +31,71 @@ async function execHost(cwd: string, command: string[], options?: ExecOptions): 
   const child = spawn(command[0], command.slice(1), {
     cwd: options?.workdir ?? cwd,
     stdio: ["ignore", "pipe", "pipe"],
+    // Its own process group, so cancelling or timing out can take the whole
+    // tree. `bash -lc "npm install"` spawns grandchildren, and signalling
+    // only the direct child leaves those running — which is what the old
+    // timeout did (#119).
+    detached: true,
     // The host's own environment plus whatever this one command was given —
     // a git credential, most likely (sandbox/git.ts). Only set when asked, so
     // the default stays exactly what spawn would have done on its own.
     ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
   });
 
+  /** SIGKILL the group, ignoring the race where it has already exited. */
+  const killGroup = () => {
+    if (child.pid === undefined) return;
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // ESRCH: already gone between the check and the signal.
+    }
+  };
+
   const out = new CappedSink();
   const err = new CappedSink();
   child.stdout.pipe(out);
   child.stderr.pipe(err);
 
-  const { exitCode, timedOut } = await new Promise<{ exitCode: number; timedOut: boolean }>((resolve, reject) => {
+  const { exitCode, timedOut, cancelled } = await new Promise<{
+    exitCode: number;
+    timedOut: boolean;
+    cancelled: boolean;
+  }>((resolve, reject) => {
+    const signal = options?.signal;
     const timer = setTimeout(() => {
       // No graceful-then-force here (unlike the supervisor's own child
       // shutdown): an agent-issued command that's overrun its budget gets no
-      // benefit from a SIGTERM grace period, and a real container's timeout
-      // path (detach-only, no kill at all) is already the looser of the two.
-      child.kill("SIGKILL");
-      resolve({ exitCode: 124, timedOut: true });
+      // benefit from a SIGTERM grace period.
+      killGroup();
+      resolve({ exitCode: 124, timedOut: true, cancelled: false });
     }, timeoutMs);
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("exit", (code, signal) => {
+    const onAbort = () => {
+      killGroup();
+      // Resolved here rather than waiting for `exit`: the point of cancelling
+      // is that the caller stops waiting *now*. The kill above is what stops
+      // the work; this is what stops the run hanging on it.
+      settle({ exitCode: 130, timedOut: false, cancelled: true });
+    };
+    const settle = (v: { exitCode: number; timedOut: boolean; cancelled: boolean }) => {
       clearTimeout(timer);
-      resolve({ exitCode: code ?? (signal ? 128 : -1), timedOut: false });
+      signal?.removeEventListener("abort", onAbort);
+      resolve(v);
+    };
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.on("error", (e) => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); reject(e); });
+    child.on("exit", (code, sig) => {
+      settle({ exitCode: code ?? (sig ? 128 : -1), timedOut: false, cancelled: false });
     });
   });
 
   return {
     stdout: out.text(),
-    stderr: err.text() + (timedOut ? `\n… [timed out after ${String(timeoutMs)}ms]` : ""),
+    stderr:
+      err.text()
+      + (timedOut ? `\n… [timed out after ${String(timeoutMs)}ms]` : "")
+      + (cancelled ? "\n… [stopped by the user]" : ""),
     exitCode,
     truncated: out.truncated || err.truncated,
     timedOut,

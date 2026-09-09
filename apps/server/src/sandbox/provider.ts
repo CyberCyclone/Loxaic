@@ -24,6 +24,19 @@ export interface ExecOptions {
   workdir?: string;
   timeoutMs?: number;
   /**
+   * Cancels the command — the run's abort signal, so Stop reaches work that
+   * is already executing rather than only what is queued behind it (#119).
+   *
+   * Implemented by killing the command's **process group**, not its pid:
+   * `bash -lc "npm install"` has grandchildren and they are what hold the
+   * CPU. A provider that cannot cancel ignores this, and the caller is bounded
+   * by `timeoutMs` as before.
+   *
+   * Not serialisable — the executor provider strips it before putting options
+   * on the wire.
+   */
+  signal?: AbortSignal;
+  /**
    * Extra environment for this one command, merged over the sandbox's own.
    * Exists so a credential can reach exactly one process and nothing else —
    * see sandbox/git.ts. **Never logged.**

@@ -758,7 +758,7 @@ async function runOneToolCall(
     }
   }
 
-  const result: ToolResult = await executeTool(handle, builtinName, args);
+  const result: ToolResult = await executeTool(handle, builtinName, args, ctx.signal);
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",
