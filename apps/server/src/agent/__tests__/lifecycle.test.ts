@@ -10,6 +10,7 @@ import {
   destroyConversationSandboxes,
   getConversationSandbox,
   reapAbandonedSandboxes,
+  SandboxLimitError,
   stopIdleSandboxes,
 } from "../sandbox-manager.ts";
 import { resetServerSettingsCache } from "../../settings.ts";
@@ -176,6 +177,27 @@ describe("reaching a sandbox by row resumes it", () => {
     expect((await rowFor(conversationId))?.status).toBe("running");
   });
 
+  it("puts a sandbox woken by row under the idle timer", async () => {
+    // A sandbox resumed through the terminal or the files API used to be
+    // marked running without ever entering the in-process map the idle timer
+    // walks, so it ran for the life of the process however long it sat
+    // untouched — holding a slot of the running cap the whole time.
+    const conversationId = await newConversation();
+    await workspaceWithFile(conversationId);
+    process.env.SANDBOX_IDLE_STOP_MS = "1";
+    resetServerSettingsCache();
+    await stopIdleSandboxes(Date.now() + 60_000, "host");
+    expect((await rowFor(conversationId))?.status).toBe("stopped");
+
+    const row = await rowFor(conversationId);
+    if (!row) throw new Error("no sandbox row");
+    expect(await attachRunningSandbox(row)).not.toBeNull();
+    expect((await rowFor(conversationId))?.status).toBe("running");
+
+    await stopIdleSandboxes(Date.now() + 60_000, "host");
+    expect((await rowFor(conversationId))?.status).toBe("stopped");
+  });
+
   it("returns null for a destroyed sandbox and records it as such", async () => {
     const conversationId = await newConversation();
     await workspaceWithFile(conversationId);
@@ -185,6 +207,40 @@ describe("reaching a sandbox by row resumes it", () => {
 
     await expect(attachRunningSandbox(row)).resolves.toBeNull();
     expect((await rowFor(conversationId))?.status).toBe("destroyed");
+  });
+});
+
+describe("waking a paused sandbox counts against the running cap", () => {
+  // The cap counts *running* sandboxes, deliberately — a paused one holds no
+  // memory, CPU or pids. That makes resuming the transition the cap is about,
+  // and it used to be unchecked: pause N, create N more, resume the first N,
+  // repeat, for as many running containers as a user liked.
+  it("refuses to resume when the user is already at the cap", async () => {
+    const previous = process.env.SANDBOX_MAX_PER_USER;
+    process.env.SANDBOX_MAX_PER_USER = "1";
+    try {
+      const first = await newConversation();
+      await workspaceWithFile(first);
+      process.env.SANDBOX_IDLE_STOP_MS = "1";
+      resetServerSettingsCache();
+      await stopIdleSandboxes(Date.now() + 60_000, "host");
+      expect((await rowFor(first))?.status).toBe("stopped");
+
+      // Room for one running sandbox, and this is it.
+      const second = await newConversation();
+      await workspaceWithFile(second);
+
+      await expect(getConversationSandbox(userId, first)).rejects.toBeInstanceOf(SandboxLimitError);
+      expect((await rowFor(first))?.status).toBe("stopped");
+
+      const row = await rowFor(first);
+      if (!row) throw new Error("no sandbox row");
+      await expect(attachRunningSandbox(row)).rejects.toBeInstanceOf(SandboxLimitError);
+      expect((await rowFor(first))?.status).toBe("stopped");
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(process.env, "SANDBOX_MAX_PER_USER");
+      else process.env.SANDBOX_MAX_PER_USER = previous;
+    }
   });
 });
 

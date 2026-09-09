@@ -76,6 +76,18 @@ export function useSandboxTerminal(
     for (const listener of listenersRef.current) listener(data);
   }, []);
 
+  // Drops the scrollback and tells every renderer to clear. Called on every
+  // (re)connect, and — the case that was missed — when the conversation
+  // changes with the panel open: the socket correctly reconnected to the new
+  // sandbox, but the old conversation's output stayed on screen with the new
+  // one's appended underneath, so the user read one workspace's transcript
+  // while typing into another's shell.
+  const clearScreen = useCallback(() => {
+    backlogRef.current = '';
+    // Clear screen + home.
+    for (const listener of listenersRef.current) listener('\u001b[2J\u001b[H');
+  }, []);
+
   const subscribe = useCallback((listener: (data: string) => void) => {
     listenersRef.current.add(listener);
     if (backlogRef.current) listener(backlogRef.current);
@@ -97,6 +109,7 @@ export function useSandboxTerminal(
     const isCancelled = () => cancelled;
     let socket: WebSocket | null = null;
 
+    clearScreen();
     setStatus('connecting');
     setError(null);
     setTty(null);
@@ -156,7 +169,7 @@ export function useSandboxTerminal(
       socketRef.current = null;
       socket?.close();
     };
-  }, [conversationId, token, enabled, attempt, emit]);
+  }, [conversationId, token, enabled, attempt, emit, clearScreen]);
 
   const send = useCallback((data: string) => {
     const socket = socketRef.current;
@@ -169,12 +182,9 @@ export function useSandboxTerminal(
   }, []);
 
   const reconnect = useCallback(() => {
-    backlogRef.current = '';
-    // Clear screen + home, so the renderer showing the old session's output
-    // does not present it as the new one's.
-    for (const listener of listenersRef.current) listener('\u001b[2J\u001b[H');
+    clearScreen();
     setAttempt((n) => n + 1);
-  }, []);
+  }, [clearScreen]);
 
   return { status, tty, workdir, error, hasSandbox, subscribe, send, resize, reconnect };
 }

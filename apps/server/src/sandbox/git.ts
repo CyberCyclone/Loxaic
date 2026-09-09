@@ -11,30 +11,85 @@
  * Mechanism: a `credential.helper` passed with `-c` that echoes the token out
  * of `$LOXAIC_GIT_TOKEN`. The helper text itself contains no secret, so it is
  * safe in argv; the value rides in `ExecOptions.env` for that command alone.
- * `credential.useHttpPath` keeps the helper scoped to the URL asked for.
+ *
+ * Three things bound *who receives* the token and *what runs beside it*,
+ * because the checkout it is used in is one the model writes to freely:
+ *
+ * - The helper list is **reset** first (`credential.helper=`): `-c` appends
+ *   rather than replaces, and a `credential.helper = store` in the account's
+ *   own gitconfig — host mode runs as that account — would otherwise be
+ *   handed the token by git's post-auth `approve` and write it, plaintext,
+ *   to `~/.git-credentials`. `file://` clones never consult a helper, which
+ *   is why the tests never saw it.
+ * - The helper answers **only for the expected host** (`$LOXAIC_GIT_HOST`,
+ *   from the clone URL): it reads the `host=` line git writes to its stdin
+ *   and stays silent for any other. A `git remote set-url origin
+ *   https://attacker/…` is one bash tool call, and a helper that ignores its
+ *   stdin would POST the owner's token wherever origin now points. (Note
+ *   `credential.useHttpPath` does *not* scope a custom helper — it only adds
+ *   the path to the lookup key for storage helpers.)
+ * - Hooks, fsmonitor and proxies are **off** for the command: `git push`
+ *   runs `.git/hooks/pre-push` from the checkout with the token in its
+ *   environment, and `core.fsmonitor` / `http.proxy` / `http.sslVerify` in a
+ *   model-writable `.git/config` are command execution and interception
+ *   respectively. Command-line config outranks the repo's.
+ *
+ * What this does **not** close: a model that actively controls the container
+ * at the moment of the push — a shim `git` earlier on PATH, a process editing
+ * config between check and use — shares a uid with the exec and can still
+ * reach the token. The sturdier shape is to never hand git the token inside
+ * the sandbox at all, pushing from the server against a bundle of the branch;
+ * that is a follow-up, and until then the push remains a deliberate action
+ * the owner takes from the Inspector, with these bounds on the passive cases.
  */
 import type { CreateSandboxConfig, ExecOptions, ExecResult, SandboxHandle } from "./provider.ts";
 
 const TOKEN_ENV = "LOXAIC_GIT_TOKEN";
+const HOST_ENV = "LOXAIC_GIT_HOST";
 
-/** `git -c …` arguments that make git ask the environment for credentials. */
+/** The helper, as a shell function: reads what git asks about, answers only
+ * for the expected host. Exported for the test that feeds it stdin. */
+export const CREDENTIAL_HELPER =
+  `!f() { h=""; while IFS= read -r l; do case "$l" in host=*) h="\${l#host=}";; esac; done; ` +
+  `if [ -n "$${HOST_ENV}" ] && [ "$h" != "$${HOST_ENV}" ]; then exit 0; fi; ` +
+  `echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`;
+
+/** `git -c …` arguments that make git ask the environment for credentials,
+ * and nothing in the checkout for anything else. */
 export function gitCredentialArgs(): string[] {
   return [
-    "-c",
-    `credential.helper=!f() { echo username=x-access-token; echo "password=$${TOKEN_ENV}"; }; f`,
-    "-c",
-    "credential.useHttpPath=true",
+    // An empty value resets the helper list; only helpers after it apply.
+    "-c", "credential.helper=",
+    "-c", `credential.helper=${CREDENTIAL_HELPER}`,
+    "-c", "credential.useHttpPath=true",
+    // Nothing from the checkout runs alongside the token.
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.fsmonitor=false",
+    // Nothing from the checkout sits between git and the host.
+    "-c", "http.proxy=",
+    "-c", "http.sslVerify=true",
   ];
 }
 
 /** The per-command environment that carries the token. `GIT_TERMINAL_PROMPT=0`
  * so a missing or rejected credential fails immediately instead of hanging a
- * non-interactive exec on a prompt nobody can answer. */
-export function gitEnv(token: string | undefined): Record<string, string> {
+ * non-interactive exec on a prompt nobody can answer. `remoteUrl` is what the
+ * helper will answer for; with no token there is nothing to scope. */
+export function gitEnv(token: string | undefined, remoteUrl?: string): Record<string, string> {
+  const host = remoteUrl ? hostOf(remoteUrl) : null;
   return {
     GIT_TERMINAL_PROMPT: "0",
     ...(token ? { [TOKEN_ENV]: token } : {}),
+    ...(token && host ? { [HOST_ENV]: host } : {}),
   };
+}
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Clone timeout. A full clone of a real repository over a real network is
@@ -61,12 +116,16 @@ export async function cloneInto(
 ): Promise<void> {
   if (!config.repoUrl) return;
   const token = config.git?.token;
-  const env = gitEnv(token);
+  const env = gitEnv(token, config.repoUrl);
   // Named explicitly rather than inferred from argv: the first non-option
   // argument of the clone is the credential-helper *value*, which would make
   // the error read "git credential.helper=!f() { … } failed".
+  //
+  // The token rides on the clone alone (it passes `env` itself). The checkout
+  // and config steps after it run with the remote's content already on disk
+  // and need no credential, so they get none.
   const run = async (step: string, command: string[], options?: ExecOptions): Promise<ExecResult> => {
-    const result = await handle.exec(command, { ...options, env });
+    const result = await handle.exec(command, { env: gitEnv(undefined), ...options });
     if (result.exitCode !== 0) {
       throw new Error(
         `git ${step} failed (exit ${String(result.exitCode)}): ${redact(result.stderr.trim(), token)}`,
@@ -86,7 +145,7 @@ export async function cloneInto(
       config.repoUrl,
       dest,
     ],
-    { timeoutMs: CLONE_TIMEOUT_MS },
+    { timeoutMs: CLONE_TIMEOUT_MS, env },
   );
 
   if (config.newBranch) {

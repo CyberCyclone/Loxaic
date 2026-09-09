@@ -31,10 +31,16 @@ import type { Todo } from '@loxaic/api-client';
  * -tripping to a server that would refuse it anyway. */
 export interface GitPanelControls {
   status: GitStatus | null;
+  /** No action may start: a git action is in flight *or* the agent is
+   * running (the server 409s then). */
   disabled: boolean;
-  onCommit: (message: string) => void;
+  /** A git action is in flight — the only thing the spinner may mean. */
+  gitBusy: boolean;
+  /** Resolve true on success, so the field can be cleared then and not
+   * before: a failed commit used to empty the message the user typed. */
+  onCommit: (message: string) => Promise<boolean>;
   onPush: () => void;
-  onOpenPr: (title: string) => void;
+  onOpenPr: (title: string) => Promise<boolean>;
 }
 
 const TODO_ICON: Record<Todo['status'], typeof Check> = {
@@ -73,8 +79,12 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
   const paused = sandbox?.status === 'stopped';
 
   // A local workspace is the user's own folder on their own machine: no
-  // server sandbox, no pause, and nothing Loxaic will ever delete — so none
-  // of the retention copy below applies, and saying it would be a lie.
+  // server sandbox and nothing Loxaic will ever delete — so none of the
+  // retention copy below applies, and saying it would be a lie. It *is*
+  // under the idle timer like any other (a container-isolated one is really
+  // paused; a direct one has nothing to pause and is simply marked so), and
+  // the copy says which state it is in rather than claiming "running" for
+  // a folder nothing has touched since yesterday.
   if (ws.kind === 'local') {
     return (
       <VStack space="xs">
@@ -86,7 +96,9 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
         </Text>
         <Text testID="agent.inspector.workspace.state" size="xs" className="text-muted-foreground">
           {sandbox
-            ? `Running directly on ${ws.executorName}, with no sandbox.`
+            ? paused
+              ? `Paused — nothing is running on ${ws.executorName} right now. Your files are untouched; the next message picks it up again.`
+              : `Running directly on ${ws.executorName}, with no sandbox.`
             : `Commands will run directly on ${ws.executorName}, with no sandbox, the first time a tool runs.`}
         </Text>
         <Text testID="agent.inspector.workspace.retention" size="xs" className="text-muted-foreground">
@@ -123,16 +135,11 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
           No workspace yet — one is created the first time a tool runs.
         </Text>
       )}
-      {/* `size="xs"`, not the `2xs` the rest of this panel uses: `text-2xs` has
-          no token in the Tailwind v4 theme, so on web it compiles to nothing at
-          all — no font size and no line height — and a wrapping paragraph of it
-          overlaps whatever follows. Harmless for the one-line hints elsewhere,
-          not for these. */}
-      <Text testID="agent.inspector.workspace.retention" size="xs" className="text-muted-foreground">
+      <Text testID="agent.inspector.workspace.retention" size="2xs" className="text-muted-foreground">
         {describeRetention(retention)}
       </Text>
       {sandbox?.reap_at && (
-        <Text testID="agent.inspector.workspace.deadline" size="xs" className="text-warning">
+        <Text testID="agent.inspector.workspace.deadline" size="2xs" className="text-warning">
           Deleted {formatDeadline(sandbox.reap_at)} unless this conversation is used again.
         </Text>
       )}
@@ -153,11 +160,13 @@ function WorkspaceSection({ workspace }: { workspace: WorkspaceView }) {
 function GitSection({ git }: { git: GitPanelControls }) {
   const [message, setMessage] = useState('');
   const [prTitle, setPrTitle] = useState('');
-  const { status, disabled, onCommit, onPush, onOpenPr } = git;
+  const { status, disabled, gitBusy, onCommit, onPush, onOpenPr } = git;
   if (!status) return null;
 
   const changed = status.changed ?? [];
-  const ahead = status.ahead ?? 0;
+  // Null is "could not count" (the base ref was never fetched), shown as
+  // unknown; only a real 0 disables Push.
+  const ahead = status.ahead ?? null;
 
   return (
     <VStack space="xs">
@@ -170,7 +179,7 @@ function GitSection({ git }: { git: GitPanelControls }) {
         </Text>
         {status.cloned && (
           <Text testID="agent.inspector.git.aheadBehind" size="xs" className="text-muted-foreground">
-            {ahead} ahead · {status.behind ?? 0} behind {status.baseBranch}
+            {ahead ?? '?'} ahead · {status.behind ?? '?'} behind {status.baseBranch}
           </Text>
         )}
       </HStack>
@@ -190,7 +199,9 @@ function GitSection({ git }: { git: GitPanelControls }) {
               placeholder="Commit message"
               value={message}
               onChangeText={setMessage}
-              editable={!disabled && changed.length > 0}
+              // Drafting is allowed while the agent works — that is when a
+              // message is most naturally composed; only *committing* waits.
+              editable={!gitBusy}
             />
           </Input>
           <HStack space="xs">
@@ -200,11 +211,13 @@ function GitSection({ git }: { git: GitPanelControls }) {
               className="flex-1"
               isDisabled={disabled || changed.length === 0 || message.trim().length === 0}
               onPress={() => {
-                onCommit(message.trim());
-                setMessage('');
+                void onCommit(message.trim()).then((ok) => { if (ok) setMessage(''); });
               }}
             >
-              {disabled ? <ButtonSpinner /> : <ButtonText>Commit</ButtonText>}
+              {/* The spinner means a commit is happening — not that the
+                  agent is, which `disabled` also covers and which can last
+                  minutes. */}
+              {gitBusy ? <ButtonSpinner /> : <ButtonText>Commit</ButtonText>}
             </Button>
             <Button
               testID="agent.inspector.git.push"
@@ -241,7 +254,7 @@ function GitSection({ git }: { git: GitPanelControls }) {
                 placeholder="Pull request title"
                 value={prTitle}
                 onChangeText={setPrTitle}
-                editable={!disabled}
+                editable={!gitBusy}
               />
             </Input>
             <Button
@@ -249,7 +262,9 @@ function GitSection({ git }: { git: GitPanelControls }) {
               size="sm"
               variant="outline"
               isDisabled={disabled || prTitle.trim().length === 0}
-              onPress={() => { onOpenPr(prTitle.trim()); }}
+              onPress={() => {
+                void onOpenPr(prTitle.trim()).then((ok) => { if (ok) setPrTitle(''); });
+              }}
             >
               <ButtonText>Open pull request</ButtonText>
             </Button>

@@ -236,6 +236,9 @@ export async function runToolLoop(ctx: {
   convId: string;
   userId: string;
   userMsgId: string;
+  /** The user message's lamport, so the run's own inserts are ordered
+   * strictly after it — see `lastLamport` below. */
+  userLamport?: number;
   model: string;
   mode: PermissionMode;
   /** Surface-appropriate system prompt, or null for none. The engine appends
@@ -303,7 +306,11 @@ export async function runToolLoop(ctx: {
     // prompt-prefix break on the conversation's very next turn. Scoped to this
     // one run — only the two inserts below share this counter — so it changes
     // nothing about the cross-device LWW ordering packages/sync relies on.
-    let lastLamport = 0;
+    // Seeded from the user message rather than zero: with a zero seed the
+    // first insert was a bare Date.now(), unguarded against the user message
+    // that had just been written with one — the same tie, at the one
+    // boundary the counter did not cover.
+    let lastLamport = ctx.userLamport ?? 0;
     const nextLamport = (): number => {
       lastLamport = monotonicLamport(lastLamport);
       return lastLamport;
@@ -317,6 +324,17 @@ export async function runToolLoop(ctx: {
     // between runs per call would keep the queue fair and destroy the prompt
     // cache on every iteration, which is the entire problem — see
     // inference/scheduler.ts.
+    //
+    // The trade-off, stated plainly: the slot is held across everything
+    // *between* the model calls too — every sandboxed `bash`, up to
+    // max_iterations of them — and is only handed back while a human is
+    // asked for approval. At concurrency 1 (LM Studio, llama.cpp without
+    // --parallel: the common case) one auto-mode run can therefore hold a
+    // shared deployment for the length of its tool work with the backend
+    // idle. Yielding around tool execution would not recover that for free:
+    // another run admitted in the gap evicts the prefix, and this run then
+    // pays a full re-evaluation when it comes back, which is the cost the
+    // queue exists to avoid. Fairness beyond FIFO is a follow-up.
     slot = await acquireRunSlot({
       signal: abort.signal,
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
@@ -568,10 +586,38 @@ export async function runToolLoop(ctx: {
           chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
-        const outcome = await runOneToolCall(
-          { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot, signal: abort.signal },
-          call,
-        );
+        let outcome: Awaited<ReturnType<typeof runOneToolCall>>;
+        try {
+          outcome = await runOneToolCall(
+            { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot, signal: abort.signal },
+            call,
+          );
+        } catch (err) {
+          if (!(err instanceof RunSlotAbortedError)) throw err;
+          // Stopped at this call's approval prompt: the approval handed the
+          // inference slot back, and re-entering the queue for an aborted run
+          // throws. Nothing ran for *this* call, so it is recorded exactly
+          // like a skipped one — which is what keeps the calls before it,
+          // which did run and did write, in the transcript and the prompt.
+          // Letting the throw escape the loop used to skip the insert below
+          // and discard those results: the model then had no record that a
+          // file it had written existed, and the user watched a result
+          // arrive live that was gone after a reload. The per-call check
+          // above skips the rest; the abort branch after the insert ends the
+          // turn.
+          const output = "Stopped by the user before this tool call ran.";
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output,
+            ok: false,
+          });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
+          continue;
+        }
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
@@ -1066,6 +1112,13 @@ async function writeOverflowToSandbox(
   try {
     const handle = await attachActiveSandbox(convId);
     if (!handle) return null;
+    // Not into a local workspace. Its workdir is a folder the user chose in
+    // their own repository (a container-isolated one mounts that same folder
+    // at the workdir), and nothing ever cleans these up — stop() and
+    // destroy() never touch the user's filesystem — so an `attachments/`
+    // directory of extracted text would accumulate in a real checkout, where
+    // it shows up in `git status` and can end up committed.
+    if (handle.provider === "executor") return null;
     // This file's content is the extracted text, not the original bytes — a
     // PDF's overflow file is plain text, not a PDF. Stripping the original
     // extension before appending ".txt" keeps that honest (report.pdf ->

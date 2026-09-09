@@ -108,6 +108,15 @@ export default function AgentScreen() {
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
   const { sandbox } = useWorkspaceStatus(activeId, runState);
+  // The banner is about *this* workspace's network, which is fixed at its
+  // creation (the row records it), not the server-wide setting, which only
+  // says what the next one gets. Keyed on the setting alone, it vanished the
+  // moment an admin turned networking on — from exactly the workspace it
+  // still applied to, since a resumed container keeps its NetworkMode — and
+  // appeared, falsely, on a networked workspace when the setting went off.
+  // A row that predates the fact falls back to the setting.
+  const workspaceHasNoNetwork =
+    sandbox?.limits?.network === undefined ? !(config?.sandbox.allowNetwork ?? true) : !sandbox.limits.network;
   // Before a run exists the pill and Inspector show the *pending* choice;
   // once it does, they show the run's own, which is fixed.
   const currentWorkspace = activeRun ? (activeRun.workspace ?? null) : pendingWorkspace;
@@ -125,9 +134,12 @@ export default function AgentScreen() {
       ? {
           status: gitPanel.status,
           disabled: gitPanel.busy || busy,
-          onCommit: (message: string) => { void gitPanel.commit(message); },
+          gitBusy: gitPanel.busy,
+          // useGitPanel resolves null on failure (it has shown the toast);
+          // the boolean is what lets the panel clear a field on success only.
+          onCommit: (message: string) => gitPanel.commit(message).then((r) => r !== null),
           onPush: () => { void gitPanel.push(); },
-          onOpenPr: (title: string) => { void gitPanel.openPr(title); },
+          onOpenPr: (title: string) => gitPanel.openPr(title).then((r) => r !== null),
         }
       : null;
   const [chooserOpen, setChooserOpen] = useState(false);
@@ -253,7 +265,7 @@ export default function AgentScreen() {
             plus one of its own: a local container deliberately *has* the
             network (the user already agreed to run these commands on their own
             machine), so the server's setting would be doubly wrong here. */}
-        {config && config.sandbox.available && !config.sandbox.allowNetwork
+        {config && config.sandbox.available && workspaceHasNoNetwork
           && currentWorkspace?.kind !== 'local' && (
           <Pressable
             testID="agent.network.banner"
@@ -261,23 +273,20 @@ export default function AgentScreen() {
             className="flex-row items-center gap-2 border-b border-border bg-warning/10 px-3 py-2 web:hover:bg-warning/15"
           >
             <Icon as={WifiOff} size="xs" className="text-warning" />
-            {/* Both lines are `size="xs"`, not xs + 2xs: the Text component
-                maps size="2xs" to a `text-2xs` class that global.css never
-                defines, so on web it silently falls back to the 16px default
-                and the *secondary* line renders larger than the primary one.
-                Weight and opacity carry the hierarchy instead. */}
             <VStack className="flex-1">
               <Text size="xs" className="font-medium text-warning">
                 This workspace has no network access — npm install, git clone and other downloads will fail.
               </Text>
-              <Text size="xs" className="text-warning/80">
-                {isAdmin
-                  ? 'Turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'
-                  : 'An admin can turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'}
+              <Text size="2xs" className="text-warning/80">
+                {config.sandbox.allowNetwork
+                  ? 'Network access is on for new workspaces now, but this one keeps the network it was created with — start a new conversation to pick it up.'
+                  : isAdmin
+                    ? 'Turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'
+                    : 'An admin can turn it on in Agent Sandbox settings. New workspaces pick it up; this one keeps the network it was created with.'}
               </Text>
             </VStack>
             <Text size="xs" className="text-warning underline">
-              {isAdmin ? 'Fix' : 'Details'}
+              {isAdmin && !config.sandbox.allowNetwork ? 'Fix' : 'Details'}
             </Text>
           </Pressable>
         )}

@@ -88,6 +88,12 @@ function makeHandle(executorId: string, ref: string): SandboxHandle {
       // group on its own machine and answers the original call normally, so
       // partial output survives (#119).
       const { signal, ...wireOptions } = options ?? {};
+      // Nothing is sent for a signal that is already aborted — after a Stop
+      // every remaining call in a batch arrives so — matching the container
+      // and host providers, which do not start the command either.
+      if (signal?.aborted) {
+        return Promise.resolve({ stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false });
+      }
       return callExecutor<ExecCallResult>(
         executorId,
         "exec",
@@ -209,8 +215,12 @@ export function getExecutorProvider(): SandboxProvider {
         "create",
         { path: local.path, isolation: local.isolation },
         // The first container-isolated workspace on a machine builds the
-        // sandbox image, which is minutes rather than seconds.
-        { timeoutMs: CREATE_TIMEOUT_MS },
+        // sandbox image, which is minutes rather than seconds. A direct one
+        // is a realpath and a stat, and gets the ordinary deadline: the run
+        // holds its inference slot through this call, so a connected-but-
+        // wedged laptop must not be able to stall the queue for ten minutes
+        // over a check that takes milliseconds.
+        local.isolation === "container" ? { timeoutMs: CREATE_TIMEOUT_MS } : {},
       );
       return makeHandle(local.executorId, ref);
     },

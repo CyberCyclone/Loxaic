@@ -148,6 +148,11 @@ export async function* streamCompletion(
 // would be untestable without a GGUF.
 
 /** Prompts asking the mock to take its time — see the delay in mockStream. */
+/** The same failure a real backend's aborted fetch produces. */
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+}
+
 const MOCK_SLOW_MATCH = /\btake your time\b/i;
 /** Long enough for a second conversation to be started by hand or by a test
  * and observed waiting; short enough not to dominate a suite. */
@@ -243,12 +248,19 @@ async function* mockStream(
       }
       signal?.addEventListener("abort", onAbort, { once: true });
     });
+    // Cut short is not the same as stopped. `liveStream`'s fetch throws
+    // AbortError, which is what puts the engine on its cancel path; a mock
+    // that merely woke early and then streamed its whole reply ended the
+    // turn as *complete* — the user got the entire answer they asked to stop,
+    // and the mock lane could not observe mid-response cancellation at all.
+    throwIfAborted(options.signal);
   }
 
   let ttftMs: number | null = null;
   const emit = async function* (text: string): AsyncGenerator<StreamEvent> {
     const words = text.split(" ");
     for (let i = 0; i < words.length; i++) {
+      throwIfAborted(options.signal);
       ttftMs ??= Date.now() - startTime;
       yield { type: "delta" as const, content: (i === 0 ? "" : " ") + words[i] };
       await new Promise((r) => setTimeout(r, 20));

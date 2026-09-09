@@ -30,8 +30,45 @@ function keyMaterial(): string {
   throw new Error("Set MCP_ENCRYPTION_KEY (or BETTER_AUTH_SECRET) to store a GitHub token");
 }
 
+/**
+ * Derived keys, by salt. scrypt at the default parameters costs ~16 MB and
+ * tens of milliseconds, *synchronously* — and `getOwnerToken` is on the
+ * per-request path of the repo and branch routes, which a picker can hit per
+ * keystroke. Each derivation stalled the whole event loop, including every
+ * other user's inference stream. The salt is stored in the blob and only
+ * changes when the token is re-written, so caching per salt costs nothing in
+ * the per-blob-salt property. Bounded, since the key material is
+ * process-constant and the cache would otherwise only ever grow.
+ */
+const keyCache = new Map<string, Buffer>();
+const KEY_CACHE_MAX = 256;
+
 function deriveKey(salt: Buffer): Buffer {
-  return scryptSync(keyMaterial(), salt, 32);
+  const id = salt.toString("base64");
+  const cached = keyCache.get(id);
+  if (cached) return cached;
+  const key = scryptSync(keyMaterial(), salt, 32);
+  if (keyCache.size >= KEY_CACHE_MAX) keyCache.clear();
+  keyCache.set(id, key);
+  return key;
+}
+
+/**
+ * The stored token exists but cannot be decrypted — the derived key no
+ * longer matches the blob. The likely cause is the one this module's own
+ * warning invites: an operator reading "set MCP_ENCRYPTION_KEY" and doing
+ * so, which invalidates every token encrypted under BETTER_AUTH_SECRET.
+ * Surfaced as its own error so every route can say "reconnect" instead of
+ * a bare 500, while GET /connection keeps showing who it was connected as.
+ */
+export class GithubTokenUnreadableError extends Error {
+  constructor() {
+    super(
+      "Loxaic can no longer read the stored GitHub token — the encryption key has changed. " +
+        "Disconnect and reconnect GitHub in Settings.",
+    );
+    this.name = "GithubTokenUnreadableError";
+  }
 }
 
 function encryptToken(token: string): string {
@@ -80,7 +117,11 @@ export async function getConnection(userId: string): Promise<GithubConnectionRow
 export async function getOwnerToken(userId: string): Promise<string | null> {
   const row = await getConnection(userId);
   if (!row) return null;
-  return decryptToken(row.encryptedToken);
+  try {
+    return decryptToken(row.encryptedToken);
+  } catch {
+    throw new GithubTokenUnreadableError();
+  }
 }
 
 export async function upsertConnection(

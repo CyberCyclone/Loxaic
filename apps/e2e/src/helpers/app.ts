@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, isVisible, platform, tap, typeInto, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, isVisible, platform, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
@@ -358,6 +358,13 @@ export async function chooseScratchWorkspace(): Promise<void> {
   await waitForVisible('agent.workspace.dialog');
   await tap('agent.workspace.source.scratch');
   await tap('agent.workspace.confirm');
+  // The modal is still mounted while its exit animation runs, and its
+  // backdrop covers the screen for that window — so a tap issued straight
+  // after confirm (the mode selector, in agent-new-project) could land on
+  // the backdrop and be lost, which then presented as a four-minute scenario
+  // timeout in manual mode. Its siblings wait on the pill; this waits on
+  // the dialog itself.
+  await waitForGone('agent.workspace.dialog');
 }
 
 /**

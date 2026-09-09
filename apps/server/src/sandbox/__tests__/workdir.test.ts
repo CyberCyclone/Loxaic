@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -107,7 +107,11 @@ describe("host provider", () => {
 describe.skipIf(!dockerReady)("container provider", () => {
   let handle: SandboxHandle;
 
-  beforeEach(async () => {
+  // One container for the three cases: none of them mutates it, a create is
+  // the expensive part, and `beforeEach` paired with `afterAll` destroyed
+  // only the last one — leaking two containers per run that no row claims
+  // and the boot sweep only ever pauses.
+  beforeAll(async () => {
     handle = await getContainerProvider().create("workdir-test", {});
   }, 120_000);
 

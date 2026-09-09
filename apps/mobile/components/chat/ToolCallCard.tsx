@@ -93,7 +93,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
       {open && (
         <Box className="border-t border-border">
           {tool.diff ? (
-            <ScrollView testID="chat.toolCall.result" style={{ maxHeight: 200 }}>
+            <ScrollView testID={tool.callId ? `chat.toolCall.result.${tool.callId}` : undefined} style={{ maxHeight: 200 }}>
               {tool.diff.map((line, i) => (
                 <Text
                   key={i}
@@ -112,7 +112,7 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
               ))}
             </ScrollView>
           ) : (
-            <ScrollView testID="chat.toolCall.result" style={{ maxHeight: 200 }}>
+            <ScrollView testID={tool.callId ? `chat.toolCall.result.${tool.callId}` : undefined} style={{ maxHeight: 200 }}>
               <Text
                 className="p-3 text-muted-foreground"
                 style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 18 }}

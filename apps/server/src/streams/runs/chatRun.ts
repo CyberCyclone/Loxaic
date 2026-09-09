@@ -78,6 +78,7 @@ export async function startChatRun(input: {
   }
 
   const userMsgId = uuid();
+  const userLamport = Date.now();
   await db.insert(messages).values({
     id: userMsgId,
     conversationId: convId,
@@ -85,7 +86,7 @@ export async function startChatRun(input: {
     authorType: "user",
     authorUserId: userId,
     origin: "server",
-    lamport: Date.now(),
+    lamport: userLamport,
     content: [
       ...atts.map((a): ContentBlock => ({
         kind: "attachment",
@@ -128,6 +129,7 @@ export async function startChatRun(input: {
     convId,
     userId,
     userMsgId,
+    userLamport,
     model,
     mode: "manual",
     basePrompt: chatSystemPrompt(),

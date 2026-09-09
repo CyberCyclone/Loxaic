@@ -15,6 +15,7 @@
  * command that overruns comes back as a real exit code with its output.
  */
 import { randomUUID } from "node:crypto";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import {
   DEFAULT_CALL_TIMEOUT_MS,
   executorOfflineMessage,
@@ -118,8 +119,18 @@ function failPending(entry: Registered, reason: string): void {
  * out until a TCP timeout. The old socket is closed and its in-flight calls
  * fail, which is the truth: that process is gone.
  */
-export function registerExecutor(conn: ExecutorConnection): () => void {
+export function registerExecutor(conn: ExecutorConnection): (() => void) | null {
   const existing = byId.get(conn.executorId);
+  // Replacement is for the *same user's* restarted desktop, and no one else.
+  // The id is the desktop's instanceId — a UUID in a config file, not a
+  // secret — and without this check a signed-in user who learned another's
+  // could connect under it, evict the real machine, and become the
+  // destination for that user's local-workspace commands and terminal
+  // keystrokes. Refused with its own close code; the caller sends nothing.
+  if (existing && existing.info.userId !== conn.userId) {
+    conn.close(4003, "That executor id is registered to another user");
+    return null;
+  }
   if (existing) {
     failPending(existing, "the machine reconnected before this call completed");
     unlink(existing);
@@ -176,6 +187,7 @@ export function handleExecutorResult(executorId: string, msg: ResultMessage): vo
   entry.pending.delete(msg.id);
   clearTimeout(p.timer);
   if (msg.ok) p.resolve(msg.value);
+  else if (msg.code === "gone") p.reject(new SandboxGoneError(msg.error));
   else p.reject(new ExecutorCallError(msg.error));
 }
 
@@ -310,16 +322,21 @@ export async function callExecutor<T>(
       reject: (err) => { cleanup(); reject(err); },
       timer,
     });
-    if (opts.signal?.aborted) onAbort();
-    else opts.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       entry.conn.send({ type: "call", id, method, params });
     } catch (err) {
       entry.pending.delete(id);
       clearTimeout(timer);
-      opts.signal?.removeEventListener("abort", onAbort);
       reject(err instanceof Error ? err : new Error(String(err)));
+      return;
     }
+    // After the call, never before it: a cancel names an id the executor
+    // only learns from the `call` frame, so one sent first landed in an empty
+    // map and was dropped — and the command then ran to completion on the
+    // user's machine. (The providers short-circuit an already-aborted signal
+    // before reaching here; this ordering is the second lock.)
+    if (opts.signal?.aborted) onAbort();
+    else opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

@@ -55,7 +55,7 @@ describe("registration", () => {
 
   it("forgets a machine when its socket closes, but still knows its name for the offline message", async () => {
     const unregister = registerExecutor(fakeConnection({}));
-    unregister();
+    unregister?.();
     expect(getExecutor("machine-a")).toBeNull();
     await expect(callExecutor("machine-a", "ping", {})).rejects.toThrow(/Your machine Casey's laptop is offline/);
   });
@@ -72,8 +72,21 @@ describe("registration", () => {
     expect(first.closed?.code).toBe(4000);
     expect(getExecutor("machine-a")?.name).toBe("Casey's laptop (restarted)");
     // The stale socket's own close must not unregister the newer one.
-    unregisterFirst();
+    unregisterFirst?.();
     expect(getExecutor("machine-a")?.name).toBe("Casey's laptop (restarted)");
+  });
+
+  it("refuses a connection claiming another user's executor id, and keeps the real one", () => {
+    // Replacement is for the same user's restarted desktop. The id is a UUID
+    // in a config file, not a secret; a stranger who learned it could
+    // otherwise evict the machine and receive its owner's commands.
+    const real = fakeConnection({});
+    registerExecutor(real);
+    const impostor = fakeConnection({ userId: "user-2", name: "Impostor" });
+    expect(registerExecutor(impostor)).toBeNull();
+    expect(impostor.closed?.code).toBe(4003);
+    expect(real.closed).toBeNull();
+    expect(getExecutor("machine-a")?.userId).toBe("user-1");
   });
 
   it("takes a roots update", () => {
@@ -122,7 +135,7 @@ describe("calls", () => {
   it("fails in-flight calls when the machine disconnects, rather than leaving them hanging", async () => {
     const unregister = registerExecutor(fakeConnection({}));
     const pending = callExecutor("machine-a", "exec", {}, { timeoutMs: 60_000 });
-    unregister();
+    unregister?.();
     await expect(pending).rejects.toThrow(/disconnected before this call completed/);
   });
 
@@ -139,6 +152,22 @@ describe("calls", () => {
 });
 
 describe("cancelling a call", () => {
+  it("sends the call before the cancel that names it, for a signal already aborted", async () => {
+    // A cancel that arrived first landed in an empty map on the executor
+    // and was dropped; the call then ran to completion on the user's
+    // machine — the batch-Stop case, still open on this path.
+    const controller = new AbortController();
+    controller.abort();
+    const conn = fakeConnection({});
+    registerExecutor(conn);
+    const pending = callExecutor("machine-a", "exec", { command: ["sleep", "5"] }, { timeoutMs: 50, signal: controller.signal });
+    expect(conn.sent.map((m) => m.type)).toEqual(["call", "exec.cancel"]);
+    const call = conn.sent[0];
+    const cancel = conn.sent[1];
+    expect(cancel.type === "exec.cancel" && call.type === "call" && cancel.id === call.id).toBe(true);
+    await expect(pending).rejects.toBeInstanceOf(ExecutorTimeoutError);
+  });
+
   it("sends exec.cancel naming the call, and still settles on the executor's own answer", async () => {
     // Cancellation deliberately does not settle the promise here: the
     // executor kills the command and then answers the original call, so the

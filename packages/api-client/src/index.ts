@@ -404,6 +404,10 @@ export interface SandboxRow {
   lastUsedAt: string;
   createdAt: string;
   stoppedAt: string | null;
+  /** Resource and posture facts fixed at creation. `network` is whether this
+   * sandbox can reach the internet — recorded then because it cannot change
+   * for the sandbox's life; absent on rows that predate it. */
+  limits?: { memory?: number; cpu?: number; network?: boolean } | null;
   /** When this workspace would be deleted, or null when reaping is off (in
    * which case it is kept until the conversation is). Derived server-side from
    * the live policy, so it never advertises a date an admin has since moved. */
@@ -550,8 +554,26 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
-  if (!res.ok) throw new ApiError(`${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
+  if (!res.ok) throw new ApiError(await describeFailure(res, init?.method ?? "GET", path), res.status);
   return res;
+}
+
+/**
+ * The server's own explanation when it gave one, else the status line. Every
+ * route that validates spells out *why* — "workspace.repo must be owner/name",
+ * "GitHub is not connected", a branch name git would refuse — and all of it
+ * used to collapse into `POST /v1/conversations failed: 400` at exactly the
+ * moment the user could have acted on the reason.
+ */
+async function describeFailure(res: Response, method: string, path: string): Promise<string> {
+  const fallback = `${method} ${path} failed: ${String(res.status)}`;
+  try {
+    const body = (await res.json()) as { error?: unknown; message?: unknown };
+    const detail = typeof body.error === "string" ? body.error : typeof body.message === "string" ? body.message : null;
+    return detail && detail.length > 0 ? detail : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 // ── Attachments ───────────────────────────────────────────
@@ -900,8 +922,10 @@ export interface GitStatus {
   baseBranch: string;
   pr: { number: number; url: string } | null;
   changed?: { path: string; status: string }[];
-  ahead?: number;
-  behind?: number;
+  /** Null when the server could not count — the base ref was never fetched —
+   * which the panel shows as unknown rather than as 0. */
+  ahead?: number | null;
+  behind?: number | null;
 }
 
 export class GitActionError extends Error {

@@ -14,7 +14,8 @@ import { EXECUTOR_PROTOCOL_VERSION, type ServerToExecutor } from "../../executor
  */
 const userId = "user-1";
 vi.mock("../../auth/middleware", () => ({
-  resolveSessionFromToken: (token: string) => Promise.resolve(token === "good" ? { user: { id: userId } } : null),
+  resolveSessionFromToken: (token: string) =>
+    Promise.resolve(token === "good" ? { user: { id: userId } } : token === "other" ? { user: { id: "user-2" } } : null),
   authenticate: () => Promise.resolve(userId),
 }));
 
@@ -115,6 +116,28 @@ describe("/ws/executor", () => {
     const badRoots = await open("good");
     badRoots.send(JSON.stringify(hello({ roots: "not-a-list" })));
     expect(await closeCode(badRoots)).toBe(4002);
+  });
+
+  it("closes on a frame that is valid JSON but not an object, and stays up", async () => {
+    // `JSON.parse("null")` succeeds; dereferencing `.type` on it threw inside
+    // the listener, which is an uncaughtException — one frame from any
+    // authenticated client took the server down. Proven by connecting again
+    // afterwards.
+    for (const frame of ["null", "123", '"x"']) {
+      const ws = await open("good");
+      ws.send(frame);
+      expect(await closeCode(ws)).toBe(4002);
+    }
+    await connectedExecutor();
+    expect(getExecutor("laptop-1")?.userId).toBe(userId);
+  });
+
+  it("refuses a hello claiming an executor id another user is connected under", async () => {
+    await connectedExecutor();
+    const impostor = await open("other");
+    impostor.send(JSON.stringify(hello()));
+    expect(await closeCode(impostor)).toBe(4003);
+    expect(getExecutor("laptop-1")?.userId).toBe(userId);
   });
 
   it("strips control characters from the name and caps its length", async () => {

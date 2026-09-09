@@ -81,6 +81,33 @@ describe("scenarioDecisionFor", () => {
     });
   });
 
+  it("counts a multi-call step as one tool message per call when choosing the next step", () => {
+    // `stepIndex` is the number of tool messages the turn holds, one per
+    // call. Indexing steps by it directly made a two-call step advance it by
+    // two, so the step after it was skipped (or the scenario fell straight
+    // through to finalText) while the fixture read perfectly well.
+    withScenarios([
+      {
+        match: "scaffold then test",
+        steps: [
+          { calls: [{ tool: "fs_write", args: { path: "a" } }, { tool: "fs_write", args: { path: "b" } }] },
+          { tool: "bash", args: { command: "node --test" } },
+        ],
+        finalText: "[Mock] done.\n",
+      },
+    ]);
+    const tools = new Set(["fs_write", "bash"]);
+    expect(scenarioDecisionFor("scaffold then test", tools, 0)?.type).toBe("step");
+    // Two tool messages later, the *second* step fires — not finalText.
+    expect(scenarioDecisionFor("scaffold then test", tools, 2)).toEqual({
+      type: "step",
+      calls: [{ tool: "bash", args: { command: "node --test" } }],
+    });
+    expect(scenarioDecisionFor("scaffold then test", tools, 3)).toEqual({ type: "final", text: "[Mock] done.\n" });
+    // Inside a batch is a state no scenario describes.
+    expect(scenarioDecisionFor("scaffold then test", tools, 1)).toBeNull();
+  });
+
   it("does not half-fire a multi-call step when one of its tools is missing", () => {
     withScenarios([
       {

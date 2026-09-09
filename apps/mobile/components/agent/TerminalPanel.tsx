@@ -56,7 +56,14 @@ export function TerminalPanel({ conversationId, token, open, onClose }: Terminal
         return merged.slice(-MAX_LINES);
       });
     });
-  }, [open, terminal.subscribe, terminal]);
+    // `terminal.subscribe` is stable (useCallback with no deps); the hook's
+    // result object is not — it is a fresh reference every render — so
+    // listing it made this effect re-run on every render, and its first
+    // statement is `setLines([])`: render → effect → set → render, until
+    // React threw "Maximum update depth exceeded" and the panel never opened.
+    // Only the browser spec exercises a panel, which is why CI never saw it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, terminal.subscribe]);
 
   if (!open) return null;
 

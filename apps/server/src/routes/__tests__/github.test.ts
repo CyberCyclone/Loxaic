@@ -34,6 +34,7 @@ githubRoutes(app);
  * (`nextToken`) to swap between an accepted and a rejected token without
  * restarting the server. */
 let nextAccepted = "good-token";
+let paginate = false;
 let mockServer: Server;
 let mockPort: number;
 
@@ -64,7 +65,23 @@ beforeAll(async () => {
         return;
       }
       if (url.startsWith("/user/repos")) {
-        res.writeHead(200, { "content-type": "application/json" });
+        const page = Number(new URL(url, "http://x").searchParams.get("page") ?? "1");
+        if (page === 2) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify([
+              { id: 3, full_name: "octocat/ancient", private: false, default_branch: "main", clone_url: "https://example.test/ancient.git" },
+            ]),
+          );
+          return;
+        }
+        res.writeHead(200, {
+          "content-type": "application/json",
+          // GitHub's own pagination shape: an absolute URL on the API origin.
+          // Only when the current test asked for a second page, so the
+          // single-page expectations elsewhere hold.
+          ...(paginate ? { link: `<http://127.0.0.1:${String(mockPort)}/user/repos?per_page=100&page=2>; rel="next"` } : {}),
+        });
         res.end(
           JSON.stringify([
             { id: 1, full_name: "octocat/hello-world", private: false, default_branch: "main", clone_url: "https://example.test/hello-world.git" },
@@ -231,6 +248,35 @@ describe("GET /v1/github/repos", () => {
     await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
     const res = await app.inject({ method: "GET", url: "/v1/github/repos?q=other" });
     expect(res.json<RepoBody[]>().map((r) => r.full_name)).toEqual(["octocat/other"]);
+  });
+
+  it("follows the next-page link, so a repo past the first hundred is still findable", async () => {
+    // One page was all that was ever read: with `per_page=100` at GitHub's
+    // maximum, anyone with more repos than that could not pick the older
+    // ones, and `q` over that one page rendered them as "no matches".
+    await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    paginate = true;
+    try {
+      const res = await app.inject({ method: "GET", url: "/v1/github/repos?q=ancient" });
+      expect(res.json<RepoBody[]>().map((r) => r.full_name)).toEqual(["octocat/ancient"]);
+    } finally {
+      paginate = false;
+    }
+  });
+
+  it("says to reconnect, as a 409, when the stored token can no longer be decrypted", async () => {
+    // The blob outlives the key that wrote it — an operator setting
+    // MCP_ENCRYPTION_KEY after tokens were stored under BETTER_AUTH_SECRET,
+    // which this module's own warning invites. GET /connection still shows
+    // who it was connected as; the routes that need the token used to 500.
+    await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    await db
+      .update(githubConnections)
+      .set({ encryptedToken: "v1:AAAA:AAAA:AAAA:AAAA" })
+      .where(eq(githubConnections.userId, userId));
+    const res = await app.inject({ method: "GET", url: "/v1/github/repos" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string }>().error).toContain("reconnect GitHub");
   });
 });
 

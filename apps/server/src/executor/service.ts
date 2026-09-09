@@ -4,9 +4,16 @@
  *
  * The one job here besides forwarding to the host provider is *refusing*.
  * The server on the other end of the socket may be someone else's machine,
- * and it can name any path it likes in any call; the only thing that stops a
- * hostile host from asking this machine for `~/.ssh/id_ed25519` is the check
- * in `approvedDir` below. So:
+ * and it can name any path it likes in any call. The roots list bounds the
+ * **file verbs** — `create`, `attach`, `readFile`, `writeFile`, `fileTree`
+ * — and the directory a shell or command *starts* in. It does not, and
+ * cannot, bound what `exec` runs: a direct workspace runs the model's shell
+ * commands as the user, and `cat ~/.ssh/id_ed25519` is a shell command. That
+ * is what the chooser's "Direct — commands run as you, with no sandbox" means,
+ * and it is why a local workspace on a server one does not trust with one's
+ * login session should be a *container* one (executor/container.ts), where
+ * the container is the boundary and the folder is all of the machine it sees.
+ * So, for the file verbs:
  *
  * - `create` is the only way a directory becomes a sandbox, and it is
  *   accepted only when the directory resolves — through symlinks, via
@@ -28,6 +35,7 @@ import { realpathSync } from "node:fs";
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { attachDirectory } from "../sandbox/host-provider.ts";
+import { SandboxGoneError } from "../sandbox/errors.ts";
 import { attachLocalContainer, ContainerRefError, createLocalContainer, isContainerRef } from "./container.ts";
 import type { ExecOptions, SandboxHandle } from "../sandbox/provider.ts";
 import type {
@@ -90,16 +98,21 @@ export interface ResolvedRef {
 }
 
 export interface RefResolver {
-  resolve(ref: string, executorId: string): Promise<ResolvedRef>;
+  /** `release`: resolving in order to stop or destroy, which an un-approved
+   * folder must not block — see attachLocalContainer. */
+  resolve(ref: string, executorId: string, opts?: { release?: boolean }): Promise<ResolvedRef>;
 }
 
 export function createRefResolver(opts: ExecutorServiceOptions): RefResolver {
   const isApproved = async (dir: string) =>
     approvedDirIn(opts.roots(), dir).then(() => true, () => false);
   return {
-    async resolve(ref) {
+    async resolve(ref, _executorId, resolveOpts) {
       if (isContainerRef(ref)) {
-        return { handle: await attachLocalContainer(ref, opts.executorId, isApproved), ref, confined: false };
+        const handle = await attachLocalContainer(ref, opts.executorId, isApproved, {
+          requireApprovedFolder: !resolveOpts?.release,
+        });
+        return { handle, ref, confined: false };
       }
       const dir = await approvedDirIn(opts.roots(), ref);
       return { handle: attachDirectory(dir), ref: dir, confined: true };
@@ -187,9 +200,9 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
 
   const resolver = createRefResolver(opts);
 
-  async function handleFor(params: unknown, method: string): Promise<ResolvedRef> {
+  async function handleFor(params: unknown, method: string, resolveOpts?: { release?: boolean }): Promise<ResolvedRef> {
     const obj = requireObject(params, method);
-    return resolver.resolve(requireString(obj, "ref", method), opts.executorId);
+    return resolver.resolve(requireString(obj, "ref", method), opts.executorId, resolveOpts);
   }
 
   /** A path as the far side should see it: resolved and bounded against the
@@ -282,7 +295,9 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
             // is what turns that into the `false` the server expects.
             return await (method === "exists" ? handle.exists() : handle.isRunning());
           } catch (err) {
-            if (err instanceof RootViolationError || err instanceof ContainerRefError) return false;
+            if (err instanceof RootViolationError || err instanceof ContainerRefError || err instanceof SandboxGoneError) {
+              return false;
+            }
             throw err;
           }
         }
@@ -291,8 +306,21 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
           // "Resumable" for a plain directory means "still there and still
           // approved" — the throw is how the manager tells paused from gone.
           // A container is genuinely started again.
-          const { handle } = await handleFor(params, method);
-          await handle.start();
+          //
+          // Both "gone" shapes are reported as exactly that, and nothing else
+          // is: an un-approved directory, a removed container, and a folder
+          // that vanished all mean the server should stop trusting its row,
+          // whereas a refusal for any other reason must reach it as an error
+          // it can show, not as a tombstone (sandbox/errors.ts).
+          try {
+            const { handle } = await handleFor(params, method);
+            await handle.start();
+          } catch (err) {
+            if (err instanceof RootViolationError || err instanceof ContainerRefError) {
+              throw new SandboxGoneError(err.message);
+            }
+            throw err;
+          }
           return { ok: true };
         }
 
@@ -300,15 +328,21 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
           // A container is paused, keeping everything in it. A directory has
           // nothing to pause: it is the user's own, not something this
           // process created, so the row on the server is simply forgotten.
-          const { handle, confined } = await handleFor(params, method);
+          //
+          // Resolved for release: a directory the user has since un-approved
+          // is still `stop`-able — the container mounted on it, above all,
+          // since un-approving is exactly when it should stop reaching it.
+          const { handle, confined } = await handleFor(params, method, { release: true });
           if (!confined) await handle.stop();
           return { ok: true };
         }
 
         case "destroy": {
           // Removes the *container*, never the folder that was mounted into
-          // it — that belongs to the user and predates us.
-          const { handle, confined } = await handleFor(params, method);
+          // it — that belongs to the user and predates us. Resolved for
+          // release, like stop: un-approval must never make a container
+          // unremovable.
+          const { handle, confined } = await handleFor(params, method, { release: true });
           if (!confined) await handle.destroy();
           return { ok: true };
         }

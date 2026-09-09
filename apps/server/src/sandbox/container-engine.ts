@@ -13,6 +13,8 @@
  * `executor/__tests__/isolation.test.ts` exists to prevent.
  */
 import Docker from "dockerode";
+import { SandboxGoneError } from "./errors.ts";
+import { StringDecoder } from "node:string_decoder";
 import { pack } from "tar-fs";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -54,6 +56,9 @@ export const EXECUTOR_LABEL = "loxaic.executor";
  * document over a local socket is fast — but finite, because the caller is an
  * HTTP request handler. */
 const BINARY_WRITE_TIMEOUT_MS = 120_000;
+/** Longest killExecGroup waits for its own exec to finish: the marker wait
+ * (3s) plus the TERM→KILL grace, with room for a slow engine. */
+const KILL_WAIT_MS = 10_000;
 
 let imageTag: string | null = null;
 
@@ -91,14 +96,18 @@ export function sandboxImage(): string {
     // "base": a context that has a Dockerfile still deserves a content tag.
     // The packaged app shipped exactly that shape for a while, and the silent
     // fallback meant every install shared one tag no edit could ever change.
+    //
+    // Files only, recursively, and only a *missing* directory is "no
+    // auxiliary files". The loop used to readFileSync every entry, so one
+    // subdirectory threw EISDIR into a catch outside the loop — abandoning
+    // it, not skipping the entry — and every alphabetically-later file
+    // dropped out of the digest. That is the stale-image failure this tag
+    // exists to prevent, one `helpers/` (or `__pycache__/`) away.
     const dir = path.join(context, "sandbox");
     try {
-      for (const name of readdirSync(dir).sort()) {
-        hash.update(name);
-        hash.update(readFileSync(path.join(dir, name)));
-      }
-    } catch {
-      // No auxiliary files in this context; the Dockerfile alone decides.
+      digestDirectory(hash, dir, "");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     digest = hash.digest("hex").slice(0, 12);
   } catch {
@@ -107,6 +116,20 @@ export function sandboxImage(): string {
   }
   imageTag = `loxaic-sandbox:${digest}`;
   return imageTag;
+}
+
+function digestDirectory(hash: ReturnType<typeof createHash>, dir: string, prefix: string): void {
+  const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const rel = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) {
+      digestDirectory(hash, path.join(dir, entry.name), `${rel}/`);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    hash.update(rel);
+    hash.update(readFileSync(path.join(dir, entry.name)));
+  }
 }
 
 /** Test seam: the tag is memoized, so a suite that rewrites the Dockerfile
@@ -184,17 +207,34 @@ export function candidatesFor(pick: { engine: EnginePick; customSocket: string |
 }
 
 /** The first candidate whose socket answers a ping, or null. */
-export async function discoverFrom(list: Candidate[]): Promise<{ docker: Docker; label: string } | null> {
+export async function discoverFrom(
+  list: Candidate[],
+): Promise<{ docker: Docker; label: string; socketPath?: string } | null> {
   for (const c of list) {
+    // Probed with a bounded client; the one handed back has no timeout, since
+    // it goes on to run execs that legitimately take minutes. A socket file
+    // with nothing listening behind it can otherwise hang the connect, and
+    // the candidates are walked in order — so the cost landed on whichever
+    // stale sockets sort before the live one.
+    if (!(await pingSocket(c.socketPath ?? null))) continue;
     const docker = c.socketPath ? new Docker({ socketPath: c.socketPath }) : new Docker();
-    try {
-      await docker.ping();
-      return { docker, label: c.label };
-    } catch {
-      // Try the next candidate.
-    }
+    return { docker, label: c.label, ...(c.socketPath ? { socketPath: c.socketPath } : {}) };
   }
   return null;
+}
+
+/** Whether an engine answers on `socketPath` (null: dockerode's default)
+ * within the probe timeout. */
+export async function pingSocket(socketPath: string | null): Promise<boolean> {
+  const probe = socketPath
+    ? new Docker({ socketPath, timeout: PROBE_TIMEOUT_MS })
+    : new Docker({ timeout: PROBE_TIMEOUT_MS });
+  try {
+    await probe.ping();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function ensureImage(docker: Docker): Promise<void> {
@@ -342,7 +382,15 @@ async function writeBinaryToContainer(
  * re-checked.
  */
 async function killExecGroup(container: Docker.Container, pgidFile: string): Promise<void> {
+  // The marker is *waited for*, bounded, not read once: `exec.start()`
+  // resolves as soon as the stream is hijacked, which can be before the
+  // wrapper shell has been scheduled inside the container and written its
+  // PGID — an abort landing in that window (a loaded engine makes it wide)
+  // found an empty file and silently left the command running. Thirty
+  // tenths of a second is well past any exec start-up; a marker that never
+  // appears means the command already exited and its trap removed it.
   const script =
+    `for i in $(seq 1 30); do [ -s ${pgidFile} ] && break; sleep 0.1; done; ` +
     `PGID=$(cat ${pgidFile} 2>/dev/null); ` +
     `[ -n "$PGID" ] || exit 0; ` +
     `kill -TERM -"$PGID" 2>/dev/null; sleep 0.2; kill -KILL -"$PGID" 2>/dev/null; ` +
@@ -350,15 +398,21 @@ async function killExecGroup(container: Docker.Container, pgidFile: string): Pro
   try {
     const killer = await container.exec({
       Cmd: ["bash", "-c", script],
-      AttachStdout: false,
+      AttachStdout: true,
       AttachStderr: false,
     });
     const s = await killer.start({ hijack: true, stdin: false });
-    // Drained and given a moment to land: without reading it the socket can
-    // be closed before the daemon has run the command.
+    // Drained, and awaited until the killer itself finishes — so "the
+    // command is gone" is true when this returns, which is what the caller
+    // relies on. Bounded, since a wedged engine must not hold the run.
     s.resume();
-    await new Promise((r) => setTimeout(r, 250));
-    s.destroy();
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { s.destroy(); resolve(); }, KILL_WAIT_MS);
+      const done = () => { clearTimeout(timer); resolve(); };
+      s.on("end", done);
+      s.on("close", done);
+      s.on("error", done);
+    });
   } catch {
     // A dead container, or an engine that refused the exec — nothing left to
     // kill either way, and the caller has already stopped waiting.
@@ -370,23 +424,35 @@ async function execInContainer(
   command: string[],
   options?: ExecOptions,
 ): Promise<ExecResult> {
-  // Only wrapped when the caller can actually cancel, so every other exec runs
-  // exactly as before. `setsid -w` waits for the child and returns its exit
-  // status, so the wrapper is invisible in the result; the inner shell records
-  // its own PGID (it is the new session's leader, so `$$` *is* the group) for
-  // killExecGroup to find, and clears the file on the way out whether the
-  // command succeeded, failed, or was killed.
+  // A signal that is already aborted means nothing should start — and after
+  // a Stop, every remaining call in a batch arrives here in that state.
+  // Starting the exec and settling "cancelled" at once used to race the
+  // wrapper: the killer read a PGID file the shell had not yet written,
+  // found nothing, and the caller was told exit 130 for a command that then
+  // ran to completion inside the container.
+  if (options?.signal?.aborted) {
+    return { stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false };
+  }
+
+  // Every exec is wrapped, not only a cancellable one: the *timeout* needs
+  // the same marker, and gating it on a signal left a timed-out clone, a
+  // wedged document extraction — the one exec whose input is genuinely
+  // untrusted — or a REST exec merely detached, running until the container
+  // was reaped. `setsid -w` waits for the child and returns its exit status,
+  // so the wrapper is invisible in the result (exec-cancel.test.ts asserts
+  // that); the inner shell records its own PGID (it is the new session's
+  // leader, so `$$` *is* the group) for killExecGroup to find, and clears
+  // the file on the way out whether the command succeeded, failed, or was
+  // killed.
   //
   // Not `exec "$@"`: that replaces the shell, which drops the wrapper — and
   // with it any chance of recording the group before the command starts.
-  const pgidFile = options?.signal ? `/tmp/loxaic-exec-${randomUUID()}.pgid` : null;
-  const cmd = pgidFile
-    ? [
-        "setsid", "-w", "bash", "-c",
-        `trap 'rm -f ${pgidFile}' EXIT; echo $$ > ${pgidFile}; "$@"`,
-        "_", ...command,
-      ]
-    : command;
+  const pgidFile = `/tmp/loxaic-exec-${randomUUID()}.pgid`;
+  const cmd = [
+    "setsid", "-w", "bash", "-c",
+    `trap 'rm -f ${pgidFile}' EXIT; echo $$ > ${pgidFile}; "$@"`,
+    "_", ...command,
+  ];
 
   const exec = await container.exec({
     Cmd: cmd,
@@ -434,8 +500,7 @@ async function execInContainer(
       stream.destroy();
       settle("cancelled");
     }
-    if (signal?.aborted) { onAbort(); }
-    else signal?.addEventListener("abort", onAbort, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     stream.on("end", () => { settle("done"); });
     stream.on("close", () => { settle("done"); });
@@ -453,7 +518,7 @@ async function execInContainer(
   // Kills what the detach above only stopped listening to. Awaited so the
   // command is actually gone before the sandbox is reported free — a
   // cancelled `npm install` still holding the CPU is the bug being fixed.
-  if (pgidFile && outcome !== "done") await killExecGroup(container, pgidFile);
+  if (outcome !== "done") await killExecGroup(container, pgidFile);
 
   let exitCode = timedOut ? 124 : outcome === "cancelled" ? 130 : 0;
   if (outcome === "done") {
@@ -548,9 +613,15 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       // frames back into one ordered stream, which is what a real terminal
       // shows and what a raw `stream.on("data", ...)` listener assumed but
       // never actually got.
+      //
+      // Decoded, not `chunk.toString()`: a PTY carries box-drawing and emoji
+      // routinely and the stream splits wherever it likes, so a multi-byte
+      // character arriving as 1 + 2 bytes became two replacement characters.
+      const decoder = new StringDecoder("utf8");
       const sink = new Writable({
         write(chunk: Buffer, _enc, cb) {
-          for (const l of dataListeners) l(chunk.toString());
+          const text = decoder.write(chunk);
+          if (text) for (const l of dataListeners) l(text);
           cb();
         },
       });
@@ -595,9 +666,28 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       // manager's "paused or gone?" discriminator, and answering "fine" for a
       // container that no longer exists would hand back a handle whose every
       // later exec fails one at a time instead.
-      const info = await container.inspect();
+      //
+      // Only a 404 means gone. Anything else — the engine unreachable, a
+      // timeout — is rethrown as itself, so the manager surfaces an error the
+      // user can retry rather than tombstoning a paused workspace that is
+      // still sitting on disk (sandbox/errors.ts).
+      let info: Docker.ContainerInspectInfo;
+      try {
+        info = await container.inspect();
+      } catch (err) {
+        if (statusCodeOf(err) === 404) throw new SandboxGoneError(`container ${container.id} no longer exists`);
+        throw err;
+      }
       if (info.State.Running) return;
-      await container.start();
+      try {
+        await container.start();
+      } catch (err) {
+        // 304: something else resumed it between the inspect and the start —
+        // the inspect→start race — which is success, not failure.
+        if (statusCodeOf(err) === 304) return;
+        if (statusCodeOf(err) === 404) throw new SandboxGoneError(`container ${container.id} no longer exists`);
+        throw err;
+      }
     },
 
     async stop() {
@@ -612,6 +702,13 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
       await container.remove({ force: true }).catch(() => undefined);
     },
   };
+}
+
+/** dockerode reports the engine's HTTP status on its errors; anything else is
+ * a transport failure with no status at all. */
+function statusCodeOf(err: unknown): number | null {
+  const code = (err as { statusCode?: unknown } | null)?.statusCode;
+  return typeof code === "number" ? code : null;
 }
 
 // ── Per-engine probing (admin settings UI) ────────────────

@@ -31,6 +31,10 @@ beforeAll(async () => {
     res.setHeader("content-type", "application/json");
     if (url === "/user") {
       res.end(JSON.stringify({ login: "octo", name: "Octo", email: null }));
+    } else if (url === "/repos/octo/notarepo") {
+      // A 200 whose body is not a repository — the shape a `/repos/../user`
+      // lookup used to come back with.
+      res.end(JSON.stringify({ login: "octo" }));
     } else if (url === "/repos/octo/real") {
       res.end(
         JSON.stringify({
@@ -91,6 +95,24 @@ describe("parseWorkspaceInput", () => {
   it("treats absent and scratch the same", async () => {
     await expect(parseWorkspaceInput(undefined, { userId })).resolves.toEqual({ kind: "scratch" });
     await expect(parseWorkspaceInput({ kind: "scratch" }, { userId })).resolves.toEqual({ kind: "scratch" });
+  });
+
+  it("refuses a repo slug with a traversal segment before ever asking GitHub", async () => {
+    // `[\w.-]+` admits `..`, and `repos/../user` normalises to `/user` in the
+    // API URL — a 200 whose body is the viewer, persisted as a workspace with
+    // an undefined repo and clone URL.
+    for (const repo of ["../user", "octo/..", "./x", "octo/."]) {
+      await expect(parseWorkspaceInput({ kind: "github", repo }, { userId })).rejects.toThrow(
+        "workspace.repo must be owner/name",
+      );
+    }
+  });
+
+  it("refuses a lookup whose answer is not a repository, rather than persisting it", async () => {
+    await connect();
+    await expect(parseWorkspaceInput({ kind: "github", repo: "octo/notarepo" }, { userId })).rejects.toThrow(
+      "did not describe octo/notarepo as a repository",
+    );
   });
 
   it("refuses github without a connection, before ever asking GitHub", async () => {

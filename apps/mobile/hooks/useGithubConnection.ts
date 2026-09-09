@@ -46,8 +46,18 @@ export function useGithubConnection(token: string | null) {
   }, []);
 
   const disconnect = useCallback(async () => {
-    await deleteGithubConnection();
-    setConnection(null);
+    // Same shape as connect: a failure here — server unreachable, a 500 —
+    // used to escape as an unhandled rejection with the card still reading
+    // "Connected as …" and no message, for a credential-removal action.
+    setError(null);
+    try {
+      await deleteGithubConnection();
+      setConnection(null);
+      return true;
+    } catch (err) {
+      setError(err instanceof GithubApiError ? err.message : 'Failed to disconnect GitHub');
+      return false;
+    }
   }, []);
 
   return { connection, loading, error, connect, disconnect, refresh };

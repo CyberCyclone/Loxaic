@@ -78,6 +78,48 @@ async function request<T>(token: string, path: string, init?: RequestOptions): P
   return res.json() as Promise<T>;
 }
 
+/**
+ * Pages followed per listing. GitHub's `per_page` tops out at 100, and a
+ * single page was all `listRepos` ever read — so anyone with more than 100
+ * repositories across owner, collaborator and org membership could not pick
+ * the older ones at all, and the picker rendered them as "no matches". Ten
+ * pages is a thousand items, at one request each; past that a listing is not
+ * a picker's problem to solve.
+ */
+const MAX_PAGES = 10;
+
+/** `path` and every `rel="next"` page after it, up to MAX_PAGES. A next link
+ * is followed only on the API's own origin — the header is the server's
+ * text, and a listing must not be steerable off-host by it. */
+async function requestAll<T>(token: string, path: string): Promise<T[]> {
+  const out: T[] = [];
+  const origin = new URL(apiUrl("/")).origin;
+  let next: string | null = path;
+  for (let page = 0; next !== null && page < MAX_PAGES; page++) {
+    const res = await rawRequest(token, next);
+    out.push(...((await res.json()) as T[]));
+    next = nextPagePath(res.headers.get("link"), origin);
+  }
+  return out;
+}
+
+function nextPagePath(link: string | null, origin: string): string | null {
+  if (!link) return null;
+  for (const part of link.split(",")) {
+    const match = /<([^>]+)>;\s*rel="next"/.exec(part.trim());
+    if (!match) continue;
+    let url: URL;
+    try {
+      url = new URL(match[1]);
+    } catch {
+      return null;
+    }
+    if (url.origin !== origin) return null;
+    return `${url.pathname}${url.search}`;
+  }
+  return null;
+}
+
 export interface GithubViewer {
   login: string;
   name: string | null;
@@ -104,12 +146,13 @@ export interface GithubRepo {
   clone_url: string;
 }
 
-/** The user's own repos, most-recently-pushed first — matches how someone
- * picks a repo to work in: whatever they touched last. `q` filters client-side
- * server-side (i.e. here) rather than via GitHub's search API, which indexes
- * separately and lags recent pushes. */
+/** The user's repos, most-recently-pushed first — matches how someone picks a
+ * repo to work in: whatever they touched last. `q` filters here rather than
+ * via GitHub's search API, which indexes separately and lags recent pushes —
+ * reasoning that only holds because the whole listing (to MAX_PAGES) is in
+ * hand, not just its first page. */
 export async function listRepos(token: string, q?: string): Promise<GithubRepo[]> {
-  const repos = await request<GithubRepo[]>(
+  const repos = await requestAll<GithubRepo>(
     token,
     "/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member",
   );
@@ -127,7 +170,7 @@ export interface GithubBranch {
 }
 
 export async function listBranches(token: string, owner: string, repo: string): Promise<string[]> {
-  const branches = await request<GithubBranch[]>(
+  const branches = await requestAll<GithubBranch>(
     token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches?per_page=100`,
   );
@@ -155,7 +198,12 @@ export async function createPull(
       body: JSON.stringify(input),
     });
   } catch (err) {
-    if (err instanceof GithubApiError && err.status === 422) {
+    // 422 is GitHub's whole validation family for this endpoint — "No commits
+    // between base and head", an unknown head, base equal to head — and only
+    // one of them is "already exists". The message is the discriminator
+    // (`errors[].message`, which the error text carries), so the rest reach
+    // the caller as the GithubApiError they are.
+    if (err instanceof GithubApiError && err.status === 422 && /already exists/i.test(err.message)) {
       throw new GithubPullExistsError(err.message);
     }
     throw err;

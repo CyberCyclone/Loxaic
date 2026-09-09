@@ -36,6 +36,12 @@ const editorId = `test-git-editor-${uuid()}`;
 let root: string;
 let mockGithub: Server;
 let pullsCalls = 0;
+/** What the fixture answers a PR creation with; a test that wants one of
+ * GitHub's 422s sets it and restores the default. */
+let pullsResponse: { status: number; body: unknown } = {
+  status: 201,
+  body: { number: 7, html_url: "https://github.example/octo/real/pull/7" },
+};
 
 beforeAll(async () => {
   await app.ready();
@@ -43,8 +49,8 @@ beforeAll(async () => {
   mockGithub = createServer((req, res) => {
     if (req.method === "POST" && req.url === "/repos/octo/real/pulls") {
       pullsCalls++;
-      res.writeHead(201, { "content-type": "application/json" });
-      res.end(JSON.stringify({ number: 7, html_url: "https://github.example/octo/real/pull/7" }));
+      res.writeHead(pullsResponse.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(pullsResponse.body));
       return;
     }
     res.statusCode = 404;
@@ -188,6 +194,47 @@ describe("GET /v1/conversations/:id/git/status", () => {
     expect(body.behind).toBe(0);
   });
 
+  it("reports ahead/behind as unknown, not zero, when the base ref cannot be counted against", async () => {
+    // rev-list fails outright when origin/<base> was never fetched. That used
+    // to render as `ahead: 0` — which disabled Push — from an exit code
+    // nobody looked at.
+    const { id } = await githubConversation();
+    await cloneFor(id);
+    const handle = await getConversationSandbox(ownerId, id);
+    await handle.exec(["git", "update-ref", "-d", "refs/remotes/origin/main"], { workdir: handle.workdir });
+
+    const res = await app.inject({ method: "GET", url: `/v1/conversations/${id}/git/status` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<StatusBody>();
+    expect(body.cloned).toBe(true);
+    expect(body.ahead).toBeNull();
+    expect(body.behind).toBeNull();
+  });
+
+  it("uses the owner's sandbox, not a newer row someone else planted on the conversation", async () => {
+    // Every action here runs in whatever row findSandboxRow returns — Push
+    // with the owner's PAT in its environment. A row that merely names the
+    // conversation must not be enough.
+    const { id } = await githubConversation();
+    await cloneFor(id);
+    await db.insert(sandboxes).values({
+      ownerId: editorId,
+      conversationId: id,
+      containerId: path.join(root, "planted-nowhere"),
+      provider: "host",
+      image: "host",
+      status: "running",
+      limits: { memory: 512, cpu: 1 },
+      createdAt: new Date(Date.now() + 60_000),
+    });
+    try {
+      const res = await app.inject({ method: "GET", url: `/v1/conversations/${id}/git/status` });
+      expect(res.json<StatusBody>().cloned).toBe(true);
+    } finally {
+      await db.delete(sandboxes).where(eq(sandboxes.ownerId, editorId));
+    }
+  });
+
   it("is owner-only — an editor gets the same 404 as a stranger", async () => {
     const { id } = await githubConversation();
     await db.insert(conversationShares).values({ conversationId: id, userId: editorId, role: "editor", createdBy: ownerId });
@@ -266,6 +313,20 @@ describe("POST /v1/conversations/:id/git/push", () => {
     expect(branches).toContain(branch);
   });
 
+  it("refuses to push once origin no longer points at the workspace's repository", async () => {
+    // `git remote set-url origin` is one bash tool call away from the model,
+    // and the push carries the owner's token in its environment.
+    const { id } = await githubConversation();
+    const handle = await getConversationSandbox(ownerId, id);
+    await handle.writeFile(path.join(handle.workdir, "a.txt"), "a\n");
+    await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/commit`, payload: { message: "add a" } });
+    await handle.exec(["git", "remote", "set-url", "origin", "https://attacker.example/x.git"], { workdir: handle.workdir });
+
+    const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/push` });
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string }>().error).toContain("origin no longer matches");
+  });
+
   it("400s before anything has been cloned", async () => {
     const { id } = await githubConversation();
     const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/push` });
@@ -303,6 +364,32 @@ describe("POST /v1/conversations/:id/git/pr", () => {
     const second = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "different title" } });
     expect(second.json()).toEqual({ number: 7, url: "https://github.example/octo/real/pull/7" });
     expect(pullsCalls).toBe(1);
+  });
+
+  it("passes GitHub's own 422 reason through, rather than calling every 422 'already exists'", async () => {
+    // "No commits between …" is the common one: nothing gates Open PR on
+    // having pushed, and it used to render as a PR existing that did not.
+    const { id } = await githubConversation();
+    pullsResponse = {
+      status: 422,
+      body: { message: "Validation Failed", errors: [{ message: "No commits between main and loxaic/x" }] },
+    };
+    try {
+      const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toContain("No commits between");
+
+      pullsResponse = {
+        status: 422,
+        body: { message: "Validation Failed", errors: [{ message: "A pull request already exists for octo:loxaic/x." }] },
+      };
+      const exists = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
+      expect(exists.statusCode).toBe(409);
+    } finally {
+      pullsResponse = { status: 201, body: { number: 7, html_url: "https://github.example/octo/real/pull/7" } };
+    }
+    const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
+    expect((row?.workspace as { pr?: unknown } | undefined)?.pr).toBeUndefined();
   });
 
   it("rejects an empty title", async () => {

@@ -92,6 +92,7 @@ export async function startAgentRun(input: {
   }
 
   const userMsgId = uuid();
+  const userLamport = Date.now();
   await db.insert(messages).values({
     id: userMsgId,
     conversationId: convId,
@@ -99,7 +100,7 @@ export async function startAgentRun(input: {
     authorType: "user",
     authorUserId: userId,
     origin: "server",
-    lamport: Date.now(),
+    lamport: userLamport,
     content: [
       ...atts.map((a): ContentBlock => ({
         kind: "attachment",
@@ -140,6 +141,7 @@ export async function startAgentRun(input: {
     convId,
     userId,
     userMsgId,
+    userLamport,
     model,
     mode,
     basePrompt: mode === "planning" ? planningSystemPrompt(workspace) : baseSystemPrompt(workspace),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Check, Server, Laptop, Monitor, FolderGit2, FolderOpen, FolderPlus, ShieldOff, Container, X } from 'lucide-react-native';
 import {
@@ -99,14 +99,19 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const allowNetwork = config?.sandbox.allowNetwork ?? false;
   const sandboxAvailable = config?.sandbox.available ?? false;
 
+  // The last list that loaded. A failed load keeps it: this runs on open, on
+  // the executor coming online, and repeatedly while a folder is being
+  // picked, and treating one blip as "no machines" reset the machine and the
+  // folder the user had already chosen, with nothing on screen to say why.
+  const executorsRef = useRef<ExecutorView[]>([]);
   const loadExecutors = useCallback(async () => {
     try {
       const list = await getExecutors();
+      executorsRef.current = list;
       setExecutors(list);
       return list;
     } catch {
-      setExecutors([]);
-      return [];
+      return executorsRef.current;
     }
   }, []);
 
@@ -117,6 +122,15 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     if (!open || !token) return;
     setSearch('');
     setPickError(null);
+    // The repo half resets too. Leaving it meant the previous conversation's
+    // repo came up already checked with its branch name still in the input —
+    // confirmable without ever being chosen this time — and because the
+    // branch generator keys on `repo`, a second conversation on the same repo
+    // got the *identical* `loxaic/<suffix>` and its `checkout -b` failed.
+    setRepo(null);
+    setBranches([]);
+    setBaseBranch('');
+    setBranchName('');
     setWhere(value.kind === 'local' ? 'local' : 'remote');
     setSource(value.kind === 'github' ? 'github' : 'scratch');
     void getCluster().then((c) => {
@@ -304,6 +318,12 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
                       onPress={() => {
                         setExecutorId(e.id);
                         setLocalPath(null);
+                        // Same rule as the default-machine effect above: a
+                        // container choice must not carry onto a machine
+                        // without an engine, where it would render selected
+                        // *and* disabled and then be refused after the
+                        // workspace was already fixed.
+                        if (!e.capabilities.container) setIsolation('direct');
                       }}
                     />
                   ))}

@@ -323,6 +323,16 @@ async function runGui() {
           pushExecutorState();
         },
       });
+    }).catch((err) => {
+      // Terminated here, or one throw — a roots-file write failing, say —
+      // leaves `executorSync` a rejected promise that every later sync
+      // chains onto and never runs: the executor silently stops following
+      // sign-in, sign-out and mode switches for the rest of the session.
+      // Reported into the state too, since what is pushed is the renderer's
+      // only signal.
+      console.log(`[loxaic] [executor] sync failed: ${err?.message ?? String(err)}`);
+      executorState = { state: "offline", reason: "could not start the executor" };
+      pushExecutorState();
     });
     return executorSync;
   }

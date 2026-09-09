@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getHostProvider } from "../host-provider.ts";
+import { CREDENTIAL_HELPER, gitCredentialArgs, gitEnv } from "../git.ts";
 
 /**
  * The invariant sandbox/git.ts exists for: after a clone with credentials, the
@@ -105,5 +106,47 @@ describe("cloning with credentials", () => {
       message = (err as Error).message;
     }
     expect(message).not.toContain(TOKEN);
+  });
+});
+
+describe("the credential helper", () => {
+  const helperFn = CREDENTIAL_HELPER.slice(1); // drop git's leading "!"
+
+  /** Runs the helper the way git does: `host=` and friends on stdin. */
+  function ask(stdin: string, env: Record<string, string>): string {
+    return execFileSync("bash", ["-c", `${helperFn} get`], { input: stdin, env: { ...process.env, ...env } }).toString();
+  }
+
+  it("resets the helper list first, so a `store` helper in the account's gitconfig never sees the token", () => {
+    // `-c credential.helper=…` appends. Without the reset, git's post-auth
+    // `approve` hands the token to every helper in the chain — including a
+    // `credential.helper = store` in the server account's own ~/.gitconfig,
+    // which writes it to ~/.git-credentials in plaintext. file:// clones never
+    // consult a helper, which is why the clone test above cannot see this.
+    const args = gitCredentialArgs();
+    const reset = args.indexOf("credential.helper=");
+    const helper = args.findIndex((a) => a.startsWith("credential.helper=!"));
+    expect(reset).toBeGreaterThanOrEqual(0);
+    expect(helper).toBeGreaterThan(reset);
+    // Nothing from the checkout runs beside, or between git and, the token.
+    expect(args).toContain("core.hooksPath=/dev/null");
+    expect(args).toContain("core.fsmonitor=false");
+    expect(args).toContain("http.proxy=");
+    expect(args).toContain("http.sslVerify=true");
+  });
+
+  it("answers only for the host the token was issued for", () => {
+    const env = gitEnv(TOKEN, "https://github.com/octo/real.git");
+    expect(env.LOXAIC_GIT_HOST).toBe("github.com");
+    expect(ask("protocol=https\nhost=github.com\n\n", env)).toContain(`password=${TOKEN}`);
+    // `git remote set-url origin https://attacker/…` is one bash tool call;
+    // a helper that ignored its stdin would POST the token there.
+    expect(ask("protocol=https\nhost=attacker.example\n\n", env)).toBe("");
+  });
+
+  it("answers for any host when no expected host is set, which only a tokenless env does", () => {
+    const env = gitEnv(TOKEN);
+    expect(env.LOXAIC_GIT_HOST).toBeUndefined();
+    expect(ask("host=anything\n\n", env)).toContain(`password=${TOKEN}`);
   });
 });
