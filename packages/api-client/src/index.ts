@@ -60,12 +60,25 @@ export async function getHealth(): Promise<HealthResponse> {
 export type SandboxMode = "container" | "host" | "off";
 export type SandboxEngine = "auto" | "docker" | "podman" | "custom";
 
+/** How long an agent workspace survives. Milliseconds, because that is the one
+ * unit that needs no conversion anywhere in the stack; the UI renders hours and
+ * days from it. */
+export interface SandboxRetention {
+  /** Unused for this long and the sandbox is paused — contents kept. */
+  idleStopMs: number;
+  /** Whether long-unused sandboxes are eventually deleted at all. */
+  reapEnabled: boolean;
+  /** Unused for this long and the sandbox is deleted, if reaping is on. */
+  reapAfterMs: number;
+}
+
 export interface ConfigResponse {
   sandbox: {
     mode: SandboxMode;
     available: boolean;
     /** Whether sandboxes can reach the network. Always true in host mode. */
     allowNetwork: boolean;
+    retention: SandboxRetention;
     reason?: string;
   };
 }
@@ -85,14 +98,21 @@ export interface EngineProbe {
   detectedAs?: "docker" | "podman";
 }
 
-export interface SandboxSettings {
+export interface SandboxSettings extends SandboxRetention {
   mode: SandboxMode;
   engine: SandboxEngine;
   customSocket: string | null;
   allowNetwork: boolean;
   /** Fields pinned by an environment variable — render read-only; PATCHing
    * one returns 409. */
-  envOverrides: { mode: boolean; socket: boolean; allowNetwork: boolean };
+  envOverrides: {
+    mode: boolean;
+    socket: boolean;
+    allowNetwork: boolean;
+    idleStop: boolean;
+    reapEnabled: boolean;
+    reapAfter: boolean;
+  };
   available: boolean;
   reason?: string;
   /** Which engines are installed/running, for greying out the picker. Empty
@@ -101,7 +121,10 @@ export interface SandboxSettings {
 }
 
 export type SandboxSettingsPatch = Partial<
-  Pick<SandboxSettings, "mode" | "engine" | "customSocket" | "allowNetwork">
+  Pick<
+    SandboxSettings,
+    "mode" | "engine" | "customSocket" | "allowNetwork" | "idleStopMs" | "reapEnabled" | "reapAfterMs"
+  >
 >;
 
 /** Carries the server's error body so the UI can tell "you typed something
@@ -323,6 +346,28 @@ export async function adminPatchShare(
     body: JSON.stringify(input),
   });
   return ((await res.json()) as { shares: ConversationShare[] }).shares;
+}
+
+/** A conversation's workspace as the client sees it. `status` is the lifecycle
+ * from the server: "stopped" means paused with its contents intact, not gone. */
+export interface SandboxRow {
+  id: string;
+  conversationId: string | null;
+  provider: "container" | "host";
+  status: "creating" | "running" | "stopped" | "destroyed";
+  lastUsedAt: string;
+  createdAt: string;
+  stoppedAt: string | null;
+  /** When this workspace would be deleted, or null when reaping is off (in
+   * which case it is kept until the conversation is). Derived server-side from
+   * the live policy, so it never advertises a date an admin has since moved. */
+  reap_at: string | null;
+}
+
+export async function getSandboxes(conversationId?: string): Promise<SandboxRow[]> {
+  const query = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+  const res = await authedFetch(`/v1/sandboxes${query}`);
+  return res.json() as Promise<SandboxRow[]>;
 }
 
 export async function getConversations(): Promise<Conversation[]> {

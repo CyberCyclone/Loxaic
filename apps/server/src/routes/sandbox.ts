@@ -4,10 +4,15 @@ import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { resolvePath } from "../agent/executor.ts";
-import { assertUnderUserLimit, releaseSandboxSlot, SandboxLimitError } from "../agent/sandbox-manager.ts";
+import {
+  assertUnderUserLimit,
+  attachRunningSandbox,
+  releaseSandboxSlot,
+  SandboxLimitError,
+} from "../agent/sandbox-manager.ts";
 import { getProviderByKind, getSandboxMode } from "../sandbox/provider.ts";
 import type { SandboxKind } from "../sandbox/provider.ts";
-import { sandboxDisabledReason } from "../settings.ts";
+import { sandboxDisabledReason, sandboxReapAt } from "../settings.ts";
 
 export function sandboxRoutes(app: FastifyInstance) {
   // Lets a caller find the sandbox backing a conversation — agent sandboxes
@@ -16,12 +21,20 @@ export function sandboxRoutes(app: FastifyInstance) {
   app.get("/v1/sandboxes", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const { conversation_id } = request.query as { conversation_id?: string };
-    return db.query.sandboxes.findMany({
+    const rows = await db.query.sandboxes.findMany({
       where: conversation_id
         ? and(eq(sandboxes.ownerId, userId), eq(sandboxes.conversationId, conversation_id))
         : eq(sandboxes.ownerId, userId),
       orderBy: desc(sandboxes.createdAt),
     });
+    // reap_at is derived here rather than stored, so it always reflects the
+    // policy the reaper will actually apply — see sandboxReapAt(). Null means
+    // reaping is switched off, which the UI must render as "kept", never as an
+    // unknown date.
+    return rows.map((row) => ({
+      ...row,
+      reap_at: row.status === "destroyed" ? null : sandboxReapAt(row.lastUsedAt)?.toISOString() ?? null,
+    }));
   });
 
   app.post("/v1/sandboxes", async (request, reply) => {
@@ -99,12 +112,21 @@ export function sandboxRoutes(app: FastifyInstance) {
     });
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
+    // Destroys, not pauses. This route is a person saying "delete this",
+    // which is one of exactly two things allowed to discard a workspace (the
+    // other being the abandoned reaper). Idle timers use stop() instead.
+    //
+    // Attaches directly rather than through attachRunningSandbox(): every
+    // other route here resumes a paused sandbox before touching it, which
+    // would mean starting a container purely to remove it a moment later. It
+    // also has to keep working when the sandbox is already gone, so that a
+    // stale row can still be cleared.
     const provider = await getProviderByKind(sandbox.provider as "container" | "host");
-    const handle = await provider.attach(sandbox.containerId);
-    await handle.stop();
+    const handle = await provider.attach(sandbox.containerId).catch(() => null);
+    await handle?.destroy().catch(() => undefined);
     await db
       .update(sandboxes)
-      .set({ status: "stopped", stoppedAt: new Date() })
+      .set({ status: "destroyed", stoppedAt: new Date() })
       .where(eq(sandboxes.id, sandbox.id));
 
     return { ok: true };
@@ -118,8 +140,8 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { command, workdir } = request.body as { command: string; workdir?: string };
-    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
-    const handle = await provider.attach(sandbox.containerId);
+    const handle = await attachRunningSandbox(sandbox);
+    if (!handle) return reply.code(404).send({ error: "Not found" });
     const result = await handle.exec(["bash", "-c", command], { workdir });
     return result;
   });
@@ -132,8 +154,8 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { path } = request.query as { path?: string };
-    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
-    const handle = await provider.attach(sandbox.containerId);
+    const handle = await attachRunningSandbox(sandbox);
+    if (!handle) return reply.code(404).send({ error: "Not found" });
     try {
       const treePath = path ? resolvePath(handle, path) : handle.workdir;
       return await handle.fileTree(treePath);
@@ -150,8 +172,8 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { path } = request.query as { path?: string };
-    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
-    const handle = await provider.attach(sandbox.containerId);
+    const handle = await attachRunningSandbox(sandbox);
+    if (!handle) return reply.code(404).send({ error: "Not found" });
     let resolved: string;
     try {
       resolved = resolvePath(handle, path);
@@ -170,8 +192,8 @@ export function sandboxRoutes(app: FastifyInstance) {
     if (!sandbox) return reply.code(404).send({ error: "Not found" });
 
     const { path, content } = request.body as { path: string; content: string };
-    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
-    const handle = await provider.attach(sandbox.containerId);
+    const handle = await attachRunningSandbox(sandbox);
+    if (!handle) return reply.code(404).send({ error: "Not found" });
     let resolved: string;
     try {
       resolved = resolvePath(handle, path);

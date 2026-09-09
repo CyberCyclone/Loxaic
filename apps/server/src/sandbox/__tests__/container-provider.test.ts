@@ -48,7 +48,9 @@ afterAll(async () => {
   if (!dockerReady) return;
   // Optional-chained: if beforeAll failed before assigning, this must not
   // throw a second, noisier error that buries the real one.
-  await handle?.stop().catch(() => undefined);
+  // destroy, not stop: stopping now leaves the container on disk, so a
+  // teardown that only paused it would leak one per test run.
+  await handle?.destroy().catch(() => undefined);
   await db.delete(sandboxes).where(eq(sandboxes.conversationId, conversationId));
   await db.delete(user).where(eq(user.id, userId));
 }, 30_000);

@@ -60,7 +60,39 @@ export interface SandboxHandle {
   /** Absent when the provider has no interactive-terminal support. */
   openTerminal?(): Promise<TerminalSession>;
   isRunning(): Promise<boolean>;
+  /**
+   * Whether the sandbox still exists at all — **true for a stopped one**.
+   *
+   * The distinction `isRunning()` cannot make, and the one that matters once
+   * stopping is a pause rather than a teardown: "paused, resume it" and "gone,
+   * build a new one" are different answers to the same false. Deliberately
+   * observational, so a caller that only wants to know can ask without
+   * starting anything.
+   */
+  exists(): Promise<boolean>;
+  /**
+   * Resume a stopped sandbox, so `exec` works again and its files are as they
+   * were left. Throws when there is nothing left to resume; a no-op when it is
+   * already running.
+   */
+  start(): Promise<void>;
+  /**
+   * Stop execution **without discarding anything**. The sandbox's filesystem
+   * survives and {@link start} brings it back.
+   *
+   * This is the pause an idle conversation gets, and it is deliberately not a
+   * teardown: a sandbox holds a coding session's actual work — edits, a repo
+   * checkout, installed dependencies — and someone returning after lunch must
+   * find it intact. Reclaiming space is {@link destroy}'s job, and only two
+   * things ask for it: deleting the conversation, and the abandoned-sandbox
+   * reaper.
+   */
   stop(): Promise<void>;
+  /**
+   * Permanently remove the sandbox and everything in it. Irreversible, and
+   * therefore never called by an idle timer.
+   */
+  destroy(): Promise<void>;
 }
 
 export interface CreateSandboxConfig {

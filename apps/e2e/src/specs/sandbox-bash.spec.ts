@@ -10,7 +10,7 @@
  */
 import { adminCreds, provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { tap, waitForVisible } from '../helpers/selectors.ts';
 import {
   BASH_PROMPT,
   MOCK_BASH_OUTPUT,
@@ -21,6 +21,7 @@ import {
   setSandboxMode,
   signIn,
   startNewAgentRun,
+  waitForToolResult,
 } from '../helpers/app.ts';
 
 describe('sandbox bash parity', () => {
@@ -47,7 +48,7 @@ describe('sandbox bash parity', () => {
 
     await waitForVisible('agent.permission.bar');
     await tap('agent.permission.allow');
-    await waitForTextIn('chat.messageList', MOCK_BASH_OUTPUT);
+    await waitForToolResult(MOCK_BASH_OUTPUT);
     await shot('sandbox-bash-container');
   });
 
@@ -67,7 +68,7 @@ describe('sandbox bash parity', () => {
 
     await waitForVisible('agent.permission.bar');
     await tap('agent.permission.allow');
-    await waitForTextIn('chat.messageList', MOCK_BASH_OUTPUT);
+    await waitForToolResult(MOCK_BASH_OUTPUT);
     await shot('sandbox-bash-host');
   });
 });

@@ -73,7 +73,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!dockerReady) return;
-  await handle?.stop().catch(() => undefined);
+  await handle?.destroy().catch(() => undefined);
   await db.delete(sandboxes).where(eq(sandboxes.ownerId, userId));
   await db.delete(user).where(eq(user.id, userId));
 }, 60_000);
@@ -144,7 +144,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
   });
 
   afterAll(async () => {
-    for (const h of handles) await h.stop().catch(() => undefined);
+    for (const h of handles) await h.destroy().catch(() => undefined);
     await db.delete(sandboxes).where(eq(sandboxes.ownerId, limitUser));
     await db.delete(user).where(inArray(user.id, [limitUser]));
     await app.close();
@@ -214,7 +214,7 @@ describe.skipIf(!dockerReady)("per-user sandbox limit", () => {
       });
       expect(otherHandle).toBeTruthy();
     } finally {
-      await otherHandle?.stop().catch(() => undefined);
+      await otherHandle?.destroy().catch(() => undefined);
       await db.delete(sandboxes).where(eq(sandboxes.ownerId, other));
       await db.delete(user).where(eq(user.id, other));
     }

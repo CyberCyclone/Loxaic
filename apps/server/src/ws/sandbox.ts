@@ -3,7 +3,7 @@ import { and, eq } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { sandboxes } from "@loxaic/db/schema";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { getProviderByKind } from "../sandbox/provider.ts";
+import { attachRunningSandbox } from "../agent/sandbox-manager.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -49,8 +49,15 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       return;
     }
 
-    const provider = await getProviderByKind(sandbox.provider as "container" | "host");
-    const handle = await provider.attach(sandbox.containerId);
+    // Resumes a paused sandbox rather than failing on it: a workspace stopped
+    // by the idle timer is intact and is exactly what someone opening a
+    // terminal wants to get back into. Null means genuinely gone, which gets
+    // the same 4004 a missing row does.
+    const handle = await attachRunningSandbox(sandbox);
+    if (!handle) {
+      socket.close(4004, "Not found");
+      return;
+    }
     if (!handle.openTerminal) {
       socket.close(4400, "Terminal not supported for this sandbox");
       return;

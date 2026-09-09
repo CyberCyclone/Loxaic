@@ -11,11 +11,13 @@ import { SandboxStatusCard } from '@/components/sandbox/SandboxStatusCard';
 import { ModePicker } from '@/components/sandbox/ModePicker';
 import { EnginePicker } from '@/components/sandbox/EnginePicker';
 import { NetworkToggle } from '@/components/sandbox/NetworkToggle';
+import { RetentionSettings } from '@/components/sandbox/RetentionSettings';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSandboxSettings } from '@/hooks/useSandboxSettings';
 import { useSession } from '@/lib/session';
-import type { SandboxEngine, SandboxMode } from '@loxaic/api-client';
+import { describeRetention } from '@/lib/retention';
+import type { SandboxEngine, SandboxMode, SandboxRetention } from '@loxaic/api-client';
 
 type PendingWarning = { kind: 'host' } | { kind: 'network' } | null;
 
@@ -62,6 +64,10 @@ export default function SandboxScreen() {
     void applyAndRefresh({ allowNetwork: false });
   };
 
+  const handleRetentionChange = (patch: Partial<SandboxRetention>) => {
+    void applyAndRefresh(patch);
+  };
+
   const confirmWarning = () => {
     if (pendingWarning?.kind === 'host') void applyAndRefresh({ mode: 'host' });
     else if (pendingWarning?.kind === 'network') void applyAndRefresh({ allowNetwork: true });
@@ -85,8 +91,12 @@ export default function SandboxScreen() {
             reason={config.sandbox.reason}
             showFixes
           />
+          <Text testID="sandbox.retention.summary" size="xs" className="text-muted-foreground">
+            {describeRetention(config.sandbox.retention)}
+          </Text>
           <Text testID="sandbox.readOnly.notice" size="xs" className="text-muted-foreground">
-            Sandbox mode, engine, and network access are set by an administrator.
+            Sandbox mode, engine, network access, and workspace retention are set by an
+            administrator.
           </Text>
         </VStack>
       );
@@ -149,6 +159,16 @@ export default function SandboxScreen() {
             Set by the SANDBOX_ALLOW_NETWORK environment variable.
           </Text>
         )}
+
+        <RetentionSettings
+          retention={{
+            idleStopMs: settings.idleStopMs,
+            reapEnabled: settings.reapEnabled,
+            reapAfterMs: settings.reapAfterMs,
+          }}
+          envOverrides={settings.envOverrides}
+          onChange={handleRetentionChange}
+        />
       </VStack>
     );
   };

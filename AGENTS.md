@@ -256,13 +256,68 @@ screenshots showing that behaviour working. Writing those tests is the implement
   unaffected: it always runs server-side behind the SSRF guard, never in the sandbox.
 - Sandboxes are per-conversation, lazily created on first tool use, and **survive socket
   close** (reconnecting mid-task keeps the working directory) — see
-  `apps/server/src/agent/sandbox-manager.ts`. An idle reaper stops them after 30 minutes.
+  `apps/server/src/agent/sandbox-manager.ts`.
   A sandbox row (`sandboxes` table) records which provider it belongs to; a mode switch
   mid-deployment makes old rows unusable rather than silently reattaching to the wrong kind.
   A crash between `provider.create` and the row insert leaves a container no row claims, so
   it is only findable by its `loxaic.sandbox` label; `sweepOrphanSandboxes()` does that
   sweep at boot (container provider only — host sandboxes are plain directories), alongside
   the stream log's own orphan recovery.
+
+### Sandbox lifecycle: stopping is a pause, destroying is the exception
+
+- **`stop()` keeps everything; only `destroy()` discards.** A sandbox is a coding session's
+  actual work — edits, a repo checkout, installed dependencies — so an idle timer must never
+  delete one. Both providers implement four verbs: `isRunning()`, `exists()` (**true for a
+  stopped sandbox** — the distinction `isRunning` cannot make), `start()` (resume; throws when
+  there is nothing left, which is how "paused" is told from "gone"), `stop()`, `destroy()`.
+  This replaced a 30-minute reaper that deleted: going to lunch cost you your workspace, and
+  the model came back with no idea why the files were gone.
+- **Exactly two things destroy a sandbox**: deleting the conversation
+  (`destroyConversationSandboxes`, fired from `DELETE /v1/conversations/:id`) and
+  `reapAbandonedSandboxes` (off by default after `reapAfterMs`, default 30 days). Everything
+  else — the idle timer, a settings change, a boot sweep — stops. `POST /v1/sandboxes/:id`'s
+  DELETE also destroys, being a person saying so.
+- **The three retention settings are admin-level and live with the other sandbox settings**
+  (`idleStopMs` 4h, `reapEnabled` true, `reapAfterMs` 30d; env pins `SANDBOX_IDLE_STOP_MS`,
+  `SANDBOX_REAP_ENABLED`, `SANDBOX_REAP_AFTER_MS`, in **milliseconds** so a harness can ask for
+  an immediate stop). `reapAfterMs` must exceed `idleStopMs` or the two timers race over the
+  same sandbox. Deletion is separately switchable because it is the only timer that can lose
+  someone's work.
+- **`reap_at` is derived on read, never stored** (`sandboxReapAt()`), so it always reflects the
+  policy the reaper will actually apply. A stored date is a promise the settings screen can
+  silently break: an admin moving 30 days to 7 would leave every row advertising the old one.
+- **`last_used_at` is flushed on a tick, not written per tool call.** A database write per
+  `bash` would be absurd, so a live sandbox's row can lag by one reaper interval — which is why
+  `reapAbandonedSandboxes` also skips anything in the in-memory `active` map, and why the tick
+  runs flush → idle-stop → abandoned-reap in that order.
+- **Rows still marked `running` are reap-eligible.** After a crash or a host reboot nothing
+  else would ever move them, so excluding them would make a sandbox permanently unreclaimable
+  precisely because the server died while it was in use.
+- **Containers now outlive the server** (`AutoRemove: false`), so the boot sweep gained a third
+  direction: pause containers a previous process left running, which no idle timer in the new
+  process would ever see.
+- **`Init: true` is load-bearing, not hygiene.** `tail -f` as PID 1 gets no default signal
+  handlers and ignores SIGTERM, so every `stop()` waited out the full 10-second grace period and
+  was SIGKILLed (`Exited (137)`) — tolerable when stopping meant deleting, absurd now that an
+  idle pause is routine. tini also reaps the orphans a days-long container accumulates from
+  every `bash -c`, which would otherwise pile up against `PidsLimit`.
+- **The per-user cap counts *running* sandboxes only.** It protects memory, CPU and pids, which
+  a paused sandbox holds none of; counting paused ones would refuse a user a new sandbox until
+  they went and deleted old conversations.
+- **Extraction-pool sandboxes (`files/extract.ts`) are the exception and still destroy on
+  idle.** They hold no work anyone returns to, are keyed by user rather than conversation, and
+  have no row — nothing could ever resume one, so pausing them would leak containers forever.
+- **Vitest shares one process across test files, so `process.env` is shared.**
+  `settings.test.ts` legitimately pins `SANDBOX_IDLE_STOP_MS=1` to prove the env
+  override works; a case elsewhere that means "the default 4-hour window" must pin it
+  explicitly rather than inherit, or it sees its sandbox stopped instantly by another
+  file's variable.
+- **Tests must not assert on a global sweep's return count.** `stopAllSandboxes` and
+  `reapAbandonedSandboxes` are server-wide, suites share one Postgres, and there is now more
+  than one host-provider suite — assert on the rows the test created instead. `reapAbandoned`
+  takes an optional `kind` purely so a test's deliberately tiny retention window cannot destroy
+  the container another suite is mid-run in.
 - `web_fetch` always runs on the **server**, never in the sandbox — container sandboxes
   have no network (`NetworkMode: none`) and host-mode ones deliberately aren't trusted with
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects

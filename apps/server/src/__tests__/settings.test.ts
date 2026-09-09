@@ -13,7 +13,25 @@ import {
 } from "../settings.ts";
 
 const SANDBOX_KEY = "sandbox";
-const ENV_KEYS = ["SANDBOX_MODE", "CONTAINER_SOCKET", "SANDBOX_ALLOW_NETWORK"] as const;
+const ENV_KEYS = [
+  "SANDBOX_MODE",
+  "CONTAINER_SOCKET",
+  "SANDBOX_ALLOW_NETWORK",
+  "SANDBOX_IDLE_STOP_MS",
+  "SANDBOX_REAP_ENABLED",
+  "SANDBOX_REAP_AFTER_MS",
+] as const;
+
+/** The no-env, nothing-persisted shape. Spread into the per-test expectations
+ * so adding a pinnable field doesn't mean editing every assertion. */
+const NO_OVERRIDES = {
+  mode: false,
+  socket: false,
+  allowNetwork: false,
+  idleStop: false,
+  reapEnabled: false,
+  reapAfter: false,
+} as const;
 
 /** Restores whatever the ambient environment had, so a developer running
  * these with SANDBOX_MODE exported doesn't get a polluted process. */
@@ -45,7 +63,7 @@ describe("sandbox settings precedence", () => {
     expect(s.engine).toBe("auto");
     expect(s.customSocket).toBeNull();
     expect(s.allowNetwork).toBe(false);
-    expect(s.envOverrides).toEqual({ mode: false, socket: false, allowNetwork: false });
+    expect(s.envOverrides).toEqual(NO_OVERRIDES);
   });
 
   it("uses persisted values when the environment says nothing", async () => {
@@ -60,7 +78,7 @@ describe("sandbox settings precedence", () => {
     expect(s.engine).toBe("podman");
     expect(s.allowNetwork).toBe(true);
     // Persisted is not "overridden" — the GUI must still let an admin edit it.
-    expect(s.envOverrides).toEqual({ mode: false, socket: false, allowNetwork: false });
+    expect(s.envOverrides).toEqual(NO_OVERRIDES);
   });
 
   it("lets the environment win over persisted values, per field", async () => {
@@ -76,7 +94,7 @@ describe("sandbox settings precedence", () => {
     // Untouched by env, so the persisted value still stands.
     expect(s.engine).toBe("podman");
     expect(s.allowNetwork).toBe(true);
-    expect(s.envOverrides).toEqual({ mode: true, socket: false, allowNetwork: false });
+    expect(s.envOverrides).toEqual({ ...NO_OVERRIDES, mode: true });
   });
 
   it("treats CONTAINER_SOCKET as a custom-engine pin covering both socket fields", () => {
@@ -93,7 +111,7 @@ describe("sandbox settings precedence", () => {
     const s = getSandboxSettings();
     expect(s.mode).toBe("container");
     expect(s.engine).toBe("auto");
-    expect(s.envOverrides).toEqual({ mode: false, socket: false, allowNetwork: false });
+    expect(s.envOverrides).toEqual(NO_OVERRIDES);
   });
 
   it("ignores an unrecognized SANDBOX_MODE rather than pinning it", async () => {
@@ -169,6 +187,68 @@ describe("updateSandboxSettings validation", () => {
     await expectRejection({ engine: "custom" }, "invalid");
   });
 
+  it("rejects a non-integer or out-of-range duration rather than clamping it", async () => {
+    // Rejecting, not clamping: a client that asked for a two-second idle stop
+    // should be told it did not get one.
+    await expectRejection({ idleStopMs: "4h" }, "invalid");
+    await expectRejection({ idleStopMs: 1.5 }, "invalid");
+    await expectRejection({ idleStopMs: 1_000 }, "invalid");
+    await expectRejection({ reapAfterMs: 60_000 }, "invalid");
+    await expectRejection({ reapAfterMs: 100 * 365 * 24 * 60 * 60 * 1000 }, "invalid");
+  });
+
+  it("rejects a non-boolean reapEnabled", async () => {
+    await expectRejection({ reapEnabled: "yes" }, "invalid");
+  });
+
+  it("refuses a retention window shorter than the idle-stop window", async () => {
+    // The two timers would otherwise race over the same sandbox: it would be
+    // eligible for deletion before it was ever eligible to be paused.
+    await expectRejection({ idleStopMs: 24 * 60 * 60 * 1000, reapAfterMs: 60 * 60 * 1000 }, "invalid");
+  });
+
+  it("catches the conflict when only one of the pair moves", async () => {
+    // Checked against the resolved pair, not just the patch — lowering the
+    // retention window alone must still be caught against the stored
+    // idle-stop value.
+    await updateSandboxSettings({ idleStopMs: 24 * 60 * 60 * 1000 });
+    await expect(updateSandboxSettings({ reapAfterMs: 60 * 60 * 1000 })).rejects.toMatchObject({
+      name: "SettingsError",
+      code: "invalid",
+    });
+  });
+
+  it("refuses to write a duration the environment pins", async () => {
+    process.env.SANDBOX_IDLE_STOP_MS = "60000";
+    await expectRejection({ idleStopMs: 4 * 60 * 60 * 1000 }, "envOverride");
+  });
+
+  it("lets the environment pin retention in milliseconds, unbounded by the API's ranges", () => {
+    // A harness that wants an immediate stop is the reason these pins exist,
+    // so they are deliberately not held to the ranges the GUI is.
+    process.env.SANDBOX_IDLE_STOP_MS = "1";
+    process.env.SANDBOX_REAP_AFTER_MS = "2";
+    process.env.SANDBOX_REAP_ENABLED = "false";
+
+    const s = getSandboxSettings();
+    expect(s.idleStopMs).toBe(1);
+    expect(s.reapAfterMs).toBe(2);
+    expect(s.reapEnabled).toBe(false);
+    expect(s.envOverrides).toEqual({
+      ...NO_OVERRIDES,
+      idleStop: true,
+      reapAfter: true,
+      reapEnabled: true,
+    });
+  });
+
+  it("ignores junk in a duration env var rather than pinning it to nonsense", () => {
+    process.env.SANDBOX_IDLE_STOP_MS = "four hours";
+    const s = getSandboxSettings();
+    expect(s.idleStopMs).toBe(4 * 60 * 60 * 1000);
+    expect(s.envOverrides.idleStop).toBe(false);
+  });
+
   it("refuses to leave container mode while hosting — on the write path, not just at boot", async () => {
     // hostingBlockedReason() guards startup; this guards the only other way
     // the mode changes. Without it an admin on a live Host could switch to
@@ -236,6 +316,9 @@ describe("updateSandboxSettings persistence", () => {
       engine: "auto",
       customSocket: null,
       allowNetwork: false,
+      idleStopMs: 4 * 60 * 60 * 1000,
+      reapEnabled: true,
+      reapAfterMs: 30 * 24 * 60 * 60 * 1000,
     });
   });
 

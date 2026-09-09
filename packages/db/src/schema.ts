@@ -245,11 +245,30 @@ export const sandboxes = pgTable("sandboxes", {
   /** "container" (dockerode ref) or "host" (a host directory path). */
   provider: text("provider").notNull().default("container"),
   image: text("image").notNull(),
+  /**
+   * "creating" → "running" → "stopped" → "destroyed".
+   *
+   * **"stopped" means paused, not gone**: the container still exists and its
+   * filesystem is intact, so the next tool call resumes it with the work still
+   * there. Only "destroyed" is terminal, and only two things produce it —
+   * deleting the conversation, and the abandoned-sandbox reaper.
+   */
   status: text("status").notNull().default("creating"),
   repoUrl: text("repo_url"),
   branch: text("branch"),
   limits: jsonb("limits"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  /**
+   * When a tool call last used this sandbox. Drives both reapers: idle-stop
+   * (pause it) and abandoned-destroy (reclaim it).
+   *
+   * Written on create, on resume, when a sandbox is stopped, and flushed for
+   * live sandboxes on each reaper tick — never on every tool call, which
+   * would be a database write per `bash`. A running sandbox's row can
+   * therefore lag by up to one tick; that is harmless, because nothing is
+   * destroyed on a timescale a five-minute lag can reach.
+   */
+  lastUsedAt: timestamp("last_used_at").defaultNow().notNull(),
   stoppedAt: timestamp("stopped_at"),
 });
 

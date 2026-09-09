@@ -267,6 +267,12 @@ async function ensureServer(): Promise<void> {
       ADMIN_EMAILS: adminEmail,
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
+      // The idle-stop reaper's real tick is five minutes.
+      // sandbox-lifecycle.spec.ts has to watch it actually pause a workspace,
+      // and reaching past the timer to stop a container by hand would assert
+      // nothing about the timer that is the subject. Two seconds costs one
+      // cheap query per tick and lets the spec observe the production path.
+      SANDBOX_REAP_INTERVAL_MS: '2000',
     },
   });
   spawnedServer = child;
