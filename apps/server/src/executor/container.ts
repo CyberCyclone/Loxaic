@@ -22,6 +22,7 @@ import {
   discoverFrom,
   ensureImage,
   makeHandle,
+  pingSocket,
 } from "../sandbox/container-engine.ts";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import { SandboxGoneError } from "../sandbox/errors.ts";
@@ -42,8 +43,40 @@ export function isContainerRef(ref: string): boolean {
   return ref.startsWith(LOCAL_CONTAINER_PREFIX);
 }
 
+/** What an engine hands out: a hex id, 12 to 64 characters. */
+const CONTAINER_ID_RE = /^[0-9a-f]{12,64}$/;
+
+/**
+ * The id under the prefix, checked for shape *before* it goes anywhere. It
+ * is the server's text, and this module's contract is that the server is not
+ * trusted — every other server-named field here is confined (the folder by
+ * realpath, the container by two labels), but the id was a bare slice that
+ * dockerode interpolated into an Engine API path (`/containers/{id}/json`)
+ * against a root-equivalent socket. The label check ran only after that
+ * request had already been sent.
+ */
 function containerIdOf(ref: string): string {
-  return ref.slice(LOCAL_CONTAINER_PREFIX.length);
+  const id = ref.slice(LOCAL_CONTAINER_PREFIX.length);
+  if (!CONTAINER_ID_RE.test(id)) throw new ContainerRefError("That is not a container reference.");
+  return id;
+}
+
+/**
+ * How many local containers a server may have this machine hold. Every
+ * `create` with container isolation makes a new one, nothing reuses one per
+ * folder, and nothing on this side sweeps them (the server's orphan sweep
+ * deliberately skips `loxaic.executor`) — so a server opening conversations
+ * in a loop, or one that lost its rows in a restart, accumulated containers
+ * on the laptop until the engine ran out. The terminal cap beside this
+ * exists for the same reason and a container is the heavier object.
+ * Deleting a conversation destroys its container, which is how the count
+ * comes down.
+ */
+const MAX_LOCAL_CONTAINERS = 8;
+
+async function countLocalContainers(docker: Docker, executorId: string): Promise<number> {
+  const list = await docker.listContainers({ all: true, filters: { label: [`${EXECUTOR_LABEL}=${executorId}`] } });
+  return list.length;
 }
 
 /**
@@ -51,13 +84,35 @@ function containerIdOf(ref: string): string {
  * `CONTAINER_SOCKET` pins one; otherwise the usual Docker/Podman/Colima
  * sockets are tried, exactly as the server does it.
  */
+/**
+ * The engine that answered last time, re-checked with a bounded ping before
+ * it is reused. `attachLocalContainer` is on the path of every call for a
+ * container ref — each `exec`, `readFile`, `isRunning`, every terminal open —
+ * and it used to walk every candidate socket on every one of them, with no
+ * client timeout, so a stale socket file (a stopped Colima, a Podman machine
+ * that is down) sorted before the live one could hang each tool call on
+ * connect. The server-side provider caches its engine the same way.
+ */
+let cachedEngine: { docker: Docker; socketPath: string | null } | null = null;
+
 async function findEngine(): Promise<Docker | null> {
+  if (cachedEngine) {
+    if (await pingSocket(cachedEngine.socketPath)) return cachedEngine.docker;
+    cachedEngine = null;
+  }
   const socket = process.env.CONTAINER_SOCKET;
   const list = socket
     ? candidatesFor({ engine: "custom", customSocket: socket })
     : candidatesFor({ engine: "auto", customSocket: null });
   const found = await discoverFrom(list);
-  return found?.docker ?? null;
+  if (!found) return null;
+  cachedEngine = { docker: found.docker, socketPath: found.socketPath ?? null };
+  return found.docker;
+}
+
+/** Test seam: forget the engine, so a suite that stops one can see it gone. */
+export function __resetEngineCacheForTest(): void {
+  cachedEngine = null;
 }
 
 async function requireEngine(): Promise<Docker> {
@@ -111,6 +166,12 @@ function userAndEnv(): { user?: string; env?: string[] } {
  */
 export async function createLocalContainer(dir: string, executorId: string): Promise<{ ref: string; handle: SandboxHandle }> {
   const docker = await requireEngine();
+  if ((await countLocalContainers(docker, executorId)) >= MAX_LOCAL_CONTAINERS) {
+    throw new ContainerRefError(
+      `This machine already holds ${String(MAX_LOCAL_CONTAINERS)} Loxaic containers — delete a conversation that ` +
+        "uses one, or choose Direct for this one.",
+    );
+  }
   // First use on a machine builds the image, which is minutes — see the
   // create timeout in the registry.
   await ensureImage(docker);
@@ -137,9 +198,12 @@ export async function attachLocalContainer(
   ref: string,
   executorId: string,
   isApproved: (dir: string) => Promise<boolean>,
+  opts: { requireApprovedFolder?: boolean } = {},
 ): Promise<SandboxHandle> {
-  const docker = await requireEngine();
+  // Shape first, engine second: a malformed id is refused before anything is
+  // asked of the machine, and without an engine in the way.
   const id = containerIdOf(ref);
+  const docker = await requireEngine();
   // Typed as possibly-absent values on purpose: dockerode declares `Labels`
   // as a total record, but a container that was not created by us may carry
   // none of these — and reading one that is missing is the ordinary case here.
@@ -157,9 +221,18 @@ export async function attachLocalContainer(
   if (labels[EXECUTOR_LABEL] !== executorId) {
     throw new ContainerRefError("That container was not created by Loxaic on this machine.");
   }
-  const folder = labels[FOLDER_LABEL];
-  if (!folder || !(await isApproved(folder))) {
-    throw new ContainerRefError(`${folder ?? "That container's folder"} is not inside a folder you have chosen for Loxaic`);
+  // Un-approving the folder revokes *reaching into* the container — exec,
+  // files, terminals — but must not make it unstoppable: `stop`/`destroy`
+  // resolve with this check off, or the one path that could remove a
+  // container mounted on a folder the user withdrew would be gated on
+  // exactly the condition that makes removing it urgent. Anything the agent
+  // left running inside would then keep write access to that folder
+  // indefinitely, with nothing on either side ever reclaiming it.
+  if (opts.requireApprovedFolder !== false) {
+    const folder = labels[FOLDER_LABEL];
+    if (!folder || !(await isApproved(folder))) {
+      throw new ContainerRefError(`${folder ?? "That container's folder"} is not inside a folder you have chosen for Loxaic`);
+    }
   }
   return makeHandle(docker, id);
 }

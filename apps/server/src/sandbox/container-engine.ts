@@ -93,14 +93,18 @@ export function sandboxImage(): string {
     // "base": a context that has a Dockerfile still deserves a content tag.
     // The packaged app shipped exactly that shape for a while, and the silent
     // fallback meant every install shared one tag no edit could ever change.
+    //
+    // Files only, recursively, and only a *missing* directory is "no
+    // auxiliary files". The loop used to readFileSync every entry, so one
+    // subdirectory threw EISDIR into a catch outside the loop — abandoning
+    // it, not skipping the entry — and every alphabetically-later file
+    // dropped out of the digest. That is the stale-image failure this tag
+    // exists to prevent, one `helpers/` (or `__pycache__/`) away.
     const dir = path.join(context, "sandbox");
     try {
-      for (const name of readdirSync(dir).sort()) {
-        hash.update(name);
-        hash.update(readFileSync(path.join(dir, name)));
-      }
-    } catch {
-      // No auxiliary files in this context; the Dockerfile alone decides.
+      digestDirectory(hash, dir, "");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
     digest = hash.digest("hex").slice(0, 12);
   } catch {
@@ -109,6 +113,20 @@ export function sandboxImage(): string {
   }
   imageTag = `loxaic-sandbox:${digest}`;
   return imageTag;
+}
+
+function digestDirectory(hash: ReturnType<typeof createHash>, dir: string, prefix: string): void {
+  const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of entries) {
+    const rel = `${prefix}${entry.name}`;
+    if (entry.isDirectory()) {
+      digestDirectory(hash, path.join(dir, entry.name), `${rel}/`);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    hash.update(rel);
+    hash.update(readFileSync(path.join(dir, entry.name)));
+  }
 }
 
 /** Test seam: the tag is memoized, so a suite that rewrites the Dockerfile
@@ -186,17 +204,34 @@ export function candidatesFor(pick: { engine: EnginePick; customSocket: string |
 }
 
 /** The first candidate whose socket answers a ping, or null. */
-export async function discoverFrom(list: Candidate[]): Promise<{ docker: Docker; label: string } | null> {
+export async function discoverFrom(
+  list: Candidate[],
+): Promise<{ docker: Docker; label: string; socketPath?: string } | null> {
   for (const c of list) {
+    // Probed with a bounded client; the one handed back has no timeout, since
+    // it goes on to run execs that legitimately take minutes. A socket file
+    // with nothing listening behind it can otherwise hang the connect, and
+    // the candidates are walked in order — so the cost landed on whichever
+    // stale sockets sort before the live one.
+    if (!(await pingSocket(c.socketPath ?? null))) continue;
     const docker = c.socketPath ? new Docker({ socketPath: c.socketPath }) : new Docker();
-    try {
-      await docker.ping();
-      return { docker, label: c.label };
-    } catch {
-      // Try the next candidate.
-    }
+    return { docker, label: c.label, ...(c.socketPath ? { socketPath: c.socketPath } : {}) };
   }
   return null;
+}
+
+/** Whether an engine answers on `socketPath` (null: dockerode's default)
+ * within the probe timeout. */
+export async function pingSocket(socketPath: string | null): Promise<boolean> {
+  const probe = socketPath
+    ? new Docker({ socketPath, timeout: PROBE_TIMEOUT_MS })
+    : new Docker({ timeout: PROBE_TIMEOUT_MS });
+  try {
+    await probe.ping();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function ensureImage(docker: Docker): Promise<void> {

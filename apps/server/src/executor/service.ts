@@ -98,16 +98,21 @@ export interface ResolvedRef {
 }
 
 export interface RefResolver {
-  resolve(ref: string, executorId: string): Promise<ResolvedRef>;
+  /** `release`: resolving in order to stop or destroy, which an un-approved
+   * folder must not block — see attachLocalContainer. */
+  resolve(ref: string, executorId: string, opts?: { release?: boolean }): Promise<ResolvedRef>;
 }
 
 export function createRefResolver(opts: ExecutorServiceOptions): RefResolver {
   const isApproved = async (dir: string) =>
     approvedDirIn(opts.roots(), dir).then(() => true, () => false);
   return {
-    async resolve(ref) {
+    async resolve(ref, _executorId, resolveOpts) {
       if (isContainerRef(ref)) {
-        return { handle: await attachLocalContainer(ref, opts.executorId, isApproved), ref, confined: false };
+        const handle = await attachLocalContainer(ref, opts.executorId, isApproved, {
+          requireApprovedFolder: !resolveOpts?.release,
+        });
+        return { handle, ref, confined: false };
       }
       const dir = await approvedDirIn(opts.roots(), ref);
       return { handle: attachDirectory(dir), ref: dir, confined: true };
@@ -195,9 +200,9 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
 
   const resolver = createRefResolver(opts);
 
-  async function handleFor(params: unknown, method: string): Promise<ResolvedRef> {
+  async function handleFor(params: unknown, method: string, resolveOpts?: { release?: boolean }): Promise<ResolvedRef> {
     const obj = requireObject(params, method);
-    return resolver.resolve(requireString(obj, "ref", method), opts.executorId);
+    return resolver.resolve(requireString(obj, "ref", method), opts.executorId, resolveOpts);
   }
 
   /** A path as the far side should see it: resolved and bounded against the
@@ -323,15 +328,21 @@ export function createExecutorService(opts: ExecutorServiceOptions): ExecutorSer
           // A container is paused, keeping everything in it. A directory has
           // nothing to pause: it is the user's own, not something this
           // process created, so the row on the server is simply forgotten.
-          const { handle, confined } = await handleFor(params, method);
+          //
+          // Resolved for release: a directory the user has since un-approved
+          // is still `stop`-able — the container mounted on it, above all,
+          // since un-approving is exactly when it should stop reaching it.
+          const { handle, confined } = await handleFor(params, method, { release: true });
           if (!confined) await handle.stop();
           return { ok: true };
         }
 
         case "destroy": {
           // Removes the *container*, never the folder that was mounted into
-          // it — that belongs to the user and predates us.
-          const { handle, confined } = await handleFor(params, method);
+          // it — that belongs to the user and predates us. Resolved for
+          // release, like stop: un-approval must never make a container
+          // unremovable.
+          const { handle, confined } = await handleFor(params, method, { release: true });
           if (!confined) await handle.destroy();
           return { ok: true };
         }

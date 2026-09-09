@@ -209,8 +209,12 @@ export function getExecutorProvider(): SandboxProvider {
         "create",
         { path: local.path, isolation: local.isolation },
         // The first container-isolated workspace on a machine builds the
-        // sandbox image, which is minutes rather than seconds.
-        { timeoutMs: CREATE_TIMEOUT_MS },
+        // sandbox image, which is minutes rather than seconds. A direct one
+        // is a realpath and a stat, and gets the ordinary deadline: the run
+        // holds its inference slot through this call, so a connected-but-
+        // wedged laptop must not be able to stall the queue for ten minutes
+        // over a check that takes milliseconds.
+        local.isolation === "container" ? { timeoutMs: CREATE_TIMEOUT_MS } : {},
       );
       return makeHandle(local.executorId, ref);
     },
