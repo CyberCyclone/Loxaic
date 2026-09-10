@@ -214,28 +214,65 @@ adb shell am start -a android.intent.action.VIEW \
 the emulator's alias for the host, so the API works without the reverse
 tunnel — but Metro needs it.)
 
-**On the go via EAS Update** (no dev machine needed) — one-time setup:
+**Expo Go runs Metro only.** It cannot open a published EAS update — a
+published update is built for a *runtime version* that only a real build of
+this app has. To try the current state of `master` without a dev machine,
+install a development or preview build (see Releases below) rather than
+reaching for Expo Go.
+
+
+## Releases and updates
+
+A release is a git tag. Nothing else is committed: `apps/desktop/package.json`,
+`apps/server/package.json` and `apps/mobile/app.json` all hold `0.0.0` in the
+repository, and `apps/desktop/scripts/stamp-version.mjs` writes the real number
+into all three during the release run.
+
+| You push | Goes to | What sees it |
+|---|---|---|
+| a commit on `master` | `preview` branch | development and preview builds |
+| `v1.2.3-beta.4` | `beta` branch | anyone who chose Beta in Settings |
+| `v1.2.3` | `production` **and** `beta` branches | everyone |
+
+A release tag publishes to beta as well, so beta is always a superset of
+production. Someone who opted in must never end up on an older build than a
+stable release.
+
+### Channels are a runtime choice, not a separate app
+
+There is one production binary. Settings → Updates switches which channel it
+asks for, by setting the `expo-channel-name` request header
+(`apps/mobile/lib/expo-updates.ts`). Switching back to production does not
+downgrade the running build: it takes effect at the next update that channel
+publishes.
+
+### One-time setup
+
+On the Expo account that owns the project:
 
 ```bash
-npm install -g eas-cli
 cd apps/mobile
-eas login                # your Expo account
-eas init                 # creates the project, writes extra.eas.projectId
-eas update:configure     # installs expo-updates, writes updates.url
+eas channel:create beta
+eas channel:edit beta --branch beta
+eas channel:list          # expect production→production, preview→preview, beta→beta
 ```
 
-Then publish whenever you want the phone updated:
+Repository secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish;
+the publish step fails without one. Both workflows skip themselves entirely on
+a fork, so a fork's `master` never tries to publish to this project.
 
-```bash
-# Bake the endpoint URLs into the published bundle:
-EXPO_PUBLIC_API_URL=https://<machine>.<tailnet>.ts.net \
-EXPO_PUBLIC_LAN_API_URL=http://<lan-ip>:4000 \
-eas update --branch preview --message "update"
-```
+### Native builds
 
-Open the update from the EAS dashboard QR (or the project page) in Expo Go.
-As long as Tailscale is connected on the phone, the app reaches your server
-anywhere; at home it auto-picks the faster LAN connection.
+`runtimeVersion` uses the `fingerprint` policy, so a change to native code or
+dependencies produces a new runtime version and an update published for it
+reaches no existing binary. The release workflow asks EAS whether a finished
+production build already exists for the runtime it just published for, and
+starts one only when none does — a JS-only release costs no build. Force one
+with the `force_native_build` input on a `workflow_dispatch` run.
+
+Stamping never changes the runtime version by itself: `stamp-version.mjs`
+writes only `version` fields, and the fingerprinter ignores
+`version`/`buildNumber`/`versionCode`.
 
 ## Endpoint resolution order (native apps)
 

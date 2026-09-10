@@ -18,6 +18,7 @@ const KNOWN_KEYS = [
   'loxaic-selected-model',
   'loxaic-smart-routing',
   'loxaic-thinking-levels',
+  'loxaic-update-channel',
 ] as const;
 
 /**

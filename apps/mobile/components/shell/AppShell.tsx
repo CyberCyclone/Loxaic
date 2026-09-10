@@ -6,6 +6,7 @@ import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Pressable } from '@/components/ui/pressable';
 import { Sidebar } from './Sidebar';
+import { UpdateReadyBanner } from './UpdateReadyBanner';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import type { SurfaceId } from '@/lib/types';
 
@@ -88,7 +89,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <HStack className="h-full flex-1 bg-background">
           {!overlaySidebar && sidebar}
-          <Box className="h-full flex-1">{children}</Box>
+          <Box className="h-full flex-1">
+            {/* One banner for the whole shell: an update being ready is a fact
+                about the app, not about the screen someone is on. */}
+            <UpdateReadyBanner />
+            <Box className="flex-1">{children}</Box>
+          </Box>
 
           {overlaySidebar && sidebarOpen && (
             <>

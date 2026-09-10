@@ -11,15 +11,21 @@ import {
   PublicSans_600SemiBold,
   PublicSans_700Bold,
 } from '@expo-google-fonts/public-sans';
+import { useEffect } from 'react';
 import { SessionProvider, useSession } from '@/lib/session';
 import { useThemePreference } from '@/hooks/useTheme';
 import { useLocalExecutorSync } from '@/hooks/useLocalExecutor';
+import { startUpdateChecks } from '@/lib/expo-updates';
 
 function ThemedApp() {
   const [themePref] = useThemePreference();
   const { ready, token } = useSession();
   // Above the auth gate on purpose — see useLocalExecutorSync.
   useLocalExecutorSync(ready ? token : null);
+  // Also above the auth gate, and for a related reason: an update that fixes
+  // a bug preventing sign-in is exactly the one a signed-out user needs. A
+  // no-op everywhere updates don't exist (web, Expo Go, development).
+  useEffect(() => startUpdateChecks(), []);
   if (!ready) return null;
   return (
     <GluestackUIProvider mode={themePref}>

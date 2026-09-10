@@ -1,0 +1,47 @@
+/**
+ * The update controls appear only where the app can actually update itself.
+ *
+ * On web there is nothing to update: the server serves the app, so it changes
+ * when the server does. The row hides rather than showing a "Check now" that
+ * would throw — expo-updates rejects every call outside a native release
+ * build, which is also true in Expo Go and in development.
+ *
+ * This runs on the shared glob, so on a native platform it asserts the
+ * opposite: the row is there, and it names what the app is running.
+ */
+import { openSettings, signUp } from '../helpers/app.ts';
+import { uniqueCreds } from '../helpers/auth.ts';
+import { byTestId, isVisible, platform, waitForVisible } from '../helpers/selectors.ts';
+import { shot } from '../helpers/screenshot.ts';
+
+describe('app updates', () => {
+  before(async () => {
+    await signUp(uniqueCreds());
+    await openSettings();
+    // Proof the modal is actually open — without this, "the row is absent"
+    // would also pass on a settings screen that never rendered at all.
+    await waitForVisible('settings.nav.sandbox');
+  });
+
+  it('offers no update controls where the app cannot update itself', async function skipOffWeb() {
+    if (platform() !== 'web') return this.skip();
+    expect(await isVisible('settings.updates.version')).toBe(false);
+    expect(await isVisible('settings.updates.channel.beta')).toBe(false);
+    await shot('settings-no-updates-row-web');
+  });
+
+  it('offers a channel and says what it is running, on a build that updates', async function skipOnWeb() {
+    // Electron is excluded too until its own updater exists: the desktop
+    // replaces a whole binary rather than a JS bundle, which is a different
+    // mechanism behind the same row.
+    if (platform() === 'web' || platform() === 'electron') return this.skip();
+    await waitForVisible('settings.updates.channel.production');
+    await waitForVisible('settings.updates.channel.beta');
+    await waitForVisible('settings.updates.check');
+    // The version line is what a bug report quotes, so it has to say
+    // something rather than render empty.
+    const version = await byTestId('settings.updates.version').getText();
+    expect(version).toContain('App');
+    await shot('settings-updates-row');
+  });
+});
