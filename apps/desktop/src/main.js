@@ -30,22 +30,26 @@ if (process.argv.includes("--headless")) {
 
 async function runGui() {
   const { app, BrowserWindow, dialog, ipcMain, shell } = await import("electron");
-  const { createInterface } = await import("node:readline");
   const { existsSync, rmSync } = await import("node:fs");
   const { default: serve } = await import("electron-serve");
   const { startStack } = await import("./supervisor/index.js");
   const { defaultDataDir, resolveRuntimePaths } = await import("./supervisor/paths.js");
   const { startExecutor } = await import("./supervisor/executor.js");
+  const { startTsnet } = await import("./supervisor/tsnet.js");
   const { addRoot, loadOrCreateExecutorId, loadRoots, removeRoot, rootsPath } = await import("./supervisor/executor-store.js");
+  const { readSecrets, updateSecrets } = await import("./supervisor/secrets.js");
   const {
     DEFAULT_HOST_PORT,
     buildConfig,
+    clientSettingsView,
     defaultHostName,
+    defaultTailnetHostname,
     firstLanAddress,
     hostSettingsView,
     configPath,
     loadConfig,
     saveConfig,
+    tsnetTargetFor,
   } = await import("./supervisor/config.js");
 
   const isDev = !app.isPackaged;
@@ -77,7 +81,158 @@ async function runGui() {
   }
 
   const PROBE_TIMEOUT_MS = 1500;
-  const TSNET_START_TIMEOUT_MS = 5000;
+
+  /**
+   * How long a launch waits for a tailnet before opening the window anyway.
+   * A node that has been approved before joins in about a second; one that
+   * has not blocks until a person approves it in a browser, and there is no
+   * window to show them the prompt until this returns. So: wait long enough
+   * for the ordinary case, then open the window and let the join finish in
+   * the background — the login screen shows the approval card.
+   */
+  const LAUNCH_TSNET_GRACE_MS = 8000;
+
+  let tsnetBinWarned = false;
+  /**
+   * The sidecar binary to spawn. LOXAIC_TSNET_BIN stands in for it under
+   * test automation, which cannot join a tailnet: it points at a script that
+   * speaks the same stdout protocol. Loud on first use, and read from the
+   * app's own environment, so it cannot be reached from a page — the same
+   * arrangement as LOXAIC_E2E_PICK_DIR.
+   */
+  function tsnetBin() {
+    const override = process.env.LOXAIC_TSNET_BIN;
+    if (override) {
+      if (!tsnetBinWarned) {
+        tsnetBinWarned = true;
+        console.warn(`[loxaic] LOXAIC_TSNET_BIN is set: the embedded Tailscale sidecar is ${override}. Test harness only.`);
+      }
+      return override;
+    }
+    return getTsnetProxyPath();
+  }
+
+  // ── Tailnet sidecar ─────────────────────────────────────
+  // At most one sidecar runs at a time, and `key` says what it is for, so a
+  // config change that does not touch the tailnet (or a Connect that follows
+  // the probe which already joined) reuses it rather than making the person
+  // approve the same machine twice.
+  let tsnet = null; // { key, handle } from startTsnet, or null
+
+  /** The tailnet as the renderer sees it. */
+  function tailnetView() {
+    if (!tsnet) return { state: "off", mode: null, authUrl: null, url: null, funnel: false, error: null, status: null };
+    const s = tsnet.handle.state;
+    return {
+      state: s.state,
+      mode: s.mode,
+      authUrl: s.authUrl ?? null,
+      url: s.url ?? null,
+      funnel: Boolean(s.funnel),
+      error: s.error ?? null,
+      status: s.status ?? null,
+    };
+  }
+
+  async function stopTsnet() {
+    const current = tsnet;
+    tsnet = null;
+    if (current) await current.handle.stop().catch(() => undefined);
+  }
+
+  /**
+   * Starts a sidecar and makes it *the* sidecar. `onTransition`, if given,
+   * sees every state alongside the renderer push — the env launch uses it to
+   * open the browser.
+   */
+  function launchTsnet(key, { onTransition, ...opts }) {
+    let handle = null;
+    handle = startTsnet({
+      bin: tsnetBin(),
+      log: (line) => { console.log(`[loxaic] ${line}`); },
+      onState: (s) => {
+        // A sidecar that was replaced must not narrate over its successor.
+        // (During startTsnet's own synchronous first call `handle` is still
+        // null and `tsnet` still the previous one; the push below covers it.)
+        if (handle !== null && tsnet?.handle === handle) pushStackState();
+        onTransition?.(s);
+      },
+      ...opts,
+    });
+    tsnet = { key, handle };
+    pushStackState();
+    return handle;
+  }
+
+  /** Both directions persist their node identity under the data dir — which
+   * is Electron's own userData in the default install, so a client approved
+   * before this existed keeps its identity — in *separate* directories: the
+   * two are different nodes, and one state file cannot hold two keys. */
+  function tsnetStateDir(mode) {
+    return path.join(dataDir(), mode === "serve" ? "tsnet-serve" : "tsnet");
+  }
+
+  /**
+   * A client sidecar for `client.hostUrl`, reusing the running one when it
+   * is already pointed there. Returns the handle; `ready` resolves with the
+   * local proxy URL the renderer should use.
+   */
+  async function ensureClientTsnet(client) {
+    const { target, tls } = tsnetTargetFor(client.hostUrl);
+    const key = `client:${target}:${client.controlUrl ?? ""}`;
+    const live = tsnet?.key === key && !["error", "off"].includes(tsnet.handle.state.state);
+    if (live) return tsnet.handle;
+    await stopTsnet();
+    return launchTsnet(key, {
+      mode: "client",
+      target,
+      tls,
+      hostname: "loxaic-desktop",
+      controlUrl: client.controlUrl,
+      authKey: readSecrets(dataDir()).tsnetAuthKey,
+      stateDir: tsnetStateDir("client"),
+    });
+  }
+
+  /**
+   * Publishes a running host stack on the tailnet. Not awaited by the
+   * caller: a first run blocks until a person approves the node, and the
+   * local stack is usable meanwhile. Once the node is up, a host that set no
+   * public address of its own is told to advertise the tailnet one — which
+   * means restarting the server child, because better-auth reads the origin
+   * it signs cookies for at boot. Postgres stays up; the API base URL does
+   * not change.
+   */
+  function startServeTsnet(config, started) {
+    const tailnet = config.host.tailnet;
+    const handle = launchTsnet(`serve:${tailnet.hostname}`, {
+      mode: "serve",
+      upstream: `http://127.0.0.1:${String(started.port)}`,
+      hostname: tailnet.hostname,
+      funnel: Boolean(tailnet.funnel),
+      controlUrl: tailnet.controlUrl,
+      authKey: readSecrets(dataDir()).tsnetAuthKey,
+      stateDir: tsnetStateDir("serve"),
+    });
+    handle.ready
+      .then(async (url) => {
+        if (tsnet?.handle !== handle) return;
+        if (config.host.advertiseUrl) return; // an explicit address wins, as everywhere else
+        try {
+          await started.setAdvertiseUrl(url);
+        } catch (err) {
+          console.warn(`[loxaic] could not re-advertise as ${url}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        pushStackState();
+      })
+      .catch(() => undefined); // the state carries the reason; nothing to do here
+    return handle;
+  }
+
+  /** Resolves with `p`'s value, or null once `ms` have passed first. */
+  function withGrace(p, ms) {
+    return Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
+  }
 
   /** Value of a --name=value CLI flag, or undefined. */
   function getFlag(name) {
@@ -100,60 +255,67 @@ async function runGui() {
   }
 
   /**
-   * Starts the tsnet sidecar if a tailnet target is configured, and returns the
-   * local proxy URL once it reports its bound port — or null if unconfigured,
-   * the binary is missing, or it doesn't come up within TSNET_START_TIMEOUT_MS.
-   * A stalled/failed sidecar must never block startup: the caller falls back
-   * to direct LAN/tailnet probing below.
+   * The `TSNET_TARGET` launch: a scripted client of one tailnet host, from
+   * before any of this had a GUI. Kept exactly as documented — env outranks
+   * the stored config, and the auth URL is opened in the browser because
+   * there is no card to show it on — with one improvement: a first login is
+   * waited for. The old five-second limit fell back to probing precisely
+   * while the person was still approving the machine it had just asked them
+   * to approve.
    */
-  function startTsnetProxy(target) {
-    return new Promise((resolve) => {
-      if (!target) return resolve(null);
-      const binPath = getTsnetProxyPath();
-      if (!existsSync(binPath)) {
-        console.warn(`[loxaic] tsnet-proxy binary not found at ${binPath}; skipping embedded Tailscale`);
-        return resolve(null);
-      }
-
-      const stateDir = path.join(app.getPath("userData"), "tsnet");
-      const child = spawn(binPath, ["--target", target, "--state-dir", stateDir], {
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      const timer = setTimeout(() => {
-        console.warn(`[loxaic] tsnet-proxy did not report a listener within ${TSNET_START_TIMEOUT_MS}ms; falling back`);
-        resolve(null);
-      }, TSNET_START_TIMEOUT_MS);
-
-      const stdout = createInterface({ input: child.stdout });
-      stdout.on("line", (line) => {
-        const listening = line.match(/^LISTENING (.+)$/);
-        if (listening) {
-          clearTimeout(timer);
-          resolve(`http://${listening[1]}`);
-          return;
+  async function startEnvTsnet(target) {
+    let opened = null;
+    const handle = launchTsnet(`client:${target}:`, {
+      mode: "client",
+      target,
+      tls: true,
+      hostname: "loxaic-desktop",
+      stateDir: tsnetStateDir("client"),
+      onTransition: (s) => {
+        if (s.state === "needs-auth" && s.authUrl && s.authUrl !== opened) {
+          opened = s.authUrl;
+          console.log(`[loxaic] Tailscale needs approval for this device: ${s.authUrl}`);
+          void shell.openExternal(s.authUrl);
         }
-        const auth = line.match(/^AUTH_URL (\S+)$/);
-        if (auth) {
-          console.log(`[loxaic] Tailscale needs approval for this device: ${auth[1]}`);
-          shell.openExternal(auth[1]);
-        }
-      });
-
-      const stderr = createInterface({ input: child.stderr });
-      stderr.on("line", (line) => console.log(`[tsnet-proxy] ${line}`));
-
-      child.on("error", (err) => {
-        console.warn(`[loxaic] tsnet-proxy failed to start: ${err.message}`);
-        clearTimeout(timer);
-        resolve(null);
-      });
-      child.on("exit", (code) => {
-        if (code !== 0) console.warn(`[loxaic] tsnet-proxy exited with code ${code}`);
-      });
-
-      app.on("before-quit", () => child.kill());
+      },
     });
+    try {
+      let url = await withGrace(handle.ready, 5000);
+      if (url === null && handle.state.state === "needs-auth") url = await handle.ready;
+      if (url === null) {
+        console.warn("[loxaic] tsnet-proxy did not come up in time; falling back");
+        await stopTsnet();
+      }
+      return url;
+    } catch (err) {
+      console.warn(`[loxaic] embedded Tailscale failed: ${err instanceof Error ? err.message : String(err)}; falling back`);
+      await stopTsnet();
+      return null;
+    }
+  }
+
+  /**
+   * Splits a setMode payload into the config to build and the auth key, if
+   * the form sent one. `undefined` means the form did not touch it; `""`
+   * means clear it. Both host and client forms may carry one.
+   */
+  function extractAuthKey(input) {
+    let authKey;
+    const config = { ...input };
+    if (config.host && typeof config.host === "object") {
+      config.host = { ...config.host };
+      if (config.host.tailnet && typeof config.host.tailnet === "object") {
+        const { authKey: key, ...tailnet } = config.host.tailnet;
+        if (typeof key === "string") authKey = key.trim();
+        config.host.tailnet = tailnet;
+      }
+    }
+    if (config.client && typeof config.client === "object") {
+      const { authKey: key, ...client } = config.client;
+      if (typeof key === "string") authKey = key.trim();
+      config.client = client;
+    }
+    return { config, authKey };
   }
 
   /**
@@ -173,8 +335,10 @@ async function runGui() {
     const remote = getFlag("remote") ?? process.env.LOXAIC_REMOTE_URL;
     if (remote) return { apiBaseUrl: remote, stack: null, mode: "client" };
 
-    const viaTsnet = await startTsnetProxy(process.env.TSNET_TARGET);
-    if (viaTsnet) return { apiBaseUrl: viaTsnet, stack: null, mode: "client" };
+    if (process.env.TSNET_TARGET) {
+      const viaTsnet = await startEnvTsnet(process.env.TSNET_TARGET);
+      if (viaTsnet) return { apiBaseUrl: viaTsnet, stack: null, mode: "client" };
+    }
 
     const candidates = [process.env.EXPO_PUBLIC_LAN_API_URL, process.env.EXPO_PUBLIC_API_URL].filter(Boolean);
     const results = await Promise.all(candidates.map(probeHealth));
@@ -193,10 +357,32 @@ async function runGui() {
     return startForConfig(config);
   }
 
-  /** Brings up whatever the stored config asks for. */
-  async function startForConfig(config) {
+  /**
+   * Brings up whatever the stored config asks for.
+   *
+   * `wait` is whether to block on a tailnet join. A person who just pressed
+   * Save or Connect is looking at the approval card, so their call waits;
+   * the launch path is not, and there is no window yet to show one on, so it
+   * waits only LAUNCH_TSNET_GRACE_MS and otherwise lets the join finish in
+   * the background — the state pushes catch the renderer up.
+   */
+  async function startForConfig(config, { wait = false } = {}) {
     if (config.mode === "client") {
-      return { apiBaseUrl: config.client.hostUrl, stack: null, mode: "client" };
+      if (config.client.via !== "tsnet") {
+        return { apiBaseUrl: config.client.hostUrl, stack: null, mode: "client" };
+      }
+      const handle = await ensureClientTsnet(config.client);
+      const url = await (wait ? handle.ready : withGrace(handle.ready, LAUNCH_TSNET_GRACE_MS));
+      if (url === null) {
+        handle.ready
+          .then((late) => {
+            if (tsnet?.handle !== handle) return;
+            apiBaseUrl = late;
+            pushStackState();
+          })
+          .catch(() => undefined);
+      }
+      return { apiBaseUrl: url, stack: null, mode: "client" };
     }
     const started = await startStack({
       dataDir: dataDir(),
@@ -204,6 +390,11 @@ async function runGui() {
       log: (line) => { console.log(`[loxaic] ${line}`); },
       instance: config,
     });
+    if (config.mode === "host" && config.host?.tailnet?.enabled) {
+      // Deliberately not awaited, whatever `wait` says: the local stack is
+      // already usable, and a first-run join lasts until someone approves it.
+      startServeTsnet(config, started);
+    }
     return { apiBaseUrl: started.apiBaseUrl, stack: started, mode: config.mode };
   }
 
@@ -242,9 +433,17 @@ async function runGui() {
       // Only solo/host have a host section; a client (or an unconfigured
       // install) reports null so Settings knows there's nothing here to edit.
       host: hostSettingsView(config?.host ?? null),
+      client: clientSettingsView(config?.client ?? null),
       // The port the server actually bound, which can differ from what was
       // requested (a stale leftover adopted at a different port, say).
       listenPort: stack?.port ?? null,
+      // What the server was actually told to advertise — after a tailnet
+      // join this is the ts.net address, whatever config.json says.
+      effectiveAdvertiseUrl: stack?.advertiseUrl ?? null,
+      defaultTailnetHostname: defaultTailnetHostname(),
+      // Whether, not what: the key itself never leaves secrets.json.
+      hasTailnetAuthKey: Boolean(readSecrets(dataDir()).tsnetAuthKey),
+      tailnet: tailnetView(),
       ...(startupError ? { error: startupError } : {}),
     };
   }
@@ -367,10 +566,16 @@ async function runGui() {
     apiBaseUrl = null;
     instanceMode = null;
     if (previous) await previous.stop().catch(() => undefined);
+    // A host's sidecar is bound to the stack that just stopped (its upstream
+    // port), so it always goes with it. A client's is kept when the new
+    // config still points at the same host — the probe that preceded a
+    // Connect already joined, and asking for approval twice is the one thing
+    // this must never do — and ensureClientTsnet decides that by key.
+    if (config.mode !== "client" || config.client.via !== "tsnet") await stopTsnet();
 
     saveConfig(dataDir(), config);
     try {
-      const started = await startForConfig(config);
+      const started = await startForConfig(config, { wait: true });
       startupError = null;
       stack = started.stack;
       apiBaseUrl = started.apiBaseUrl;
@@ -400,8 +605,47 @@ async function runGui() {
     ipcMain.handle("loxaic:getState", () => stackState());
 
     ipcMain.handle("loxaic:setMode", async (_event, input) => {
-      const config = buildConfig(input ?? {}, loadConfig(dataDir()));
+      // The auth key is peeled off before the config is built: buildConfig
+      // strips it too, but it must reach secrets.json and never config.json,
+      // and this is the one place both are written from. Absent means leave
+      // the stored one alone; empty means forget it.
+      const { config: cleaned, authKey } = extractAuthKey(input ?? {});
+      const config = buildConfig(cleaned, loadConfig(dataDir()));
+      if (authKey !== undefined) updateSecrets(dataDir(), { tsnetAuthKey: authKey });
       return applyConfig(config);
+    });
+
+    // ── Tailnet ──
+    ipcMain.handle("loxaic:tailnet.getState", () => tailnetView());
+
+    // Opens the approval link the sidecar printed, and only ever that one:
+    // the renderer cannot name a URL for the main process to open.
+    ipcMain.handle("loxaic:tailnet.openAuthUrl", async () => {
+      const view = tailnetView();
+      if (view.state === "needs-auth" && view.authUrl) await shell.openExternal(view.authUrl);
+      return view;
+    });
+
+    // Try again with the same settings — after enabling certificates in the
+    // tailnet admin, say. A host's sidecar is re-attached to the running
+    // stack; a client's is restarted and the API URL follows it.
+    ipcMain.handle("loxaic:tailnet.restart", async () => {
+      const config = loadConfig(dataDir());
+      await stopTsnet();
+      if (config?.mode === "host" && config.host?.tailnet?.enabled && stack) {
+        startServeTsnet(config, stack);
+      } else if (config?.mode === "client" && config.client?.via === "tsnet") {
+        const handle = await ensureClientTsnet(config.client);
+        handle.ready
+          .then((url) => {
+            if (tsnet?.handle !== handle) return;
+            apiBaseUrl = url;
+            pushStackState();
+          })
+          .catch(() => undefined);
+      }
+      pushStackState();
+      return tailnetView();
     });
 
     // Is a container engine reachable? Host mode requires one — the server
@@ -414,13 +658,31 @@ async function runGui() {
 
     // Does this URL serve a Loxaic? Returns the cluster so the join screen can
     // name what the user is about to connect to instead of echoing their URL.
-    ipcMain.handle("loxaic:probeHost", async (_event, url) => {
+    //
+    // With `{ via: "tsnet" }` the host is reached through the embedded
+    // sidecar: it is started (or reused) for that address, the probe waits
+    // for it to join — a first run, until the person approves this machine,
+    // which the state pushes show them meanwhile — and the request goes
+    // through its local proxy. The sidecar is left running for the Connect
+    // that follows, which reuses it.
+    ipcMain.handle("loxaic:probeHost", async (_event, url, opts) => {
       if (typeof url !== "string" || !url.trim()) return { ok: false, reason: "No URL given" };
       const base = url.trim().replace(/\/+$/, "");
+      let probeBase = base;
+      if (opts && typeof opts === "object" && opts.via === "tsnet") {
+        try {
+          const controlUrl = typeof opts.controlUrl === "string" && opts.controlUrl.trim() ? opts.controlUrl.trim() : undefined;
+          const handle = await ensureClientTsnet({ hostUrl: base, controlUrl });
+          pushStackState();
+          probeBase = await handle.ready;
+        } catch (err) {
+          return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+        }
+      }
       try {
-        const health = await fetch(`${base}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+        const health = await fetch(`${probeBase}/health`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
         if (!health.ok) return { ok: false, reason: `Server answered ${String(health.status)}` };
-        const res = await fetch(`${base}/v1/cluster`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+        const res = await fetch(`${probeBase}/v1/cluster`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
         if (!res.ok) return { ok: true, url: base };
         const body = await res.json();
         return { ok: true, url: base, cluster: body.cluster, hosts: body.hosts };
@@ -445,6 +707,7 @@ async function runGui() {
       apiBaseUrl = null;
       instanceMode = null;
       if (previous) await previous.stop().catch(() => undefined);
+      await stopTsnet();
       // Removing the config *is* the detach: absence is the first-run signal,
       // so the next resolve lands on onboarding. The instanceId is lost with
       // it, which is correct — re-joining later is a fresh registration, and
@@ -567,12 +830,13 @@ async function runGui() {
   let quitting = false;
   app.on("before-quit", (event) => {
     if (quitting) return;
-    if (!stack && !executor) return;
+    if (!stack && !executor && !tsnet) return;
     event.preventDefault();
     quitting = true;
     const stops = [];
     if (executor) stops.push(executor.stop().catch(() => undefined));
     if (stack) stops.push(stack.stop());
+    stops.push(stopTsnet());
     Promise.all(stops).finally(() => { app.exit(0); });
   });
 }

@@ -9,6 +9,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import type { SurfaceId } from '@/lib/types';
 import { useSettings } from '@/hooks/useSettings';
+import { useInstanceState } from '@/hooks/useInstanceState';
 import { useSession } from '@/lib/session';
 
 interface SidebarProps {
@@ -73,6 +74,12 @@ function NavItem({
 
 export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }: SidebarProps) {
   const [settings] = useSettings();
+  const instance = useInstanceState();
+  // Where this app is actually talking to. Off the desktop there is no
+  // instance state, so the manual endpoint override (or nothing) is all
+  // there is to say.
+  const instanceUrl = instance?.mode === 'client' ? instance.client?.hostUrl : instance?.effectiveAdvertiseUrl;
+  const serverLabel = instanceUrl ?? (settings.endpoint.trim() ? settings.endpoint : 'local server');
   const { signOut, isAdmin } = useSession();
   const router = useRouter();
   const initials =
@@ -153,7 +160,7 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
                 {settings.name || 'Signed in'}
               </Text>
               <Text size="xs" className="text-muted-foreground">
-                {settings.tailscale || settings.endpoint || 'local server'}
+                {serverLabel}
               </Text>
             </VStack>
           </HStack>

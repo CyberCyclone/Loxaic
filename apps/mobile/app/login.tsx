@@ -11,6 +11,7 @@ import { Input, InputField, InputSlot, InputIcon } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { useSession } from '@/lib/session';
+import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -148,6 +149,11 @@ export default function LoginScreen() {
               </Text>
             </Pressable>
           </HStack>
+
+          {/* A host that just chose to expose itself lands here before it can
+              sign in, and this is the one moment its approval link is certain
+              to be needed. Renders nothing off the desktop. */}
+          <TailnetStatusCard testIDPrefix="login.tailnet" />
         </VStack>
       </Box>
     </KeyboardAvoidingView>

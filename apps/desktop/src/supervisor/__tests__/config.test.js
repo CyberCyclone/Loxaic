@@ -6,12 +6,15 @@ import {
   advertiseUrlFor,
   bindHostFor,
   buildConfig,
+  clientSettingsView,
   configPath,
   defaultHostName,
+  defaultTailnetHostname,
   firstLanAddress,
   hostSettingsView,
   loadConfig,
   saveConfig,
+  tsnetTargetFor,
 } from "../config.js";
 
 function tmpDir() {
@@ -173,6 +176,7 @@ describe("hostSettingsView", () => {
       bind: "lan",
       advertiseUrl: null,
       db: { kind: "external" },
+      tailnet: null,
     });
   });
 });
@@ -201,5 +205,113 @@ describe("advertiseUrlFor", () => {
       return;
     }
     expect(url).toBe(`http://${lan}:4100`);
+  });
+});
+
+describe("tailnet settings", () => {
+  it("stores nothing for a host that never mentioned the tailnet", () => {
+    expect(buildConfig({ mode: "host" }).host.tailnet).toBeUndefined();
+  });
+
+  it("normalises an enabled tailnet with a default hostname derived from the machine", () => {
+    const config = buildConfig({ mode: "host", host: { tailnet: { enabled: true } } });
+    expect(config.host.tailnet).toEqual({
+      enabled: true,
+      hostname: defaultTailnetHostname(),
+      funnel: false,
+    });
+    expect(config.host.tailnet.hostname).toMatch(/^loxaic-[a-z0-9-]*$/);
+  });
+
+  it("cleans a typed hostname the way Tailscale will", () => {
+    const config = buildConfig({ mode: "host", host: { tailnet: { enabled: true, hostname: "My GPU Box!!" } } });
+    expect(config.host.tailnet.hostname).toBe("my-gpu-box");
+  });
+
+  it("keeps the hostname across a disable so re-enabling brings it back", () => {
+    const on = buildConfig({ mode: "host", host: { tailnet: { enabled: true, hostname: "gpu-box", funnel: true } } });
+    const off = buildConfig({ mode: "host", host: { tailnet: { enabled: false } } }, on);
+    expect(off.host.tailnet).toEqual({ enabled: false, hostname: "gpu-box", funnel: true });
+    const again = buildConfig({ mode: "host", host: { tailnet: { enabled: true } } }, off);
+    expect(again.host.tailnet.hostname).toBe("gpu-box");
+  });
+
+  it("inherits the whole tailnet section when the new input omits it", () => {
+    const first = buildConfig({ mode: "host", host: { tailnet: { enabled: true, hostname: "gpu-box" } } });
+    const second = buildConfig({ mode: "host", host: { name: "renamed" } }, first);
+    expect(second.host.tailnet).toEqual(first.host.tailnet);
+  });
+
+  it("never persists an auth key, even when a caller passes one", () => {
+    // The key goes to secrets.json; config.json is read by the renderer.
+    const config = buildConfig({
+      mode: "host",
+      host: { tailnet: { enabled: true, authKey: "tskey-auth-secret" } },
+    });
+    expect(JSON.stringify(config)).not.toContain("tskey-auth-secret");
+    expect(config.host.tailnet.authKey).toBeUndefined();
+  });
+
+  it("validates a control server URL as a bare origin", () => {
+    const config = buildConfig({
+      mode: "host",
+      host: { tailnet: { enabled: true, controlUrl: "https://headscale.example.com/" } },
+    });
+    expect(config.host.tailnet.controlUrl).toBe("https://headscale.example.com");
+    expect(() =>
+      buildConfig({ mode: "host", host: { tailnet: { enabled: true, controlUrl: "headscale" } } }),
+    ).toThrow(/Control server URL must be a full URL/);
+  });
+
+  it("never gives solo a tailnet section, even inheriting from a host", () => {
+    const host = buildConfig({ mode: "host", host: { tailnet: { enabled: true } } });
+    const solo = buildConfig({ mode: "solo" }, host);
+    expect(solo.host.tailnet).toBeUndefined();
+  });
+
+  it("puts the tailnet section in the host view", () => {
+    const config = buildConfig({ mode: "host", host: { tailnet: { enabled: true, hostname: "gpu-box" } } });
+    expect(hostSettingsView(config.host).tailnet).toEqual({ enabled: true, hostname: "gpu-box", funnel: false });
+    expect(hostSettingsView(buildConfig({ mode: "host" }).host).tailnet).toBeNull();
+  });
+});
+
+describe("client via tsnet", () => {
+  it("defaults to a direct connection and stores no via", () => {
+    const config = buildConfig({ mode: "client", client: { hostUrl: "http://box.local:4100" } });
+    expect(config.client.via).toBeUndefined();
+    expect(clientSettingsView(config.client)).toEqual({ hostUrl: "http://box.local:4100", via: "direct", controlUrl: null });
+  });
+
+  it("records tsnet and the control URL", () => {
+    const config = buildConfig({
+      mode: "client",
+      client: { hostUrl: "https://box.tail1234.ts.net/", via: "tsnet", controlUrl: "https://headscale.example.com" },
+    });
+    expect(config.client).toEqual({
+      hostUrl: "https://box.tail1234.ts.net",
+      via: "tsnet",
+      controlUrl: "https://headscale.example.com",
+    });
+  });
+
+  it("rejects an unknown via and an unparseable tsnet host", () => {
+    expect(() => buildConfig({ mode: "client", client: { hostUrl: "http://x", via: "carrier-pigeon" } })).toThrow(
+      /Client connection must be one of/,
+    );
+    expect(() => buildConfig({ mode: "client", client: { hostUrl: "box.tail.ts.net", via: "tsnet" } })).toThrow(
+      /must be a full URL/,
+    );
+  });
+});
+
+describe("tsnetTargetFor", () => {
+  it("dials :443 over TLS for an https host", () => {
+    expect(tsnetTargetFor("https://box.tail1234.ts.net")).toEqual({ target: "box.tail1234.ts.net:443", tls: true });
+  });
+
+  it("keeps an explicit port and drops TLS for a plain http host", () => {
+    // A host reached by Tailscale IP with nothing terminating TLS in front.
+    expect(tsnetTargetFor("http://100.101.102.103:4100")).toEqual({ target: "100.101.102.103:4100", tls: false });
   });
 });

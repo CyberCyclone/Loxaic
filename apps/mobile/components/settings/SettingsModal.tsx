@@ -344,7 +344,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 )}
               </HStack>
               <Text size="2xs" className="text-muted-foreground">
-                Overrides auto-detection (LAN then tailnet). Leave blank to auto-detect.
+                Overrides auto-detection (LAN then tailnet). Leave blank to auto-detect. For a
+                Tailscale host, install the Tailscale app on this device and enter the host&apos;s
+                https://….ts.net address — or its Funnel address, if it published one, which needs
+                no Tailscale app here.
               </Text>
             </VStack>
 

@@ -1231,6 +1231,73 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `realpathSync`, and keep the logical path for what `terminal.ready` reports — they are
   genuinely different answers.
 
+### Tailscale from the GUI (the tsnet sidecar)
+
+- **`infra/tsnet-proxy` runs in two directions and `supervisor/tsnet.js` drives both.**
+  `client` proxies a local port to a tailnet host (a desktop Client); `serve` publishes the
+  local server on the tailnet with an automatic HTTPS cert (a Host), plus `--funnel` for the
+  public internet. The sidecar's stdout is a line protocol — `AUTH_URL`, `LISTENING`
+  (client), `SERVING` (serve), `STATUS` — and everything the renderer sees
+  (`stackState().tailnet`: `off | starting | needs-auth | up | error`) is derived from it.
+  At most one sidecar runs; `main.js`'s `tsnet.key` says what it is for.
+- **Configuration has exactly one write path: `setMode`.** `host.tailnet` and
+  `client.via`/`controlUrl` ride in the same `config.json` as everything else, through
+  `buildConfig`. The `tailnet.*` IPC channels (`getState`, `openAuthUrl`, `restart`) are live
+  state and two actions, never settings. `openAuthUrl` takes no URL: the main process opens
+  the link the *sidecar* printed, so a page cannot ask it to open an arbitrary address.
+- **The auth key rides stdin, first line, and lives in `secrets.json`** — never
+  `config.json` (read by the renderer, safe to log), never argv (`ps`), never env. `setMode`
+  peels `authKey` off the payload (`extractAuthKey`) before `buildConfig`, which strips it
+  again defensively; `hasTailnetAuthKey` tells the form whether one is stored, and the form
+  never shows it back. Absent means keep, empty means forget.
+- **A tailnet host's first start runs the server child twice, deliberately.** The
+  `https://….ts.net` address is only known once the sidecar has joined — on a first run,
+  after a person approves the node in a browser, which can take minutes — and better-auth
+  reads the origin it signs cookies for at boot. So the stack comes up on the LAN address
+  (usable immediately), the sidecar is started *without* being awaited, and on `SERVING` the
+  server child alone is restarted with the tailnet URL via `stack.setAdvertiseUrl()` (Postgres
+  stays up; the API base URL does not change). An explicit `advertiseUrl` wins and skips the
+  restart, as it does everywhere else. `tailnet.spec.ts` asserts `effectiveAdvertiseUrl`
+  becomes the ts.net address: nothing else could set it.
+- **Launch never blocks on a tailnet.** `startForConfig`'s `wait` is true only for a person
+  who just pressed Save/Connect and is looking at the approval card; the launch path waits
+  `LAUNCH_TSNET_GRACE_MS` and otherwise opens the window and lets the join finish in the
+  background — there is no window to show a prompt on until it returns. The old client path's
+  five-second limit fell back to probing precisely while the person was approving the machine
+  it had just asked them to approve.
+- **The browser is auto-opened only on the `TSNET_TARGET` env path**, which has no GUI to
+  show a card. The config-driven paths show the card with an "Open in browser" button. This is
+  also what keeps the e2e from opening real browser tabs.
+- **`TSNET_TARGET` (env) still outranks `client.via: "tsnet"` (config)** — same rule as every
+  other env override in `resolveApi()`.
+- **Serve and client state directories are separate** (`<dataDir>/tsnet-serve`,
+  `<dataDir>/tsnet`): two different nodes, and one state file cannot hold two keys. The client
+  one is the path the pre-GUI sidecar used — `dataDir()` is Electron's own `userData` in a
+  default install — so a client approved before this existed keeps its identity.
+- **`explainExit` turns a dead sidecar into a sentence**: the sidecar's own `tsnet-proxy:`
+  fatal line first, a tsnet `health(…): error:` line second, and otherwise the last thing the
+  shell or OS said. That last clause is how the e2e's exit-126 was diagnosed (below), and why
+  the Retry button has something to show.
+- **`LOXAIC_TSNET_BIN` is test-only** (one-time warning, read from the app's own env, same as
+  `LOXAIC_E2E_PICK_DIR`). The Electron e2e sets it for *every* run so no test can reach the
+  real control plane. `fixtures/fake-tsnet.sh` speaks the protocol; the hostname it is given
+  picks the script (`*-fail-*` exits with the certificate message, `*-slow-*` delays).
+- **The fixture is copied out of the checkout into a temp dir before use.** A repo under
+  `~/Documents` is TCC-protected on macOS, and a packaged app launched by chromedriver — not by
+  a terminal whose Files-and-Folders grant it could inherit — is refused when `bash` opens the
+  script there: exit 126, "Operation not permitted", while the identical spawn from a shell
+  works. It cost most of a stage to find, because the app reads its *own* bundle under
+  `~/Documents` fine (its own files are exempt).
+- **Never `ButtonSpinner` outside a `Button`.** It reads the parent Button's style context and
+  throws without one, which unmounts the whole React tree — a blank window, with no error
+  boundary to say why. `TailnetStatusCard`'s `starting` branch did exactly that, for the one
+  second a fresh host spends there, and the e2e saw a black window with `innerText.length ===
+  0`. `components/ui/spinner` is the standalone one.
+- **The onboarding column is a `ScrollView`**, not a centred `Box`: the Host step with its
+  tailnet fields is taller than a short window, and gluestack's `min-h-0` on every Box/VStack
+  lets a flex column *compress* its children into each other rather than overflow — the same
+  failure the Inspector hit. Centred while it fits, scrolls once it does not.
+
 ### Electron
 
 - **Instance mode lives in `<dataDir>/config.json`** (`supervisor/config.js`), read by both

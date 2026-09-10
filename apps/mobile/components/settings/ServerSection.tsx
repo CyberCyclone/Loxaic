@@ -6,6 +6,7 @@ import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
 import { useInstanceState } from '@/hooks/useInstanceState';
 import { ServerSettingsModal } from './ServerSettingsModal';
+import { TailnetStatusCard } from './TailnetStatusCard';
 import { electronBridge } from '@/lib/endpoint';
 
 /**
@@ -39,7 +40,12 @@ export function ServerSection() {
       : mode === 'host'
         ? `Hosting as "${state.host?.name ?? ''}"`
         : 'Connected to a host';
-  const subtitle = mode === 'client' ? state.apiBaseUrl : (state.host?.advertiseUrl ?? state.apiBaseUrl);
+  // What this install is actually reachable at: for a host, whatever the
+  // server was told to advertise — the tailnet address once that join lands.
+  const subtitle =
+    mode === 'client'
+      ? (state.client?.hostUrl ?? state.apiBaseUrl)
+      : (state.effectiveAdvertiseUrl ?? state.host?.advertiseUrl ?? state.apiBaseUrl);
 
   return (
     <>
@@ -62,6 +68,7 @@ export function ServerSection() {
             </Button>
           </HStack>
         </Box>
+        <TailnetStatusCard testIDPrefix="settings.server.tailnet.status" />
       </VStack>
       <ServerSettingsModal open={editing} onClose={() => { setEditing(false); }} state={state} />
     </>

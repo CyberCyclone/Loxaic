@@ -229,7 +229,6 @@ export interface Settings {
   name: string
   defaultMode: AgentMode
   defaultThinkingLevel: ThinkingLevel
-  tailscale: string
   endpoint: string
 }
 
