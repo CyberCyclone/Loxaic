@@ -2,7 +2,7 @@
   "expo": {
     "name": "loxaic",
     "slug": "loxaic",
-    "version": "0.0.1",
+    "version": "0.0.0",
     "orientation": "portrait",
     "scheme": "loxaic",
     "userInterfaceStyle": "automatic",

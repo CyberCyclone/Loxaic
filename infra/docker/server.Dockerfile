@@ -38,6 +38,12 @@ COPY --from=builder /app/apps/server/node_modules ./apps/server/node_modules
 COPY --from=builder /app/packages/db/node_modules ./packages/db/node_modules
 COPY --from=builder /app/apps/mobile/dist ./web
 ENV WEB_DIST_DIR=/app/web
+# Unset by a plain `docker build`, so an image built that way reports no
+# version (null, not "0.0.0") — the same honesty `serverVersion()` already
+# applies to a bare `node dist/index.js`. A release pipeline passes
+# --build-arg LOXAIC_VERSION=<tag> to stamp a real one.
+ARG LOXAIC_VERSION
+ENV LOXAIC_VERSION=$LOXAIC_VERSION
 EXPOSE 4000
 # migrate.ts resolves migrationsFolder ("../../packages/db/drizzle") relative
 # to process.cwd(), which assumes the process runs from apps/server/ (true in

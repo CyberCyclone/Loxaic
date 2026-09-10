@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { db, eq, sql } from "@loxaic/db";
 import { hosts, serverSettings } from "@loxaic/db/schema";
+import { serverVersion } from "./version.ts";
 
 const CLUSTER_KEY = "cluster";
 
@@ -135,11 +136,10 @@ export async function registerHost(): Promise<string | null> {
   const name = process.env.LOXAIC_HOST_NAME ?? "Loxaic Host";
   const advertiseUrl = process.env.LOXAIC_ADVERTISE_URL ?? `http://localhost:${process.env.PORT ?? "4000"}`;
   const inferenceBaseUrl = process.env.INFERENCE_BASE_URL ?? null;
-  // LOXAIC_VERSION is what the desktop supervisor passes; npm_package_version
-  // is what `pnpm dev` sets. Neither reaching here used to mean the column was
-  // always null — and the upsert never refreshed it, so even a value that did
-  // arrive was frozen at first registration.
-  const version = process.env.LOXAIC_VERSION ?? process.env.npm_package_version ?? null;
+  // Neither env var reaching here used to mean the column was always null —
+  // and the upsert never refreshed it, so even a value that did arrive was
+  // frozen at first registration.
+  const version = serverVersion();
 
   await db
     .insert(hosts)

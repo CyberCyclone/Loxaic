@@ -83,6 +83,10 @@ export interface ConfigResponse {
     retention: SandboxRetention;
     reason?: string;
   };
+  /** This server's build version, or null when nothing reported one (a bare
+   * `node dist/index.js`, a hand-rolled Docker image) — render as "—", never
+   * as "0.0.0" or "unknown". */
+  version: string | null;
 }
 
 /** `GET /v1/cluster`, projected to what a client shows: which host it is
