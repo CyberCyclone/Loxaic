@@ -125,6 +125,16 @@ jobs:
       # be ~30 MB apiece of dead weight in the bundle — and, on macOS, three
       # more foreign binaries for codesign to walk.
       TSNET_PROXY_HOST_ONLY: "1"
+      # Read only on darwin (app-builder-lib's isSignAllowed checks
+      # process.platform first), so these are harmlessly unused on the other
+      # two legs rather than needing a per-leg conditional. electron-builder
+      # imports CSC_LINK/CSC_KEY_PASSWORD into a throwaway keychain itself —
+      # nothing here needs to create one by hand.
+      CSC_LINK: ${{ secrets.CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

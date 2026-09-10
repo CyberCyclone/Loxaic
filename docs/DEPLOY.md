@@ -335,6 +335,43 @@ those children were spawned from.
 To test against this repository while it is still private, set `LOXAIC_GH_TOKEN` to a token
 that can read it. It is never persisted and never logged, and it is for local testing only.
 
+### macOS: signing and notarization
+
+A macOS release build is signed with a Developer ID Application certificate and notarized by
+Apple, so Gatekeeper opens it without a right-click-Open workaround. Both are driven entirely
+by environment variables — nothing in `apps/desktop/package.json` names a certificate or an
+Apple account:
+
+| Secret | What it's for |
+|---|---|
+| `CSC_LINK` | The `.p12` certificate (base64-encoded, or a URL electron-builder can fetch) |
+| `CSC_KEY_PASSWORD` | The passphrase the `.p12` was exported with |
+| `APPLE_ID` | The Apple ID to submit the notarization request as |
+| `APPLE_APP_SPECIFIC_PASSWORD` | An [app-specific password](https://support.apple.com/en-us/102654) for that Apple ID — never the account password |
+| `APPLE_TEAM_ID` | The Developer Team ID the certificate belongs to |
+
+Set as repository secrets, they take effect automatically in `release.yml`'s macOS build —
+electron-builder imports the certificate into its own throwaway keychain and submits for
+notarization once packaging finishes. Missing all five is not an error: a contributor's local
+`pnpm --filter @loxaic/desktop package:dir` produces an unsigned build with a log warning, which
+is what makes local development possible with no Apple account at all. Missing *some* of the
+three notarization variables **is** an error, deliberately — a half-configured secret set should
+fail loudly rather than notarize incorrectly.
+
+To build unsigned on a machine that happens to have some other certificate in its keychain, set
+`CSC_IDENTITY_AUTO_DISCOVERY=false` rather than editing the config — it's a per-invocation
+choice, not a committed one.
+
+Verifying a real signed, notarized build (needs a release actually built with the secrets
+above):
+
+```bash
+codesign --verify --deep --strict Loxaic.app   # every nested binary signed, recursively
+codesign -d --entitlements :- Loxaic.app         # confirm the three hardened-runtime grants
+spctl -a -vv -t install Loxaic.app               # "accepted", source=Notarized Developer ID
+xcrun stapler validate Loxaic.app                # the notarization ticket is stapled on
+```
+
 ## Endpoint resolution order (native apps)
 
 1. Settings → endpoint override (never probed, always wins)
