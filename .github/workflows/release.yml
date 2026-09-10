@@ -6,8 +6,13 @@ name: Release
 #
 # The version is stamped from the tag rather than committed (see
 # apps/desktop/scripts/stamp-version.mjs), so nothing here writes back to the
-# repository. Desktop installers are added to this workflow in the stage that
-# introduces the desktop updater.
+# repository.
+#
+# The release is created as a *draft* first and undrafted last, and that
+# ordering is what makes it safe: GitHub's `/releases/latest` and its Atom
+# feed both skip drafts, so the running desktop app cannot see a release
+# whose installers are still uploading — or one where a platform failed to
+# build at all.
 on:
   push:
     tags: ['v*']
@@ -53,6 +58,94 @@ jobs:
         run: |
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           node apps/desktop/scripts/stamp-version.mjs --parse "$TAG" >> "$GITHUB_OUTPUT"
+
+  create-release:
+    name: draft the release
+    needs: meta
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'CyberCyclone' }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      # Created here rather than left to electron-builder, which would
+      # otherwise have three matrix legs racing to create the same release.
+      # Idempotent, so re-running a failed release run is safe.
+      - run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists"
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --draft \
+            --generate-notes \
+            $([ "$PRERELEASE" = "true" ] && echo --prerelease || true)
+
+  desktop:
+    name: package ${{ matrix.os }}
+    needs: [meta, create-release]
+    if: ${{ github.repository_owner == 'CyberCyclone' }}
+    strategy:
+      # One platform failing to build must not cancel the other two: a release
+      # missing Windows is still a release worth having for macOS and Linux,
+      # and the draft makes that visible before anyone is offered it.
+      fail-fast: false
+      matrix:
+        # macos-15 is arm64. An Intel mac build is a follow-up — it needs
+        # @embedded-postgres/darwin-x64, which is not installed.
+        os: [macos-15, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      # Upload into the draft the job above made, never into a published one.
+      EP_DRAFT: "true"
+      # Each leg ships only its own platform's sidecar; the other four would
+      # be ~30 MB apiece of dead weight in the bundle — and, on macOS, three
+      # more foreign binaries for codesign to walk.
+      TSNET_PROXY_HOST_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: infra/tsnet-proxy/go.mod
+          cache-dependency-path: infra/tsnet-proxy/go.sum
+      - run: pnpm install --frozen-lockfile
+      - name: Stamp the version from the tag
+        run: node apps/desktop/scripts/stamp-version.mjs "$TAG"
+        shell: bash
+      - name: Package and upload
+        run: pnpm --filter @loxaic/desktop package:publish
+        shell: bash
+
+  publish-release:
+    name: publish the release
+    needs: [meta, expo-update, desktop]
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'CyberCyclone' }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      # The moment this runs, every installed desktop app can see the release.
+      # It is last on purpose: it needs the update to have been published and
+      # every platform's installer to have finished uploading.
+      - run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   expo-update:
     name: publish update

@@ -43,6 +43,13 @@ if (SELF_CONTAINED) {
 // main.js spawns the sidecar and points the app at a tailnet host instead.
 delete process.env.TSNET_TARGET;
 
+// A `--dir` build is a packaged build as far as `app.isPackaged` is concerned,
+// so without this every Electron run would ask GitHub for a release feed —
+// and, on a machine where a release exists, start downloading an installer
+// mid-suite. Switched off explicitly rather than left to chance, and the
+// updates spec asserts the app says so instead of pretending to be current.
+process.env.LOXAIC_DISABLE_UPDATES = '1';
+
 const E2E_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DESKTOP_DIR = path.resolve(E2E_DIR, '../desktop');
 const DESKTOP_DIST = path.join(DESKTOP_DIR, 'dist');

@@ -69,6 +69,24 @@ contextBridge.exposeInMainWorld("loxaic", {
   },
 
   /**
+   * Desktop updates. Same rule again: fixed channels, nothing addressable.
+   * `setChannel` takes one of two names and the main process validates it;
+   * there is no way for a page to point this at a feed, a version, or a file.
+   */
+  updates: {
+    getState: () => ipcRenderer.invoke("loxaic:updates.getState"),
+    setChannel: (channel) => ipcRenderer.invoke("loxaic:updates.setChannel", channel),
+    check: () => ipcRenderer.invoke("loxaic:updates.check"),
+    /** Stops the embedded stack, then restarts into the downloaded update. */
+    install: () => ipcRenderer.invoke("loxaic:updates.install"),
+    onState: (callback) => {
+      const listener = (_event, state) => { callback(state); };
+      ipcRenderer.on("loxaic:updateState", listener);
+      return () => { ipcRenderer.off("loxaic:updateState", listener); };
+    },
+  },
+
+  /**
    * The local executor: this machine running agent commands in a folder the
    * user chose. Same rule as `instance`: fixed channels, and the one that
    * involves a path (`pickDirectory`) takes none from the renderer — the
