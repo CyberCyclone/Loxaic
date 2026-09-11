@@ -26,6 +26,10 @@ export function initialState({ version = null, channel = "production", enabled =
     progress: null,
     error: null,
     version,
+    /** Set from the moment Restart is pressed until the next check: the one
+     * window in which an `error` at status `ready` is about the install
+     * itself and must be shown, not absorbed. */
+    installing: false,
   };
 }
 
@@ -55,8 +59,10 @@ export function reduce(state, event) {
   switch (event.type) {
     case "checking":
       return state.status === "ready"
-        ? { ...state, error: null }
-        : { ...state, status: "checking", error: null, progress: null };
+        ? { ...state, error: null, installing: false }
+        : { ...state, status: "checking", error: null, progress: null, installing: false };
+    case "installing":
+      return { ...state, installing: true, error: null };
     case "available":
       return state.status === "ready"
         ? state
@@ -76,11 +82,20 @@ export function reduce(state, event) {
         error: null,
       };
     case "error":
-      // An error after a successful download is a *later* check failing, and
-      // says nothing about the update already on disk. Keep the offer.
-      return state.status === "ready"
-        ? state
-        : { ...state, status: "error", progress: null, error: event.message || "The update check failed." };
+      // An error after a successful download is usually a *later* check
+      // failing, which says nothing about the update already on disk — keep
+      // the offer. The exception is an error while installing: quitAndInstall
+      // reports failure by emitting `error`, at status `ready`, and dropping
+      // that left a person who pressed Restart, watched nothing happen, and
+      // went on being told an update was ready, forever, with the reason gone.
+      if (state.status === "ready" && !state.installing) return state;
+      return {
+        ...state,
+        status: "error",
+        progress: null,
+        installing: false,
+        error: event.message || (state.status === "ready" ? "The update could not be installed." : "The update check failed."),
+      };
     case "channel":
       // A channel switch invalidates what the previous channel had found: the
       // build that was on offer may not exist on the new one at all.

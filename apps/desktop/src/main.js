@@ -895,15 +895,18 @@ async function runGui() {
     log: (line) => { console.log(`[loxaic] ${line}`); },
     onState: (state) => { mainWindow?.webContents.send("loxaic:updateState", state); },
     beforeInstall: async () => {
-      // Claim the quit before handing over. `quitAndInstall` closes the
-      // windows and then emits `before-quit`; with `quitting` already set,
-      // that handler steps aside and lets the app quit the ordinary way,
-      // which is what Squirrel and NSIS need to take over from. Stopping the
-      // children here rather than there is the point: the installer is about
-      // to replace the binary they were spawned from, and Postgres in
-      // particular needs to be down before that happens.
-      quitting = true;
+      // Stop the children *first*, then claim the quit. `quitAndInstall`
+      // closes the windows and then emits `before-quit`; with `quitting`
+      // set, that handler steps aside and lets the app quit the ordinary
+      // way, which is what Squirrel and NSIS need to take over from. But the
+      // flag has to become true only once it is: set before the await, a
+      // Cmd-Q or SIGTERM landing mid-shutdown found `quitting` already true,
+      // stepped aside, and exited with Postgres mid-drain — the exact
+      // outcome this ordering exists to prevent. Stopping the children here
+      // rather than in the handler is the point: the installer is about to
+      // replace the binary they were spawned from.
       await shutdownChildren();
+      quitting = true;
     },
   });
 

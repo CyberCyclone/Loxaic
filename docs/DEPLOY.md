@@ -312,6 +312,17 @@ from Settings → Updates. The channel is the same choice as on mobile and is st
 
 Nothing installs itself behind your back: the download is automatic, the restart is a button.
 
+**What the channel verifies, and what it does not.** On macOS a signed, notarized build is
+verified by the OS on install. On Windows and Linux the installers are **not signed**, so the
+only integrity check on a downloaded update is the `sha512` in `latest.yml` — a file written
+and uploaded by the same CI job, into the same GitHub release, as the installer it describes.
+That means anyone who can write an asset to a release (a compromised `GITHUB_TOKEN` or runner,
+a hijacked build-time dependency with an install script, a stolen maintainer token) can ship a
+trojaned installer with a matching hash, and every install would fetch it automatically and run
+it on the next restart. Until Windows signing exists, treat desktop auto-update on Windows as
+convenient rather than trustworthy, and keep the release workflow's write access as narrow as
+it is.
+
 **Checks are off** — with the reason shown in Settings rather than a silent no-op — in a
 development build, when `LOXAIC_DISABLE_UPDATES=1` or `--loxaic-no-updates` is given, and on
 Linux unless the app is running as an AppImage. A `.deb` is owned by the package manager;

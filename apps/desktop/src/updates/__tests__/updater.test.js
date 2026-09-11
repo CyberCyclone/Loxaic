@@ -185,6 +185,20 @@ describe("the desktop updater", () => {
     expect(updater.state().error).toMatch(/no autoUpdater/i);
   });
 
+  it("reports a shutdown that fails before the install, and does not install", async () => {
+    // beforeInstall stops Postgres, the server, the executor and the sidecar.
+    // If it rejects, the backend is already down — that has to be a sentence
+    // on screen, not a rejection into a void while the row says "ready".
+    const autoUpdater = fakeUpdater();
+    const { updater } = make({ autoUpdater, beforeInstall: () => Promise.reject(new Error("postgres refused to stop")) });
+    await updater.check();
+    autoUpdater.emit("update-downloaded", { version: "1.3.0" });
+    await updater.install();
+    expect(updater.state()).toMatchObject({ status: "error" });
+    expect(updater.state().error).toMatch(/postgres refused to stop/);
+    expect(autoUpdater.calls.some((c) => Array.isArray(c) && c[0] === "quitAndInstall")).toBe(false);
+  });
+
   it("uses a private feed only when told to, and never logs the token", async () => {
     const { updater, autoUpdater, logs } = make({ env: { LOXAIC_GH_TOKEN: "ghp_secret_value" } });
     await updater.check();

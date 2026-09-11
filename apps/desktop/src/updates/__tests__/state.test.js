@@ -51,6 +51,19 @@ describe("updater state", () => {
     }
   });
 
+  it("reports an error that happens while installing, sticky rule or not", () => {
+    // quitAndInstall reports failure by emitting `error` — at status `ready`,
+    // which the sticky rule absorbed. The person pressed Restart, nothing
+    // happened, and the row went on saying an update was ready, forever.
+    const ready = run(initialState({}), { type: "downloaded", version: "2.0.0" });
+    const failed = run(ready, { type: "installing" }, { type: "error", message: "installer exited 1" });
+    expect(failed).toMatchObject({ status: "error", error: "installer exited 1", installing: false });
+    // A later check's error, with no install in flight, still leaves the offer.
+    expect(reduce(ready, { type: "error", message: "rate limited" })).toMatchObject({ status: "ready" });
+    // And a new check clears the installing window.
+    expect(run(ready, { type: "installing" }, { type: "checking" }).installing).toBe(false);
+  });
+
   it("forgets what the old channel found when the channel changes", () => {
     // The build that was on offer may not exist on the new channel at all,
     // so continuing to advertise it would be a straightforward lie.

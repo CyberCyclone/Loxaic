@@ -1653,6 +1653,31 @@ screenshots showing that behaviour working. Writing those tests is the implement
   missing Windows is still worth having for the other two.
 - **`asar: false` means `mac.target` must include `zip`.** MacUpdater downloads the zip, not the
   dmg; the dmg is what a person installs by hand.
+- **The update channel has no authenticity check on Windows or Linux.** electron-updater's
+  Windows signature check compares the downloaded installer's publisher against the running
+  app's own certificate — with neither signed it is a no-op, and Linux has nothing equivalent.
+  What is left is the `sha512` in `latest.yml`, generated and uploaded by the same job into the
+  same release as the installer it vouches for: anyone who can write an asset there gets
+  automatic code execution on every install. macOS is the exception once signed and notarized.
+  That is why the release workflow's `contents: write` is scoped to the three jobs that touch the
+  release and every action is pinned to a commit — the workflow publishes binaries clients
+  auto-install, so a mutable tag there is a supply-chain seam.
+- **A failed install is not allowed to be silent.** Three things had to change together:
+  `beforeInstall()` is bounded and caught (its rejection into a `void` left the person in an app
+  whose backend was already down, still being told an update was ready); the reducer's
+  sticky-`ready` rule has an `installing` exception (`quitAndInstall` reports failure by emitting
+  `error` at status `ready`, which the rule absorbed); and the renderer's bridge calls `.catch`
+  into the error state rather than being `void`ed. And `quitting` is claimed only *after* the
+  children are down — set before the await, a Cmd-Q mid-shutdown stepped aside and exited with
+  Postgres mid-drain.
+- **The draft is reused on a re-run only while it is still a draft.** `gh release view` succeeds
+  for a published release too, so an unguarded "already exists → exit 0" let a re-run upload into
+  a *live* release with `EP_DRAFT=true`, rewriting `latest.yml` while clients polled it. A
+  published tag now fails the run with a message; deleting the release first is the deliberate
+  act it should be. And `publish-release` runs on `always()` minus cancellation, then counts
+  installer assets before undrafting: a matrix job concludes `failure` if any leg does, so the
+  default needs-gate stranded every release missing one platform as a permanent draft — the
+  opposite of what `fail-fast: false` was added for.
 - **The Electron e2e pins `LOXAIC_DISABLE_UPDATES=1`.** A `--dir` build is packaged as far as
   `app.isPackaged` is concerned, so without it every run would ask GitHub for a release feed and,
   on a machine where a release exists, start downloading an installer mid-suite.

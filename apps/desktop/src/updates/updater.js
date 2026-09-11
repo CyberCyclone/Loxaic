@@ -172,7 +172,21 @@ export function createUpdater({
      */
     async install() {
       if (state.status !== "ready" || !updater) return state;
-      await beforeInstall();
+      apply({ type: "installing" });
+      // Bounded and caught. beforeInstall stops Postgres, the server, the
+      // executor and the sidecar; if one of them refuses to stop, or hangs,
+      // the person is in an app whose backend is already down — that has to
+      // become a sentence on screen, not a rejection into a `void` while the
+      // row goes on saying an update is ready. The children have their own
+      // shutdown deadlines, so this ceiling only stops a silent wait forever.
+      try {
+        await withDeadline(beforeInstall(), BEFORE_INSTALL_DEADLINE_MS, "stopping the running services");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(`updates: install aborted — ${message}`);
+        apply({ type: "error", message: `Could not stop the running services before installing: ${message}` });
+        return state;
+      }
       updater.quitAndInstall(false, true);
       return state;
     },
@@ -197,6 +211,18 @@ export function createUpdater({
 }
 
 const CHANNEL_SET = new Set(["production", "beta"]);
+
+/** Longer than any child's own stop deadline, so it only ever fires when
+ * one of them has genuinely wedged. */
+const BEFORE_INSTALL_DEADLINE_MS = 45_000;
+
+function withDeadline(promise, ms, what) {
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => { reject(new Error(`timed out after ${String(ms / 1000)}s ${what}`)); }, ms);
+  });
+  return Promise.race([promise, deadline]).finally(() => { clearTimeout(timer); });
+}
 
 /**
  * Digs `autoUpdater` out of the imported module, whichever shape it arrives in.
