@@ -12,6 +12,8 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { useSession } from '@/lib/session';
 import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
+import { currentEndpoint } from '@/lib/endpoint';
+import { ServerPicker } from '@/components/auth/ServerPicker';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -23,6 +25,7 @@ export default function LoginScreen() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [serverOpen, setServerOpen] = useState(false);
 
   if (needsOnboarding) return <Redirect href="/onboarding" />;
   if (token) return <Redirect href="/" />;
@@ -38,11 +41,20 @@ export default function LoginScreen() {
         await signUp(email.trim(), password, name.trim() || undefined);
       }
       router.replace('/');
-    } catch {
+    } catch (err) {
+      // A request that never reached a server is a different problem from a
+      // rejected password, and the fix is on a different control. Opening the
+      // server field here is the whole point: on a fresh install there is no
+      // other route to it, and "check your server connection" is useless
+      // advice when nothing on screen lets you act on it.
+      const unreachable = isUnreachable(err);
+      if (unreachable) setServerOpen(true);
       setError(
-        mode === 'sign-in'
-          ? 'Sign in failed. Check your email, password, and server connection.'
-          : 'Sign up failed. The email may already be registered, or the server is unreachable.',
+        unreachable
+          ? `Could not reach ${currentEndpoint() ?? 'a server'}. Check the address below.`
+          : mode === 'sign-in'
+            ? 'Sign in failed. Check your email and password.'
+            : 'Sign up failed. The email may already be registered.',
       );
     } finally {
       setBusy(false);
@@ -150,6 +162,8 @@ export default function LoginScreen() {
             </Pressable>
           </HStack>
 
+          <ServerPicker open={serverOpen} onToggle={setServerOpen} />
+
           {/* A host that just chose to expose itself lands here before it can
               sign in, and this is the one moment its approval link is certain
               to be needed. Renders nothing off the desktop. */}
@@ -158,4 +172,20 @@ export default function LoginScreen() {
       </Box>
     </KeyboardAvoidingView>
   );
+}
+
+/**
+ * Whether the request failed to reach a server at all, as opposed to reaching
+ * one that said no.
+ *
+ * Deliberately generous: a fetch that never got a response surfaces as
+ * "Network request failed" on React Native, a `TypeError` on web, and an
+ * `AbortError` on a timeout, and none of them carry a status. Treating an
+ * unknown failure as reachable would hide the one control that fixes it, so
+ * the default leans the other way.
+ */
+function isUnreachable(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'AbortError' || err.name === 'TypeError') return true;
+  return /network|fetch|failed to connect|timeout|refused/i.test(err.message);
 }

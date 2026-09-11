@@ -23,3 +23,6 @@ uploads/
 # `go build` with no -o drops a binary named after the module in the package
 # directory; build.sh always writes to an explicit output dir instead.
 /infra/tsnet-proxy/tsnet-proxy
+
+# macOS Finder metadata
+.DS_Store
