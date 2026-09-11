@@ -102,9 +102,13 @@ type config struct {
 // parseConfig turns argv into a validated config. It returns an error rather
 // than exiting so that the failure modes are testable; main() is what decides
 // a bad flag is fatal.
-func parseConfig(args []string) (*config, error) {
+func parseConfig(args []string, usageTo io.Writer) (*config, error) {
 	fs := flag.NewFlagSet("tsnet-proxy", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
+	// Usage goes wherever the caller says: main passes stderr so `--help` and
+	// a mistyped flag print the flag list a hand-run binary needs, tests pass
+	// io.Discard so a deliberately bad argv does not spray usage into the
+	// test output. Discarding unconditionally silenced --help entirely.
+	fs.SetOutput(usageTo)
 
 	cfg := &config{}
 	fs.StringVar(&cfg.mode, "mode", modeClient, "client (proxy a local port to a tailnet target) or serve (publish the local server on the tailnet)")
@@ -188,6 +192,13 @@ func validateUpstream(raw string) error {
 	if parsed.Path != "" && parsed.Path != "/" {
 		return fmt.Errorf("--upstream must not include a path, got %q", raw)
 	}
+	// A query would be merged onto every inbound request by the reverse
+	// proxy's director (`targetQuery + "&" + req.URL.RawQuery`), so the server
+	// would see it on all of them; a fragment is never sent but is equally not
+	// an origin. Both are the same mistake as a path, and surface the same way.
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("--upstream must be a bare origin with no query or fragment, got %q", raw)
+	}
 	return nil
 }
 
@@ -251,7 +262,11 @@ func readAuthKey(r io.Reader) (string, error) {
 }
 
 func main() {
-	cfg, err := parseConfig(os.Args[1:])
+	cfg, err := parseConfig(os.Args[1:], os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		// The flag set has already printed usage; asking for it is not an error.
+		os.Exit(0)
+	}
 	if err != nil {
 		log.Fatalf("tsnet-proxy: %v", err)
 	}
@@ -302,8 +317,9 @@ func main() {
 		// default log.Printf instead — bypassing this process's stderr
 		// mirroring entirely, and leaving a parent that missed the first line
 		// with nothing to catch. Wiring both means a late subscriber still
-		// gets an AUTH_URL, and every tsnet message is tagged and mirrored the
-		// same way.
+		// gets an AUTH_URL — after emitLog's cooldown, which is what stops
+		// the repeats becoming a browser tab every five seconds — and every
+		// tsnet message is tagged and mirrored the same way.
 		Logf:     func(f string, a ...any) { emitLog("backend", f, a...) },
 		UserLogf: func(f string, a ...any) { emitLog("tsnet", f, a...) },
 	}
@@ -387,7 +403,7 @@ func runServe(ctx context.Context, srv *tsnet.Server, cfg *config) {
 	// Not named `url`: that shadows the net/url package for the rest of this
 	// function, which compiles today only because the one url.Parse above
 	// already ran.
-	served := serveURL(srv)
+	served := serveURL(srv, cfg.funnelAddr)
 	if served != "" {
 		fmt.Printf("SERVING %s\n", served)
 	}
@@ -429,12 +445,24 @@ func funnelHint(funnel bool) string {
 
 // serveURL is the https:// address other machines should use, derived from the
 // certificate domain tsnet holds for this node.
-func serveURL(srv *tsnet.Server) string {
-	domains := srv.CertDomains()
+// serveURL is the address people should open. It carries the listen port
+// whenever that is not 443: --serve-addr accepts :8443 and :10000 for Funnel
+// and anything at all otherwise, and an advertised URL that silently pointed
+// at 443 would send every follower to a port nothing listens on, with the
+// sidecar looking perfectly healthy.
+func serveURL(srv *tsnet.Server, listenAddr string) string {
+	return serveURLFor(srv.CertDomains(), listenAddr)
+}
+
+func serveURLFor(domains []string, listenAddr string) string {
 	if len(domains) == 0 {
 		return ""
 	}
-	return "https://" + domains[0]
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil || port == "" || port == "443" {
+		return "https://" + domains[0]
+	}
+	return "https://" + domains[0] + ":" + port
 }
 
 func emitStatus(srv *tsnet.Server, cfg *config, url string) {
@@ -462,8 +490,22 @@ func emitStatus(srv *tsnet.Server, cfg *config, url string) {
 
 // serveHTTP runs an HTTP server over ln until ctx is cancelled, then drains.
 func serveHTTP(ctx context.Context, ln net.Listener, handler http.Handler) {
-	httpSrv := &http.Server{Handler: handler}
+	httpSrv := &http.Server{
+		Handler: handler,
+		// With --funnel this listener faces the whole internet through
+		// Tailscale's relays, and a peer that opens a connection and dribbles
+		// header bytes would otherwise hold a goroutine and a relay slot open
+		// forever. Only the header read is bounded: ReadTimeout/WriteTimeout
+		// would cut the long-lived WebSocket streams every chat rides on.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	// Shutdown closes the listener first — which returns Serve at once — and
+	// only then waits for in-flight connections. Returning the moment Serve
+	// does would abandon that wait mid-drain and exit the process with a
+	// stream still open, so this waits for the shutdown goroutine to finish.
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
@@ -472,22 +514,29 @@ func serveHTTP(ctx context.Context, ln net.Listener, handler http.Handler) {
 	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("tsnet-proxy: serve: %v", err)
 	}
+	<-done
 }
 
-// announcedAuthURL is the last auth URL put on stdout, so each distinct one is
-// announced exactly once.
+// announcedAuthURL is the last auth URL put on stdout and when, so a repeat
+// of the same URL is announced again only after authURLRepeatAfter.
 //
 // This is not tidiness. Two loggers carry the URL and one of them repeats it
 // every few seconds for as long as the node is unapproved, while the parent's
-// standing reaction to an AUTH_URL line is to open a browser — so without this
-// the person waiting to approve their machine gets a fresh tab every five
-// seconds until they do. Keyed on the URL rather than a bool because a
-// registration that expires is replaced by a genuinely new one, which does
-// need announcing.
+// standing reaction to an AUTH_URL line is to open a browser — so without
+// this the person waiting to approve their machine gets a fresh tab every
+// five seconds until they do. But suppressing every repeat would leave a
+// parent that missed the first line (a closed tab, a failed openExternal)
+// with nothing to catch for the life of the process, which is the reason
+// both loggers are wired at all. A cooldown gives both: one tab, and a way
+// back. Keyed on the URL rather than a bool because a registration that
+// expires is replaced by a genuinely new one, which is announced at once.
 var announcedAuthURL struct {
 	sync.Mutex
 	url string
+	at  time.Time
 }
+
+const authURLRepeatAfter = 60 * time.Second
 
 // emitLog mirrors a tsnet log line to stderr (so it lands in the parent's
 // captured child-process logs) and re-emits any interactive auth URL it
@@ -502,9 +551,10 @@ func emitLog(source, format string, args ...any) {
 	}
 	announcedAuthURL.Lock()
 	defer announcedAuthURL.Unlock()
-	if authURL == announcedAuthURL.url {
+	if authURL == announcedAuthURL.url && time.Since(announcedAuthURL.at) < authURLRepeatAfter {
 		return
 	}
 	announcedAuthURL.url = authURL
+	announcedAuthURL.at = time.Now()
 	fmt.Println("AUTH_URL " + authURL)
 }

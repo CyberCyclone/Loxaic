@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"flag"
 	"io"
 	"net"
 	"net/http"
@@ -17,7 +19,7 @@ import (
 func TestParseConfigDefaultsToClient(t *testing.T) {
 	// An older caller passes only --target. It must keep working unchanged:
 	// the desktop app in the field predates --mode entirely.
-	cfg, err := parseConfig([]string{"--target", "box.tail.ts.net:443"})
+	cfg, err := parseConfig([]string{"--target", "box.tail.ts.net:443"}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
@@ -38,7 +40,7 @@ func TestParseConfigServeMode(t *testing.T) {
 		"--upstream", "http://127.0.0.1:4100",
 		"--hostname", "loxaic-host",
 		"--funnel",
-	})
+	}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseConfig: %v", err)
 	}
@@ -108,9 +110,9 @@ func TestParseConfigRejections(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseConfig(tc.args)
+			_, err := parseConfig(tc.args, io.Discard)
 			if err == nil {
-				t.Fatalf("parseConfig(%v) = nil error, want one mentioning %q", tc.args, tc.want)
+				t.Fatalf("parseConfig(%v, io.Discard) = nil error, want one mentioning %q", tc.args, tc.want)
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error = %q, want it to mention %q", err, tc.want)
@@ -438,5 +440,48 @@ func captureStdout(t *testing.T) func() string {
 		out := <-done
 		_ = r.Close()
 		return out
+	}
+}
+
+func TestServeURLCarriesTheListenPort(t *testing.T) {
+	domains := []string{"box.tail1234.ts.net"}
+	cases := map[string]string{
+		":443":   "https://box.tail1234.ts.net",
+		":8443":  "https://box.tail1234.ts.net:8443",
+		":10000": "https://box.tail1234.ts.net:10000",
+	}
+	for addr, want := range cases {
+		if got := serveURLFor(domains, addr); got != want {
+			t.Errorf("serveURLFor(%q) = %q, want %q", addr, got, want)
+		}
+	}
+	if got := serveURLFor(nil, ":443"); got != "" {
+		t.Errorf("no cert domains should yield no URL, got %q", got)
+	}
+}
+
+func TestUpstreamRejectsQueryAndFragment(t *testing.T) {
+	for _, raw := range []string{
+		"http://127.0.0.1:4100/?verbose=1",
+		"http://127.0.0.1:4100?verbose=1",
+		"http://127.0.0.1:4100/#frag",
+	} {
+		if err := validateUpstream(raw); err == nil {
+			t.Errorf("validateUpstream(%q) accepted a non-origin", raw)
+		}
+	}
+	if err := validateUpstream("http://127.0.0.1:4100"); err != nil {
+		t.Errorf("a bare origin must pass: %v", err)
+	}
+}
+
+func TestHelpPrintsUsageAndIsNotAnError(t *testing.T) {
+	var out strings.Builder
+	_, err := parseConfig([]string{"--help"}, &out)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("--help should return flag.ErrHelp, got %v", err)
+	}
+	if !strings.Contains(out.String(), "-upstream") {
+		t.Fatalf("--help printed no flag list; got:\n%s", out.String())
 	}
 }
