@@ -1,10 +1,10 @@
 import { useCallback, useState } from 'react';
-import { useUpdates } from 'expo-updates';
 import {
   applyChannel,
   checkNow,
   isSupported,
   restartIntoUpdate,
+  useUpdateState,
   versionInfo,
   type VersionInfo,
 } from '@/lib/expo-updates';
@@ -13,7 +13,6 @@ import {
   useUpdateChannel,
   type UpdateChannel,
 } from '@/lib/update-channel';
-import { useServerConfig } from './useServerConfig';
 
 export type UpdateStatus = 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
 
@@ -30,8 +29,6 @@ export interface AppUpdates {
   /** A sentence for the person, when something went wrong. */
   error: string | null;
   version: VersionInfo | null;
-  /** The server's own version, for spotting skew against this app's. */
-  serverVersion: string | null;
 }
 
 /**
@@ -46,12 +43,11 @@ export interface AppUpdates {
 export function useAppUpdates(): AppUpdates {
   const supported = isSupported();
   const channel = useUpdateChannel();
-  const { config } = useServerConfig();
 
-  // expo-updates' own hook: the states it reports (checking, downloading) are
-  // the ones this cannot observe from the outside, since checkNow() awaits
-  // both halves in one call.
-  const { isChecking, isDownloading, isUpdatePending, checkError, downloadError } = useUpdates();
+  // expo-updates' own hook, through the one module allowed to import it: the
+  // states it reports (checking, downloading) are the ones this cannot
+  // observe from the outside, since checkNow() awaits both halves in one call.
+  const { isChecking, isDownloading, isUpdatePending, checkError, downloadError } = useUpdateState();
   const [localError, setLocalError] = useState<string | null>(null);
 
   const setChannel = useCallback((next: UpdateChannel) => {
@@ -81,14 +77,19 @@ export function useAppUpdates(): AppUpdates {
   }, []);
 
   const error = localError ?? checkError?.message ?? downloadError?.message ?? null;
+  // An error outranks a pending update. `isUpdatePending` stays true from a
+  // completed download until the app reloads, so tested first it made every
+  // later error unreachable — a refused channel switch rendered as "An
+  // update is ready" and the person never learned their Beta choice did not
+  // take. A staged update is less urgent than a thing that just went wrong.
   const status: UpdateStatus = isChecking
     ? 'checking'
     : isDownloading
       ? 'downloading'
-      : isUpdatePending
-        ? 'ready'
-        : error
-          ? 'error'
+      : error
+        ? 'error'
+        : isUpdatePending
+          ? 'ready'
           : 'idle';
 
   return {
@@ -100,6 +101,5 @@ export function useAppUpdates(): AppUpdates {
     status,
     error,
     version: supported ? versionInfo() : null,
-    serverVersion: config?.version ?? null,
   };
 }

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { getItem, setItem } from './storage';
+import { getItem, isStorageHydrated, setItem } from './storage';
 
 /**
  * Which stream of over-the-air updates this install follows.
@@ -33,7 +33,12 @@ function read(): UpdateChannel {
     // strand someone on a channel they cannot name — and production is the
     // conservative half of the choice.
     current = getItem(KEY) === 'beta' ? 'beta' : 'production';
-    loaded = true;
+    // An unhydrated cache is indistinguishable from an absent key, and they
+    // deserve different answers: the first is "not yet", the second is
+    // "production". Latching on "not yet" turned a one-frame miss into a
+    // permanent one — a beta user was put back on production at every cold
+    // launch, and Settings showed Stable selected while storage held beta.
+    if (isStorageHydrated()) loaded = true;
   }
   return current;
 }
@@ -58,8 +63,10 @@ export function readUpdateChannel(): UpdateChannel {
 /** Writes the channel and notifies every reader. Applying it to the update
  * layer is the caller's job — see lib/expo-updates.ts's applyChannel. */
 export function setUpdateChannel(channel: UpdateChannel): void {
-  read(); // ensure the initial load happened, so `loaded` can't clobber this
+  // A write is authoritative whatever the hydration state: nothing a later
+  // hydration reads back can be newer than what was just stored.
   current = channel;
+  loaded = true;
   setItem(KEY, channel);
   listeners.forEach((l) => { l(); });
 }

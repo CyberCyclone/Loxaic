@@ -6,6 +6,7 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Spinner } from '@/components/ui/spinner';
 import { useAppUpdates } from '@/hooks/useAppUpdates';
+import { useServerConfig } from '@/hooks/useServerConfig';
 import { UPDATE_CHANNELS, type UpdateChannel } from '@/lib/update-channel';
 
 const CHANNEL_LABEL: Record<UpdateChannel, string> = {
@@ -27,7 +28,12 @@ const CHANNEL_LABEL: Record<UpdateChannel, string> = {
  * "stable" and "beta" alone.
  */
 export function UpdatesRow() {
-  const { supported, channel, setChannel, check, install, status, error, version, serverVersion } = useAppUpdates();
+  const { supported, channel, setChannel, check, install, status, error, version } = useAppUpdates();
+  // Fetched here, by the only thing that renders it. Reading it in the hook
+  // dragged a GET /v1/config into every session through the banner that
+  // mounts in AppShell — on every platform, for a value it never shows.
+  const { config } = useServerConfig();
+  const serverVersion = config?.version ?? null;
   if (!supported) return null;
 
   const busy = status === 'checking' || status === 'downloading';
@@ -53,7 +59,9 @@ export function UpdatesRow() {
 
       <HStack space="sm" className="items-center">
         {status === 'ready' ? (
-          <Button testID="settings.updates.check" size="sm" onPress={install}>
+          // Its own testID: a spec selecting `settings.updates.check` while an
+          // update happened to be staged would reload the app instead.
+          <Button testID="settings.updates.install" size="sm" onPress={install}>
             <ButtonText>Restart to update</ButtonText>
           </Button>
         ) : (
@@ -94,7 +102,7 @@ export function UpdatesRow() {
           active={channel === 'beta'}
           testID="settings.updates.betaCopy"
           label="Beta"
-          body="The same updates, earlier — including ones still being tested, which can be rough. You can switch back at any time; you keep the version you have until a stable release is newer than it, so switching back is never a downgrade."
+          body="The same updates, earlier — including ones still being tested, which can be rough. You can switch back at any time; you keep the version you have until a stable release replaces it."
         />
       </VStack>
     </VStack>

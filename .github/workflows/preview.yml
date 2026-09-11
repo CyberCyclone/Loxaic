@@ -8,6 +8,12 @@ on:
   push:
     branches: [master]
 
+# Holds EXPO_TOKEN on every push to master, so it gets nothing else: read is
+# all the checkout needs, and the default would otherwise be the repository's
+# — which may be write-all.
+permissions:
+  contents: read
+
 # One publish at a time, and only the newest matters — an update superseded
 # before it finished publishing is wasted work.
 concurrency:

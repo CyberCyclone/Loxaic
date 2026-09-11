@@ -25,7 +25,16 @@ function ThemedApp() {
   // Also above the auth gate, and for a related reason: an update that fixes
   // a bug preventing sign-in is exactly the one a signed-out user needs. A
   // no-op everywhere updates don't exist (web, Expo Go, development).
-  useEffect(() => startUpdateChecks(), []);
+  //
+  // Gated on `ready`, which SessionProvider sets after hydrateStorage() has
+  // resolved — not on being signed in, so the property above survives. Ungated,
+  // this ran before hydration (child effects fire first, and hydration is an
+  // await inside the parent's), read an empty cache, and re-applied
+  // 'production' over a stored 'beta' at every cold launch.
+  useEffect(() => {
+    if (!ready) return;
+    return startUpdateChecks();
+  }, [ready]);
   if (!ready) return null;
   return (
     <GluestackUIProvider mode={themePref}>

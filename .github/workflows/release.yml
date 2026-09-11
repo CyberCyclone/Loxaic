@@ -21,8 +21,11 @@ on:
         type: boolean
         default: false
 
+# Nothing here writes to the repository — the version is stamped, not
+# committed — so read is all the checkout needs. The desktop-installer stage
+# raises this to write for the job that creates the GitHub release.
 permissions:
-  contents: write
+  contents: read
 
 # Never two releases of the same tag at once, and never cancel one halfway:
 # a partially published release is worse than a slow one.
@@ -127,6 +130,11 @@ jobs:
         # production build already exists for this runtime, and only build
         # when none does. Building on every release would cost 20-40 minutes
         # and a queue slot for what is usually a JS-only change.
+        #
+        # The gate fails *closed*: an output shape it does not recognise is an
+        # error, not "zero builds". Mapping the unknown to zero would silently
+        # start the very builds this exists to prevent — with a step that
+        # still succeeds and a log line indistinguishable from the real case.
         run: |
           set -euo pipefail
           for platform in ios android; do
@@ -140,7 +148,7 @@ jobs:
                 --status finished \
                 --limit 1 \
                 --non-interactive \
-                --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);process.stdout.write(String(Array.isArray(v)?v.length:0));})')
+                --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
               if [ "$COUNT" != "0" ]; then
                 echo "$platform: runtime $RUNTIME already has a finished build; skipping"
                 continue

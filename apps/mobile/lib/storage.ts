@@ -6,10 +6,31 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  *
  * Web uses localStorage directly (kept key-compatible with the old Vite app:
  * loxaic-theme, loxaic-settings, …). Native reads go through the cache,
- * which `hydrateStorage()` fills from AsyncStorage once at app start —
- * await it before first render (the root layout does, behind the font gate).
+ * which `hydrateStorage()` fills from AsyncStorage once at app start.
+ *
+ * It is awaited inside SessionProvider's effect (lib/session.tsx), *not*
+ * ahead of first render — the root layout's font gate gates fonts, nothing
+ * else — and child effects run before parent effects. So a mount effect
+ * anywhere below the provider runs with the cache still empty, and a read
+ * there gets a miss for a key that is in storage. Anything that has to read
+ * at start-up gates on `isStorageHydrated()` (or on SessionProvider's
+ * `ready`, which is set after this resolves) rather than assuming.
  */
 const cache = new Map<string, string>();
+
+// Web's localStorage is synchronous, so there is nothing to wait for there.
+let hydrated = Platform.OS === 'web';
+
+/** Whether native reads can be trusted yet. */
+export function isStorageHydrated(): boolean {
+  return hydrated;
+}
+
+/** For tests only: pretend the app has just started. */
+export function __resetStorageForTest(): void {
+  cache.clear();
+  hydrated = Platform.OS === 'web';
+}
 
 const KNOWN_KEYS = [
   'loxaic-theme',
@@ -40,15 +61,22 @@ function isKnownKey(key: string): boolean {
 }
 
 export async function hydrateStorage(): Promise<void> {
-  if (Platform.OS === 'web') return;
-  // getAllKeys, then filter — AsyncStorage has no prefix query, and reading
-  // every key would pull in whatever other libraries have stored.
-  const all = await AsyncStorage.getAllKeys();
-  const wanted = all.filter(isKnownKey);
-  if (wanted.length === 0) return;
-  const pairs = await AsyncStorage.multiGet(wanted);
-  for (const [key, value] of pairs) {
-    if (value != null) cache.set(key, value);
+  if (Platform.OS === 'web') {
+    hydrated = true;
+    return;
+  }
+  try {
+    // getAllKeys, then filter — AsyncStorage has no prefix query, and reading
+    // every key would pull in whatever other libraries have stored.
+    const all = await AsyncStorage.getAllKeys();
+    const wanted = all.filter(isKnownKey);
+    if (wanted.length === 0) return;
+    const pairs = await AsyncStorage.multiGet(wanted);
+    for (const [key, value] of pairs) {
+      if (value != null) cache.set(key, value);
+    }
+  } finally {
+    hydrated = true;
   }
 }
 

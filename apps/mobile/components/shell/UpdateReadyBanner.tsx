@@ -20,10 +20,13 @@ import { useAppUpdates } from '@/hooks/useAppUpdates';
  * banner, one row up from the content.
  */
 export function UpdateReadyBanner() {
-  const { status, install } = useAppUpdates();
+  const { supported, status, install } = useAppUpdates();
   const [dismissed, setDismissed] = useState(false);
 
-  if (status !== 'ready' || dismissed) return null;
+  // Explicit rather than relying on `status` never reaching 'ready' where
+  // updates do not exist — that held only because the web shim reports
+  // isUpdatePending: false, which is its property, not this code's.
+  if (!supported || status !== 'ready' || dismissed) return null;
 
   return (
     <Box

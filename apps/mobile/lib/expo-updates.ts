@@ -2,6 +2,7 @@ import { AppState, Platform, type AppStateStatus } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
+import { useUpdates } from 'expo-updates';
 import { readUpdateChannel, subscribeUpdateChannel, type UpdateChannel } from './update-channel';
 
 /**
@@ -193,5 +194,45 @@ export function versionInfo(): VersionInfo {
     builtForChannel: Updates.channel,
     runtimeVersion: Updates.runtimeVersion,
     isEmbedded: Updates.isEmbeddedLaunch,
+  };
+}
+
+/** The live check/download state, for a component that needs to render it. */
+export interface UpdateState {
+  isChecking: boolean;
+  isDownloading: boolean;
+  isUpdatePending: boolean;
+  checkError: Error | null;
+  downloadError: Error | null;
+}
+
+const INERT_UPDATE_STATE: UpdateState = {
+  isChecking: false,
+  isDownloading: false,
+  isUpdatePending: false,
+  checkError: null,
+  downloadError: null,
+};
+
+/**
+ * expo-updates' own `useUpdates()`, behind this module's guard.
+ *
+ * This is the one thing here that cannot be gated by an early return: it is
+ * a hook, so it has to be called on every render regardless. What can be
+ * guarded is what it *reports* — everything it says is masked to inert
+ * values where updates do not exist, so no component ever renders the web
+ * shim's (or Expo Go's) idea of the state. Keeping the call in this file is
+ * what keeps "lib/expo-updates.ts is the only importer of expo-updates" true
+ * rather than true-except-for-that-one-hook.
+ */
+export function useUpdateState(): UpdateState {
+  const live = useUpdates();
+  if (!isSupported()) return INERT_UPDATE_STATE;
+  return {
+    isChecking: live.isChecking,
+    isDownloading: live.isDownloading,
+    isUpdatePending: live.isUpdatePending,
+    checkError: live.checkError ?? null,
+    downloadError: live.downloadError ?? null,
   };
 }

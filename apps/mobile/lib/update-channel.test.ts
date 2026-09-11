@@ -36,12 +36,13 @@ vi.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
-const { hydrateStorage } = await import('./storage');
+const { hydrateStorage, __resetStorageForTest } = await import('./storage');
 const { readUpdateChannel, setUpdateChannel, subscribeUpdateChannel, __resetUpdateChannelForTest } =
   await import('./update-channel');
 
 beforeEach(() => {
   asyncStore.clear();
+  __resetStorageForTest();
   __resetUpdateChannelForTest();
 });
 
@@ -69,6 +70,19 @@ describe('update channel preference', () => {
     __resetUpdateChannelForTest();
     await hydrateStorage();
     expect(readUpdateChannel()).toBe('production');
+  });
+
+  it('a read taken before hydration does not decide the answer for good', async () => {
+    // The order the real app runs in: startUpdateChecks() fires from a child
+    // effect before SessionProvider's effect has even begun the hydration
+    // await. That early read used to latch 'production' for the life of the
+    // process, so a stored 'beta' was never seen — the preference worked for
+    // exactly one session. Every other case here hydrates first, which is
+    // why none of them could catch it.
+    asyncStore.set('loxaic-update-channel', 'beta');
+    expect(readUpdateChannel()).toBe('production'); // honest "not yet"
+    await hydrateStorage();
+    expect(readUpdateChannel()).toBe('beta');
   });
 
   it('reads an unrecognised stored value as production', async () => {

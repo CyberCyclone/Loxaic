@@ -103,8 +103,9 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Expo SDK 57 / New Architecture only.** `newArchEnabled` is no longer a valid `app.json`
   key (SDK 55 removed the legacy architecture), `expo prebuild` now wipes `ios/`/`android/`
   before regenerating (pass `--no-clean` to keep them), and `runtimeVersion.policy:
-  "sdkVersion"` means each SDK bump starts a fresh EAS Update runtime — clients on the old
-  build simply stop receiving updates. Upgrade with `npx expo install expo@^NN --fix` run
+  "fingerprint"` means a native or dependency change — an SDK bump included — starts a fresh
+  EAS Update runtime, and an update published for it reaches no existing binary (see
+  "Releases and over-the-air updates" below). Upgrade with `npx expo install expo@^NN --fix` run
   *inside* `apps/mobile`, then `npx expo install --check` and `npx expo-doctor@latest`.
 - **TypeScript is deliberately held at 5.9** via `expo.install.exclude` in
   `apps/mobile/package.json`: every other workspace package is `^5.7` and the shared eslint
@@ -1586,7 +1587,26 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **`lib/expo-updates.ts` is the only file that imports `expo-updates`.** Every call in that
   module throws outside a native release build, so the guard lives in one place (`isSupported`)
   and everything else — the settings row, the banner, the hook — is written without platform
-  guards of its own.
+  guards of its own. The one thing that cannot sit behind an early return is `useUpdates()`,
+  since a hook has to be called on every render; `useUpdateState()` calls it there and masks
+  what it *reports* to inert values, which is how the rule stays true rather than
+  true-except-for-that-hook.
+- **The stored channel must not be read before storage has hydrated.** `hydrateStorage()` is
+  awaited inside `SessionProvider`'s effect, not ahead of first render, and child effects run
+  before parent effects — so `startUpdateChecks()` fired from `ThemedApp` used to read an empty
+  cache, latch `production` for the life of the process, and put every beta user back on
+  Stable at every cold launch while Settings showed Stable selected. It is gated on `ready`
+  now, and `read()` no longer latches until `isStorageHydrated()`. The test that catches this
+  reads *first* and hydrates *second*; every other case does the opposite, which is why none of
+  them could.
+- **OTA bundles are not code-signed yet, and that is a recorded decision, not an oversight.**
+  Without `codeSigningCertificate` expo-updates trusts any bundle the update server returns —
+  the only thing between a leaked `EXPO_TOKEN` (which `preview.yml` now uses on every push to
+  `master`) and arbitrary JS in every install is the EAS account. Enabling signing after builds
+  are in the field needs a native release to carry the certificate, so the cheapest moment is
+  **before the first production publish**: `npx expo-updates configuration:generate-signing-key`
+  in `apps/mobile`, commit the public certificate, keep the private key out of CI, and sign in
+  the publish step. Do this before `v1.0.0`.
 
 ## Conventions
 

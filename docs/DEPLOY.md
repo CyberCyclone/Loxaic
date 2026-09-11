@@ -261,6 +261,22 @@ Repository secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish;
 the publish step fails without one. Both workflows skip themselves entirely on
 a fork, so a fork's `master` never tries to publish to this project.
 
+### Before the first production publish: sign the bundles
+
+Over-the-air bundles are currently trusted on TLS alone — expo-updates accepts whatever the
+update server returns, so a leaked or misused `EXPO_TOKEN` means arbitrary JS in every install.
+Code signing makes a private key held *outside* CI the thing that authorises a bundle. It is
+cheapest to add before anything real is published, because enabling it later needs a native
+release to carry the certificate:
+
+```bash
+cd apps/mobile && npx expo-updates configuration:generate-signing-key
+```
+
+Commit the generated public certificate and the `codeSigningCertificate`/`codeSigningMetadata`
+it adds to `app.json`; keep the private key out of the repository and out of CI secrets that
+every branch can read; pass it to `eas update` in the publish step only.
+
 ### Native builds
 
 `runtimeVersion` uses the `fingerprint` policy, so a change to native code or
