@@ -47,11 +47,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [confirmDetach, setConfirmDetach] = useState(false);
   const [endpointTest, setEndpointTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [testingEndpoint, setTestingEndpoint] = useState(false);
+  const [confirmEndpoint, setConfirmEndpoint] = useState(false);
 
   useEffect(() => {
     if (open) {
       setDraft(settings);
       setDirty(false);
+      setConfirmEndpoint(false);
     }
   }, [open, settings]);
 
@@ -60,7 +62,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setDirty(true);
   };
 
-  const save = () => {
+  /**
+   * Saving, once the endpoint change has been agreed to.
+   *
+   * Split from `save` so the confirm step cannot be bypassed by a second
+   * caller: everything that actually writes goes through here.
+   */
+  const commit = () => {
     setSettings(draft);
     const endpoint = draft.endpoint.trim();
     if (endpoint) {
@@ -88,6 +96,24 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     }
     setDirty(false);
     showToast('Settings saved');
+  };
+
+  /**
+   * Changing the endpoint is the one setting here that can cut this device off
+   * from the server entirely — an address that is merely mistyped, or a domain
+   * whose DNS has not propagated, looks identical to a server that is down.
+   * Nothing else on this screen can do that, so nothing else is confirmed.
+   *
+   * Every other setting rides along with it: refusing to save the rest would
+   * mean an admin correcting a display name and a hostname in one visit gets
+   * neither until they agree to the risky half separately.
+   */
+  const save = () => {
+    if (draft.endpoint.trim() === settings.endpoint.trim()) {
+      commit();
+      return;
+    }
+    setConfirmEndpoint(true);
   };
 
   /**
@@ -165,7 +191,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 Display name
               </Text>
               <Input className="border-border bg-card">
-                <InputField value={draft.name} onChangeText={(v) => { update('name', v); }} />
+                <InputField testID="settings.name" value={draft.name} onChangeText={(v) => { update('name', v); }} />
               </Input>
             </VStack>
 
@@ -385,10 +411,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               Unsaved changes
             </Text>
             <HStack space="sm">
-              <Button variant="outline" size="sm" onPress={discard}>
+              <Button testID="settings.discard" variant="outline" size="sm" onPress={discard}>
                 <ButtonText>Discard</ButtonText>
               </Button>
-              <Button size="sm" className="bg-primary" onPress={save}>
+              <Button testID="settings.save" size="sm" className="bg-primary" onPress={save}>
                 <ButtonText className="text-primary-foreground">Save changes</ButtonText>
               </Button>
             </HStack>
@@ -396,6 +422,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         )}
       </ModalContent>
     </Modal>
+    <WarningConfirmModal
+      open={confirmEndpoint}
+      title="Change the server address?"
+      message={endpointWarning(settings.endpoint, draft.endpoint)}
+      confirmLabel="Change it"
+      testIDPrefix="settings.endpoint.confirm"
+      onConfirm={() => { setConfirmEndpoint(false); commit(); }}
+      onCancel={() => { setConfirmEndpoint(false); }}
+    />
     <WarningConfirmModal
       open={confirmDetach}
       title="Disconnect from this server?"
@@ -406,5 +441,39 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       onCancel={() => { setConfirmDetach(false); }}
     />
     </>
+  );
+}
+
+/**
+ * What changing the endpoint will do, in the terms the person changing it is
+ * actually working in.
+ *
+ * Deliberately names both addresses rather than saying "the server address":
+ * the case this exists for is an admin moving a deployment from a bare IP to a
+ * domain, and a transposed digit or a DNS record that has not propagated yet
+ * is indistinguishable from a server that is down. Saying which way it is
+ * moving is what makes a typo visible before it is committed.
+ *
+ * It also says how to get back, because the honest answer is reassuring: the
+ * app keeps working from cache while signed in, so this screen stays reachable
+ * and the change is reversible right here. The point of no return is signing
+ * out, not saving.
+ */
+function endpointWarning(current: string, next: string): string {
+  const from = current.trim();
+  const to = next.trim();
+  if (!to) {
+    return (
+      `This app will stop using ${from || 'the address you set'} and go back to finding a ` +
+      'server automatically. If it finds none, you will not be able to reach your server ' +
+      'from this device. You can set an address again on this screen while you are still ' +
+      'signed in.'
+    );
+  }
+  return (
+    `Everything in this app will talk to ${to}${from ? ` instead of ${from}` : ''}. ` +
+    'If that address is wrong, or is not reachable from this device yet, you will lose access ' +
+    'to your server — including the ability to sign in again once you sign out. ' +
+    'While you stay signed in you can change it back on this screen.'
   );
 }

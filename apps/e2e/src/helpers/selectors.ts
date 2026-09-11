@@ -97,6 +97,33 @@ export async function longPress(id: string, durationMs = 800): Promise<void> {
 export async function typeInto(id: string, text: string): Promise<void> {
   const el = byTestId(id);
   await el.waitForDisplayed();
+
+  // On web and Electron, `setValue` types character by character into what is
+  // usually a React-controlled input: the component re-renders between
+  // keystrokes and quietly eats some of them ("https://typo.example.com"
+  // arrived as "tp:/yoeapecm"). Retrying does not help and can make it worse —
+  // `clearValue` blanks the DOM but not React's state, so the next render
+  // restores the old value and the retype appends onto it. Setting the value
+  // through React's own native input setter and dispatching a real `input`
+  // event is the one approach that survives both.
+  if (platform() === 'web' || platform() === 'electron') {
+    await el.click();
+    await browser.execute(
+      (selector: string, value: string) => {
+        const node = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector);
+        if (!node) throw new Error(`typeInto: no element matched ${selector}`);
+        const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+        // Called straight off the descriptor rather than lifted into a
+        // variable first: the setter is only meaningful bound to `node`.
+        Object.getOwnPropertyDescriptor(proto.prototype, 'value')?.set?.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+      },
+      testIdSelector(id),
+      text,
+    );
+    return;
+  }
+
   await el.setValue(text);
   // XCUITest typing on the iOS 26 simulator can drop characters (see the
   // maxTypingFrequency note in wdio.ios.ts). Read the field back and retype
