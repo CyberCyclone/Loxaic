@@ -363,6 +363,43 @@ Apple account:
 | `APPLE_APP_SPECIFIC_PASSWORD` | An [app-specific password](https://support.apple.com/en-us/102654) for that Apple ID — never the account password |
 | `APPLE_TEAM_ID` | The Developer Team ID the certificate belongs to |
 
+#### Where these go
+
+**The `.p12` file is never put anywhere in this repository, and there is no env file to edit.**
+Both of those are the obvious guesses and both are wrong, so, concretely:
+
+- **The `.p12`** stays outside the checkout — your home directory, or a password manager. It is
+  read exactly once, by the `base64` command below, and nothing in the project ever refers to a
+  path to it. Note that `.gitignore` does *not* cover `*.p12`: a certificate dropped into the
+  checkout would be committable, which is reason enough to keep it elsewhere.
+- **The five variables** are **GitHub Actions repository secrets**, not shell exports and not a
+  file. GitHub injects them into the release build; `.github/workflows/release.yml` already
+  reads all five in its `desktop` job. Add them at
+  **Settings → Secrets and variables → Actions → New repository secret**
+  (`https://github.com/CyberCyclone/Open-Shannon/settings/secrets/actions`), or from a terminal:
+
+  ```bash
+  # CSC_LINK is the certificate itself, base64-encoded — not a path to it.
+  base64 -i ~/DeveloperID.p12 | gh secret set CSC_LINK
+
+  # The remaining four prompt for the value, so it stays out of shell history.
+  gh secret set CSC_KEY_PASSWORD
+  gh secret set APPLE_ID
+  gh secret set APPLE_APP_SPECIFIC_PASSWORD
+  gh secret set APPLE_TEAM_ID
+  ```
+
+  Confirm with `gh secret list`, which shows names and update times and never values.
+
+Nothing local needs configuring: a normal `pnpm --filter @loxaic/desktop package` on your own
+machine stays unsigned, and that is the intended everyday behaviour. To sign a build locally
+anyway, pass the same variables inline for that one command — there is still no file:
+
+```bash
+CSC_LINK=$(base64 -i ~/DeveloperID.p12) CSC_KEY_PASSWORD='…' \
+  pnpm --filter @loxaic/desktop package
+```
+
 Set as repository secrets, they take effect automatically in `release.yml`'s macOS build —
 electron-builder imports the certificate into its own throwaway keychain and submits for
 notarization once packaging finishes. Missing all five is not an error: a contributor's local
