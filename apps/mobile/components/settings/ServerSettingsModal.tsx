@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Modal,
   ModalBackdrop,
@@ -51,10 +51,18 @@ export function ServerSettingsModal({
   const [hostUrl, setHostUrl] = useState('');
   const [probe, setProbe] = useState<{ ok: boolean; reason?: string; cluster?: { name: string } } | null>(null);
 
-  // Re-seed from the live state every time the dialog opens, not just once —
-  // a save that landed since the last open must not show stale values.
+  // Re-seed from the live state every time the dialog *opens*, not just once —
+  // a save that landed since the last open must not show stale values. But
+  // only on the open transition: `state` gets a new identity on every stack
+  // push (an executor connecting, a sidecar changing state), and re-running
+  // this body then would overwrite whatever the person is mid-typing with the
+  // previously-saved values. The ref lets the effect read the *current* state
+  // at open time without depending on it.
+  const stateRef = useRef(state);
+  stateRef.current = state;
   useEffect(() => {
     if (!open) return;
+    const state = stateRef.current;
     setError(null);
     if (state.mode === 'client') {
       setHostUrl(state.apiBaseUrl ?? '');
@@ -67,7 +75,7 @@ export function ServerSettingsModal({
         advertiseUrl: state.host?.advertiseUrl ?? '',
       });
     }
-  }, [open, state]);
+  }, [open]);
 
   if (!bridge) return null;
 
@@ -83,12 +91,19 @@ export function ServerSettingsModal({
     setError(null);
     try {
       await bridge.instance.setMode({
-        mode: state.mode === 'solo' ? 'solo' : 'host',
+        mode: (state.mode ?? state.storedMode) === 'solo' ? 'solo' : 'host',
         host: {
           name: hostName.trim(),
-          port: Number(hostConfig.port) || state.defaultPort,
+          // The *stored* port is the honest fallback for a blank or garbled
+          // entry, not the default: an admin editing only the public address
+          // on a host running on 4177 must not be silently rebound to 4100 —
+          // every LAN client has 4177 written down.
+          port: Number(hostConfig.port) || (state.host?.port ?? state.defaultPort),
           bind: hostConfig.bind,
-          ...(hostConfig.advertiseUrl.trim() ? { advertiseUrl: hostConfig.advertiseUrl.trim() } : {}),
+          // Sent unconditionally: buildConfig reads an *omitted* key as "keep
+          // the previous value", so an empty field could never clear a stored
+          // public address. normalizeAdvertiseUrl('') is what clears it.
+          advertiseUrl: hostConfig.advertiseUrl.trim(),
         },
       });
       showToast('Server restarted');
@@ -169,7 +184,7 @@ export function ServerSettingsModal({
                   </Input>
                 </VStack>
 
-                <HostConfigFields
+                <HostConfigFields defaultPort={state.defaultPort}
                   testIDPrefix="settings.server"
                   values={hostConfig}
                   onChange={setHostConfig}

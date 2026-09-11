@@ -12,11 +12,18 @@
  * drive without one.
  */
 import { browser } from '@wdio/globals';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { SELF_CONTAINED, selfContainedDataDir } from '../../../scripts/electron-env.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { openSettings, signUp } from '../../helpers/app.ts';
+import {
+  instanceState,
+  openSettings,
+  probeEngine,
+  returnToOnboarding,
+  setMode,
+  signUp,
+} from '../../helpers/app.ts';
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { testIdSelector, typeInto, waitForVisible, tap } from '../../helpers/selectors.ts';
 
@@ -55,42 +62,6 @@ async function retype(id: string, text: string): Promise<void> {
   );
 }
 
-interface InstanceState {
-  mode: string | null;
-  apiBaseUrl: string | null;
-  host: { name: string; port: number; bind: string; advertiseUrl: string | null } | null;
-  listenPort: number | null;
-}
-
-async function instanceState(): Promise<InstanceState | null> {
-  return browser.execute(async () => {
-    const bridge = (window as unknown as {
-      loxaic?: { instance?: { getState: () => Promise<InstanceState> } };
-    }).loxaic;
-    return (await bridge?.instance?.getState()) ?? null;
-  });
-}
-
-async function probeEngine(): Promise<{ ok: boolean }> {
-  return browser.execute(async () => {
-    const bridge = (window as unknown as {
-      loxaic?: { instance?: { probeEngine: () => Promise<{ ok: boolean }> } };
-    }).loxaic;
-    return (await bridge?.instance?.probeEngine()) ?? { ok: false };
-  });
-}
-
-async function returnToOnboarding(): Promise<void> {
-  rmSync(path.join(selfContainedDataDir ?? '', 'config.json'), { force: true });
-  await browser.execute(async () => {
-    const bridge = (window as unknown as {
-      loxaic?: { instance?: { detach: () => Promise<unknown> } };
-    }).loxaic;
-    await bridge?.instance?.detach();
-  });
-  await browser.url('app://-/onboarding');
-}
-
 describe('electron host settings', () => {
   let switchedToHost = false;
 
@@ -107,15 +78,17 @@ describe('electron host settings', () => {
   // doesn't cost an unnecessary restart on a machine with no Docker/Podman.
   after(async function restoreSolo() {
     if (!switchedToHost) return;
-    await browser.execute(async () => {
-      const bridge = (window as unknown as {
-        loxaic?: { instance?: { setMode: (config: unknown) => Promise<unknown> } };
-      }).loxaic;
-      await bridge?.instance?.setMode({ mode: 'solo' });
-    });
+    await setMode({ mode: 'solo' });
   });
 
   it('sets up a Host with an explicit bind and public address, and both persist', async () => {
+    // Flipped the moment the shared install is touched, not once the Host is
+    // confirmed up. A stack that fails to start in time is exactly the case
+    // that must still be restored — otherwise onboarding.spec.ts and
+    // offline.spec.ts run against an install with no config and no stack,
+    // and one real failure becomes a cascade whose cause is files upstream.
+    // Restoring a Solo config that is already Solo is harmless.
+    switchedToHost = true;
     await returnToOnboarding();
     await waitForVisible('onboarding.mode.host');
     await tap('onboarding.mode.host');
@@ -139,7 +112,6 @@ describe('electron host settings', () => {
       },
       { timeout: 60_000, interval: 1000, timeoutMsg: 'stack did not start after choosing Host' },
     );
-    switchedToHost = true;
 
     const state = await instanceState();
     expect(state?.host?.name).toBe('E2E Test Host');

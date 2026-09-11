@@ -21,15 +21,25 @@ export function ServerSection() {
   const [editing, setEditing] = useState(false);
 
   if (!electronBridge()) return null;
-  if (!state?.mode) return null;
+  if (!state) return null;
+
+  // `mode` is null while the stack is down — including right after a save
+  // that failed to start it. That is exactly when this row must stay on
+  // screen: unmounting here would take the edit dialog (and the error it was
+  // about to show) with it, leaving a dead app with no explanation and no way
+  // to change the setting that broke it. `storedMode` is what config.json
+  // says, whether or not anything is running.
+  const mode = state.mode ?? state.storedMode;
+  if (!mode) return null;
+  const down = state.mode === null;
 
   const title =
-    state.mode === 'solo'
+    mode === 'solo'
       ? 'Just this machine'
-      : state.mode === 'host'
+      : mode === 'host'
         ? `Hosting as "${state.host?.name ?? ''}"`
         : 'Connected to a host';
-  const subtitle = state.mode === 'client' ? state.apiBaseUrl : (state.host?.advertiseUrl ?? state.apiBaseUrl);
+  const subtitle = mode === 'client' ? state.apiBaseUrl : (state.host?.advertiseUrl ?? state.apiBaseUrl);
 
   return (
     <>
@@ -39,12 +49,16 @@ export function ServerSection() {
           <HStack space="sm" className="items-center justify-between">
             <VStack className="flex-1">
               <Text size="sm" className="text-foreground">{title}</Text>
-              {subtitle && (
+              {down ? (
+                <Text testID="settings.server.down" size="2xs" className="text-destructive">
+                  Not running{state.error ? `: ${state.error}` : ''}
+                </Text>
+              ) : subtitle ? (
                 <Text size="2xs" className="text-muted-foreground">{subtitle}</Text>
-              )}
+              ) : null}
             </VStack>
             <Button testID="settings.server.edit" variant="outline" size="sm" onPress={() => { setEditing(true); }}>
-              <ButtonText>{state.mode === 'client' ? 'Change host' : 'Edit'}</ButtonText>
+              <ButtonText>{mode === 'client' ? 'Change host' : 'Edit'}</ButtonText>
             </Button>
           </HStack>
         </Box>

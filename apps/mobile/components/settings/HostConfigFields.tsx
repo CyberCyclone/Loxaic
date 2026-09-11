@@ -33,23 +33,32 @@ export function HostConfigFields({
   values,
   onChange,
   lanAddress,
+  defaultPort,
   fields = ['port', 'bind', 'advertiseUrl'],
 }: {
   testIDPrefix: string;
   values: HostConfigValues;
   onChange: (values: HostConfigValues) => void;
   lanAddress: string | null;
+  /** What the bridge reports as the default — never a literal here. */
+  defaultPort: number;
   fields?: Field[];
 }) {
   const show = (f: Field) => fields.includes(f);
 
+  const port = values.port || String(defaultPort);
+  const advertised = values.advertiseUrl.trim();
+  // A loopback bind with no public address is reachable by nobody else, and
+  // the sentence has to say so rather than print a localhost URL under a
+  // heading that promises others can use it.
+  const loopbackOnly = !advertised && values.bind === 'localhost';
   const reachableAt =
-    values.advertiseUrl.trim() ||
-    (values.bind === 'localhost'
-      ? `http://localhost:${values.port || '4100'}`
+    advertised ||
+    (loopbackOnly
+      ? `http://localhost:${port}`
       : lanAddress
-        ? `http://${lanAddress}:${values.port || '4100'}`
-        : `http://<this machine's LAN address>:${values.port || '4100'}`);
+        ? `http://${lanAddress}:${port}`
+        : `http://<this machine's LAN address>:${port}`);
 
   return (
     <VStack space="md">
@@ -109,8 +118,10 @@ export function HostConfigFields({
       )}
 
       {(show('bind') || show('advertiseUrl')) && (
-        <Text size="xs" className="text-muted-foreground">
-          Others will reach you at {reachableAt}
+        <Text testID={`${testIDPrefix}.reachableAt`} size="xs" className="text-muted-foreground">
+          {loopbackOnly
+            ? `Only this machine can reach it, at ${reachableAt}. Choose "This network" or set a public address for others to connect.`
+            : `Others will reach you at ${reachableAt}`}
         </Text>
       )}
     </VStack>

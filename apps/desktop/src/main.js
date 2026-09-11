@@ -225,6 +225,10 @@ async function runGui() {
     const config = loadConfig(dataDir());
     return {
       mode: instanceMode,
+      // What config.json says, whether or not a stack is up. `mode` goes null
+      // when a save fails to start; Settings needs to keep showing the row —
+      // and the error — rather than vanishing along with it.
+      storedMode: config?.mode ?? null,
       apiBaseUrl,
       // The one thing onboarding keys on: no stored config means show the
       // mode chooser rather than the app.

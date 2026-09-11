@@ -13,47 +13,10 @@
  * outranks the stored config, so there is no onboarding to reach.
  */
 import { browser } from '@wdio/globals';
-import { rmSync } from 'node:fs';
-import path from 'node:path';
-import { SELF_CONTAINED, selfContainedDataDir } from '../../../scripts/electron-env.ts';
+import { SELF_CONTAINED } from '../../../scripts/electron-env.ts';
+import { instanceState, returnToOnboarding } from '../../helpers/app.ts';
 import { shot } from '../../helpers/screenshot.ts';
 import { isVisible, tap, typeInto, waitForVisible } from '../../helpers/selectors.ts';
-
-/** State the main process reports; the same shape preload.cjs exposes. */
-interface InstanceState {
-  mode: string | null;
-  apiBaseUrl: string | null;
-  needsOnboarding: boolean;
-  defaultHostName: string;
-}
-
-/**
- * Returns the app to a genuine first run: drop the stored config and ask the
- * main process to forget its stack.
- *
- * Per-test rather than once in a hook, because these tests each *configure*
- * the instance — proving the chooser appears on a first run means getting
- * back to one first.
- */
-async function returnToOnboarding(): Promise<void> {
-  rmSync(path.join(selfContainedDataDir ?? '', 'config.json'), { force: true });
-  await browser.execute(async () => {
-    const bridge = (window as unknown as {
-      loxaic?: { instance?: { detach: () => Promise<unknown> } };
-    }).loxaic;
-    await bridge?.instance?.detach();
-  });
-  await browser.url('app://-/onboarding');
-}
-
-async function instanceState(): Promise<InstanceState | null> {
-  return browser.execute(async () => {
-    const bridge = (window as unknown as {
-      loxaic?: { instance?: { getState: () => Promise<InstanceState> } };
-    }).loxaic;
-    return (await bridge?.instance?.getState()) ?? null;
-  });
-}
 
 describe('electron onboarding', () => {
   before(function skipUnlessSelfContained() {

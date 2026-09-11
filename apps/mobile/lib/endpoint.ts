@@ -42,6 +42,8 @@ export interface HostSettingsView {
  * URL. See apps/desktop/src/preload.cjs — absent on every other platform. */
 export interface InstanceState {
   mode: 'solo' | 'host' | 'client' | null;
+  /** The mode config.json holds, even when nothing is running (`mode` null). */
+  storedMode: 'solo' | 'host' | 'client' | null;
   apiBaseUrl: string | null;
   needsOnboarding: boolean;
   defaultHostName: string;

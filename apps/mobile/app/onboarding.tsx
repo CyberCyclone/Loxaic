@@ -180,7 +180,7 @@ export default function OnboardingScreen() {
 
           {step === 'solo' && (
             <VStack space="md">
-              <HostConfigFields
+              <HostConfigFields defaultPort={state?.defaultPort ?? 4100}
                 testIDPrefix="onboarding.solo"
                 values={soloConfig}
                 onChange={setSoloConfig}
@@ -227,7 +227,7 @@ export default function OnboardingScreen() {
                 </Input>
               </VStack>
 
-              <HostConfigFields
+              <HostConfigFields defaultPort={state?.defaultPort ?? 4100}
                 testIDPrefix="onboarding.host"
                 values={hostConfig}
                 onChange={setHostConfig}
@@ -263,7 +263,9 @@ export default function OnboardingScreen() {
                         name: hostName.trim(),
                         port: Number(hostConfig.port) || state?.defaultPort,
                         bind: hostConfig.bind,
-                        ...(hostConfig.advertiseUrl.trim() ? { advertiseUrl: hostConfig.advertiseUrl.trim() } : {}),
+                        // Unconditional, same as Settings: an omitted key
+                        // means "keep the previous value" to buildConfig.
+                        advertiseUrl: hostConfig.advertiseUrl.trim(),
                       },
                     });
                   }}

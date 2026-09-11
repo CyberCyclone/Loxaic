@@ -8,6 +8,8 @@ import { byTestId, isVisible, platform, tap, typeInto, waitForGone, waitForTextI
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
+import { rmSync } from 'node:fs';
+import { selfContainedDataDir } from '../../scripts/electron-env.ts';
 
 /** Text the mock inference provider echoes back for a plain chat turn. */
 export function mockEcho(prompt: string): string {
@@ -525,4 +527,65 @@ export async function resetSandboxSettings(): Promise<void> {
       `[e2e] sandbox settings reset failed (${String(res.status)}): ${await res.text()}`,
     );
   }
+}
+
+// ── Desktop instance bridge (Electron, self-contained runs) ─────────────
+
+/** State the main process reports — the same shape preload.cjs exposes. One
+ * definition, shared by every spec that drives the bridge, so a change to the
+ * shape has one place to land instead of diverging copies. */
+export interface InstanceState {
+  mode: string | null;
+  storedMode: string | null;
+  apiBaseUrl: string | null;
+  needsOnboarding: boolean;
+  defaultHostName: string;
+  defaultPort: number;
+  host: { name: string; port: number; bind: string; advertiseUrl: string | null } | null;
+  listenPort: number | null;
+  error?: string;
+}
+
+export async function instanceState(): Promise<InstanceState | null> {
+  return browser.execute(async () => {
+    const bridge = (window as unknown as {
+      loxaic?: { instance?: { getState: () => Promise<InstanceState> } };
+    }).loxaic;
+    return (await bridge?.instance?.getState()) ?? null;
+  });
+}
+
+export async function probeEngine(): Promise<{ ok: boolean }> {
+  return browser.execute(async () => {
+    const bridge = (window as unknown as {
+      loxaic?: { instance?: { probeEngine: () => Promise<{ ok: boolean }> } };
+    }).loxaic;
+    return (await bridge?.instance?.probeEngine()) ?? { ok: false };
+  });
+}
+
+export async function setMode(config: unknown): Promise<void> {
+  await browser.execute(async (input: unknown) => {
+    const bridge = (window as unknown as {
+      loxaic?: { instance?: { setMode: (config: unknown) => Promise<unknown> } };
+    }).loxaic;
+    await bridge?.instance?.setMode(input);
+  }, config);
+}
+
+/**
+ * Returns the app to a genuine first run: drop the stored config and ask the
+ * main process to forget its stack. Whatever "back to a first run" has to do
+ * lives here once — a future extra step (clearing an endpoint override, say)
+ * must not have to be found in every spec that needs it.
+ */
+export async function returnToOnboarding(): Promise<void> {
+  rmSync(path.join(selfContainedDataDir ?? '', 'config.json'), { force: true });
+  await browser.execute(async () => {
+    const bridge = (window as unknown as {
+      loxaic?: { instance?: { detach: () => Promise<unknown> } };
+    }).loxaic;
+    await bridge?.instance?.detach();
+  });
+  await browser.url('app://-/onboarding');
 }
