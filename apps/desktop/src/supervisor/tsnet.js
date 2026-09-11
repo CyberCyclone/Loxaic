@@ -142,6 +142,10 @@ export function startTsnet({
       // looks like a credential.
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
+      // Test harness only: the fake sidecar's chosen client port. It could
+      // never have been set before — this env is built from scratch, which
+      // is right, but the fixture documented a knob nothing could reach.
+      ...(process.env.FAKE_TSNET_CLIENT_PORT ? { FAKE_TSNET_CLIENT_PORT: process.env.FAKE_TSNET_CLIENT_PORT } : {}),
       ...(process.env.TMPDIR ? { TMPDIR: process.env.TMPDIR } : {}),
     },
     stdio: [authKey ? "pipe" : "ignore", "pipe", "pipe"],
@@ -162,7 +166,11 @@ export function startTsnet({
     const payload = rest.join(" ");
     switch (keyword) {
       case "AUTH_URL":
-        if (!settled) setState({ state: "needs-auth", authUrl: payload });
+        // After the node has come up, a fresh AUTH_URL means its key has
+        // expired and the backend is asking again. That has to reach the
+        // card — `openAuthUrl` only opens the link in needs-auth — rather
+        // than leaving the renderer on "up" with an address that has died.
+        setState({ state: "needs-auth", authUrl: payload });
         break;
       case "LISTENING":
         succeed(`http://${payload}`);
@@ -256,7 +264,11 @@ export function startTsnet({
  * before that; otherwise the exit status is all there is.
  */
 export function explainExit(stderrTail, why) {
-  const own = stderrTail.filter((l) => /^(?:\S+ \S+ )?tsnet-proxy: (?!\[)/.test(l));
+  // The sidecar's own voice, minus the two informational lines it prints on
+  // a clean start ("forwarding …", "serving …"): those matched, and since
+  // the *last* match wins, a sidecar killed after a clean start reported its
+  // forwarding line as the error and threw away `why`.
+  const own = stderrTail.filter((l) => /^(?:\S+ \S+ )?tsnet-proxy: (?!\[|forwarding |serving )/.test(l));
   if (own.length > 0) {
     // log.Fatalf prints a timestamp first; drop it, and the prefix.
     return own[own.length - 1].replace(/^(?:\S+ \S+ )?tsnet-proxy: /, "");
@@ -269,6 +281,9 @@ export function explainExit(stderrTail, why) {
   // Nothing the sidecar said in its own voice. Whatever the shell or the OS
   // said last is the only clue there is — "Permission denied", "not found"
   // — and an exit code alone sends a person to a search engine.
-  const last = [...stderrTail].reverse().find((l) => l.trim() && !l.includes("tsnet-proxy: ["));
+  // Anything the sidecar itself said has been considered above; what is left
+  // of its own output is informational and must not be reported as the
+  // reason either. Only a line from the shell or the OS counts here.
+  const last = [...stderrTail].reverse().find((l) => l.trim() && !l.includes("tsnet-proxy: "));
   return last ? `The embedded Tailscale sidecar ${why}: ${last.trim()}` : `The embedded Tailscale sidecar ${why}.`;
 }

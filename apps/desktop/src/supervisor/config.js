@@ -85,7 +85,7 @@ function normalizeAdvertiseUrl(value) {
  * Same rules as the advertise URL — a bare http(s) origin — because that is
  * what tsnet's ControlURL wants; empty means Tailscale's own.
  */
-function normalizeControlUrl(value) {
+export function normalizeControlUrl(value) {
   if (value === undefined || value === null) return undefined;
   const trimmed = String(value).trim();
   if (!trimmed) return undefined;

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { getSandboxStatus } from "../sandbox/status.ts";
 import { getCluster, listHosts } from "../cluster.ts";
+import { signUpClosedReason } from "../auth/index.ts";
 
 /**
  * Unauthenticated, no-secrets, client-facing config — whether agent sandboxes
@@ -13,7 +14,9 @@ import { getCluster, listHosts } from "../cluster.ts";
  */
 export function configRoutes(app: FastifyInstance) {
   app.get("/v1/config", async () => {
-    return { sandbox: await getSandboxStatus() };
+    // `signUpOpen` lets a sign-in screen stop offering "Create one" when the
+    // server would refuse it; the refusal itself is enforced in auth.
+    return { sandbox: await getSandboxStatus(), signUpOpen: signUpClosedReason() === null };
   });
 
   /**

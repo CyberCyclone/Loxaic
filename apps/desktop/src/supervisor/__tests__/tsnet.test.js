@@ -251,3 +251,19 @@ async function waitFor(fn, timeoutMs = 5_000) {
     await new Promise((r) => setTimeout(r, 20));
   }
 }
+
+describe("explainExit", () => {
+  it("does not mistake the sidecar's own informational lines for the error", () => {
+    // Both lines are in the sidecar's own voice and used to match. The last
+    // match won, so a sidecar SIGKILLed after a clean start reported
+    // "forwarding …" as its reason and discarded the one real clue.
+    const tail = [
+      "2026/01/01 00:00:00 tsnet-proxy: forwarding 127.0.0.1:53321 -> box.ts.net:443",
+      "2026/01/01 00:00:00 tsnet-proxy: serving :443 -> http://127.0.0.1:4100",
+    ];
+    expect(explainExit(tail, "was killed")).toBe("The embedded Tailscale sidecar was killed.");
+    // A real fatal line still wins.
+    expect(explainExit([...tail, "2026/01/01 00:00:01 tsnet-proxy: listening: no certificate"], "exited"))
+      .toBe("listening: no certificate");
+  });
+});

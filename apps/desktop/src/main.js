@@ -33,7 +33,7 @@ async function runGui() {
   const { existsSync, rmSync } = await import("node:fs");
   const { default: serve } = await import("electron-serve");
   const { startStack } = await import("./supervisor/index.js");
-  const { defaultDataDir, resolveRuntimePaths } = await import("./supervisor/paths.js");
+  const { defaultDataDir, resolveRuntimePaths, tsnetProxyPath } = await import("./supervisor/paths.js");
   const { startExecutor } = await import("./supervisor/executor.js");
   const { startTsnet } = await import("./supervisor/tsnet.js");
   const { addRoot, loadOrCreateExecutorId, loadRoots, removeRoot, rootsPath } = await import("./supervisor/executor-store.js");
@@ -48,6 +48,7 @@ async function runGui() {
     hostSettingsView,
     configPath,
     loadConfig,
+    normalizeControlUrl,
     saveConfig,
     tsnetTargetFor,
   } = await import("./supervisor/config.js");
@@ -68,16 +69,9 @@ async function runGui() {
     return path.join(process.resourcesPath, "web");
   }
 
-  /** Where the per-OS tsnet-proxy sidecar binary lives, dev vs packaged. */
+  /** Where the per-OS tsnet-proxy sidecar binary lives — shared with headless.js. */
   function getTsnetProxyPath() {
-    const platform = process.platform === "win32" ? "win32" : process.platform;
-    const arch = process.arch;
-    const ext = platform === "win32" ? ".exe" : "";
-    const name = `tsnet-proxy-${platform}-${arch}${ext}`;
-    const dir = isDev
-      ? path.join(__dirname, "../resources/tsnet-proxy")
-      : path.join(process.resourcesPath, "tsnet-proxy");
-    return path.join(dir, name);
+    return tsnetProxyPath();
   }
 
   const PROBE_TIMEOUT_MS = 1500;
@@ -118,11 +112,18 @@ async function runGui() {
   // the probe which already joined) reuses it rather than making the person
   // approve the same machine twice.
   let tsnet = null; // { key, handle } from startTsnet, or null
+  // A probe's own sidecar, for when the main one is what the app is talking
+  // through. "Check" has to be a read-only action: tearing down the proxy
+  // behind `apiBaseUrl` to test a different address, then finding the person
+  // pressed Cancel, left the app disconnected until restart.
+  let tsnetProbe = null;
 
-  /** The tailnet as the renderer sees it. */
+  /** The tailnet as the renderer sees it — a probe in progress first, since
+   * that is the join the person is waiting on. */
   function tailnetView() {
-    if (!tsnet) return { state: "off", mode: null, authUrl: null, url: null, funnel: false, error: null, status: null };
-    const s = tsnet.handle.state;
+    const current = tsnetProbe ?? tsnet;
+    if (!current) return { state: "off", mode: null, authUrl: null, url: null, funnel: false, error: null, status: null };
+    const s = current.handle.state;
     return {
       state: s.state,
       mode: s.mode,
@@ -135,9 +136,24 @@ async function runGui() {
   }
 
   async function stopTsnet() {
+    await stopProbeTsnet();
+    // The slot is cleared only once the stop has finished. Nulling it first
+    // opened a window where a second caller saw "no sidecar", launched its
+    // own, and had that overwritten when this one resumed — two nodes on one
+    // state directory, the first referenced by nothing shutdownChildren()
+    // could reach.
     const current = tsnet;
-    tsnet = null;
-    if (current) await current.handle.stop().catch(() => undefined);
+    if (!current) return;
+    await current.handle.stop().catch(() => undefined);
+    if (tsnet === current) tsnet = null;
+  }
+
+  async function stopProbeTsnet() {
+    const current = tsnetProbe;
+    if (!current) return;
+    await current.handle.stop().catch(() => undefined);
+    if (tsnetProbe === current) tsnetProbe = null;
+    pushStackState();
   }
 
   /**
@@ -169,7 +185,7 @@ async function runGui() {
    * before this existed keeps its identity — in *separate* directories: the
    * two are different nodes, and one state file cannot hold two keys. */
   function tsnetStateDir(mode) {
-    return path.join(dataDir(), mode === "serve" ? "tsnet-serve" : "tsnet");
+    return path.join(dataDir(), mode === "serve" ? "tsnet-serve" : mode === "probe" ? "tsnet-probe" : "tsnet");
   }
 
   /**
@@ -193,6 +209,41 @@ async function runGui() {
       stateDir: tsnetStateDir("client"),
     });
   }
+
+  /**
+   * A sidecar for a probe that must not disturb the one the app is using:
+   * its own slot, its own node identity (a separate state directory), and
+   * no auth key — a probe is a reachability check, and a stored key was
+   * issued for a control server the renderer does not get to swap. Reused
+   * across probes of the same address, so approving it once is enough.
+   */
+  async function ensureProbeTsnet(client) {
+    const { target, tls } = tsnetTargetFor(client.hostUrl);
+    const key = `client:${target}:${client.controlUrl ?? ""}`;
+    const live = tsnetProbe?.key === key && !["error", "off"].includes(tsnetProbe.handle.state.state);
+    if (live) return tsnetProbe.handle;
+    await stopProbeTsnet();
+    let handle = null;
+    handle = startTsnet({
+      bin: tsnetBin(),
+      log: (line) => { console.log(`[loxaic] ${line}`); },
+      onState: () => { if (handle !== null && tsnetProbe?.handle === handle) pushStackState(); },
+      mode: "client",
+      target,
+      tls,
+      hostname: "loxaic-desktop",
+      controlUrl: client.controlUrl,
+      stateDir: tsnetStateDir("probe"),
+    });
+    tsnetProbe = { key, handle };
+    pushStackState();
+    return handle;
+  }
+
+  /** How long a probe waits for its sidecar before handing back instead of
+   * holding the form: long enough for an ordinary join, not for a coffee.
+   * The sidecar keeps running, so a Check after the approval lands is quick. */
+  const PROBE_TSNET_WAIT_MS = 120_000;
 
   /**
    * Publishes a running host stack on the tailnet. Not awaited by the
@@ -220,8 +271,14 @@ async function runGui() {
         if (config.host.advertiseUrl) return; // an explicit address wins, as everywhere else
         try {
           await started.setAdvertiseUrl(url);
+          startupError = null;
         } catch (err) {
-          console.warn(`[loxaic] could not re-advertise as ${url}: ${err instanceof Error ? err.message : String(err)}`);
+          // The supervisor has brought the server back on its previous
+          // address; what is lost is the tailnet one. Say so where the
+          // renderer can show it rather than only in the log.
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[loxaic] could not re-advertise as ${url}: ${message}`);
+          startupError = `The server could not be restarted for its tailnet address and is still on its previous one: ${message}`;
         }
         pushStackState();
       })
@@ -270,6 +327,7 @@ async function runGui() {
       target,
       tls: true,
       hostname: "loxaic-desktop",
+      authKey: readSecrets(dataDir()).tsnetAuthKey,
       stateDir: tsnetStateDir("client"),
       onTransition: (s) => {
         if (s.state === "needs-auth" && s.authUrl && s.authUrl !== opened) {
@@ -281,7 +339,12 @@ async function runGui() {
     });
     try {
       let url = await withGrace(handle.ready, 5000);
-      if (url === null && handle.state.state === "needs-auth") url = await handle.ready;
+      // Keep waiting as long as the sidecar is alive — not only once it has
+      // reached needs-auth. A first run whose AUTH_URL took six seconds to
+      // arrive was still "starting" at the five-second mark, got stopped, and
+      // fell back to LAN probing with the person never asked to approve
+      // anything: the exact failure the docstring above says was removed.
+      if (url === null && handle.state.state !== "error") url = await handle.ready;
       if (url === null) {
         console.warn("[loxaic] tsnet-proxy did not come up in time; falling back");
         await stopTsnet();
@@ -495,11 +558,26 @@ async function runGui() {
    * a mode switch cannot leave two children behind.
    */
   let executorSync = Promise.resolve();
+  // What the live executor was started for. It follows exactly two inputs,
+  // and pushStackState fires for plenty that move neither — every sidecar
+  // transition, a probe, a tailnet retry. Restarting it for those kills
+  // whatever the agent is running on this machine, for no change.
+  let executorSpawnedFor = null;
+
   function syncExecutor() {
     executorSync = executorSync.then(async () => {
+      if (
+        executor &&
+        executorSpawnedFor &&
+        executorSpawnedFor.token === sessionToken &&
+        executorSpawnedFor.apiBaseUrl === apiBaseUrl
+      ) {
+        return;
+      }
       if (executor) {
         const previous = executor;
         executor = null;
+        executorSpawnedFor = null;
         await previous.stop().catch(() => undefined);
       }
       if (!sessionToken) {
@@ -522,6 +600,7 @@ async function runGui() {
         return;
       }
       const identity = executorIdentity();
+      executorSpawnedFor = { token: sessionToken, apiBaseUrl };
       executor = startExecutor({
         entry,
         cwd: path.dirname(entry),
@@ -671,10 +750,36 @@ async function runGui() {
       let probeBase = base;
       if (opts && typeof opts === "object" && opts.via === "tsnet") {
         try {
-          const controlUrl = typeof opts.controlUrl === "string" && opts.controlUrl.trim() ? opts.controlUrl.trim() : undefined;
-          const handle = await ensureClientTsnet({ hostUrl: base, controlUrl });
+          // The same validation setMode applies to the same field: this was
+          // the one path a renderer-named control server reached the sidecar
+          // unparsed — and, before the probe slot below, with the stored auth
+          // key presented to it.
+          const controlUrl = normalizeControlUrl(opts.controlUrl);
+          const client = { hostUrl: base, controlUrl };
+          // The main sidecar is what the app is talking through whenever a
+          // tsnet client is the running mode. A probe of a *different*
+          // address must not touch it — Check is the one button in the dialog
+          // a person expects to be able to press speculatively.
+          const { target } = tsnetTargetFor(base);
+          const backingTheApp =
+            tsnet !== null && instanceMode === "client" && tsnet.key !== `client:${target}:${controlUrl ?? ""}`;
+          const handle = backingTheApp ? await ensureProbeTsnet(client) : await ensureClientTsnet(client);
           pushStackState();
-          probeBase = await handle.ready;
+          // Bounded, unlike the join itself: a sidecar that never reached
+          // `error` held the form for the full ten-minute join timeout with
+          // no cancel reachable. The sidecar stays up past this, so a Check
+          // after the approval lands reuses it.
+          const url = await withGrace(handle.ready, PROBE_TSNET_WAIT_MS);
+          if (url === null) {
+            return {
+              ok: false,
+              reason:
+                handle.state.state === "needs-auth"
+                  ? "Still waiting for this machine to be approved on the tailnet. Approve it, then press Check again."
+                  : "The tailnet did not come up in time. Try again in a moment.",
+            };
+          }
+          probeBase = url;
         } catch (err) {
           return { ok: false, reason: err instanceof Error ? err.message : String(err) };
         }

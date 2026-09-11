@@ -211,9 +211,11 @@ export function HostConfigFields({
                 <Text size="sm" className="flex-1 text-foreground">Also publish to the internet (Funnel)</Text>
               </HStack>
               <Text size="2xs" className="text-muted-foreground">
-                Anyone with the address reaches the sign-in page, not only your tailnet. This is how a
-                phone without the Tailscale app reaches you. Funnel has to be allowed in your
-                tailnet&apos;s policy.
+                Anyone on the internet with the address can reach the sign-in page — this is how a
+                phone without the Tailscale app reaches you. The address is not a secret: its
+                certificate is public the moment it is issued. While this is on, creating accounts
+                is switched off, so make your own account first (the first account becomes the
+                administrator). Funnel has to be allowed in your tailnet&apos;s policy.
               </Text>
 
               <VStack space="xs">

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -21,8 +21,23 @@ export function loadOrCreateSecrets(dataDir) {
     pgPassword: randomBytes(32).toString("hex"),
   };
   mkdirSync(dataDir, { recursive: true });
-  writeFileSync(file, JSON.stringify(secrets, null, 2) + "\n", { mode: 0o600 });
+  writeSecretsFile(file, secrets);
   return secrets;
+}
+
+/**
+ * Write-to-temp-then-rename, so the file is never observable half-written.
+ * This started to matter when secrets.json stopped being write-once: every
+ * setMode carrying a tailnet auth key rewrites it, and a torn write reads
+ * back as "missing" — which regenerates *both* the auth secret and the
+ * Postgres password, while initdb only runs when the data directory is
+ * absent. The cluster keeps the old role password and every later boot
+ * fails to authenticate, with nothing on screen to say why.
+ */
+function writeSecretsFile(file, secrets) {
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, JSON.stringify(secrets, null, 2) + "\n", { mode: 0o600 });
+  renameSync(tmp, file);
 }
 
 /**
@@ -56,6 +71,6 @@ export function updateSecrets(dataDir, patch) {
     if (value === null || value === undefined || value === "") delete next[key];
     else next[key] = value;
   }
-  writeFileSync(file, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });
+  writeSecretsFile(file, next);
   return next;
 }

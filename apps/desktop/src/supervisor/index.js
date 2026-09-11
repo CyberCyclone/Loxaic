@@ -245,6 +245,19 @@ export async function startStack({
     for (const key of PASSTHROUGH_ENV) {
       if (process.env[key] !== undefined) env[key] = process.env[key];
     }
+    // After the pass-through, so this extends the operator's list rather
+    // than being overwritten by it. better-auth trusts the origin it signs
+    // for plus TRUSTED_ORIGINS and nothing else, so moving BETTER_AUTH_URL to
+    // the ts.net address on a tailnet join would silently un-trust every
+    // browser that reached this host by its LAN address — signing them all
+    // out, minutes after the switch was flipped, with no way back in.
+    if (advertise !== advertiseUrl) {
+      env.TRUSTED_ORIGINS = [env.TRUSTED_ORIGINS, advertiseUrl].filter(Boolean).join(",");
+    }
+    // With Funnel on, the server closes registration (auth/index.ts): the
+    // whole API is on the public internet, and the first account created is
+    // made admin.
+    if (hostConfig?.tailnet?.funnel) env.LOXAIC_FUNNEL = "1";
     return env;
   };
 
@@ -292,16 +305,31 @@ export async function startStack({
      * because the port does not. A no-op when nothing would change.
      */
     setAdvertiseUrl: (next) => {
-      restarting = restarting.then(async () => {
+      const attempt = restarting.then(async () => {
         if (stopped || next === currentAdvertiseUrl) return;
         log(`[stack] restarting server to advertise ${next}`);
         const previous = server;
         await previous.stop();
-        server = await spawnServer(next);
-        currentAdvertiseUrl = next;
+        try {
+          server = await spawnServer(next);
+          currentAdvertiseUrl = next;
+        } catch (err) {
+          // Come back up on the address that was working, so a failed
+          // re-advertise costs the tailnet URL rather than the whole host.
+          // Without this `server` kept pointing at the child just stopped
+          // while stackState() went on reporting a healthy host.
+          log(`[stack] could not advertise ${next}; returning to ${currentAdvertiseUrl}`);
+          server = await spawnServer(currentAdvertiseUrl);
+          throw err;
+        }
         log(`[stack] server now advertises ${next}`);
       });
-      return restarting;
+      // The chain has to survive a failure: a `.then` chained onto a rejected
+      // promise skips its callback, so one failed restart would have made
+      // every later one — including the person's Retry — a silent no-op.
+      // The caller still gets the rejection.
+      restarting = attempt.catch(() => undefined);
+      return attempt;
     },
     stop: async () => {
       if (stopped) return;

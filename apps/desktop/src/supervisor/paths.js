@@ -53,3 +53,16 @@ export function resolveRuntimePaths() {
     webDistDir: path.resolve(appRoot, "../mobile/dist"),
   };
 }
+
+/**
+ * The per-OS tsnet-proxy sidecar binary. It sits beside the server payload
+ * in both layouts — resources/{server,tsnet-proxy} in a checkout,
+ * Resources/{server,tsnet-proxy} in the packaged app — so it is derived from
+ * the same resolution rather than duplicated with its own dev/packaged split.
+ * Shared by main.js and headless.js: a headless host has to find it too.
+ */
+export function tsnetProxyPath() {
+  const { serverDir } = resolveRuntimePaths();
+  const ext = process.platform === "win32" ? ".exe" : "";
+  return path.join(path.dirname(serverDir), "tsnet-proxy", `tsnet-proxy-${process.platform}-${process.arch}${ext}`);
+}
