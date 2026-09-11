@@ -8,6 +8,19 @@ describe('normalizeUrl', () => {
     expect(normalizeUrl('box.tail1234.ts.net')).toBe('https://box.tail1234.ts.net');
   });
 
+  it('assumes plain http for an address on your own network', () => {
+    // The self-contained server listens on plain HTTP, and the picker's help
+    // text advertises "its address on your network". Defaulting these to
+    // https produced a bare "Could not reach it." with no hint that the
+    // scheme had been guessed — and Save does not test.
+    expect(normalizeUrl('192.168.1.20:4100')).toBe('http://192.168.1.20:4100');
+    expect(normalizeUrl('localhost:4000')).toBe('http://localhost:4000');
+    expect(normalizeUrl('box:4100')).toBe('http://box:4100');
+    expect(normalizeUrl('[::1]:4000')).toBe('http://[::1]:4000');
+    // A typed scheme is never second-guessed.
+    expect(normalizeUrl('https://192.168.1.20:4100')).toBe('https://192.168.1.20:4100');
+  });
+
   it('keeps an explicit scheme, including plain http for a LAN address', () => {
     expect(normalizeUrl('http://192.168.1.20:4100')).toBe('http://192.168.1.20:4100');
     expect(normalizeUrl('https://box.tail1234.ts.net')).toBe('https://box.tail1234.ts.net');

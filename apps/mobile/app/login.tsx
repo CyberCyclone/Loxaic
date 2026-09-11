@@ -13,7 +13,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { useSession } from '@/lib/session';
 import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 import { currentEndpoint } from '@/lib/endpoint';
-import { ServerPicker } from '@/components/auth/ServerPicker';
+import { ServerPicker, serverPickerKind } from '@/components/auth/ServerPicker';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -48,10 +48,21 @@ export default function LoginScreen() {
       // other route to it, and "check your server connection" is useless
       // advice when nothing on screen lets you act on it.
       const unreachable = isUnreachable(err);
-      if (unreachable) setServerOpen(true);
+      // Only where there is something below to check. In a browser there is
+      // no picker (the page came from the server it signs in to), and a
+      // sentence pointing at a control that renders nothing is the failure
+      // this screen was changed to fix, turned the other way round.
+      const picker = serverPickerKind();
+      if (unreachable && picker === 'form') setServerOpen(true);
       setError(
         unreachable
-          ? `Could not reach ${currentEndpoint() ?? 'a server'}. Check the address below.`
+          ? `Could not reach ${currentEndpoint() ?? 'a server'}.${
+              picker === 'form'
+                ? ' Check the address below.'
+                : picker === 'reconfigure'
+                  ? ' Use "Connect to a different server" below.'
+                  : ' Check that the server is running and reachable from here.'
+            }`
           : mode === 'sign-in'
             ? 'Sign in failed. Check your email and password.'
             : 'Sign up failed. The email may already be registered.',

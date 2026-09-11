@@ -8,7 +8,7 @@ import { Text } from '@/components/ui/text';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
-import { currentEndpoint, electronBridge, setEndpoint } from '@/lib/endpoint';
+import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { getItem, setItem, removeItem } from '@/lib/storage';
 import { normalizeUrl } from '@/lib/server-address';
 
@@ -34,6 +34,20 @@ import { normalizeUrl } from '@/lib/server-address';
  * gets a route back to onboarding, which writes through that path, and the
  * form below is native-only.
  */
+/**
+ * What the sign-in screen can offer for reaching a different server here:
+ * the address form on native, a route back to onboarding on the desktop, and
+ * nothing in a browser — where the page came from the server it signs in to.
+ * Exported so the sign-in error can be gated on the same answer the picker
+ * renders from, rather than promising "check the address below" over a
+ * control that is not there.
+ */
+export function serverPickerKind(): 'form' | 'reconfigure' | 'none' {
+  if (electronBridge()) return 'reconfigure';
+  if (Platform.OS === 'web') return 'none';
+  return 'form';
+}
+
 export function ServerPicker({ open, onToggle }: { open: boolean; onToggle: (open: boolean) => void }) {
   const router = useRouter();
   const [url, setUrl] = useState(() => getItem('loxaic-endpoint') ?? currentEndpoint() ?? '');
@@ -75,6 +89,17 @@ export function ServerPicker({ open, onToggle }: { open: boolean; onToggle: (ope
       // rather than pinning the app to a blank string.
       removeItem('loxaic-endpoint');
       setEndpoint(null);
+      // setEndpoint(null) only clears the resolution; nothing re-runs the
+      // detection, and the api-client keeps the previous base URL. Left
+      // there, the collapsed line read "Server: not set" while the next
+      // sign-in posted the password to the very address just removed —
+      // and stored its token under the unscoped key, so the following
+      // launch signed the person straight out. resolveEndpoint assigns
+      // directly and fires no listener, so the result is routed back
+      // through setEndpoint, the same as Settings' own clear branch.
+      void resolveEndpoint(true).then((next) => {
+        if (next) setEndpoint(next);
+      });
       setResult(null);
       onToggle(false);
       return;
