@@ -11,7 +11,7 @@
 import { openSidebar, signUp } from '../helpers/app.ts';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, tap, typeInto, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, tap, typeInto, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 
 describe('changing the server endpoint', () => {
   before(async () => {
@@ -36,11 +36,14 @@ describe('changing the server endpoint', () => {
     await tap('settings.save');
     await waitForVisible('settings.endpoint.confirm.dialog');
 
-    const message = await byTestId('settings.endpoint.confirm.dialog').getText();
+    // Through waitForTextIn, which owns the per-platform split: getText() on
+    // a container concatenates its leaves on web only, and this file is in
+    // the every-platform glob — on iOS and Android the container's own text
+    // is empty and both assertions would have read ''.
     // Naming the destination is what makes a typo visible before it commits.
-    expect(message).toContain('https://typo.example.com');
+    await waitForTextIn('settings.endpoint.confirm.dialog', 'https://typo.example.com', 5_000);
     // And says the way back, which is true while the session lasts.
-    expect(message).toMatch(/sign in again|change it back/i);
+    await waitForTextIn('settings.endpoint.confirm.dialog', 'change it back', 5_000);
     await shot('settings-endpoint-confirm');
   });
 

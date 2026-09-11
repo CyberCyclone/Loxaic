@@ -110,17 +110,40 @@ export async function typeInto(id: string, text: string): Promise<void> {
     await el.click();
     await browser.execute(
       (selector: string, value: string) => {
-        const node = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector);
+        const node = document.querySelector(selector);
         if (!node) throw new Error(`typeInto: no element matched ${selector}`);
+        // Named failures, because this now backs signUp/signIn for every web
+        // and Electron spec. A testID that landed on a wrapper (the common
+        // gluestack shape — several .web.tsx overrides render a raw div or
+        // span) used to throw an opaque "Illegal invocation" from inside the
+        // page; a missing setter used to dispatch `input` with the *old*
+        // value and report success, surfacing much later as an unrelated
+        // timeout in whatever the text was supposed to unlock.
+        if (!(node instanceof HTMLInputElement) && !(node instanceof HTMLTextAreaElement)) {
+          throw new Error(`typeInto: ${selector} is a <${node.tagName.toLowerCase()}>, not an input or textarea`);
+        }
         const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
         // Called straight off the descriptor rather than lifted into a
-        // variable first: the setter is only meaningful bound to `node`.
+        // variable first: the setter is only meaningful bound to `node`. A
+        // missing setter is not checked for separately — the read-back below
+        // catches it, since the value would still be the old one.
         Object.getOwnPropertyDescriptor(proto.prototype, 'value')?.set?.call(node, value);
         node.dispatchEvent(new Event('input', { bubbles: true }));
       },
       testIdSelector(id),
       text,
     );
+    // Read back — but not inside the execute above. A controlled input's DOM
+    // value is reset to the *old* state synchronously after the event and
+    // only becomes the new one once React commits, so a synchronous check
+    // saw "" every time. Waiting on the value is the honest read-back: a
+    // missing setter or a value that genuinely did not take still fails,
+    // and fails here with the selector named, rather than as an unrelated
+    // timeout in whatever the text was supposed to unlock.
+    await browser.waitUntil(async () => (await el.getValue()) === text, {
+      timeout: 2_000,
+      timeoutMsg: `typeInto: ${testIdSelector(id)} did not take the value ${JSON.stringify(text)}`,
+    });
     return;
   }
 
