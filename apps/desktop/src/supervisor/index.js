@@ -109,14 +109,22 @@ async function waitForHealth(baseUrl) {
  * Returns { apiBaseUrl, port, stop } — stop() tears down server-then-Postgres
  * in order, so the server can drain against a live database.
  */
-/** The desktop app's own version, from its package.json — the packaged app
- * runs under Electron, not pnpm, so npm_package_version is never set. */
+/**
+ * The desktop app's own version, from its package.json — the packaged app
+ * runs under Electron, not pnpm, so npm_package_version is never set.
+ *
+ * Null for an unstamped build. The repository holds 0.0.0 and only a release
+ * run stamps the real number, so 0.0.0 means "not a release", and the server
+ * reports that as null — "no version was reported" — rather than as a number
+ * a client would print. A package.json that cannot be read is the same
+ * answer; it is never the string "unknown".
+ */
 function desktopVersion() {
   try {
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-    return typeof pkg.version === "string" ? pkg.version : "unknown";
+    return typeof pkg.version === "string" && pkg.version !== "0.0.0" ? pkg.version : null;
   } catch {
-    return "unknown";
+    return null;
   }
 }
 
@@ -200,9 +208,6 @@ export async function startStack({
       PATH: process.env.PATH ?? "",
       HOME: process.env.HOME ?? "",
       NODE_ENV: "production",
-      // The bundled server records this in the hosts table. npm_package_version
-      // only exists under `pnpm dev`; the packaged app has to say so itself.
-      LOXAIC_VERSION: desktopVersion(),
       PORT: String(port),
       HOST: bindHost,
       DATABASE_URL: databaseUrl,
@@ -228,6 +233,12 @@ export async function startStack({
       // dir: user data belongs under dataDir.
       UPLOADS_DIR: path.join(dataDir, "uploads"),
     };
+    // The bundled server records this in the hosts table. npm_package_version
+    // only exists under `pnpm dev`; the packaged app has to say so itself —
+    // and says nothing for an unstamped build, so the server's null stays
+    // honest.
+    const version = desktopVersion();
+    if (version) env.LOXAIC_VERSION = version;
     if (instance) {
       // This machine's identity in the `hosts` table. Stable across mode
       // changes, so a Solo→Host switch updates one row rather than registering

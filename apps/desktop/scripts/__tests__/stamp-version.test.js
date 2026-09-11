@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { parseReleaseTag, stampFiles } from "../stamp-version.mjs";
@@ -111,5 +113,24 @@ describe("stampFiles", () => {
     const root = scratchRepo();
     writeFileSync(path.join(root, "apps/mobile/app.json"), JSON.stringify({ expo: {} }));
     expect(() => stampFiles(root, "1.0.0")).toThrow(/no expo\.version field found/);
+  });
+});
+
+describe("run as a CLI", () => {
+  it("actually runs main() — including from a path with a space in it", () => {
+    // The old entry-point guard glued "file://" onto argv[1] and compared
+    // strings, which only matched on POSIX paths with nothing to percent-
+    // encode. Under a path with a space (or on Windows) main() never ran and
+    // the process exited 0 having done nothing. Every other test here
+    // imports the module, so none of them could see it; running the script
+    // as a subprocess is the only way to.
+    const script = fileURLToPath(new URL("../stamp-version.mjs", import.meta.url));
+    const dir = mkdtempSync(path.join(os.tmpdir(), "stamp with space-"));
+    const copy = path.join(dir, "stamp-version.mjs");
+    copyFileSync(script, copy);
+    // --parse writes nothing, so a copy anywhere is safe to run.
+    const out = execFileSync(process.execPath, [copy, "--parse", "v1.2.3-beta.4"], { encoding: "utf8" });
+    expect(out).toContain("version=1.2.3-beta.4");
+    expect(out).toContain("prerelease=true");
   });
 });

@@ -7,7 +7,8 @@
  * what `pnpm dev`/`pnpm start` set from `apps/server/package.json` itself.
  * Neither is guaranteed — a bare `node dist/index.js`, a hand-rolled Docker
  * image — so this is nullable, and null means exactly that: no version was
- * reported, not "unknown" or "0.0.0".
+ * reported. The desktop supervisor sets nothing for an unstamped 0.0.0 build,
+ * so that reads as null here too rather than as a number worth printing.
  *
  * `||`, not `??`: an unset `--build-arg` in the Docker image still leaves
  * `ENV LOXAIC_VERSION=$LOXAIC_VERSION` set to an *empty string*, not unset —

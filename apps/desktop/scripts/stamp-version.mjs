@@ -14,7 +14,7 @@
 //   stamp-version.mjs <tag>          rewrite all three files in place
 //   stamp-version.mjs --parse <tag>  print version/prerelease/channel as
 //                                    key=value lines, for $GITHUB_OUTPUT
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -110,6 +110,24 @@ function main() {
 }
 
 // Only run as a CLI, not when imported by the test file.
-if (import.meta.url === `file://${process.argv[1]}`) {
+//
+// Compared as real paths on both sides, not as strings. Gluing "file://" onto
+// argv[1] matched only on POSIX paths with nothing to percent-encode — every
+// windows-latest release leg and any checkout under a path with a space had
+// main() silently never run: exit 0, nothing stamped, every file still at
+// 0.0.0, the one failure this script exists to prevent. Converting argv[1]
+// to a URL is not enough either: Node resolves the entry module through
+// symlinks, so `import.meta.url` is the *real* path while argv[1] is what was
+// typed — different on macOS for anything under /var → /private/var, which
+// the subprocess test found the moment it ran. realpath on both is what
+// makes them the same file whenever they are.
+function invokedDirectly() {
+  try {
+    return realpathSync(process.argv[1] ?? "") === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+if (invokedDirectly()) {
   main();
 }

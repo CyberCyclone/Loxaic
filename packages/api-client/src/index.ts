@@ -84,8 +84,8 @@ export interface ConfigResponse {
     reason?: string;
   };
   /** This server's build version, or null when nothing reported one (a bare
-   * `node dist/index.js`, a hand-rolled Docker image) — render as "—", never
-   * as "0.0.0" or "unknown". */
+   * `node dist/index.js`, a hand-rolled Docker image, an unstamped desktop
+   * build) or the call was not signed in — render as "—". */
   version: string | null;
 }
 
@@ -106,9 +106,16 @@ export async function getCluster(): Promise<ClusterInfo | null> {
 }
 
 export async function getConfig(): Promise<ConfigResponse> {
-  const res = await fetch(`${BASE_URL}/v1/config`);
+  // The bearer rides along when there is one: `version` is returned only to
+  // a signed-in caller, and the route stays reachable without it.
+  const headers = new Headers();
+  if (AUTH_TOKEN) headers.set("Authorization", `Bearer ${AUTH_TOKEN}`);
+  const res = await fetch(`${BASE_URL}/v1/config`, { headers });
   if (!res.ok) throw new Error(`GET /v1/config ${String(res.status)}`);
-  return res.json() as Promise<ConfigResponse>;
+  const body = (await res.json()) as Partial<ConfigResponse> & Pick<ConfigResponse, "sandbox">;
+  // Absent — an older server, or an unauthenticated call — is the same
+  // answer as null, and the declared type promises one or the other.
+  return { ...body, signUpOpen: body.signUpOpen ?? true, version: body.version ?? null };
 }
 
 // ── Admin: server-level sandbox settings ──────────────────
