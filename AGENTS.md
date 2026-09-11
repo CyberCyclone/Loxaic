@@ -1738,12 +1738,20 @@ screenshots showing that behaviour working. Writing those tests is the implement
   keep working with no Apple account involved. `notarize: true` in package.json is declarative
   documentation of the intent; the behavior is identical whether that key is present or absent,
   since only `notarize: false` changes anything.
-- **`CSC_LINK`/`CSC_KEY_PASSWORD` need no import step of their own in CI.** electron-builder
-  reads them and creates its own throwaway keychain — there is nothing for the workflow to do
-  beyond setting the two env vars. The five signing/notarization secrets are read unconditionally
-  by every leg of the release matrix (`.github/workflows/release.yml`'s `desktop` job) rather
-  than gated to the macOS one: `isSignAllowed()` checks `process.platform !== "darwin"` first,
-  so they are simply unused, harmless env on the Linux and Windows legs.
+- **The five signing/notarization secrets reach exactly one step, on exactly one platform.**
+  Declared job-wide they sat in the environment of `pnpm install` — and every third-party
+  postinstall script it runs — on all three runners; "only electron-builder reads them" was
+  true and beside the point. And "read only on darwin" was wrong twice over: **Windows has its
+  own read** (`WIN_CSC_LINK` falls back to `CSC_LINK`, and `win` names no certificate, so the
+  Apple `.p12` would have signed the NSIS installer), and **an unset GitHub secret expands to
+  `""`, which electron-builder does not treat as absent** — `""` passes its `== null` guard,
+  reaches `importCertificate`, resolves to the project directory, and throws "not a file", so
+  the first tag after `identity: null` was removed would have failed macOS packaging outright.
+  The package step's shell unsets anything empty and everything on a non-macOS leg; the
+  `environment: release` on the `desktop` job is the enabler for moving the key behind required
+  reviewers, which a repository secret — readable by a workflow on any branch — cannot be.
+  electron-builder still imports `CSC_LINK` into a throwaway keychain itself; nothing else is
+  needed.
 - **Every nested Mach-O binary needs a valid signature for notarization to succeed, not just the
   app itself.** `asar: false` is why osx-sign walks and signs the embedded Postgres binaries and
   the `tsnet-proxy` sidecar along with everything else in the bundle — Apple's notarization

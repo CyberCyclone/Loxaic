@@ -116,6 +116,12 @@ jobs:
         # @embedded-postgres/darwin-x64, which is not installed.
         os: [macos-15, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # A repository secret is readable by a workflow on *any* branch. Naming an
+    # environment lets the signing key live as an environment secret instead,
+    # behind required reviewers and a deployment branch rule limited to tags —
+    # so only a run someone approved can reach it. Until that is set up, this
+    # line changes nothing: secrets still resolve from the repository.
+    environment: release
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.meta.outputs.tag }}
@@ -125,16 +131,6 @@ jobs:
       # be ~30 MB apiece of dead weight in the bundle — and, on macOS, three
       # more foreign binaries for codesign to walk.
       TSNET_PROXY_HOST_ONLY: "1"
-      # Read only on darwin (app-builder-lib's isSignAllowed checks
-      # process.platform first), so these are harmlessly unused on the other
-      # two legs rather than needing a per-leg conditional. electron-builder
-      # imports CSC_LINK/CSC_KEY_PASSWORD into a throwaway keychain itself —
-      # nothing here needs to create one by hand.
-      CSC_LINK: ${{ secrets.CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -155,8 +151,33 @@ jobs:
         run: node apps/desktop/scripts/stamp-version.mjs "$TAG"
         shell: bash
       - name: Package and upload
-        run: pnpm --filter @loxaic/desktop package:publish
+        # The signing key and Apple credentials reach exactly one step, on
+        # exactly one platform. Declared job-wide they sat in the environment
+        # of `pnpm install` — and every third-party postinstall script it runs
+        # — on all three runners, two of which never use them. Two more facts
+        # the shell below exists for: GitHub expands an *unset* secret to "",
+        # which electron-builder does not treat as absent ("" passed its
+        # `== null` guard on macOS and threw "not a file"); and on Windows
+        # CSC_LINK is the fallback for WIN_CSC_LINK, so the Apple .p12 would
+        # have been used to sign the NSIS installer. Anything empty is unset,
+        # and everything is unset on a leg that is not macOS. electron-builder
+        # imports CSC_LINK into a throwaway keychain itself; nothing else is
+        # needed. Empty notarization variables would have been safe on their
+        # own — getNotarizeOptions tests truthiness — but consistency is
+        # cheaper than remembering which two of the five are sharp.
         shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ "$RUNNER_OS" != "macOS" ] || [ -z "${!v:-}" ]; then unset "$v"; fi
+          done
+          pnpm --filter @loxaic/desktop package:publish
 
   publish-release:
     name: publish the release
