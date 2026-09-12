@@ -12,9 +12,10 @@ import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { useSession } from '@/lib/session';
-import { electronBridge, type InstanceState } from '@/lib/endpoint';
+import { electronBridge, type InstanceConfigInput, type InstanceState } from '@/lib/endpoint';
+import { HostConfigFields, type HostConfigValues } from '@/components/settings/HostConfigFields';
 
-type Step = 'choose' | 'host' | 'client';
+type Step = 'choose' | 'solo' | 'host' | 'client';
 
 /**
  * First-run instance setup for the desktop app: run this machine alone
@@ -38,9 +39,12 @@ export default function OnboardingScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Solo form
+  const [soloConfig, setSoloConfig] = useState<HostConfigValues>({ port: '', bind: 'localhost', advertiseUrl: '' });
+
   // Host form
   const [hostName, setHostName] = useState('');
-  const [hostPort, setHostPort] = useState('');
+  const [hostConfig, setHostConfig] = useState<HostConfigValues>({ port: '', bind: 'lan', advertiseUrl: '' });
   const [engine, setEngine] = useState<{ ok: boolean; engine?: string; reason?: string } | null>(null);
 
   // Client form
@@ -52,13 +56,14 @@ export default function OnboardingScreen() {
     void bridge.instance.getState().then((s) => {
       setState(s);
       setHostName((n) => n || s.defaultHostName);
-      setHostPort((p) => p || String(s.defaultPort));
+      setSoloConfig((v) => ({ ...v, port: v.port || String(s.defaultPort) }));
+      setHostConfig((v) => ({ ...v, port: v.port || String(s.defaultPort) }));
       if (s.error) setError(s.error);
     });
   }, [bridge]);
 
   const apply = useCallback(
-    async (config: unknown) => {
+    async (config: InstanceConfigInput) => {
       if (!bridge) return;
       setBusy(true);
       setError(null);
@@ -127,9 +132,11 @@ export default function OnboardingScreen() {
             <Text size="sm" className="text-center text-muted-foreground">
               {step === 'choose'
                 ? 'This machine can run Loxaic for you, serve it to others, or connect to one already running.'
-                : step === 'host'
-                  ? 'Other people sign in to this machine and use its models.'
-                  : 'Connect to a Loxaic already running somewhere else.'}
+                : step === 'solo'
+                  ? 'Runs everything locally, for you alone.'
+                  : step === 'host'
+                    ? 'Other people sign in to this machine and use its models.'
+                    : 'Connect to a Loxaic already running somewhere else.'}
             </Text>
           </VStack>
 
@@ -149,7 +156,7 @@ export default function OnboardingScreen() {
                 icon={Laptop}
                 title="Just this machine"
                 body="Runs everything locally for you alone. No container engine needed."
-                onPress={() => { void apply({ mode: 'solo' }); }}
+                onPress={() => { setStep('solo'); }}
                 disabled={busy}
               />
               <ModeCard
@@ -171,6 +178,39 @@ export default function OnboardingScreen() {
             </VStack>
           )}
 
+          {step === 'solo' && (
+            <VStack space="md">
+              <HostConfigFields defaultPort={state?.defaultPort ?? 4100}
+                testIDPrefix="onboarding.solo"
+                values={soloConfig}
+                onChange={setSoloConfig}
+                lanAddress={state?.lanAddress ?? null}
+                fields={['port']}
+              />
+              <Text size="xs" className="text-muted-foreground">
+                Only change the port if 4100 is already used by something else on this machine.
+              </Text>
+              <HStack space="sm">
+                <Button variant="outline" className="flex-1" onPress={() => { setStep('choose'); }}>
+                  <ButtonText>Back</ButtonText>
+                </Button>
+                <Button
+                  testID="onboarding.solo.submit"
+                  className="flex-1"
+                  isDisabled={busy}
+                  onPress={() => {
+                    void apply({
+                      mode: 'solo',
+                      host: { port: Number(soloConfig.port) || state?.defaultPort },
+                    });
+                  }}
+                >
+                  {busy ? <ButtonSpinner /> : <ButtonText>Continue</ButtonText>}
+                </Button>
+              </HStack>
+            </VStack>
+          )}
+
           {step === 'host' && (
             <VStack space="md">
               <VStack space="xs">
@@ -187,23 +227,12 @@ export default function OnboardingScreen() {
                 </Input>
               </VStack>
 
-              <VStack space="xs">
-                <Text size="sm" className="text-muted-foreground">Port</Text>
-                <Input className="h-12">
-                  <InputField
-                    testID="onboarding.host.port"
-                    placeholder="4100"
-                    value={hostPort}
-                    onChangeText={setHostPort}
-                    keyboardType="number-pad"
-                  />
-                </Input>
-                {state?.lanAddress && (
-                  <Text size="xs" className="text-muted-foreground">
-                    Others will reach you at http://{state.lanAddress}:{hostPort || '4100'}
-                  </Text>
-                )}
-              </VStack>
+              <HostConfigFields defaultPort={state?.defaultPort ?? 4100}
+                testIDPrefix="onboarding.host"
+                values={hostConfig}
+                onChange={setHostConfig}
+                lanAddress={state?.lanAddress ?? null}
+              />
 
               {engine && !engine.ok && (
                 <HStack space="sm" className="items-start rounded-md bg-destructive/10 p-3">
@@ -230,7 +259,14 @@ export default function OnboardingScreen() {
                   onPress={() => {
                     void apply({
                       mode: 'host',
-                      host: { name: hostName.trim(), port: Number(hostPort) || state?.defaultPort, bind: 'lan' },
+                      host: {
+                        name: hostName.trim(),
+                        port: Number(hostConfig.port) || state?.defaultPort,
+                        bind: hostConfig.bind,
+                        // Unconditional, same as Settings: an omitted key
+                        // means "keep the previous value" to buildConfig.
+                        advertiseUrl: hostConfig.advertiseUrl.trim(),
+                      },
                     });
                   }}
                 >

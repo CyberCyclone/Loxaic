@@ -16,11 +16,12 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Heading } from '@/components/ui/heading';
 import { Input, InputField } from '@/components/ui/input';
-import { Button, ButtonText } from '@/components/ui/button';
+import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { AutoCompactToggle } from './AutoCompactToggle';
 import { AgentStepLimit } from './AgentStepLimit';
+import { ServerSection } from './ServerSection';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
@@ -43,6 +44,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [draft, setDraft] = useState<Settings>(settings);
   const [dirty, setDirty] = useState(false);
   const [confirmDetach, setConfirmDetach] = useState(false);
+  const [endpointTest, setEndpointTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [testingEndpoint, setTestingEndpoint] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -109,6 +112,31 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const discard = () => {
     setDraft(settings);
     setDirty(false);
+  };
+
+  /** Same 1500ms /health probe endpoint.ts uses for its own candidates —
+   * this is only ever a manual sanity check, so a stale (pre-Save) address
+   * is fine to test: whatever's currently typed is what the user wants to
+   * know is reachable. */
+  const testEndpoint = async () => {
+    const url = draft.endpoint.trim();
+    if (!url) return;
+    setTestingEndpoint(true);
+    setEndpointTest(null);
+    const controller = new AbortController();
+    const timer = setTimeout(() => { controller.abort(); }, 1500);
+    try {
+      const res = await fetch(`${url.replace(/\/+$/, '')}/health`, { signal: controller.signal });
+      setEndpointTest(res.ok ? { ok: true, message: 'Reachable' } : { ok: false, message: `Server answered ${String(res.status)}` });
+    } catch (err) {
+      setEndpointTest({
+        ok: false,
+        message: err instanceof Error && err.name === 'AbortError' ? 'Timed out' : 'Not reachable',
+      });
+    } finally {
+      clearTimeout(timer);
+      setTestingEndpoint(false);
+    }
   };
 
   return (
@@ -288,16 +316,41 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </Text>
               <Input className="border-border bg-card">
                 <InputField
+                  testID="settings.endpoint"
                   placeholder="https://your-server.tailnet.ts.net"
                   autoCapitalize="none"
                   value={draft.endpoint}
-                  onChangeText={(v) => { update('endpoint', v); }}
+                  onChangeText={(v) => { update('endpoint', v); setEndpointTest(null); }}
                 />
               </Input>
+              <HStack space="sm" className="items-center">
+                <Button
+                  testID="settings.endpoint.test"
+                  variant="outline"
+                  size="sm"
+                  isDisabled={!draft.endpoint.trim() || testingEndpoint}
+                  onPress={() => { void testEndpoint(); }}
+                >
+                  {testingEndpoint ? <ButtonSpinner /> : <ButtonText>Test</ButtonText>}
+                </Button>
+                {endpointTest && (
+                  <Text
+                    testID="settings.endpoint.result"
+                    size="2xs"
+                    className={endpointTest.ok ? 'text-success' : 'text-destructive'}
+                  >
+                    {endpointTest.message}
+                  </Text>
+                )}
+              </HStack>
               <Text size="2xs" className="text-muted-foreground">
                 Overrides auto-detection (LAN then tailnet). Leave blank to auto-detect.
               </Text>
             </VStack>
+
+            <Box className="h-px bg-border" />
+
+            <ServerSection />
 
             {/* Desktop only: leaving a host is a main-process action (it stops
                 the stack and returns to onboarding), which no other platform

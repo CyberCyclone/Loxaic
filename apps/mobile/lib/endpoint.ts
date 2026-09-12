@@ -27,10 +27,23 @@ import { getItem } from './storage';
  * way to learn it.
  */
 
+/** What the renderer is allowed to see of a stored host config — never the
+ * database URL or password. Null when the current mode has no host section
+ * (client, or an unconfigured install). See config.js's hostSettingsView. */
+export interface HostSettingsView {
+  name: string;
+  port: number;
+  bind: 'lan' | 'localhost';
+  advertiseUrl: string | null;
+  db: { kind: string };
+}
+
 /** Everything the desktop main process can be asked to do, plus the launch
  * URL. See apps/desktop/src/preload.cjs — absent on every other platform. */
 export interface InstanceState {
   mode: 'solo' | 'host' | 'client' | null;
+  /** The mode config.json holds, even when nothing is running (`mode` null). */
+  storedMode: 'solo' | 'host' | 'client' | null;
   apiBaseUrl: string | null;
   needsOnboarding: boolean;
   defaultHostName: string;
@@ -39,7 +52,27 @@ export interface InstanceState {
   /** This machine's executor id — the same id it registers under, so the
    * chooser can tell "this machine" from the user's others. */
   instanceId: string;
+  host: HostSettingsView | null;
+  /** The port the server actually bound — can differ from what was
+   * requested (an adopted leftover, say). Null off solo/host. */
+  listenPort: number | null;
   error?: string;
+}
+
+/** Payload accepted by `instance.setMode` — the renderer's only way to write
+ * config.json. Mirrors config.js's `buildConfig` input; validation is
+ * authoritative there, not here. */
+export interface InstanceConfigInput {
+  mode: 'solo' | 'host' | 'client';
+  host?: {
+    name?: string;
+    port?: number;
+    bind?: 'lan' | 'localhost';
+    advertiseUrl?: string;
+  };
+  client?: {
+    hostUrl?: string;
+  };
 }
 
 /** The local executor as the main process reports it. `roots` is the list
@@ -67,7 +100,7 @@ export interface LoxaicBridge {
   };
   instance: {
     getState: () => Promise<InstanceState>;
-    setMode: (config: unknown) => Promise<InstanceState>;
+    setMode: (config: InstanceConfigInput) => Promise<InstanceState>;
     probeEngine: () => Promise<{ ok: boolean; engine?: string; reason?: string }>;
     probeHost: (url: string) => Promise<{
       ok: boolean;

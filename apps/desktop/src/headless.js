@@ -26,6 +26,10 @@ Options:
   --as-host            Configure this install as a Host (serves other users)
                        and persist it, then start. Requires a container engine.
   --host-name <name>   Name shown against this host's models (default: hostname)
+  --bind <lan|localhost>  Persisted bind choice, with --as-host (default: lan)
+  --advertise-url <u>  Persisted public address, with --as-host (a reverse
+                       proxy or domain other machines should use instead of
+                       this one's own LAN address)
   --inference-url <u>  Inference backend base URL (sets INFERENCE_BASE_URL)
   --mock-inference     Use the mock inference provider (sets MOCK_INFERENCE=true)
   --help               Show this help and exit
@@ -95,7 +99,17 @@ async function main() {
   // `--host` forces host mode for a machine that has never seen the GUI.
   let instance = loadConfig(dataDir);
   if (hasFlag("host-mode") || hasFlag("as-host")) {
-    instance = buildConfig({ mode: "host", host: { name: getFlag("host-name") } }, instance);
+    instance = buildConfig(
+      {
+        mode: "host",
+        host: {
+          name: getFlag("host-name"),
+          bind: getFlag("bind"),
+          advertiseUrl: getFlag("advertise-url"),
+        },
+      },
+      instance,
+    );
     saveConfig(dataDir, instance);
   }
   if (instance?.mode === "client") {

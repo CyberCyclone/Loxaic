@@ -32,8 +32,12 @@ pnpm package:dir # prod, unpacked (skips the installer step — faster iteration
 - **Connect to a host** — no local stack at all; the app points at a Loxaic
   running elsewhere.
 
-You can change modes later from Settings without restarting the app, and a
-Host can use an external PostgreSQL instead of the embedded one.
+Settings has a **Server** section for changing a Solo/Host's port, bind
+(LAN vs this machine only), and public address later — Save restarts the
+embedded stack on the new settings, without an app restart. A Client can
+likewise change or re-probe which host it points at from the same section.
+(An external PostgreSQL, instead of the embedded one, has no GUI yet at
+all — first setup or later.)
 
 On launch the main process resolves how to reach a server, in order:
 `--remote=<url>` / `LOXAIC_REMOTE_URL` (connect to a server elsewhere, skip
@@ -79,11 +83,11 @@ WantedBy=multi-user.target
 
 A headless instance reads the same `config.json` the GUI writes, so a machine
 set up through the app can be moved to a systemd unit without reconfiguring
-it. On a box that has never seen the GUI, add `--as-host` (with an optional
-`--host-name`) to configure and start it as a Host in one step. Headless
-**client** mode — joining someone else's host with no window — is not built
-yet; the flag exits with a message rather than silently starting a host
-instead.
+it. On a box that has never seen the GUI, add `--as-host` (with optional
+`--host-name`, `--bind`, and `--advertise-url`) to configure and start it as
+a Host in one step. Headless **client** mode — joining someone else's host
+with no window — is not built yet; the flag exits with a message rather than
+silently starting a host instead.
 
 For the AppImage, extract it first — `./Loxaic.AppImage --appimage-extract`
 — and point `ExecStart` at `squashfs-root/loxaic` and
@@ -93,9 +97,12 @@ step, which is why the unit above assumes one.
 
 Flags: `--port` (default 4100, or `$LOXAIC_PORT`), `--host` (default
 `0.0.0.0`), `--data-dir` (default the platform user-data dir, or
-`$LOXAIC_DATA_DIR`), `--inference-url`, `--mock-inference`, `--help`. The
-GUI's `--loxaic-port`/`--loxaic-data-dir` names are accepted too, so one
-set of flags works with either entry point.
+`$LOXAIC_DATA_DIR`), `--as-host`, `--host-name`, `--bind` (`lan` or
+`localhost`, persisted with `--as-host`; default `lan`), `--advertise-url`
+(persisted with `--as-host` — a reverse proxy or domain other machines
+should use instead of this one's own LAN address), `--inference-url`,
+`--mock-inference`, `--help`. The GUI's `--loxaic-port`/`--loxaic-data-dir`
+names are accepted too, so one set of flags works with either entry point.
 
 The GUI and the headless server share the same data directory by default (an
 account created in one signs in from the other) — a machine can move between
