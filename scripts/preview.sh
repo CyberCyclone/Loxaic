@@ -93,7 +93,7 @@ up() {
   echo "→ pushing ${sha:0:8} to $SSH_TARGET"
   git push --quiet --force "$SSH_TARGET:$BARE" "$sha:refs/preview/pr-$pr"
 
-  echo "→ checking out and building (the first build installs the whole workspace, so it is slow)"
+  echo "→ checking out"
   on_host "set -e
     root=\"\$HOME/$ROOT\"
     bare=\"\$HOME/$BARE\"
@@ -109,6 +109,22 @@ up() {
       git -C \"\$bare\" worktree prune
       git -C \"\$bare\" worktree add --quiet --detach \"\$dir\" 'refs/preview/pr-$pr'
     fi
+    mkdir -p \"\$dir/infra/preview\""
+
+  # The preview's own configuration comes from *this* checkout, never from the
+  # pull request. Two reasons, and the second is the important one: a PR opened
+  # before this tooling existed has no compose.yml at all and would be
+  # undeployable, and a PR that did carry one could rewrite the terms it runs
+  # under — mounting the Docker socket, say. The PR supplies the build context
+  # and nothing else. Sent after `clean`, which would otherwise remove them.
+  tar -cf - -C "$(git rev-parse --show-toplevel)" \
+    infra/preview/compose.yml infra/docker/metro.Dockerfile \
+    | on_host "tar -xf - -C \"\$HOME/$ROOT/pr-$pr\""
+
+  echo "→ building (the first build installs the whole workspace, so it is slow)"
+  on_host "set -e
+    root=\"\$HOME/$ROOT\"
+    dir=\"\$root/pr-$pr\"
 
     # Minted once per preview and kept, so redeploying a PR does not sign you
     # out of it mid-test.
