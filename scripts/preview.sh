@@ -19,16 +19,21 @@
 # Configuration, all overridable from the environment:
 #
 #   PREVIEW_SSH       where the previews run          (cgibson@192.168.1.13)
-#   PREVIEW_HOSTNAME  what a phone dials to reach it  (192.168.1.13)
+#   PREVIEW_HOSTNAME  what a phone dials to reach it  (pheonix.tail47eac7.ts.net)
 #   PREVIEW_ROOT      where they live on that host    (loxaic-previews, under $HOME)
 #
-# PREVIEW_HOSTNAME is separate from PREVIEW_SSH on purpose: once Tailscale is
-# on the host, set it to the tailnet name and Expo Go reaches Metro from
-# anywhere, while the deploy itself keeps going over the LAN address.
+# PREVIEW_HOSTNAME is separate from PREVIEW_SSH on purpose: the deploy goes over
+# the LAN address, which is fast and needs nothing, while the URL handed to the
+# phone is the tailnet one that resolves from anywhere.
 set -euo pipefail
 
 SSH_TARGET="${PREVIEW_SSH:-cgibson@192.168.1.13}"
-PUBLIC_HOST="${PREVIEW_HOSTNAME:-192.168.1.13}"
+# The tailnet name rather than the LAN address, because this is the value that
+# gets baked into the app bundle and advertised by Metro — and a phone testing a
+# preview is as likely to be on cellular as on the house wifi. The ports stay
+# published on every interface either way, so 192.168.1.13 keeps working for
+# anything on the LAN; override PREVIEW_HOSTNAME for a device with no Tailscale.
+PUBLIC_HOST="${PREVIEW_HOSTNAME:-pheonix.tail47eac7.ts.net}"
 ROOT="${PREVIEW_ROOT:-loxaic-previews}"
 BARE="$ROOT/repo.git"
 
@@ -134,7 +139,12 @@ up() {
       chmod 600 \"\$secret_file\"
     fi
 
-    cat > \"\$dir/infra/preview/.env\" <<EOF
+    # Outside the worktree, deliberately. server.Dockerfile does `COPY . .`
+    # and .dockerignore does not exclude .env, so an env file inside the build
+    # context would bake this preview's auth secret into an image layer — and
+    # would bust the COPY cache on every config change, turning a 30-second
+    # redeploy into a five-minute rebuild.
+    cat > \"\$root/pr-$pr.env\" <<EOF
 PREVIEW_SERVER_PORT=$SERVER_PORT
 PREVIEW_METRO_PORT=$METRO_PORT
 PREVIEW_HOSTNAME=$PUBLIC_HOST
@@ -142,9 +152,10 @@ PREVIEW_BASE_URL=http://$PUBLIC_HOST:$SERVER_PORT
 PREVIEW_METRO_URL=http://$PUBLIC_HOST:$METRO_PORT
 PREVIEW_AUTH_SECRET=\$(cat \"\$secret_file\")
 EOF
+    chmod 600 \"\$root/pr-$pr.env\"
 
     cd \"\$dir\"
-    docker compose -p 'pr-$pr' -f infra/preview/compose.yml --env-file infra/preview/.env up -d --build"
+    docker compose -p 'pr-$pr' -f infra/preview/compose.yml --env-file \"\$root/pr-$pr.env\" up -d --build"
 
   cat <<EOF
 
@@ -165,17 +176,17 @@ down() {
   on_host "set -e
     root=\"\$HOME/$ROOT\"
     dir=\"\$root/pr-$pr\"
-    if [ -e \"\$dir/infra/preview/compose.yml\" ]; then
+    if [ -e \"\$dir/infra/preview/compose.yml\" ] && [ -f \"\$root/pr-$pr.env\" ]; then
       cd \"\$dir\"
       # -v because a preview's database is disposable by definition, and
       # leaving volumes behind is how a host fills up one merged PR at a time.
-      docker compose -p 'pr-$pr' -f infra/preview/compose.yml --env-file infra/preview/.env down -v --remove-orphans || true
+      docker compose -p 'pr-$pr' -f infra/preview/compose.yml --env-file \"\$root/pr-$pr.env\" down -v --remove-orphans || true
     else
       docker compose -p 'pr-$pr' down -v --remove-orphans 2>/dev/null || true
     fi
     git -C \"\$HOME/$BARE\" worktree remove --force \"\$dir\" 2>/dev/null || rm -rf \"\$dir\"
     git -C \"\$HOME/$BARE\" update-ref -d 'refs/preview/pr-$pr' 2>/dev/null || true
-    rm -f \"\$root/pr-$pr.secret\""
+    rm -f \"\$root/pr-$pr.secret\" \"\$root/pr-$pr.env\""
 }
 
 list() {
@@ -221,7 +232,7 @@ logs() {
   local pr="${1:-}"
   require_pr "$pr" logs
   shift
-  on_host -t "cd \"\$HOME/$ROOT/pr-$pr\" && docker compose -p 'pr-$pr' -f infra/preview/compose.yml --env-file infra/preview/.env logs -f ${*:-}"
+  on_host -t "cd \"\$HOME/$ROOT/pr-$pr\" && docker compose -p 'pr-$pr' -f infra/preview/compose.yml --env-file \"\$HOME/$ROOT/pr-$pr.env\" logs -f ${*:-}"
 }
 
 case "${1:-}" in
