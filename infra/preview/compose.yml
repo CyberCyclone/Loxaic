@@ -1,0 +1,93 @@
+# One pull request's environment: its own database, its own server, and a
+# Metro dev server so Expo Go can open that PR's app.
+#
+# Brought up by `scripts/preview.sh`, which writes the .env beside this file
+# and names the compose project `pr-<N>` — so every resource (containers,
+# network, volumes) is namespaced per PR and `docker compose down -v` takes
+# exactly one PR's environment away and nothing else.
+#
+# Two deliberate absences, because a preview runs code from a pull request:
+#
+#   - **No Docker socket.** The agent's container sandbox would need
+#     /var/run/docker.sock mounted, which hands PR code the daemon and with it
+#     the whole machine. SANDBOX_MODE=off instead; see PREVIEW.md for the
+#     opt-in when you are testing sandbox behaviour on a branch you trust.
+#   - **No inference credentials.** MOCK_INFERENCE drives the full agent tool
+#     loop without reaching LM Studio, so concurrent previews never queue
+#     behind each other over one model.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: loxaic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no published port: nothing outside this PR's network has
+    # any business reaching its database, and publishing one per preview would
+    # put a trivially-credentialed Postgres on the LAN once per open PR.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/server.Dockerfile
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/loxaic
+      STREAM_BACKEND: memory
+      MOCK_INFERENCE: "true"
+      SANDBOX_MODE: "${PREVIEW_SANDBOX_MODE:-off}"
+      UPLOADS_DIR: /data/uploads
+      # Per preview, written once by preview.sh and kept in its .env. A shared
+      # secret across previews would let a session minted against one PR's
+      # server be presented to another's.
+      BETTER_AUTH_SECRET: "${PREVIEW_AUTH_SECRET:?preview.sh writes this}"
+      # better-auth builds its callback URLs and cookie domain from this, so
+      # it has to be the address the phone and browser actually use — not
+      # localhost, which here would mean the container.
+      BETTER_AUTH_URL: "${PREVIEW_BASE_URL:?preview.sh writes this}"
+      # The Expo Go app loads its JS from Metro's origin but calls the API on
+      # the server's, so Metro's origin has to be trusted too or better-auth
+      # refuses every request the app makes.
+      TRUSTED_ORIGINS: "${PREVIEW_BASE_URL},${PREVIEW_METRO_URL}"
+    ports:
+      - "${PREVIEW_SERVER_PORT:?preview.sh writes this}:4000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  metro:
+    build:
+      context: ../..
+      dockerfile: infra/docker/metro.Dockerfile
+    environment:
+      # Both halves of what Expo hands the phone. The hostname is whatever the
+      # phone can actually resolve — the box's tailnet name, so Expo Go works
+      # away from the LAN as well as on it — and the port must match the
+      # published one, since Expo builds its URL from its own listening port.
+      REACT_NATIVE_PACKAGER_HOSTNAME: "${PREVIEW_HOSTNAME:?preview.sh writes this}"
+      METRO_PORT: "${PREVIEW_METRO_PORT:?preview.sh writes this}"
+      # Baked into the bundle at serve time: this PR's app talks to this PR's
+      # server. Both are set because endpoint.ts tries the LAN one first and
+      # falls back to the remote one, and here they are the same address.
+      EXPO_PUBLIC_API_URL: "${PREVIEW_BASE_URL}"
+      EXPO_PUBLIC_LAN_API_URL: "${PREVIEW_BASE_URL}"
+    ports:
+      - "${PREVIEW_METRO_PORT}:${PREVIEW_METRO_PORT}"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
