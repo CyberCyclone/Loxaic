@@ -363,6 +363,69 @@ Apple account:
 | `APPLE_APP_SPECIFIC_PASSWORD` | An [app-specific password](https://support.apple.com/en-us/102654) for that Apple ID — never the account password |
 | `APPLE_TEAM_ID` | The Developer Team ID the certificate belongs to |
 
+#### Where these go
+
+**The `.p12` file is never put anywhere in this repository, and there is no env file to edit.**
+Both of those are the obvious guesses and both are wrong, so, concretely:
+
+- **The `.p12`** stays outside the checkout — your home directory, or a password manager. It is
+  read exactly once, by the `base64` command below, and nothing in the project ever refers to a
+  path to it. Note that `.gitignore` does *not* cover `*.p12`: a certificate dropped into the
+  checkout would be committable, which is reason enough to keep it elsewhere.
+- **The five variables** are **GitHub Actions repository secrets**, not shell exports and not a
+  file. GitHub injects them into the release build; `.github/workflows/release.yml` already
+  reads all five in its `desktop` job. Add them at
+  **Settings → Secrets and variables → Actions → New repository secret**
+  (`https://github.com/CyberCyclone/Open-Shannon/settings/secrets/actions`), or from a terminal:
+
+  ```bash
+  # CSC_LINK is the certificate itself, base64-encoded — not a path to it.
+  base64 -i ~/DeveloperID.p12 | gh secret set CSC_LINK
+
+  # The remaining four prompt for the value, so it stays out of shell history.
+  gh secret set CSC_KEY_PASSWORD
+  gh secret set APPLE_ID
+  gh secret set APPLE_APP_SPECIFIC_PASSWORD
+  gh secret set APPLE_TEAM_ID
+  ```
+
+  Confirm with `gh secret list`, which shows names and update times and never values.
+
+  **Know what a repository secret is.** It is readable by a workflow run on *any* branch — by
+  anyone with write access who pushes a branch whose workflow echoes it somewhere they control,
+  and by any compromised third-party action already in the dependency graph. What these five
+  authorise is signing software as you, which is a materially different thing to hand out than
+  a test API key. To narrow that, `release.yml`'s `desktop` job names a GitHub Actions
+  **environment** called `release`: create it under **Settings → Environments**, move the five
+  secrets into it, add required reviewers, and limit its deployment branches to tags. Only a run
+  someone approved can then reach the key. Until you do that, the line is inert and the secrets
+  resolve from the repository as before.
+
+  **If the certificate ever leaks**, revoke it at [developer.apple.com](https://developer.apple.com/account/resources/certificates)
+  → Certificates, then issue a new one and replace `CSC_LINK`. Knowing that ahead of time is
+  the difference between a bad hour and a bad week.
+
+Nothing local needs configuring for the everyday case: with **no** Developer ID certificate in
+your keychain, `pnpm --filter @loxaic/desktop package` falls back to an unsigned build with a
+warning rather than failing. If you *do* have one, electron-builder discovers it automatically
+and will sign — and, with `notarize: true`, submit to Apple — so pass
+`CSC_IDENTITY_AUTO_DISCOVERY=false` for that one command to keep a local build deliberately
+unsigned. To sign with a *specific* certificate instead, pass the same variables for that one
+command — there is still no file, and the password is read without echo so it never lands in
+your shell history:
+
+```bash
+read -rs "?Certificate password: " CSC_KEY_PASSWORD   # zsh; bash: read -rsp "Certificate password: " CSC_KEY_PASSWORD
+export CSC_KEY_PASSWORD
+CSC_LINK=$(base64 -i ~/DeveloperID.p12) pnpm --filter @loxaic/desktop package
+```
+
+The `$(base64 …)` form is the one part that looks safe and isn't quite: it puts the whole
+certificate into the environment of that command and every child of it, readable by any
+process running as you and captured by anything that dumps the environment on a crash.
+Harmless on a personal laptop; on a shared build box, prefer a file your user alone can read
+and `CSC_LINK=/path/to/DeveloperID.p12`, which electron-builder also accepts.
+
 Set as repository secrets, they take effect automatically in `release.yml`'s macOS build —
 electron-builder imports the certificate into its own throwaway keychain and submits for
 notarization once packaging finishes. Missing all five is not an error: a contributor's local
