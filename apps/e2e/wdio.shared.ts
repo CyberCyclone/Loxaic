@@ -39,8 +39,13 @@ export const sharedConfig: Partial<WebdriverIO.Config> = {
 
   // A failed step is exactly when a picture is worth most, so capture one
   // without the spec having to ask.
-  afterTest: async function afterTest(test, _context, { passed }) {
-    if (!passed) await shot(`FAILED-${test.title}`);
+  //
+  // A test skipped with `this.skip()` also arrives here with `passed: false`,
+  // and carries no error. Screenshotting those files a picture named FAILED-…
+  // for a test that never ran — which is exactly how a reader of the
+  // artifacts directory concludes a green run was red.
+  afterTest: async function afterTest(test, _context, { passed, error }) {
+    if (!passed && error) await shot(`FAILED-${test.title}`);
   },
 
   onComplete: async function onComplete() {

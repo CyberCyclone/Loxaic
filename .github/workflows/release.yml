@@ -1,0 +1,161 @@
+name: Release
+
+# Cutting a release is pushing a tag:
+#   v1.2.3          → production (and beta, which is a superset of it)
+#   v1.2.3-beta.4   → beta only
+#
+# The version is stamped from the tag rather than committed (see
+# apps/desktop/scripts/stamp-version.mjs), so nothing here writes back to the
+# repository. Desktop installers are added to this workflow in the stage that
+# introduces the desktop updater.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing tag to (re)publish, e.g. v1.2.3
+        required: true
+      force_native_build:
+        description: Build native binaries even if this runtime already has some
+        type: boolean
+        default: false
+
+# Nothing here writes to the repository — the version is stamped, not
+# committed — so read is all the checkout needs. The desktop-installer stage
+# raises this to write for the job that creates the GitHub release.
+permissions:
+  contents: read
+
+# Never two releases of the same tag at once, and never cancel one halfway:
+# a partially published release is worse than a slow one.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    name: parse tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.parse.outputs.tag }}
+      version: ${{ steps.parse.outputs.version }}
+      prerelease: ${{ steps.parse.outputs.prerelease }}
+      channel: ${{ steps.parse.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: parse
+        # The same parser the stamping uses, so the two can never disagree
+        # about what a tag means. It exits non-zero on a tag shape it does not
+        # recognise, which fails the release rather than guessing.
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          node apps/desktop/scripts/stamp-version.mjs --parse "$TAG" >> "$GITHUB_OUTPUT"
+
+  expo-update:
+    name: publish update
+    needs: meta
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'CyberCyclone' }}
+    env:
+      TAG: ${{ needs.meta.outputs.tag }}
+      PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+      FORCE_BUILD: ${{ github.event.inputs.force_native_build }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Stamp the version from the tag
+        run: node apps/desktop/scripts/stamp-version.mjs "$TAG"
+
+      - name: Publish the update
+        id: publish
+        working-directory: apps/mobile
+        # A release tag publishes to *both* branches, so beta stays a strict
+        # superset of production: someone on beta must never be stranded on an
+        # older build than a stable release. A beta tag publishes to beta only.
+        run: |
+          set -euo pipefail
+          if [ "$PRERELEASE" = "true" ]; then
+            BRANCHES="beta"
+          else
+            BRANCHES="production beta"
+          fi
+          for branch in $BRANCHES; do
+            echo "publishing to $branch"
+            eas update --branch "$branch" --message "$TAG" --non-interactive --json > "update-$branch.json"
+          done
+          # The runtime version the update was published for decides whether a
+          # native build is needed below. Read from the publish itself rather
+          # than recomputed, so the two can't disagree — and tolerant of shape
+          # because eas' --json output is versioned by the CLI, not by us.
+          RUNTIME=$(node -e '
+            const fs = require("node:fs");
+            const branch = process.argv[1];
+            const raw = JSON.parse(fs.readFileSync(`update-${branch}.json`, "utf8"));
+            const updates = Array.isArray(raw) ? raw : (raw.updates ?? [raw]);
+            const runtimes = [...new Set(updates.map((u) => u?.runtimeVersion).filter(Boolean))];
+            if (runtimes.length !== 1) {
+              console.error(`expected one runtime version, got ${JSON.stringify(runtimes)}`);
+              process.exit(1);
+            }
+            process.stdout.write(runtimes[0]);
+          ' "${BRANCHES%% *}")
+          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
+          echo "published for runtime $RUNTIME"
+
+      - name: Build natively, but only for a runtime that has no build yet
+        working-directory: apps/mobile
+        env:
+          RUNTIME: ${{ steps.publish.outputs.runtime }}
+        # With the fingerprint runtime policy, a change to native code or
+        # dependencies produces a new runtime version, and an update published
+        # for it reaches *no existing binary*. So: ask whether a finished
+        # production build already exists for this runtime, and only build
+        # when none does. Building on every release would cost 20-40 minutes
+        # and a queue slot for what is usually a JS-only change.
+        #
+        # The gate fails *closed*: an output shape it does not recognise is an
+        # error, not "zero builds". Mapping the unknown to zero would silently
+        # start the very builds this exists to prevent — with a step that
+        # still succeeds and a log line indistinguishable from the real case.
+        run: |
+          set -euo pipefail
+          for platform in ios android; do
+            if [ "$FORCE_BUILD" = "true" ]; then
+              echo "$platform: forced by workflow input"
+            else
+              COUNT=$(eas build:list \
+                --platform "$platform" \
+                --runtime-version "$RUNTIME" \
+                --build-profile production \
+                --status finished \
+                --limit 1 \
+                --non-interactive \
+                --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
+              if [ "$COUNT" != "0" ]; then
+                echo "$platform: runtime $RUNTIME already has a finished build; skipping"
+                continue
+              fi
+              echo "$platform: no build for runtime $RUNTIME yet"
+            fi
+            # --no-wait: a build takes far longer than this workflow should,
+            # and the update is already published — the binary catches up.
+            eas build --platform "$platform" --profile production --non-interactive --no-wait
+          done

@@ -22,6 +22,7 @@ import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { AutoCompactToggle } from './AutoCompactToggle';
 import { AgentStepLimit } from './AgentStepLimit';
 import { ServerSection } from './ServerSection';
+import { UpdatesRow } from './UpdatesRow';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
@@ -241,6 +242,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <AutoCompactToggle />
 
             <Box className="h-px bg-border" />
+
+            <UpdatesRow />
 
             <Pressable
               testID="settings.nav.mcp"

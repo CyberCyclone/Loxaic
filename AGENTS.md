@@ -103,8 +103,9 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Expo SDK 57 / New Architecture only.** `newArchEnabled` is no longer a valid `app.json`
   key (SDK 55 removed the legacy architecture), `expo prebuild` now wipes `ios/`/`android/`
   before regenerating (pass `--no-clean` to keep them), and `runtimeVersion.policy:
-  "sdkVersion"` means each SDK bump starts a fresh EAS Update runtime — clients on the old
-  build simply stop receiving updates. Upgrade with `npx expo install expo@^NN --fix` run
+  "fingerprint"` means a native or dependency change — an SDK bump included — starts a fresh
+  EAS Update runtime, and an update published for it reaches no existing binary (see
+  "Releases and over-the-air updates" below). Upgrade with `npx expo install expo@^NN --fix` run
   *inside* `apps/mobile`, then `npx expo install --check` and `npx expo-doctor@latest`.
 - **TypeScript is deliberately held at 5.9** via `expo.install.exclude` in
   `apps/mobile/package.json`: every other workspace package is `^5.7` and the shared eslint
@@ -1530,6 +1531,82 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Docker is contended. It asserts *nothing behind the stop ran* rather than an exact count of
   skipped calls, because whether the stop lands before or during the first call is a real race
   and both outcomes are correct.
+
+### Releases and over-the-air updates
+
+- **The version lives in the git tag, nowhere else.** All three version fields
+  (`apps/desktop/package.json`, `apps/server/package.json`, `apps/mobile/app.json`) are `0.0.0`
+  in the repository and `apps/desktop/scripts/stamp-version.mjs` writes the real number during
+  the release run. **Do not "fix" those zeros** — a committed version is a second source of
+  truth that drifts from the tag, and the point of stamping is that it cannot.
+  `parseReleaseTag` accepts `vX.Y.Z` and `vX.Y.Z-beta.N` and nothing else, and the same parser
+  is what CI's `meta` job uses, so a tag can never mean one thing to the stamp and another to
+  the workflow.
+- **One binary, two channels.** `beta` is not a separate app, a separate build profile, or a
+  separate bundle identifier — it is the `expo-channel-name` request header, set at runtime
+  (`lib/expo-updates.ts`). This is why `app.json` declares
+  `updates.requestHeaders: {"expo-channel-name": "production"}`: expo-updates only lets you
+  override a key the build already embeds, so without that line a locally-built release (the
+  e2e's, or any `expo run:ios --configuration Release`) throws the moment someone taps Beta.
+- **`Updates.channel` is what the binary was *built* for and never changes**, however many
+  times someone switches. So the stored preference (`loxaic-update-channel`, in
+  `KNOWN_KEYS`) is the source of truth and is re-applied on every launch. The override itself
+  persists natively across launches, which makes re-applying idempotent rather than redundant
+  — and makes it the only way to be sure a build that was reinstalled is on the channel the
+  person chose.
+- **Production is the absence of an override, not a header of its own.** `applyChannel`
+  passes `null` for production. Sending `expo-channel-name: production` explicitly would work
+  on an EAS build and fail on a build that embedded a different value.
+- **`checkAutomatically: "ON_ERROR_RECOVERY"` is deliberate.** The native layer's launch-time
+  check runs *before* JS applies the stored override, so it would always ask for the built-in
+  channel — a beta user's first request of every launch would fetch production. JS drives
+  every check instead, and the native path stays only as crash recovery.
+- **Nothing here ever reloads the app on its own.** `checkNow` downloads and stops; the
+  restart is a banner the person taps. Automatic checks are throttled to 15 minutes and
+  single-flighted; "Check now" and a channel switch bypass the throttle, because both are
+  someone asking.
+- **A release tag publishes to `production` *and* `beta`.** Beta must stay a strict superset,
+  or opting in would strand someone on an older build than the stable release they would
+  otherwise have had.
+- **A native build is started only when the runtime has none.** With the `fingerprint` runtime
+  policy, a native or dependency change makes a new runtime version and an update published
+  for it reaches no existing binary — but a JS-only release reuses the runtime, and building
+  every time would cost 20-40 minutes and a queue slot for nothing. `release.yml` asks
+  `eas build:list` for a finished production build at that runtime and builds only on none;
+  `force_native_build` overrides it. Stamping cannot move the runtime version by itself: the
+  fingerprinter ignores `version`/`buildNumber`/`versionCode`.
+- **Expo Go cannot open a published update** — an update is built for a runtime version only a
+  real build has. Expo Go is for Metro, and the docs say so; do not add an Expo Go path to the
+  update workflows.
+- **Web has to be excluded by hand.** expo-updates' web shim hardcodes
+  `isEnabled = true` while implementing none of the API — no
+  `setUpdateRequestHeadersOverride` at all, and a `reload()` that is a page refresh — so
+  `isSupported()` checks `Platform.OS` first. Without that the settings row rendered on the
+  web app, which has nothing to update: the server serves it and it changes when the server
+  does. `specs/updates.spec.ts` is what caught it and is the only place this code runs on web.
+- **`lib/expo-updates.ts` is the only file that imports `expo-updates`.** Every call in that
+  module throws outside a native release build, so the guard lives in one place (`isSupported`)
+  and everything else — the settings row, the banner, the hook — is written without platform
+  guards of its own. The one thing that cannot sit behind an early return is `useUpdates()`,
+  since a hook has to be called on every render; `useUpdateState()` calls it there and masks
+  what it *reports* to inert values, which is how the rule stays true rather than
+  true-except-for-that-hook.
+- **The stored channel must not be read before storage has hydrated.** `hydrateStorage()` is
+  awaited inside `SessionProvider`'s effect, not ahead of first render, and child effects run
+  before parent effects — so `startUpdateChecks()` fired from `ThemedApp` used to read an empty
+  cache, latch `production` for the life of the process, and put every beta user back on
+  Stable at every cold launch while Settings showed Stable selected. It is gated on `ready`
+  now, and `read()` no longer latches until `isStorageHydrated()`. The test that catches this
+  reads *first* and hydrates *second*; every other case does the opposite, which is why none of
+  them could.
+- **OTA bundles are not code-signed yet, and that is a recorded decision, not an oversight.**
+  Without `codeSigningCertificate` expo-updates trusts any bundle the update server returns —
+  the only thing between a leaked `EXPO_TOKEN` (which `preview.yml` now uses on every push to
+  `master`) and arbitrary JS in every install is the EAS account. Enabling signing after builds
+  are in the field needs a native release to carry the certificate, so the cheapest moment is
+  **before the first production publish**: `npx expo-updates configuration:generate-signing-key`
+  in `apps/mobile`, commit the public certificate, keep the private key out of CI, and sign in
+  the publish step. Do this before `v1.0.0`.
 
 ## Conventions
 

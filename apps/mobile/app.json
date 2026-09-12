@@ -48,10 +48,14 @@
     },
     "owner": "caseygibson",
     "runtimeVersion": {
-      "policy": "sdkVersion"
+      "policy": "fingerprint"
     },
     "updates": {
-      "url": "https://u.expo.dev/78ef6ddc-9619-4afe-91e6-9370e4c3fc70"
+      "url": "https://u.expo.dev/78ef6ddc-9619-4afe-91e6-9370e4c3fc70",
+      "checkAutomatically": "ON_ERROR_RECOVERY",
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
     }
   }
 }

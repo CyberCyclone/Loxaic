@@ -1,0 +1,51 @@
+name: Preview update
+
+# Every merge to master goes out to the `preview` branch, which development
+# builds follow. That is the whole point of the branch: it is where the
+# current state of master can be opened on a device without cutting a
+# release. Release tags are a different workflow (release.yml).
+on:
+  push:
+    branches: [master]
+
+# Holds EXPO_TOKEN on every push to master, so it gets nothing else: read is
+# all the checkout needs, and the default would otherwise be the repository's
+# — which may be write-all.
+permissions:
+  contents: read
+
+# One publish at a time, and only the newest matters — an update superseded
+# before it finished publishing is wasted work.
+concurrency:
+  group: preview-update
+  cancel-in-progress: true
+
+jobs:
+  expo-preview:
+    name: publish to preview
+    runs-on: ubuntu-latest
+    # A fork has no EXPO_TOKEN and no business publishing to this project's
+    # update branches, so it skips the job rather than failing the push.
+    if: ${{ github.repository_owner == 'CyberCyclone' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Publish
+        working-directory: apps/mobile
+        # No EXPO_PUBLIC_* endpoint baked in, deliberately: a published bundle
+        # resolves its server the way every install does (auto-detect, then
+        # the Settings override), rather than carrying one developer's tailnet
+        # address to everyone who opens it.
+        run: eas update --branch preview --message "${{ github.sha }}" --non-interactive
