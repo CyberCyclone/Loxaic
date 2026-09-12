@@ -142,7 +142,7 @@ until the media scanner indexes it. See `seedAndroidPhoto` in `scripts/native.ts
 ```bash
 pnpm --filter @loxaic/mobile prebuild:ios
 cd apps/mobile/ios && pod install
-xcodebuild -workspace loxaic.xcworkspace -scheme loxaic \
+xcodebuild -workspace Loxaic.xcworkspace -scheme Loxaic \
   -configuration Release -sdk iphonesimulator -derivedDataPath build \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
 pnpm --filter @loxaic/e2e test:ios

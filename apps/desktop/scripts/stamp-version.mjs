@@ -70,7 +70,12 @@ function stampPackageJson(file, version) {
 /** app.json's version lives one level down, at expo.version — a real parse
  * here (not a string replace) is safe because Expo's CLI already treats this
  * file as JSON it may rewrite (`eas update:configure`, `expo prebuild`), so
- * there's no existing hand-formatting convention to preserve. */
+ * there's no existing hand-formatting convention to preserve.
+ *
+ * This is also why `apps/mobile/app.config.js` overlays app.json rather than
+ * replacing it: a config that only existed as JavaScript would leave this
+ * nothing to write to. That file passes `version` through untouched, which is
+ * the half of the contract it has to keep. */
 function stampAppJson(file, version) {
   const raw = readFileSync(file, "utf8");
   const parsed = JSON.parse(raw);

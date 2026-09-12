@@ -251,13 +251,38 @@ uploading and the mobile update has published. GitHub's `/releases/latest` and
 its Atom feed both skip drafts, so no installed app can see a half-published
 release.
 
-### Channels are a runtime choice, not a separate app
+### Three apps, one codebase
 
-There is one production binary. Settings → Updates switches which channel it
-asks for, by setting the `expo-channel-name` request header
-(`apps/mobile/lib/expo-updates.ts`). Switching back to production does not
-downgrade the running build: it takes effect at the next update that channel
-publishes.
+Dev, beta and production are **separate apps**, not one app in three moods.
+Each has its own identity and follows its own update channel, so all three can
+sit on one device at once and none of them can be switched onto another's
+channel from inside the app:
+
+| `APP_VARIANT` | Name on the device | Identifier | Scheme | Channel | Who gets it |
+|---|---|---|---|---|---|
+| `dev` | Loxaic Dev | `com.loxaic.app.dev` | `loxaic-dev` | `dev` | you, privately |
+| `beta` | Loxaic Beta | `com.loxaic.app.beta` | `loxaic-beta` | `beta` | anyone who installs the beta |
+| `production` (default) | Loxaic | `com.loxaic.app` | `loxaic` | `production` | everyone |
+
+`apps/mobile/app.config.js` is where that table lives. It overlays `app.json`
+rather than replacing it, because `apps/desktop/scripts/stamp-version.mjs`
+writes the release version into that JSON and needs a file to write to; the
+config passes `version` straight through. An unset `APP_VARIANT` — `expo
+start`, Expo Go, a plain `expo export` — is production, and an unrecognised
+one throws rather than quietly building production under a name nobody meant
+to ship.
+
+The build profile in `eas.json` carries the matching `APP_VARIANT`, so
+`--profile beta` is the only thing that has to be right; the variant, the
+channel and the identifiers all follow from it. **A build and an `eas update`
+that disagree on `APP_VARIANT` produce an update nobody receives** — the
+channel is embedded in the binary, and `expo-updates` only honours a channel
+the build already has.
+
+Each variant is also its own **runtime version**: the fingerprint policy hashes
+native config, and the bundle identifier is native config. So a release builds
+and gates natives per platform *per variant*, and an update published for one
+variant's runtime is invisible to the others.
 
 ### One-time setup
 
@@ -266,10 +291,24 @@ On the Expo account that owns the project:
 ```bash
 cd apps/mobile
 npx --yes eas-cli@latest login
+npx --yes eas-cli@latest channel:create dev
 npx --yes eas-cli@latest channel:create beta
-npx --yes eas-cli@latest channel:edit beta --branch beta
-npx --yes eas-cli@latest channel:list   # expect production→production, preview→preview, beta→beta
+npx --yes eas-cli@latest channel:list   # expect dev→dev, beta→beta, production→production
 ```
+
+The dev app talks to the dev stack on the box, and that address is baked in at
+build time from EAS's own `development` environment rather than from this
+repository — so the build and the over-the-air bundle read the same value and
+cannot drift:
+
+```bash
+npx --yes eas-cli@latest env:set --environment development --scope project \
+  --visibility plaintext --name EXPO_PUBLIC_API_URL --value http://<your-box>.<tailnet>.ts.net:43000
+```
+
+Whoever installs it can still point it somewhere else from the sign-in screen;
+the stored override wins over any baked-in default (see "Endpoint resolution
+order" below).
 
 `npx`, rather than a bare `eas`, for two reasons that both bite in practice. A
 global `npm install -g eas-cli` lands in the bin directory of whichever Node
