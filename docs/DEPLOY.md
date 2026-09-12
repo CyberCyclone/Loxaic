@@ -260,10 +260,23 @@ On the Expo account that owns the project:
 
 ```bash
 cd apps/mobile
-eas channel:create beta
-eas channel:edit beta --branch beta
-eas channel:list          # expect production→production, preview→preview, beta→beta
+npx --yes eas-cli@latest login
+npx --yes eas-cli@latest channel:create beta
+npx --yes eas-cli@latest channel:edit beta --branch beta
+npx --yes eas-cli@latest channel:list   # expect production→production, preview→preview, beta→beta
 ```
+
+`npx`, rather than a bare `eas`, for two reasons that both bite in practice. A
+global `npm install -g eas-cli` lands in the bin directory of whichever Node
+version nvm had selected at the time, so it silently disappears from `PATH` the
+next time you switch versions — which reads as "command not found" with the
+binary still sitting on disk. And `eas.json` here requires `>= 13.0.0`, so a
+global copy left over from an older project is refused by this one anyway.
+Going through `npx` sidesteps both: it ignores whatever `eas` is on `PATH`
+and fetches a current CLI each time — `@latest` is a floating tag, the
+opposite of a pin, and that is the point. CI is unaffected:
+`expo/expo-github-action` puts a current `eas` on `PATH` itself, which is why
+the workflows call it directly.
 
 Repository secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish;
 the publish step fails without one. Both workflows skip themselves entirely on
