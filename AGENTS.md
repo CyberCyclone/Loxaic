@@ -1608,6 +1608,98 @@ screenshots showing that behaviour working. Writing those tests is the implement
   in `apps/mobile`, commit the public certificate, keep the private key out of CI, and sign in
   the publish step. Do this before `v1.0.0`.
 
+### The desktop updater
+
+- **A whole new binary, not a bundle — but one choice, one row.** `hooks/useAppUpdates.ts` has
+  two backends (`electron-updater` through the desktop bridge, expo-updates on native) and the
+  settings row and banner are written once against the shape they share. Both hooks are called
+  unconditionally and one is selected: whether a desktop bridge exists is fixed for the life of
+  the process, but hooks may not be called conditionally on *anything*, and expo-updates' web
+  implementation is inert rather than absent.
+- **Never set `autoUpdater.channel`.** On the GitHub provider the channel that matters is
+  derived from the release *tag* — a `v1.2.3-beta.4` release publishes `beta.yml` and is found
+  by walking the releases feed — and setting `channel` additionally flips `allowDowngrade` to
+  true behind your back. `allowPrerelease` is the whole switch, and `allowDowngrade` staying
+  false is what makes "switching back to Stable never downgrades you" true rather than
+  aspirational.
+- **The row stays visible on the desktop even when checks are off**, with the reason. A build
+  that silently never updates is indistinguishable from one that is up to date, and the case a
+  person is least likely to guess is the one that matters most (a `.deb`, which really does have
+  to be updated by hand). Off means: not packaged, `LOXAIC_DISABLE_UPDATES=1`,
+  `--loxaic-no-updates`, or Linux without `$APPIMAGE`.
+- **`updates.json` is its own file, not a key in config.json.** `buildConfig()` rebuilds that
+  object from a fixed set of keys and drops everything else, so a channel stored there would
+  revert the next time anyone touched a server setting. Its own file also survives a detach,
+  which is right: the channel is a fact about the binary on this machine, not about the server
+  it points at.
+- **`shutdownChildren()` is shared by the quit handler and the updater, and the order in
+  `install()` is load-bearing.** It stops the children and *awaits* them, then sets `quitting`,
+  then calls `quitAndInstall`. `quitAndInstall` closes the windows and only then emits
+  `before-quit`; that handler must find `quitting` already true and step aside, because its
+  `app.exit(0)` would kill the process out from under Squirrel's and NSIS's handover. And the
+  children have to be down first regardless: the installer is about to replace the binary they
+  were spawned from, with Postgres mid-write.
+- **`state.js` is a pure reducer with no `require("electron")` anywhere**, which is what makes
+  the two decisions worth having testable at all: an error clears when the next check *starts*
+  (checks fail for passing reasons — a laptop that just woke — and an error that never clears is
+  a permanent accusation in Settings), and a downloaded update is **sticky** (the six-hourly
+  timer keeps running, and its `checking`/`not-available` events would otherwise walk "an update
+  is ready" off the screen for one that is still on disk).
+- **The release is drafted first and undrafted last.** GitHub's `/releases/latest` and its Atom
+  feed both skip drafts, so nothing installed can see a release whose installers are still
+  uploading — or one where a platform failed to build. `create-release` makes the draft (once,
+  idempotently, so three matrix legs cannot race to create it), each leg uploads into it with
+  `EP_DRAFT=true`, and `publish-release` flips the switch. `fail-fast: false`, because a release
+  missing Windows is still worth having for the other two.
+- **`asar: false` means `mac.target` must include `zip`.** MacUpdater downloads the zip, not the
+  dmg; the dmg is what a person installs by hand.
+- **The update channel has no authenticity check on Windows or Linux.** electron-updater's
+  Windows signature check compares the downloaded installer's publisher against the running
+  app's own certificate — with neither signed it is a no-op, and Linux has nothing equivalent.
+  What is left is the `sha512` in `latest.yml`, generated and uploaded by the same job into the
+  same release as the installer it vouches for: anyone who can write an asset there gets
+  automatic code execution on every install. macOS is the exception once signed and notarized.
+  That is why the release workflow's `contents: write` is scoped to the three jobs that touch the
+  release and every action is pinned to a commit — the workflow publishes binaries clients
+  auto-install, so a mutable tag there is a supply-chain seam.
+- **A failed install is not allowed to be silent.** Three things had to change together:
+  `beforeInstall()` is bounded and caught (its rejection into a `void` left the person in an app
+  whose backend was already down, still being told an update was ready); the reducer's
+  sticky-`ready` rule has an `installing` exception (`quitAndInstall` reports failure by emitting
+  `error` at status `ready`, which the rule absorbed); and the renderer's bridge calls `.catch`
+  into the error state rather than being `void`ed. And `quitting` is claimed only *after* the
+  children are down — set before the await, a Cmd-Q mid-shutdown stepped aside and exited with
+  Postgres mid-drain.
+- **The draft is reused on a re-run only while it is still a draft.** `gh release view` succeeds
+  for a published release too, so an unguarded "already exists → exit 0" let a re-run upload into
+  a *live* release with `EP_DRAFT=true`, rewriting `latest.yml` while clients polled it. A
+  published tag now fails the run with a message; deleting the release first is the deliberate
+  act it should be. And `publish-release` runs on `always()` minus cancellation, then counts
+  installer assets before undrafting: a matrix job concludes `failure` if any leg does, so the
+  default needs-gate stranded every release missing one platform as a permanent draft — the
+  opposite of what `fail-fast: false` was added for.
+- **The Electron e2e pins `LOXAIC_DISABLE_UPDATES=1`.** A `--dir` build is packaged as far as
+  `app.isPackaged` is concerned, so without it every run would ask GitHub for a release feed and,
+  on a machine where a release exists, start downloading an installer mid-suite.
+- **`E2E_SELF_CONTAINED=1` runs a subset and always has.** `standup()` returns before
+  `ensureServer()` in that mode, and `ensureServer()` is what provisions the per-run admin
+  account and points the server at the mock GitHub API — so every admin-requiring spec (the
+  sandbox and agent ones) and the GitHub one fail there by construction, with a message saying
+  so. Compare a red self-contained run against a default-mode one before concluding anything.
+- **The lazy `import("electron-updater")` needs `mod.default.autoUpdater`, and only a packaged
+  launch could say so.** It is CommonJS and defines `autoUpdater` with a `defineProperty` getter,
+  which Node's cjs-module-lexer cannot see — so the ESM namespace a dynamic `import()` produces
+  carries *no* `autoUpdater` named export. Every unit test passed because a hand-written fake
+  module has real named exports; the packaged app failed on its first real launch with "Cannot
+  set properties of undefined (setting 'logger')". One test now imitates the real shape.
+  (The same launch also showed each failure logged twice, because `checkForUpdates` rejects
+  *and* emits `error`.) A `--dir` build has no `app-update.yml` at all — electron-builder writes
+  one only for a real target — so enabling updates there always reports that ENOENT.
+- **Not verified by anything yet**: electron-updater's actual behaviour against a real release —
+  the prerelease walk, `private` + `token`, `quitAndInstall` after a normal quit, `$APPIMAGE`.
+  Windows packaging has never been exercised at all, and macOS installs are unsigned until
+  signing lands.
+
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.

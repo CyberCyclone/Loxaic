@@ -63,6 +63,15 @@ before `standup.ts` is even imported (module-load order matters here); `standup(
 become no-ops since the app's own supervisor owns that stack's lifecycle. Electron-only — there is
 no equivalent for the web suite, which has no supervisor to embed a stack under.
 
+**It runs a subset, by construction.** `standup()` returns before `ensureServer()` in this mode,
+because the app owns the stack — and `ensureServer()` is also what provisions the per-run admin
+account (`artifacts/.run/admin.json`) and points the server at the mock GitHub API. So every spec
+that needs an admin (the sandbox and agent ones, which change server-level sandbox settings) or a
+stubbed GitHub fails here with a message saying exactly that, and the packaged app talks to the
+real api.github.com. Run the suite **without** `E2E_SELF_CONTAINED` to exercise those; this mode
+is for proving the embedded stack itself, which is what `electron/*.spec.ts` covers. A red run
+here is not automatically a regression — compare it against a default-mode run first.
+
 The same script points the app's embedded Tailscale sidecar at a stand-in for every Electron
 run (`LOXAIC_TSNET_BIN` → a per-run temp copy of `fixtures/fake-tsnet.sh`), so no spec can ever
 reach the real Tailscale control plane — approving a node needs a real account and a browser.

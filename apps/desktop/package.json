@@ -10,12 +10,14 @@
     "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
     "build:server": "node scripts/build-server.mjs",
     "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder",
+    "package:publish": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder --publish always",
     "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && pnpm build:server && electron-builder --dir",
     "typecheck": "echo ok",
     "test": "vitest run"
   },
   "dependencies": {
     "electron-serve": "^3.0.1",
+    "electron-updater": "^6.8.9",
     "embedded-postgres": "17.10.0-beta.17"
   },
   "devDependencies": {
@@ -37,12 +39,14 @@
       { "from": "resources/server", "to": "server" }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "publish": [{ "provider": "github", "owner": "CyberCyclone", "repo": "Open-Shannon" }],
     "mac": {
-      "target": "dmg",
+      "target": ["dmg", "zip"],
       "category": "public.app-category.developer-tools",
       "identity": null
     },
     "win": { "target": "nsis" },
+    "nsis": { "oneClick": true },
     "linux": {
       "target": ["AppImage", "deb"],
       "category": "Development"

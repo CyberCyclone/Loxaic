@@ -17,10 +17,14 @@ const CHANNEL_LABEL: Record<UpdateChannel, string> = {
 /**
  * Which updates this install follows, and what it is running.
  *
- * Renders nothing where the app cannot update itself — web (the server serves
- * it), Expo Go, development — rather than showing a control that would throw
- * on use. That is most of the reason this reads through useAppUpdates rather
- * than expo-updates directly.
+ * Renders nothing where the app cannot update itself at all — a browser (the
+ * server serves the web app and it changes when the server does), Expo Go,
+ * development on native — rather than showing a control that would throw on
+ * use. The desktop app is the deliberate exception: it always shows the row,
+ * because a desktop build that is not checking (a development launch, an
+ * install from a package manager) is otherwise indistinguishable from one
+ * that is up to date. That is most of the reason this reads through
+ * useAppUpdates rather than expo-updates directly.
  *
  * Both channels are described, not just the one being switched on, in the
  * same shape AutoCompactToggle uses: the difference between them is a
@@ -28,7 +32,7 @@ const CHANNEL_LABEL: Record<UpdateChannel, string> = {
  * "stable" and "beta" alone.
  */
 export function UpdatesRow() {
-  const { supported, channel, setChannel, check, install, status, error, version } = useAppUpdates();
+  const { supported, channel, setChannel, check, install, status, error, progress, version } = useAppUpdates();
   // Fetched here, by the only thing that renders it. Reading it in the hook
   // dragged a GET /v1/config into every session through the banner that
   // mounts in AppShell — on every platform, for a value it never shows.
@@ -37,6 +41,10 @@ export function UpdatesRow() {
   if (!supported) return null;
 
   const busy = status === 'checking' || status === 'downloading';
+  // "Checks are off" is a fact, not a fault: a development build, or an
+  // install from a package manager that owns the binary. It reads muted, and
+  // the button that would do nothing is disabled rather than absent.
+  const off = status === 'off';
 
   return (
     <VStack space="xs">
@@ -65,7 +73,7 @@ export function UpdatesRow() {
             <ButtonText>Restart to update</ButtonText>
           </Button>
         ) : (
-          <Button testID="settings.updates.check" variant="outline" size="sm" isDisabled={busy} onPress={check}>
+          <Button testID="settings.updates.check" variant="outline" size="sm" isDisabled={busy || off} onPress={check}>
             <ButtonText>Check now</ButtonText>
           </Button>
         )}
@@ -75,15 +83,7 @@ export function UpdatesRow() {
           size="2xs"
           className={`flex-1 ${status === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}
         >
-          {status === 'checking'
-            ? 'Checking…'
-            : status === 'downloading'
-              ? 'Downloading…'
-              : status === 'ready'
-                ? 'An update is ready. It applies when you restart.'
-                : status === 'error'
-                  ? error
-                  : 'Up to date.'}
+          {describeStatus(status, error, progress)}
         </Text>
       </HStack>
 
@@ -107,6 +107,29 @@ export function UpdatesRow() {
       </VStack>
     </VStack>
   );
+}
+
+function describeStatus(
+  status: ReturnType<typeof useAppUpdates>['status'],
+  error: string | null,
+  progress: number | null,
+): string {
+  switch (status) {
+    case 'off':
+      return error ?? 'Not checking for updates.';
+    case 'checking':
+      return 'Checking…';
+    case 'downloading':
+      // The desktop downloads a whole installer and reports bytes; a JS
+      // bundle over the air is done before a percentage would be readable.
+      return progress === null ? 'Downloading…' : `Downloading… ${String(Math.round(progress * 100))}%`;
+    case 'ready':
+      return 'An update is ready. It applies when you restart.';
+    case 'error':
+      return error ?? 'The update check failed.';
+    default:
+      return 'Up to date.';
+  }
 }
 
 /** One line naming exactly what is running, for a bug report to quote. The

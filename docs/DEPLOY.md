@@ -133,7 +133,9 @@ other untouched.
 
 ### Upgrading
 
-Replace the binary/`.app`/AppImage with the new version. The data directory
+The GUI app updates itself — see "Desktop auto-update" below. For a headless
+install, or an install from a `.deb`, replace the binary/`.app`/AppImage with
+the new version. Either way the data directory
 (embedded Postgres + generated secrets) is untouched, and migrations apply
 automatically on next start — a failed migration is a **fatal boot error**
 in this mode (`MIGRATIONS_STRICT=1`), not a silent skip, so a broken upgrade
@@ -231,12 +233,18 @@ into all three during the release run.
 | You push | Goes to | What sees it |
 |---|---|---|
 | a commit on `master` | `preview` branch | development and preview builds |
-| `v1.2.3-beta.4` | `beta` branch | anyone who chose Beta in Settings |
-| `v1.2.3` | `production` **and** `beta` branches | everyone |
+| `v1.2.3-beta.4` | `beta` branch + a GitHub pre-release | anyone who chose Beta in Settings |
+| `v1.2.3` | `production` **and** `beta` branches + a GitHub release | everyone |
 
 A release tag publishes to beta as well, so beta is always a superset of
 production. Someone who opted in must never end up on an older build than a
 stable release.
+
+A tag builds desktop installers for macOS (arm64), Linux and Windows into a
+**draft** release, and only undrafts it once every platform has finished
+uploading and the mobile update has published. GitHub's `/releases/latest` and
+its Atom feed both skip drafts, so no installed app can see a half-published
+release.
 
 ### Channels are a runtime choice, not a separate app
 
@@ -289,6 +297,43 @@ with the `force_native_build` input on a `workflow_dispatch` run.
 Stamping never changes the runtime version by itself: `stamp-version.mjs`
 writes only `version` fields, and the fingerprinter ignores
 `version`/`buildNumber`/`versionCode`.
+
+### Desktop auto-update
+
+The desktop app checks GitHub Releases for a newer build, downloads it, and offers a restart
+from Settings → Updates. The channel is the same choice as on mobile and is stored in
+`<dataDir>/updates.json`, so it survives a detach and a mode switch.
+
+- **Stable** follows `/releases/latest`, which GitHub defines as the newest release that is
+  neither a draft nor a pre-release — so a beta never reaches it.
+- **Beta** additionally accepts pre-releases (`allowPrerelease`).
+- **Switching back to Stable never downgrades you.** `allowDowngrade` stays off, so someone
+  on `1.3.0-beta.2` keeps it until `1.3.0` proper is published.
+
+Nothing installs itself behind your back: the download is automatic, the restart is a button.
+
+**What the channel verifies, and what it does not.** On macOS a signed, notarized build is
+verified by the OS on install. On Windows and Linux the installers are **not signed**, so the
+only integrity check on a downloaded update is the `sha512` in `latest.yml` — a file written
+and uploaded by the same CI job, into the same GitHub release, as the installer it describes.
+That means anyone who can write an asset to a release (a compromised `GITHUB_TOKEN` or runner,
+a hijacked build-time dependency with an install script, a stolen maintainer token) can ship a
+trojaned installer with a matching hash, and every install would fetch it automatically and run
+it on the next restart. Until Windows signing exists, treat desktop auto-update on Windows as
+convenient rather than trustworthy, and keep the release workflow's write access as narrow as
+it is.
+
+**Checks are off** — with the reason shown in Settings rather than a silent no-op — in a
+development build, when `LOXAIC_DISABLE_UPDATES=1` or `--loxaic-no-updates` is given, and on
+Linux unless the app is running as an AppImage. A `.deb` is owned by the package manager;
+update it the way you installed it.
+
+Restarting into an update stops the embedded Postgres, the server, the executor and the
+Tailscale sidecar first, and waits for them — the installer is about to replace the binary
+those children were spawned from.
+
+To test against this repository while it is still private, set `LOXAIC_GH_TOKEN` to a token
+that can read it. It is never persisted and never logged, and it is for local testing only.
 
 ## Endpoint resolution order (native apps)
 

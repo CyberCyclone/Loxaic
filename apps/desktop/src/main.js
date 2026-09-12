@@ -38,6 +38,7 @@ async function runGui() {
   const { startTsnet } = await import("./supervisor/tsnet.js");
   const { addRoot, loadOrCreateExecutorId, loadRoots, removeRoot, rootsPath } = await import("./supervisor/executor-store.js");
   const { readSecrets, updateSecrets } = await import("./supervisor/secrets.js");
+  const { createUpdater } = await import("./updates/updater.js");
   const {
     DEFAULT_HOST_PORT,
     buildConfig,
@@ -873,7 +874,41 @@ async function runGui() {
       }
       return executorStateView();
     });
+
+    // ── Updates ──
+    // Four fixed IPC channels, none of which takes a URL, a path or a version
+    // from the renderer: the release feed is compiled in, and the only choice
+    // a page can express is which of two named update channels to follow.
+    ipcMain.handle("loxaic:updates.getState", () => updates.state());
+    ipcMain.handle("loxaic:updates.setChannel", (_event, channel) => updates.setChannel(channel));
+    ipcMain.handle("loxaic:updates.check", () => updates.check());
+    ipcMain.handle("loxaic:updates.install", () => updates.install());
   }
+
+  // ── Desktop updates ─────────────────────────────────────
+  // A whole new binary, installed by the platform's own installer — nothing
+  // like the mobile app's JS bundle over the air, but the same choice of
+  // channel and the same settings row, so both report through one shape.
+  const updates = createUpdater({
+    dataDir: dataDir(),
+    app,
+    log: (line) => { console.log(`[loxaic] ${line}`); },
+    onState: (state) => { mainWindow?.webContents.send("loxaic:updateState", state); },
+    beforeInstall: async () => {
+      // Stop the children *first*, then claim the quit. `quitAndInstall`
+      // closes the windows and then emits `before-quit`; with `quitting`
+      // set, that handler steps aside and lets the app quit the ordinary
+      // way, which is what Squirrel and NSIS need to take over from. But the
+      // flag has to become true only once it is: set before the await, a
+      // Cmd-Q or SIGTERM landing mid-shutdown found `quitting` already true,
+      // stepped aside, and exited with Postgres mid-drain — the exact
+      // outcome this ordering exists to prevent. Stopping the children here
+      // rather than in the handler is the point: the installer is about to
+      // replace the binary they were spawned from.
+      await shutdownChildren();
+      quitting = true;
+    },
+  });
 
   async function createWindow() {
     mainWindow = new BrowserWindow({
@@ -925,6 +960,7 @@ async function runGui() {
     // rather than assumed: a window that opened before the stack resolved
     // would otherwise sit on stale props.
     pushStackState();
+    updates.start();
   });
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
   app.on("activate", () => { if (!mainWindow) createWindow(); });
@@ -933,15 +969,27 @@ async function runGui() {
   // live database, and Postgres needs a clean shutdown — a fire-and-forget
   // kill here would leave the cluster to crash-recover on next launch.
   let quitting = false;
-  app.on("before-quit", (event) => {
-    if (quitting) return;
-    if (!stack && !executor && !tsnet) return;
-    event.preventDefault();
-    quitting = true;
+
+  /** Everything this process spawned, stopped and awaited. Shared by the
+   * quit handler and the updater, which has to bring the same children down
+   * before the installer replaces the binary they came from. */
+  function shutdownChildren() {
     const stops = [];
     if (executor) stops.push(executor.stop().catch(() => undefined));
     if (stack) stops.push(stack.stop());
     stops.push(stopTsnet());
-    Promise.all(stops).finally(() => { app.exit(0); });
+    return Promise.all(stops);
+  }
+
+  app.on("before-quit", (event) => {
+    // Already draining — either a second Cmd-Q, or the quit that
+    // `quitAndInstall` triggers after the updater has stopped the children
+    // itself. Both must be allowed to proceed: preventing this one is how an
+    // update gets installed into a process that then refuses to exit.
+    if (quitting) return;
+    if (!stack && !executor && !tsnet) return;
+    event.preventDefault();
+    quitting = true;
+    shutdownChildren().finally(() => { app.exit(0); });
   });
 }

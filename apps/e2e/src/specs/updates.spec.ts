@@ -31,10 +31,10 @@ describe('app updates', () => {
   });
 
   it('offers a channel and says what it is running, on a build that updates', async function skipOnWeb() {
-    // Electron is excluded too until its own updater exists: the desktop
-    // replaces a whole binary rather than a JS bundle, which is a different
-    // mechanism behind the same row.
-    if (platform() === 'web' || platform() === 'electron') return this.skip();
+    // Native and the desktop both, through one row: the mechanisms underneath
+    // share nothing (a JS bundle over the air versus a whole new binary), and
+    // that is exactly why the row is worth asserting on identically.
+    if (platform() === 'web') return this.skip();
     await waitForVisible('settings.updates.channel.production');
     await waitForVisible('settings.updates.channel.beta');
     await waitForVisible('settings.updates.check');

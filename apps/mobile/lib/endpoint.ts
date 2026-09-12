@@ -132,6 +132,28 @@ export interface ExecutorState {
   roots: string[];
 }
 
+/**
+ * The desktop updater as the main process reports it.
+ *
+ * `enabled: false` is not an error — a development build, a launch that
+ * switched checks off, an install from a .deb — and `disabledReason` says
+ * which, because "this app never updates" and "this app is up to date" look
+ * identical from the outside otherwise.
+ */
+export interface DesktopUpdateState {
+  enabled: boolean;
+  disabledReason: string | null;
+  channel: 'production' | 'beta';
+  status: 'off' | 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
+  /** The version found or downloaded — not the one running. */
+  availableVersion: string | null;
+  /** 0-1 while downloading. */
+  progress: number | null;
+  error: string | null;
+  /** The running build's version. */
+  version: string | null;
+}
+
 export interface LoxaicBridge {
   platform: 'electron';
   apiBaseUrl: string | null;
@@ -164,6 +186,14 @@ export interface LoxaicBridge {
     testDb: (input: { url: string; password?: string }) => Promise<{ ok: boolean; url?: string; reason?: string }>;
     detach: () => Promise<InstanceState>;
     onStackState: (cb: (state: InstanceState) => void) => () => void;
+  };
+  updates: {
+    getState: () => Promise<DesktopUpdateState>;
+    setChannel: (channel: 'production' | 'beta') => Promise<DesktopUpdateState>;
+    check: () => Promise<DesktopUpdateState>;
+    /** Stops the embedded stack and restarts into the downloaded update. */
+    install: () => Promise<DesktopUpdateState>;
+    onState: (cb: (state: DesktopUpdateState) => void) => () => void;
   };
   tailnet: {
     getState: () => Promise<TailnetState>;
