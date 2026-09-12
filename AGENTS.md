@@ -1700,6 +1700,73 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Windows packaging has never been exercised at all, and macOS installs are unsigned until
   signing lands.
 
+### macOS signing and notarization
+
+- **`identity: null` is gone, on purpose, and must not come back.** It used to mean "never sign,
+  always" — but a config field applies to CI the same as a contributor's laptop, and CI is
+  exactly where signing has to happen. The right way to get an unsigned local build back (no
+  cert on this machine, or deliberately skipping it) is the env var
+  `CSC_IDENTITY_AUTO_DISCOVERY=false`, which is a per-invocation choice rather than a committed
+  one. Restoring `identity: null` would silently turn every release build unsigned again.
+- **Without a cert at all, packaging still succeeds — it just warns.** `forceCodeSigning`
+  defaults to false, so a machine with zero identities in its keychain (verified directly: this
+  one) falls back to an unsigned/ad-hoc build with a warning in the log, not a failure. That is
+  what every `package:dir` run on this repo has been doing all along; B4 only changes what
+  happens when a real certificate *is* present.
+- **The three hardened-runtime entitlements are not optional decoration.**
+  `build/entitlements.mac.plist` grants `allow-jit` and
+  `allow-unsigned-executable-memory` (Electron/V8 need to allocate and execute JIT'd machine
+  code, which the hardened runtime refuses by default — the app crashes on launch without
+  these) and `disable-library-validation` (hardened runtime otherwise refuses to load a dylib
+  not signed by the same Team ID as the app — and `asar: false` means node_modules' native
+  bindings are plain files on disk, signed by their own upstream publishers, not by us). No
+  App Sandbox entitlements are present: this is a plain Developer ID app, not a Mac-App-Store
+  one, so sandbox keys like network-client would be inert clutter, not protection.
+- **`entitlements`/`entitlementsInherit` point at the same file.** There is no separate
+  sandboxed login-helper process here that would need the narrower inherited set the option
+  exists for — one file covers both because both signing passes need the same three grants.
+- **`gatekeeperAssess: false` is not "skip verification," it is "skip a check that cannot pass
+  yet."** electron-builder's post-sign Gatekeeper assessment runs immediately after signing,
+  before notarization has happened and long before the notarization ticket is stapled — a
+  signed-but-not-yet-notarized app fails that assessment by construction. The real check is
+  `spctl -a -vv -t install` against the stapled build, done once notarization has actually run.
+- **Notarization needs all three of `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+  `APPLE_TEAM_ID`, and is silently skipped with none of them.** electron-builder's own
+  `getNotarizeOptions` throws if exactly one or two of the three are set (a half-configured
+  secret set should fail loudly, not notarize wrong), but returns `undefined` — no error, a log
+  line — when none are set at all. That is what makes a contributor's local `package:dir`
+  keep working with no Apple account involved. `notarize: true` in package.json is declarative
+  documentation of the intent; the behavior is identical whether that key is present or absent,
+  since only `notarize: false` changes anything.
+- **The five signing/notarization secrets reach exactly one step, on exactly one platform.**
+  Declared job-wide they sat in the environment of `pnpm install` — and every third-party
+  postinstall script it runs — on all three runners; "only electron-builder reads them" was
+  true and beside the point. And "read only on darwin" was wrong twice over: **Windows has its
+  own read** (`WIN_CSC_LINK` falls back to `CSC_LINK`, and `win` names no certificate, so the
+  Apple `.p12` would have signed the NSIS installer), and **an unset GitHub secret expands to
+  `""`, which electron-builder does not treat as absent** — `""` passes its `== null` guard,
+  reaches `importCertificate`, resolves to the project directory, and throws "not a file", so
+  the first tag after `identity: null` was removed would have failed macOS packaging outright.
+  The package step's shell unsets anything empty and everything on a non-macOS leg; the
+  `environment: release` on the `desktop` job is the enabler for moving the key behind required
+  reviewers, which a repository secret — readable by a workflow on any branch — cannot be.
+  electron-builder still imports `CSC_LINK` into a throwaway keychain itself; nothing else is
+  needed.
+- **Every nested Mach-O binary needs a valid signature for notarization to succeed, not just the
+  app itself.** `asar: false` is why osx-sign walks and signs the embedded Postgres binaries and
+  the `tsnet-proxy` sidecar along with everything else in the bundle — Apple's notarization
+  service rejects a submission containing *any* unsigned executable, wherever it lives inside
+  the `.app`. `codesign --verify --deep --strict` is what proves this actually happened; it
+  cannot be exercised without a real Developer ID certificate, which this environment does not
+  have.
+- **Nothing here has been verified against a real Apple account.** The whole signing and
+  notarization path — a real `codesign`, a real notarization submission and its ticket, `spctl`
+  accepting the stapled result, `xcrun stapler validate` — needs Apple Developer credentials in
+  repository secrets and a release tag actually pushed. Confirmed instead: packaging still
+  succeeds both unsigned (no keychain identity) and with signing explicitly suppressed
+  (`CSC_IDENTITY_AUTO_DISCOVERY=false`), the entitlements plist parses, and the workflow YAML
+  and its embedded shell are both syntactically valid.
+
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened runtime (required for notarization). This is
+  a plain Developer ID app, not a sandboxed/Mac App Store one — there is no
+  com.apple.security.app-sandbox here, and none of the sandbox entitlements
+  (network client, file access, etc.) apply. Keep this list to what actually
+  crashes or breaks without it; hardened runtime denies everything not
+  explicitly granted, so an over-broad entitlement is a needless attack
+  surface on a distributed binary.
+-->
+<plist version="1.0">
+<dict>
+  <!--
+    Electron/V8 need to allocate executable, writable memory to JIT-compile
+    JavaScript. Hardened runtime blocks that by default; without this the app
+    crashes on launch (or the first script it tries to run) on every Mac,
+    Intel and Apple Silicon alike. This is the one entitlement every Electron
+    app on the hardened runtime ships with.
+  -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!--
+    V8 also generates and calls into unsigned machine code as part of that
+    same JIT pipeline (not just JIT-*compiled* pages, but memory whose
+    signature hardened runtime would otherwise refuse to execute at all).
+    Electron's own signing guidance lists this alongside allow-jit for
+    exactly that reason.
+  -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!--
+    Hardened runtime otherwise refuses to load a dynamic library unless it is
+    signed by the same Team ID as the app itself. asar is off here
+    (apps/desktop/package.json), so node_modules' native bindings (and
+    anything embedded-postgres loads at runtime) are plain files on disk
+    signed by their own upstream publishers, not by us — without this they
+    would refuse to load the moment the hardened runtime is enforced.
+  -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
