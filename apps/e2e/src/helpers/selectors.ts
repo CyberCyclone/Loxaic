@@ -97,6 +97,56 @@ export async function longPress(id: string, durationMs = 800): Promise<void> {
 export async function typeInto(id: string, text: string): Promise<void> {
   const el = byTestId(id);
   await el.waitForDisplayed();
+
+  // On web and Electron, `setValue` types character by character into what is
+  // usually a React-controlled input: the component re-renders between
+  // keystrokes and quietly eats some of them ("https://typo.example.com"
+  // arrived as "tp:/yoeapecm"). Retrying does not help and can make it worse —
+  // `clearValue` blanks the DOM but not React's state, so the next render
+  // restores the old value and the retype appends onto it. Setting the value
+  // through React's own native input setter and dispatching a real `input`
+  // event is the one approach that survives both.
+  if (platform() === 'web' || platform() === 'electron') {
+    await el.click();
+    await browser.execute(
+      (selector: string, value: string) => {
+        const node = document.querySelector(selector);
+        if (!node) throw new Error(`typeInto: no element matched ${selector}`);
+        // Named failures, because this now backs signUp/signIn for every web
+        // and Electron spec. A testID that landed on a wrapper (the common
+        // gluestack shape — several .web.tsx overrides render a raw div or
+        // span) used to throw an opaque "Illegal invocation" from inside the
+        // page; a missing setter used to dispatch `input` with the *old*
+        // value and report success, surfacing much later as an unrelated
+        // timeout in whatever the text was supposed to unlock.
+        if (!(node instanceof HTMLInputElement) && !(node instanceof HTMLTextAreaElement)) {
+          throw new Error(`typeInto: ${selector} is a <${node.tagName.toLowerCase()}>, not an input or textarea`);
+        }
+        const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement : HTMLInputElement;
+        // Called straight off the descriptor rather than lifted into a
+        // variable first: the setter is only meaningful bound to `node`. A
+        // missing setter is not checked for separately — the read-back below
+        // catches it, since the value would still be the old one.
+        Object.getOwnPropertyDescriptor(proto.prototype, 'value')?.set?.call(node, value);
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+      },
+      testIdSelector(id),
+      text,
+    );
+    // Read back — but not inside the execute above. A controlled input's DOM
+    // value is reset to the *old* state synchronously after the event and
+    // only becomes the new one once React commits, so a synchronous check
+    // saw "" every time. Waiting on the value is the honest read-back: a
+    // missing setter or a value that genuinely did not take still fails,
+    // and fails here with the selector named, rather than as an unrelated
+    // timeout in whatever the text was supposed to unlock.
+    await browser.waitUntil(async () => (await el.getValue()) === text, {
+      timeout: 2_000,
+      timeoutMsg: `typeInto: ${testIdSelector(id)} did not take the value ${JSON.stringify(text)}`,
+    });
+    return;
+  }
+
   await el.setValue(text);
   // XCUITest typing on the iOS 26 simulator can drop characters (see the
   // maxTypingFrequency note in wdio.ios.ts). Read the field back and retype

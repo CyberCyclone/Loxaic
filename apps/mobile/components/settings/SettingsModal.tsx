@@ -28,7 +28,10 @@ import { useSettings } from '@/hooks/useSettings';
 import { useThemePreference, type ThemePreference } from '@/hooks/useTheme';
 import { removeItem, setItem } from '@/lib/storage';
 import { clearCacheForEndpoint } from '@/lib/message-cache';
-import { clearToken } from '@/lib/auth';
+import { clearToken, loadToken } from '@/lib/auth';
+import { useSession } from '@/lib/session';
+import { normalizeUrl } from '@/lib/server-address';
+import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
@@ -42,16 +45,20 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [themePref, setThemePref] = useThemePreference();
   const router = useRouter();
   const { showToast } = useToastHelper();
+  const { signOut } = useSession();
   const [draft, setDraft] = useState<Settings>(settings);
   const [dirty, setDirty] = useState(false);
   const [confirmDetach, setConfirmDetach] = useState(false);
   const [endpointTest, setEndpointTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [testingEndpoint, setTestingEndpoint] = useState(false);
+  const [confirmEndpoint, setConfirmEndpoint] = useState(false);
+  const [endpointError, setEndpointError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setDraft(settings);
       setDirty(false);
+      setConfirmEndpoint(false);
     }
   }, [open, settings]);
 
@@ -60,9 +67,24 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     setDirty(true);
   };
 
-  const save = () => {
+  /**
+   * Saving, once the endpoint change has been agreed to.
+   *
+   * Split from `save` so the confirm step cannot be bypassed by a second
+   * caller: everything that actually writes goes through here.
+   */
+  const commit = (moved: boolean) => {
     setSettings(draft);
     const endpoint = draft.endpoint.trim();
+    // The old host's session must not follow the endpoint to the new one.
+    // BASE_URL moving is only half of a move: the api-client also holds the
+    // live bearer in memory, and REST, both stream sockets and every
+    // fileUrl() image src would have presented host A's token to host B —
+    // which could replay it against A for the life of the session row.
+    // Per-endpoint scoping only governs what is *read from storage*, so it
+    // has to be dropped here, before the URL moves, and the new endpoint's
+    // own token loaded after. detach() does the same for the same reason.
+    if (moved) setAuthToken(null);
     if (endpoint) {
       setItem('loxaic-endpoint', endpoint);
       // setEndpoint, not setApiBaseUrl: the api-client's base URL is only half
@@ -70,6 +92,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       // hold a URL captured when their effect last ran, so both have to be
       // told or the change appears to work and then silently doesn't.
       setEndpoint(endpoint);
+      if (moved) void adoptSessionAt();
     } else {
       // Clearing the field has to actually clear the override. It previously
       // fell through this branch entirely, so an endpoint could be set from
@@ -82,12 +105,52 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       // new server while both sockets stay connected to the old one until an
       // app restart: a split-brain where the socket keeps streaming to a host
       // the user thinks they left.
-      void resolveEndpoint(true).then((resolved) => {
+      void resolveEndpoint(true).then(async (resolved) => {
         if (resolved) setEndpoint(resolved);
+        if (moved) await adoptSessionAt();
       });
     }
     setDirty(false);
     showToast('Settings saved');
+  };
+
+  /** Loads whatever session the endpoint now in effect has — and signs out,
+   * honestly, when it has none, rather than leaving the shell up on a token
+   * the new server has never seen. */
+  const adoptSessionAt = async () => {
+    const token = await loadToken();
+    if (!token) await signOut();
+  };
+
+  /**
+   * Changing the endpoint is the one setting here that can cut this device off
+   * from the server entirely — an address that is merely mistyped, or a domain
+   * whose DNS has not propagated, looks identical to a server that is down.
+   * Nothing else on this screen can do that, so nothing else is confirmed.
+   *
+   * Every other setting rides along with it: refusing to save the rest would
+   * mean an admin correcting a display name and a hostname in one visit gets
+   * neither until they agree to the risky half separately.
+   */
+  const save = () => {
+    if (draft.endpoint.trim() === settings.endpoint.trim()) {
+      commit(false);
+      return;
+    }
+    // Validated *before* the dialog, so it only ever quotes an address that
+    // could work. A scheme-less "typo.example.com" — the easiest thing to
+    // type when moving a deployment onto a domain — used to commit, then
+    // resolve relative on web while the WebSocket constructor threw: a
+    // half-connected device with no indication why, right after a dialog
+    // had named the address and said the change took effect.
+    const next = normalizeUrl(draft.endpoint);
+    if (next instanceof Error) {
+      setEndpointError(next.message);
+      return;
+    }
+    setEndpointError(null);
+    if (next !== null && next !== draft.endpoint) setDraft((d) => ({ ...d, endpoint: next }));
+    setConfirmEndpoint(true);
   };
 
   /**
@@ -165,7 +228,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 Display name
               </Text>
               <Input className="border-border bg-card">
-                <InputField value={draft.name} onChangeText={(v) => { update('name', v); }} />
+                <InputField testID="settings.name" value={draft.name} onChangeText={(v) => { update('name', v); }} />
               </Input>
             </VStack>
 
@@ -323,7 +386,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   placeholder="https://your-server.tailnet.ts.net"
                   autoCapitalize="none"
                   value={draft.endpoint}
-                  onChangeText={(v) => { update('endpoint', v); setEndpointTest(null); }}
+                  onChangeText={(v) => {
+                    update('endpoint', v);
+                    setEndpointTest(null);
+                    setEndpointError(null);
+                  }}
                 />
               </Input>
               <HStack space="sm" className="items-center">
@@ -346,6 +413,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </Text>
                 )}
               </HStack>
+              {endpointError && (
+                <Text testID="settings.endpoint.error" size="2xs" className="text-destructive">
+                  {endpointError}
+                </Text>
+              )}
               <Text size="2xs" className="text-muted-foreground">
                 Overrides auto-detection (LAN then tailnet). Leave blank to auto-detect. For a
                 Tailscale host, install the Tailscale app on this device and enter the host&apos;s
@@ -385,10 +457,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               Unsaved changes
             </Text>
             <HStack space="sm">
-              <Button variant="outline" size="sm" onPress={discard}>
+              <Button testID="settings.discard" variant="outline" size="sm" onPress={discard}>
                 <ButtonText>Discard</ButtonText>
               </Button>
-              <Button size="sm" className="bg-primary" onPress={save}>
+              <Button testID="settings.save" size="sm" className="bg-primary" onPress={save}>
                 <ButtonText className="text-primary-foreground">Save changes</ButtonText>
               </Button>
             </HStack>
@@ -396,6 +468,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         )}
       </ModalContent>
     </Modal>
+    <WarningConfirmModal
+      open={confirmEndpoint}
+      title="Change the server address?"
+      message={endpointWarning(currentEndpoint() ?? settings.endpoint, draft.endpoint)}
+      confirmLabel="Change it"
+      testIDPrefix="settings.endpoint.confirm"
+      onConfirm={() => { setConfirmEndpoint(false); commit(true); }}
+      onCancel={() => { setConfirmEndpoint(false); }}
+    />
     <WarningConfirmModal
       open={confirmDetach}
       title="Disconnect from this server?"
@@ -406,5 +487,43 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       onCancel={() => { setConfirmDetach(false); }}
     />
     </>
+  );
+}
+
+/**
+ * What changing the endpoint will do, in the terms the person changing it is
+ * actually working in.
+ *
+ * Deliberately names both addresses rather than saying "the server address":
+ * the case this exists for is an admin moving a deployment from a bare IP to a
+ * domain, and a transposed digit or a DNS record that has not propagated yet
+ * is indistinguishable from a server that is down. Saying which way it is
+ * moving is what makes a typo visible before it is committed.
+ *
+ * It also says how to get back, because the honest answer is reassuring: the
+ * app keeps working from cache while signed in, so this screen stays reachable
+ * and the change is reversible right here. The point of no return is signing
+ * out, not saving.
+ */
+function endpointWarning(current: string, next: string): string {
+  // `current` is the address actually in effect (currentEndpoint()), not the
+  // stored override: on every auto-detected install the override is '' while
+  // a real resolved address is in use, and the before/after comparison — the
+  // whole point of naming both — vanished on exactly those installs.
+  const from = current.trim();
+  const to = next.trim();
+  if (!to) {
+    return (
+      `This app will stop using ${from || 'the address you set'} and go back to finding a ` +
+      'server automatically. If it finds none, you will not be able to reach your server ' +
+      'from this device. You can set an address again on this screen while you are still ' +
+      'signed in.'
+    );
+  }
+  return (
+    `Everything in this app will talk to ${to}${from ? ` instead of ${from}` : ''}. ` +
+    'If that address is wrong, or is not reachable from this device yet, you will lose access ' +
+    'to your server — including the ability to sign in again once you sign out. ' +
+    'While you stay signed in you can change it back on this screen.'
   );
 }
