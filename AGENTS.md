@@ -1602,7 +1602,7 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **OTA bundles are not code-signed yet, and that is a recorded decision, not an oversight.**
   Without `codeSigningCertificate` expo-updates trusts any bundle the update server returns —
   the only thing between a leaked `EXPO_TOKEN` (which `preview.yml` now uses on every push to
-  `master`) and arbitrary JS in every install is the EAS account. Enabling signing after builds
+  `dev`) and arbitrary JS in every install is the EAS account. Enabling signing after builds
   are in the field needs a native release to carry the certificate, so the cheapest moment is
   **before the first production publish**: `npx expo-updates configuration:generate-signing-key`
   in `apps/mobile`, commit the public certificate, keep the private key out of CI, and sign in
@@ -1771,6 +1771,12 @@ screenshots showing that behaviour working. Writing those tests is the implement
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.
 - Minimal changes; match existing file style; don't add deps without a reason.
+- **`dev` is the trunk — every pull request targets it.** `master` and `beta` are release
+  pointers, moved only by the release workflow once a release has actually published, so a
+  branch there means "this shipped" rather than "someone merged this". Nothing is merged into
+  them by hand and nothing is developed on them. A release is cut from `dev` by pushing a tag
+  (`scripts/release.sh`), which is also the only thing that sets a version — see
+  "Releases and over-the-air updates".
 - Ports (dev): server 4000, inference 4002, ntfy 4003, Postgres 5432, Expo web 8081.
   Self-contained desktop app (a separate deployment, coexists with dev on one host): server
   4100 (`LOXAIC_PORT`), Postgres on an ephemeral localhost port — see `docs/DEPLOY.md`.

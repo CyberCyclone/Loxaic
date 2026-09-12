@@ -1,14 +1,14 @@
 name: Preview update
 
-# Every merge to master goes out to the `preview` branch, which development
-# builds follow. That is the whole point of the branch: it is where the
-# current state of master can be opened on a device without cutting a
-# release. Release tags are a different workflow (release.yml).
+# Every merge to `dev` — the trunk — goes out to the `preview` branch, which
+# development builds follow. That is the whole point of the branch: it is
+# where the current state of the trunk can be opened on a device without
+# cutting a release. Release tags are a different workflow (release.yml).
 on:
   push:
-    branches: [master]
+    branches: [dev]
 
-# Holds EXPO_TOKEN on every push to master, so it gets nothing else: read is
+# Holds EXPO_TOKEN on every push to dev, so it gets nothing else: read is
 # all the checkout needs, and the default would otherwise be the repository's
 # — which may be write-all.
 permissions:
