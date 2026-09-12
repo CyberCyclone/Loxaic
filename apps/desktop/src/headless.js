@@ -8,8 +8,11 @@
 // itself into this same file for a display-having machine's convenience.
 import "./cwd-guard.js";
 import os from "node:os";
+import path from "node:path";
 import { startStack } from "./supervisor/index.js";
-import { defaultDataDir } from "./supervisor/paths.js";
+import { defaultDataDir, tsnetProxyPath } from "./supervisor/paths.js";
+import { startTsnet } from "./supervisor/tsnet.js";
+import { readSecrets } from "./supervisor/secrets.js";
 import { buildConfig, loadConfig, saveConfig } from "./supervisor/config.js";
 
 const HELP = `Usage: loxaic-headless [options]
@@ -137,12 +140,49 @@ async function main() {
   for (const url of listAddresses(stack.port)) console.log(`  ${url}`);
   console.log(`Data directory: ${dataDir}`);
 
+  // A Host set up through the GUI to expose itself keeps that exposure when
+  // it restarts headless — "the machine nobody sits at" is exactly the
+  // stored-auth-key case, and this used to drop off the tailnet silently
+  // while the help text promised the config carried over unchanged. Same
+  // shape as the GUI's startServeTsnet, minus the browser: an approval link
+  // is printed for whoever reads the log.
+  let tsnet = null;
+  const tailnet = instance?.mode === "host" ? instance.host?.tailnet : null;
+  if (tailnet?.enabled) {
+    tsnet = startTsnet({
+      bin: tsnetProxyPath(),
+      mode: "serve",
+      upstream: `http://127.0.0.1:${String(stack.port)}`,
+      hostname: tailnet.hostname,
+      funnel: Boolean(tailnet.funnel),
+      controlUrl: tailnet.controlUrl,
+      authKey: readSecrets(dataDir).tsnetAuthKey,
+      stateDir: path.join(dataDir, "tsnet-serve"),
+      log: (line) => { console.log(line); },
+      onState: (s) => {
+        if (s.state === "needs-auth" && s.authUrl) console.log(`Tailscale needs approval for this machine: ${s.authUrl}`);
+        if (s.state === "error" && s.error) console.error(`Tailscale: ${s.error}`);
+      },
+    });
+    tsnet.ready
+      .then(async (url) => {
+        console.log(`Reachable on the tailnet at ${url}`);
+        if (instance.host.advertiseUrl) return; // an explicit address wins, as everywhere else
+        try {
+          await stack.setAdvertiseUrl(url);
+        } catch (err) {
+          console.error(`could not re-advertise as ${url}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })
+      .catch(() => undefined); // onState has already printed the reason
+  }
+
   let stopping = false;
   const shutdown = (signal) => {
     if (stopping) return;
     stopping = true;
     console.log(`\n${signal} received — shutting down`);
-    stack.stop().then(
+    Promise.all([stack.stop(), tsnet ? tsnet.stop() : Promise.resolve()]).then(
       () => process.exit(0),
       (err) => { console.error(err); process.exit(1); },
     );

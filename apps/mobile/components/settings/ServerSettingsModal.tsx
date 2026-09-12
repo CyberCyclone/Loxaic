@@ -15,7 +15,9 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
-import { HostConfigFields, type HostConfigValues } from './HostConfigFields';
+import { EMPTY_TAILNET, HostConfigFields, tailnetInputFrom, type HostConfigValues } from './HostConfigFields';
+import { TailnetStatusCard } from './TailnetStatusCard';
+import { Switch } from '@/components/ui/switch';
 import { electronBridge, type InstanceState } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
@@ -46,9 +48,10 @@ export function ServerSettingsModal({
   const [error, setError] = useState<string | null>(null);
 
   const [hostName, setHostName] = useState('');
-  const [hostConfig, setHostConfig] = useState<HostConfigValues>({ port: '', bind: 'lan', advertiseUrl: '' });
+  const [hostConfig, setHostConfig] = useState<HostConfigValues>({ port: '', bind: 'lan', advertiseUrl: '', tailnet: { ...EMPTY_TAILNET } });
 
   const [hostUrl, setHostUrl] = useState('');
+  const [viaTsnet, setViaTsnet] = useState(false);
   const [probe, setProbe] = useState<{ ok: boolean; reason?: string; cluster?: { name: string } } | null>(null);
 
   // Re-seed from the live state every time the dialog *opens*, not just once —
@@ -65,14 +68,21 @@ export function ServerSettingsModal({
     const state = stateRef.current;
     setError(null);
     if (state.mode === 'client') {
-      setHostUrl(state.apiBaseUrl ?? '');
+      // The address the person typed, not the local proxy a tsnet client
+      // actually talks to — that one is ephemeral and means nothing to them.
+      setHostUrl(state.client?.hostUrl ?? state.apiBaseUrl ?? '');
+      setViaTsnet(state.client?.via === 'tsnet');
       setProbe(null);
     } else {
       setHostName(state.host?.name ?? '');
+      const stored = state.host?.tailnet;
       setHostConfig({
         port: String(state.host?.port ?? state.defaultPort),
         bind: state.host?.bind ?? 'lan',
         advertiseUrl: state.host?.advertiseUrl ?? '',
+        tailnet: stored
+          ? { ...EMPTY_TAILNET, enabled: stored.enabled, hostname: stored.hostname, funnel: stored.funnel, controlUrl: stored.controlUrl ?? '' }
+          : { ...EMPTY_TAILNET },
       });
     }
   }, [open]);
@@ -82,7 +92,7 @@ export function ServerSettingsModal({
   const checkHostUrl = async () => {
     if (!hostUrl.trim()) return;
     setBusy(true);
-    setProbe(await bridge.instance.probeHost(hostUrl));
+    setProbe(await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined));
     setBusy(false);
   };
 
@@ -104,6 +114,7 @@ export function ServerSettingsModal({
           // the previous value", so an empty field could never clear a stored
           // public address. normalizeAdvertiseUrl('') is what clears it.
           advertiseUrl: hostConfig.advertiseUrl.trim(),
+          ...((state.mode ?? state.storedMode) === 'host' ? { tailnet: tailnetInputFrom(hostConfig.tailnet) } : {}),
         },
       });
       showToast('Server restarted');
@@ -119,7 +130,7 @@ export function ServerSettingsModal({
     setBusy(true);
     setError(null);
     try {
-      await bridge.instance.setMode({ mode: 'client', client: { hostUrl } });
+      await bridge.instance.setMode({ mode: 'client', client: { hostUrl, ...(viaTsnet ? { via: 'tsnet' as const } : {}) } });
       showToast('Connected');
       onClose();
     } catch (err) {
@@ -162,6 +173,17 @@ export function ServerSettingsModal({
                   </Input>
                 </VStack>
 
+                <HStack space="sm" className="items-center">
+                  <Switch
+                    testID="settings.server.client.tsnet"
+                    value={viaTsnet}
+                    onValueChange={(v: boolean) => { setViaTsnet(v); setProbe(null); }}
+                    isDisabled={busy}
+                  />
+                  <Text size="sm" className="flex-1 text-foreground">Connect through Tailscale</Text>
+                </HStack>
+                {viaTsnet && <TailnetStatusCard testIDPrefix="settings.server.client.tailnet" />}
+
                 {probe && !probe.ok && (
                   <Text testID="settings.server.client.error" size="sm" className="text-destructive">
                     Couldn&apos;t reach a Loxaic there: {probe.reason}
@@ -189,7 +211,9 @@ export function ServerSettingsModal({
                   values={hostConfig}
                   onChange={setHostConfig}
                   lanAddress={state.lanAddress}
-                  fields={state.mode === 'solo' ? ['port'] : ['port', 'bind', 'advertiseUrl']}
+                  defaultTailnetHostname={state.defaultTailnetHostname}
+                  hasTailnetAuthKey={state.hasTailnetAuthKey}
+                  fields={state.mode === 'solo' ? ['port'] : ['port', 'bind', 'advertiseUrl', 'tailnet']}
                 />
               </VStack>
             )}

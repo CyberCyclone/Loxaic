@@ -63,6 +63,14 @@ before `standup.ts` is even imported (module-load order matters here); `standup(
 become no-ops since the app's own supervisor owns that stack's lifecycle. Electron-only — there is
 no equivalent for the web suite, which has no supervisor to embed a stack under.
 
+The same script points the app's embedded Tailscale sidecar at a stand-in for every Electron
+run (`LOXAIC_TSNET_BIN` → a per-run temp copy of `fixtures/fake-tsnet.sh`), so no spec can ever
+reach the real Tailscale control plane — approving a node needs a real account and a browser.
+The stand-in speaks the real sidecar's stdout protocol; the hostname a spec types picks its
+script (`*-fail-*` exits with the certificate message, `*-slow-*` delays). It is copied out of
+the checkout because a repo under `~/Documents` is TCC-protected on macOS and the app, launched
+by chromedriver rather than a terminal, is refused when it tries to run a script there.
+
 ## iOS and Android
 
 Both use Appium. Install its drivers once — they go into a repo-local `.appium/`, so a run uses

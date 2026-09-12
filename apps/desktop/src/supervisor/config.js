@@ -27,6 +27,13 @@ export const MODES = ["solo", "host", "client"];
 
 export const BINDS = ["lan", "localhost"];
 
+/** How a client reaches its host: straight over the network, or through the
+ * embedded Tailscale sidecar. Absent means direct. */
+export const CLIENT_VIAS = ["direct", "tsnet"];
+
+/** Tailscale's own limit for a node hostname. */
+const TAILNET_HOSTNAME_MAX = 63;
+
 /** The self-contained app's own default, distinct from the dev stack's 4000. */
 export const DEFAULT_HOST_PORT = 4100;
 
@@ -71,6 +78,95 @@ function normalizeAdvertiseUrl(value) {
     throw new Error("Public address must not include a path, query, or fragment");
   }
   return parsed.origin;
+}
+
+/**
+ * A control-plane URL for a self-hosted coordination server (Headscale).
+ * Same rules as the advertise URL — a bare http(s) origin — because that is
+ * what tsnet's ControlURL wants; empty means Tailscale's own.
+ */
+export function normalizeControlUrl(value) {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = String(value).trim();
+  if (!trimmed) return undefined;
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("Control server URL must be a full URL, e.g. https://headscale.example.com");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Control server URL must start with http:// or https://");
+  }
+  return parsed.origin;
+}
+
+/**
+ * The name this machine advertises on the tailnet, derived from the
+ * machine's own name so it reads as "that machine" in the admin console:
+ * `loxaic-` plus whatever survives Tailscale's hostname rules (lowercase
+ * letters, digits, hyphens). "Casey's MacBook Pro" becomes
+ * `loxaic-casey-s-macbook-pro`.
+ */
+export function defaultTailnetHostname(machineName = defaultHostName()) {
+  const slug = String(machineName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalizeTailnetHostname(slug ? `loxaic-${slug}` : "loxaic-host");
+}
+
+/** Bounds and cleans a tailnet hostname the way Tailscale itself will. */
+function normalizeTailnetHostname(value) {
+  const cleaned = String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, TAILNET_HOSTNAME_MAX)
+    .replace(/-+$/g, "");
+  return cleaned;
+}
+
+/**
+ * A host's tailnet exposure. Stored as a complete object once it has ever
+ * been set — including while disabled — so that switching it off and on
+ * again brings the same hostname back rather than a fresh default.
+ *
+ * `authKey` is deliberately not part of this: it is a credential and goes to
+ * secrets.json, never here (config.json is read by the renderer and safe to
+ * log). It is stripped even if a caller passes it, so no path can persist it
+ * by accident.
+ */
+function normalizeTailnet(input, previous) {
+  if (input === undefined) return previous ? { ...previous } : undefined;
+  if (input === null) return undefined;
+  if (typeof input !== "object") throw new Error("tailnet settings must be an object");
+  const enabled = Boolean(input.enabled);
+  const hostname = normalizeTailnetHostname(input.hostname ?? previous?.hostname ?? "") || defaultTailnetHostname();
+  const tailnet = {
+    enabled,
+    hostname,
+    funnel: Boolean(input.funnel ?? previous?.funnel ?? false),
+  };
+  const controlUrl = normalizeControlUrl(input.controlUrl ?? previous?.controlUrl);
+  if (controlUrl) tailnet.controlUrl = controlUrl;
+  return tailnet;
+}
+
+/**
+ * What the sidecar dials for a tsnet client, derived from the host URL the
+ * person typed. `https://box.tail1234.ts.net` is the normal case — a host
+ * serving through its own sidecar (or Tailscale Serve) on :443 with a real
+ * certificate — but a plain `http://box.tail1234.ts.net:4100` (a host reached
+ * by Tailscale IP with no TLS in front) is legitimate too, so the scheme
+ * decides both the port default and whether the sidecar speaks TLS.
+ */
+export function tsnetTargetFor(hostUrl) {
+  const parsed = new URL(hostUrl);
+  const tls = parsed.protocol === "https:";
+  const port = parsed.port || (tls ? "443" : "80");
+  return { target: `${parsed.hostname}:${port}`, tls };
 }
 
 export function configPath(dataDir) {
@@ -150,14 +246,39 @@ export function buildConfig(input, previous = null) {
       mode === "solo" ? host.advertiseUrl : (host.advertiseUrl ?? previousHost.advertiseUrl),
     );
     if (advertiseUrl) config.host.advertiseUrl = advertiseUrl;
+
+    // Solo never gets a tailnet section, for the same reason it never gets
+    // an advertiseUrl: it is "this machine only", and a node on the tailnet
+    // is exactly a machine other devices can reach.
+    if (mode === "host") {
+      const tailnet = normalizeTailnet(host.tailnet, previousHost.tailnet);
+      if (tailnet) config.host.tailnet = tailnet;
+    }
   }
 
   if (mode === "client") {
-    const hostUrl = input.client?.hostUrl;
+    const client = input.client ?? {};
+    const hostUrl = client.hostUrl;
     if (typeof hostUrl !== "string" || !hostUrl.trim()) {
       throw new Error("Client mode needs the host's URL");
     }
     config.client = { hostUrl: hostUrl.trim().replace(/\/+$/, "") };
+    const via = client.via ?? "direct";
+    if (!CLIENT_VIAS.includes(via)) {
+      throw new Error(`Client connection must be one of: ${CLIENT_VIAS.join(", ")}`);
+    }
+    if (via === "tsnet") {
+      // The sidecar derives what to dial from this URL, so it has to be one
+      // it can parse now rather than one that fails at spawn time.
+      try {
+        tsnetTargetFor(config.client.hostUrl);
+      } catch {
+        throw new Error("A Tailscale host address must be a full URL, e.g. https://box.tail1234.ts.net");
+      }
+      config.client.via = "tsnet";
+      const controlUrl = normalizeControlUrl(client.controlUrl);
+      if (controlUrl) config.client.controlUrl = controlUrl;
+    }
   }
 
   return config;
@@ -178,6 +299,18 @@ export function hostSettingsView(hostConfig) {
     bind: hostConfig.bind,
     advertiseUrl: hostConfig.advertiseUrl ?? null,
     db: { kind: hostConfig.db?.kind ?? "embedded" },
+    // Safe to show whole: the auth key was never stored in here.
+    tailnet: hostConfig.tailnet ? { ...hostConfig.tailnet } : null,
+  };
+}
+
+/** The client-mode counterpart of hostSettingsView. */
+export function clientSettingsView(clientConfig) {
+  if (!clientConfig) return null;
+  return {
+    hostUrl: clientConfig.hostUrl,
+    via: clientConfig.via ?? "direct",
+    controlUrl: clientConfig.controlUrl ?? null,
   };
 }
 

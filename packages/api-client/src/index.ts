@@ -73,6 +73,8 @@ export interface SandboxRetention {
 }
 
 export interface ConfigResponse {
+  /** False while the server refuses new accounts (Funnel is on). */
+  signUpOpen: boolean;
   sandbox: {
     mode: SandboxMode;
     available: boolean;

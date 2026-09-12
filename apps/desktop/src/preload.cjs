@@ -35,7 +35,9 @@ contextBridge.exposeInMainWorld("loxaic", {
     getState: () => ipcRenderer.invoke("loxaic:getState"),
     setMode: (config) => ipcRenderer.invoke("loxaic:setMode", config),
     probeEngine: () => ipcRenderer.invoke("loxaic:probeEngine"),
-    probeHost: (url) => ipcRenderer.invoke("loxaic:probeHost", url),
+    /** `opts.via === "tsnet"` reaches the host through the embedded
+     * Tailscale sidecar, joining the tailnet first if this machine has not. */
+    probeHost: (url, opts) => ipcRenderer.invoke("loxaic:probeHost", url, opts),
     testDb: (input) => ipcRenderer.invoke("loxaic:testDb", input),
     detach: () => ipcRenderer.invoke("loxaic:detach"),
 
@@ -51,6 +53,19 @@ contextBridge.exposeInMainWorld("loxaic", {
       ipcRenderer.on("loxaic:stackState", listener);
       return () => { ipcRenderer.off("loxaic:stackState", listener); };
     },
+  },
+
+  /**
+   * The embedded Tailscale sidecar. Its settings are written through
+   * `instance.setMode` like everything else in config.json; these are the
+   * live state and two actions. `openAuthUrl` takes no URL — the main process
+   * opens the one the sidecar printed and nothing else, so a page cannot ask
+   * it to open an arbitrary address in the person's browser.
+   */
+  tailnet: {
+    getState: () => ipcRenderer.invoke("loxaic:tailnet.getState"),
+    openAuthUrl: () => ipcRenderer.invoke("loxaic:tailnet.openAuthUrl"),
+    restart: () => ipcRenderer.invoke("loxaic:tailnet.restart"),
   },
 
   /**

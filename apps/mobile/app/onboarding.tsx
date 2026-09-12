@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
-import { KeyboardAvoidingView, Platform } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Boxes, Laptop, Server, TriangleAlert } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -13,7 +13,9 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { useSession } from '@/lib/session';
 import { electronBridge, type InstanceConfigInput, type InstanceState } from '@/lib/endpoint';
-import { HostConfigFields, type HostConfigValues } from '@/components/settings/HostConfigFields';
+import { EMPTY_TAILNET, HostConfigFields, tailnetInputFrom, type HostConfigValues } from '@/components/settings/HostConfigFields';
+import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
+import { Switch } from '@/components/ui/switch';
 
 type Step = 'choose' | 'solo' | 'host' | 'client';
 
@@ -40,15 +42,16 @@ export default function OnboardingScreen() {
   const [error, setError] = useState<string | null>(null);
 
   // Solo form
-  const [soloConfig, setSoloConfig] = useState<HostConfigValues>({ port: '', bind: 'localhost', advertiseUrl: '' });
+  const [soloConfig, setSoloConfig] = useState<HostConfigValues>({ port: '', bind: 'localhost', advertiseUrl: '', tailnet: { ...EMPTY_TAILNET } });
 
   // Host form
   const [hostName, setHostName] = useState('');
-  const [hostConfig, setHostConfig] = useState<HostConfigValues>({ port: '', bind: 'lan', advertiseUrl: '' });
+  const [hostConfig, setHostConfig] = useState<HostConfigValues>({ port: '', bind: 'lan', advertiseUrl: '', tailnet: { ...EMPTY_TAILNET } });
   const [engine, setEngine] = useState<{ ok: boolean; engine?: string; reason?: string } | null>(null);
 
   // Client form
   const [hostUrl, setHostUrl] = useState('');
+  const [viaTsnet, setViaTsnet] = useState(false);
   const [probe, setProbe] = useState<{ ok: boolean; reason?: string; cluster?: { name: string } } | null>(null);
 
   useEffect(() => {
@@ -114,13 +117,26 @@ export default function OnboardingScreen() {
   const checkHostUrl = async () => {
     if (!hostUrl.trim()) return;
     setBusy(true);
-    setProbe(await bridge.instance.probeHost(hostUrl));
+    // Through the sidecar, a first run waits here until this machine is
+    // approved — the card below shows the link while it does.
+    setProbe(await bridge.instance.probeHost(hostUrl, viaTsnet ? { via: 'tsnet' } : undefined));
     setBusy(false);
   };
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-      <Box className="flex-1 items-center justify-center bg-background px-6">
+      {/* A ScrollView, not a centred Box: the Host step with its tailnet
+          fields is taller than a short window, and gluestack's min-h-0 on
+          every Box/VStack lets a flex column *compress* its children into
+          each other rather than overflow — the same failure the Inspector
+          hit (see AGENTS.md). Centred while it fits, scrolls once it does
+          not. */}
+      <ScrollView
+        style={{ flex: 1, minHeight: 0 }}
+        className="bg-background"
+        contentContainerStyle={{ flexGrow: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 24, paddingVertical: 32 }}
+        keyboardShouldPersistTaps="handled"
+      >
         <VStack space="xl" className="w-full max-w-[520px]">
           <VStack space="xs" className="items-center">
             <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
@@ -232,6 +248,8 @@ export default function OnboardingScreen() {
                 values={hostConfig}
                 onChange={setHostConfig}
                 lanAddress={state?.lanAddress ?? null}
+                defaultTailnetHostname={state?.defaultTailnetHostname}
+                hasTailnetAuthKey={state?.hasTailnetAuthKey}
               />
 
               {engine && !engine.ok && (
@@ -266,6 +284,7 @@ export default function OnboardingScreen() {
                         // Unconditional, same as Settings: an omitted key
                         // means "keep the previous value" to buildConfig.
                         advertiseUrl: hostConfig.advertiseUrl.trim(),
+                        tailnet: tailnetInputFrom(hostConfig.tailnet),
                       },
                     });
                   }}
@@ -283,7 +302,7 @@ export default function OnboardingScreen() {
                 <Input className="h-12">
                   <InputField
                     testID="onboarding.client.url"
-                    placeholder="http://192.168.1.20:4100"
+                    placeholder={viaTsnet ? 'https://box.tail1234.ts.net' : 'http://192.168.1.20:4100'}
                     value={hostUrl}
                     onChangeText={(v) => { setHostUrl(v); setProbe(null); }}
                     autoCapitalize="none"
@@ -291,6 +310,21 @@ export default function OnboardingScreen() {
                   />
                 </Input>
               </VStack>
+
+              <HStack space="sm" className="items-center">
+                <Switch
+                  testID="onboarding.client.tsnet"
+                  value={viaTsnet}
+                  onValueChange={(v: boolean) => { setViaTsnet(v); setProbe(null); }}
+                  isDisabled={busy}
+                />
+                <Text size="sm" className="flex-1 text-foreground">Connect through Tailscale</Text>
+              </HStack>
+              <Text size="2xs" className="text-muted-foreground">
+                For a host on your tailnet. This machine joins it by itself — no Tailscale app
+                needed — and you approve it once in a browser.
+              </Text>
+              {viaTsnet && <TailnetStatusCard testIDPrefix="onboarding.client.tailnet" />}
 
               {probe && !probe.ok && (
                 <Text testID="onboarding.client.error" size="sm" className="text-destructive">
@@ -312,7 +346,7 @@ export default function OnboardingScreen() {
                     testID="onboarding.client.submit"
                     className="flex-1"
                     isDisabled={busy}
-                    onPress={() => { void apply({ mode: 'client', client: { hostUrl } }); }}
+                    onPress={() => { void apply({ mode: 'client', client: { hostUrl, ...(viaTsnet ? { via: 'tsnet' as const } : {}) } }); }}
                   >
                     {busy ? <ButtonSpinner /> : <ButtonText>Connect</ButtonText>}
                   </Button>
@@ -330,7 +364,7 @@ export default function OnboardingScreen() {
             </VStack>
           )}
         </VStack>
-      </Box>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }

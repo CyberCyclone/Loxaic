@@ -16,8 +16,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // Must come before the standup import: it allocates the free port a
 // self-contained run serves on, which standup reads at module load.
-import { SELF_CONTAINED, appDataDir } from './scripts/electron-env.ts';
-import { BASE_URL } from './scripts/standup.ts';
+import { SELF_CONTAINED, appDataDir, stopSelfContainedLeftovers } from './scripts/electron-env.ts';
+import { BASE_URL, teardown } from './scripts/standup.ts';
 import { sharedConfig } from './wdio.shared.ts';
 
 process.env.E2E_PLATFORM = 'electron';
@@ -96,6 +96,12 @@ export const config: WebdriverIO.Config = {
   // only make sense for a desktop build.
   specs: ['./src/specs/*.spec.ts', './src/specs/browser/*.spec.ts', './src/specs/electron/*.spec.ts'],
   services: ['electron'],
+  // The shared teardown, plus the one thing only this suite leaks: the
+  // embedded stack a self-contained run's app was killed out from under.
+  onComplete: async function onComplete() {
+    await teardown();
+    stopSelfContainedLeftovers();
+  },
   capabilities: [
     {
       browserName: 'electron',

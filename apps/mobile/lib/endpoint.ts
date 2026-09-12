@@ -30,12 +30,43 @@ import { getItem } from './storage';
 /** What the renderer is allowed to see of a stored host config — never the
  * database URL or password. Null when the current mode has no host section
  * (client, or an unconfigured install). See config.js's hostSettingsView. */
+/** A host's tailnet exposure, as stored. Never carries the auth key. */
+export interface TailnetSettings {
+  enabled: boolean;
+  hostname: string;
+  funnel: boolean;
+  controlUrl?: string;
+}
+
 export interface HostSettingsView {
   name: string;
   port: number;
   bind: 'lan' | 'localhost';
   advertiseUrl: string | null;
   db: { kind: string };
+  tailnet: TailnetSettings | null;
+}
+
+export interface ClientSettingsView {
+  hostUrl: string;
+  via: 'direct' | 'tsnet';
+  controlUrl: string | null;
+}
+
+/**
+ * The embedded Tailscale sidecar, live. `needs-auth` carries the link a
+ * person has to open to approve this machine; `up` carries the address the
+ * node is reachable at (a host's `https://….ts.net`, or a client's local
+ * proxy); `error` carries a sentence. `off` when no sidecar is running.
+ */
+export interface TailnetState {
+  state: 'off' | 'starting' | 'needs-auth' | 'up' | 'error';
+  mode: 'serve' | 'client' | null;
+  authUrl: string | null;
+  url: string | null;
+  funnel: boolean;
+  error: string | null;
+  status: { ips?: string[]; certDomain?: string } | null;
 }
 
 /** Everything the desktop main process can be asked to do, plus the launch
@@ -53,15 +84,26 @@ export interface InstanceState {
    * chooser can tell "this machine" from the user's others. */
   instanceId: string;
   host: HostSettingsView | null;
+  client: ClientSettingsView | null;
   /** The port the server actually bound — can differ from what was
    * requested (an adopted leftover, say). Null off solo/host. */
   listenPort: number | null;
+  /** What the server was actually told to advertise — after a tailnet join,
+   * the ts.net address, whatever config.json says. Null off solo/host. */
+  effectiveAdvertiseUrl: string | null;
+  defaultTailnetHostname: string;
+  /** Whether an auth key is stored; the key itself never leaves the main
+   * process. */
+  hasTailnetAuthKey: boolean;
+  tailnet: TailnetState;
   error?: string;
 }
 
 /** Payload accepted by `instance.setMode` — the renderer's only way to write
  * config.json. Mirrors config.js's `buildConfig` input; validation is
- * authoritative there, not here. */
+ * authoritative there, not here. An `authKey` anywhere in it is peeled off by
+ * the main process into secrets.json: absent leaves the stored one alone,
+ * empty clears it. */
 export interface InstanceConfigInput {
   mode: 'solo' | 'host' | 'client';
   host?: {
@@ -69,9 +111,13 @@ export interface InstanceConfigInput {
     port?: number;
     bind?: 'lan' | 'localhost';
     advertiseUrl?: string;
+    tailnet?: Partial<TailnetSettings> & { authKey?: string };
   };
   client?: {
     hostUrl?: string;
+    via?: 'direct' | 'tsnet';
+    controlUrl?: string;
+    authKey?: string;
   };
 }
 
@@ -102,7 +148,13 @@ export interface LoxaicBridge {
     getState: () => Promise<InstanceState>;
     setMode: (config: InstanceConfigInput) => Promise<InstanceState>;
     probeEngine: () => Promise<{ ok: boolean; engine?: string; reason?: string }>;
-    probeHost: (url: string) => Promise<{
+    /** With `{ via: 'tsnet' }` the probe goes through the embedded sidecar,
+     * joining the tailnet first — which, on a first run, waits for the person
+     * to approve this machine; follow `onStackState` for the prompt. */
+    probeHost: (
+      url: string,
+      opts?: { via: 'tsnet'; controlUrl?: string },
+    ) => Promise<{
       ok: boolean;
       url?: string;
       reason?: string;
@@ -112,6 +164,13 @@ export interface LoxaicBridge {
     testDb: (input: { url: string; password?: string }) => Promise<{ ok: boolean; url?: string; reason?: string }>;
     detach: () => Promise<InstanceState>;
     onStackState: (cb: (state: InstanceState) => void) => () => void;
+  };
+  tailnet: {
+    getState: () => Promise<TailnetState>;
+    /** Opens the approval link the sidecar printed — never one the renderer
+     * names. */
+    openAuthUrl: () => Promise<TailnetState>;
+    restart: () => Promise<TailnetState>;
   };
 }
 

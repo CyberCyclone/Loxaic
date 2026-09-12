@@ -186,86 +186,155 @@ export async function startStack({
   }
   const databaseUrl = externalDb ? externalDatabaseUrl(externalDb, secrets) : pg.url;
 
-  const env = {
-    // Deliberately not `...process.env`: the stack's config is fully explicit.
-    PATH: process.env.PATH ?? "",
-    HOME: process.env.HOME ?? "",
-    NODE_ENV: "production",
-    // The bundled server records this in the hosts table. npm_package_version
-    // only exists under `pnpm dev`; the packaged app has to say so itself.
-    LOXAIC_VERSION: desktopVersion(),
-    PORT: String(port),
-    HOST: bindHost,
-    DATABASE_URL: databaseUrl,
-    STREAM_BACKEND: "memory",
-    WEB_DIST_DIR: webDistDir,
-    MIGRATIONS_DIR: migrationsDir,
-    MIGRATIONS_STRICT: "1",
-    // Lets the container sandbox provider auto-build its image on first use
-    // even though a packaged install has no repo checkout to build from —
-    // build-server.mjs ships a copy of infra/docker/sandbox.Dockerfile here.
-    SANDBOX_BUILD_CONTEXT: path.join(serverDir, "sandbox"),
-    BETTER_AUTH_SECRET: secrets.betterAuthSecret,
-    // Derived from the advertised URL, not pinned to loopback: better-auth
-    // builds its callback URLs and cookie domain from this, so a host serving
-    // LAN clients while claiming to be localhost rejects every one of them.
-    BETTER_AUTH_URL: advertiseUrl,
-    LOXAIC_DATA_DIR: dataDir,
-    // Without this, storage.ts falls back to <cwd>/uploads — and cwd here is
-    // serverDir, i.e. inside the installed app bundle. Attachments would be
-    // written next to the shipped code, wiped by every update while their DB
-    // rows survive (degrading to "[image unavailable]"), and on macOS would
-    // break the bundle's code signature. Same treatment as the Postgres data
-    // dir: user data belongs under dataDir.
-    UPLOADS_DIR: path.join(dataDir, "uploads"),
+  /**
+   * The server child's environment, as a function of the one thing that can
+   * change while the stack is up: the advertised URL. A tailnet host only
+   * learns its `https://….ts.net` address once the sidecar has joined, and
+   * better-auth builds cookie and callback origins from this at boot — so
+   * that host's server has to be started again with the right value, without
+   * the Postgres beside it being touched.
+   */
+  const serverEnv = (advertise) => {
+    const env = {
+      // Deliberately not `...process.env`: the stack's config is fully explicit.
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "",
+      NODE_ENV: "production",
+      // The bundled server records this in the hosts table. npm_package_version
+      // only exists under `pnpm dev`; the packaged app has to say so itself.
+      LOXAIC_VERSION: desktopVersion(),
+      PORT: String(port),
+      HOST: bindHost,
+      DATABASE_URL: databaseUrl,
+      STREAM_BACKEND: "memory",
+      WEB_DIST_DIR: webDistDir,
+      MIGRATIONS_DIR: migrationsDir,
+      MIGRATIONS_STRICT: "1",
+      // Lets the container sandbox provider auto-build its image on first use
+      // even though a packaged install has no repo checkout to build from —
+      // build-server.mjs ships a copy of infra/docker/sandbox.Dockerfile here.
+      SANDBOX_BUILD_CONTEXT: path.join(serverDir, "sandbox"),
+      BETTER_AUTH_SECRET: secrets.betterAuthSecret,
+      // Derived from the advertised URL, not pinned to loopback: better-auth
+      // builds its callback URLs and cookie domain from this, so a host serving
+      // LAN clients while claiming to be localhost rejects every one of them.
+      BETTER_AUTH_URL: advertise,
+      LOXAIC_DATA_DIR: dataDir,
+      // Without this, storage.ts falls back to <cwd>/uploads — and cwd here is
+      // serverDir, i.e. inside the installed app bundle. Attachments would be
+      // written next to the shipped code, wiped by every update while their DB
+      // rows survive (degrading to "[image unavailable]"), and on macOS would
+      // break the bundle's code signature. Same treatment as the Postgres data
+      // dir: user data belongs under dataDir.
+      UPLOADS_DIR: path.join(dataDir, "uploads"),
+    };
+    if (instance) {
+      // This machine's identity in the `hosts` table. Stable across mode
+      // changes, so a Solo→Host switch updates one row rather than registering
+      // the same machine twice.
+      env.LOXAIC_INSTANCE_ID = instance.instanceId;
+      env.LOXAIC_ADVERTISE_URL = advertise;
+      if (hostConfig?.name) env.LOXAIC_HOST_NAME = hostConfig.name;
+    }
+    if (hosting) {
+      // Hosting for other users requires container isolation. The server
+      // refuses to boot without it — see apps/server/src/index.ts. Enforcing it
+      // there rather than here means a hand-started server can't skip the gate.
+      env.LOXAIC_HOSTING = "1";
+    }
+    for (const key of PASSTHROUGH_ENV) {
+      if (process.env[key] !== undefined) env[key] = process.env[key];
+    }
+    // After the pass-through, so this extends the operator's list rather
+    // than being overwritten by it. better-auth trusts the origin it signs
+    // for plus TRUSTED_ORIGINS and nothing else, so moving BETTER_AUTH_URL to
+    // the ts.net address on a tailnet join would silently un-trust every
+    // browser that reached this host by its LAN address — signing them all
+    // out, minutes after the switch was flipped, with no way back in.
+    if (advertise !== advertiseUrl) {
+      env.TRUSTED_ORIGINS = [env.TRUSTED_ORIGINS, advertiseUrl].filter(Boolean).join(",");
+    }
+    // With Funnel on, the server closes registration (auth/index.ts): the
+    // whole API is on the public internet, and the first account created is
+    // made admin.
+    if (hostConfig?.tailnet?.funnel) env.LOXAIC_FUNNEL = "1";
+    return env;
   };
-  if (instance) {
-    // This machine's identity in the `hosts` table. Stable across mode
-    // changes, so a Solo→Host switch updates one row rather than registering
-    // the same machine twice.
-    env.LOXAIC_INSTANCE_ID = instance.instanceId;
-    env.LOXAIC_ADVERTISE_URL = advertiseUrl;
-    if (hostConfig?.name) env.LOXAIC_HOST_NAME = hostConfig.name;
-  }
-  if (hosting) {
-    // Hosting for other users requires container isolation. The server
-    // refuses to boot without it — see apps/server/src/index.ts. Enforcing it
-    // there rather than here means a hand-started server can't skip the gate.
-    env.LOXAIC_HOSTING = "1";
-  }
-  for (const key of PASSTHROUGH_ENV) {
-    if (process.env[key] !== undefined) env[key] = process.env[key];
-  }
+
+  /** Spawns the server child and waits for it to be healthy. */
+  const spawnServer = async (advertise) => {
+    const started = await startServer({ entry, cwd: serverDir, env: serverEnv(advertise), log });
+    if (started.child.pid) writeFileSync(serverPidFile, String(started.child.pid));
+    try {
+      await waitForHealth(`http://localhost:${started.port}`);
+    } catch (err) {
+      await started.stop();
+      throw err;
+    }
+    return started;
+  };
 
   let server;
+  let currentAdvertiseUrl = advertiseUrl;
   try {
-    server = await startServer({ entry, cwd: serverDir, env, log });
+    server = await spawnServer(advertiseUrl);
   } catch (err) {
     await pg?.stop().catch(() => undefined);
     throw err;
   }
-  if (server.child.pid) writeFileSync(serverPidFile, String(server.child.pid));
 
   const apiBaseUrl = `http://localhost:${server.port}`;
-  try {
-    await waitForHealth(apiBaseUrl);
-  } catch (err) {
-    await server.stop();
-    await pg?.stop().catch(() => undefined);
-    throw err;
-  }
   log(
     `[stack] up at ${apiBaseUrl} (${pg ? `postgres :${String(pg.port)}` : "external database"}, ` +
       `data ${dataDir}${hosting ? `, hosting as "${String(hostConfig?.name)}"` : ""})`,
   );
 
   let stopped = false;
+  // Serialised: two advertise-URL changes racing would each stop the other's
+  // freshly started child.
+  let restarting = Promise.resolve();
   return {
     apiBaseUrl,
     port: server.port,
+    get advertiseUrl() {
+      return currentAdvertiseUrl;
+    },
+    /**
+     * Restarts only the server child so it advertises (and signs cookies for)
+     * a different origin. Postgres stays up; the API base URL does not change
+     * because the port does not. A no-op when nothing would change.
+     */
+    setAdvertiseUrl: (next) => {
+      const attempt = restarting.then(async () => {
+        if (stopped || next === currentAdvertiseUrl) return;
+        log(`[stack] restarting server to advertise ${next}`);
+        const previous = server;
+        await previous.stop();
+        try {
+          server = await spawnServer(next);
+          currentAdvertiseUrl = next;
+        } catch (err) {
+          // Come back up on the address that was working, so a failed
+          // re-advertise costs the tailnet URL rather than the whole host.
+          // Without this `server` kept pointing at the child just stopped
+          // while stackState() went on reporting a healthy host.
+          log(`[stack] could not advertise ${next}; returning to ${currentAdvertiseUrl}`);
+          server = await spawnServer(currentAdvertiseUrl);
+          throw err;
+        }
+        log(`[stack] server now advertises ${next}`);
+      });
+      // The chain has to survive a failure: a `.then` chained onto a rejected
+      // promise skips its callback, so one failed restart would have made
+      // every later one — including the person's Retry — a silent no-op.
+      // The caller still gets the rejection.
+      restarting = attempt.catch(() => undefined);
+      return attempt;
+    },
     stop: async () => {
       if (stopped) return;
       stopped = true;
+      await restarting.catch(() => undefined);
       await server.stop();
       await pg?.stop().catch(() => undefined);
       rmSync(serverPidFile, { force: true });

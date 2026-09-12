@@ -33,11 +33,19 @@ pnpm package:dir # prod, unpacked (skips the installer step — faster iteration
   running elsewhere.
 
 Settings has a **Server** section for changing a Solo/Host's port, bind
-(LAN vs this machine only), and public address later — Save restarts the
-embedded stack on the new settings, without an app restart. A Client can
-likewise change or re-probe which host it points at from the same section.
-(An external PostgreSQL, instead of the embedded one, has no GUI yet at
-all — first setup or later.)
+(LAN vs this machine only), public address, and Tailscale exposure later —
+Save restarts the embedded stack on the new settings, without an app
+restart. A Client can likewise change or re-probe which host it points at
+from the same section. (An external PostgreSQL, instead of the embedded one,
+has no GUI yet at all — first setup or later.)
+
+A Host can **expose itself on Tailscale** from the same form, with no
+Tailscale app installed: the desktop bundles a `tsnet` node that publishes
+the server at `https://<name>.<tailnet>.ts.net` (optionally to the public
+internet via Funnel), and a Client can connect through the same node. See
+[REMOTE_ACCESS.md](REMOTE_ACCESS.md) — including the one-time browser
+approval, the MagicDNS/HTTPS prerequisites, and why a tailnet host's first
+start briefly restarts its server.
 
 On launch the main process resolves how to reach a server, in order:
 `--remote=<url>` / `LOXAIC_REMOTE_URL` (connect to a server elsewhere, skip
