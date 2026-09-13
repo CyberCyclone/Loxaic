@@ -102,6 +102,13 @@ Keep the rest of the description short: what changed, what was verified, what wa
 reasoning goes in this file and in code comments, where it is read again; a PR description is
 read once.
 
+**Answer a review finding on its own thread, not only in a top-level comment.** The thread is
+what gets resolved, and an inline finding answered somewhere else leaves the reviewer holding
+an open thread with no visible response. Reply on every thread — including the ones you are
+declining, with the reason — and leave resolving them to whoever opened them. A top-level
+comment is for the summary across findings, and is never a substitute for the per-thread
+replies.
+
 ## Gotchas
 
 ### TypeScript + React Native
