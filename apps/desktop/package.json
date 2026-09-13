@@ -1,6 +1,8 @@
 {
   "name": "@loxaic/desktop",
   "version": "0.0.0",
+  "description": "Loxaic — a self-hosted, multi-user AI platform, packaged with its own server and database.",
+  "homepage": "https://github.com/CyberCyclone/Open-Shannon",
   "private": true,
   "type": "module",
   "main": "src/main.js",

@@ -23,33 +23,6 @@
 // launches, which makes "which channel is this install on?" a question with
 // two possible answers; a build that can only be one thing has one.
 
-/**
- * Where the public half of the update-signing key pair lives, and how a
- * manifest signed with the private half is labelled.
- *
- * A build that carries this certificate accepts an update only if the manifest
- * arrives with a signature the certificate verifies. Without it, expo-updates
- * trusts whatever the update server returns — so the EAS account would be the
- * only thing standing between a leaked `EXPO_TOKEN` and arbitrary JavaScript
- * in every install. With it, publishing an update people's phones will run
- * takes the private key as well, and that key has never been in this
- * repository, in EAS, or in an EXPO_TOKEN's reach.
- *
- * The path is relative to this directory and resolved twice, by two different
- * things, which is why it can be one string: `@expo/config-plugins` joins it
- * to the project root at prebuild and embeds the file's *contents* in
- * Expo.plist / strings.xml, and `eas update` reads it from the working
- * directory to check the private key it was given actually matches.
- *
- * `keyid` is a label carried in the signature, not a secret and not a lookup —
- * it exists so a future second key can be told apart from this one. `alg` is
- * the only algorithm expo-updates implements.
- */
-const CODE_SIGNING = {
-  certificate: "./certs/certificate.pem",
-  metadata: { keyid: "main", alg: "rsa-v1_5-sha256" },
-};
-
 const VARIANTS = {
   production: {
     name: "Loxaic",
@@ -58,35 +31,18 @@ const VARIANTS = {
     suffix: "",
     scheme: "loxaic",
     channel: "production",
-    signed: true,
   },
   beta: {
     name: "Loxaic Beta",
     suffix: ".beta",
     scheme: "loxaic-beta",
     channel: "beta",
-    signed: true,
   },
   dev: {
-    // Deliberately unsigned, and it is the one variant that can be.
-    //
-    // Signing costs the publisher the private key at publish time, and the dev
-    // channel publishes on every merge to the trunk — so its key would have to
-    // be a repository secret, readable by a workflow on any branch. That is
-    // the same blast radius as EXPO_TOKEN, which would leave beta and
-    // production defended by a key sitting next to the thing it defends
-    // against. Keeping dev out lets the real key live as an environment secret
-    // that only a tag release can reach.
-    //
-    // What that costs: the dev channel has no integrity check at all. The dev
-    // app is the owner's own build, pointed at the owner's own stack, and is
-    // not distributed — which is the reason this trade is acceptable here and
-    // would not be for an app anybody else installs.
     name: "Loxaic Dev",
     suffix: ".dev",
     scheme: "loxaic-dev",
     channel: "dev",
-    signed: false,
   },
 };
 
@@ -147,26 +103,10 @@ module.exports = ({ config }) => {
       // has to publish to — a build and an update that disagree here produce
       // an update nobody receives.
       requestHeaders: { "expo-channel-name": variant.channel },
-      // Spread, not two `undefined`s: `eas update` decides whether an update
-      // must be signed by asking whether the resolved config has a
-      // `codeSigningCertificate` at all, so a key left in place holding
-      // `undefined` would make an unsigned variant refuse to publish without
-      // `--private-key-path`. It has to carry no key.
-      ...(variant.signed
-        ? {
-            codeSigningCertificate: CODE_SIGNING.certificate,
-            codeSigningMetadata: CODE_SIGNING.metadata,
-          }
-        : {}),
     },
     extra: { ...config.extra, variant: variant.key },
   };
 };
 
-// Exported for the test, which is the only thing that needs the table itself,
-// and for fingerprint.config.js, which has to answer the same question this
-// file does — whether this variant embeds the certificate — from one table
-// rather than two that can drift.
+// Exported for the test, which is the only thing that needs the table itself.
 module.exports.VARIANTS = VARIANTS;
-module.exports.CODE_SIGNING = CODE_SIGNING;
-module.exports.variantFor = variantFor;

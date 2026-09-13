@@ -1,7 +1,4 @@
-import { X509Certificate } from 'node:crypto';
-import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
@@ -115,91 +112,5 @@ describe('app variants', () => {
 
   it('records which variant it is, for anything that needs to ask at runtime', () => {
     expect((build('dev').extra as { variant: string }).variant).toBe('dev');
-  });
-});
-
-/**
- * Update code signing: what a build will accept, and what publishing one costs.
- *
- * A build carrying the certificate runs an update only if the manifest was
- * signed by the matching private key — which lives in a password manager and a
- * GitHub environment secret, and never here. Getting any of this wrong is
- * silent on the machine that does it and loud only on someone's phone, weeks
- * later, so it is asserted rather than trusted.
- */
-describe('update code signing', () => {
-  const certPath = require_.resolve('../certs/certificate.pem');
-  const certPem = readFileSync(certPath, 'utf8');
-
-  it.each(['production', 'beta'])('%s embeds the certificate', (variant) => {
-    const updates = build(variant).updates as Record<string, unknown>;
-    expect(updates.codeSigningCertificate).toBe('./certs/certificate.pem');
-    expect(updates.codeSigningMetadata).toEqual({ keyid: 'main', alg: 'rsa-v1_5-sha256' });
-  });
-
-  it('leaves the dev variant carrying no certificate key at all', () => {
-    // Not `undefined` — absent. eas-cli decides whether a publish must be
-    // signed by asking whether the resolved config *has* the key, so a
-    // `codeSigningCertificate: undefined` left in place would make every dev
-    // publish refuse to run without a private key the dev workflow
-    // deliberately does not have.
-    const updates = build('dev').updates as Record<string, unknown>;
-    expect('codeSigningCertificate' in updates).toBe(false);
-    expect('codeSigningMetadata' in updates).toBe(false);
-  });
-
-  it('points at a certificate that is actually there', () => {
-    // The path is resolved twice by two different things — prebuild embeds the
-    // file's contents, and eas update reads it to check the key it was handed
-    // — and both fail late. Missing it here is the cheap place.
-    const cert = new X509Certificate(certPem);
-    expect(cert.subject).toContain('CN=Loxaic');
-  });
-
-  it('has years of validity left on the certificate', () => {
-    // An expired certificate is the worst failure this file can produce: every
-    // installed beta and production app stops accepting updates, and the only
-    // fix is a new certificate, which needs a new native build and an app
-    // store round trip. Two years of warning is enough to do that calmly; this
-    // test going red is the warning.
-    const validTo = new Date(new X509Certificate(certPem).validTo);
-    const twoYears = Date.now() + 2 * 365 * 24 * 60 * 60 * 1000;
-    expect(validTo.getTime()).toBeGreaterThan(twoYears);
-  });
-
-  it('keeps the private key out of the committed directory', () => {
-    // `codesigning:generate` writes the key pair and the certificate into two
-    // directories a flag apart, and only one of them is ignored. Committing
-    // the private key would hand anyone who reads this repository the power to
-    // publish an update every install runs — and no rotation is possible
-    // without a new build of every app.
-    for (const entry of readdirSync(dirname(certPath))) {
-      const contents = readFileSync(join(dirname(certPath), entry), 'utf8');
-      expect(contents).not.toContain('PRIVATE KEY');
-    }
-  });
-
-  it('counts the certificate as a fingerprint source for signed variants only', () => {
-    // Rotating the certificate has to move the runtime version, or an update
-    // signed by the new key is offered to binaries carrying the old one, which
-    // download and reject it forever. The config is per variant because the
-    // dev app embeds no certificate and must not be rebuilt for a rotation
-    // that cannot affect it.
-    const fingerprintConfig = () => {
-      // Uncached each time: it reads APP_VARIANT at require time, and
-      // CommonJS would otherwise hand back whichever variant asked first.
-      // Reflect.deleteProperty rather than `delete` on a computed key, which
-      // the lint rules refuse — same operation, no escape hatch needed.
-      Reflect.deleteProperty(require_.cache, require_.resolve('../fingerprint.config.js'));
-      return require_('../fingerprint.config.js') as { extraSources: { filePath: string }[] };
-    };
-    for (const variant of ['production', 'beta']) {
-      process.env.APP_VARIANT = variant;
-      expect(fingerprintConfig().extraSources.map((s) => s.filePath)).toContain(
-        'certs/certificate.pem',
-      );
-    }
-    process.env.APP_VARIANT = 'dev';
-    expect(fingerprintConfig().extraSources).toEqual([]);
   });
 });
