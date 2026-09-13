@@ -1684,8 +1684,12 @@ replies.
   The dev app keeps its APK because it is installed from a link rather than submitted.
 - **"Does this runtime have a build?" is the only question the gate answers, and the skip
   branch must therefore skip.** When a finished build already exists for this runtime and
-  variant, the store already has it — either from the bootstrap build, which `docs/DEPLOY.md`
-  runs with `--auto-submit-with-profile`, or from the release that built it. Submitting again
+  variant, the store is taken to already have it — from the release that built it, or from the
+  bootstrap. That assumption is not uniform across platforms and nothing in CI can verify it:
+  iOS bootstraps with `--auto-submit-with-profile`, but **Play refuses an API upload to a
+  listing with no prior release**, so Android's first bundle is uploaded by hand in Play
+  Console (`docs/DEPLOY.md`) — miss it and every release at that fingerprint skips against an
+  empty store and still reports success. Submitting again
   is not merely redundant, it cannot run: `eas submit --non-interactive` throws unless given
   `--id`/`--latest`/`--path`/`--url`, and there is no implicit latest-build fallback.
   Supplying one only relocates the failure — `--latest` filters on platform, distribution and

@@ -467,15 +467,22 @@ jobs:
                 --non-interactive \
                 --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
               if [ "$COUNT" != "0" ]; then
-                # A binary for this runtime already exists, and the store
-                # already has it: either it is the bootstrap build, which
-                # docs/DEPLOY.md now tells you to run with
-                # --auto-submit-with-profile, or it is a build from an earlier
-                # release run, which submitted on completion. So there is
-                # nothing to send — the binary is identical and the JS it runs
-                # was just published over the air. This is the JS-only release
-                # AGENTS.md describes: no new store build, TestFlight and Play
-                # version numbers unchanged.
+                # A binary for this runtime already exists, and the store is
+                # assumed to have it — either from an earlier release run,
+                # which submitted on completion, or from the bootstrap. Note
+                # what that assumption rests on, because CI cannot check it:
+                # iOS bootstraps with --auto-submit-with-profile, but Play
+                # refuses an API upload to a listing with no prior release, so
+                # the first Android bundle is uploaded **by hand** in Play
+                # Console (docs/DEPLOY.md). Skip that upload and every release
+                # cut at the bootstrap fingerprint skips here against an empty
+                # store and reports success.
+                #
+                # Given it has been uploaded, there is nothing to send: the
+                # binary is identical and the JS it runs was just published
+                # over the air. This is the JS-only release AGENTS.md
+                # describes — no new store build, TestFlight and Play version
+                # numbers unchanged.
                 #
                 # It used to run `eas submit` here instead, and that could
                 # never have worked: `resolveArchiveSourceAsync` throws "You
