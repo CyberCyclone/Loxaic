@@ -205,97 +205,6 @@ jobs:
           done
           pnpm --filter @loxaic/desktop package:publish
 
-  android-apk:
-    name: attach the ${{ matrix.variant }} APK
-    needs: [meta, expo-update]
-    runs-on: ubuntu-latest
-    # Runs even when a sibling variant failed — an APK for the variant that
-    # did publish is still worth attaching — but never after a cancellation.
-    if: ${{ always() && github.repository_owner == 'CyberCyclone'
-            && needs.meta.result == 'success'
-            && needs.expo-update.result != 'cancelled' }}
-    # An EAS build queue can be long. This waits rather than leaving the
-    # release without an installable Android artifact, which is the whole
-    # point of the job — but it must not wait forever.
-    timeout-minutes: 120
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: ${{ fromJSON(needs.meta.outputs.variants) }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: ${{ needs.meta.outputs.tag }}
-      VERSION: ${{ needs.meta.outputs.version }}
-      VARIANT: ${{ matrix.variant }}
-      APP_VARIANT: ${{ matrix.variant }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: ${{ needs.meta.outputs.tag }}
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
-        with:
-          version: 10.4.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 22
-          cache: pnpm
-      - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
-          packager: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      - name: Work out this variant's runtime version
-        id: runtime
-        working-directory: apps/mobile
-        # Recomputed here rather than passed from expo-update: a matrix job
-        # cannot expose a per-leg output, and the fingerprint is a pure
-        # function of the checked-out tree and APP_VARIANT, so both jobs get
-        # the same answer from the same commit.
-        run: |
-          set -euo pipefail
-          RUNTIME=$(npx --yes @expo/fingerprint@latest . | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).hash)})')
-          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
-          echo "$VARIANT runtime: $RUNTIME"
-
-      - name: Find a finished Android build and attach it
-        working-directory: apps/mobile
-        # Android is distributed here as an APK on the GitHub release, not
-        # through Play, so a release without one has nothing an Android user
-        # can install. Reusing an existing build for this runtime is correct
-        # rather than a shortcut: the binary is identical, and its first
-        # launch fetches the update this run just published.
-        env:
-          RUNTIME: ${{ steps.runtime.outputs.runtime }}
-        run: |
-          set -euo pipefail
-          deadline=$(( $(date +%s) + 110 * 60 ))
-          while :; do
-            # Filtered by runtime version, or this happily attaches a build of
-            # an older release — the APK and the update in the same release
-            # would then be for different native code.
-            BUILD=$(eas build:list --platform android --build-profile "$VARIANT" \
-              --runtime-version "$RUNTIME" \
-              --status finished --limit 1 --non-interactive --json \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list");process.exit(1);}process.stdout.write(v[0]?.artifacts?.applicationArchiveUrl ?? "")})')
-            [ -n "$BUILD" ] && break
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::warning::no finished $VARIANT Android build to attach to $TAG"
-              exit 0
-            fi
-            echo "waiting for a finished $VARIANT Android build…"
-            sleep 60
-          done
-
-          NAME="Loxaic-$VERSION.apk"
-          [ "$VARIANT" = "beta" ] && NAME="Loxaic-Beta-$VERSION.apk"
-          curl -fL --retry 3 -o "$NAME" "$BUILD"
-          gh release upload "$TAG" "$NAME" --repo "$GITHUB_REPOSITORY" --clobber
-          echo "attached $NAME"
-
   advance-branches:
     name: move the release pointers
     needs: [meta, publish-release]
@@ -327,12 +236,6 @@ jobs:
 
   publish-release:
     name: publish the release
-    # Deliberately *not* waiting on android-apk. The policy below is that a
-    # missing APK warns rather than blocks, and needing the job would have
-    # contradicted it in practice: the release would have sat in draft for up
-    # to two hours waiting on an Android build queue. `gh release upload`
-    # works against a published release, so the APK attaches whenever it is
-    # ready.
     needs: [meta, expo-update, desktop]
     runs-on: ubuntu-latest
     # `desktop` is a three-way matrix with fail-fast: false, and a matrix job
@@ -381,12 +284,6 @@ jobs:
             echo "$variant: $count installer asset(s)"
           done
           echo "publishing $TAG"
-          # A missing APK is a warning rather than a refusal: the desktop
-          # installers are the hard requirement, and an Android user can still
-          # be served by the update channel once a build finishes later.
-          apks=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '[.assets[] | select(.name | test("\\.apk$"))] | length')
-          [ "$apks" = "0" ] && echo "::warning::$TAG has no Android APK attached"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   expo-update:
@@ -490,6 +387,7 @@ jobs:
         # still succeeds and a log line indistinguishable from the real case.
         run: |
           set -euo pipefail
+          FAILED=""
           for platform in ios android; do
             if [ "$FORCE_BUILD" = "true" ]; then
               echo "$platform: forced by workflow input"
@@ -503,17 +401,46 @@ jobs:
                 --non-interactive \
                 --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
               if [ "$COUNT" != "0" ]; then
-                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; skipping"
+                # A binary for this runtime already exists — from the
+                # bootstrap build the setup docs require, a manual run, or a
+                # re-run of this release. That answers "does this runtime have
+                # a build?" and says nothing about "has the store got it", so
+                # it submits the existing build rather than skipping the
+                # platform. Without this the first release after setup would
+                # submit nothing at all, and a release whose build succeeded
+                # but whose submission failed could never retry.
+                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; submitting it"
+                eas submit --platform "$platform" --profile "$VARIANT" \
+                  --non-interactive || FAILED="$FAILED $platform:submit"
                 continue
               fi
               echo "$platform: no $VARIANT build for runtime $RUNTIME yet"
             fi
             # --no-wait: a build takes far longer than this workflow should,
             # and the update is already published — the binary catches up.
-            # No `|| true`: this block is documented as failing closed, and a
-            # build that could not even be *queued* is exactly the case where
-            # the update has published for a runtime no binary will ever have.
-            eas build --platform "$platform" --profile "$VARIANT" --non-interactive --no-wait --json \
-              > "build-$platform.json"
+            #
+            # Both platforms submit on completion: a store build is only
+            # useful once the store has it, and the submission is scheduled
+            # server-side so --no-wait still holds. iOS goes to TestFlight or
+            # App Store Connect, Android to its Play listing's internal track
+            # — neither goes live without a human, which is the point.
+            #
+            # Failures are collected rather than aborting the loop. The build
+            # half still fails the step (see below), but iOS is simply first
+            # in the list, and an Apple-side misconfiguration — an expired App
+            # Store Connect key, a missing app record — must not stop Android
+            # being queued at all.
+            eas build --platform "$platform" --profile "$VARIANT" \
+              --auto-submit-with-profile "$VARIANT" \
+              --non-interactive --no-wait --json \
+              > "build-$platform.json" || FAILED="$FAILED $platform:build"
           done
+
+          # Failing closed, but only after both platforms have had their turn:
+          # a build that could not even be queued is exactly the case where an
+          # update has published for a runtime no binary will ever have.
+          if [ -n "$FAILED" ]; then
+            echo "::error::$VARIANT failed for:$FAILED" >&2
+            exit 1
+          fi
           echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"

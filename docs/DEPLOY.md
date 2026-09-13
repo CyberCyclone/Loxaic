@@ -250,8 +250,8 @@ is committed:
 | You run | Tag | Mobile | Desktop | Branch moved |
 |---|---|---|---|---|
 | merge a PR | — | `dev` channel update; the dev stack redeploys | — | `dev` |
-| `release.sh beta` | `vX.Y.Z-beta.N` | `beta` channel + Loxaic Beta builds when the runtime is new | Loxaic Beta installers, GitHub pre-release | `beta` |
-| `release.sh promote` or `patch`/`minor`/`major` | `vX.Y.Z` | `production` **and** `beta` channels | **both** variants' installers, GitHub release | `master` and `beta` |
+| `release.sh beta` | `vX.Y.Z-beta.N` | `beta` channel; when the runtime is new, Loxaic Beta builds → TestFlight + Play internal | Loxaic Beta installers, GitHub pre-release | `beta` |
+| `release.sh promote` or `patch`/`minor`/`major` | `vX.Y.Z` | `production` **and** `beta` channels; new-runtime builds → App Store Connect + Play internal | **both** variants' installers, GitHub release | `master` and `beta` |
 
 A release tag publishes to beta as well, so beta is always a superset of
 production. Someone who opted in must never end up on an older build than a
@@ -305,13 +305,18 @@ native config, and the bundle identifier is native config. So a release builds
 and gates natives per platform *per variant*, and an update published for one
 variant's runtime is invisible to the others.
 
-**Android builds an APK on every profile, production included**, because
-Android distribution here is an APK attached to the GitHub release and
-sideloaded — not Google Play. That is a deliberate choice and a trap worth
-naming: Play has required an App Bundle for new apps since 2021, so publishing
-there later means a fourth build profile with `"android": { "buildType":
-"app-bundle" }`, not a flag on this one. `submit.production` exists for the
-**iOS** side; `eas submit` is not used for Android at all.
+**Beta and production build App Bundles and go to Google Play; only `dev`
+builds an APK.** Play has required an App Bundle for new apps since 2021, so
+the store profiles take EAS's default rather than naming a `buildType`. The dev
+app is the exception because it is never submitted — it is installed from a
+link, which needs an installable APK.
+
+Because the variants have different package names, they are **two Play
+listings**, not two tracks of one: `com.loxaic.app` and `com.loxaic.app.beta`.
+That is what lets a tester keep both installed and update independently, the
+same as on iOS and the desktop. A single listing with a `beta` track would mean
+one package name and one installable app, which is the model this deliberately
+does not use.
 
 ### One-time setup
 
@@ -354,6 +359,88 @@ the workflows call it directly.
 Repository secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish;
 the publish step fails without one. Both workflows skip themselves entirely on
 a fork, so a fork's `dev` never tries to publish to this project.
+
+### Before the first release: credentials EAS has to hold
+
+CI runs `eas build` with `--non-interactive`, which **cannot create
+credentials** — it can only use ones that already exist. So each of these is
+run once, by hand, from a machine signed in to EAS, and never again.
+
+**Android** needs three things, in this order:
+
+1. **Play Console listings**, one per variant, because they are separate
+   packages: `com.loxaic.app` and `com.loxaic.app.beta`.
+2. **The first release of each uploaded by hand.** Play refuses an API upload
+   to an app that has never had a release, so the very first App Bundle goes
+   through the Play Console UI. Every later one can be automated — this is the
+   single most common reason a first automated submission fails.
+3. **A service account key**, so EAS can upload on your behalf: Play Console →
+   Setup → API access → create a service account in Google Cloud, grant it
+   *Release manager* on the app, download its JSON key, then hand it to EAS:
+
+   ```bash
+   cd apps/mobile
+   APP_VARIANT=beta npx --yes eas-cli@latest credentials --platform android
+   APP_VARIANT=production npx --yes eas-cli@latest credentials --platform android
+   ```
+
+   For each: *Google Service Account* → upload the JSON. The same key can serve
+   both listings if it has access to both.
+
+The first interactive build per variant is also what makes EAS generate and
+store the upload keystore, so run one before relying on CI:
+
+```bash
+cd apps/mobile
+APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile beta
+APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production
+```
+
+**iOS** needs an Apple Developer account, and three things set up in this
+order:
+
+1. **App Store Connect records**, one per variant, because they are separate
+   apps: `com.loxaic.app` ("Loxaic") and `com.loxaic.app.beta` ("Loxaic
+   Beta"). A submission cannot create them.
+2. **An App Store Connect API key** (Users and Access → Integrations → App
+   Store Connect API, role App Manager). Download the `.p8` — Apple lets you
+   download it exactly once.
+3. **Credentials, uploaded to EAS rather than to GitHub**, per variant:
+
+   ```bash
+   cd apps/mobile
+   APP_VARIANT=beta npx --yes eas-cli@latest credentials --platform ios
+   APP_VARIANT=production npx --yes eas-cli@latest credentials --platform ios
+   ```
+
+   For each: a **Distribution Certificate** and an **App Store provisioning
+   profile**, then *App Store Connect API Key* → upload the `.p8`.
+
+EAS holding the key is the point: CI's only secret stays `EXPO_TOKEN`. The
+alternative — `ascApiKeyPath`/`ascApiKeyId`/`ascApiKeyIssuerId` in `eas.json`,
+or the `EXPO_ASC_*` environment variables with the `.p8` as a GitHub secret —
+would put an Apple credential in this repository's CI for no benefit.
+
+The `submit` profiles in `eas.json` are deliberately minimal. With the API key
+in place EAS resolves the App Store Connect record from the bundle identifier
+the build already carries, so there is nothing account-specific committed here.
+If a lookup is ever ambiguous, `ascAppId` (the numeric id from the record's App
+Store Connect URL) pins it — neither that nor `appleTeamId` is secret.
+
+**What a release then does:** `eas build --auto-submit-with-profile` hands each
+finished build to its store — iOS to TestFlight (beta) or App Store Connect
+(production), Android to that variant's Play listing on the **internal testing
+track**.
+
+Nothing goes live without you. EAS *uploads*; it does not release. An external
+TestFlight group needs a Beta App Review, an App Store release needs the button
+in App Store Connect, and a Play release means promoting the internal build to
+production in Play Console. That is deliberate: a tag push should never reach
+every user unreviewed.
+
+A JS-only release produces **no new store build at all**, which is correct and
+worth expecting: the runtime version has not moved, so everyone gets the update
+over the air and the TestFlight and Play version numbers stay where they are.
 
 ### Before the first production publish: sign the bundles
 

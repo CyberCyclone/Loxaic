@@ -91,7 +91,30 @@ function stampAppJson(file, version) {
 export function stampFiles(repoRoot, version) {
   stampPackageJson(path.join(repoRoot, "apps/desktop/package.json"), version);
   stampPackageJson(path.join(repoRoot, "apps/server/package.json"), version);
-  stampAppJson(path.join(repoRoot, "apps/mobile/app.json"), version);
+  // The *numeric* version for the mobile app, even on a beta tag — see
+  // marketingVersion.
+  stampAppJson(path.join(repoRoot, "apps/mobile/app.json"), marketingVersion(version));
+}
+
+/**
+ * The version a store will accept, which is not always the version of the
+ * release.
+ *
+ * `expo.version` becomes `CFBundleShortVersionString`, and Apple requires that
+ * to be a period-separated list of at most three integers — `1.2.0-beta.1` is
+ * rejected at upload with ITMS-90060. The submission is scheduled server-side
+ * and the build runs `--no-wait`, so that rejection lands long after the
+ * release workflow has reported success: every beta would silently never reach
+ * TestFlight, from a green run.
+ *
+ * The prerelease counter is not lost, it just is not carried here. A beta
+ * build is told apart by its build number, which EAS increments per submission
+ * (`autoIncrement`, `appVersionSource: remote`), and by the channel the app
+ * reports in Settings. The desktop and server keep the full `1.2.0-beta.1`,
+ * because electron-updater's feed rules depend on the prerelease component.
+ */
+export function marketingVersion(version) {
+  return version.split("-")[0];
 }
 
 function main() {
