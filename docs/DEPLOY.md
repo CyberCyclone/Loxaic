@@ -284,6 +284,14 @@ native config, and the bundle identifier is native config. So a release builds
 and gates natives per platform *per variant*, and an update published for one
 variant's runtime is invisible to the others.
 
+**Android builds an APK on every profile, production included**, because
+Android distribution here is an APK attached to the GitHub release and
+sideloaded — not Google Play. That is a deliberate choice and a trap worth
+naming: Play has required an App Bundle for new apps since 2021, so publishing
+there later means a fourth build profile with `"android": { "buildType":
+"app-bundle" }`, not a flag on this one. `submit.production` exists for the
+**iOS** side; `eas submit` is not used for Android at all.
+
 ### One-time setup
 
 On the Expo account that owns the project:

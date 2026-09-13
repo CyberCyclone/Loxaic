@@ -51,10 +51,24 @@ const VARIANTS = {
  * path a contributor takes without knowing this file exists. An *unrecognised*
  * value throws instead: a typo in a build profile must not quietly produce a
  * production build under a name nobody meant to ship.
+ *
+ * An empty string throws too, deliberately, even though it is what a declared
+ * but unset CI variable expands to. Treating it as production would be the
+ * friendlier default and the wrong one: the channel the binary embeds comes
+ * from here while the channel CI publishes to comes from the `--channel` flag,
+ * so a variable that failed to expand would produce a build embedded with
+ * `production` and an update published to `beta` — one that reaches nobody,
+ * with no error anywhere. Failing the build is the louder half of that choice.
  */
 function variantFor(raw) {
   const key = raw ?? "production";
-  const variant = VARIANTS[key];
+  // `Object.hasOwn`, not `VARIANTS[key]`: a plain lookup walks the prototype
+  // chain, so APP_VARIANT=constructor (or toString, or valueOf) found a
+  // function instead of a variant and sailed past the throw below — producing
+  // an app named `undefined` with the identifier `com.loxaic.appundefined`,
+  // no scheme, and no `expo-channel-name` header at all, which is a build that
+  // follows no channel and silently receives no updates for its whole life.
+  const variant = Object.hasOwn(VARIANTS, key) ? VARIANTS[key] : undefined;
   if (!variant) {
     throw new Error(
       `APP_VARIANT="${key}" is not one of ${Object.keys(VARIANTS).join(", ")}`,
@@ -72,8 +86,16 @@ module.exports = ({ config }) => {
     // all three variants publish updates through, and changing it per variant
     // would mean three projects and three sets of credentials.
     scheme: variant.scheme,
-    ios: { ...config.ios, bundleIdentifier: `com.loxaic.app${variant.suffix}` },
-    android: { ...config.android, package: `com.loxaic.app${variant.suffix}` },
+    // Derived from what app.json declares rather than repeating the base
+    // identifier here. Hard-coding it made app.json's copy dead: it is the
+    // file that looks like the source of truth for identity, and renaming the
+    // app there would have changed nothing while prebuild quietly kept
+    // regenerating the old identifier from this file.
+    ios: {
+      ...config.ios,
+      bundleIdentifier: `${config.ios.bundleIdentifier}${variant.suffix}`,
+    },
+    android: { ...config.android, package: `${config.android.package}${variant.suffix}` },
     updates: {
       ...config.updates,
       // expo-updates only honours a channel the build already embeds, and this

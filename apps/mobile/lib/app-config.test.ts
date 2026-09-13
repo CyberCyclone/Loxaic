@@ -59,6 +59,38 @@ describe('app variants', () => {
     expect(() => build('prod')).toThrow(/APP_VARIANT="prod"/);
   });
 
+  it.each(['constructor', 'toString', 'valueOf'])(
+    'refuses %s, which a plain lookup would have found on the prototype',
+    (key) => {
+      // A prototype hit produced an app named `undefined`, the identifier
+      // `com.loxaic.appundefined`, and — the one that costs a release — no
+      // `expo-channel-name` header at all: a build following no channel, which
+      // receives no updates for its whole life and says nothing about it.
+      expect(() => build(key)).toThrow(/is not one of/);
+    },
+  );
+
+  it('refuses an empty APP_VARIANT rather than defaulting it to production', () => {
+    // What a declared-but-unset CI variable expands to. Defaulting it would
+    // embed `production` in a build whose update CI publishes to `beta` — an
+    // update that reaches nobody, silently. See the note in app.config.js.
+    expect(() => build('')).toThrow(/APP_VARIANT=""/);
+  });
+
+  it('derives identifiers from app.json rather than repeating the base', () => {
+    // app.json is the file that looks like the source of truth for identity;
+    // hard-coding the base here made its copy dead, so a rename there would
+    // have changed nothing while prebuild kept using the old identifier.
+    const base = (appJson.expo.ios as { bundleIdentifier: string }).bundleIdentifier;
+    const config = configFn({
+      config: { ...appJson.expo, ios: { bundleIdentifier: 'com.example.renamed' } },
+    });
+    expect((config.ios as { bundleIdentifier: string }).bundleIdentifier).toBe(
+      'com.example.renamed',
+    );
+    expect(base).not.toBe('com.example.renamed');
+  });
+
   it('passes version through untouched, which is the release stamp contract', () => {
     // apps/desktop/scripts/stamp-version.mjs writes the tag into app.json and
     // nothing else; if this file ever computed a version, the stamp would be
