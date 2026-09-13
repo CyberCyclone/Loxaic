@@ -1612,23 +1612,21 @@ screenshots showing that behaviour working. Writing those tests is the implement
   what makes the release build gate a per-platform, *per-variant* question. An update
   published under the wrong variant reaches nobody, and the only symptom is the gate
   starting a native build it "should not need".
-- **`Updates.channel` is what the binary was *built* for and never changes**, however many
-  times someone switches. So the stored preference (`loxaic-update-channel`, in
-  `KNOWN_KEYS`) is the source of truth and is re-applied on every launch. The override itself
-  persists natively across launches, which makes re-applying idempotent rather than redundant
-  — and makes it the only way to be sure a build that was reinstalled is on the channel the
-  person chose.
-- **Production is the absence of an override, not a header of its own.** `applyChannel`
-  passes `null` for production. Sending `expo-channel-name: production` explicitly would work
-  on an EAS build and fail on a build that embedded a different value.
-- **`checkAutomatically: "ON_ERROR_RECOVERY"` is deliberate.** The native layer's launch-time
-  check runs *before* JS applies the stored override, so it would always ask for the built-in
-  channel — a beta user's first request of every launch would fetch production. JS drives
-  every check instead, and the native path stays only as crash recovery.
+- **`Updates.channel` is simply the truth about an install, and nothing overrides it.** The
+  channel is embedded by `app.config.js` from `APP_VARIANT`, so a build follows one channel
+  for its whole life. There was a runtime override and a stored preference
+  (`loxaic-update-channel`); both are gone, along with the question they created — "which
+  channel is this on?" had two possible answers, the one the build embedded and the one
+  someone tapped, and the Settings row could disagree with the headers being sent. A person
+  who wants beta installs the beta app.
+- **`checkAutomatically: "ON_ERROR_RECOVERY"` is still deliberate**, for a different reason
+  now that the native layer would ask for the right channel anyway: JS drives every check, so
+  a download never competes with one the native layer started, and the reload stays something
+  the person taps in the banner rather than something a launch decides. The native path
+  remains as crash recovery.
 - **Nothing here ever reloads the app on its own.** `checkNow` downloads and stops; the
   restart is a banner the person taps. Automatic checks are throttled to 15 minutes and
-  single-flighted; "Check now" and a channel switch bypass the throttle, because both are
-  someone asking.
+  single-flighted; "Check now" bypasses the throttle, because that is someone asking.
 - **A release tag publishes to `production` *and* `beta`.** Beta must stay a strict superset,
   or opting in would strand someone on an older build than the stable release they would
   otherwise have had.
@@ -1655,14 +1653,13 @@ screenshots showing that behaviour working. Writing those tests is the implement
   since a hook has to be called on every render; `useUpdateState()` calls it there and masks
   what it *reports* to inert values, which is how the rule stays true rather than
   true-except-for-that-hook.
-- **The stored channel must not be read before storage has hydrated.** `hydrateStorage()` is
-  awaited inside `SessionProvider`'s effect, not ahead of first render, and child effects run
-  before parent effects — so `startUpdateChecks()` fired from `ThemedApp` used to read an empty
-  cache, latch `production` for the life of the process, and put every beta user back on
-  Stable at every cold launch while Settings showed Stable selected. It is gated on `ready`
-  now, and `read()` no longer latches until `isStorageHydrated()`. The test that catches this
-  reads *first* and hydrates *second*; every other case does the opposite, which is why none of
-  them could.
+- **`startUpdateChecks()` reads nothing from storage, which is why it no longer waits for
+  hydration.** It used to, and the gate was load-bearing: `hydrateStorage()` is awaited inside
+  `SessionProvider`'s effect while child effects run first, so an ungated call read an empty
+  cache, latched `production` for the life of the process, and put every beta user back on
+  Stable at each cold launch while Settings showed Stable selected. Removing the stored
+  channel removed the race rather than the guard — worth knowing before anything else in this
+  layer starts reading a preference at launch.
 - **OTA bundles are not code-signed yet, and that is a recorded decision, not an oversight.**
   Without `codeSigningCertificate` expo-updates trusts any bundle the update server returns —
   the only thing between a leaked `EXPO_TOKEN` (which `preview.yml` now uses on every push to
