@@ -82,6 +82,33 @@ screenshots showing that behaviour working. Writing those tests is the implement
   the PR description instead, straight from that directory.
 - If a change genuinely isn't user-visible, say so in the PR rather than skipping the section.
 
+## Pull requests
+
+**Every PR description ends with a section called "What you need to do".** It is a numbered
+checklist of the actions only the repository owner can take, in the order they have to
+happen. Nothing anywhere else in the description is a request — that section is the entire
+ask, and if it is empty it says so: "Nothing. Merge when CI is green."
+
+Each item is one line and answers three things: **the exact command or click**, **what should
+happen when it works**, and **why it is needed**. Name the file or URL. No item may be
+"review this" or "consider whether" — a decision belongs there only when it has named
+options and a recommendation.
+
+Say what will fail if an item is skipped, when skipping it fails silently. Most of these
+steps are credentials, and a missing one usually surfaces days later as "the release went out
+and nobody got it".
+
+Keep the rest of the description short: what changed, what was verified, what was not. The
+reasoning goes in this file and in code comments, where it is read again; a PR description is
+read once.
+
+**Answer a review finding on its own thread, not only in a top-level comment.** The thread is
+what gets resolved, and an inline finding answered somewhere else leaves the reviewer holding
+an open thread with no visible response. Reply on every thread — including the ones you are
+declining, with the reason — and leave resolving them to whoever opened them. A top-level
+comment is for the summary across findings, and is never a substitute for the per-thread
+replies.
+
 ## Gotchas
 
 ### TypeScript + React Native
@@ -1637,16 +1664,35 @@ screenshots showing that behaviour working. Writing those tests is the implement
   runtime versions differ — a finished build of one says nothing about the other. `APP_VARIANT`
   is set for the whole `expo-update` job so the config a publish runs against is the one the
   matching build used; a mismatch publishes an update that reaches nobody and reports nothing.
-- **`advance-branches` moves `beta` and `master` only after the release has published**, with
-  a non-forced push: a branch pointer means "this shipped", and a tag cut from an older base
-  fails there rather than rewriting what a branch says. `GITHUB_TOKEN` pushes never trigger
-  workflows, so this cannot start another CI run.
-- **Android is an APK on the GitHub release, not Play.** The `android-apk` job waits for a
-  finished EAS build and attaches it, because a release with no APK leaves an Android user
-  nothing to install. Reusing an existing build for that runtime is correct rather than a
-  shortcut: the binary is identical and its first launch fetches the update just published. A
-  missing APK warns rather than blocking the release — the desktop installers are the hard
-  requirement.
+- **`advance-branches` moves `beta` and `master` only after the release has published *and*
+  the mobile update has**, with a non-forced push: a branch pointer means "this shipped", and
+  a tag cut from an older base fails there rather than rewriting what a branch says.
+  `GITHUB_TOKEN` pushes never trigger workflows, so this cannot start another CI run.
+  **`expo-update` has to be in its `needs` for that to hold**: `if: success()` evaluates over
+  a job's own needs and nothing else, and `publish-release`'s gate deliberately tolerates a
+  failed `expo-update` — so without it a missing `EXPO_UPDATE_SIGNING_KEY` undrafted the
+  desktop release, moved both pointers, and consumed the tag with no mobile update published.
+  `publish-release` still tolerates it on purpose: the installers are real and uploaded, and a
+  desktop release is worth having; it is the *pointer* that must not claim more than happened.
+- **The installer-asset guard has to check for "no assets at all" separately.** `printf '%s\n'
+  ""` emits one empty line, which `grep -vc '^Loxaic-Beta-'` counts — so an empty asset list
+  produced a stable count of 1 and published a release with nothing installable, which is the
+  exact inverse of the guard's purpose.
+- **Only `dev` builds an APK; beta and production go to Play as App Bundles.** An earlier
+  design attached an APK to the GitHub release from an `android-apk` job — that job and that
+  reasoning are both gone, replaced by store submission (see the Play listings bullet below).
+  The dev app keeps its APK because it is installed from a link rather than submitted.
+- **"Does this runtime have a build?" is the only question the gate answers, and the skip
+  branch must therefore skip.** When a finished build already exists for this runtime and
+  variant, the store already has it — either from the bootstrap build, which `docs/DEPLOY.md`
+  runs with `--auto-submit-with-profile`, or from the release that built it. Submitting again
+  is not merely redundant, it cannot run: `eas submit --non-interactive` throws unless given
+  `--id`/`--latest`/`--path`/`--url`, and there is no implicit latest-build fallback.
+  Supplying one only relocates the failure — `--latest` filters on platform, distribution and
+  status but **not** build profile or runtime version, so it can pick the wrong binary, and
+  `--id` re-sends something the store already took (Apple ITMS-4238, Play's reused
+  `versionCode`). Retrying a genuinely failed submission is a person running `eas submit --id
+  <build-id>`, which is a different job from releasing the JS that just changed.
 - **EAS holds the App Store Connect key; GitHub holds only `EXPO_TOKEN`.** The submit profiles
   in `eas.json` are deliberately minimal — with the API key stored on EAS, the App Store
   Connect record is resolved from the bundle identifier the build already carries, so nothing
@@ -1678,7 +1724,10 @@ screenshots showing that behaviour working. Writing those tests is the implement
   build reported success. So a beta would silently never reach TestFlight from a green run.
   The desktop and server keep the full version, because electron-updater's feed rules are
   built on the prerelease component; a beta build is told apart on mobile by its build number
-  and the channel it reports.
+  and the channel it reports — which is why `describeVersion` renders `nativeBuild`. It
+  collected that field and never displayed it, and suppressed `nativeVersion` as equal to
+  `appVersion`, so beta.1, beta.2 and stable all read `App 1.2.3` in the one line a bug report
+  is meant to quote.
 - **"Does this runtime have a build?" and "has the store got it?" are different questions.**
   The build gate answers the first; submission must not ride on it. It did, which meant the
   bootstrap build the setup requires would leave the *first* release submitting nothing, and a
@@ -1725,14 +1774,43 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Stable at each cold launch while Settings showed Stable selected. Removing the stored
   channel removed the race rather than the guard — worth knowing before anything else in this
   layer starts reading a preference at launch.
-- **OTA bundles are not code-signed yet, and that is a recorded decision, not an oversight.**
-  Without `codeSigningCertificate` expo-updates trusts any bundle the update server returns —
-  the only thing between a leaked `EXPO_TOKEN` (which `preview.yml` now uses on every push to
-  `dev`) and arbitrary JS in every install is the EAS account. Enabling signing after builds
-  are in the field needs a native release to carry the certificate, so the cheapest moment is
-  **before the first production publish**: `npx expo-updates configuration:generate-signing-key`
-  in `apps/mobile`, commit the public certificate, keep the private key out of CI, and sign in
-  the publish step. Do this before `v1.0.0`.
+- **Beta and production bundles are code-signed; the dev channel deliberately is not.** Those
+  two variants embed `apps/mobile/certs/certificate.pem` (committed, public) and accept an
+  update only if its manifest was signed by the matching private key — which is not in this
+  repository and not in EAS, so a leaked `EXPO_TOKEN` publishes updates every install
+  downloads and refuses. Without it the EAS account is the only thing between such a token and
+  arbitrary JS on every phone. The key reaches `release.yml` as `EXPO_UPDATE_SIGNING_KEY`,
+  written to `$RUNNER_TEMP` — never into the checkout, which `eas build` uploads to EAS — and
+  passed as `--private-key-path`.
+- **`dev` is unsigned because `dev-update.yml` runs on every push to the trunk**, so its key
+  would have to be a repository secret readable by a workflow on any branch: the same blast
+  radius as `EXPO_TOKEN`, which would leave the public apps defended by a key kept beside the
+  thing it defends against. Keeping dev out is what lets the real key live as an environment
+  secret only a tag release can reach. The cost is real and stated in both files: the dev
+  channel has no integrity check at all.
+- **An unsigned variant must carry no `codeSigningCertificate` key at all, not one holding
+  `undefined`.** eas-cli decides whether a publish must be signed by asking whether the
+  resolved config *has* the key, so leaving it in place would make every dev publish refuse to
+  run without a key that workflow deliberately does not have. `app.config.js` spreads the pair
+  in conditionally, and `app-config.test.ts` asserts the absence rather than the value.
+- **The certificate is a fingerprint source** (`apps/mobile/fingerprint.config.js`), and it has
+  to be. The config holds only the *path*, so replacing the file leaves the runtime version
+  untouched — and an update signed by the new key would then be offered to every binary
+  carrying the old certificate, which downloads it, rejects the signature, and repeats forever,
+  with no error anywhere but the device. Counting it makes a rotation behave like any other
+  native change: a new runtime, so old binaries are offered nothing until their owners install
+  a new build. The extra source is per variant, since rotating cannot affect a dev app that
+  embeds no certificate.
+- **Nothing can be verified about the key from inside the repository, by design** — the two
+  checks that matter run elsewhere. eas-cli validates that the private key it was handed
+  matches the committed certificate before publishing anything (`keyPair key mismatch`
+  otherwise), and the device validates the signature against the certificate its build
+  embedded. What `app-config.test.ts` can do, and does: the certificate parses, is present,
+  has more than two years left (so an expiry that would strand every install turns CI red long
+  before it bites), and no file in `certs/` contains a private key.
+- **Losing the private key cannot be recovered from.** There is no revocation: a new key means
+  a new certificate, a new runtime version, a new build of both apps, and a store review before
+  anyone can receive an update again. `docs/DEPLOY.md` carries the rotation procedure.
 
 ### The desktop updater
 
