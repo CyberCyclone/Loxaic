@@ -1639,6 +1639,13 @@ replies.
   what makes the release build gate a per-platform, *per-variant* question. An update
   published under the wrong variant reaches nobody, and the only symptom is the gate
   starting a native build it "should not need".
+- **A runtime version is per platform as well as per variant.** The fingerprint hashes native
+  config, which differs between iOS and Android, so `eas update` publishes two updates for two
+  runtimes and the build gate asks each platform about its own. The second release run
+  published successfully and then failed in our own step, which assumed one runtime across both
+  (`expected one runtime version, got ["16ae…","e92e…"]`) — so the build step never ran and no
+  beta app was built. The publish step now emits `runtime_ios` and `runtime_android`, and fails
+  if either platform is missing or reports more than one.
 - **`Updates.channel` is simply the truth about an install, and nothing overrides it.** The
   channel is embedded by `app.config.js` from `APP_VARIANT`, so a build follows one channel
   for its whole life. There was a runtime override and a stored preference
@@ -1975,6 +1982,14 @@ replies.
   (`CSC_IDENTITY_AUTO_DISCOVERY=false`), the entitlements plist parses, and the workflow YAML
   and its embedded shell are both syntactically valid.
 
+- **Signing a bundle this size needs the runner's file limit raised, and `ulimit` alone does not
+  raise it.** `@electron/osx-sign` opens every file at once (`walkAsync` runs `isBinaryFile`
+  inside an unbounded `Promise.all`), the app holds ~16,000 files, and a `macos-15` runner caps a
+  process at 10,240 through `kern.maxfilesperproc` — so the second release died with `EMFILE`
+  mid-signing. Reproduced on the runner against osx-sign's own walk: defaults fail, `ulimit -n
+  65536` alone fails, `sudo sysctl kern.maxfilesperproc` plus `ulimit` passes. The package step
+  does both, on macOS only. Nothing local reproduces it, because a Mac's own limit is
+  effectively unlimited.
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.
