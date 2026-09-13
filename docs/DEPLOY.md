@@ -373,10 +373,13 @@ run once, by hand, from a machine signed in to EAS, and never again.
 
 1. **Play Console listings**, one per variant, because they are separate
    packages: `com.loxaic.app` and `com.loxaic.app.beta`.
-2. **The first release of each uploaded by hand.** Play refuses an API upload
-   to an app that has never had a release, so the very first App Bundle goes
-   through the Play Console UI. Every later one can be automated — this is the
-   single most common reason a first automated submission fails.
+2. **The first release of each uploaded by hand**, to the **internal testing**
+   track. Play refuses an API upload to an app that has never had a release, so
+   the very first App Bundle goes through the Play Console UI. The bundle
+   itself comes from the bootstrap build below — this step cannot be completed
+   until that has run, which is why it is described here and performed after.
+   Every later upload can be automated; this is the single most common reason a
+   first automated submission fails.
 3. **A service account key**, so EAS can upload on your behalf: Play Console →
    Setup → API access → create a service account in Google Cloud, grant it
    *Release manager* on the app, download its JSON key, then hand it to EAS:
@@ -401,8 +404,13 @@ APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile bet
 APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production
 ```
 
-Download each `.aab` from the build page and upload it in Play Console. From
-then on `--auto-submit-with-profile` works, and CI uses it.
+Download each `.aab` from the build page and upload it in Play Console, on the
+**internal testing** track — the same track `eas.json` pins every later
+submission to, so nothing reaches users until you promote it yourself. Play's
+new-app flow steers a first release towards *Production*, and for
+`com.loxaic.app` that would put the very first Loxaic build in front of every
+user, from a step whose purpose is only to register an upload key. From then on
+`--auto-submit-with-profile` works, and CI uses it.
 
 **Getting that binary into the store is not optional**, whichever way it gets
 there. A release tag cut at the same fingerprint finds this build already
@@ -410,12 +418,17 @@ finished and therefore builds and submits nothing — correctly, since the binar
 would be identical — so if the bootstrap build never reached the store, the
 store stays empty and the first release looks like it did nothing.
 
-To retry a submission that genuinely failed, name the build rather than
-re-running a release:
+To retry a submission that genuinely failed — **not** a first upload Play
+refused for having no prior release, which only the manual upload above fixes —
+name the build rather than re-running a release:
 
 ```bash
-cd apps/mobile && npx --yes eas-cli@latest submit --platform ios --profile beta --id <build-id>
+cd apps/mobile && npx --yes eas-cli@latest submit --platform <ios|android> --profile beta --id <build-id>
 ```
+
+`--id` re-sends that exact build, so it is the wrong tool for anything the
+store has already accepted: Apple answers ITMS-4238 and Play refuses a reused
+`versionCode`.
 
 **iOS** needs an Apple Developer account, and three things set up in this
 order:
