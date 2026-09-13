@@ -21,3 +21,10 @@ ENVS_HOSTNAME=yourbox.tailXXXX.ts.net
 # and the dev slot falls back to mock inference and says so. LM Studio must be
 # set to listen on the LAN, not just loopback, for a container to reach it.
 DEV_INFERENCE_URL=http://192.168.1.13:1234
+
+# Agent sandboxes are off in both slots, because turning them on means mounting
+# the Docker socket into a container running code from a pull request. Set to
+# `host` only for a branch you have read, and only knowingly: it runs that
+# branch's agent commands as your user on that machine.
+#PREVIEW_SANDBOX_MODE=off
+#DEV_SANDBOX_MODE=off

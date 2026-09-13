@@ -1571,6 +1571,18 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **`scripts/envs.local` is gitignored (`*.local`) and holds the box's address.** The
   repository is going public; where someone's home server lives does not belong in it. The
   script refuses to run rather than defaulting to anyone's machine.
+- **An environment is isolated from the *box*, not from the network.** No Docker socket and
+  no credentials — but both containers have unrestricted egress to the LAN and the internet,
+  and the build runs the deployed commit's own `pnpm install` (and so its lockfile's
+  postinstall scripts) as root. That makes this safe for code you have read and unsafe as a
+  sandbox for code you have not; deploying a fork's pull request is running a stranger's
+  build scripts on your LAN.
+- **Uncertainty about the preview slot's contents refuses rather than proceeds.** Reading the
+  state file over ssh can fail, and "I cannot tell what is deployed" used to be
+  indistinguishable from "nothing is deployed" — which chose to keep the volumes, so the next
+  deploy would run one pull request's migrations on another's database. Likewise `sync` tears
+  the slot down only on a definite `CLOSED`/`MERGED`: it runs unattended every five minutes,
+  and any other answer, including failing to get one, leaves the slot alone.
 
 ### Releases and over-the-air updates
 

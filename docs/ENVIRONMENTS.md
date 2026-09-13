@@ -68,9 +68,13 @@ Copy `scripts/envs.local.example` to `scripts/envs.local` (gitignored) and fill
 in your box's address. Then, once, on the box itself:
 
 ```bash
-sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 curl
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 curl git
 sudo usermod -aG docker "$USER"
 ```
+
+(`git` because the deploy pushes to a bare repository on the box, and `curl`
+because the deploy waits on the server's own `/health` before reporting
+success. Ubuntu Server and the Debian cloud images ship neither.)
 
 The group change only applies to a **new** login, so reconnect and confirm the
 daemon answers without `sudo`:
@@ -121,13 +125,32 @@ A pull request's code runs here, so two things are deliberately withheld:
 
 - **The Docker socket.** Mounting `/var/run/docker.sock` is what the agent's
   container sandbox would need, and it is equivalent to handing that code root
-  on the box. Both slots run `SANDBOX_MODE=off`. Agent tool calls that need a
-  sandbox fail with a reason, which is the honest outcome; if you are
-  specifically testing sandbox behaviour on a branch you trust, redeploy that
-  slot with `SLOT_SANDBOX_MODE=host` in its env file and understand that you
-  have just given that branch your user account on that machine.
+  on the box. Both slots run `SANDBOX_MODE=off`, and agent tool calls that need
+  a sandbox fail with a reason. If you are specifically testing sandbox
+  behaviour on a branch you trust, set `PREVIEW_SANDBOX_MODE=host` (or
+  `DEV_SANDBOX_MODE=host`) in `scripts/envs.local` and redeploy — and
+  understand that you have just given that branch your user account on that
+  machine. It belongs in `envs.local` rather than in the slot's env file on the
+  box, because every deploy rewrites that file from scratch.
 - **Credentials of any kind.** Neither slot is given a key to anything, and the
   dev slot's only outbound dependency is the LM Studio on the same machine.
+
+**What it *can* reach is the network, and that is the real limit of this.** A
+preview has unrestricted outbound access in both directions that matter:
+
+- **At build time**, `server.Dockerfile`'s contents come from the deployed
+  commit — a pull request can rewrite it — and even untouched it runs that
+  commit's `pnpm install`, so that lockfile's postinstall scripts execute as
+  root with a network.
+- **At run time**, both containers sit on an ordinary bridge network. They can
+  reach the box's own LM Studio, anything else on the home LAN — the router, a
+  NAS, the other slot's published port — and the whole internet.
+
+So the honest summary is: this is safe against a mistake and against code you
+have read, and it is *not* a sandbox for code you have not. Deploying a fork's
+pull request means running a stranger's build scripts on your LAN. Read the
+diff first, which is the same rule that applies to checking a branch out
+locally.
 
 Each slot also gets its own database, its own uploads volume, and its own
 `BETTER_AUTH_SECRET`, so a session minted against one is not valid against the

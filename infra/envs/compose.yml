@@ -26,6 +26,12 @@
 services:
   db:
     image: postgres:17-alpine
+    # Every service here restarts, or none should. With `server` and `metro`
+    # set to come back after a host reboot and this one not, the box would
+    # return with a server crash-looping against a database that never started
+    # — and nothing would repair it, because `dev up` sees metro running and
+    # the state file holding the right commit and reports the slot current.
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

@@ -42,12 +42,23 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The environment wins over the file, which is the precedence every other
+# configurable thing in this repo uses (env > stored > default) and the only
+# one that allows a one-off: `ENVS_HOSTNAME=192.168.1.13 envs.sh preview up 7`
+# for a device with no Tailscale, say. Sourcing the file last would silently
+# ignore that — it did, and the first thing it cost was a test of this script
+# that quietly ran against the real box instead of the unreachable address it
+# was given.
+_env_ssh="${ENVS_SSH:-}"
+_env_hostname="${ENVS_HOSTNAME:-}"
+_env_root="${ENVS_ROOT:-}"
 # shellcheck source=/dev/null
 [ -f "$REPO_ROOT/scripts/envs.local" ] && . "$REPO_ROOT/scripts/envs.local"
 
-SSH_TARGET="${ENVS_SSH:-}"
-PUBLIC_HOST="${ENVS_HOSTNAME:-}"
-ROOT="${ENVS_ROOT:-loxaic-envs}"
+SSH_TARGET="${_env_ssh:-${ENVS_SSH:-}}"
+PUBLIC_HOST="${_env_hostname:-${ENVS_HOSTNAME:-}}"
+ROOT="${_env_root:-${ENVS_ROOT:-loxaic-envs}}"
 BARE="$ROOT/repo.git"
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -76,6 +87,14 @@ bootstrap() {
       echo 'docker is not installed on this host — see docs/ENVIRONMENTS.md' >&2
       exit 1
     }
+    # Ubuntu Server and the Debian cloud images do not ship git, and without it
+    # the failure is a bare "git: command not found" from the middle of a
+    # multi-line remote command — or, worse, a push that fails for want of
+    # git-receive-pack after the bare repo appears to exist.
+    command -v git >/dev/null || {
+      echo 'git is not installed on this host — see docs/ENVIRONMENTS.md' >&2
+      exit 1
+    }
     docker version >/dev/null 2>&1 || {
       echo 'cannot reach the docker daemon as this user — after usermod -aG docker you need a fresh login' >&2
       exit 1
@@ -84,7 +103,16 @@ bootstrap() {
     [ -d \"\$HOME/$BARE\" ] || git init --quiet --bare \"\$HOME/$BARE\""
 }
 
-slot_state() { on_host "cat \"\$HOME/$ROOT/$1.state\" 2>/dev/null" || true; }
+# Prints the slot's state file, or nothing when the slot is empty. Exits
+# non-zero when the *question* could not be asked — a dropped connection, sshd
+# throttling, a permissions problem — which callers have to tell apart from an
+# empty answer, because "I do not know what is deployed" and "nothing is
+# deployed" lead to opposite decisions about someone's database.
+slot_state() {
+  local out
+  out="$(on_host "cat \"\$HOME/$ROOT/$1.state\" 2>/dev/null; exit 0")" || return 1
+  printf '%s' "$out"
+}
 
 slot_running() {
   on_host "docker compose -p '$1' ps --status running --quiet 2>/dev/null" | grep -q . && return 0
@@ -99,6 +127,13 @@ deploy_slot() {
   local slot="$1" sha="$2" label="$3" wipe="$4"
   slot_ports "$slot"
   bootstrap
+
+  # Read from envs.local rather than hand-edited into the slot's env file:
+  # deploy_slot rewrites that file from a fixed heredoc on every deploy, so a
+  # hand-added key was erased by the very redeploy the docs told you to run.
+  local sandbox
+  if [ "$slot" = "preview" ]; then sandbox="${PREVIEW_SANDBOX_MODE:-off}"
+  else sandbox="${DEV_SANDBOX_MODE:-off}"; fi
 
   local mock="true" inference=""
   if [ "$slot" = "dev" ]; then
@@ -142,7 +177,15 @@ deploy_slot() {
   # rewrite the terms it runs under — mounting the Docker socket, say. The
   # commit supplies the build context and nothing else. Sent after `clean`,
   # which would otherwise remove the untracked copies.
-  tar -cf - -C "$REPO_ROOT" infra/envs/compose.yml infra/docker/metro.Dockerfile \
+  # From HEAD rather than the working tree. The property wanted is "config
+  # comes from the workstation, never from the commit being deployed", and
+  # reading the checkout's files coupled that to whatever is open in an editor:
+  # the timer fires `sync` from the same checkout, so a half-finished edit to
+  # compose.yml — a new `${SLOT_FOO:?}` with nothing writing it, say — would be
+  # tarred onto the dev slot and fail `docker compose up` *after* the slot had
+  # been recreated, taking the standing stack down for a change nobody
+  # committed.
+  git -C "$REPO_ROOT" archive HEAD infra/envs/compose.yml infra/docker/metro.Dockerfile \
     | on_host "tar -xf - -C \"\$HOME/$ROOT/$slot\""
 
   echo "→ building ($label)"
@@ -172,6 +215,7 @@ SLOT_METRO_URL=http://$PUBLIC_HOST:$METRO_PORT
 SLOT_VERSION=$label
 SLOT_MOCK_INFERENCE=$mock
 SLOT_INFERENCE_URL=$inference
+SLOT_SANDBOX_MODE=$sandbox
 SLOT_AUTH_SECRET=\$(cat \"\$secret_file\")
 EOF
     chmod 600 \"\$root/$slot.env\"
@@ -179,7 +223,13 @@ EOF
     cd \"\$dir\"
     docker compose -p '$slot' -f infra/envs/compose.yml --env-file \"\$root/$slot.env\" up -d --build"
 
-  cat <<EOF
+  # `docker compose up -d` returning 0 proves the images built and the
+  # containers were created, and nothing more. A migration that fails or a
+  # server that throws at boot builds perfectly, starts, exits, and — being
+  # `unless-stopped` — crash-loops, while this printed both URLs and `list`
+  # reported the slot running because metro was. Ask the server itself.
+  if wait_for_health "$SERVER_PORT"; then
+    cat <<EOF
 
 $label is up on the $slot slot.
 
@@ -187,6 +237,29 @@ $label is up on the $slot slot.
   Expo Go     exp://$PUBLIC_HOST:$METRO_PORT
 
 EOF
+  else
+    cat >&2 <<EOF
+
+$label was built and started on the $slot slot, but its server never answered
+/health. The containers are still up so the logs are readable:
+
+  ./scripts/envs.sh $slot logs server
+
+EOF
+    return 1
+  fi
+}
+
+# Polls from the box itself rather than from here: the workstation may not be
+# on the tailnet, and this is a question about the container, not about the
+# route to it.
+wait_for_health() {
+  local port="$1"
+  on_host "for _ in \$(seq 1 60); do
+      if curl -fsS -m 3 \"http://localhost:$port/health\" >/dev/null 2>&1; then exit 0; fi
+      sleep 2
+    done
+    exit 1"
 }
 
 compose_down() {
@@ -214,8 +287,17 @@ preview_up() {
   # A different pull request means a different schema: its migrations must not
   # be applied on top of the last one's database. The same pull request keeps
   # its volumes, so a redeploy leaves you signed in and your test data intact.
-  local wipe="keep" previous
-  previous="$(slot_state preview | sed -n 's/^pr=\([0-9]*\).*/\1/p')"
+  #
+  # Refusing when the state cannot be read is the whole point of the exit-code
+  # split above: a failed ssh used to be indistinguishable from an empty slot,
+  # which chose "keep" — and the very next call, a fresh connection that
+  # succeeds, would then bring this PR up on the *other* PR's Postgres volume
+  # and run its migrations there. Silently, and exactly the mixed-schema case
+  # the paragraph above says must never happen.
+  local state wipe="keep" previous
+  state="$(slot_state preview)" \
+    || die "could not read the preview slot's state from $SSH_TARGET — not deploying, because what is already there decides whether its database is dropped"
+  previous="$(printf '%s' "$state" | sed -n 's/^pr=\([0-9]*\).*/\1/p')"
   [ -n "$previous" ] && [ "$previous" != "$pr" ] && wipe="wipe"
 
   deploy_slot preview "$sha" "pr-$pr@${sha:0:7}" "$wipe"
@@ -229,19 +311,31 @@ EOF
 }
 
 preview_sync() {
-  local pr
-  pr="$(slot_state preview | sed -n 's/^pr=\([0-9]*\).*/\1/p')"
+  local slot_out pr
+  slot_out="$(slot_state preview)" || {
+    echo "preview: could not reach $SSH_TARGET — leaving the slot alone"
+    return 0
+  }
+  pr="$(printf '%s' "$slot_out" | sed -n 's/^pr=\([0-9]*\).*/\1/p')"
   if [ -z "$pr" ]; then
     echo "preview: nothing deployed"
     return 0
   fi
+
+  # Only a definite CLOSED or MERGED destroys anything. This runs unattended
+  # every five minutes, and every other outcome — a GitHub outage, an expired
+  # token, a laptop between wifi networks, a rate limit — used to collapse into
+  # "not OPEN" and take the slot down with `-v`, dropping the database and
+  # uploads of a pull request someone was in the middle of reviewing.
   local state
-  state="$(gh pr view "$pr" --json state --jq .state 2>/dev/null || echo UNKNOWN)"
-  if [ "$state" = "OPEN" ]; then
-    echo "preview: PR $pr is still open"
+  if ! state="$(gh pr view "$pr" --json state --jq .state 2>/dev/null)"; then
+    echo "preview: could not ask GitHub about PR $pr — leaving the slot alone"
     return 0
   fi
-  echo "preview: PR $pr is $state — tearing it down"
+  case "$state" in
+    CLOSED|MERGED) echo "preview: PR $pr is $state — tearing it down" ;;
+    *) echo "preview: PR $pr is $state"; return 0 ;;
+  esac
   preview_down
 }
 
@@ -263,8 +357,12 @@ dev_up() {
   # A no-op when the slot already holds this commit *and* is actually running:
   # the timer calls this every few minutes, and rebuilding an unchanged trunk
   # would keep the box busy for nothing.
+  # An unreadable state here is safe to ignore: the worst case is a redeploy
+  # of the commit that is already there, which is idempotent. That is the
+  # opposite of the preview slot, where the same uncertainty decides whether a
+  # database is dropped.
   local deployed
-  deployed="$(slot_state dev | sed -n 's/^sha=\(.*\)/\1/p')"
+  deployed="$(slot_state dev 2>/dev/null | sed -n 's/^sha=\(.*\)/\1/p' || true)"
   if [ "$deployed" = "$sha" ] && slot_running dev; then
     echo "dev: already at ${sha:0:7}"
     return 0
