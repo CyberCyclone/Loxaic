@@ -6,7 +6,7 @@
 //   resources/server/drizzle/    migrations copy for MIGRATIONS_DIR
 // Run via `pnpm --filter @loxaic/desktop build:server`.
 import { execFileSync } from "node:child_process";
-import { cpSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +16,46 @@ const outDir = path.resolve(__dirname, "../resources/server");
 
 function run(args, cwd = repoRoot) {
   console.log(`[build-server] ${args.join(" ")}`);
-  execFileSync(args[0], args.slice(1), { cwd, stdio: "inherit" });
+  // On Windows `pnpm` is a `pnpm.cmd` shim, and execFileSync cannot launch one
+  // without a shell: PATHEXT resolution is a shell's job, and since Node's fix
+  // for CVE-2024-27980 a .cmd/.bat target refuses to spawn without one anyway.
+  // The first Windows release leg died here with `spawnSync pnpm ENOENT`.
+  // Arguments containing whitespace are quoted for cmd.exe, or a checkout path
+  // with a space in it would split into two arguments.
+  const win = process.platform === "win32";
+  const argv = win ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args;
+  execFileSync(argv[0], argv.slice(1), { cwd, stdio: "inherit", shell: win });
+}
+
+/**
+ * Every symlink under `root` whose target lies outside `root`.
+ *
+ * `pnpm deploy` links the deployed package into its own virtual store —
+ * `node_modules/.pnpm/node_modules/@loxaic/server -> ../../../../../../../server`
+ * — a *relative* link that climbs back out of the payload into the checkout.
+ * In the repo it happens to land on apps/server and resolve. Copied into
+ * `Loxaic.app/Contents/Resources/server` it points at nothing. Unsigned
+ * packaging never looks, but signing stats every file in the bundle, so the
+ * first release to carry a real certificate died on it (ENOENT, inside
+ * electron-builder's readDirectoryAndSign). Symlinked directories are not
+ * descended into, so a link inside the payload cannot lead the walk out of it.
+ */
+function escapingLinks(root) {
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) {
+        const target = path.resolve(dir, readlinkSync(full));
+        const rel = path.relative(root, target);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) found.push(full);
+      } else if (entry.isDirectory()) {
+        walk(full);
+      }
+    }
+  };
+  walk(root);
+  return found;
 }
 
 run(["pnpm", "--filter", "@loxaic/server", "build"]);
@@ -40,6 +79,19 @@ rmSync(path.join(repoRoot, "apps/server/apps"), { recursive: true, force: true }
 // a prior run's stray that deploy would have copied along as a project file.
 for (const extra of ["src", "apps", "tsconfig.json", "tsup.config.ts", "vitest.config.ts"]) {
   rmSync(path.join(outDir, extra), { recursive: true, force: true });
+}
+
+// Nothing at runtime imports the server by its own package name — the server
+// *is* dist/ — so a link pointing out of the payload is never load-bearing,
+// only a hazard for whatever walks the bundle next.
+for (const link of escapingLinks(outDir)) {
+  console.log(`[build-server] removing link that escapes the payload: ${path.relative(outDir, link)}`);
+  // unlinkSync, not rmSync: rmSync refuses a link whose target is a directory
+  // ("Path is a directory") without `recursive`, and `recursive` is not
+  // something to point at a path whose target is the checkout. unlink removes
+  // the link itself — on Windows too, where libuv removes a directory junction
+  // as a link rather than as the directory it names.
+  unlinkSync(link);
 }
 
 const drizzleSrc = path.join(repoRoot, "packages/db/drizzle");
@@ -66,5 +118,11 @@ for (const required of ["dist/index.js", "dist/executor.js", "node_modules/fasti
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }
+}
+// Checked last so a future step cannot reintroduce one: this fails in seconds
+// on any machine, instead of in a release's signing step on one runner.
+const escaping = escapingLinks(outDir);
+if (escaping.length > 0) {
+  throw new Error(`[build-server] links escape the payload: ${escaping.map((l) => path.relative(outDir, l)).join(", ")}`);
 }
 console.log(`[build-server] server payload ready at ${outDir}`);

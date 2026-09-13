@@ -357,11 +357,8 @@ opposite of a pin, and that is the point. CI is unaffected:
 the workflows call it directly.
 
 Secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish; the publish
-step fails without one. A release also needs `EXPO_UPDATE_SIGNING_KEY` — the
-private key the beta and production apps verify every update against — which
-`dev-update.yml` deliberately does not have; see "Update code signing" below.
-Both workflows skip themselves entirely on a fork, so a fork's `dev` never
-tries to publish to this project.
+step fails without one. Both workflows skip themselves entirely on a fork, so a
+fork's `dev` never tries to publish to this project.
 
 ### Before the first release: credentials EAS has to hold
 
@@ -465,9 +462,7 @@ repository's CI. The alternative —
 `ascApiKeyPath`/`ascApiKeyId`/`ascApiKeyIssuerId` in `eas.json`, or the
 `EXPO_ASC_*` environment variables with the `.p8` as a GitHub secret — would
 put one there for no benefit. The mobile side of a release run therefore needs
-exactly two secrets: `EXPO_TOKEN` to reach EAS, and `EXPO_UPDATE_SIGNING_KEY`
-to sign the update (see "Update code signing" below), which is deliberately
-*not* something EAS holds.
+exactly one secret: `EXPO_TOKEN`.
 
 The `submit` profiles in `eas.json` are deliberately minimal. With the API key
 in place EAS resolves the App Store Connect record from the bundle identifier
@@ -490,90 +485,24 @@ A JS-only release produces **no new store build at all**, which is correct and
 worth expecting: the runtime version has not moved, so everyone gets the update
 over the air and the TestFlight and Play version numbers stay where they are.
 
-### Update code signing
+### Over-the-air updates are not signed
 
-The beta and production apps embed a certificate
-(`apps/mobile/certs/certificate.pem`, committed, public) and **accept an update
-only if its manifest was signed by the matching private key**. That key is not
-in this repository and is not in EAS, so a leaked or misused `EXPO_TOKEN`
-publishes updates every installed app downloads and refuses. Without signing,
-the EAS account is the only thing between such a token and arbitrary JavaScript
-running on every phone.
+EAS restricts update code signing to its **Enterprise** plan, so on any other
+plan the apps trust whatever bundle EAS serves for their channel. That leaves
+two things as the whole defence for every installed app:
 
-The certificate is self-signed, names `Loxaic`, and is valid for 20 years. It
-is counted as a fingerprint source (`apps/mobile/fingerprint.config.js`), so
-replacing it moves the runtime version — see "Rotating the key" below for why
-that matters.
+- **2FA on the Expo account** that owns the project.
+- **`EXPO_TOKEN`**, which can publish to every channel — beta and production
+  included. Treat a leak as "someone can run code on every phone with Loxaic
+  installed": revoke the token in your Expo account settings under Access
+  tokens, create a new one, and `gh secret set EXPO_TOKEN` again.
 
-**The dev channel is deliberately unsigned.** `dev-update.yml` runs on every
-push to the trunk, so its key would have to be a repository secret readable by
-a workflow on any branch — the same blast radius as `EXPO_TOKEN`, which would
-leave beta and production defended by a key kept beside the thing it defends
-against. The dev app is the owner's own build pointed at the owner's own stack,
-so it takes the hit instead: the dev channel has no integrity check at all. See
-the `dev` entry in `apps/mobile/app.config.js`.
-
-#### The one thing left to do
-
-The private key was generated into `apps/mobile/keys/private-key.pem` (that
-directory is gitignored). Two homes, and it needs both:
-
-```bash
-gh secret set EXPO_UPDATE_SIGNING_KEY --env release < apps/mobile/keys/private-key.pem
-```
-
-and a copy in your password manager. `--env release` puts it in the same
-environment as the macOS signing secrets, which is the only place `release.yml`
-reads it; drop `--env release` to set it as a repository secret if that
-environment does not exist yet, and move it later. Confirm with
-`gh secret list --env release`, which shows names and update times, never
-values.
-
-**Losing this key costs a store round trip for every user.** There is no
-recovery and no revocation: a new key means a new certificate, a new runtime
-version, a new build of both apps, and an App Store and Play review before
-anyone can receive an update again. Back it up before you delete the local
-copy.
-
-Without the secret, the release workflow fails at the "Take the update-signing
-key out of the secret" step and publishes nothing. That is on purpose —
-publishing unsigned would succeed, produce an update every app rejects, and
-report nothing wrong.
-
-#### Publishing a beta or production update by hand
-
-`eas update` refuses to publish these two variants without the key, so a manual
-publish (or an `eas update:republish` / `eas update:rollback`) needs it on
-disk:
-
-```bash
-cd apps/mobile
-APP_VARIANT=beta npx eas-cli update --channel beta --environment preview \
-  --private-key-path ./keys/private-key.pem --message "what changed"
-```
-
-eas-cli checks that the key matches the committed certificate before it
-publishes anything, so the wrong key is an error rather than an update nobody
-can install.
-
-#### Rotating the key
-
-Only necessary if the key leaks or gets lost — the certificate itself lasts
-until 2046, and `apps/mobile/lib/app-config.test.ts` fails two years before it
-expires so this is never a surprise.
-
-1. `cd apps/mobile && npx expo-updates codesigning:generate --key-output-directory keys
-   --certificate-output-directory certs --certificate-validity-duration-years 20
-   --certificate-common-name "Loxaic"` — overwrites both files.
-2. Commit the new `certs/certificate.pem`; update the `EXPO_UPDATE_SIGNING_KEY`
-   secret and your password manager from the new `keys/private-key.pem`.
-3. Cut a release. The new certificate changes the fingerprint, so the runtime
-   version moves and native builds start automatically.
-
-Every app carrying the old certificate stops being offered anything at all
-until its owner installs the new build — which is the point of step 3's
-fingerprint change. Without it the old binaries would be offered updates signed
-by a key they cannot verify, download them, reject them, and repeat forever.
+Signing is possible without Enterprise only by serving updates ourselves —
+expo-updates speaks a published protocol, and a self-hosted update server can
+sign with a key it holds. That is a project, not a setting. Do not add
+`codeSigningCertificate` to the app config while updates come from EAS: a build
+that embeds a certificate rejects every unsigned update for as long as it is
+installed.
 
 ### Native builds
 
@@ -698,9 +627,7 @@ Both of those are the obvious guesses and both are wrong, so, concretely:
   **environment** called `release`: create it under **Settings → Environments**, move the five
   secrets into it, add required reviewers, and limit its deployment branches to tags. Only a run
   someone approved can then reach the key. Until you do that, the line is inert and the secrets
-  resolve from the repository as before. `EXPO_UPDATE_SIGNING_KEY` belongs in that same
-  environment and for the same reason — `release.yml`'s `expo-update` job names it too — and
-  it is the one secret whose loss cannot be fixed by revoking and reissuing.
+  resolve from the repository as before.
 
   **If the certificate ever leaks**, revoke it at [developer.apple.com](https://developer.apple.com/account/resources/certificates)
   → Certificates, then issue a new one and replace `CSC_LINK`. Knowing that ahead of time is

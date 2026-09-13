@@ -1670,14 +1670,19 @@ replies.
   `GITHUB_TOKEN` pushes never trigger workflows, so this cannot start another CI run.
   **`expo-update` has to be in its `needs` for that to hold**: `if: success()` evaluates over
   a job's own needs and nothing else, and `publish-release`'s gate deliberately tolerates a
-  failed `expo-update` — so without it a missing `EXPO_UPDATE_SIGNING_KEY` undrafted the
+  failed `expo-update` — so without it a failed mobile publish undrafted the
   desktop release, moved both pointers, and consumed the tag with no mobile update published.
   `publish-release` still tolerates it on purpose: the installers are real and uploaded, and a
   desktop release is worth having; it is the *pointer* that must not claim more than happened.
 - **The installer-asset guard has to check for "no assets at all" separately.** `printf '%s\n'
   ""` emits one empty line, which `grep -vc '^Loxaic-Beta-'` counts — so an empty asset list
   produced a stable count of 1 and published a release with nothing installable, which is the
-  exact inverse of the guard's purpose.
+  exact inverse of the guard's purpose. **Nor is an installer proof that a platform finished**:
+  the first release's Linux leg uploaded its AppImage, failed building the `.deb`, and the guard
+  published a release holding one of six installers. A variant now also needs at least one
+  platform *feed* in the release (`beta-linux.yml`, `latest-mac.yml`, `beta.yml` for Windows),
+  because electron-builder writes a platform's feed only after every target for that platform
+  has built — and no installed app can update from a release without one.
 - **Only `dev` builds an APK; beta and production go to Play as App Bundles.** An earlier
   design attached an APK to the GitHub release from an `android-apk` job — that job and that
   reasoning are both gone, replaced by store submission (see the Play listings bullet below).
@@ -1732,11 +1737,6 @@ replies.
   collected that field and never displayed it, and suppressed `nativeVersion` as equal to
   `appVersion`, so beta.1, beta.2 and stable all read `App 1.2.3` in the one line a bug report
   is meant to quote.
-- **"Does this runtime have a build?" and "has the store got it?" are different questions.**
-  The build gate answers the first; submission must not ride on it. It did, which meant the
-  bootstrap build the setup requires would leave the *first* release submitting nothing, and a
-  release whose build succeeded but whose submission failed could never retry. The skip branch
-  submits the existing build instead.
 - **A store failure on one platform must not stop the other being queued.** iOS is simply
   first in the loop, and `--auto-submit-with-profile` adds up-front failure modes an Apple
   account can produce (expired key, missing app record) — under `set -e` those aborted the
@@ -1778,43 +1778,19 @@ replies.
   Stable at each cold launch while Settings showed Stable selected. Removing the stored
   channel removed the race rather than the guard — worth knowing before anything else in this
   layer starts reading a preference at launch.
-- **Beta and production bundles are code-signed; the dev channel deliberately is not.** Those
-  two variants embed `apps/mobile/certs/certificate.pem` (committed, public) and accept an
-  update only if its manifest was signed by the matching private key — which is not in this
-  repository and not in EAS, so a leaked `EXPO_TOKEN` publishes updates every install
-  downloads and refuses. Without it the EAS account is the only thing between such a token and
-  arbitrary JS on every phone. The key reaches `release.yml` as `EXPO_UPDATE_SIGNING_KEY`,
-  written to `$RUNNER_TEMP` — never into the checkout, which `eas build` uploads to EAS — and
-  passed as `--private-key-path`.
-- **`dev` is unsigned because `dev-update.yml` runs on every push to the trunk**, so its key
-  would have to be a repository secret readable by a workflow on any branch: the same blast
-  radius as `EXPO_TOKEN`, which would leave the public apps defended by a key kept beside the
-  thing it defends against. Keeping dev out is what lets the real key live as an environment
-  secret only a tag release can reach. The cost is real and stated in both files: the dev
-  channel has no integrity check at all.
-- **An unsigned variant must carry no `codeSigningCertificate` key at all, not one holding
-  `undefined`.** eas-cli decides whether a publish must be signed by asking whether the
-  resolved config *has* the key, so leaving it in place would make every dev publish refuse to
-  run without a key that workflow deliberately does not have. `app.config.js` spreads the pair
-  in conditionally, and `app-config.test.ts` asserts the absence rather than the value.
-- **The certificate is a fingerprint source** (`apps/mobile/fingerprint.config.js`), and it has
-  to be. The config holds only the *path*, so replacing the file leaves the runtime version
-  untouched — and an update signed by the new key would then be offered to every binary
-  carrying the old certificate, which downloads it, rejects the signature, and repeats forever,
-  with no error anywhere but the device. Counting it makes a rotation behave like any other
-  native change: a new runtime, so old binaries are offered nothing until their owners install
-  a new build. The extra source is per variant, since rotating cannot affect a dev app that
-  embeds no certificate.
-- **Nothing can be verified about the key from inside the repository, by design** — the two
-  checks that matter run elsewhere. eas-cli validates that the private key it was handed
-  matches the committed certificate before publishing anything (`keyPair key mismatch`
-  otherwise), and the device validates the signature against the certificate its build
-  embedded. What `app-config.test.ts` can do, and does: the certificate parses, is present,
-  has more than two years left (so an expiry that would strand every install turns CI red long
-  before it bites), and no file in `certs/` contains a private key.
-- **Losing the private key cannot be recovered from.** There is no revocation: a new key means
-  a new certificate, a new runtime version, a new build of both apps, and a store review before
-  anyone can receive an update again. `docs/DEPLOY.md` carries the rotation procedure.
+- **Over-the-air updates are not code-signed, and on Expo's pricing that is a fixed fact rather
+  than a to-do.** EAS gates update code signing to its Enterprise plan: the first release run
+  got as far as `🔒 Signing updates` and was refused server-side ("EAS Update code signing
+  requires a subscription to the EAS Enterprise plan"). A full signing design had been built,
+  reviewed and merged before any publish was attempted against this account — a two-minute
+  `eas update --private-key-path` on a throwaway channel would have found it — so ask the
+  paid-tier question *first* for any EAS feature. What unsigned means: whoever holds
+  `EXPO_TOKEN` or the Expo login can publish JavaScript that every installed app runs, on
+  every channel, so 2FA on that account and the handling of that one secret are the entire
+  defence. The route back to signing is a self-hosted updates server (expo-updates speaks a
+  published protocol, and signing is free when the server is ours). **Do not re-add
+  `codeSigningCertificate` while updates come from EAS**: a build that embeds a certificate
+  refuses every unsigned update for as long as it is installed.
 
 ### The desktop updater
 

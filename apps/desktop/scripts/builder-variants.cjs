@@ -115,6 +115,14 @@ function configFor(rawVariant) {
       target: ["AppImage", "deb"],
       category: "Development",
       executableName: variant.executableName,
+      // A .deb must name a maintainer and a homepage, and electron-builder
+      // refuses to build one without both (FpmTarget.computeFpmMetaInfoOptions)
+      // — which is how the first Linux release uploaded its AppImage and then
+      // failed. The homepage lives in package.json. The maintainer is set here
+      // rather than through package.json `author`, which electron-builder would
+      // otherwise require to carry an email address; this is GitHub's no-reply
+      // form of the repository owner, so nobody's inbox ships in the package.
+      maintainer: "CyberCyclone <CyberCyclone@users.noreply.github.com>",
     },
   };
 }

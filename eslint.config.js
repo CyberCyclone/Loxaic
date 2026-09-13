@@ -146,7 +146,6 @@ export default tseslint.config(
     files: [
       "apps/mobile/app.config.js",
       "apps/mobile/babel.config.js",
-      "apps/mobile/fingerprint.config.js",
       "apps/mobile/metro.config.js",
     ],
     extends: [js.configs.recommended],

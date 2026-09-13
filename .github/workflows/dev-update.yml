@@ -12,19 +12,13 @@ on:
 # all the checkout needs, and the default would otherwise be the repository's
 # — which may be write-all.
 #
-# It holds no update-signing key, and that is the point: updates on the `dev`
-# channel are published unsigned, so this workflow — which runs on every push
-# to the trunk — never has to be trusted with the key that beta and production
-# depend on. See the `dev` entry in apps/mobile/app.config.js for the whole
-# trade. The consequence, stated plainly since the trigger branch takes daily
-# merges: whoever can push here can put arbitrary JavaScript into the dev app,
-# with the EAS account as the only thing in the way. That argues for `dev`
-# requiring a pull request and a passing CI run before a merge — branch
-# protection, which this repository cannot set while it is private on a free
-# plan, so it is a thing to turn on the day it goes public rather than a thing
-# already relied upon. It costs the beta and production apps nothing either
-# way, because they do not follow this channel and would reject an unsigned
-# update if they did.
+# Worth stating plainly, since the trigger branch now takes daily merges: OTA
+# bundles are not code-signed (see AGENTS.md), so whoever can push to this
+# branch can put arbitrary JS into every build that follows it, with the EAS
+# account as the only thing in the way. That argues for `dev` requiring a pull
+# request and a passing CI run before a merge — branch protection, which this
+# repository cannot set while it is private on a free plan, so it is a thing
+# to turn on the day it goes public rather than a thing already relied upon.
 permissions:
   contents: read
 

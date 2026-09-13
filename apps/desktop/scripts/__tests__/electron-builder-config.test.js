@@ -71,4 +71,17 @@ describe("the electron-builder config", () => {
       expect(config.publish[0]).toMatchObject({ provider: "github", owner: "CyberCyclone", repo: "Open-Shannon" });
     }
   });
+
+  it("carries the metadata a .deb refuses to build without", () => {
+    // FpmTarget.computeFpmMetaInfoOptions throws unless there is a homepage
+    // and a maintainer — and it throws only when the deb target actually
+    // builds, which happens on a Linux release runner and nowhere else. The
+    // first release uploaded its AppImage and then died on exactly this, so it
+    // is asserted here, where a missing field costs seconds instead of a tag.
+    const pkg = require_("../../package.json");
+    expect(pkg.homepage).toMatch(/^https:\/\//);
+    for (const variant of ["production", "beta"]) {
+      expect(configFor(variant).linux.maintainer).toMatch(/^.+ <[^>]+@[^>]+>$/);
+    }
+  });
 });

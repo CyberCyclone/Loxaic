@@ -288,6 +288,7 @@ jobs:
             echo "::error::$TAG has no installer assets at all; leaving it a draft" >&2
             exit 1
           fi
+          all_assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
           for variant in $VARIANTS; do
             if [ "$variant" = "beta" ]; then
               count=$(printf '%s\n' "$assets" | grep -c '^Loxaic-Beta-' || true)
@@ -298,7 +299,21 @@ jobs:
               echo "::error::no $variant installer was uploaded for $TAG; leaving it a draft" >&2
               exit 1
             fi
-            echo "$variant: $count installer asset(s)"
+            # An installer is not proof its platform finished. The first
+            # release showed it: the Linux leg uploaded its AppImage, failed
+            # building the .deb, and this check published one installer out
+            # of six. electron-builder writes a platform's update feed
+            # (beta-linux.yml, latest-mac.yml, beta.yml for Windows, ...) only
+            # after every target for that platform has built, so a feed is
+            # what a *completed* leg leaves behind — and without one, no
+            # installed app could update from this release anyway.
+            if [ "$variant" = "beta" ]; then channel=beta; else channel=latest; fi
+            feeds=$(printf '%s\n' "$all_assets" | grep -cE '^'"$channel"'(-mac|-linux(-arm64|-arm)?)?\.yml$' || true)
+            if [ "$feeds" = "0" ]; then
+              echo "::error::no $variant platform finished for $TAG (no $channel feed .yml uploaded); leaving it a draft" >&2
+              exit 1
+            fi
+            echo "$variant: $count installer asset(s), $feeds finished platform(s)"
           done
           echo "publishing $TAG"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
@@ -308,15 +323,6 @@ jobs:
     needs: meta
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'CyberCyclone' }}
-    # Same environment the desktop job names, and for the same reason: this is
-    # where the update-signing key is read, and an environment secret can be
-    # put behind required reviewers and a tag-only deployment branch rule while
-    # a repository secret is readable by a workflow on any branch. Publishing
-    # JavaScript that every install will run is at least as consequential as
-    # shipping an installer, so the two gates belong together. Until reviewers
-    # are configured this line changes nothing — secrets still resolve from the
-    # repository.
-    environment: release
     strategy:
       # One variant failing must not cancel the other: a release that reached
       # production but not beta is still worth having, and the difference is
@@ -361,57 +367,17 @@ jobs:
       - name: Stamp the version from the tag
         run: node apps/desktop/scripts/stamp-version.mjs "$TAG"
 
-      - name: Take the update-signing key out of the secret
-        id: signing
-        env:
-          SIGNING_KEY: ${{ secrets.EXPO_UPDATE_SIGNING_KEY }}
-        # The beta and production apps embed a certificate
-        # (apps/mobile/certs/certificate.pem), so they accept an update only if
-        # its manifest is signed by the matching private key. That key is not
-        # in this repository and is not in EAS — a leaked EXPO_TOKEN publishes
-        # updates no installed app will run — so it has to arrive here, and
-        # this is the one place it exists.
-        #
-        # Written under RUNNER_TEMP rather than into the checkout, because the
-        # next step's `eas build` uploads the project directory to EAS: a key
-        # file inside the workspace would be handed to the very service this
-        # key exists to distrust. eas-cli only ever reads it from the path.
-        #
-        # Refused rather than skipped when the secret is missing. Publishing
-        # unsigned would succeed here, produce an update every installed app
-        # downloads and rejects, and report nothing — the failure would show up
-        # as "the release went out and nobody got it", days later.
-        run: |
-          set -euo pipefail
-          if [ -z "${SIGNING_KEY:-}" ]; then
-            echo "::error::EXPO_UPDATE_SIGNING_KEY is not set, so this update could only be published unsigned — which every beta and production build would reject. See docs/DEPLOY.md." >&2
-            exit 1
-          fi
-          umask 077
-          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/update-signing-key.pem"
-          echo "key=$RUNNER_TEMP/update-signing-key.pem" >> "$GITHUB_OUTPUT"
-
       - name: Publish the update
         id: publish
         working-directory: apps/mobile
-        env:
-          SIGNING_KEY_PATH: ${{ steps.signing.outputs.key }}
         # APP_VARIANT is set for the whole job, so the config this publishes
         # against is the same one the matching build used. They have to agree:
         # the channel is embedded in the binary and the variant decides the
         # runtime version, so a mismatch publishes an update that reaches
         # nobody and reports nothing.
-        #
-        # `--private-key-path` is not optional for these two variants and
-        # cannot be forgotten: eas-cli refuses to publish at all when the
-        # resolved app config names a certificate and no key was given, and
-        # refuses again if the key does not match that certificate. So the two
-        # halves cannot drift apart quietly — every matrix leg here is beta or
-        # production, and both embed the certificate.
         run: |
           set -euo pipefail
           eas update --channel "$VARIANT" --environment "$EAS_ENVIRONMENT" \
-            --private-key-path "$SIGNING_KEY_PATH" \
             --message "$TAG" --non-interactive --json > "update.json"
           # The runtime version the update was published for decides whether a
           # native build is needed below. Read from the publish itself rather
@@ -532,11 +498,3 @@ jobs:
             exit 1
           fi
           echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
-
-      # The runner is thrown away either way; this is about the window in
-      # between, where a later step or action added to this job would find a
-      # usable signing key sitting on disk. `always()` because a failed build
-      # is exactly when someone adds a debugging step.
-      - name: Put the signing key away
-        if: always()
-        run: rm -f "$RUNNER_TEMP/update-signing-key.pem"
