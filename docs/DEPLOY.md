@@ -218,7 +218,7 @@ tunnel — but Metro needs it.)
 
 **Expo Go runs Metro only.** It cannot open a published EAS update — a
 published update is built for a *runtime version* that only a real build of
-this app has. To try the current state of `master` without a dev machine,
+this app has. To try the current state of `dev` without a dev machine,
 install a development or preview build (see Releases below) rather than
 reaching for Expo Go.
 
@@ -232,7 +232,7 @@ into all three during the release run.
 
 | You push | Goes to | What sees it |
 |---|---|---|
-| a commit on `master` | `preview` branch | development and preview builds |
+| a commit on `dev` | `preview` branch | development and preview builds |
 | `v1.2.3-beta.4` | `beta` branch + a GitHub pre-release | anyone who chose Beta in Settings |
 | `v1.2.3` | `production` **and** `beta` branches + a GitHub release | everyone |
 
@@ -280,7 +280,7 @@ the workflows call it directly.
 
 Repository secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish;
 the publish step fails without one. Both workflows skip themselves entirely on
-a fork, so a fork's `master` never tries to publish to this project.
+a fork, so a fork's `dev` never tries to publish to this project.
 
 ### Before the first production publish: sign the bundles
 

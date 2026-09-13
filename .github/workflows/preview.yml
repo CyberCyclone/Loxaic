@@ -1,16 +1,24 @@
 name: Preview update
 
-# Every merge to master goes out to the `preview` branch, which development
-# builds follow. That is the whole point of the branch: it is where the
-# current state of master can be opened on a device without cutting a
-# release. Release tags are a different workflow (release.yml).
+# Every merge to `dev` — the trunk — goes out to the `preview` branch, which
+# development builds follow. That is the whole point of the branch: it is
+# where the current state of the trunk can be opened on a device without
+# cutting a release. Release tags are a different workflow (release.yml).
 on:
   push:
-    branches: [master]
+    branches: [dev]
 
-# Holds EXPO_TOKEN on every push to master, so it gets nothing else: read is
+# Holds EXPO_TOKEN on every push to dev, so it gets nothing else: read is
 # all the checkout needs, and the default would otherwise be the repository's
 # — which may be write-all.
+#
+# Worth stating plainly, since the trigger branch now takes daily merges: OTA
+# bundles are not code-signed (see AGENTS.md), so whoever can push to this
+# branch can put arbitrary JS into every build that follows it, with the EAS
+# account as the only thing in the way. That argues for `dev` requiring a pull
+# request and a passing CI run before a merge — branch protection, which this
+# repository cannot set while it is private on a free plan, so it is a thing
+# to turn on the day it goes public rather than a thing already relied upon.
 permissions:
   contents: read
 
