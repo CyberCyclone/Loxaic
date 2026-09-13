@@ -1679,10 +1679,13 @@ replies.
   produced a stable count of 1 and published a release with nothing installable, which is the
   exact inverse of the guard's purpose. **Nor is an installer proof that a platform finished**:
   the first release's Linux leg uploaded its AppImage, failed building the `.deb`, and the guard
-  published a release holding one of six installers. A variant now also needs at least one
-  platform *feed* in the release (`beta-linux.yml`, `latest-mac.yml`, `beta.yml` for Windows),
-  because electron-builder writes a platform's feed only after every target for that platform
-  has built — and no installed app can update from a release without one.
+  published a release holding one of six installers. Every platform that uploaded an installer must
+  also have left its *feed* (`.dmg`/`.zip` → `beta-mac.yml`, `.AppImage`/`.deb` →
+  `beta-linux.yml`, `.exe` → `beta.yml`; `latest*` for stable), because electron-builder writes
+  a platform's feed only after every target for it has built. **Checked per platform, not as a
+  total**: a count lets a finished macOS vouch for a Linux leg that stopped halfway, and that
+  release's AppImages would never update again. A platform with no installer at all is still
+  allowed — `fail-fast: false` exists so a release missing one platform ships the others.
 - **Only `dev` builds an APK; beta and production go to Play as App Bundles.** An earlier
   design attached an APK to the GitHub release from an `android-apk` job — that job and that
   reasoning are both gone, replaced by store submission (see the Play listings bullet below).
@@ -1787,7 +1790,9 @@ replies.
   paid-tier question *first* for any EAS feature. What unsigned means: whoever holds
   `EXPO_TOKEN` or the Expo login can publish JavaScript that every installed app runs, on
   every channel, so 2FA on that account and the handling of that one secret are the entire
-  defence. The route back to signing is a self-hosted updates server (expo-updates speaks a
+  defence. `expo-update` names `environment: release` so that token can move behind required
+  reviewers — but `dev-update.yml` reads the same token on every push to `dev`, so the gate
+  protects nothing until that workflow has a token of its own. The route back to signing is a self-hosted updates server (expo-updates speaks a
   published protocol, and signing is free when the server is ours). **Do not re-add
   `codeSigningCertificate` while updates come from EAS**: a build that embeds a certificate
   refuses every unsigned update for as long as it is installed.

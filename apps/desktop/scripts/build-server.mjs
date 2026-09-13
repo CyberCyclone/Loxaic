@@ -18,12 +18,21 @@ function run(args, cwd = repoRoot) {
   console.log(`[build-server] ${args.join(" ")}`);
   // On Windows `pnpm` is a `pnpm.cmd` shim, and execFileSync cannot launch one
   // without a shell: PATHEXT resolution is a shell's job, and since Node's fix
-  // for CVE-2024-27980 a .cmd/.bat target refuses to spawn without one anyway.
+  // for CVE-2024-27980 spawning a .cmd/.bat *without* `shell` throws EINVAL —
+  // so resolving `pnpm.cmd` and executing it directly is not an escape hatch.
   // The first Windows release leg died here with `spawnSync pnpm ENOENT`.
-  // Arguments containing whitespace are quoted for cmd.exe, or a checkout path
-  // with a space in it would split into two arguments.
+  //
+  // With a shell, the joined command line goes back through cmd.exe, which
+  // re-parses `& | < > ( ) ^` as well as whitespace — all legal in a path. So
+  // every argument is quoted, not only ones containing a space: inside quotes
+  // cmd takes those characters literally. Backslashes before a quote are
+  // doubled so the child's own argv parsing (CommandLineToArgvW) cannot read
+  // `\"` as an escaped quote. `%NAME%` still expands inside quotes, which no
+  // quoting switches off; a `%` in the checkout path is the one way left to
+  // break this.
   const win = process.platform === "win32";
-  const argv = win ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args;
+  const quote = (a) => `"${String(a).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
+  const argv = win ? args.map(quote) : args;
   execFileSync(argv[0], argv.slice(1), { cwd, stdio: "inherit", shell: win });
 }
 

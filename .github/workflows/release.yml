@@ -302,18 +302,45 @@ jobs:
             # An installer is not proof its platform finished. The first
             # release showed it: the Linux leg uploaded its AppImage, failed
             # building the .deb, and this check published one installer out
-            # of six. electron-builder writes a platform's update feed
-            # (beta-linux.yml, latest-mac.yml, beta.yml for Windows, ...) only
-            # after every target for that platform has built, so a feed is
-            # what a *completed* leg leaves behind — and without one, no
-            # installed app could update from this release anyway.
-            if [ "$variant" = "beta" ]; then channel=beta; else channel=latest; fi
-            feeds=$(printf '%s\n' "$all_assets" | grep -cE '^'"$channel"'(-mac|-linux(-arm64|-arm)?)?\.yml$' || true)
-            if [ "$feeds" = "0" ]; then
-              echo "::error::no $variant platform finished for $TAG (no $channel feed .yml uploaded); leaving it a draft" >&2
+            # of six. electron-builder writes a platform's update feed only
+            # after every target for that platform has built, so every
+            # platform that uploaded an installer must also have left its
+            # feed. Checked per platform, not as a total: a count lets a
+            # finished macOS vouch for a Linux leg that stopped halfway, and
+            # that release's AppImages would never update again. A platform
+            # with no installer at all is still allowed — fail-fast is off so
+            # a release missing one platform ships the others.
+            if [ "$variant" = "beta" ]; then
+              channel=beta
+              mine=$(printf '%s\n' "$assets" | grep '^Loxaic-Beta-' || true)
+            else
+              channel=latest
+              mine=$(printf '%s\n' "$assets" | grep -v '^Loxaic-Beta-' || true)
+            fi
+            missing=""
+            while IFS= read -r installer; do
+              [ -n "$installer" ] || continue
+              case "$installer" in
+                *.dmg|*.zip) feed="$channel-mac.yml" ;;
+                *.AppImage|*.deb)
+                  case "$installer" in
+                    *arm64*|*aarch64*) feed="$channel-linux-arm64.yml" ;;
+                    *) feed="$channel-linux.yml" ;;
+                  esac ;;
+                *.exe) feed="$channel.yml" ;;
+                *) continue ;;
+              esac
+              # A here-string, not `printf | grep -q`: under pipefail grep's
+              # early exit can SIGPIPE printf and read as "not found".
+              if ! grep -qxF "$feed" <<< "$all_assets"; then
+                missing="$missing $installer (needs $feed)"
+              fi
+            done <<< "$mine"
+            if [ -n "$missing" ]; then
+              echo "::error::$variant platform uploaded installers but never finished:$missing; leaving it a draft" >&2
               exit 1
             fi
-            echo "$variant: $count installer asset(s), $feeds finished platform(s)"
+            echo "$variant: $count installer asset(s), every uploading platform finished"
           done
           echo "publishing $TAG"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
@@ -323,6 +350,15 @@ jobs:
     needs: meta
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'CyberCyclone' }}
+    # EXPO_TOKEN can publish JavaScript to every channel, and with update
+    # signing unavailable on this EAS plan it is the whole defence for every
+    # installed app (AGENTS.md). Naming an environment is what lets it move
+    # behind required reviewers and a tag-only deployment branch rule; until
+    # it does, this line changes nothing and the secret still resolves from
+    # the repository. Before relying on it: dev-update.yml reads the same
+    # token on every push to `dev`, so the gate only protects anything once
+    # that workflow is given a token of its own.
+    environment: release
     strategy:
       # One variant failing must not cancel the other: a release that reached
       # production but not beta is still worth having, and the difference is
