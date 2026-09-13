@@ -82,6 +82,26 @@ screenshots showing that behaviour working. Writing those tests is the implement
   the PR description instead, straight from that directory.
 - If a change genuinely isn't user-visible, say so in the PR rather than skipping the section.
 
+## Pull requests
+
+**Every PR description ends with a section called "What you need to do".** It is a numbered
+checklist of the actions only the repository owner can take, in the order they have to
+happen. Nothing anywhere else in the description is a request — that section is the entire
+ask, and if it is empty it says so: "Nothing. Merge when CI is green."
+
+Each item is one line and answers three things: **the exact command or click**, **what should
+happen when it works**, and **why it is needed**. Name the file or URL. No item may be
+"review this" or "consider whether" — a decision belongs there only when it has named
+options and a recommendation.
+
+Say what will fail if an item is skipped, when skipping it fails silently. Most of these
+steps are credentials, and a missing one usually surfaces days later as "the release went out
+and nobody got it".
+
+Keep the rest of the description short: what changed, what was verified, what was not. The
+reasoning goes in this file and in code comments, where it is read again; a PR description is
+read once.
+
 ## Gotchas
 
 ### TypeScript + React Native
@@ -1725,14 +1745,43 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Stable at each cold launch while Settings showed Stable selected. Removing the stored
   channel removed the race rather than the guard — worth knowing before anything else in this
   layer starts reading a preference at launch.
-- **OTA bundles are not code-signed yet, and that is a recorded decision, not an oversight.**
-  Without `codeSigningCertificate` expo-updates trusts any bundle the update server returns —
-  the only thing between a leaked `EXPO_TOKEN` (which `preview.yml` now uses on every push to
-  `dev`) and arbitrary JS in every install is the EAS account. Enabling signing after builds
-  are in the field needs a native release to carry the certificate, so the cheapest moment is
-  **before the first production publish**: `npx expo-updates configuration:generate-signing-key`
-  in `apps/mobile`, commit the public certificate, keep the private key out of CI, and sign in
-  the publish step. Do this before `v1.0.0`.
+- **Beta and production bundles are code-signed; the dev channel deliberately is not.** Those
+  two variants embed `apps/mobile/certs/certificate.pem` (committed, public) and accept an
+  update only if its manifest was signed by the matching private key — which is not in this
+  repository and not in EAS, so a leaked `EXPO_TOKEN` publishes updates every install
+  downloads and refuses. Without it the EAS account is the only thing between such a token and
+  arbitrary JS on every phone. The key reaches `release.yml` as `EXPO_UPDATE_SIGNING_KEY`,
+  written to `$RUNNER_TEMP` — never into the checkout, which `eas build` uploads to EAS — and
+  passed as `--private-key-path`.
+- **`dev` is unsigned because `dev-update.yml` runs on every push to the trunk**, so its key
+  would have to be a repository secret readable by a workflow on any branch: the same blast
+  radius as `EXPO_TOKEN`, which would leave the public apps defended by a key kept beside the
+  thing it defends against. Keeping dev out is what lets the real key live as an environment
+  secret only a tag release can reach. The cost is real and stated in both files: the dev
+  channel has no integrity check at all.
+- **An unsigned variant must carry no `codeSigningCertificate` key at all, not one holding
+  `undefined`.** eas-cli decides whether a publish must be signed by asking whether the
+  resolved config *has* the key, so leaving it in place would make every dev publish refuse to
+  run without a key that workflow deliberately does not have. `app.config.js` spreads the pair
+  in conditionally, and `app-config.test.ts` asserts the absence rather than the value.
+- **The certificate is a fingerprint source** (`apps/mobile/fingerprint.config.js`), and it has
+  to be. The config holds only the *path*, so replacing the file leaves the runtime version
+  untouched — and an update signed by the new key would then be offered to every binary
+  carrying the old certificate, which downloads it, rejects the signature, and repeats forever,
+  with no error anywhere but the device. Counting it makes a rotation behave like any other
+  native change: a new runtime, so old binaries are offered nothing until their owners install
+  a new build. The extra source is per variant, since rotating cannot affect a dev app that
+  embeds no certificate.
+- **Nothing can be verified about the key from inside the repository, by design** — the two
+  checks that matter run elsewhere. eas-cli validates that the private key it was handed
+  matches the committed certificate before publishing anything (`keyPair key mismatch`
+  otherwise), and the device validates the signature against the certificate its build
+  embedded. What `app-config.test.ts` can do, and does: the certificate parses, is present,
+  has more than two years left (so an expiry that would strand every install turns CI red long
+  before it bites), and no file in `certs/` contains a private key.
+- **Losing the private key cannot be recovered from.** There is no revocation: a new key means
+  a new certificate, a new runtime version, a new build of both apps, and a store review before
+  anyone can receive an update again. `docs/DEPLOY.md` carries the rotation procedure.
 
 ### The desktop updater
 
