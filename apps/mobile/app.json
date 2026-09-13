@@ -43,7 +43,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "78ef6ddc-9619-4afe-91e6-9370e4c3fc70"
+        "projectId": "021a4960-4d9d-46e0-bd6a-7437d95e0fab"
       }
     },
     "owner": "caseygibson",
@@ -51,7 +51,7 @@
       "policy": "fingerprint"
     },
     "updates": {
-      "url": "https://u.expo.dev/78ef6ddc-9619-4afe-91e6-9370e4c3fc70",
+      "url": "https://u.expo.dev/021a4960-4d9d-46e0-bd6a-7437d95e0fab",
       "checkAutomatically": "ON_ERROR_RECOVERY",
       "requestHeaders": {
         "expo-channel-name": "production"
