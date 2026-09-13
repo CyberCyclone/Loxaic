@@ -160,7 +160,9 @@ export default tseslint.config(
     languageOptions: { sourceType: "module", globals: globals.node },
   },
   {
-    files: ["apps/desktop/src/**/*.cjs"],
+    // Includes the packaging config at the app root, which is CommonJS
+    // because electron-builder loads it with require().
+    files: ["apps/desktop/src/**/*.cjs", "apps/desktop/*.cjs"],
     extends: [js.configs.recommended],
     languageOptions: { sourceType: "commonjs", globals: globals.node },
   },

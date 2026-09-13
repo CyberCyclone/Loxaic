@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { appVariant } from "../variant.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -10,9 +11,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * (appData + productName) — computed without the `electron` module so the
  * headless entry can run under ELECTRON_RUN_AS_NODE, where `app` is
  * unavailable. GUI and headless therefore share the same data by default.
+ *
+ * Follows the variant's product name, which is what keeps "Loxaic Beta" and
+ * "Loxaic" from sharing one embedded Postgres — two apps on one data
+ * directory would be two servers fighting over the same database, and a beta
+ * that could corrupt the stable install's data is not a beta anyone should
+ * run. It matches Electron's own `userData` because electron-builder writes
+ * the same `productName` into the packaged package.json (`extraMetadata`),
+ * which is where both this and `app.name` now come from.
  */
-export function defaultDataDir() {
-  const name = "Loxaic";
+export function defaultDataDir(name = appVariant().productName) {
   switch (process.platform) {
     case "darwin":
       return path.join(os.homedir(), "Library", "Application Support", name);

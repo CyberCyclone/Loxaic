@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createUpdater, whyDisabled } from "../updater.js";
-import { loadChannel, saveChannel, updatesPath } from "../store.js";
 
 let dataDir;
 beforeEach(() => { dataDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-updates-")); });
@@ -16,7 +15,16 @@ afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); });
 function fakeUpdater() {
   const updater = new EventEmitter();
   updater.calls = [];
-  updater.channel = null;
+  // `channel` is a *setter* on the real AppUpdater, and assigning it sets
+  // allowDowngrade = true as a side effect (AppUpdater.js). Imitated here
+  // because that side effect is the whole reason the production code puts
+  // allowDowngrade back afterwards — a fake with a plain property would let
+  // the ordering break silently, which is the bug this guards.
+  let channel = null;
+  Object.defineProperty(updater, "channel", {
+    get: () => channel,
+    set: (value) => { channel = value; updater.allowDowngrade = true; },
+  });
   updater.checkForUpdates = () => { updater.calls.push("check"); return Promise.resolve(null); };
   updater.setFeedURL = (options) => { updater.calls.push(["setFeedURL", options]); };
   updater.quitAndInstall = (...args) => { updater.calls.push(["quitAndInstall", ...args]); };
@@ -29,7 +37,6 @@ function make(overrides = {}) {
   const autoUpdater = overrides.autoUpdater ?? fakeUpdater();
   let loaded = 0;
   const updater = createUpdater({
-    dataDir,
     app: { isPackaged: true, getVersion: () => "1.2.3" },
     platform: "darwin",
     env: {},
@@ -56,19 +63,6 @@ describe("why the updater is off", () => {
     const app = { isPackaged: true };
     expect(whyDisabled({ app, platform: "linux", env: {} })).toMatch(/package/i);
     expect(whyDisabled({ app, platform: "linux", env: { APPIMAGE: "/tmp/Loxaic.AppImage" } })).toBe(null);
-  });
-});
-
-describe("the update channel on disk", () => {
-  it("round-trips, is private, and reads anything else as production", () => {
-    expect(loadChannel(dataDir)).toBe("production");
-    saveChannel(dataDir, "beta");
-    expect(loadChannel(dataDir)).toBe("beta");
-    expect(statSync(updatesPath(dataDir)).mode & 0o777).toBe(0o600);
-
-    writeFileSync(updatesPath(dataDir), JSON.stringify({ channel: "nightly" }));
-    expect(loadChannel(dataDir)).toBe("production");
-    expect(() => saveChannel(dataDir, "nightly")).toThrow(/Unknown update channel/);
   });
 });
 
@@ -117,27 +111,49 @@ describe("the desktop updater", () => {
     expect(updater.state()).toMatchObject({ status: "error" });
   });
 
-  it("switches channel with allowPrerelease, and never sets `channel`", async () => {
-    // Setting `autoUpdater.channel` flips allowDowngrade to true behind your
-    // back. Leaving beta must mean "no more beta builds", not "go back one".
+  it("asks for the plain latest release when it is the stable app", async () => {
+    // allowPrerelease false means the provider uses /releases/latest, which
+    // GitHub defines as excluding prereleases — so a stable install can never
+    // be offered a beta, without anything else being configured.
     const { updater, autoUpdater } = make();
     await updater.check();
     expect(autoUpdater.allowPrerelease).toBe(false);
-    expect(autoUpdater.allowDowngrade).toBe(false);
-
-    await updater.setChannel("beta");
-    expect(autoUpdater.allowPrerelease).toBe(true);
     expect(autoUpdater.channel).toBe(null);
-    expect(loadChannel(dataDir)).toBe("beta");
-    // A switch is a reason to look now, not in six hours.
-    expect(autoUpdater.calls.filter((c) => c === "check")).toHaveLength(2);
+    expect(autoUpdater.allowDowngrade).toBe(false);
   });
 
-  it("refuses an unknown channel and does not rewrite the stored one", async () => {
-    const { updater } = make();
-    await updater.setChannel("nightly");
-    expect(updater.state().channel).toBe("production");
-    expect(loadChannel(dataDir)).toBe("production");
+  it("cannot be a beta app that ignores betas, because the variant decides both", async () => {
+    // `allowPrerelease` used to be its own option, which made
+    // {variant: "beta", allowPrerelease: false} expressible — and that fails
+    // in the quiet direction: /releases/latest excludes prereleases, so the
+    // beta app would have been blind to every beta tag while its settings row
+    // still said "beta", and a check finding nothing looks exactly like being
+    // up to date.
+    const beta = make({ variant: "beta" });
+    await beta.updater.check();
+    expect(beta.autoUpdater.allowPrerelease).toBe(true);
+
+    const stable = make({ variant: "production" });
+    await stable.updater.check();
+    expect(stable.autoUpdater.allowPrerelease).toBe(false);
+    expect(stable.autoUpdater.channel).toBe(null);
+  });
+
+  it("pins the beta app to the beta feed, and puts allowDowngrade back after", async () => {
+    // allowPrerelease alone is not enough: the provider then takes the newest
+    // feed entry whether or not it is a prerelease, and asks that release for
+    // latest*.yml — so a beta install would replace itself with the stable
+    // app the first time a release tag landed. Pinning the channel makes it
+    // ask for beta*.yml, which the beta variant publishes on every tag.
+    const { updater, autoUpdater } = make({ variant: "beta" });
+    await updater.check();
+    expect(autoUpdater.allowPrerelease).toBe(true);
+    expect(autoUpdater.channel).toBe("beta");
+    // Assigning the channel set this to true; it has to end up false, or a
+    // beta walks backwards. Order-dependent, which is why the fake imitates
+    // the real setter.
+    expect(autoUpdater.allowDowngrade).toBe(false);
+    expect(updater.state().variant).toBe("beta");
   });
 
   it("installs only what it has, and stops the children before it does", async () => {
@@ -202,7 +218,6 @@ describe("the desktop updater", () => {
   it("uses a private feed only when told to, and never logs the token", async () => {
     const { updater, autoUpdater, logs } = make({ env: { LOXAIC_GH_TOKEN: "ghp_secret_value" } });
     await updater.check();
-    await updater.setChannel("beta"); // so there is a file on disk to check
     const call = autoUpdater.calls.find((c) => Array.isArray(c) && c[0] === "setFeedURL");
     expect(call[1]).toMatchObject({ provider: "github", private: true, token: "ghp_secret_value" });
     // Said loudly enough that nobody ships with it set, without the value.

@@ -8,17 +8,15 @@
  * `require("electron")` anywhere in this file, deliberately.
  */
 
-/** The channel names, shared with the mobile app's own update row so one
- * settings component can serve both. */
-export const CHANNELS = ["production", "beta"];
-
-export function initialState({ version = null, channel = "production", enabled = true, disabledReason = null } = {}) {
+export function initialState({ version = null, variant = "production", enabled = true, disabledReason = null } = {}) {
   return {
     enabled,
     // Why not, in words, when not: "checks are off" with no reason reads as a
     // bug rather than as a development build behaving correctly.
     disabledReason: enabled ? null : disabledReason,
-    channel,
+    /** Which app this is — "production" or "beta". Decided when it was
+     * packaged, never at runtime: they are separate applications. */
+    variant,
     status: enabled ? "idle" : "off",
     /** The version that was found, or downloaded — not the running one. */
     availableVersion: null,
@@ -50,12 +48,10 @@ export function initialState({ version = null, channel = "production", enabled =
  *     ready, and still applied on the next restart.
  */
 export function reduce(state, event) {
-  if (!state.enabled) {
-    // Nothing runs when the updater is off, but the channel is still a stored
-    // preference someone can set — they may be about to install a build that
-    // does update.
-    return event.type === "channel" ? { ...state, channel: event.channel } : state;
-  }
+  // Nothing runs when the updater is off, and there is nothing left to
+  // record either: the variant is fixed at package time, so no event can
+  // change anything about a disabled updater.
+  if (!state.enabled) return state;
   switch (event.type) {
     case "checking":
       return state.status === "ready"
@@ -96,10 +92,6 @@ export function reduce(state, event) {
         installing: false,
         error: event.message || (state.status === "ready" ? "The update could not be installed." : "The update check failed."),
       };
-    case "channel":
-      // A channel switch invalidates what the previous channel had found: the
-      // build that was on offer may not exist on the new one at all.
-      return { ...state, channel: event.channel, status: "idle", availableVersion: null, progress: null, error: null };
     default:
       return state;
   }

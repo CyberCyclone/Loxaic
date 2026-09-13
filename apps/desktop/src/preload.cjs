@@ -69,13 +69,14 @@ contextBridge.exposeInMainWorld("loxaic", {
   },
 
   /**
-   * Desktop updates. Same rule again: fixed channels, nothing addressable.
-   * `setChannel` takes one of two names and the main process validates it;
-   * there is no way for a page to point this at a feed, a version, or a file.
+   * Desktop updates. Same rule again: fixed channels, nothing addressable —
+   * and now nothing to choose either. Which releases this install follows is
+   * decided when it is packaged ("Loxaic Beta" is a separate application), so
+   * a page can read the state, ask for a check, and ask to restart. There is
+   * no way for it to point this at a feed, a version, or a file.
    */
   updates: {
     getState: () => ipcRenderer.invoke("loxaic:updates.getState"),
-    setChannel: (channel) => ipcRenderer.invoke("loxaic:updates.setChannel", channel),
     check: () => ipcRenderer.invoke("loxaic:updates.check"),
     /** Stops the embedded stack, then restarts into the downloaded update. */
     install: () => ipcRenderer.invoke("loxaic:updates.install"),

@@ -1,5 +1,4 @@
 import { initialState, reduce } from "./state.js";
-import { loadChannel, saveChannel } from "./store.js";
 
 /** How long after launch the first check runs. Long enough that it never
  * competes with starting Postgres and the server. */
@@ -28,8 +27,18 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
  * has no business interrupting them when it fails.
  */
 export function createUpdater({
-  dataDir,
   app,
+  /**
+   * Which app this is, from src/variant.js. Decided at package time — and it
+   * decides whether the build follows prereleases too, so it is one parameter
+   * rather than two. Accepting them separately made `{variant: "beta",
+   * allowPrerelease: false}` expressible: a beta app that silently never sees
+   * a beta tag, because `/releases/latest` excludes prereleases while the
+   * channel getter still asks that stable release for beta.yml. A check that
+   * finds nothing is indistinguishable from being up to date, so it would
+   * have failed in the quiet direction.
+   */
+  variant = "production",
   log = console.log,
   onState = () => {},
   /** Run before the app is replaced: stop the embedded stack, the executor
@@ -43,10 +52,11 @@ export function createUpdater({
   launchDelayMs = LAUNCH_DELAY_MS,
   checkIntervalMs = CHECK_INTERVAL_MS,
 } = {}) {
+  const allowPrerelease = variant === "beta";
   const disabledReason = whyDisabled({ app, argv, env, platform });
   let state = initialState({
     version: app?.getVersion?.() ?? null,
-    channel: loadChannel(dataDir),
+    variant,
     enabled: disabledReason === null,
     disabledReason,
   });
@@ -64,15 +74,26 @@ export function createUpdater({
   }
 
   /**
-   * The one place electron-updater is configured.
+   * The one place electron-updater is configured, and the feed rules are
+   * subtle enough to be worth stating.
    *
-   * `autoUpdater.channel` is deliberately never set. On the GitHub provider
-   * the channel that matters is derived from the release *tag* — a
-   * `v1.2.3-beta.4` release publishes `beta.yml` and is found by walking the
-   * releases feed — and setting `channel` additionally flips `allowDowngrade`
-   * to true behind your back, which is precisely the behaviour we do not
-   * want: leaving beta should mean "no more beta builds", not "go back one".
-   * `allowPrerelease` is the whole switch.
+   * **Stable** sets nothing: `allowPrerelease` stays false, so the provider
+   * asks `/releases/latest`, which GitHub defines as excluding prereleases.
+   * A stable install therefore never sees a beta.
+   *
+   * **Beta** cannot simply set `allowPrerelease`. With that alone the
+   * provider walks the releases feed and takes the newest entry *whether it
+   * is a prerelease or not* (GitHubProvider's `shouldFetchVersion` admits a
+   * stable tag), then asks that release for `latest*.yml` — so the beta app
+   * would install the stable app over itself the first time a release tag
+   * landed. Pinning `channel = "beta"` makes it ask each release for
+   * `beta*.yml` instead, which the beta variant publishes on *every* tag
+   * (see electron-builder.config.cjs). A beta tester consequently receives
+   * every release, always as the beta app.
+   *
+   * Assigning `channel` flips `allowDowngrade` to true as a side effect —
+   * electron-updater's own setter does it — so it is put back immediately
+   * afterwards. Order matters here, and the test asserts it.
    */
   async function ensureUpdater() {
     if (updater) return updater;
@@ -83,8 +104,12 @@ export function createUpdater({
       // The install is a person pressing Restart, not something that happens
       // to them because they closed the window.
       autoUpdater.autoInstallOnAppQuit = false;
+      autoUpdater.allowPrerelease = allowPrerelease;
+      if (allowPrerelease) autoUpdater.channel = "beta";
+      // After the channel assignment, never before: the setter sets
+      // allowDowngrade = true, and a beta must not walk backwards any more
+      // than a stable one.
       autoUpdater.allowDowngrade = false;
-      autoUpdater.allowPrerelease = state.channel === "beta";
 
       const token = env.LOXAIC_GH_TOKEN;
       if (token) {
@@ -142,21 +167,6 @@ export function createUpdater({
   return {
     state: () => state,
 
-    /**
-     * Switches channel. Persisted first, because it is a preference that has
-     * to survive whatever the check that follows does — including the app
-     * being closed while it runs.
-     */
-    async setChannel(channel) {
-      if (!CHANNEL_SET.has(channel) || channel === state.channel) return state;
-      saveChannel(dataDir, channel);
-      apply({ type: "channel", channel });
-      if (!state.enabled) return state;
-      if (updater) updater.allowPrerelease = channel === "beta";
-      await check();
-      return state;
-    },
-
     check,
 
     /**
@@ -209,8 +219,6 @@ export function createUpdater({
     },
   };
 }
-
-const CHANNEL_SET = new Set(["production", "beta"]);
 
 /** Longer than any child's own stop deadline, so it only ever fires when
  * one of them has genuinely wedged. */
