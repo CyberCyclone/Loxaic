@@ -896,7 +896,6 @@ async function runGui() {
   const updates = createUpdater({
     app,
     variant: variant.name,
-    allowPrerelease: variant.prerelease,
     log: (line) => { console.log(`[loxaic] ${line}`); },
     onState: (state) => { mainWindow?.webContents.send("loxaic:updateState", state); },
     beforeInstall: async () => {

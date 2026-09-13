@@ -44,6 +44,15 @@ describe("the electron-builder config", () => {
     expect(configFor("production").artifactName).toBe("Loxaic-${version}-${os}-${arch}.${ext}");
   });
 
+  it("pins the Linux executable name rather than letting it be inferred", () => {
+    // electron-builder lowercases the product name without replacing
+    // whitespace, so "Loxaic Beta" would produce `loxaic beta` — a name with
+    // a space in a .desktop entry, and one nothing outside the build could
+    // guess. Naming it makes it ours.
+    expect(configFor("beta").linux.executableName).toBe("loxaic-beta");
+    expect(configFor("production").linux.executableName).toBe("loxaic");
+  });
+
   it("refuses a variant it does not know", () => {
     expect(() => configFor("nightly")).toThrow(/LOXAIC_VARIANT="nightly"/);
   });

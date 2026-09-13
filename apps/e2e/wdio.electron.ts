@@ -94,7 +94,12 @@ function appBinaryPath(): string {
         ]
       : process.platform === 'win32'
         ? [beta ? 'win-unpacked/Loxaic Beta.exe' : 'win-unpacked/Loxaic.exe']
-        : [beta ? 'linux-unpacked/loxaic-beta' : 'linux-unpacked/loxaic'];
+        : beta
+          ? // `executableName` in the beta variant pins the first; the second
+            // is what electron-builder would infer from "Loxaic Beta" if that
+            // pin were ever dropped, and costs nothing to also accept.
+            ['linux-unpacked/loxaic-beta', 'linux-unpacked/loxaic beta']
+          : ['linux-unpacked/loxaic'];
 
   for (const rel of candidates) {
     const full = path.join(DESKTOP_DIST, rel);

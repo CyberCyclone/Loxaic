@@ -19,12 +19,18 @@
 // release workflow build the beta app for a stable tag too, and is the whole
 // reason a beta tester keeps receiving releases instead of being stranded on
 // the last prerelease.
+//
+// Nothing sets LOXAIC_VARIANT yet: the release workflow packages both variants
+// from its own matrix, and that arrives with the release-pipeline stage. Until
+// then every build here is the stable app, which is the right default but
+// means the beta feed described above has no artifacts behind it.
 
 const VARIANTS = {
   production: {
     productName: "Loxaic",
     appId: "com.loxaic.desktop",
     artifactName: "Loxaic-${version}-${os}-${arch}.${ext}",
+    executableName: "loxaic",
     // No `channel`: electron-builder defaults to "latest", which is what an
     // installed stable app asks /releases/latest for.
     channel: undefined,
@@ -36,6 +42,12 @@ const VARIANTS = {
     // space: an installer called "Loxaic Beta-1.2.3-mac-arm64.dmg" is a
     // download link nobody can paste without quoting.
     artifactName: "Loxaic-Beta-${version}-${os}-${arch}.${ext}",
+    // Pinned rather than inferred. electron-builder derives the Linux
+    // executable from the product name by lowercasing it *without* replacing
+    // whitespace, so "Loxaic Beta" would become `loxaic beta` — a name with a
+    // space in it, which is awkward in a .desktop entry and impossible to
+    // guess from the outside. Naming it here makes it ours.
+    executableName: "loxaic-beta",
     channel: "beta",
   },
 };
@@ -96,7 +108,11 @@ function configFor(rawVariant) {
     },
     win: { target: "nsis" },
     nsis: { oneClick: true },
-    linux: { target: ["AppImage", "deb"], category: "Development" },
+    linux: {
+      target: ["AppImage", "deb"],
+      category: "Development",
+      executableName: variant.executableName,
+    },
   };
 }
 

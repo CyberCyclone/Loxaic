@@ -379,6 +379,13 @@ The separate data directory is not cosmetic: one directory shared by two install
 servers on one embedded Postgres, and a beta able to corrupt the stable install's database is
 not a beta anyone should run.
 
+**Upgrading past this change signs you out once.** Electron keeps its renderer profile —
+session, theme, local preferences — in `userData`, which is derived from the app's name. That
+name was previously missing and fell back to the package name, so an older build stored it
+under `Application Support/@loxaic/desktop` and a newer one reads `Application
+Support/Loxaic`. Your **database is untouched** and all conversations are intact; you simply
+have to sign in again. Nothing has been released yet, so this affects development builds only.
+
 **Why the beta variant is built for stable tags too.** With `allowPrerelease` alone,
 electron-updater walks the releases feed, takes the newest entry *whether or not it is a
 prerelease*, and asks that release for `latest*.yml` — so a beta install would replace itself

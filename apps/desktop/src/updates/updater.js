@@ -28,10 +28,17 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
  */
 export function createUpdater({
   app,
-  /** Which app this is, from src/variant.js. Decided at package time. */
+  /**
+   * Which app this is, from src/variant.js. Decided at package time — and it
+   * decides whether the build follows prereleases too, so it is one parameter
+   * rather than two. Accepting them separately made `{variant: "beta",
+   * allowPrerelease: false}` expressible: a beta app that silently never sees
+   * a beta tag, because `/releases/latest` excludes prereleases while the
+   * channel getter still asks that stable release for beta.yml. A check that
+   * finds nothing is indistinguishable from being up to date, so it would
+   * have failed in the quiet direction.
+   */
   variant = "production",
-  /** Whether this build follows prereleases — true for the beta variant. */
-  allowPrerelease = false,
   log = console.log,
   onState = () => {},
   /** Run before the app is replaced: stop the embedded stack, the executor
@@ -45,6 +52,7 @@ export function createUpdater({
   launchDelayMs = LAUNCH_DELAY_MS,
   checkIntervalMs = CHECK_INTERVAL_MS,
 } = {}) {
+  const allowPrerelease = variant === "beta";
   const disabledReason = whyDisabled({ app, argv, env, platform });
   let state = initialState({
     version: app?.getVersion?.() ?? null,

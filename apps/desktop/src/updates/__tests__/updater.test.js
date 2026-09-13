@@ -122,13 +122,30 @@ describe("the desktop updater", () => {
     expect(autoUpdater.allowDowngrade).toBe(false);
   });
 
+  it("cannot be a beta app that ignores betas, because the variant decides both", async () => {
+    // `allowPrerelease` used to be its own option, which made
+    // {variant: "beta", allowPrerelease: false} expressible — and that fails
+    // in the quiet direction: /releases/latest excludes prereleases, so the
+    // beta app would have been blind to every beta tag while its settings row
+    // still said "beta", and a check finding nothing looks exactly like being
+    // up to date.
+    const beta = make({ variant: "beta" });
+    await beta.updater.check();
+    expect(beta.autoUpdater.allowPrerelease).toBe(true);
+
+    const stable = make({ variant: "production" });
+    await stable.updater.check();
+    expect(stable.autoUpdater.allowPrerelease).toBe(false);
+    expect(stable.autoUpdater.channel).toBe(null);
+  });
+
   it("pins the beta app to the beta feed, and puts allowDowngrade back after", async () => {
     // allowPrerelease alone is not enough: the provider then takes the newest
     // feed entry whether or not it is a prerelease, and asks that release for
     // latest*.yml — so a beta install would replace itself with the stable
     // app the first time a release tag landed. Pinning the channel makes it
     // ask for beta*.yml, which the beta variant publishes on every tag.
-    const { updater, autoUpdater } = make({ variant: "beta", allowPrerelease: true });
+    const { updater, autoUpdater } = make({ variant: "beta" });
     await updater.check();
     expect(autoUpdater.allowPrerelease).toBe(true);
     expect(autoUpdater.channel).toBe("beta");

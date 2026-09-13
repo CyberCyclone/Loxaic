@@ -1686,6 +1686,16 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Setting top-level `productName` there also fixes something that was quietly wrong before:
   Electron derives `app.name` (and therefore `userData`) from it, and without it fell back to
   `@loxaic/desktop` while `defaultDataDir()` said `Loxaic`.
+- **That fix moves the stable app's `userData`, and it is a one-time re-login.** `userData` is
+  the *Chromium profile* — localStorage, cookies, session storage — so an install made before
+  this change keeps its session in `.../Application Support/@loxaic/desktop` while the new one
+  reads `.../Loxaic`. The result is an app that looks freshly installed: signed out, theme
+  reset. **The database is untouched**, because `defaultDataDir()` always said `Loxaic`, which
+  is exactly what makes this easy to misdiagnose — the conversations are all still there, the
+  person just cannot see them until they sign in again. No release has ever been published, so
+  the only installs affected are local development builds; a migration for that is more
+  startup machinery than the transition is worth, but it has to be in the release notes of the
+  first tag that carries it.
 - **The beta variant pins `autoUpdater.channel = "beta"`, and `allowPrerelease` alone would be
   a bug.** With only `allowPrerelease`, GitHubProvider walks the releases feed and takes the
   newest entry *whether or not it is a prerelease*, then asks that release for `latest*.yml` —
