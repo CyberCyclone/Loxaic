@@ -391,21 +391,24 @@ run once, by hand, from a machine signed in to EAS, and never again.
    both listings if it has access to both.
 
 The first interactive build per variant is also what makes EAS generate and
-store the upload keystore, so run one before relying on CI — **with
-`--auto-submit-with-profile`**, so the store ends up holding that binary:
+store the upload keystore, so run one before relying on CI. **Android's first
+build must not auto-submit** — Play refuses an API upload to an app that has
+never had a release, which is the whole reason for the by-hand step above:
 
 ```bash
 cd apps/mobile
-APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile beta --auto-submit-with-profile beta
-APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production --auto-submit-with-profile production
+APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile beta
+APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production
 ```
 
-The submit half is not optional garnish. A release tag cut at the same
-fingerprint finds this build already finished and therefore builds and submits
-nothing — correctly, since the binary would be identical — so if the bootstrap
-build never reached the store, the store stays empty and the first release
-looks like it did nothing. Run the same pair for iOS once its credentials
-exist (below).
+Download each `.aab` from the build page and upload it in Play Console. From
+then on `--auto-submit-with-profile` works, and CI uses it.
+
+**Getting that binary into the store is not optional**, whichever way it gets
+there. A release tag cut at the same fingerprint finds this build already
+finished and therefore builds and submits nothing — correctly, since the binary
+would be identical — so if the bootstrap build never reached the store, the
+store stays empty and the first release looks like it did nothing.
 
 To retry a submission that genuinely failed, name the build rather than
 re-running a release:
