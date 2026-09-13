@@ -14,7 +14,7 @@ import { shot } from '../../helpers/screenshot.ts';
 import { openSettings, signUp } from '../../helpers/app.ts';
 import { uniqueCreds } from '../../helpers/auth.ts';
 import { browser } from '@wdio/globals';
-import { byTestId, waitForVisible } from '../../helpers/selectors.ts';
+import { byTestId, isVisible, waitForVisible } from '../../helpers/selectors.ts';
 
 /**
  * Brings the row on screen for a screenshot.
@@ -28,7 +28,10 @@ import { byTestId, waitForVisible } from '../../helpers/selectors.ts';
  */
 async function showRow(): Promise<void> {
   await browser.execute(() => {
-    document.querySelector('[data-testid="settings.updates.copy"]')?.scrollIntoView({ block: 'end' });
+    // The version line, not the copy below it: that copy is hidden on the
+    // `off` path, and this suite runs with LOXAIC_DISABLE_UPDATES=1, so it is
+    // never on screen here.
+    document.querySelector('[data-testid="settings.updates.version"]')?.scrollIntoView({ block: 'end' });
   });
 }
 
@@ -49,6 +52,14 @@ describe('desktop updates', () => {
     expect(await byTestId('settings.updates.check').isEnabled()).toBe(false);
     await showRow();
     await shot('desktop-updates-off');
+  });
+
+  it('does not promise updates to a build that is not checking', async () => {
+    // The status line says checks are off; a sentence underneath saying
+    // updates arrive when a release is published would contradict it, on
+    // exactly the builds — a .deb, a development launch — that this row stays
+    // visible to distinguish.
+    expect(await isVisible('settings.updates.copy')).toBe(false);
   });
 
   it('names the running build', async () => {

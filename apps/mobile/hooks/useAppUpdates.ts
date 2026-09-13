@@ -102,7 +102,12 @@ function useDesktopUpdates(): Backend | null {
           nativeVersion: null,
           nativeBuild: null,
           updateId: null,
-          channel: null,
+          // Surfaced rather than dropped. The desktop still stores a channel
+          // until the beta-variant work lands, and this row is now the only
+          // place it can be seen at all — an install left on beta with no
+          // control and no indication is the failure this change is removing,
+          // not one to introduce on the platform it hasn't reached yet.
+          channel: state.channel ?? null,
           runtimeVersion: null,
           isEmbedded: false,
         }

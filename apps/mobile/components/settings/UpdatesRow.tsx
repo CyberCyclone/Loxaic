@@ -68,9 +68,15 @@ export function UpdatesRow() {
         {describeVersion(version, serverVersion)}
       </Text>
 
-      <Text testID="settings.updates.copy" size="2xs" className="text-muted-foreground">
-        Updates arrive when a release is published. Restart to apply one.
-      </Text>
+      {/* Not on the `off` path: there it would promise updates to exactly the
+          builds the line above says will never update themselves — a .deb, a
+          development launch — which is the distinction this row stays visible
+          to make. */}
+      {!off && (
+        <Text testID="settings.updates.copy" size="2xs" className="text-muted-foreground">
+          Updates arrive when a release is published. Restart to apply one.
+        </Text>
+      )}
     </VStack>
   );
 }

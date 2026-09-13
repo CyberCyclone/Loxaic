@@ -106,6 +106,20 @@ export async function restartIntoUpdate(): Promise<void> {
 export function startUpdateChecks(): () => void {
   if (!isSupported()) return () => undefined;
 
+  // One-shot clear, kept for a release cycle. The override this removes was
+  // stored *natively*, not in JS, so a build made while the switch existed
+  // could still be carrying one — and with the switch gone nothing would
+  // re-apply it and nothing would clear it. That install would follow beta
+  // for the life of the binary while `Updates.channel` — and so every bug
+  // report it produced — said production: exactly the two-answers problem
+  // this change exists to end, made permanent and invisible.
+  try {
+    Updates.setUpdateRequestHeadersOverride(null);
+  } catch {
+    // A build that never embedded the header throws here, and has no override
+    // to clear in the first place.
+  }
+
   void checkNow({ auto: true });
 
   const onAppState = AppState.addEventListener('change', (state: AppStateStatus) => {
