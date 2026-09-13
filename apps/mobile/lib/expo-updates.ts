@@ -3,31 +3,23 @@ import Constants, { ExecutionEnvironment } from 'expo-constants';
 import * as Application from 'expo-application';
 import * as Updates from 'expo-updates';
 import { useUpdates } from 'expo-updates';
-import { readUpdateChannel, subscribeUpdateChannel, type UpdateChannel } from './update-channel';
 
 /**
  * Over-the-air updates, for native release builds. The only file that imports
  * `expo-updates`, so everything else can be written without guarding for the
  * platforms where updates do not exist at all.
  *
- * The shape of this is decided by two facts about expo-updates:
+ * Two facts about expo-updates shape this:
  *
  *   1. Every API here throws in Expo Go and in development, where there is no
  *      update system to talk to. So nothing runs unless `isSupported()`.
  *
- *   2. The channel is a *request header*, set at runtime. One production
- *      binary can therefore follow either channel, which is what makes "opt
- *      into beta" a switch rather than a separate app. `Updates.channel`
- *      reports what the binary was *built* for and never changes, so the
- *      stored preference — not that constant — is the source of truth, and it
- *      is re-applied on every launch.
+ *   2. The channel is embedded in the build (`app.config.js` writes it from
+ *      `APP_VARIANT`), so `Updates.channel` is simply the truth about this
+ *      install — dev, beta and production are separate apps. There was once a
+ *      runtime override here, which made "which channel is this on?" a
+ *      question with two possible answers; nothing overrides it now.
  */
-
-/** Production is the built-in channel, so it is the *absence* of an override
- * rather than a header of its own. Passing null is what restores it. */
-function headersFor(channel: UpdateChannel): Record<string, string> | null {
-  return channel === 'beta' ? { 'expo-channel-name': 'beta' } : null;
-}
 
 /**
  * Whether this build can update itself at all.
@@ -50,37 +42,6 @@ export function isSupported(): boolean {
     !__DEV__ &&
     Constants.executionEnvironment !== ExecutionEnvironment.StoreClient
   );
-}
-
-export interface ApplyResult {
-  ok: boolean;
-  /** Why the channel could not be applied, in words a person can act on. */
-  reason?: string;
-}
-
-/**
- * Points this install at a channel's updates, now.
- *
- * Only the keys already embedded in the build's own `updates.requestHeaders`
- * can be overridden (expo-updates enforces this), which is why app.json
- * declares `expo-channel-name` even though EAS Build would inject it anyway:
- * a locally-built release — the e2e's, or anyone's `expo run:ios
- * --configuration Release` — would otherwise throw here.
- */
-export function applyChannel(channel: UpdateChannel): ApplyResult {
-  if (!isSupported()) return { ok: false, reason: 'This build does not receive updates.' };
-  try {
-    Updates.setUpdateRequestHeadersOverride(headersFor(channel));
-    return { ok: true };
-  } catch (err) {
-    return {
-      ok: false,
-      reason:
-        err instanceof Error && /header/i.test(err.message)
-          ? 'This build cannot switch channels. Install a build from the release pipeline to use beta.'
-          : `Could not switch channel: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
 }
 
 /** Automatic checks are throttled to this; "Check now" is not. Foregrounding
@@ -134,32 +95,24 @@ export async function restartIntoUpdate(): Promise<void> {
 }
 
 /**
- * Applies the stored channel and starts checking: once now, and again
- * whenever the app comes back to the foreground — the two moments an update
- * is worth having and nobody is mid-thought. Returns an unsubscribe.
+ * Starts checking: once now, and again whenever the app comes back to the
+ * foreground — the two moments an update is worth having and nobody is
+ * mid-thought. Returns an unsubscribe.
  *
  * Mounted above the auth gate (see app/_layout.tsx): a fix for a bug that
- * *prevents* signing in is exactly the one a signed-out user needs.
+ * *prevents* signing in is exactly the one a signed-out user needs. It reads
+ * nothing from storage, so it does not wait for hydration either.
  */
 export function startUpdateChecks(): () => void {
   if (!isSupported()) return () => undefined;
 
-  applyChannel(readUpdateChannel());
   void checkNow({ auto: true });
-
-  const onChannelChange = subscribeUpdateChannel(() => {
-    applyChannel(readUpdateChannel());
-    // A deliberate channel switch is a reason to look straight away, so this
-    // check is not the throttled one.
-    void checkNow();
-  });
 
   const onAppState = AppState.addEventListener('change', (state: AppStateStatus) => {
     if (state === 'active') void checkNow({ auto: true });
   });
 
   return () => {
-    onChannelChange();
     onAppState.remove();
   };
 }
@@ -172,8 +125,8 @@ export interface VersionInfo {
   nativeBuild: string | null;
   /** Short form of the running update's id; null on the embedded bundle. */
   updateId: string | null;
-  /** The channel the binary was built for — not the one in force. */
-  builtForChannel: string | null;
+  /** The channel this install follows, fixed when it was built. */
+  channel: string | null;
   runtimeVersion: string | null;
   /** True when running the bundle that shipped inside the binary. */
   isEmbedded: boolean;
@@ -191,7 +144,7 @@ export function versionInfo(): VersionInfo {
     nativeVersion: Application.nativeApplicationVersion,
     nativeBuild: Application.nativeBuildVersion,
     updateId: Updates.updateId ? Updates.updateId.slice(0, 8) : null,
-    builtForChannel: Updates.channel,
+    channel: Updates.channel,
     runtimeVersion: Updates.runtimeVersion,
     isEmbedded: Updates.isEmbeddedLaunch,
   };

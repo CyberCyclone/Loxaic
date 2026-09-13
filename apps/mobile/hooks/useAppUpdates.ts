@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  applyChannel,
   checkNow,
   isSupported,
   restartIntoUpdate,
@@ -8,11 +7,6 @@ import {
   versionInfo,
   type VersionInfo,
 } from '@/lib/expo-updates';
-import {
-  setUpdateChannel,
-  useUpdateChannel,
-  type UpdateChannel,
-} from '@/lib/update-channel';
 import { electronBridge, type DesktopUpdateState } from '@/lib/endpoint';
 
 export type UpdateStatus = 'off' | 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
@@ -21,8 +15,6 @@ export interface AppUpdates {
   /** False where this app cannot update itself at all: web in a browser,
    * Expo Go, development on native. The whole settings row hides on false. */
   supported: boolean;
-  channel: UpdateChannel;
-  setChannel: (channel: UpdateChannel) => void;
   check: () => void;
   /** Restart into the downloaded update. Only meaningful at `ready`. */
   install: () => void;
@@ -43,8 +35,10 @@ export interface AppUpdates {
  * Two layers do, and they have nothing in common underneath: expo-updates
  * fetches a JS bundle over the air on native, while the desktop app downloads
  * a whole new binary and hands it to the platform's installer. What a person
- * decides is the same in both cases — Stable or Beta, check now, restart —
- * so the settings row and the banner are written once, against this shape.
+ * decides is the same in both cases — check now, restart — so the settings
+ * row and the banner are written once, against this shape. Which channel an
+ * install follows is not among those decisions: it is fixed when the app is
+ * built, so dev, beta and production are separate apps.
  *
  * Both backends are read unconditionally and one is selected, rather than
  * branching over which hook to call: whether a desktop bridge exists is fixed
@@ -79,10 +73,6 @@ function useDesktopUpdates(): Backend | null {
     return () => { live = false; off(); };
   }, [bridge]);
 
-  const setChannel = useCallback((next: UpdateChannel) => {
-    setBridgeError(null);
-    bridge?.updates.setChannel(next).then(setState).catch(failed);
-  }, [bridge]);
   const check = useCallback(() => {
     setBridgeError(null);
     bridge?.updates.check().then(setState).catch(failed);
@@ -99,8 +89,6 @@ function useDesktopUpdates(): Backend | null {
     // still a build that updates — saying so, with the reason, is the only
     // way a person can tell it apart from one that is up to date.
     supported: true,
-    channel: state?.channel ?? 'production',
-    setChannel,
     check,
     install,
     status: bridgeError ? 'error' : (state?.status ?? 'idle'),
@@ -114,7 +102,7 @@ function useDesktopUpdates(): Backend | null {
           nativeVersion: null,
           nativeBuild: null,
           updateId: null,
-          builtForChannel: null,
+          channel: null,
           runtimeVersion: null,
           isEmbedded: false,
         }
@@ -125,26 +113,12 @@ function useDesktopUpdates(): Backend | null {
 /** expo-updates on native; inert everywhere else. */
 function useExpoUpdates(): Backend {
   const supported = isSupported();
-  const channel = useUpdateChannel();
 
   // expo-updates' own hook, through the one module allowed to import it: the
   // states it reports (checking, downloading) are the ones this cannot
   // observe from the outside, since checkNow() awaits both halves in one call.
   const { isChecking, isDownloading, isUpdatePending, checkError, downloadError } = useUpdateState();
   const [localError, setLocalError] = useState<string | null>(null);
-
-  const setChannel = useCallback((next: UpdateChannel) => {
-    // Applied before it is stored: if this build cannot switch — a locally
-    // built release without the header embedded — the preference must not be
-    // left claiming a channel the app is not actually following.
-    const applied = applyChannel(next);
-    if (!applied.ok) {
-      setLocalError(applied.reason ?? 'Could not switch channel.');
-      return;
-    }
-    setLocalError(null);
-    setUpdateChannel(next);
-  }, []);
 
   const check = useCallback(() => {
     setLocalError(null);
@@ -162,9 +136,9 @@ function useExpoUpdates(): Backend {
   const error = localError ?? checkError?.message ?? downloadError?.message ?? null;
   // An error outranks a pending update. `isUpdatePending` stays true from a
   // completed download until the app reloads, so tested first it made every
-  // later error unreachable — a refused channel switch rendered as "An
-  // update is ready" and the person never learned their Beta choice did not
-  // take. A staged update is less urgent than a thing that just went wrong.
+  // later error unreachable — a failed check rendered as "An update is ready"
+  // and the person never learned something had gone wrong. A staged update is
+  // less urgent than a thing that just went wrong.
   const status: UpdateStatus = isChecking
     ? 'checking'
     : isDownloading
@@ -177,8 +151,6 @@ function useExpoUpdates(): Backend {
 
   return {
     supported,
-    channel,
-    setChannel,
     check,
     install,
     status,
