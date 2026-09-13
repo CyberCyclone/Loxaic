@@ -1672,6 +1672,23 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Play refuses an API upload to an app that has never had a release**, so the first App
   Bundle for each listing goes through the Play Console by hand. This is the most common
   reason a first automated submission fails, and it looks nothing like its cause.
+- **The mobile app is stamped with the *numeric* version, even on a beta tag.** `expo.version`
+  becomes `CFBundleShortVersionString`, and Apple requires period-separated integers —
+  `1.2.0-beta.1` is rejected at upload (ITMS-90060), server-side, long after a `--no-wait`
+  build reported success. So a beta would silently never reach TestFlight from a green run.
+  The desktop and server keep the full version, because electron-updater's feed rules are
+  built on the prerelease component; a beta build is told apart on mobile by its build number
+  and the channel it reports.
+- **"Does this runtime have a build?" and "has the store got it?" are different questions.**
+  The build gate answers the first; submission must not ride on it. It did, which meant the
+  bootstrap build the setup requires would leave the *first* release submitting nothing, and a
+  release whose build succeeded but whose submission failed could never retry. The skip branch
+  submits the existing build instead.
+- **A store failure on one platform must not stop the other being queued.** iOS is simply
+  first in the loop, and `--auto-submit-with-profile` adds up-front failure modes an Apple
+  account can produce (expired key, missing app record) — under `set -e` those aborted the
+  step before Android was reached. Failures are collected per platform and the step fails
+  after both have had their turn, which keeps failing-closed without coupling the platforms.
 - **A JS-only release produces no new store build**, which is correct rather than a failure:
   the runtime version has not moved, so everyone receives the update over the air and the
   TestFlight and Play version numbers stay where they are.

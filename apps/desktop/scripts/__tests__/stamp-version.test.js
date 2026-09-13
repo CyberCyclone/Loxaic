@@ -54,7 +54,7 @@ describe("stampFiles", () => {
     return root;
   }
 
-  it("stamps all three files with the given version", () => {
+  it("gives the mobile app a store-legal version on a beta tag", () => {
     const root = scratchRepo();
     stampFiles(root, "1.2.3-beta.4");
 
@@ -62,9 +62,24 @@ describe("stampFiles", () => {
     const server = JSON.parse(readFileSync(path.join(root, "apps/server/package.json"), "utf8"));
     const mobile = JSON.parse(readFileSync(path.join(root, "apps/mobile/app.json"), "utf8"));
 
+    // The desktop needs the prerelease component — electron-updater's feed
+    // rules are built on it.
     expect(desktop.version).toBe("1.2.3-beta.4");
     expect(server.version).toBe("1.2.3-beta.4");
-    expect(mobile.expo.version).toBe("1.2.3-beta.4");
+    // Apple does not: expo.version becomes CFBundleShortVersionString, which
+    // must be period-separated integers, and `1.2.3-beta.4` is rejected at
+    // upload (ITMS-90060) — server-side, long after a --no-wait build has
+    // reported success, so every beta would silently never reach TestFlight.
+    expect(mobile.expo.version).toBe("1.2.3");
+  });
+
+  it("leaves a stable version identical everywhere", () => {
+    const root = scratchRepo();
+    stampFiles(root, "1.2.3");
+    const mobile = JSON.parse(readFileSync(path.join(root, "apps/mobile/app.json"), "utf8"));
+    const desktop = JSON.parse(readFileSync(path.join(root, "apps/desktop/package.json"), "utf8"));
+    expect(mobile.expo.version).toBe("1.2.3");
+    expect(desktop.version).toBe("1.2.3");
   });
 
   it("touches exactly the version field — a package.json's other fields survive untouched", () => {

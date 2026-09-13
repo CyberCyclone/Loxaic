@@ -387,6 +387,7 @@ jobs:
         # still succeeds and a log line indistinguishable from the real case.
         run: |
           set -euo pipefail
+          FAILED=""
           for platform in ios android; do
             if [ "$FORCE_BUILD" = "true" ]; then
               echo "$platform: forced by workflow input"
@@ -400,25 +401,46 @@ jobs:
                 --non-interactive \
                 --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
               if [ "$COUNT" != "0" ]; then
-                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; skipping"
+                # A binary for this runtime already exists — from the
+                # bootstrap build the setup docs require, a manual run, or a
+                # re-run of this release. That answers "does this runtime have
+                # a build?" and says nothing about "has the store got it", so
+                # it submits the existing build rather than skipping the
+                # platform. Without this the first release after setup would
+                # submit nothing at all, and a release whose build succeeded
+                # but whose submission failed could never retry.
+                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; submitting it"
+                eas submit --platform "$platform" --profile "$VARIANT" \
+                  --non-interactive || FAILED="$FAILED $platform:submit"
                 continue
               fi
               echo "$platform: no $VARIANT build for runtime $RUNTIME yet"
             fi
             # --no-wait: a build takes far longer than this workflow should,
             # and the update is already published — the binary catches up.
-            # No `|| true`: this block is documented as failing closed, and a
-            # build that could not even be *queued* is exactly the case where
-            # the update has published for a runtime no binary will ever have.
             #
             # Both platforms submit on completion: a store build is only
             # useful once the store has it, and the submission is scheduled
             # server-side so --no-wait still holds. iOS goes to TestFlight or
             # App Store Connect, Android to its Play listing's internal track
             # — neither goes live without a human, which is the point.
+            #
+            # Failures are collected rather than aborting the loop. The build
+            # half still fails the step (see below), but iOS is simply first
+            # in the list, and an Apple-side misconfiguration — an expired App
+            # Store Connect key, a missing app record — must not stop Android
+            # being queued at all.
             eas build --platform "$platform" --profile "$VARIANT" \
               --auto-submit-with-profile "$VARIANT" \
               --non-interactive --no-wait --json \
-              > "build-$platform.json"
+              > "build-$platform.json" || FAILED="$FAILED $platform:build"
           done
+
+          # Failing closed, but only after both platforms have had their turn:
+          # a build that could not even be queued is exactly the case where an
+          # update has published for a runtime no binary will ever have.
+          if [ -n "$FAILED" ]; then
+            echo "::error::$VARIANT failed for:$FAILED" >&2
+            exit 1
+          fi
           echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
