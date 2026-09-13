@@ -1594,12 +1594,24 @@ screenshots showing that behaviour working. Writing those tests is the implement
   `parseReleaseTag` accepts `vX.Y.Z` and `vX.Y.Z-beta.N` and nothing else, and the same parser
   is what CI's `meta` job uses, so a tag can never mean one thing to the stamp and another to
   the workflow.
-- **One binary, two channels.** `beta` is not a separate app, a separate build profile, or a
-  separate bundle identifier — it is the `expo-channel-name` request header, set at runtime
-  (`lib/expo-updates.ts`). This is why `app.json` declares
-  `updates.requestHeaders: {"expo-channel-name": "production"}`: expo-updates only lets you
-  override a key the build already embeds, so without that line a locally-built release (the
-  e2e's, or any `expo run:ios --configuration Release`) throws the moment someone taps Beta.
+- **Three apps, one config.** dev, beta and production are separate apps — separate display
+  names, bundle identifiers, package names, schemes and update channels — and
+  `apps/mobile/app.config.js` is the only place that table lives. `APP_VARIANT` picks one;
+  unset is production (so `expo start`, Expo Go and a plain `expo export` all work), and an
+  unrecognised value throws rather than quietly building production under a name nobody
+  meant to ship. The build profile in `eas.json` carries the matching `APP_VARIANT`, so
+  `--profile beta` is the only thing that has to be right.
+- **`app.config.js` overlays `app.json`; it does not replace it.** `stamp-version.mjs` writes
+  the release version by parsing and re-serialising that JSON, so a config that existed only
+  as JavaScript would leave the stamp nothing to write to. The dynamic config passes
+  `version` through untouched, which is the half of the contract it has to keep — and
+  `app.json` keeps everything identical across variants.
+- **A variant is its own runtime version, so `eas update` must run with the same
+  `APP_VARIANT` as the build it targets.** The fingerprint policy hashes native config and
+  the bundle identifier is native config, so the three variants hash differently — which is
+  what makes the release build gate a per-platform, *per-variant* question. An update
+  published under the wrong variant reaches nobody, and the only symptom is the gate
+  starting a native build it "should not need".
 - **`Updates.channel` is what the binary was *built* for and never changes**, however many
   times someone switches. So the stored preference (`loxaic-update-channel`, in
   `KNOWN_KEYS`) is the source of truth and is re-applied on every launch. The override itself

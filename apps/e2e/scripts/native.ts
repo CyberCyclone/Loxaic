@@ -212,7 +212,7 @@ export function iosAppPath(): string {
   }
   const app = path.join(
     MOBILE_DIR,
-    'ios/build/Build/Products/Release-iphonesimulator/loxaic.app',
+    'ios/build/Build/Products/Release-iphonesimulator/Loxaic.app',
   );
   if (!existsSync(app)) {
     throw new Error(

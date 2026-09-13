@@ -143,7 +143,11 @@ export default tseslint.config(
   //    no .cjs extension; Metro loads them via require() regardless
   //    of the package's own "type" field. ──────────────────────
   {
-    files: ["apps/mobile/babel.config.js", "apps/mobile/metro.config.js"],
+    files: [
+      "apps/mobile/app.config.js",
+      "apps/mobile/babel.config.js",
+      "apps/mobile/metro.config.js",
+    ],
     extends: [js.configs.recommended],
     languageOptions: { sourceType: "commonjs", globals: globals.node },
   },
