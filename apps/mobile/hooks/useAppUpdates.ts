@@ -107,7 +107,7 @@ function useDesktopUpdates(): Backend | null {
           // place it can be seen at all — an install left on beta with no
           // control and no indication is the failure this change is removing,
           // not one to introduce on the platform it hasn't reached yet.
-          channel: state.channel ?? null,
+          channel: state.channel,
           runtimeVersion: null,
           isEmbedded: false,
         }
