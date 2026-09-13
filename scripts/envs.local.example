@@ -1,0 +1,30 @@
+# Copy to scripts/envs.local (gitignored by `*.local`) and edit.
+#
+# The box's address is deliberately not committed: this repository is going
+# public, and where someone's home server lives is nobody else's business.
+
+# Where the environments run. Must accept your SSH key without a password —
+# the timer runs unattended.
+ENVS_SSH=you@192.168.1.13
+
+# What a phone dials to reach them. The tailnet name rather than the LAN
+# address, because this is what gets baked into the app bundle and advertised
+# by Metro, and a phone testing a preview is as likely to be on cellular as on
+# the house wifi. The LAN address keeps working either way — the ports are
+# published on every interface.
+ENVS_HOSTNAME=yourbox.tailXXXX.ts.net
+
+# Where they live on that host, under $HOME. Optional.
+#ENVS_ROOT=loxaic-envs
+
+# The dev slot points at a real model; previews stay on the mock. Unset this
+# and the dev slot falls back to mock inference and says so. LM Studio must be
+# set to listen on the LAN, not just loopback, for a container to reach it.
+DEV_INFERENCE_URL=http://192.168.1.13:1234
+
+# Agent sandboxes are off in both slots, because turning them on means mounting
+# the Docker socket into a container running code from a pull request. Set to
+# `host` only for a branch you have read, and only knowingly: it runs that
+# branch's agent commands as your user on that machine.
+#PREVIEW_SANDBOX_MODE=off
+#DEV_SANDBOX_MODE=off

@@ -1,0 +1,119 @@
+# One environment on the box: its own database, its own server, and a Metro
+# dev server so Expo Go can open it.
+#
+# Two slots use this file, distinguished only by the variables `envs.sh` writes
+# into their env file and by the compose project name (`preview` / `dev`), so
+# every resource — containers, network, volumes — is namespaced per slot and
+# `docker compose -p <slot> down -v` takes exactly one environment away.
+#
+#   preview   whichever pull request is being reviewed right now, on fixed
+#             ports so the same Expo Go link works for every one of them
+#   dev       the trunk, redeployed as `dev` moves, and what the dev app build
+#             talks to
+#
+# Two deliberate absences, because the preview slot runs code from a pull
+# request that has not been reviewed yet:
+#
+#   - **No Docker socket.** The agent's container sandbox would need
+#     /var/run/docker.sock mounted, which hands that code the daemon and with
+#     it the whole machine. SANDBOX_MODE=off by default; see ENVIRONMENTS.md
+#     for the opt-in when you are testing sandbox behaviour on a branch you
+#     trust.
+#   - **No credentials of any kind.** The slots differ on inference (the dev
+#     slot points at the box's own LM Studio, previews stay on the mock) and
+#     neither is given a key to anything.
+
+services:
+  db:
+    image: postgres:17-alpine
+    # Every service here restarts, or none should. With `server` and `metro`
+    # set to come back after a host reboot and this one not, the box would
+    # return with a server crash-looping against a database that never started
+    # — and nothing would repair it, because `dev up` sees metro running and
+    # the state file holding the right commit and reports the slot current.
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: loxaic
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Deliberately no published port: nothing outside this slot's network has
+    # any business reaching its database, and publishing one per slot would
+    # put a trivially-credentialed Postgres on the LAN.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/server.Dockerfile
+      args:
+        # `pr-136@ac7a19a` / `dev@4961336`, so the Settings row names the
+        # deploy rather than reporting a bare 0.0.0 and leaving you to guess
+        # which commit you are looking at. The ARG sits after the expensive
+        # layers in server.Dockerfile, so changing it per deploy rebuilds one
+        # cheap layer rather than reinstalling the workspace.
+        LOXAIC_VERSION: "${SLOT_VERSION:?envs.sh writes this}"
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/loxaic
+      STREAM_BACKEND: memory
+      # Previews are mock: they run unreviewed code, exist to check a flow
+      # quickly, and several of them a day would otherwise queue on one model.
+      # The dev slot is the opposite case — merged code, long-lived, and the
+      # things only a real model shows (tool-call formatting, streaming
+      # timing, the prompt-reuse figures) are exactly what it is for.
+      MOCK_INFERENCE: "${SLOT_MOCK_INFERENCE:?envs.sh writes this}"
+      INFERENCE_BASE_URL: "${SLOT_INFERENCE_URL:-http://localhost:4002}"
+      SANDBOX_MODE: "${SLOT_SANDBOX_MODE:-off}"
+      UPLOADS_DIR: /data/uploads
+      # Per slot, written once by envs.sh and kept in its env file. A shared
+      # secret would let a session minted against the preview slot be
+      # presented to the dev one.
+      BETTER_AUTH_SECRET: "${SLOT_AUTH_SECRET:?envs.sh writes this}"
+      # better-auth builds its callback URLs and cookie domain from this, so
+      # it has to be the address the phone and browser actually use — not
+      # localhost, which here would mean the container.
+      BETTER_AUTH_URL: "${SLOT_BASE_URL:?envs.sh writes this}"
+      # The Expo Go app loads its JS from Metro's origin but calls the API on
+      # the server's, so Metro's origin has to be trusted too or better-auth
+      # refuses every request the app makes.
+      TRUSTED_ORIGINS: "${SLOT_BASE_URL},${SLOT_METRO_URL}"
+    ports:
+      - "${SLOT_SERVER_PORT:?envs.sh writes this}:4000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  metro:
+    build:
+      context: ../..
+      dockerfile: infra/docker/metro.Dockerfile
+    environment:
+      # Both halves of what Expo hands the phone. The hostname is whatever the
+      # phone can actually resolve — the box's tailnet name, so Expo Go works
+      # away from the LAN as well as on it — and the port must match the
+      # published one, since Expo builds its URL from its own listening port.
+      REACT_NATIVE_PACKAGER_HOSTNAME: "${SLOT_HOSTNAME:?envs.sh writes this}"
+      METRO_PORT: "${SLOT_METRO_PORT:?envs.sh writes this}"
+      # Baked into the bundle at serve time: this slot's app talks to this
+      # slot's server. Both are set because endpoint.ts tries the LAN one
+      # first and falls back to the remote one, and here they are the same.
+      EXPO_PUBLIC_API_URL: "${SLOT_BASE_URL}"
+      EXPO_PUBLIC_LAN_API_URL: "${SLOT_BASE_URL}"
+    ports:
+      - "${SLOT_METRO_PORT}:${SLOT_METRO_PORT}"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:

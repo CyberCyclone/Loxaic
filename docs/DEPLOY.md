@@ -175,6 +175,11 @@ somewhere else. Without a build present, the server runs API-only.
 
 ## Expo Go on your phone
 
+**Reviewing a pull request, or the trunk, without running anything locally:**
+`scripts/envs.sh` keeps a preview slot and a dev stack on a machine you own,
+each with its own Metro server, so a pull request can be opened in Expo Go from
+anywhere on your tailnet. See [ENVIRONMENTS.md](ENVIRONMENTS.md).
+
 **Dev iteration** (with your dev machine running):
 
 ```bash

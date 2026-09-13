@@ -1532,6 +1532,58 @@ screenshots showing that behaviour working. Writing those tests is the implement
   skipped calls, because whether the stop lands before or during the first call is a real race
   and both outcomes are correct.
 
+### Environments on the box
+
+- **`scripts/envs.sh` deploys from your workstation, and nothing in GitHub can reach the
+  box.** A self-hosted runner, an SSH key in repository secrets, or a tunnel would each end
+  with something in GitHub holding a credential to a machine on a home network — and once
+  this repository is public, a fork's pull request is a stranger's code. So the workstation,
+  already authenticated to GitHub, pushes to the box over an SSH key that already exists;
+  the box needs no GitHub access, no inbound port, and no secrets. Which pull requests get
+  deployed is whichever numbers get typed.
+- **The slot's configuration comes from the workstation's checkout, never from the commit
+  being deployed.** `compose.yml` and `metro.Dockerfile` are sent over after `git clean`.
+  Otherwise a pull request could rewrite the terms it runs under — mounting the Docker
+  socket, say — and a pull request opened before this tooling existed would have no
+  `compose.yml` at all and be undeployable, which is most of them.
+- **One preview slot on fixed ports, because the Expo Go URL is typed by hand.**
+  `exp://<host>:42001` has to be the same link for every pull request, so `preview up`
+  replaces rather than adds. Only one PR can be previewed at a time — an accepted cost.
+- **A preview changing pull request drops its database first; the dev slot never does.** Two
+  branches can carry different migrations, and one branch's schema on the other's data fails
+  in ways that belong to neither. Redeploying the *same* PR keeps its volumes so you stay
+  signed in; the dev slot holds long-lived test data and migrations are forward-only, so
+  moving the trunk forward is not a reason to drop it (`dev down --volumes` is).
+- **Dev runs a real model, previews run the mock.** A preview runs unreviewed code to check a
+  flow quickly, and mocking means several a day cost nothing. The dev slot is merged code, is
+  what the dev app build talks to, and the things only a real model shows — tool-call
+  formatting, streaming timing, the prompt-reuse figures — are what a standing private
+  environment is for. There is one dev slot, so it cannot queue behind itself.
+- **The env file lives outside the build context.** It carries the slot's
+  `BETTER_AUTH_SECRET`, and `server.Dockerfile` does `COPY . .` while `.dockerignore` does
+  not exclude `.env` — so an env file inside the worktree baked the secret into an image
+  layer *and* invalidated the `COPY` cache on every config change, turning a short redeploy
+  into a full workspace reinstall.
+- **Metro listens on its published port inside the container as well as outside.** Expo
+  builds the URL it hands the phone from its own listening port and knows nothing about a
+  port mapping, so the conventional `42001:8081` would advertise `exp://host:8081` — a port
+  nothing serves.
+- **`scripts/envs.local` is gitignored (`*.local`) and holds the box's address.** The
+  repository is going public; where someone's home server lives does not belong in it. The
+  script refuses to run rather than defaulting to anyone's machine.
+- **An environment is isolated from the *box*, not from the network.** No Docker socket and
+  no credentials — but both containers have unrestricted egress to the LAN and the internet,
+  and the build runs the deployed commit's own `pnpm install` (and so its lockfile's
+  postinstall scripts) as root. That makes this safe for code you have read and unsafe as a
+  sandbox for code you have not; deploying a fork's pull request is running a stranger's
+  build scripts on your LAN.
+- **Uncertainty about the preview slot's contents refuses rather than proceeds.** Reading the
+  state file over ssh can fail, and "I cannot tell what is deployed" used to be
+  indistinguishable from "nothing is deployed" — which chose to keep the volumes, so the next
+  deploy would run one pull request's migrations on another's database. Likewise `sync` tears
+  the slot down only on a definite `CLOSED`/`MERGED`: it runs unattended every five minutes,
+  and any other answer, including failing to get one, leaves the slot alone.
+
 ### Releases and over-the-air updates
 
 - **The version lives in the git tag, nowhere else.** All three version fields
