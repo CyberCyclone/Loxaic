@@ -30,9 +30,16 @@ function run(args, cwd = repoRoot) {
   // `\"` as an escaped quote. `%NAME%` still expands inside quotes, which no
   // quoting switches off; a `%` in the checkout path is the one way left to
   // break this.
+  //
+  // The command name itself is left bare, and must be. pnpm.cmd locates its
+  // own JS entry through `%~dp0`, and cmd.exe resolves `%~dp0` against the
+  // *current directory* when a batch file is invoked by a quoted bare name —
+  // so `"pnpm"` went looking for D:\a\Open-Shannon\pnpm\bin\pnpm.cjs, outside
+  // the checkout, and died with MODULE_NOT_FOUND. It is always the literal
+  // `pnpm` here, which holds nothing cmd could re-parse.
   const win = process.platform === "win32";
   const quote = (a) => `"${String(a).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1")}"`;
-  const argv = win ? args.map(quote) : args;
+  const argv = win ? [args[0], ...args.slice(1).map(quote)] : args;
   execFileSync(argv[0], argv.slice(1), { cwd, stdio: "inherit", shell: win });
 }
 
