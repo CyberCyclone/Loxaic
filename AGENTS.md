@@ -1647,6 +1647,25 @@ screenshots showing that behaviour working. Writing those tests is the implement
   shortcut: the binary is identical and its first launch fetches the update just published. A
   missing APK warns rather than blocking the release — the desktop installers are the hard
   requirement.
+- **EAS holds the App Store Connect key; GitHub holds only `EXPO_TOKEN`.** The submit profiles
+  in `eas.json` are deliberately minimal — with the API key stored on EAS, the App Store
+  Connect record is resolved from the bundle identifier the build already carries, so nothing
+  account-specific is committed. The alternative (`ascApiKey*` in eas.json, or `EXPO_ASC_*`
+  with the `.p8` as a repository secret) would put an Apple credential in CI for no benefit.
+- **CI cannot create credentials.** `eas build --non-interactive` can only use what already
+  exists, so the first build of each platform *and each variant* has to be run by hand once —
+  that is what generates the Android keystore and registers the iOS certificate and profile.
+  A release run that fails with a credentials error is almost always this, not a broken
+  workflow.
+- **iOS submits on build completion, Android does not.** An iOS build is only useful once
+  Apple has it, and `--auto-submit-with-profile` schedules that server-side so `--no-wait`
+  still holds. Android is distributed as an APK on the GitHub release rather than through
+  Play, so there is nothing to submit it to. Note EAS *uploads* and does not submit for
+  review: an external TestFlight group needs a Beta App Review and a store release needs a
+  human in App Store Connect.
+- **A JS-only release produces no new TestFlight build**, which is correct rather than a
+  failure: the runtime version has not moved, so testers receive the update over the air and
+  the TestFlight version number stays where it was.
 - **A release tag publishes to `production` *and* `beta`.** Beta must stay a strict superset,
   or opting in would strand someone on an older build than the stable release they would
   otherwise have had.

@@ -513,7 +513,17 @@ jobs:
             # No `|| true`: this block is documented as failing closed, and a
             # build that could not even be *queued* is exactly the case where
             # the update has published for a runtime no binary will ever have.
-            eas build --platform "$platform" --profile "$VARIANT" --non-interactive --no-wait --json \
+            #
+            # iOS submits itself on completion; Android deliberately does not.
+            # An iOS build is only useful once Apple has it — TestFlight for
+            # beta, App Store Connect for production — and the submission is
+            # scheduled server-side, so --no-wait still holds. Android is
+            # distributed as an APK attached to the release by the job below,
+            # not through Play, so there is nothing to submit it to.
+            SUBMIT=()
+            [ "$platform" = "ios" ] && SUBMIT=(--auto-submit-with-profile "$VARIANT")
+            eas build --platform "$platform" --profile "$VARIANT" \
+              "${SUBMIT[@]}" --non-interactive --no-wait --json \
               > "build-$platform.json"
           done
           echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"

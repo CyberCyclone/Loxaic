@@ -355,6 +355,63 @@ Repository secret `EXPO_TOKEN` (an Expo access token) is what lets CI publish;
 the publish step fails without one. Both workflows skip themselves entirely on
 a fork, so a fork's `dev` never tries to publish to this project.
 
+### Before the first release: credentials EAS has to hold
+
+CI runs `eas build` with `--non-interactive`, which **cannot create
+credentials** — it can only use ones that already exist. So each of these is
+run once, by hand, from a machine signed in to EAS, and never again.
+
+**Android** — one interactive build per variant, which is what makes EAS
+generate and store the upload keystore:
+
+```bash
+cd apps/mobile
+APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile beta
+APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production
+```
+
+**iOS** needs an Apple Developer account, and three things set up in this
+order:
+
+1. **App Store Connect records**, one per variant, because they are separate
+   apps: `com.loxaic.app` ("Loxaic") and `com.loxaic.app.beta` ("Loxaic
+   Beta"). A submission cannot create them.
+2. **An App Store Connect API key** (Users and Access → Integrations → App
+   Store Connect API, role App Manager). Download the `.p8` — Apple lets you
+   download it exactly once.
+3. **Credentials, uploaded to EAS rather than to GitHub**, per variant:
+
+   ```bash
+   cd apps/mobile
+   APP_VARIANT=beta npx --yes eas-cli@latest credentials --platform ios
+   APP_VARIANT=production npx --yes eas-cli@latest credentials --platform ios
+   ```
+
+   For each: a **Distribution Certificate** and an **App Store provisioning
+   profile**, then *App Store Connect API Key* → upload the `.p8`.
+
+EAS holding the key is the point: CI's only secret stays `EXPO_TOKEN`. The
+alternative — `ascApiKeyPath`/`ascApiKeyId`/`ascApiKeyIssuerId` in `eas.json`,
+or the `EXPO_ASC_*` environment variables with the `.p8` as a GitHub secret —
+would put an Apple credential in this repository's CI for no benefit.
+
+The `submit` profiles in `eas.json` are deliberately minimal. With the API key
+in place EAS resolves the App Store Connect record from the bundle identifier
+the build already carries, so there is nothing account-specific committed here.
+If a lookup is ever ambiguous, `ascAppId` (the numeric id from the record's App
+Store Connect URL) pins it — neither that nor `appleTeamId` is secret.
+
+**What a release then does on iOS:** `eas build --auto-submit-with-profile`
+hands the build to Apple when it finishes — TestFlight for beta, App Store
+Connect for production. EAS *uploads*; it does not submit for review, and it
+cannot: an external TestFlight group needs a Beta App Review, and a store
+release needs you to press the button in App Store Connect. Android is not
+submitted anywhere — it is the APK attached to the GitHub release.
+
+A JS-only release produces no new TestFlight build at all, which is correct
+and worth expecting: the runtime version has not moved, so testers get the
+update over the air and the TestFlight version number stays where it was.
+
 ### Before the first production publish: sign the bundles
 
 Over-the-air bundles are currently trusted on TLS alone — expo-updates accepts whatever the
