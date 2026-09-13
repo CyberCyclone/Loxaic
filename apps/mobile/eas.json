@@ -21,9 +21,6 @@
       "autoIncrement": true,
       "env": {
         "APP_VARIANT": "beta"
-      },
-      "android": {
-        "buildType": "apk"
       }
     },
     "production": {
@@ -32,18 +29,21 @@
       "autoIncrement": true,
       "env": {
         "APP_VARIANT": "production"
-      },
-      "android": {
-        "buildType": "apk"
       }
     }
   },
   "submit": {
     "beta": {
-      "ios": {}
+      "ios": {},
+      "android": {
+        "track": "internal"
+      }
     },
     "production": {
-      "ios": {}
+      "ios": {},
+      "android": {
+        "track": "internal"
+      }
     }
   }
 }

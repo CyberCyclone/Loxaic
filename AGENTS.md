@@ -1657,15 +1657,24 @@ screenshots showing that behaviour working. Writing those tests is the implement
   that is what generates the Android keystore and registers the iOS certificate and profile.
   A release run that fails with a credentials error is almost always this, not a broken
   workflow.
-- **iOS submits on build completion, Android does not.** An iOS build is only useful once
-  Apple has it, and `--auto-submit-with-profile` schedules that server-side so `--no-wait`
-  still holds. Android is distributed as an APK on the GitHub release rather than through
-  Play, so there is nothing to submit it to. Note EAS *uploads* and does not submit for
-  review: an external TestFlight group needs a Beta App Review and a store release needs a
-  human in App Store Connect.
-- **A JS-only release produces no new TestFlight build**, which is correct rather than a
-  failure: the runtime version has not moved, so testers receive the update over the air and
-  the TestFlight version number stays where it was.
+- **Both platforms submit on build completion, and neither goes live.**
+  `--auto-submit-with-profile` schedules the upload server-side, so `--no-wait` still holds:
+  iOS to TestFlight or App Store Connect, Android to that variant's Play listing on the
+  **internal** track. EAS uploads and does not release — an external TestFlight group needs a
+  Beta App Review, an App Store release needs the button in App Store Connect, and a Play
+  release means promoting the internal build in Play Console. A tag push must never reach
+  every user unreviewed.
+- **Beta and production are two Play listings, not two tracks.** They have different package
+  names (`com.loxaic.app`, `com.loxaic.app.beta`), which is what lets a tester keep both
+  installed — the same model as iOS and the desktop. Only `dev` builds an APK, because it is
+  installed from a link rather than submitted; the store profiles take EAS's App Bundle
+  default, which Play has required for new apps since 2021.
+- **Play refuses an API upload to an app that has never had a release**, so the first App
+  Bundle for each listing goes through the Play Console by hand. This is the most common
+  reason a first automated submission fails, and it looks nothing like its cause.
+- **A JS-only release produces no new store build**, which is correct rather than a failure:
+  the runtime version has not moved, so everyone receives the update over the air and the
+  TestFlight and Play version numbers stay where they are.
 - **A release tag publishes to `production` *and* `beta`.** Beta must stay a strict superset,
   or opting in would strand someone on an older build than the stable release they would
   otherwise have had.
