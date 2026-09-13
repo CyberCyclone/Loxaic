@@ -1,9 +1,9 @@
-name: Preview update
+name: Dev update
 
-# Every merge to `dev` — the trunk — goes out to the `preview` branch, which
-# development builds follow. That is the whole point of the branch: it is
-# where the current state of the trunk can be opened on a device without
-# cutting a release. Release tags are a different workflow (release.yml).
+# Every merge to `dev` — the trunk — goes out over the air to the Loxaic Dev
+# app, so what is on the trunk can be opened on a phone without cutting a
+# release or building anything. Release tags are a different workflow
+# (release.yml), and the beta and production apps never see this channel.
 on:
   push:
     branches: [dev]
@@ -25,12 +25,12 @@ permissions:
 # One publish at a time, and only the newest matters — an update superseded
 # before it finished publishing is wasted work.
 concurrency:
-  group: preview-update
+  group: dev-update
   cancel-in-progress: true
 
 jobs:
-  expo-preview:
-    name: publish to preview
+  expo-dev:
+    name: publish to the dev channel
     runs-on: ubuntu-latest
     # A fork has no EXPO_TOKEN and no business publishing to this project's
     # update branches, so it skips the job rather than failing the push.
@@ -52,8 +52,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Publish
         working-directory: apps/mobile
-        # No EXPO_PUBLIC_* endpoint baked in, deliberately: a published bundle
-        # resolves its server the way every install does (auto-detect, then
-        # the Settings override), rather than carrying one developer's tailnet
-        # address to everyone who opens it.
-        run: eas update --branch preview --message "${{ github.sha }}" --non-interactive
+        env:
+          # The same variant the dev app was *built* as. These have to agree:
+          # the channel is embedded in the binary, and an update published
+          # under a different variant has a different runtime version, so it
+          # reaches nobody and nothing reports an error.
+          APP_VARIANT: dev
+        # `--environment development` is what supplies EXPO_PUBLIC_API_URL,
+        # from EAS rather than from this repository — the same value the dev
+        # build baked in, so the two cannot drift.
+        #
+        # This deliberately reverses the rule the preview workflow held to,
+        # which baked in no endpoint so a published bundle resolved its server
+        # the way every install does. That was right for a bundle anyone might
+        # open; it is wrong for the dev app, which exists to point at the dev
+        # stack and is private. Whoever installs it can still point it
+        # elsewhere from the sign-in screen — the stored override wins over a
+        # baked-in default.
+        run: |
+          eas update --channel dev --environment development \
+            --message "${{ github.sha }}" --non-interactive

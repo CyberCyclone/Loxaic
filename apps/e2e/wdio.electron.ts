@@ -94,12 +94,16 @@ function appBinaryPath(): string {
         ]
       : process.platform === 'win32'
         ? [beta ? 'win-unpacked/Loxaic Beta.exe' : 'win-unpacked/Loxaic.exe']
-        : beta
-          ? // `executableName` in the beta variant pins the first; the second
-            // is what electron-builder would infer from "Loxaic Beta" if that
-            // pin were ever dropped, and costs nothing to also accept.
-            ['linux-unpacked/loxaic-beta', 'linux-unpacked/loxaic beta']
-          : ['linux-unpacked/loxaic'];
+        : // Both names are pinned by `linux.executableName` in
+          // builder-variants.cjs. Without that pin electron-builder falls back
+          // to the *package* name rather than the product name — LinuxPackager
+          // uses `appInfo.sanitizedName.toLowerCase()`, and `sanitizedName` is
+          // `sanitizeFileName("@loxaic/desktop")`, which keeps the `@` — so
+          // the fallback is listed too and both variants would otherwise have
+          // been wrong here, not just the beta one.
+          beta
+          ? ['linux-unpacked/loxaic-beta', 'linux-unpacked/@loxaicdesktop']
+          : ['linux-unpacked/loxaic', 'linux-unpacked/@loxaicdesktop'];
 
   for (const rel of candidates) {
     const full = path.join(DESKTOP_DIST, rel);

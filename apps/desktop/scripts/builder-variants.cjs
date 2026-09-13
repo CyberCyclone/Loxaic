@@ -42,11 +42,14 @@ const VARIANTS = {
     // space: an installer called "Loxaic Beta-1.2.3-mac-arm64.dmg" is a
     // download link nobody can paste without quoting.
     artifactName: "Loxaic-Beta-${version}-${os}-${arch}.${ext}",
-    // Pinned rather than inferred. electron-builder derives the Linux
-    // executable from the product name by lowercasing it *without* replacing
-    // whitespace, so "Loxaic Beta" would become `loxaic beta` — a name with a
-    // space in it, which is awkward in a .desktop entry and impossible to
-    // guess from the outside. Naming it here makes it ours.
+    // Pinned rather than inferred, for both variants. Without it
+    // LinuxPackager falls back to `appInfo.sanitizedName.toLowerCase()`, and
+    // `sanitizedName` is `sanitizeFileName(metadata.name)` — the *package*
+    // name, `@loxaic/desktop`, which sanitizes to `@loxaicdesktop` because
+    // only the slash is stripped. Neither productName nor artifactName
+    // influences it, so the stable app's Linux executable was already
+    // misnamed; it is latent only because packaging has never been exercised
+    // on Linux here.
     executableName: "loxaic-beta",
     channel: "beta",
   },

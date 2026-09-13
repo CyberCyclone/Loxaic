@@ -1627,6 +1627,26 @@ screenshots showing that behaviour working. Writing those tests is the implement
 - **Nothing here ever reloads the app on its own.** `checkNow` downloads and stops; the
   restart is a banner the person taps. Automatic checks are throttled to 15 minutes and
   single-flighted; "Check now" bypasses the throttle, because that is someone asking.
+- **A release is cut by `scripts/release.sh`, from your workstation, and CI does the rest.**
+  `apps/desktop/scripts/next-tag.mjs` decides the version from the tags that exist — betas
+  continue an unreleased line rather than starting a new one, a plain bump refuses while a
+  newer beta is outstanding and names `promote` instead, and `promote` tags *the beta's own
+  commit* rather than `dev`'s head, because releasing what the testers ran is the point.
+- **The release workflow is a matrix over variants, and the build gate is per variant.** Each
+  variant has its own bundle identifier, the fingerprint policy hashes native config, so their
+  runtime versions differ — a finished build of one says nothing about the other. `APP_VARIANT`
+  is set for the whole `expo-update` job so the config a publish runs against is the one the
+  matching build used; a mismatch publishes an update that reaches nobody and reports nothing.
+- **`advance-branches` moves `beta` and `master` only after the release has published**, with
+  a non-forced push: a branch pointer means "this shipped", and a tag cut from an older base
+  fails there rather than rewriting what a branch says. `GITHUB_TOKEN` pushes never trigger
+  workflows, so this cannot start another CI run.
+- **Android is an APK on the GitHub release, not Play.** The `android-apk` job waits for a
+  finished EAS build and attaches it, because a release with no APK leaves an Android user
+  nothing to install. Reusing an existing build for that runtime is correct rather than a
+  shortcut: the binary is identical and its first launch fetches the update just published. A
+  missing APK warns rather than blocking the release — the desktop installers are the hard
+  requirement.
 - **A release tag publishes to `production` *and* `beta`.** Beta must stay a strict superset,
   or opting in would strand someone on an older build than the stable release they would
   otherwise have had.
