@@ -207,7 +207,15 @@ jobs:
 
   advance-branches:
     name: move the release pointers
-    needs: [meta, publish-release]
+    # `expo-update` is in this list and `publish-release`'s gate deliberately
+    # does not include it, which is the whole point: the desktop release may
+    # undraft on its own merits (its installers are real and uploaded), but a
+    # branch pointer claims the *whole* release shipped. `if: success()`
+    # evaluates over this job's own needs and nothing else, so without
+    # `expo-update` here a failed mobile publish moved `beta` and `master`
+    # anyway — desktop users updated, phone users got nothing, and the
+    # pointers said it shipped.
+    needs: [meta, publish-release, expo-update]
     runs-on: ubuntu-latest
     # Only once the release is actually published. A branch pointer here means
     # "this shipped", so moving it for a run that never undrafted would make
@@ -271,6 +279,15 @@ jobs:
           # ones are what is left.
           assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name | select(test("\\.(dmg|zip|AppImage|deb|exe)$"))')
+          # Checked before the loop, because the loop cannot see it: with no
+          # assets at all, `printf '%s\n' ""` still emits one empty line, and
+          # `grep -vc '^Loxaic-Beta-'` counts that line — so the stable count
+          # came out as 1 and a release with nothing installable published,
+          # which is the exact opposite of what the loop is for.
+          if [ -z "$assets" ]; then
+            echo "::error::$TAG has no installer assets at all; leaving it a draft" >&2
+            exit 1
+          fi
           for variant in $VARIANTS; do
             if [ "$variant" = "beta" ]; then
               count=$(printf '%s\n' "$assets" | grep -c '^Loxaic-Beta-' || true)
@@ -450,17 +467,32 @@ jobs:
                 --non-interactive \
                 --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
               if [ "$COUNT" != "0" ]; then
-                # A binary for this runtime already exists — from the
-                # bootstrap build the setup docs require, a manual run, or a
-                # re-run of this release. That answers "does this runtime have
-                # a build?" and says nothing about "has the store got it", so
-                # it submits the existing build rather than skipping the
-                # platform. Without this the first release after setup would
-                # submit nothing at all, and a release whose build succeeded
-                # but whose submission failed could never retry.
-                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; submitting it"
-                eas submit --platform "$platform" --profile "$VARIANT" \
-                  --non-interactive || FAILED="$FAILED $platform:submit"
+                # A binary for this runtime already exists, and the store
+                # already has it: either it is the bootstrap build, which
+                # docs/DEPLOY.md now tells you to run with
+                # --auto-submit-with-profile, or it is a build from an earlier
+                # release run, which submitted on completion. So there is
+                # nothing to send — the binary is identical and the JS it runs
+                # was just published over the air. This is the JS-only release
+                # AGENTS.md describes: no new store build, TestFlight and Play
+                # version numbers unchanged.
+                #
+                # It used to run `eas submit` here instead, and that could
+                # never have worked: `resolveArchiveSourceAsync` throws "You
+                # need to specify the archive source when running in
+                # non-interactive mode" unless given --id/--latest/--path/--url,
+                # and there is no implicit latest-build fallback. Supplying one
+                # only moves the failure — `--latest` is not filtered by build
+                # profile or runtime (only platform/distribution/status), so it
+                # can pick the wrong binary, and `--id` re-submits something
+                # the store already took, which Apple refuses as ITMS-4238 and
+                # Play as a reused versionCode.
+                #
+                # Retrying a genuinely failed submission is a person running
+                # `eas submit --platform <p> --profile <v> --id <build-id>`
+                # against the build they mean. That is a different job from
+                # "release the JS that just changed".
+                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; nothing to build or submit"
                 continue
               fi
               echo "$platform: no $VARIANT build for runtime $RUNTIME yet"

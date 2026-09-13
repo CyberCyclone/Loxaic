@@ -391,12 +391,27 @@ run once, by hand, from a machine signed in to EAS, and never again.
    both listings if it has access to both.
 
 The first interactive build per variant is also what makes EAS generate and
-store the upload keystore, so run one before relying on CI:
+store the upload keystore, so run one before relying on CI — **with
+`--auto-submit-with-profile`**, so the store ends up holding that binary:
 
 ```bash
 cd apps/mobile
-APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile beta
-APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production
+APP_VARIANT=beta npx --yes eas-cli@latest build --platform android --profile beta --auto-submit-with-profile beta
+APP_VARIANT=production npx --yes eas-cli@latest build --platform android --profile production --auto-submit-with-profile production
+```
+
+The submit half is not optional garnish. A release tag cut at the same
+fingerprint finds this build already finished and therefore builds and submits
+nothing — correctly, since the binary would be identical — so if the bootstrap
+build never reached the store, the store stays empty and the first release
+looks like it did nothing. Run the same pair for iOS once its credentials
+exist (below).
+
+To retry a submission that genuinely failed, name the build rather than
+re-running a release:
+
+```bash
+cd apps/mobile && npx --yes eas-cli@latest submit --platform ios --profile beta --id <build-id>
 ```
 
 **iOS** needs an Apple Developer account, and three things set up in this
@@ -418,6 +433,16 @@ order:
 
    For each: a **Distribution Certificate** and an **App Store provisioning
    profile**, then *App Store Connect API Key* → upload the `.p8`.
+
+4. **One bootstrap build per variant**, for the same reason as Android — it is
+   what registers the certificate and profile against a real build, and it is
+   what puts a binary in TestFlight for the first release to find:
+
+   ```bash
+   cd apps/mobile
+   APP_VARIANT=beta npx --yes eas-cli@latest build --platform ios --profile beta --auto-submit-with-profile beta
+   APP_VARIANT=production npx --yes eas-cli@latest build --platform ios --profile production --auto-submit-with-profile production
+   ```
 
 EAS holding the key is the point: no Apple credential reaches this
 repository's CI. The alternative —

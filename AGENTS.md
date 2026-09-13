@@ -1657,16 +1657,35 @@ read once.
   runtime versions differ — a finished build of one says nothing about the other. `APP_VARIANT`
   is set for the whole `expo-update` job so the config a publish runs against is the one the
   matching build used; a mismatch publishes an update that reaches nobody and reports nothing.
-- **`advance-branches` moves `beta` and `master` only after the release has published**, with
-  a non-forced push: a branch pointer means "this shipped", and a tag cut from an older base
-  fails there rather than rewriting what a branch says. `GITHUB_TOKEN` pushes never trigger
-  workflows, so this cannot start another CI run.
-- **Android is an APK on the GitHub release, not Play.** The `android-apk` job waits for a
-  finished EAS build and attaches it, because a release with no APK leaves an Android user
-  nothing to install. Reusing an existing build for that runtime is correct rather than a
-  shortcut: the binary is identical and its first launch fetches the update just published. A
-  missing APK warns rather than blocking the release — the desktop installers are the hard
-  requirement.
+- **`advance-branches` moves `beta` and `master` only after the release has published *and*
+  the mobile update has**, with a non-forced push: a branch pointer means "this shipped", and
+  a tag cut from an older base fails there rather than rewriting what a branch says.
+  `GITHUB_TOKEN` pushes never trigger workflows, so this cannot start another CI run.
+  **`expo-update` has to be in its `needs` for that to hold**: `if: success()` evaluates over
+  a job's own needs and nothing else, and `publish-release`'s gate deliberately tolerates a
+  failed `expo-update` — so without it a missing `EXPO_UPDATE_SIGNING_KEY` undrafted the
+  desktop release, moved both pointers, and consumed the tag with no mobile update published.
+  `publish-release` still tolerates it on purpose: the installers are real and uploaded, and a
+  desktop release is worth having; it is the *pointer* that must not claim more than happened.
+- **The installer-asset guard has to check for "no assets at all" separately.** `printf '%s\n'
+  ""` emits one empty line, which `grep -vc '^Loxaic-Beta-'` counts — so an empty asset list
+  produced a stable count of 1 and published a release with nothing installable, which is the
+  exact inverse of the guard's purpose.
+- **Only `dev` builds an APK; beta and production go to Play as App Bundles.** An earlier
+  design attached an APK to the GitHub release from an `android-apk` job — that job and that
+  reasoning are both gone, replaced by store submission (see the Play listings bullet below).
+  The dev app keeps its APK because it is installed from a link rather than submitted.
+- **"Does this runtime have a build?" is the only question the gate answers, and the skip
+  branch must therefore skip.** When a finished build already exists for this runtime and
+  variant, the store already has it — either from the bootstrap build, which `docs/DEPLOY.md`
+  runs with `--auto-submit-with-profile`, or from the release that built it. Submitting again
+  is not merely redundant, it cannot run: `eas submit --non-interactive` throws unless given
+  `--id`/`--latest`/`--path`/`--url`, and there is no implicit latest-build fallback.
+  Supplying one only relocates the failure — `--latest` filters on platform, distribution and
+  status but **not** build profile or runtime version, so it can pick the wrong binary, and
+  `--id` re-sends something the store already took (Apple ITMS-4238, Play's reused
+  `versionCode`). Retrying a genuinely failed submission is a person running `eas submit --id
+  <build-id>`, which is a different job from releasing the JS that just changed.
 - **EAS holds the App Store Connect key; GitHub holds only `EXPO_TOKEN`.** The submit profiles
   in `eas.json` are deliberately minimal — with the API key stored on EAS, the App Store
   Connect record is resolved from the bundle identifier the build already carries, so nothing
@@ -1698,7 +1717,10 @@ read once.
   build reported success. So a beta would silently never reach TestFlight from a green run.
   The desktop and server keep the full version, because electron-updater's feed rules are
   built on the prerelease component; a beta build is told apart on mobile by its build number
-  and the channel it reports.
+  and the channel it reports — which is why `describeVersion` renders `nativeBuild`. It
+  collected that field and never displayed it, and suppressed `nativeVersion` as equal to
+  `appVersion`, so beta.1, beta.2 and stable all read `App 1.2.3` in the one line a bug report
+  is meant to quote.
 - **"Does this runtime have a build?" and "has the store got it?" are different questions.**
   The build gate answers the first; submission must not ride on it. It did, which meant the
   bootstrap build the setup requires would leave the *first* release submitting nothing, and a

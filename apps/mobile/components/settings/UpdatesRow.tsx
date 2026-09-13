@@ -119,6 +119,13 @@ function describeVersion(
   if (version.nativeVersion && version.nativeVersion !== version.appVersion) {
     parts.push(`binary ${version.nativeVersion}`);
   }
+  // The build number is the only thing separating one beta from another here.
+  // A beta tag stamps the *numeric* version into the app (Apple rejects
+  // `1.2.0-beta.1` as CFBundleShortVersionString), so beta.1, beta.2 and the
+  // eventual stable release all carry `1.2.0` — and `nativeVersion` is
+  // suppressed just above precisely because it equals it. Without this, the
+  // one line a bug report is asked to quote cannot distinguish three builds.
+  if (version.nativeBuild) parts.push(`build ${version.nativeBuild}`);
   // Named only when it is not the ordinary one: a beta tester's report needs
   // to say so, while "production" on every production install is noise.
   if (version.channel && version.channel !== 'production') parts.push(`${version.channel} channel`);
