@@ -1671,28 +1671,37 @@ screenshots showing that behaviour working. Writing those tests is the implement
 
 ### The desktop updater
 
-- **A whole new binary, not a bundle — but one choice, one row.** `hooks/useAppUpdates.ts` has
+- **A whole new binary, not a bundle — but one row.** `hooks/useAppUpdates.ts` has
   two backends (`electron-updater` through the desktop bridge, expo-updates on native) and the
   settings row and banner are written once against the shape they share. Both hooks are called
   unconditionally and one is selected: whether a desktop bridge exists is fixed for the life of
   the process, but hooks may not be called conditionally on *anything*, and expo-updates' web
   implementation is inert rather than absent.
-- **Never set `autoUpdater.channel`.** On the GitHub provider the channel that matters is
-  derived from the release *tag* — a `v1.2.3-beta.4` release publishes `beta.yml` and is found
-  by walking the releases feed — and setting `channel` additionally flips `allowDowngrade` to
-  true behind your back. `allowPrerelease` is the whole switch, and `allowDowngrade` staying
-  false is what makes "switching back to Stable never downgrades you" true rather than
-  aspirational.
+- **"Loxaic Beta" is a separate desktop application, decided at package time.**
+  `LOXAIC_VARIANT` picks it (`scripts/builder-variants.cjs`), and it gets its own `appId`,
+  product name, artifact name and — crucially — its own data directory, so beta and stable can
+  be installed at once without two servers fighting over one embedded Postgres. The running
+  app learns which it is from `src/variant.js`, reading the `extraMetadata` electron-builder
+  stamped into the packaged package.json; `asar: false` is what makes that file readable.
+  Setting top-level `productName` there also fixes something that was quietly wrong before:
+  Electron derives `app.name` (and therefore `userData`) from it, and without it fell back to
+  `@loxaic/desktop` while `defaultDataDir()` said `Loxaic`.
+- **The beta variant pins `autoUpdater.channel = "beta"`, and `allowPrerelease` alone would be
+  a bug.** With only `allowPrerelease`, GitHubProvider walks the releases feed and takes the
+  newest entry *whether or not it is a prerelease*, then asks that release for `latest*.yml` —
+  so a beta install would replace itself with the **stable** app the first time a release tag
+  landed. Pinning the channel makes it ask each release for `beta*.yml`, which the beta variant
+  publishes on every tag (`publish.channel: "beta"`). A beta tester therefore receives every
+  release, always as the beta app. Stable sets neither and uses `/releases/latest`, which
+  GitHub defines as excluding prereleases.
+- **Assigning `channel` flips `allowDowngrade` to true**, in electron-updater's own setter. It
+  is put back to false immediately afterwards, and the order is load-bearing — the fake in
+  `updater.test.js` imitates that side effect precisely so the ordering cannot break silently.
 - **The row stays visible on the desktop even when checks are off**, with the reason. A build
   that silently never updates is indistinguishable from one that is up to date, and the case a
   person is least likely to guess is the one that matters most (a `.deb`, which really does have
   to be updated by hand). Off means: not packaged, `LOXAIC_DISABLE_UPDATES=1`,
   `--loxaic-no-updates`, or Linux without `$APPIMAGE`.
-- **`updates.json` is its own file, not a key in config.json.** `buildConfig()` rebuilds that
-  object from a fixed set of keys and drops everything else, so a channel stored there would
-  revert the next time anyone touched a server setting. Its own file also survives a detach,
-  which is right: the channel is a fact about the binary on this machine, not about the server
-  it points at.
 - **`shutdownChildren()` is shared by the quit handler and the updater, and the order in
   `install()` is load-bearing.** It stops the children and *awaits* them, then sets `quitting`,
   then calls `quitAndInstall`. `quitAndInstall` closes the windows and only then emits

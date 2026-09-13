@@ -9,9 +9,9 @@
     "build:web": "pnpm --filter @loxaic/mobile export:web",
     "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
     "build:server": "node scripts/build-server.mjs",
-    "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder",
-    "package:publish": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder --publish always",
-    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && pnpm build:server && electron-builder --dir",
+    "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder --config electron-builder.config.cjs",
+    "package:publish": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder --config electron-builder.config.cjs --publish always",
+    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && pnpm build:server && electron-builder --config electron-builder.config.cjs --dir",
     "typecheck": "echo ok",
     "test": "vitest run"
   },
@@ -24,36 +24,5 @@
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0",
     "vitest": "^3.0.0"
-  },
-  "build": {
-    "appId": "com.loxaic.desktop",
-    "productName": "Loxaic",
-    "npmRebuild": false,
-    "asar": false,
-    "files": [
-      "src/**/*"
-    ],
-    "extraResources": [
-      { "from": "../mobile/dist", "to": "web" },
-      { "from": "resources/tsnet-proxy", "to": "tsnet-proxy" },
-      { "from": "resources/server", "to": "server" }
-    ],
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
-    "publish": [{ "provider": "github", "owner": "CyberCyclone", "repo": "Open-Shannon" }],
-    "mac": {
-      "target": ["dmg", "zip"],
-      "category": "public.app-category.developer-tools",
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": true
-    },
-    "win": { "target": "nsis" },
-    "nsis": { "oneClick": true },
-    "linux": {
-      "target": ["AppImage", "deb"],
-      "category": "Development"
-    }
   }
 }

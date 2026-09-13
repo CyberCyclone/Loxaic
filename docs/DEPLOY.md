@@ -123,7 +123,7 @@ below) reuses the existing database.
 
 | | Server port | Postgres | Data directory |
 |---|---|---|---|
-| **Self-contained** (GUI or headless) | `4100` default — `LOXAIC_PORT` / `--loxaic-port` | embedded, ephemeral localhost port chosen at startup | platform user-data dir — `LOXAIC_DATA_DIR` / `--loxaic-data-dir` |
+| **Self-contained** (GUI or headless) | `4100` default — `LOXAIC_PORT` / `--loxaic-port` | embedded, ephemeral localhost port chosen at startup | platform user-data dir, named for the variant (`Loxaic` / `Loxaic Beta`) — `LOXAIC_DATA_DIR` / `--loxaic-data-dir` |
 | **Dev** (`pnpm dev` + Compose) | `4000` | Compose, `localhost:5432` | Compose volume |
 
 A self-contained release build and a dev checkout run **simultaneously on the
@@ -366,20 +366,35 @@ writes only `version` fields, and the fingerprinter ignores
 ### Desktop auto-update
 
 The desktop app checks GitHub Releases for a newer build, downloads it, and offers a restart
-from Settings → Updates. The channel is the same choice as on mobile and is stored in
-`<dataDir>/updates.json`, so it survives a detach and a mode switch.
+from Settings → Updates. There is nothing to choose: **Loxaic and Loxaic Beta are separate
+applications**, each following its own releases, and a beta tester installs the beta app rather
+than flipping a switch inside the stable one.
 
-- **Stable** follows `/releases/latest`, which GitHub defines as the newest release that is
-  neither a draft nor a pre-release — so a beta never reaches it.
-- **Beta** additionally accepts pre-releases (`allowPrerelease`).
-- **Switching back to Stable never downgrades you.** `allowDowngrade` stays off, so someone
-  on `1.3.0-beta.2` keeps it until `1.3.0` proper is published.
+| | `LOXAIC_VARIANT` | Installs as | Bundle id | Data directory | Follows |
+|---|---|---|---|---|---|
+| Stable | `production` (default) | Loxaic | `com.loxaic.desktop` | `…/Loxaic` | `/releases/latest` |
+| Beta | `beta` | Loxaic Beta | `com.loxaic.desktop.beta` | `…/Loxaic Beta` | every release's `beta*.yml` |
+
+The separate data directory is not cosmetic: one directory shared by two installs would be two
+servers on one embedded Postgres, and a beta able to corrupt the stable install's database is
+not a beta anyone should run.
+
+**Why the beta variant is built for stable tags too.** With `allowPrerelease` alone,
+electron-updater walks the releases feed, takes the newest entry *whether or not it is a
+prerelease*, and asks that release for `latest*.yml` — so a beta install would replace itself
+with the stable app the first time a release tag landed. The beta variant therefore publishes
+its own `beta*.yml` on **every** tag, and pins `autoUpdater.channel = "beta"` so that is what
+it asks for. A beta tester receives every release, always as the beta app.
+
+Neither variant ever walks backwards: `allowDowngrade` stays false. (Assigning `channel` sets
+it true as a side effect, so the code puts it back immediately afterwards — order matters, and
+there is a test for it.)
 
 Nothing installs itself behind your back: the download is automatic, the restart is a button.
 
 **What the channel verifies, and what it does not.** On macOS a signed, notarized build is
 verified by the OS on install. On Windows and Linux the installers are **not signed**, so the
-only integrity check on a downloaded update is the `sha512` in `latest.yml` — a file written
+only integrity check on a downloaded update is the `sha512` in `latest.yml`/`beta.yml` — a file written
 and uploaded by the same CI job, into the same GitHub release, as the installer it describes.
 That means anyone who can write an asset to a release (a compromised `GITHUB_TOKEN` or runner,
 a hijacked build-time dependency with an install script, a stolen maintainer token) can ship a

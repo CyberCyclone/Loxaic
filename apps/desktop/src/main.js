@@ -39,6 +39,7 @@ async function runGui() {
   const { addRoot, loadOrCreateExecutorId, loadRoots, removeRoot, rootsPath } = await import("./supervisor/executor-store.js");
   const { readSecrets, updateSecrets } = await import("./supervisor/secrets.js");
   const { createUpdater } = await import("./updates/updater.js");
+  const { appVariant } = await import("./variant.js");
   const {
     DEFAULT_HOST_PORT,
     buildConfig,
@@ -876,22 +877,26 @@ async function runGui() {
     });
 
     // ── Updates ──
-    // Four fixed IPC channels, none of which takes a URL, a path or a version
-    // from the renderer: the release feed is compiled in, and the only choice
-    // a page can express is which of two named update channels to follow.
+    // Three fixed IPC channels, none of which takes a URL, a path, a version
+    // or a channel from the renderer: the release feed is compiled in and the
+    // channel is decided when the app is packaged, so a page can ask what the
+    // state is, ask for a check, and ask to restart — nothing else.
     ipcMain.handle("loxaic:updates.getState", () => updates.state());
-    ipcMain.handle("loxaic:updates.setChannel", (_event, channel) => updates.setChannel(channel));
     ipcMain.handle("loxaic:updates.check", () => updates.check());
     ipcMain.handle("loxaic:updates.install", () => updates.install());
   }
 
   // ── Desktop updates ─────────────────────────────────────
   // A whole new binary, installed by the platform's own installer — nothing
-  // like the mobile app's JS bundle over the air, but the same choice of
-  // channel and the same settings row, so both report through one shape.
+  // like the mobile app's JS bundle over the air, but reported through the
+  // same shape and the same settings row. Which releases this install follows
+  // comes from the variant it was packaged as: "Loxaic Beta" is a separate
+  // application, not a switch inside this one.
+  const variant = appVariant();
   const updates = createUpdater({
-    dataDir: dataDir(),
     app,
+    variant: variant.name,
+    allowPrerelease: variant.prerelease,
     log: (line) => { console.log(`[loxaic] ${line}`); },
     onState: (state) => { mainWindow?.webContents.send("loxaic:updateState", state); },
     beforeInstall: async () => {

@@ -50,4 +50,14 @@ describe("paths", () => {
     expect(path.isAbsolute(dir)).toBe(true);
     expect(path.basename(dir)).toBe("Loxaic");
   });
+
+  it("gives each variant its own directory", () => {
+    // The two apps must never share one: a single data directory means two
+    // servers on one embedded Postgres, and a beta that can corrupt the
+    // stable install's database is not a beta anyone should run. The name
+    // comes from the packaged productName, which is also what Electron uses
+    // for userData, so these agree by construction.
+    expect(path.basename(defaultDataDir("Loxaic Beta"))).toBe("Loxaic Beta");
+    expect(defaultDataDir("Loxaic Beta")).not.toBe(defaultDataDir("Loxaic"));
+  });
 });

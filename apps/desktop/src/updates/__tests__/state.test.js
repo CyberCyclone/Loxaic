@@ -64,23 +64,20 @@ describe("updater state", () => {
     expect(run(ready, { type: "installing" }, { type: "checking" }).installing).toBe(false);
   });
 
-  it("forgets what the old channel found when the channel changes", () => {
-    // The build that was on offer may not exist on the new channel at all,
-    // so continuing to advertise it would be a straightforward lie.
-    const found = run(initialState({}), { type: "available", version: "9.9.9-beta.1" });
-    expect(reduce(found, { type: "channel", channel: "production" })).toMatchObject({
-      channel: "production",
-      status: "idle",
-      availableVersion: null,
-    });
+  it("carries the variant it was packaged as", () => {
+    // Which releases this install follows is not a preference the reducer can
+    // change: "Loxaic Beta" is a separate application. The state carries it so
+    // the settings row can say so, and nothing else.
+    expect(initialState({ variant: "beta" })).toMatchObject({ variant: "beta" });
+    expect(initialState({})).toMatchObject({ variant: "production" });
   });
 
-  it("still records a channel choice while the updater is off", () => {
-    // Someone on a development build may well be about to install one that
-    // does update; refusing the preference would lose that choice.
+  it("ignores every event while the updater is off", () => {
+    // There is nothing left to record: with the channel fixed at package
+    // time, a disabled updater has no state anything could change.
     const off = initialState({ enabled: false, disabledReason: "development build" });
-    expect(reduce(off, { type: "channel", channel: "beta" })).toMatchObject({ status: "off", channel: "beta" });
     expect(reduce(off, { type: "available", version: "1.0.0" })).toBe(off);
+    expect(reduce(off, { type: "checking" })).toBe(off);
   });
 
   it("reports progress as a fraction, and refuses nonsense", () => {

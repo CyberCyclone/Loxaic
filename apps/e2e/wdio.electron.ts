@@ -74,18 +74,27 @@ function electronVersion(): string {
   return pkg.version;
 }
 
-/** Where `electron-builder --dir` leaves the binary, per platform. */
+/**
+ * Where `electron-builder --dir` leaves the binary, per platform.
+ *
+ * Follows LOXAIC_VARIANT, because the beta variant is packaged under its own
+ * product name ("Loxaic Beta") — so the same suite can drive either build,
+ * which is the only way to check that the beta app really is a separate
+ * application rather than a differently-labelled one.
+ */
 function appBinaryPath(): string {
+  const beta = process.env.LOXAIC_VARIANT === 'beta';
+  const mac = beta ? 'Loxaic Beta.app/Contents/MacOS/Loxaic Beta' : 'Loxaic.app/Contents/MacOS/Loxaic';
   const candidates =
     process.platform === 'darwin'
       ? [
           // arch-suffixed on Apple Silicon, bare "mac" on Intel
-          'mac-arm64/Loxaic.app/Contents/MacOS/Loxaic',
-          'mac/Loxaic.app/Contents/MacOS/Loxaic',
+          `mac-arm64/${mac}`,
+          `mac/${mac}`,
         ]
       : process.platform === 'win32'
-        ? ['win-unpacked/Loxaic.exe']
-        : ['linux-unpacked/loxaic'];
+        ? [beta ? 'win-unpacked/Loxaic Beta.exe' : 'win-unpacked/Loxaic.exe']
+        : [beta ? 'linux-unpacked/loxaic-beta' : 'linux-unpacked/loxaic'];
 
   for (const rel of candidates) {
     const full = path.join(DESKTOP_DIST, rel);

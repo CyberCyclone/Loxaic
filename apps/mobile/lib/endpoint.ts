@@ -143,7 +143,8 @@ export interface ExecutorState {
 export interface DesktopUpdateState {
   enabled: boolean;
   disabledReason: string | null;
-  channel: 'production' | 'beta';
+  /** Which desktop app this is — decided when it was packaged. */
+  variant: 'production' | 'beta';
   status: 'off' | 'idle' | 'checking' | 'downloading' | 'ready' | 'error';
   /** The version found or downloaded — not the one running. */
   availableVersion: string | null;
@@ -189,7 +190,6 @@ export interface LoxaicBridge {
   };
   updates: {
     getState: () => Promise<DesktopUpdateState>;
-    setChannel: (channel: 'production' | 'beta') => Promise<DesktopUpdateState>;
     check: () => Promise<DesktopUpdateState>;
     /** Stops the embedded stack and restarts into the downloaded update. */
     install: () => Promise<DesktopUpdateState>;
