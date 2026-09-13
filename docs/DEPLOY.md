@@ -235,15 +235,36 @@ A release is a git tag. Nothing else is committed: `apps/desktop/package.json`,
 repository, and `apps/desktop/scripts/stamp-version.mjs` writes the real number
 into all three during the release run.
 
-| You push | Goes to | What sees it |
-|---|---|---|
-| a commit on `dev` | `preview` branch | development and preview builds |
-| `v1.2.3-beta.4` | `beta` branch + a GitHub pre-release | anyone who chose Beta in Settings |
-| `v1.2.3` | `production` **and** `beta` branches + a GitHub release | everyone |
+Releases are cut with `scripts/release.sh`, which works out the next version
+from the tags that exist and pushes it — nothing is typed by hand and nothing
+is committed:
+
+```bash
+./scripts/release.sh beta        # next beta of the next patch
+./scripts/release.sh beta:minor  # ...of the next minor, or beta:major
+./scripts/release.sh promote     # release the beta that is under test
+./scripts/release.sh patch       # a release with no beta before it
+./scripts/release.sh --dry-run beta
+```
+
+| You run | Tag | Mobile | Desktop | Branch moved |
+|---|---|---|---|---|
+| merge a PR | — | `dev` channel update; the dev stack redeploys | — | `dev` |
+| `release.sh beta` | `vX.Y.Z-beta.N` | `beta` channel + Loxaic Beta builds when the runtime is new | Loxaic Beta installers, GitHub pre-release | `beta` |
+| `release.sh promote` or `patch`/`minor`/`major` | `vX.Y.Z` | `production` **and** `beta` channels | **both** variants' installers, GitHub release | `master` and `beta` |
 
 A release tag publishes to beta as well, so beta is always a superset of
 production. Someone who opted in must never end up on an older build than a
-stable release.
+stable release — and on the desktop that means the **beta variant is built for
+a stable tag too**, because a beta install only ever reads `beta*.yml`.
+
+`promote` tags the commit the beta was cut at, not `dev`'s head: promoting
+means releasing exactly what the beta testers have been running, and taking
+whatever landed since would ship code nobody tested.
+
+The branch pointers move **after** the release publishes, from the workflow
+using `GITHUB_TOKEN` — so `master` means "this shipped" rather than "someone
+merged this", and the push cannot trigger another CI run.
 
 A tag builds desktop installers for macOS (arm64), Linux and Windows into a
 **draft** release, and only undrafts it once every platform has finished

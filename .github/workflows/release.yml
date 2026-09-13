@@ -47,8 +47,19 @@ jobs:
       version: ${{ steps.parse.outputs.version }}
       prerelease: ${{ steps.parse.outputs.prerelease }}
       channel: ${{ steps.parse.outputs.channel }}
+      sha: ${{ steps.parse.outputs.sha }}
+      # Which app variants this tag publishes. A beta tag is beta only; a
+      # release publishes to production *and* beta, so a beta tester is never
+      # left on an older build than the stable release they would otherwise
+      # have had. On the desktop that means the beta variant is built for a
+      # stable tag too — see the feed note in scripts/builder-variants.cjs.
+      variants: ${{ steps.parse.outputs.variants }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The tag's own commit is what `advance-branches` fast-forwards to,
+          # and a shallow checkout cannot resolve it.
+          fetch-depth: 0
       - id: parse
         # The same parser the stamping uses, so the two can never disagree
         # about what a tag means. It exits non-zero on a tag shape it does not
@@ -56,8 +67,15 @@ jobs:
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
+          set -euo pipefail
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           node apps/desktop/scripts/stamp-version.mjs --parse "$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-list -n1 "$TAG")" >> "$GITHUB_OUTPUT"
+          if node apps/desktop/scripts/stamp-version.mjs --parse "$TAG" | grep -q '^prerelease=true$'; then
+            echo 'variants=["beta"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'variants=["production","beta"]' >> "$GITHUB_OUTPUT"
+          fi
 
   create-release:
     name: draft the release
@@ -101,7 +119,7 @@ jobs:
             $([ "$PRERELEASE" = "true" ] && echo --prerelease || true)
 
   desktop:
-    name: package ${{ matrix.os }}
+    name: package ${{ matrix.variant }} on ${{ matrix.os }}
     needs: [meta, create-release]
     if: ${{ github.repository_owner == 'CyberCyclone' }}
     permissions:
@@ -115,6 +133,11 @@ jobs:
         # macos-15 is arm64. An Intel mac build is a follow-up — it needs
         # @embedded-postgres/darwin-x64, which is not installed.
         os: [macos-15, ubuntu-latest, windows-latest]
+        # Both apps for a release tag, the beta app alone for a prerelease.
+        # Building the beta variant for a *stable* tag is not redundant: a
+        # beta install only ever reads `beta*.yml`, so without a beta build in
+        # that release its testers would sit on the last prerelease forever.
+        variant: ${{ fromJSON(needs.meta.outputs.variants) }}
     runs-on: ${{ matrix.os }}
     # A repository secret is readable by a workflow on *any* branch. Naming an
     # environment lets the signing key live as an environment secret instead,
@@ -125,6 +148,9 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.meta.outputs.tag }}
+      # Which application this leg packages: its name, bundle id, data
+      # directory and update feed all follow from it.
+      LOXAIC_VARIANT: ${{ matrix.variant }}
       # Upload into the draft the job above made, never into a published one.
       EP_DRAFT: "true"
       # Each leg ships only its own platform's sidecar; the other four would
@@ -179,9 +205,110 @@ jobs:
           done
           pnpm --filter @loxaic/desktop package:publish
 
+  android-apk:
+    name: attach the ${{ matrix.variant }} APK
+    needs: [meta, expo-update]
+    runs-on: ubuntu-latest
+    # Runs even when a sibling variant failed — an APK for the variant that
+    # did publish is still worth attaching — but never after a cancellation.
+    if: ${{ always() && github.repository_owner == 'CyberCyclone'
+            && needs.meta.result == 'success'
+            && needs.expo-update.result != 'cancelled' }}
+    # An EAS build queue can be long. This waits rather than leaving the
+    # release without an installable Android artifact, which is the whole
+    # point of the job — but it must not wait forever.
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.meta.outputs.variants) }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.meta.outputs.tag }}
+      VERSION: ${{ needs.meta.outputs.version }}
+      VARIANT: ${{ matrix.variant }}
+      APP_VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.meta.outputs.tag }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Find a finished Android build and attach it
+        working-directory: apps/mobile
+        # Android is distributed here as an APK on the GitHub release, not
+        # through Play, so a release without one has nothing an Android user
+        # can install. Reusing an existing build for this runtime is correct
+        # rather than a shortcut: the binary is identical, and its first
+        # launch fetches the update this run just published.
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 110 * 60 ))
+          while :; do
+            BUILD=$(eas build:list --platform android --build-profile "$VARIANT" \
+              --status finished --limit 1 --non-interactive --json \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list");process.exit(1);}process.stdout.write(v[0]?.artifacts?.applicationArchiveUrl ?? "")})')
+            [ -n "$BUILD" ] && break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::warning::no finished $VARIANT Android build to attach to $TAG"
+              exit 0
+            fi
+            echo "waiting for a finished $VARIANT Android build…"
+            sleep 60
+          done
+
+          NAME="Loxaic-$VERSION.apk"
+          [ "$VARIANT" = "beta" ] && NAME="Loxaic-Beta-$VERSION.apk"
+          curl -fL --retry 3 -o "$NAME" "$BUILD"
+          gh release upload "$TAG" "$NAME" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "attached $NAME"
+
+  advance-branches:
+    name: move the release pointers
+    needs: [meta, publish-release]
+    runs-on: ubuntu-latest
+    # Only once the release is actually published. A branch pointer here means
+    # "this shipped", so moving it for a run that never undrafted would make
+    # it mean "someone tried".
+    if: ${{ success() && github.repository_owner == 'CyberCyclone' }}
+    permissions:
+      contents: write
+    env:
+      SHA: ${{ needs.meta.outputs.sha }}
+      PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      # Not forced, deliberately: a tag cut from an older base would fail here
+      # rather than rewriting what a branch says shipped. GITHUB_TOKEN pushes
+      # never trigger workflows, so this cannot start another CI run.
+      - run: |
+          set -euo pipefail
+          git push origin "$SHA:refs/heads/beta"
+          echo "beta -> ${SHA:0:8}"
+          if [ "$PRERELEASE" != "true" ]; then
+            git push origin "$SHA:refs/heads/master"
+            echo "master -> ${SHA:0:8}"
+          fi
+
   publish-release:
     name: publish the release
-    needs: [meta, expo-update, desktop]
+    needs: [meta, expo-update, desktop, android-apk]
     runs-on: ubuntu-latest
     # `desktop` is a three-way matrix with fail-fast: false, and a matrix job
     # concludes `failure` if any one leg does — so the default needs-success
@@ -193,7 +320,8 @@ jobs:
     if: ${{ always() && github.repository_owner == 'CyberCyclone'
             && needs.meta.result == 'success'
             && needs.desktop.result != 'cancelled'
-            && needs.expo-update.result != 'cancelled' }}
+            && needs.expo-update.result != 'cancelled'
+            && needs.android-apk.result != 'cancelled' }}
     permissions:
       contents: write
     env:
@@ -214,17 +342,38 @@ jobs:
             exit 1
           fi
           echo "publishing $TAG with $count installer asset(s)"
+          # A missing APK is a warning rather than a refusal: the desktop
+          # installers are the hard requirement, and an Android user can still
+          # be served by the update channel once a build finishes later.
+          apks=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '[.assets[] | select(.name | test("\\.apk$"))] | length')
+          [ "$apks" = "0" ] && echo "::warning::$TAG has no Android APK attached"
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   expo-update:
-    name: publish update
+    name: publish ${{ matrix.variant }} update
     needs: meta
     runs-on: ubuntu-latest
     if: ${{ github.repository_owner == 'CyberCyclone' }}
+    strategy:
+      # One variant failing must not cancel the other: a release that reached
+      # production but not beta is still worth having, and the difference is
+      # visible in the job list.
+      fail-fast: false
+      matrix:
+        # A release tag publishes to production *and* beta, so beta stays a
+        # strict superset: someone on the beta app must never be stranded on
+        # an older build than the stable release they would otherwise have
+        # had. A beta tag publishes to beta alone.
+        variant: ${{ fromJSON(needs.meta.outputs.variants) }}
     env:
       TAG: ${{ needs.meta.outputs.tag }}
-      PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+      VARIANT: ${{ matrix.variant }}
       FORCE_BUILD: ${{ github.event.inputs.force_native_build }}
+      # The variant *is* the channel, the build profile and the EAS
+      # environment: eas.json names all three the same thing so there is one
+      # value to get right rather than three to keep in step.
+      APP_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -249,28 +398,22 @@ jobs:
       - name: Publish the update
         id: publish
         working-directory: apps/mobile
-        # A release tag publishes to *both* branches, so beta stays a strict
-        # superset of production: someone on beta must never be stranded on an
-        # older build than a stable release. A beta tag publishes to beta only.
+        # APP_VARIANT is set for the whole job, so the config this publishes
+        # against is the same one the matching build used. They have to agree:
+        # the channel is embedded in the binary and the variant decides the
+        # runtime version, so a mismatch publishes an update that reaches
+        # nobody and reports nothing.
         run: |
           set -euo pipefail
-          if [ "$PRERELEASE" = "true" ]; then
-            BRANCHES="beta"
-          else
-            BRANCHES="production beta"
-          fi
-          for branch in $BRANCHES; do
-            echo "publishing to $branch"
-            eas update --branch "$branch" --message "$TAG" --non-interactive --json > "update-$branch.json"
-          done
+          eas update --channel "$VARIANT" --environment "$VARIANT" \
+            --message "$TAG" --non-interactive --json > "update.json"
           # The runtime version the update was published for decides whether a
           # native build is needed below. Read from the publish itself rather
           # than recomputed, so the two can't disagree — and tolerant of shape
           # because eas' --json output is versioned by the CLI, not by us.
           RUNTIME=$(node -e '
             const fs = require("node:fs");
-            const branch = process.argv[1];
-            const raw = JSON.parse(fs.readFileSync(`update-${branch}.json`, "utf8"));
+            const raw = JSON.parse(fs.readFileSync("update.json", "utf8"));
             const updates = Array.isArray(raw) ? raw : (raw.updates ?? [raw]);
             const runtimes = [...new Set(updates.map((u) => u?.runtimeVersion).filter(Boolean))];
             if (runtimes.length !== 1) {
@@ -278,20 +421,25 @@ jobs:
               process.exit(1);
             }
             process.stdout.write(runtimes[0]);
-          ' "${BRANCHES%% *}")
+          ')
           echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
-          echo "published for runtime $RUNTIME"
+          echo "published $VARIANT for runtime $RUNTIME"
 
       - name: Build natively, but only for a runtime that has no build yet
+        id: build
         working-directory: apps/mobile
         env:
           RUNTIME: ${{ steps.publish.outputs.runtime }}
         # With the fingerprint runtime policy, a change to native code or
         # dependencies produces a new runtime version, and an update published
         # for it reaches *no existing binary*. So: ask whether a finished
-        # production build already exists for this runtime, and only build
-        # when none does. Building on every release would cost 20-40 minutes
-        # and a queue slot for what is usually a JS-only change.
+        # build already exists for this runtime, and only build when none
+        # does. Building on every release would cost 20-40 minutes and a queue
+        # slot for what is usually a JS-only change.
+        #
+        # Asked per variant, not once: each variant has its own bundle
+        # identifier, the fingerprint hashes native config, so their runtime
+        # versions differ and a build of one says nothing about the other.
         #
         # The gate fails *closed*: an output shape it does not recognise is an
         # error, not "zero builds". Mapping the unknown to zero would silently
@@ -306,18 +454,24 @@ jobs:
               COUNT=$(eas build:list \
                 --platform "$platform" \
                 --runtime-version "$RUNTIME" \
-                --build-profile production \
+                --build-profile "$VARIANT" \
                 --status finished \
                 --limit 1 \
                 --non-interactive \
                 --json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list, got "+typeof v);process.exit(1);}process.stdout.write(String(v.length));})')
               if [ "$COUNT" != "0" ]; then
-                echo "$platform: runtime $RUNTIME already has a finished build; skipping"
+                echo "$platform: runtime $RUNTIME already has a finished $VARIANT build; skipping"
                 continue
               fi
-              echo "$platform: no build for runtime $RUNTIME yet"
+              echo "$platform: no $VARIANT build for runtime $RUNTIME yet"
             fi
             # --no-wait: a build takes far longer than this workflow should,
             # and the update is already published — the binary catches up.
-            eas build --platform "$platform" --profile production --non-interactive --no-wait
+            eas build --platform "$platform" --profile "$VARIANT" --non-interactive --no-wait --json \
+              > "build-$platform.json" || true
           done
+          # Handed to the APK job, which cannot read another job's files.
+          if [ -f build-android.json ]; then
+            ID=$(node -e 'try{const v=JSON.parse(require("node:fs").readFileSync("build-android.json","utf8"));const b=Array.isArray(v)?v[0]:v;process.stdout.write(b?.id??"")}catch{process.stdout.write("")}')
+            echo "android_build_id=$ID" >> "$GITHUB_OUTPUT"
+          fi
