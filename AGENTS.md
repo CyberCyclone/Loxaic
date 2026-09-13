@@ -1771,12 +1771,21 @@ screenshots showing that behaviour working. Writing those tests is the implement
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.
 - Minimal changes; match existing file style; don't add deps without a reason.
-- **`dev` is the trunk — every pull request targets it.** `master` and `beta` are release
-  pointers, moved only by the release workflow once a release has actually published, so a
-  branch there means "this shipped" rather than "someone merged this". Nothing is merged into
-  them by hand and nothing is developed on them. A release is cut from `dev` by pushing a tag
-  (`scripts/release.sh`), which is also the only thing that sets a version — see
-  "Releases and over-the-air updates".
+- **`dev` is the trunk — every pull request targets it.** `master` is a git release pointer:
+  it is meant to mark what has shipped rather than what someone merged. A hotfix pull request
+  straight to it is the one legitimate exception, which is why CI still runs on both `master`
+  events. **Nothing advances `master` automatically yet** — the release workflow writes no git
+  ref today, so until the stage that adds that step, `master` moves only when a human merges
+  or pushes to it, and the repository's default branch should be `dev` so a fresh clone is not
+  looking at a frozen branch. Nothing is *developed* on `master` either way.
+- **`beta` and `production` are EAS update branches, not git branches.** `release.yml`
+  publishes with `eas update --branch beta`, which targets Expo's own branch/channel mapping
+  and never touches a git ref — see `docs/DEPLOY.md`. A git branch named `beta` also exists,
+  which is exactly why this is worth stating: the two are unrelated, and a release does not
+  move the git one.
+- **A release is cut from `dev` by pushing a `vX.Y.Z` tag**, which is the only thing that sets
+  a version — `release.yml` fires on `push: tags: ['v*']`, with a `workflow_dispatch` input
+  for re-publishing an existing one. See "Releases and over-the-air updates".
 - Ports (dev): server 4000, inference 4002, ntfy 4003, Postgres 5432, Expo web 8081.
   Self-contained desktop app (a separate deployment, coexists with dev on one host): server
   4100 (`LOXAIC_PORT`), Postgres on an ephemeral localhost port — see `docs/DEPLOY.md`.

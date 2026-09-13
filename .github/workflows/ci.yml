@@ -1,16 +1,19 @@
 name: CI
 
 # `dev` is the trunk: every pull request targets it, and CI has to run on one
-# or nothing is checked. `master` stays in the pull_request list because it is
-# still a branch a PR could legitimately target (a hotfix straight to a
-# release), but nothing pushes to it by hand any more — the release workflow
-# fast-forwards it, and a push by `GITHUB_TOKEN` does not trigger workflows
-# anyway, so listing it under `push` would be a trigger that can never fire.
+# or nothing is checked. `master` stays in both lists because a hotfix straight
+# to a release branch is a legitimate path, and `pull_request` alone would not
+# cover it: that checks `refs/pull/N/merge`, a throwaway merge computed when
+# the PR opened, and release.yml runs no lint, typecheck or test of its own —
+# so a hotfix merged and tagged would ship with nothing having run against the
+# tree that actually shipped. The release workflow will one day fast-forward
+# `master` itself, and those pushes use GITHUB_TOKEN, which by GitHub's rule
+# never triggers a workflow — so keeping master here costs nothing then either.
 on:
   pull_request:
     branches: [dev, master]
   push:
-    branches: [dev]
+    branches: [dev, master]
 
 jobs:
   lint:

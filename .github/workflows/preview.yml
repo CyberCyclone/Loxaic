@@ -11,6 +11,14 @@ on:
 # Holds EXPO_TOKEN on every push to dev, so it gets nothing else: read is
 # all the checkout needs, and the default would otherwise be the repository's
 # — which may be write-all.
+#
+# Worth stating plainly, since the trigger branch now takes daily merges: OTA
+# bundles are not code-signed (see AGENTS.md), so whoever can push to this
+# branch can put arbitrary JS into every build that follows it, with the EAS
+# account as the only thing in the way. That argues for `dev` requiring a pull
+# request and a passing CI run before a merge — branch protection, which this
+# repository cannot set while it is private on a free plan, so it is a thing
+# to turn on the day it goes public rather than a thing already relied upon.
 permissions:
   contents: read
 
