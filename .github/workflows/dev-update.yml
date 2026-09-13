@@ -60,8 +60,15 @@ jobs:
           APP_VARIANT: dev
         # `--environment development` is what supplies EXPO_PUBLIC_API_URL,
         # from EAS rather than from this repository — the same value the dev
-        # build baked in, so the two cannot drift. Whoever installs it can
-        # still point it elsewhere from the sign-in screen.
+        # build baked in, so the two cannot drift.
+        #
+        # This deliberately reverses the rule the preview workflow held to,
+        # which baked in no endpoint so a published bundle resolved its server
+        # the way every install does. That was right for a bundle anyone might
+        # open; it is wrong for the dev app, which exists to point at the dev
+        # stack and is private. Whoever installs it can still point it
+        # elsewhere from the sign-in screen — the stored override wins over a
+        # baked-in default.
         run: |
           eas update --channel dev --environment development \
             --message "${{ github.sha }}" --non-interactive

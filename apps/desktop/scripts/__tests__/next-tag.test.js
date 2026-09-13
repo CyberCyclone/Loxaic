@@ -78,4 +78,19 @@ describe("nextTag", () => {
     expect(() => nextTag("nightly", ["v1.0.0"])).toThrow(/unknown release kind/);
     expect(() => nextTag("beta:huge", ["v1.0.0"])).toThrow(/unknown bump/);
   });
+
+  it.each(["constructor", "toString", "valueOf"])(
+    "rejects %s, which a plain lookup would find on the prototype",
+    (key) => {
+      expect(() => nextTag(key, ["v1.0.0"])).toThrow(/unknown release kind/);
+      expect(() => nextTag(`beta:${key}`, ["v1.0.0"])).toThrow(/unknown bump/);
+    },
+  );
+
+  it("does not read a misspelled beta kind as a plain beta", () => {
+    // release.sh passes its argument through verbatim, so "betaminor" asking
+    // for a minor line and silently getting a patch one would be worse than
+    // an error.
+    expect(() => nextTag("betaminor", ["v1.2.3"])).toThrow(/unknown release kind/);
+  });
 });

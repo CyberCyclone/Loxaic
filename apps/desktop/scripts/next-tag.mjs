@@ -93,9 +93,18 @@ export function nextTag(kind, tags) {
     return `v${newest.major}.${newest.minor}.${newest.patch}`;
   }
 
-  if (kind.startsWith("beta")) {
-    const size = kind.includes(":") ? kind.split(":")[1] : "patch";
-    if (!BUMP[size]) throw new Error(`unknown bump "${size}" (expected patch, minor or major)`);
+  if (kind === "beta" || kind.startsWith("beta:")) {
+    // `beta:` exactly, not `startsWith("beta")`: release.sh passes its
+    // argument through verbatim, so "betaminor" would otherwise be read as a
+    // plain `beta` and quietly cut a patch line instead of the minor one that
+    // was asked for.
+    const size = kind === "beta" ? "patch" : kind.slice("beta:".length);
+    // Object.hasOwn, not a plain lookup: `BUMP["constructor"]` finds a
+    // function on the prototype and sails past the guard, which is the same
+    // hole app.config.js had.
+    if (!Object.hasOwn(BUMP, size)) {
+      throw new Error(`unknown bump "${size}" (expected patch, minor or major)`);
+    }
     // Already mid-beta for an unreleased version: the next one continues it
     // rather than starting a new line one patch further on.
     if (newest.prerelease) {
@@ -105,7 +114,7 @@ export function nextTag(kind, tags) {
     return `v${next.major}.${next.minor}.${next.patch}-beta.1`;
   }
 
-  if (!BUMP[kind]) {
+  if (!Object.hasOwn(BUMP, kind)) {
     throw new Error(`unknown release kind "${kind}" (expected beta, promote, patch, minor or major)`);
   }
   if (newest.prerelease) {

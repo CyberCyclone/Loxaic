@@ -248,6 +248,19 @@ jobs:
           packager: pnpm
       - run: pnpm install --frozen-lockfile
 
+      - name: Work out this variant's runtime version
+        id: runtime
+        working-directory: apps/mobile
+        # Recomputed here rather than passed from expo-update: a matrix job
+        # cannot expose a per-leg output, and the fingerprint is a pure
+        # function of the checked-out tree and APP_VARIANT, so both jobs get
+        # the same answer from the same commit.
+        run: |
+          set -euo pipefail
+          RUNTIME=$(npx --yes @expo/fingerprint@latest . | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).hash)})')
+          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
+          echo "$VARIANT runtime: $RUNTIME"
+
       - name: Find a finished Android build and attach it
         working-directory: apps/mobile
         # Android is distributed here as an APK on the GitHub release, not
@@ -255,11 +268,17 @@ jobs:
         # can install. Reusing an existing build for this runtime is correct
         # rather than a shortcut: the binary is identical, and its first
         # launch fetches the update this run just published.
+        env:
+          RUNTIME: ${{ steps.runtime.outputs.runtime }}
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 110 * 60 ))
           while :; do
+            # Filtered by runtime version, or this happily attaches a build of
+            # an older release — the APK and the update in the same release
+            # would then be for different native code.
             BUILD=$(eas build:list --platform android --build-profile "$VARIANT" \
+              --runtime-version "$RUNTIME" \
               --status finished --limit 1 --non-interactive --json \
               | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s);if(!Array.isArray(v)){console.error("expected an array from eas build:list");process.exit(1);}process.stdout.write(v[0]?.artifacts?.applicationArchiveUrl ?? "")})')
             [ -n "$BUILD" ] && break
@@ -308,7 +327,13 @@ jobs:
 
   publish-release:
     name: publish the release
-    needs: [meta, expo-update, desktop, android-apk]
+    # Deliberately *not* waiting on android-apk. The policy below is that a
+    # missing APK warns rather than blocks, and needing the job would have
+    # contradicted it in practice: the release would have sat in draft for up
+    # to two hours waiting on an Android build queue. `gh release upload`
+    # works against a published release, so the APK attaches whenever it is
+    # ready.
+    needs: [meta, expo-update, desktop]
     runs-on: ubuntu-latest
     # `desktop` is a three-way matrix with fail-fast: false, and a matrix job
     # concludes `failure` if any one leg does — so the default needs-success
@@ -320,13 +345,13 @@ jobs:
     if: ${{ always() && github.repository_owner == 'CyberCyclone'
             && needs.meta.result == 'success'
             && needs.desktop.result != 'cancelled'
-            && needs.expo-update.result != 'cancelled'
-            && needs.android-apk.result != 'cancelled' }}
+            && needs.expo-update.result != 'cancelled' }}
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.meta.outputs.tag }}
+      VARIANTS: ${{ join(fromJSON(needs.meta.outputs.variants), ' ') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The moment this runs, every installed desktop app can see the release.
@@ -335,13 +360,27 @@ jobs:
       # nobody can install is worse than a draft someone can look at.
       - run: |
           set -euo pipefail
-          count=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
-            --jq '[.assets[] | select(.name | test("\\.(dmg|zip|AppImage|deb|exe)$"))] | length')
-          if [ "$count" = "0" ]; then
-            echo "::error::no installer was uploaded for $TAG; leaving it a draft" >&2
-            exit 1
-          fi
-          echo "publishing $TAG with $count installer asset(s)"
+          # Counted per variant, not in total. Both variants upload into the
+          # same draft, so a single count would let a release in which every
+          # *stable* leg failed publish on the strength of beta's installers —
+          # and every stable install would then see a release it cannot
+          # install. The beta artifacts are named Loxaic-Beta-*, so the stable
+          # ones are what is left.
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name | select(test("\\.(dmg|zip|AppImage|deb|exe)$"))')
+          for variant in $VARIANTS; do
+            if [ "$variant" = "beta" ]; then
+              count=$(printf '%s\n' "$assets" | grep -c '^Loxaic-Beta-' || true)
+            else
+              count=$(printf '%s\n' "$assets" | grep -vc '^Loxaic-Beta-' || true)
+            fi
+            if [ "$count" = "0" ]; then
+              echo "::error::no $variant installer was uploaded for $TAG; leaving it a draft" >&2
+              exit 1
+            fi
+            echo "$variant: $count installer asset(s)"
+          done
+          echo "publishing $TAG"
           # A missing APK is a warning rather than a refusal: the desktop
           # installers are the hard requirement, and an Android user can still
           # be served by the update channel once a build finishes later.
@@ -370,9 +409,13 @@ jobs:
       TAG: ${{ needs.meta.outputs.tag }}
       VARIANT: ${{ matrix.variant }}
       FORCE_BUILD: ${{ github.event.inputs.force_native_build }}
-      # The variant *is* the channel, the build profile and the EAS
-      # environment: eas.json names all three the same thing so there is one
-      # value to get right rather than three to keep in step.
+      # The variant is the channel, the build profile and APP_VARIANT — but
+      # *not* the EAS environment. EAS has exactly three of those
+      # (development, preview, production), so eas.json maps the beta profile
+      # to `preview`, and this has to map the same way or the publish asks for
+      # an environment that does not exist while `eas build --profile beta` in
+      # the next step quietly uses the right one.
+      EAS_ENVIRONMENT: ${{ matrix.variant == 'beta' && 'preview' || 'production' }}
       APP_VARIANT: ${{ matrix.variant }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -405,7 +448,7 @@ jobs:
         # nobody and reports nothing.
         run: |
           set -euo pipefail
-          eas update --channel "$VARIANT" --environment "$VARIANT" \
+          eas update --channel "$VARIANT" --environment "$EAS_ENVIRONMENT" \
             --message "$TAG" --non-interactive --json > "update.json"
           # The runtime version the update was published for decides whether a
           # native build is needed below. Read from the publish itself rather
@@ -467,11 +510,10 @@ jobs:
             fi
             # --no-wait: a build takes far longer than this workflow should,
             # and the update is already published — the binary catches up.
+            # No `|| true`: this block is documented as failing closed, and a
+            # build that could not even be *queued* is exactly the case where
+            # the update has published for a runtime no binary will ever have.
             eas build --platform "$platform" --profile "$VARIANT" --non-interactive --no-wait --json \
-              > "build-$platform.json" || true
+              > "build-$platform.json"
           done
-          # Handed to the APK job, which cannot read another job's files.
-          if [ -f build-android.json ]; then
-            ID=$(node -e 'try{const v=JSON.parse(require("node:fs").readFileSync("build-android.json","utf8"));const b=Array.isArray(v)?v[0]:v;process.stdout.write(b?.id??"")}catch{process.stdout.write("")}')
-            echo "android_build_id=$ID" >> "$GITHUB_OUTPUT"
-          fi
+          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"

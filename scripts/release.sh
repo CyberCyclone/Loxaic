@@ -45,7 +45,9 @@ gh auth status >/dev/null 2>&1 || die "gh is not signed in (run: gh auth login)"
 # from whatever this checkout last fetched. A stale view would happily mint a
 # tag that already exists somewhere else.
 echo "→ fetching tags"
-git fetch --quiet --tags --prune-tags origin
+# --prune as well as --prune-tags: git only removes stale local tags when
+# pruning is enabled, so --prune-tags alone does nothing.
+git fetch --quiet --prune --prune-tags --tags origin
 git fetch --quiet origin dev
 
 NEXT="$(node apps/desktop/scripts/next-tag.mjs "$KIND")" || exit 1
