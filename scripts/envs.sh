@@ -30,10 +30,10 @@
 # because this repository is going public and the box's address is nobody
 # else's business:
 #
-#   ENVS_SSH=you@192.168.1.13                 # where the environments run
+#   ENVS_SSH=you@192.168.1.50                 # where the environments run
 #   ENVS_HOSTNAME=yourbox.tailXXXX.ts.net     # what a phone dials to reach it
 #   ENVS_ROOT=loxaic-envs                     # where they live, under $HOME
-#   DEV_INFERENCE_URL=http://192.168.1.13:1234  # LM Studio for the dev slot
+#   DEV_INFERENCE_URL=http://192.168.1.50:1234  # LM Studio for the dev slot
 #
 # ENVS_HOSTNAME is separate from ENVS_SSH on purpose: the deploy goes over the
 # LAN address, which is fast and needs nothing, while the URL baked into the
@@ -45,7 +45,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # The environment wins over the file, which is the precedence every other
 # configurable thing in this repo uses (env > stored > default) and the only
-# one that allows a one-off: `ENVS_HOSTNAME=192.168.1.13 envs.sh preview up 7`
+# one that allows a one-off: `ENVS_HOSTNAME=192.168.1.50 envs.sh preview up 7`
 # for a device with no Tailscale, say. Sourcing the file last would silently
 # ignore that — it did, and the first thing it cost was a test of this script
 # that quietly ran against the real box instead of the unreachable address it
