@@ -203,6 +203,25 @@ jobs:
           for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
             if [ "$RUNNER_OS" != "macOS" ] || [ -z "${!v:-}" ]; then unset "$v"; fi
           done
+          # Signing opens every file in the bundle at once (@electron/osx-sign's
+          # walkAsync runs isBinaryFile inside an unbounded Promise.all), and
+          # the bundle holds ~16,000 files against a runner cap of 10,240 — the
+          # second release died with EMFILE mid-signing. `ulimit` alone does
+          # not help, because kern.maxfilesperproc still caps the process.
+          # Reproduced on macos-15 against osx-sign's own walk: defaults fail,
+          # ulimit-only fails, sysctl plus ulimit passes.
+          #
+          # Not fatal, deliberately: this is tuning, not correctness. Under
+          # `set -e` a refused sysctl or ulimit (no passwordless sudo on a
+          # self-hosted mac, a hardened image, a lower inherited hard limit)
+          # would end the step before packaging — losing macOS outright,
+          # including the unsigned build that works without a certificate, and
+          # the release would still undraft for the other platforms.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            sudo sysctl -w kern.maxfiles=524288 kern.maxfilesperproc=524288 >/dev/null \
+              && ulimit -n 524288 \
+              || echo "::warning::could not raise the open-file limit; signing may hit EMFILE"
+          fi
           pnpm --filter @loxaic/desktop package:publish
 
   advance-branches:
@@ -395,7 +414,13 @@ jobs:
           cache: pnpm
       - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         with:
-          eas-version: latest
+          # Pinned to a major, not `latest`: the publish step reads eas-cli's
+          # --json output field by field, so a CLI whose output changed would
+          # break a release only after its update had already published.
+          # `24.x` still takes every minor and patch — expo-github-action
+          # resolves the range with `npm info` and installs the newest match.
+          # Bump the major deliberately, and watch the next publish step.
+          eas-version: 24.x
           token: ${{ secrets.EXPO_TOKEN }}
           packager: pnpm
       - run: pnpm install --frozen-lockfile
@@ -415,29 +440,60 @@ jobs:
           set -euo pipefail
           eas update --channel "$VARIANT" --environment "$EAS_ENVIRONMENT" \
             --message "$TAG" --non-interactive --json > "update.json"
-          # The runtime version the update was published for decides whether a
-          # native build is needed below. Read from the publish itself rather
-          # than recomputed, so the two can't disagree — and tolerant of shape
-          # because eas' --json output is versioned by the CLI, not by us.
-          RUNTIME=$(node -e '
+          # Each platform's update is published for that platform's own
+          # runtime version — the fingerprint hashes native config, which
+          # differs between iOS and Android — and that is what decides whether
+          # each platform needs a native build below. The second release run
+          # assumed one runtime across both, published successfully, and then
+          # failed right here (`expected one runtime version, got
+          # ["16ae…","e92e…"]`), so the build step never ran and no beta app
+          # was built.
+          #
+          # Read from the publish itself rather than recomputed, so the two
+          # can't disagree, and tolerant of the outer shape because eas'
+          # --json output is versioned by the CLI, not by us. The per-entry
+          # shape is not tolerated, and cannot be: each update must carry
+          # `platform` and `runtimeVersion`. If a future eas-cli renames either
+          # it lands here after the update has already published, so that case
+          # gets its own error naming the fields actually seen, rather than
+          # reading as a runtime-version count.
+          node -e '
             const fs = require("node:fs");
             const raw = JSON.parse(fs.readFileSync("update.json", "utf8"));
             const updates = Array.isArray(raw) ? raw : (raw.updates ?? [raw]);
-            const runtimes = [...new Set(updates.map((u) => u?.runtimeVersion).filter(Boolean))];
-            if (runtimes.length !== 1) {
-              console.error(`expected one runtime version, got ${JSON.stringify(runtimes)}`);
+            if (updates.length === 0) {
+              console.error("eas update --json printed no updates at all");
               process.exit(1);
             }
-            process.stdout.write(runtimes[0]);
-          ')
-          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
-          echo "published $VARIANT for runtime $RUNTIME"
+            if (!updates.some((u) => u?.platform && u?.runtimeVersion)) {
+              const seen = Object.keys(updates[0] ?? {}).join(", ") || "(nothing)";
+              console.error(`no update carried both platform and runtimeVersion; the eas-cli --json shape may have changed (first entry has: ${seen})`);
+              process.exit(1);
+            }
+            const byPlatform = {};
+            for (const u of updates) {
+              if (!u?.platform || !u?.runtimeVersion) continue;
+              (byPlatform[u.platform] ??= new Set()).add(u.runtimeVersion);
+            }
+            const out = [];
+            for (const platform of ["ios", "android"]) {
+              const runtimes = [...(byPlatform[platform] ?? [])];
+              if (runtimes.length !== 1) {
+                console.error(`expected one ${platform} runtime version, got ${JSON.stringify(runtimes)}`);
+                process.exit(1);
+              }
+              out.push(`runtime_${platform}=${runtimes[0]}`);
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
+            console.log(`published ${process.env.VARIANT}: ${out.join(", ")}`);
+          '
 
       - name: Build natively, but only for a runtime that has no build yet
         id: build
         working-directory: apps/mobile
         env:
-          RUNTIME: ${{ steps.publish.outputs.runtime }}
+          RUNTIME_IOS: ${{ steps.publish.outputs.runtime_ios }}
+          RUNTIME_ANDROID: ${{ steps.publish.outputs.runtime_android }}
         # With the fingerprint runtime policy, a change to native code or
         # dependencies produces a new runtime version, and an update published
         # for it reaches *no existing binary*. So: ask whether a finished
@@ -457,6 +513,7 @@ jobs:
           set -euo pipefail
           FAILED=""
           for platform in ios android; do
+            if [ "$platform" = "ios" ]; then RUNTIME="$RUNTIME_IOS"; else RUNTIME="$RUNTIME_ANDROID"; fi
             if [ "$FORCE_BUILD" = "true" ]; then
               echo "$platform: forced by workflow input"
             else
@@ -533,4 +590,3 @@ jobs:
             echo "::error::$VARIANT failed for:$FAILED" >&2
             exit 1
           fi
-          echo "runtime=$RUNTIME" >> "$GITHUB_OUTPUT"
