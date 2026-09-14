@@ -464,11 +464,26 @@ repository's CI. The alternative —
 put one there for no benefit. The mobile side of a release run therefore needs
 exactly one secret: `EXPO_TOKEN`.
 
-The `submit` profiles in `eas.json` are deliberately minimal. With the API key
-in place EAS resolves the App Store Connect record from the bundle identifier
-the build already carries, so there is nothing account-specific committed here.
-If a lookup is ever ambiguous, `ascAppId` (the numeric id from the record's App
-Store Connect URL) pins it — neither that nor `appleTeamId` is secret.
+**Each iOS submit profile needs `ascAppId`** — the numeric **Apple ID** from
+App Store Connect → Apps → the app → App Information. EAS can look the record up
+from the bundle identifier only in *interactive* mode; in CI the second release
+run built its iOS app and then refused to submit it ("Set ascAppId in the submit
+profile (eas.json) or re-run this command in interactive mode"). It is not a
+secret. `submit.beta.ios` carries Loxaic Beta's; `submit.production.ios` needs
+Loxaic's once that record exists, or the first stable tag's iOS submission fails
+the same way.
+
+**Android needs its Play service-account key stored in EAS before CI can
+submit.** CI cannot create one — "Google Service Account Keys cannot be set up in
+--non-interactive mode" — so it is uploaded once, interactively, per variant:
+
+```bash
+cd apps/mobile && APP_VARIANT=beta npx --yes eas-cli@latest credentials --platform android
+```
+
+Choose the profile, then *Google Service Account* → upload the JSON key for Play
+Store submissions (not the FCM entry). Without it every Android build finishes and
+never reaches Play.
 
 **What a release then does:** `eas build --auto-submit-with-profile` hands each
 finished build to its store — iOS to TestFlight (beta) or App Store Connect
