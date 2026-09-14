@@ -210,9 +210,17 @@ jobs:
           # not help, because kern.maxfilesperproc still caps the process.
           # Reproduced on macos-15 against osx-sign's own walk: defaults fail,
           # ulimit-only fails, sysctl plus ulimit passes.
+          #
+          # Not fatal, deliberately: this is tuning, not correctness. Under
+          # `set -e` a refused sysctl or ulimit (no passwordless sudo on a
+          # self-hosted mac, a hardened image, a lower inherited hard limit)
+          # would end the step before packaging — losing macOS outright,
+          # including the unsigned build that works without a certificate, and
+          # the release would still undraft for the other platforms.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            sudo sysctl -w kern.maxfiles=524288 kern.maxfilesperproc=524288 >/dev/null
-            ulimit -n 524288
+            sudo sysctl -w kern.maxfiles=524288 kern.maxfilesperproc=524288 >/dev/null \
+              && ulimit -n 524288 \
+              || echo "::warning::could not raise the open-file limit; signing may hit EMFILE"
           fi
           pnpm --filter @loxaic/desktop package:publish
 
@@ -406,7 +414,13 @@ jobs:
           cache: pnpm
       - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         with:
-          eas-version: latest
+          # Pinned to a major, not `latest`: the publish step reads eas-cli's
+          # --json output field by field, so a CLI whose output changed would
+          # break a release only after its update had already published.
+          # `24.x` still takes every minor and patch — expo-github-action
+          # resolves the range with `npm info` and installs the newest match.
+          # Bump the major deliberately, and watch the next publish step.
+          eas-version: 24.x
           token: ${{ secrets.EXPO_TOKEN }}
           packager: pnpm
       - run: pnpm install --frozen-lockfile
@@ -437,11 +451,25 @@ jobs:
           #
           # Read from the publish itself rather than recomputed, so the two
           # can't disagree, and tolerant of the outer shape because eas'
-          # --json output is versioned by the CLI, not by us.
+          # --json output is versioned by the CLI, not by us. The per-entry
+          # shape is not tolerated, and cannot be: each update must carry
+          # `platform` and `runtimeVersion`. If a future eas-cli renames either
+          # it lands here after the update has already published, so that case
+          # gets its own error naming the fields actually seen, rather than
+          # reading as a runtime-version count.
           node -e '
             const fs = require("node:fs");
             const raw = JSON.parse(fs.readFileSync("update.json", "utf8"));
             const updates = Array.isArray(raw) ? raw : (raw.updates ?? [raw]);
+            if (updates.length === 0) {
+              console.error("eas update --json printed no updates at all");
+              process.exit(1);
+            }
+            if (!updates.some((u) => u?.platform && u?.runtimeVersion)) {
+              const seen = Object.keys(updates[0] ?? {}).join(", ") || "(nothing)";
+              console.error(`no update carried both platform and runtimeVersion; the eas-cli --json shape may have changed (first entry has: ${seen})`);
+              process.exit(1);
+            }
             const byPlatform = {};
             for (const u of updates) {
               if (!u?.platform || !u?.runtimeVersion) continue;

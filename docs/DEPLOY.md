@@ -508,10 +508,14 @@ installed.
 
 `runtimeVersion` uses the `fingerprint` policy, so a change to native code or
 dependencies produces a new runtime version and an update published for it
-reaches no existing binary. The release workflow asks EAS whether a finished
-production build already exists for the runtime it just published for, and
-starts one only when none does — a JS-only release costs no build. Force one
-with the `force_native_build` input on a `workflow_dispatch` run.
+reaches no existing binary. Runtime versions are **per platform** as well as per
+variant — the fingerprint hashes native config, which differs between iOS and
+Android — so one `eas update` publishes two updates for two runtimes. The
+release workflow asks EAS, for each platform separately, whether a finished
+build of that variant already exists for the runtime that platform's update was
+just published for, and starts one only when none does — a JS-only release costs
+no build. Force one with the `force_native_build` input on a `workflow_dispatch`
+run.
 
 Stamping never changes the runtime version by itself: `stamp-version.mjs`
 writes only `version` fields, and the fingerprinter ignores
