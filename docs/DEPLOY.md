@@ -377,9 +377,14 @@ run once, by hand, from a machine signed in to EAS, and never again.
    until that has run, which is why it is described here and performed after.
    Every later upload can be automated; this is the single most common reason a
    first automated submission fails.
-3. **A service account key**, so EAS can upload on your behalf: Play Console →
-   Setup → API access → create a service account in Google Cloud, grant it
-   *Release manager* on the app, download its JSON key, then hand it to EAS:
+3. **A service account key**, so EAS can upload on your behalf. In Google Cloud
+   Console, enable the *Google Play Android Developer API*, create a service
+   account, and download a JSON key for it. In Play Console → **Users and
+   permissions**, invite the service account's email and grant it release
+   permissions on each listing it will upload to (Expo's guide grants Admin on
+   the app; the exact minimum is not verified here). Then hand the key to EAS,
+   once per variant — CI cannot do this step ("Google Service Account Keys cannot
+   be set up in --non-interactive mode"):
 
    ```bash
    cd apps/mobile
@@ -387,8 +392,13 @@ run once, by hand, from a machine signed in to EAS, and never again.
    APP_VARIANT=production npx --yes eas-cli@latest credentials --platform android
    ```
 
-   For each: *Google Service Account* → upload the JSON. The same key can serve
-   both listings if it has access to both.
+   For each: *Google Service Account* → the **Play Store submissions** entry (not
+   FCM V1) → upload the JSON. The same key can serve both listings if it has
+   access to both. Without a key, every Android build finishes and never reaches
+   Play. A key EAS holds but Play has not authorised fails differently — "The
+   service account is missing the necessary permissions" — meaning the app
+   permissions above are missing, or a new service account's access has not taken
+   effect yet, which can take up to a day.
 
 The first interactive build per variant is also what makes EAS generate and
 store the upload keystore, so run one before relying on CI. **Android's first
@@ -427,12 +437,21 @@ cd apps/mobile && npx --yes eas-cli@latest submit --platform <ios|android> --pro
 store has already accepted: Apple answers ITMS-4238 and Play refuses a reused
 `versionCode`.
 
-**iOS** needs an Apple Developer account, and three things set up in this
+**iOS** needs an Apple Developer account, and four things set up in this
 order:
 
 1. **App Store Connect records**, one per variant, because they are separate
    apps: `com.loxaic.app` ("Loxaic") and `com.loxaic.app.beta` ("Loxaic
-   Beta"). A submission cannot create them.
+   Beta"). A submission cannot create them. **Copy each record's Apple ID into
+   `apps/mobile/eas.json` as `submit.<variant>.ios.ascAppId`** — App Store
+   Connect → Apps → the app → App Information → Apple ID, a number, not a
+   secret. Non-interactive `eas submit` cannot find the record from the bundle
+   identifier, so CI refuses to submit without it ("Set ascAppId in the submit
+   profile (eas.json) or re-run this command in interactive mode"), and because
+   submission happens server-side after the build, the release run can still go
+   green. `submit.beta.ios` has Loxaic Beta's; `submit.production.ios` stays
+   empty until the Loxaic record exists, and the first stable tag's iOS
+   submission fails until it is filled in.
 2. **An App Store Connect API key** (Users and Access → Integrations → App
    Store Connect API, role App Manager). Download the `.p8` — Apple lets you
    download it exactly once.
@@ -463,27 +482,6 @@ repository's CI. The alternative —
 `EXPO_ASC_*` environment variables with the `.p8` as a GitHub secret — would
 put one there for no benefit. The mobile side of a release run therefore needs
 exactly one secret: `EXPO_TOKEN`.
-
-**Each iOS submit profile needs `ascAppId`** — the numeric **Apple ID** from
-App Store Connect → Apps → the app → App Information. EAS can look the record up
-from the bundle identifier only in *interactive* mode; in CI the second release
-run built its iOS app and then refused to submit it ("Set ascAppId in the submit
-profile (eas.json) or re-run this command in interactive mode"). It is not a
-secret. `submit.beta.ios` carries Loxaic Beta's; `submit.production.ios` needs
-Loxaic's once that record exists, or the first stable tag's iOS submission fails
-the same way.
-
-**Android needs its Play service-account key stored in EAS before CI can
-submit.** CI cannot create one — "Google Service Account Keys cannot be set up in
---non-interactive mode" — so it is uploaded once, interactively, per variant:
-
-```bash
-cd apps/mobile && APP_VARIANT=beta npx --yes eas-cli@latest credentials --platform android
-```
-
-Choose the profile, then *Google Service Account* → upload the JSON key for Play
-Store submissions (not the FCM entry). Without it every Android build finishes and
-never reaches Play.
 
 **What a release then does:** `eas build --auto-submit-with-profile` hands each
 finished build to its store — iOS to TestFlight (beta) or App Store Connect
