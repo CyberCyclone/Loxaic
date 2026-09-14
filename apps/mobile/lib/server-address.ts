@@ -30,6 +30,37 @@ export function normalizeUrl(raw: string): string | Error | null {
   return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
 }
 
+/**
+ * A sentence to add when an address could not be reached and it is a
+ * Tailscale address, or `null` for any other address.
+ *
+ * The usual reason a tailnet address fails from a phone is not the address:
+ * Tailscale is switched off on the phone, so the name does not resolve and a
+ * 100.x address routes nowhere. A bare "Could not reach it." sends someone
+ * off re-typing an address that was right all along. A Funnel address is also
+ * `*.ts.net` and is public, which is why this says "make sure" rather than
+ * claiming the device is disconnected.
+ */
+export function tailnetHint(url: string | null | undefined): string | null {
+  return url && isTailnetAddress(url)
+    ? 'This is a Tailscale address, so make sure Tailscale is connected on this device.'
+    : null;
+}
+
+/** A MagicDNS name (`*.ts.net`), or an IPv4 address in Tailscale's 100.64.0.0/10. */
+function isTailnetAddress(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return false;
+  }
+  if (host.endsWith('.ts.net')) return true;
+  // Only 100.64–100.127: the rest of 100.0.0.0/8 is ordinary public space.
+  const octets = /^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
+  return octets !== null && Number(octets[1]) >= 64 && Number(octets[1]) <= 127;
+}
+
 /** `http` for a literal IP or a dotless host, `https` for a domain name. */
 function defaultScheme(hostAndMaybePort: string): 'http' | 'https' {
   const host = hostAndMaybePort.replace(/\/.*$/, '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');

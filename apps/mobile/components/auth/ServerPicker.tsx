@@ -10,7 +10,7 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { getItem, setItem, removeItem } from '@/lib/storage';
-import { normalizeUrl } from '@/lib/server-address';
+import { normalizeUrl, tailnetHint } from '@/lib/server-address';
 
 /**
  * Choosing which server to sign in to, from the sign-in screen itself.
@@ -140,10 +140,15 @@ export function ServerPicker({ open, onToggle }: { open: boolean; onToggle: (ope
           : { ok: false, message: `Server answered ${String(res.status)}` },
       );
     } catch (err) {
+      // A tailnet address with Tailscale off fails both ways — the name does
+      // not resolve, or a 100.x address hangs until the timeout — so the hint
+      // replaces both generic messages rather than only one of them.
+      const hint = tailnetHint(next);
       setResult({
         ok: false,
-        message:
-          err instanceof Error && err.name === 'AbortError'
+        message: hint
+          ? `Could not reach it. ${hint}`
+          : err instanceof Error && err.name === 'AbortError'
             ? 'Timed out. Check the address, and that this device is on the same network or tailnet.'
             : 'Could not reach it.',
       });

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
-import { KeyboardAvoidingView, Platform } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -14,6 +14,7 @@ import { useSession } from '@/lib/session';
 import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 import { currentEndpoint } from '@/lib/endpoint';
 import { ServerPicker, serverPickerKind } from '@/components/auth/ServerPicker';
+import { tailnetHint } from '@/lib/server-address';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -54,9 +55,13 @@ export default function LoginScreen() {
       // this screen was changed to fix, turned the other way round.
       const picker = serverPickerKind();
       if (unreachable && picker === 'form') setServerOpen(true);
+      const endpoint = currentEndpoint();
+      // A tailnet address fails like a wrong one when Tailscale is simply off
+      // on this device, and turning it on is the fix, not the address below.
+      const hint = tailnetHint(endpoint);
       setError(
         unreachable
-          ? `Could not reach ${currentEndpoint() ?? 'a server'}.${
+          ? `Could not reach ${endpoint ?? 'a server'}.${hint ? ` ${hint}` : ''}${
               picker === 'form'
                 ? ' Check the address below.'
                 : picker === 'reconfigure'
@@ -75,9 +80,24 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <Box className="flex-1 items-center justify-center bg-background px-6">
+      {/* A ScrollView, not a centred Box: with the server form open the column
+          is taller than the space the keyboard leaves, and a Box can only let
+          the keyboard cover it. Centred while it fits, scrolls once it does
+          not — the same shape as onboarding. */}
+      <ScrollView
+        style={{ flex: 1, minHeight: 0 }}
+        className="bg-background"
+        contentContainerStyle={{
+          flexGrow: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: 24,
+          paddingVertical: 32,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
         <VStack space="xl" className="w-full max-w-[380px]">
           <VStack space="xs" className="items-center">
             <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
@@ -180,7 +200,7 @@ export default function LoginScreen() {
               to be needed. Renders nothing off the desktop. */}
           <TailnetStatusCard testIDPrefix="login.tailnet" />
         </VStack>
-      </Box>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
