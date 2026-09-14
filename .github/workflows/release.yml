@@ -69,9 +69,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          node apps/desktop/scripts/stamp-version.mjs --parse "$TAG" >> "$GITHUB_OUTPUT"
+          # Parsed once and captured — never piped into `grep -q`. --parse
+          # writes three lines in three writes with `prerelease=` second, so
+          # grep -q exits on that match, node's third write can land on a
+          # closed pipe, and under pipefail the pipeline reads as false. That
+          # race put v0.0.1-beta.3 down the stable branch: it was built and
+          # published as production as well as beta. beta.1 and beta.2 simply
+          # won the race. A failed parse still fails the step here, through
+          # set -e on the assignment.
+          parsed=$(node apps/desktop/scripts/stamp-version.mjs --parse "$TAG")
+          printf '%s\n' "$parsed" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-list -n1 "$TAG")" >> "$GITHUB_OUTPUT"
-          if node apps/desktop/scripts/stamp-version.mjs --parse "$TAG" | grep -q '^prerelease=true$'; then
+          if grep -qx 'prerelease=true' <<< "$parsed"; then
             echo 'variants=["beta"]' >> "$GITHUB_OUTPUT"
           else
             echo 'variants=["production","beta"]' >> "$GITHUB_OUTPUT"
