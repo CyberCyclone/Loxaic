@@ -1712,10 +1712,13 @@ replies.
   `--id` re-sends something the store already took (Apple ITMS-4238, Play's reused
   `versionCode`). Retrying a genuinely failed submission is a person running `eas submit --id
   <build-id>`, which is a different job from releasing the JS that just changed.
-- **EAS holds the App Store Connect key; GitHub holds only `EXPO_TOKEN`.** The submit profiles
-  in `eas.json` are deliberately minimal — with the API key stored on EAS, the App Store
-  Connect record is resolved from the bundle identifier the build already carries, so nothing
-  account-specific is committed. The alternative (`ascApiKey*` in eas.json, or `EXPO_ASC_*`
+- **EAS holds the App Store Connect key; GitHub holds only `EXPO_TOKEN`.** But the submit
+  profiles cannot be empty: non-interactive `eas submit` will not look an App Store Connect
+  record up from the bundle identifier (only interactive mode does), so each iOS profile
+  carries `ascAppId`. It is not a secret. The claim that the record resolves itself was
+  documented, reviewed and wrong, and cost the second release its TestFlight upload. The
+  Android counterpart is the Play service-account key, which likewise can only be added to EAS
+  interactively ("Google Service Account Keys cannot be set up in --non-interactive mode"). The alternative (`ascApiKey*` in eas.json, or `EXPO_ASC_*`
   with the `.p8` as a repository secret) would put an Apple credential in CI for no benefit.
 - **CI cannot create credentials.** `eas build --non-interactive` can only use what already
   exists, so the first build of each platform *and each variant* has to be run by hand once —
@@ -1990,6 +1993,13 @@ replies.
   65536` alone fails, `sudo sysctl kern.maxfilesperproc` plus `ulimit` passes. The package step
   does both, on macOS only. Nothing local reproduces it, because a Mac's own limit is
   effectively unlimited.
+- **The certificate must be *Developer ID Application*; an *Apple Development* certificate signs
+  and cannot be notarized.** The second release signed every binary with an Apple Development
+  certificate and Apple rejected all 133 of them, the main executable and Electron Framework
+  included, with "The binary is not signed with a valid Developer ID certificate". When *every*
+  binary is rejected, suspect the certificate type before suspecting a missed nested file.
+  `security find-identity -v -p codesigning` names the type; check it before exporting the
+  `.p12` into `CSC_LINK`.
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.
