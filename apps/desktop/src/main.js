@@ -2,6 +2,7 @@ import "./cwd-guard.js";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { describeFetchError } from "./fetch-error.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -794,7 +795,10 @@ async function runGui() {
         const body = await res.json();
         return { ok: true, url: base, cluster: body.cluster, hosts: body.hosts };
       } catch (err) {
-        return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+        // Node's fetch says "fetch failed" for every network error; the reason
+        // a person needs — including macOS refusing local network access —
+        // is on err.cause. See fetch-error.js.
+        return { ok: false, reason: describeFetchError(err, { url: probeBase, appName: app.getName() }) };
       }
     });
 
