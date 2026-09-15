@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
 import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
@@ -27,6 +27,12 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [serverOpen, setServerOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  // Stable, so the picker's effect fires on a new result rather than on every
+  // render of this screen, which would yank the view down while typing.
+  const revealServerResult = useCallback(() => {
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, []);
 
   if (needsOnboarding) return <Redirect href="/onboarding" />;
   if (token) return <Redirect href="/" />;
@@ -94,6 +100,7 @@ export default function LoginScreen() {
           the keyboard cover it. Centred while it fits, scrolls once it does
           not — the same shape as onboarding. */}
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1, minHeight: 0 }}
         className="bg-background"
         contentContainerStyle={{
@@ -200,7 +207,7 @@ export default function LoginScreen() {
             </Pressable>
           </HStack>
 
-          <ServerPicker open={serverOpen} onToggle={setServerOpen} />
+          <ServerPicker open={serverOpen} onToggle={setServerOpen} onResult={revealServerResult} />
 
           {/* A host that just chose to expose itself lands here before it can
               sign in, and this is the one moment its approval link is certain

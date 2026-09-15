@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { Platform } from 'react-native';
 import { Box } from '@/components/ui/box';
@@ -48,11 +48,27 @@ export function serverPickerKind(): 'form' | 'reconfigure' | 'none' {
   return 'form';
 }
 
-export function ServerPicker({ open, onToggle }: { open: boolean; onToggle: (open: boolean) => void }) {
+export function ServerPicker({
+  open,
+  onToggle,
+  onResult,
+}: {
+  open: boolean;
+  onToggle: (open: boolean) => void;
+  /** Called once a Test or Save result has rendered, so the screen can scroll it into view. */
+  onResult?: () => void;
+}) {
   const router = useRouter();
   const [url, setUrl] = useState(() => getItem('loxaic-endpoint') ?? currentEndpoint() ?? '');
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
+
+  // The result line appears after the keyboard has already lifted the form,
+  // and nothing moves it again: on iOS the second line of a two-line message
+  // sat under the keyboard. The screen owns the scroll view, so tell it.
+  useEffect(() => {
+    if (result) onResult?.();
+  }, [result, onResult]);
 
   const active = currentEndpoint();
 
