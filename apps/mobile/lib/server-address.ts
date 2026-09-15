@@ -56,7 +56,11 @@ function isTailnetAddress(url: string): boolean {
     return false;
   }
   if (host.endsWith('.ts.net')) return true;
-  // Only 100.64–100.127: the rest of 100.0.0.0/8 is ordinary public space.
+  // Tailscale numbers nodes from 100.64.0.0/10, the RFC 6598 carrier-grade NAT
+  // range — which it borrows rather than owns, so a CGNAT-numbered LAN can
+  // match too. Kept anyway: people type tailnet IPs, and the hint only says
+  // "make sure", so a false match costs a moment. The rest of 100.0.0.0/8 is
+  // ordinary public space and never matches.
   const octets = /^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
   return octets !== null && Number(octets[1]) >= 64 && Number(octets[1]) <= 127;
 }

@@ -58,7 +58,9 @@ export default function LoginScreen() {
       const endpoint = currentEndpoint();
       // A tailnet address fails like a wrong one when Tailscale is simply off
       // on this device, and turning it on is the fix, not the address below.
-      const hint = tailnetHint(endpoint);
+      // Not in a browser: there the endpoint is the page's own origin, so a
+      // Funnel- or Serve-hosted page just proved it reachable from here.
+      const hint = picker === 'none' ? null : tailnetHint(endpoint);
       setError(
         unreachable
           ? `Could not reach ${endpoint ?? 'a server'}.${hint ? ` ${hint}` : ''}${
@@ -80,6 +82,11 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
+      // 'height' on Android, unlike onboarding's `undefined`, deliberately:
+      // under edge-to-edge (SDK 57) adjustResize no longer shrinks the window,
+      // so with `undefined` the keyboard sat over the open server form — tested
+      // on an API 36 emulator, the field did not move at all. Onboarding is
+      // desktop-only, which is why it never showed there.
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       {/* A ScrollView, not a centred Box: with the server form open the column

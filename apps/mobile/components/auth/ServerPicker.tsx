@@ -142,16 +142,15 @@ export function ServerPicker({ open, onToggle }: { open: boolean; onToggle: (ope
     } catch (err) {
       // A tailnet address with Tailscale off fails both ways — the name does
       // not resolve, or a 100.x address hangs until the timeout — so the hint
-      // replaces both generic messages rather than only one of them.
+      // goes after either message. Appended, not substituted: a timeout on a
+      // connected tailnet (server down, wrong port, a Funnel host) still needs
+      // "Timed out" to be diagnosable.
+      const base =
+        err instanceof Error && err.name === 'AbortError'
+          ? 'Timed out. Check the address, and that this device is on the same network or tailnet.'
+          : 'Could not reach it.';
       const hint = tailnetHint(next);
-      setResult({
-        ok: false,
-        message: hint
-          ? `Could not reach it. ${hint}`
-          : err instanceof Error && err.name === 'AbortError'
-            ? 'Timed out. Check the address, and that this device is on the same network or tailnet.'
-            : 'Could not reach it.',
-      });
+      setResult({ ok: false, message: hint ? `${base} ${hint}` : base });
     } finally {
       clearTimeout(timer);
       setTesting(false);
