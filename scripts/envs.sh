@@ -115,8 +115,12 @@ slot_state() {
 }
 
 slot_running() {
-  on_host "docker compose -p '$1' ps --status running --quiet 2>/dev/null" | grep -q . && return 0
-  return 1
+  # Captured, then matched — never piped into `grep -q`. A slot has several
+  # containers, so grep -q exits on the first id and ssh's next write can land
+  # on a closed pipe; under pipefail that read a running slot as stopped.
+  local out
+  out="$(on_host "docker compose -p '$1' ps --status running --quiet 2>/dev/null")" || return 1
+  grep -q . <<< "$out"
 }
 
 # Shared by both slots. The only differences between a preview and the dev

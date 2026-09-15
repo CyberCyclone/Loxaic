@@ -1666,6 +1666,20 @@ replies.
   continue an unreleased line rather than starting a new one, a plain bump refuses while a
   newer beta is outstanding and names `promote` instead, and `promote` tags *the beta's own
   commit* rather than `dev`'s head, because releasing what the testers ran is the point.
+- **Never pipe a command into `grep -q` under `pipefail`.** `grep -q` exits on its first match,
+  the writer's next write lands on a closed pipe, and the *pipeline* fails even though the match
+  succeeded. The release workflow's prerelease check did exactly this — `stamp-version --parse`
+  writes `prerelease=` on the second of three lines — and `v0.0.1-beta.3` lost the race,
+  classified as stable, and was built and published as production as well as beta. It is a race,
+  so earlier tags passing proved nothing. Capture the output, then match it with a here-string
+  (`grep -qx … <<< "$out"`), as the feed guard, the meta step, `scripts/envs.sh`'s
+  `slot_running` and `fake-tsnet.sh`'s `in_env` check now all do. The race can only ever turn a
+  match into a miss, so a check whose "yes" is the alarm (a leaked key) is where it hides.
+- **The meta step branches on the parsed `prerelease` value, never on whether a match was
+  found.** Exactly `true` is beta, exactly `false` is stable, and anything else fails the step.
+  `set -e` on the capture only catches a non-zero exit; `--parse` exiting 0 with no output (which
+  `invokedDirectly()` has caused before) would otherwise fall through to the stable branch and
+  publish a beta tag as production from a green run.
 - **The release workflow is a matrix over variants, and the build gate is per variant.** Each
   variant has its own bundle identifier, the fingerprint policy hashes native config, so their
   runtime versions differ — a finished build of one says nothing about the other. `APP_VARIANT`
