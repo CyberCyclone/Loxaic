@@ -113,6 +113,15 @@ describe('choosing a server from the sign-in screen', () => {
     await waitForResultText(/could not reach|timed out/i);
     await shot('login-server-unreachable');
 
+    // A Tailscale address gets told to check Tailscale. With Tailscale off on
+    // the phone this failed exactly like a typo, when the address was right.
+    // The name is never registered, so it fails on any machine, on a tailnet
+    // or not — and the hint depends on the address, not on how it failed.
+    await typeInto('login.server.input', 'http://loxaic-e2e.tail00000.ts.net:4100');
+    await tap('login.server.test');
+    await waitForResultText(/Tailscale is connected/);
+    await shot('login-server-tailnet-hint');
+
     // Put the working one back, or every later spec in this run signs in
     // against a dead address. (With an empty string here this *cleared* the
     // override and collapsed the picker — the opposite of the comment.)

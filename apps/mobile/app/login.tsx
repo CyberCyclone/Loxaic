@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { Redirect, useRouter } from 'expo-router';
-import { KeyboardAvoidingView, Platform } from 'react-native';
+import { KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -14,6 +14,7 @@ import { useSession } from '@/lib/session';
 import { TailnetStatusCard } from '@/components/settings/TailnetStatusCard';
 import { currentEndpoint } from '@/lib/endpoint';
 import { ServerPicker, serverPickerKind } from '@/components/auth/ServerPicker';
+import { tailnetHint } from '@/lib/server-address';
 
 export default function LoginScreen() {
   const { token, needsOnboarding, signIn, signUp } = useSession();
@@ -26,6 +27,12 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [serverOpen, setServerOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
+  // Stable, so the picker's effect fires on a new result rather than on every
+  // render of this screen, which would yank the view down while typing.
+  const revealServerResult = useCallback(() => {
+    scrollRef.current?.scrollToEnd({ animated: true });
+  }, []);
 
   if (needsOnboarding) return <Redirect href="/onboarding" />;
   if (token) return <Redirect href="/" />;
@@ -54,9 +61,15 @@ export default function LoginScreen() {
       // this screen was changed to fix, turned the other way round.
       const picker = serverPickerKind();
       if (unreachable && picker === 'form') setServerOpen(true);
+      const endpoint = currentEndpoint();
+      // A tailnet address fails like a wrong one when Tailscale is simply off
+      // on this device, and turning it on is the fix, not the address below.
+      // Not in a browser: there the endpoint is the page's own origin, so a
+      // Funnel- or Serve-hosted page just proved it reachable from here.
+      const hint = picker === 'none' ? null : tailnetHint(endpoint);
       setError(
         unreachable
-          ? `Could not reach ${currentEndpoint() ?? 'a server'}.${
+          ? `Could not reach ${endpoint ?? 'a server'}.${hint ? ` ${hint}` : ''}${
               picker === 'form'
                 ? ' Check the address below.'
                 : picker === 'reconfigure'
@@ -75,9 +88,30 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      // 'height' on Android, unlike onboarding's `undefined`, deliberately:
+      // under edge-to-edge (SDK 57) adjustResize no longer shrinks the window,
+      // so with `undefined` the keyboard sat over the open server form — tested
+      // on an API 36 emulator, the field did not move at all. Onboarding is
+      // desktop-only, which is why it never showed there.
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
-      <Box className="flex-1 items-center justify-center bg-background px-6">
+      {/* A ScrollView, not a centred Box: with the server form open the column
+          is taller than the space the keyboard leaves, and a Box can only let
+          the keyboard cover it. Centred while it fits, scrolls once it does
+          not — the same shape as onboarding. */}
+      <ScrollView
+        ref={scrollRef}
+        style={{ flex: 1, minHeight: 0 }}
+        className="bg-background"
+        contentContainerStyle={{
+          flexGrow: 1,
+          alignItems: 'center',
+          justifyContent: 'center',
+          paddingHorizontal: 24,
+          paddingVertical: 32,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
         <VStack space="xl" className="w-full max-w-[380px]">
           <VStack space="xs" className="items-center">
             <Box className="h-12 w-12 items-center justify-center rounded-md bg-primary">
@@ -173,14 +207,14 @@ export default function LoginScreen() {
             </Pressable>
           </HStack>
 
-          <ServerPicker open={serverOpen} onToggle={setServerOpen} />
+          <ServerPicker open={serverOpen} onToggle={setServerOpen} onResult={revealServerResult} />
 
           {/* A host that just chose to expose itself lands here before it can
               sign in, and this is the one moment its approval link is certain
               to be needed. Renders nothing off the desktop. */}
           <TailnetStatusCard testIDPrefix="login.tailnet" />
         </VStack>
-      </Box>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }

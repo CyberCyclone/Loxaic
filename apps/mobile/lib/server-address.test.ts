@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeUrl } from './server-address';
+import { normalizeUrl, tailnetHint } from './server-address';
+
+describe('tailnetHint', () => {
+  it('reminds you to connect Tailscale for a MagicDNS name', () => {
+    // Testing a tailnet address with Tailscale off on the phone gave the same
+    // bare "Could not reach it." as a typo, when the address was fine.
+    expect(tailnetHint('http://pheonix.tail47eac7.ts.net:4100')).toMatch(/Tailscale is connected/);
+    expect(tailnetHint('https://BOX.tail1234.TS.NET')).not.toBeNull();
+    expect(tailnetHint('https://box.tail1234.ts.net./')).not.toBeNull();
+  });
+
+  it('recognises a Tailscale IP, which is only 100.64.0.0/10', () => {
+    expect(tailnetHint('http://100.101.102.103:4100')).not.toBeNull();
+    expect(tailnetHint('http://100.64.0.1')).not.toBeNull();
+    expect(tailnetHint('http://100.127.255.254')).not.toBeNull();
+    // The rest of 100.0.0.0/8 is ordinary public address space.
+    expect(tailnetHint('http://100.63.255.255')).toBeNull();
+    expect(tailnetHint('http://100.128.0.1')).toBeNull();
+  });
+
+  it('says nothing for any other address', () => {
+    expect(tailnetHint('http://192.168.1.13:4100')).toBeNull();
+    expect(tailnetHint('https://example.com')).toBeNull();
+    // Containing "ts.net" is not being under it.
+    expect(tailnetHint('https://ts.net.example.com')).toBeNull();
+    expect(tailnetHint('https://notts.net')).toBeNull();
+    expect(tailnetHint(null)).toBeNull();
+    expect(tailnetHint('not a url')).toBeNull();
+  });
+});
 
 describe('normalizeUrl', () => {
   it('accepts a bare hostname, because that is what people paste', () => {
