@@ -239,6 +239,20 @@ replies.
 - Real inference needs llama.cpp started with `--jinja` (native OpenAI tool calling) at
   `INFERENCE_BASE_URL` (default `http://localhost:4002`). See `docs/RUNTIME.md` for the
   per-platform (Mac/Windows/Linux, Metal/CUDA/ROCm) setup matrix.
+- **Model requests go through `inference/transport.ts`, never the global `fetch`.** Node's
+  built-in fetch is undici with a 300 s `headersTimeout` and `bodyTimeout`, and llama.cpp and
+  LM Studio send **no response headers for a streaming completion until prompt processing has
+  finished** — so any prompt that took over five minutes to evaluate was cut off by our own
+  client. A beta turn on a 39k-token prompt died that way, the backend logging "Client
+  disconnected" exactly 300 s after the request arrived and the server logging nothing. The
+  transport uses an undici `Agent` with both timeouts at 0 (Stop, through the `AbortSignal`,
+  is what ends a request) and `fetch` **from the same npm `undici`**: an npm Agent handed to
+  Node's bundled fetch is unreliable across undici majors, and the packaged app runs Electron
+  33's Node 20 (undici 6) while dev runs Node 24 (undici 7). Quick probes (`/props`,
+  `/v1/models`) stay on the global fetch with their own short timeouts. Network failures are
+  rewritten into a sentence ("Could not reach the model server…") instead of "fetch failed".
+  undici's timeouts run on ~1 s-resolution timers, so a test using a short one needs a delay
+  of seconds, not milliseconds.
 
 ### Tool loop (Chat and Agent both)
 

@@ -1,4 +1,5 @@
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
+import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 
 // Read at call time, not module load — a supervisor sets these in the child's
 // env, and module-scope reads would freeze them before any caller could act.
@@ -406,7 +407,8 @@ async function* liveStream(
     body.tool_choice = "auto";
   }
 
-  const response = await fetch(`${BASE_URL()}/v1/chat/completions`, {
+  // Not the global fetch: see transport.ts for the 300-second cut-off it has.
+  const response = await inferenceFetch(`${BASE_URL()}/v1/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -431,7 +433,8 @@ async function* liveStream(
 
   if (!response.body) throw new Error("Inference response has no body");
 
-  const reader = response.body.getReader();
+  // undici types its body chunks as `any`; they are bytes.
+  const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
   const decoder = new TextDecoder();
   let buffer = "";
   let lastUsage: CompletionResult["usage"] | null = null;
@@ -441,7 +444,14 @@ async function* liveStream(
 
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } catch (err) {
+        // A connection lost mid-reply surfaces here, as undici's "terminated".
+        throw inferenceNetworkError(err, options.signal);
+      }
+      const { done, value } = chunk;
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
