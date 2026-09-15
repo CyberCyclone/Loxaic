@@ -535,7 +535,13 @@ async function* liveStream(
       }
     }
   } finally {
-    reader.releaseLock();
+    // Cancel, not just release. Any early exit — a mid-stream SSE error, a
+    // throw in the consumer's loop — otherwise leaves the request in flight:
+    // undici pauses the socket on backpressure, a read-from stream is not
+    // cancelled when it is garbage collected, and the only timeout left is
+    // the hour-long ceiling. The backend would keep generating for nobody.
+    // Cancelling a body that already finished is a no-op.
+    await reader.cancel().catch(() => undefined);
   }
 
   const totalMs = Date.now() - startTime;

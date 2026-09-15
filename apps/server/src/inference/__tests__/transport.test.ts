@@ -2,7 +2,13 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { streamCompletion, type StreamEvent } from "../provider.ts";
-import { createInferenceDispatcher, inferenceFetch } from "../transport.ts";
+import {
+  INFERENCE_TIMEOUT_CEILING_MS,
+  createInferenceDispatcher,
+  inferenceDispatcher,
+  inferenceFetch,
+  inferenceNetworkError,
+} from "../transport.ts";
 
 /**
  * A llama.cpp-shaped backend that is slow in the ways a real one is: it sends
@@ -31,6 +37,20 @@ beforeAll(async () => {
     if (req.url?.startsWith("/hang/")) {
       // Never answers: a prompt still being evaluated.
       req.on("close", () => onHangClosed?.());
+      return;
+    }
+    if (req.url?.startsWith("/fast/")) {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(sse({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] }));
+      res.end("data: [DONE]\n\n");
+      return;
+    }
+    if (req.url?.startsWith("/sse-error/")) {
+      // A 200 that reports a failure mid-stream, then keeps the connection
+      // open and would keep generating — the early exit the reader must cancel.
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(sse({ error: { message: "model crashed" } }));
+      res.on("close", () => onHangClosed?.());
       return;
     }
     // /slow/: headers only after DELAY_MS, then a stall mid-body.
@@ -105,6 +125,58 @@ describe("inference transport", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
     // The backend is told, so it stops evaluating a prompt nobody wants.
     await closed;
+  });
+
+  it("the real path uses the shared dispatcher, whose timeouts are the long ceiling — not 0, not undici's 300 s", async () => {
+    // The delays above cannot tell 1 h from undici's 300 s default, so read the
+    // options off the dispatcher production actually uses. undici keeps them
+    // under Symbol('options'); if that moves, this fails loudly, not silently.
+    expect(INFERENCE_TIMEOUT_CEILING_MS).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    const dispatcher = inferenceDispatcher();
+    const optionsKey = Object.getOwnPropertySymbols(dispatcher).find((s) => s.description === "options");
+    if (!optionsKey) throw new Error("undici no longer keeps Agent options under Symbol('options')");
+    const options = (dispatcher as unknown as Record<symbol, { headersTimeout?: number; bodyTimeout?: number }>)[
+      optionsKey
+    ];
+    expect(options.headersTimeout).toBe(INFERENCE_TIMEOUT_CEILING_MS);
+    expect(options.bodyTimeout).toBe(INFERENCE_TIMEOUT_CEILING_MS);
+
+    // And streamCompletion really sends through that instance, rather than the
+    // global fetch or a fresh default Agent.
+    const dispatch = vi.spyOn(dispatcher, "dispatch");
+    try {
+      vi.stubEnv("MOCK_INFERENCE", "false");
+      vi.stubEnv("INFERENCE_BASE_URL", `${base}/fast`);
+      expect(await collect(streamCompletion("m", [{ role: "user", content: "hi" }]))).toBe("hi");
+      expect(dispatch).toHaveBeenCalled();
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
+  it("an early exit mid-stream cancels the response, so the backend sees the connection close", async () => {
+    vi.stubEnv("MOCK_INFERENCE", "false");
+    vi.stubEnv("INFERENCE_BASE_URL", `${base}/sse-error`);
+    const closed = new Promise<void>((resolve) => {
+      onHangClosed = resolve;
+    });
+    await expect(collect(streamCompletion("m", [{ role: "user", content: "hi" }]))).rejects.toThrow(
+      /Inference backend error: model crashed/,
+    );
+    // Releasing the reader alone leaves this open until the hour-long ceiling.
+    await closed;
+  });
+
+  it("an unrecognised network failure names its code but never the backend's address", () => {
+    const cause = Object.assign(new Error("connect EHOSTUNREACH 10.0.3.14:4002"), { code: "EHOSTUNREACH" });
+    const err = inferenceNetworkError(new TypeError("fetch failed", { cause })) as Error;
+    expect(err.message).toBe("The request to the model server failed (EHOSTUNREACH).");
+    expect(err.message).not.toMatch(/10\.0\.3\.14|4002/);
+
+    const uncoded = inferenceNetworkError(
+      new TypeError("fetch failed", { cause: new Error("connect somewhere.internal:4002") }),
+    ) as Error;
+    expect(uncoded.message).toBe("The request to the model server failed.");
   });
 
   it("an unreachable backend reports what happened, not a bare 'fetch failed'", async () => {

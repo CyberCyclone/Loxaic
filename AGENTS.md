@@ -245,14 +245,24 @@ replies.
   finished** — so any prompt that took over five minutes to evaluate was cut off by our own
   client. A beta turn on a 39k-token prompt died that way, the backend logging "Client
   disconnected" exactly 300 s after the request arrived and the server logging nothing. The
-  transport uses an undici `Agent` with both timeouts at 0 (Stop, through the `AbortSignal`,
-  is what ends a request) and `fetch` **from the same npm `undici`**: an npm Agent handed to
-  Node's bundled fetch is unreliable across undici majors, and the packaged app runs Electron
-  33's Node 20 (undici 6) while dev runs Node 24 (undici 7). Quick probes (`/props`,
-  `/v1/models`) stay on the global fetch with their own short timeouts. Network failures are
-  rewritten into a sentence ("Could not reach the model server…") instead of "fetch failed".
-  undici's timeouts run on ~1 s-resolution timers, so a test using a short one needs a delay
-  of seconds, not milliseconds.
+  transport uses an undici `Agent` and `fetch` **from the same npm `undici`**: an npm Agent
+  handed to Node's bundled fetch is unreliable across undici majors, and the packaged app runs
+  Electron 33's Node 20 (undici 6) while dev runs Node 24 (undici 7). Quick probes (`/props`,
+  `/v1/models`) stay on the global fetch with their own short timeouts.
+- **Both timeouts are `INFERENCE_TIMEOUT_CEILING_MS` (1 h), not 0.** Disabling them traded the
+  cut-off for an unbounded stall: a backend that wedges after accepting the connection keeps
+  the run, and its inference slot, forever — at concurrency 1 that queues every other
+  conversation, and an automatic compaction has nobody to press Stop. Never lower it toward
+  the old 300 s; `transport.test.ts` reads the real dispatcher's options to hold both lines.
+  With the timeouts that long, **the stream reader is cancelled, not just released**, in
+  `liveStream`'s `finally`: a read-from undici body is not cancelled on garbage collection, so
+  an early exit (a mid-stream SSE error, a throw in the consumer) left the socket open and the
+  backend generating for nobody.
+- Network failures are rewritten into a sentence ("Could not reach the model server…") instead
+  of "fetch failed". **The fallback names the error code only**: undici's own message carries
+  the backend's `host:port`, and this sentence reaches every client on the conversation,
+  shared viewers included. undici's timeouts run on ~1 s-resolution timers, so a test using a
+  short one needs a delay of seconds, not milliseconds.
 
 ### Tool loop (Chat and Agent both)
 

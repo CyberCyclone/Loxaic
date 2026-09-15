@@ -7,8 +7,9 @@
 // completion until prompt processing has finished. A prompt that takes longer
 // than five minutes to evaluate was therefore cut off by our own client — the
 // backend logged "Client disconnected" at exactly 300 s and we logged nothing
-// but "fetch failed". The fix is a dispatcher with both timeouts disabled, and
-// that dispatcher has to be driven by a `fetch` from the *same* undici: handing
+// but "fetch failed". The fix is a dispatcher whose timeouts are far past any
+// real prompt evaluation, and that dispatcher has to be driven by a `fetch`
+// from the *same* undici: handing
 // an npm-undici Agent to Node's bundled fetch is unreliable across undici
 // majors, and the packaged desktop runs Electron 33's Node 20 (undici 6) while
 // dev runs Node 24 (undici 7). Importing both from one package makes the pair
@@ -17,19 +18,35 @@
 import { Agent, fetch, type RequestInit, type Response } from "undici";
 
 export interface InferenceTimeouts {
-  /** 0 disables it. Prompt evaluation happens before headers are sent. */
+  /** Prompt evaluation happens before headers are sent. */
   headersTimeout: number;
-  /** 0 disables it. A reasoning model can pause between chunks for a long time. */
+  /** Idle time between chunks. A reasoning model can pause for a long time. */
   bodyTimeout: number;
   /** Reaching the server is not the slow part; a wrong address should fail fast. */
   connectTimeout: number;
 }
 
-// Nothing time-bounds a model request once it is connected: Stop (the run's
-// AbortSignal) is how a person ends one. A peer that vanishes without closing
-// the socket is still noticed eventually, because undici enables TCP
-// keep-alive on its sockets.
-const DEFAULT_TIMEOUTS: InferenceTimeouts = { headersTimeout: 0, bodyTimeout: 0, connectTimeout: 10_000 };
+/**
+ * How long a connected model request may wait for its headers, or between two
+ * chunks of its body, before we give up on it. Both timeouts are this.
+ *
+ * It is a trade between two failures. Too short, and a real prompt is cut off
+ * by our own client: 300 s did exactly that to a 39k-token prompt. Disabled
+ * (0), and a backend that wedges *after* accepting the connection — a stuck
+ * model load, a proxy holding the socket — keeps the run alive forever. Stop
+ * is then the only way out, and the run holds its inference slot the whole
+ * time: at concurrency 1, which is what LM Studio always resolves to, every
+ * other conversation on the deployment queues behind it, and an automatic
+ * compaction has nobody watching to press Stop at all. An hour is an order of
+ * magnitude past any prompt evaluation we have seen, and still ends a wedge.
+ */
+export const INFERENCE_TIMEOUT_CEILING_MS = 60 * 60 * 1000;
+
+const DEFAULT_TIMEOUTS: InferenceTimeouts = {
+  headersTimeout: INFERENCE_TIMEOUT_CEILING_MS,
+  bodyTimeout: INFERENCE_TIMEOUT_CEILING_MS,
+  connectTimeout: 10_000,
+};
 
 /** Exported so a test can build one with deliberately short timeouts. */
 export function createInferenceDispatcher(overrides: Partial<InferenceTimeouts> = {}): Agent {
@@ -43,10 +60,15 @@ export function createInferenceDispatcher(overrides: Partial<InferenceTimeouts> 
 
 let shared: Agent | null = null;
 
+/** The dispatcher every model request uses unless a test passes its own. */
+export function inferenceDispatcher(): Agent {
+  return (shared ??= createInferenceDispatcher());
+}
+
 export async function inferenceFetch(
   url: string,
   init: Omit<RequestInit, "dispatcher">,
-  dispatcher: Agent = (shared ??= createInferenceDispatcher()),
+  dispatcher: Agent = inferenceDispatcher(),
 ): Promise<Response> {
   try {
     return await fetch(url, { ...init, dispatcher });
@@ -77,7 +99,6 @@ export function inferenceNetworkError(err: unknown, signal?: AbortSignal): unkno
   if (err.name === "AbortError" || signal?.aborted) return err;
   const cause = (err as Error & { cause?: unknown }).cause;
   const code = errorCode(cause) ?? errorCode(err);
-  const detail = cause instanceof Error ? cause.message : err.message;
   const message = ((): string | null => {
     switch (code) {
       case "UND_ERR_HEADERS_TIMEOUT":
@@ -102,5 +123,18 @@ export function inferenceNetworkError(err: unknown, signal?: AbortSignal): unkno
   // Only network-level failures are rewritten; anything else already says
   // what it is.
   if (message === null && err.message !== "fetch failed" && err.message !== "terminated") return err;
-  return new Error(message ?? `The request to the model server failed: ${detail}`, { cause: err });
+  return new Error(message ?? fallbackMessage(code), { cause: err });
+}
+
+/**
+ * Names the error code and nothing else. undici's own message for these
+ * ("connect EHOSTUNREACH 10.0.3.14:4002") carries the backend's address, and
+ * this sentence reaches every client on the conversation — shared viewers
+ * included. The code is what someone debugging needs; the original error stays
+ * on `cause` for the server side. Shape-checked so only a bare code gets in.
+ */
+function fallbackMessage(code: string | undefined): string {
+  return code !== undefined && /^[A-Z][A-Z0-9_]{1,63}$/.test(code)
+    ? `The request to the model server failed (${code}).`
+    : "The request to the model server failed.";
 }
