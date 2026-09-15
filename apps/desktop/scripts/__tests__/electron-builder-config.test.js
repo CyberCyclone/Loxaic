@@ -84,4 +84,17 @@ describe("the electron-builder config", () => {
       expect(configFor(variant).linux.maintainer).toMatch(/^.+ <[^>]+@[^>]+>$/);
     }
   });
+
+  it("declares why the Mac app needs the local network", () => {
+    // Without a Local Network grant, macOS 15+ refuses an app's connections
+    // to LAN hosts before they leave the machine, and the prompt that asks
+    // for the grant shows this string. A missing key is invisible in every
+    // test that doesn't join a LAN host from a packaged app.
+    for (const variant of ["production", "beta"]) {
+      const config = configFor(variant);
+      expect(config.mac.extendInfo.NSLocalNetworkUsageDescription).toMatch(
+        new RegExp(`^${config.productName} `),
+      );
+    }
+  });
 });
