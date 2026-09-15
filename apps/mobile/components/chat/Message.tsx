@@ -106,10 +106,21 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
               />
             )}
             {msg.error ? (
-              <HStack space="xs" className="items-start">
-                <Icon as={AlertCircle} size="xs" className="mt-0.5 text-destructive" />
-                <Text className="flex-1 text-destructive">{msg.text}</Text>
-              </HStack>
+              <VStack space="xs">
+                {/* Whatever streamed before the failure is still real output,
+                    so it stays readable above the reason rather than being
+                    replaced by it. */}
+                {!!msg.text && <Markdown text={msg.text} />}
+                <HStack space="xs" className="items-start">
+                  <Icon as={AlertCircle} size="xs" className="mt-0.5 text-destructive" />
+                  {/* The fallback is for rows that predate the stored reason.
+                      It deliberately guesses at nothing: an invented cause is
+                      worse than admitting we were not told one. */}
+                  <Text testID="chat.message.error" className="flex-1 text-destructive">
+                    {msg.errorText ?? 'This response failed.'}
+                  </Text>
+                </HStack>
+              </VStack>
             ) : isUser ? (
               // User bubbles stay plain: someone typing a literal `*` or `#`
               // should see exactly what they typed.

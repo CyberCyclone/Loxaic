@@ -523,6 +523,9 @@ export interface ApiMessage {
   lamport: number;
   content: import("@loxaic/types").ContentBlock[];
   status: "streaming" | "complete" | "error" | "cancelled";
+  /** Why an errored turn failed. Null otherwise, and on errored rows that
+   * predate the column. */
+  error: string | null;
   createdAt: string;
   deletedAt: string | null;
   /** Persisted usage/timing for this message — null for user messages or if never recorded. */

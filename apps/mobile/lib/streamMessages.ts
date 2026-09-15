@@ -151,6 +151,11 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         thinking: thinking || undefined,
         tools: tools.length > 0 ? tools : undefined,
         usage: toMessageUsage(row.usage),
+        // Without this a reloaded failed turn rendered as an empty reply with
+        // no sign anything went wrong. `error` is null on rows that predate
+        // the column, which the bubble answers with a plain fallback.
+        error: row.status === 'error',
+        errorText: row.status === 'error' ? (row.error ?? undefined) : undefined,
       };
       out.push(msg);
       byId.set(row.id, msg);
@@ -197,6 +202,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
         : undefined,
     usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
     error: sm.status === 'error',
+    errorText: sm.status === 'error' ? sm.error : undefined,
     stopped: sm.status === 'cancelled',
     compaction: role === 'summary' ? sm.compaction : undefined,
     attachments: role === 'user' ? sm.attachments : undefined,
@@ -246,6 +252,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
               ...m,
               usage: event.usage ? usageFromTurn(event.usage) : m.usage,
               error: event.status === 'error',
+              errorText: event.status === 'error' ? event.error : undefined,
               stopped: event.status === 'cancelled',
             }
           : m,

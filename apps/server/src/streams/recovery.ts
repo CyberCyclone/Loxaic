@@ -2,6 +2,7 @@ import { and, db, eq, lt } from "@loxaic/db";
 import { messages } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
 import { getStreamBroker } from "./index.ts";
+import { capErrorText, INTERRUPTED_BY_RESTART } from "./error-text.ts";
 
 /** Any Postgres row still `status: "streaming"` this long after boot has no
  * process that could possibly still be writing to it — the registry is
@@ -33,7 +34,9 @@ export async function recoverOrphanedStreams(): Promise<void> {
         const blocks: ContentBlock[] = [];
         if (m.thinking) blocks.push({ kind: "thinking", text: m.thinking });
         blocks.push({ kind: "text", text: m.text });
-        await db.update(messages).set({ content: blocks, status: "error" }).where(eq(messages.id, m.message_id));
+        // A reason the stream already recorded wins; otherwise the restart is it.
+        const error = capErrorText(m.error) ?? INTERRUPTED_BY_RESTART;
+        await db.update(messages).set({ content: blocks, status: "error", error }).where(eq(messages.id, m.message_id));
       }
     } catch {
       // Best-effort — the sweep below is the backstop either way.
@@ -45,6 +48,6 @@ export async function recoverOrphanedStreams(): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_STREAMING_MINUTES * 60 * 1000);
   await db
     .update(messages)
-    .set({ status: "error" })
+    .set({ status: "error", error: INTERRUPTED_BY_RESTART })
     .where(and(eq(messages.status, "streaming"), lt(messages.createdAt, cutoff)));
 }

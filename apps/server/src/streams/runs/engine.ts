@@ -33,6 +33,7 @@ import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
+import { capErrorText } from "../error-text.ts";
 
 /**
  * Tool round-trips one user message may take, when the user has expressed no
@@ -468,8 +469,15 @@ export async function runToolLoop(ctx: {
         const blocks: ContentBlock[] = [];
         if (thinking) blocks.push({ kind: "thinking", text: thinking });
         if (text) blocks.push({ kind: "text", text });
-        await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
-        const eventError = isAbort ? undefined : errorMessage;
+        // Stored as well as emitted: the event reaches only the clients
+        // watching right now, and a reload used to show a bare empty reply.
+        // A cancel stores nothing — a user stop is not an error.
+        const eventError = isAbort ? undefined : (capErrorText(errorMessage) ?? undefined);
+        await db
+          .update(messages)
+          .set({ content: blocks, status, error: eventError ?? null })
+          .where(eq(messages.id, assistantMsgId))
+          .catch(() => undefined);
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
         await producer.end(status, { error: eventError }).catch(() => undefined);
         return;

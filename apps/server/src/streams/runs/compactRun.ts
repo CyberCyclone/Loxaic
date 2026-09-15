@@ -12,6 +12,7 @@ import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts
 import { acquireRunSlot, type RunSlot } from "../../inference/scheduler.ts";
 import { announceNewRun } from "../watchers.ts";
 import { loadHistory, HISTORY_LIMIT } from "./engine.ts";
+import { capErrorText } from "../error-text.ts";
 
 /**
  * `/compact`: summarise the conversation into a `summary` message and continue
@@ -436,18 +437,18 @@ async function runCompactGeneration(ctx: {
   } catch (err) {
     const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
     const status = isAbort ? "cancelled" : "error";
-    const errorMessage = (err as Error).message;
+    const eventError = isAbort ? undefined : (capErrorText((err as Error).message) ?? undefined);
 
     // A partial summary must never be mistaken for a compaction point, so it
     // is persisted with a non-complete status — which the loaders' summary
-    // lookup already excludes.
+    // lookup already excludes. The reason is kept for the same reload the
+    // chat engine's is.
     await db
       .update(messages)
-      .set({ content: [{ kind: "text", text: summaryText }], status })
+      .set({ content: [{ kind: "text", text: summaryText }], status, error: eventError ?? null })
       .where(eq(messages.id, summaryMsgId))
       .catch(() => undefined);
 
-    const eventError = isAbort ? undefined : errorMessage;
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status, error: eventError });
     await producer.end(status, { error: eventError }).catch(() => undefined);
   } finally {

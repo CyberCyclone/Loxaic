@@ -136,6 +136,10 @@ export const messages = pgTable(
     lamport: bigint("lamport", { mode: "number" }).notNull(),
     content: jsonb("content").notNull(),
     status: text("status", { enum: ["streaming", "complete", "error", "cancelled"] }).notNull().default("streaming"),
+    /** Why a `status: "error"` turn failed, as shown under it. Null for every
+     * other status — a user stop is not an error — and for failed rows written
+     * before this column, which the client answers with a plain fallback. */
+    error: text("error"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     deletedAt: timestamp("deleted_at"),
   },

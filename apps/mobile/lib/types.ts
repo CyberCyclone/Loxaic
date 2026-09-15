@@ -99,6 +99,9 @@ export interface Message {
   forks?: string[]
   origin?: MessageLocation
   error?: boolean
+  /** Why the turn failed, when the server said. Absent on an `error` message
+   * whose reason was never recorded — rendered as a fallback, not a guess. */
+  errorText?: string
   /** User-initiated stop (stream.stop), not a failure — rendered distinctly from `error`. */
   stopped?: boolean
   /** Present only on role: 'summary' — what a /compact did. Absent while the
