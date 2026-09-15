@@ -301,6 +301,9 @@ importers:
       tar-fs:
         specifier: ^2.1.4
         version: 2.1.5
+      undici:
+        specifier: ^6.28.0
+        version: 6.28.0
       uuid:
         specifier: ^14.0.1
         version: 14.0.1
