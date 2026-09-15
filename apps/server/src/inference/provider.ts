@@ -158,6 +158,13 @@ const MOCK_SLOW_MATCH = /\btake your time\b/i;
  * and observed waiting; short enough not to dominate a suite. */
 const MOCK_SLOW_MS = 8_000;
 
+/** A prompt the mock fails the way LM Studio fails a model it cannot load: an
+ * HTTP 400 before any token, whose `error.message` liveStream throws as-is.
+ * Without it a failed turn needs a real, broken backend, so whether its reason
+ * reaches the user could not be tested on the mock lane at all. */
+const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
+const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
+
 const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
   // MCP entries first — a trigger only fires when the tool is actually in
   // options.tools, so these double as a wiring test of the MCP registry.
@@ -200,6 +207,8 @@ async function* mockStream(
   const alreadyRanTools = currentTurn.some((m) => m.role === "tool");
   const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
   const prompt = textOfContent(lastUser?.content);
+  // Before anything is yielded, as a refused request is: nothing streamed.
+  if (MOCK_FAIL_MATCH.test(prompt)) throw new Error(MOCK_FAIL_MESSAGE);
   const imageCount = countImageParts(lastUser?.content);
   const documentCount = countDocumentParts(lastUser?.content);
 

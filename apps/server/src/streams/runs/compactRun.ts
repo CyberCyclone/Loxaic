@@ -12,6 +12,7 @@ import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts
 import { acquireRunSlot, type RunSlot } from "../../inference/scheduler.ts";
 import { announceNewRun } from "../watchers.ts";
 import { loadHistory, HISTORY_LIMIT } from "./engine.ts";
+import { markBackendErrors, turnErrorText } from "../error-text.ts";
 
 /**
  * `/compact`: summarise the conversation into a `summary` message and continue
@@ -343,7 +344,9 @@ async function runCompactGeneration(ctx: {
     const before = await lastTurnTokens(convId);
 
     let doneResult: CompletionResult | null = null;
-    for await (const event of streamCompletion(model, ctx.promptMessages, { signal: abort.signal })) {
+    // The same split the engine makes: only what the stream throws is stored
+    // as the reason. This try also spans database writes whose errors are ours.
+    for await (const event of markBackendErrors(streamCompletion(model, ctx.promptMessages, { signal: abort.signal }))) {
       if (event.type === "delta") {
         summaryText += event.content;
         producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
@@ -436,18 +439,20 @@ async function runCompactGeneration(ctx: {
   } catch (err) {
     const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
     const status = isAbort ? "cancelled" : "error";
-    const errorMessage = (err as Error).message;
+    const eventError = isAbort ? undefined : turnErrorText(err, `compaction failed in ${convId}`);
 
     // A partial summary must never be mistaken for a compaction point, so it
     // is persisted with a non-complete status — which the loaders' summary
-    // lookup already excludes.
+    // lookup already excludes. The reason is kept for the same reload the
+    // chat engine's is, and the client's CompactionCard renders it as a
+    // failed card: without that a failed summary row reloaded as a card
+    // spinning on "Compacting…" forever.
     await db
       .update(messages)
-      .set({ content: [{ kind: "text", text: summaryText }], status })
+      .set({ content: [{ kind: "text", text: summaryText }], status, error: eventError ?? null })
       .where(eq(messages.id, summaryMsgId))
       .catch(() => undefined);
 
-    const eventError = isAbort ? undefined : errorMessage;
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status, error: eventError });
     await producer.end(status, { error: eventError }).catch(() => undefined);
   } finally {

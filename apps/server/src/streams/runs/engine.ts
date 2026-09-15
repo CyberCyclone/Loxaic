@@ -33,6 +33,7 @@ import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
+import { markBackendErrors, turnErrorText } from "../error-text.ts";
 
 /**
  * Tool round-trips one user message may take, when the user has expressed no
@@ -429,7 +430,12 @@ export async function runToolLoop(ctx: {
       };
 
       try {
-        for await (const event of streamCompletion(model, chatMessages, { tools, signal: abort.signal })) {
+        // markBackendErrors is what separates the backend's words from ours:
+        // only what the stream itself throws is stored as the reason, since
+        // that text is re-served to everyone who can read the thread.
+        for await (const event of markBackendErrors(
+          streamCompletion(model, chatMessages, { tools, signal: abort.signal }),
+        )) {
           if (event.type === "delta") {
             text += event.content;
             producer.emit({ kind: "text.delta", message_id: assistantMsgId, text: event.content });
@@ -440,21 +446,6 @@ export async function runToolLoop(ctx: {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
             recordPrompt(convId, fingerprint, event.result.usage.prompt_tokens);
-            await recordUsage({
-              runId: streamId,
-              userId,
-              convId,
-              messageId: assistantMsgId,
-              model,
-              result: event.result,
-              reuse,
-              context: apportion(
-                tally,
-                event.result.usage.prompt_tokens,
-                event.result.usage.completion_tokens,
-                breakdownMeta,
-              ),
-            });
           }
         }
       } catch (err) {
@@ -464,15 +455,40 @@ export async function runToolLoop(ctx: {
         // situation, not an outage — say so instead of relaying the backend's
         // phrasing, which is different for every runtime.
         const raw = (err as Error).message;
-        const errorMessage = !isAbort && hadImages ? (visionErrorMessage(raw) ?? raw) : raw;
+        const backendText = hadImages ? (visionErrorMessage(raw) ?? raw) : raw;
         const blocks: ContentBlock[] = [];
         if (thinking) blocks.push({ kind: "thinking", text: thinking });
         if (text) blocks.push({ kind: "text", text });
-        await db.update(messages).set({ content: blocks, status }).where(eq(messages.id, assistantMsgId)).catch(() => undefined);
-        const eventError = isAbort ? undefined : errorMessage;
+        // Stored as well as emitted: the event reaches only the clients
+        // watching right now, and a reload used to show a bare empty reply.
+        // A cancel stores nothing — a user stop is not an error.
+        const eventError = isAbort ? undefined : turnErrorText(err, `turn failed in ${convId}`, backendText);
+        await db
+          .update(messages)
+          .set({ content: blocks, status, error: eventError ?? null })
+          .where(eq(messages.id, assistantMsgId))
+          .catch(() => undefined);
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
         await producer.end(status, { error: eventError }).catch(() => undefined);
         return;
+      }
+
+      // Outside the try above, and never allowed to fail the turn: a reply the
+      // model finished is not undone because its usage row could not be
+      // written, and a database error is not a reason the model failed.
+      if (doneResult) {
+        await recordUsage({
+          runId: streamId,
+          userId,
+          convId,
+          messageId: assistantMsgId,
+          model,
+          result: doneResult,
+          reuse,
+          context: apportion(tally, doneResult.usage.prompt_tokens, doneResult.usage.completion_tokens, breakdownMeta),
+        }).catch((err: unknown) => {
+          console.error(`recording usage failed for ${convId}:`, err);
+        });
       }
 
       // Persist the assistant turn as ordered blocks: thinking, prose, calls.
