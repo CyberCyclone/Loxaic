@@ -12,7 +12,16 @@ import { browser } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { platform, waitForTextIn } from '../helpers/selectors.ts';
-import { listConversations, selectThread, sendMessage, signUp, waitForComposerReady } from '../helpers/app.ts';
+import {
+  listConversations,
+  mockEcho,
+  selectThread,
+  sendAndAwaitReply,
+  sendMessage,
+  signUp,
+  startNewThread,
+  waitForComposerReady,
+} from '../helpers/app.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
 /** Trips the mock's failure. */
@@ -66,5 +75,44 @@ describe('a failed chat reply', () => {
 
     await waitForTextIn('chat.message.error', FAIL_REASON);
     await shot('chat-error-after-reload');
+  });
+
+  it('shows a failed compaction as failed, and still does after a reload', async function () {
+    const [failedTurn] = await listConversations(creds);
+    await startNewThread('chat');
+    const opener = 'something worth compacting';
+    await sendAndAwaitReply(opener, mockEcho(opener));
+    // Guidance rides in the summarisation instruction, which is the compaction
+    // prompt's last user turn — the one the mock's failure trigger reads.
+    await sendMessage(`/compact ${FAIL_PROMPT}`);
+    await waitForTextIn('chat.compaction.error', FAIL_REASON);
+    await shot('compaction-error-live');
+
+    const conv = (await listConversations(creds)).find((c) => c.id !== failedTurn.id);
+    if (!conv) throw new Error('the compacted conversation was not listed');
+    const res = await fetch(`${BASE_URL}/v1/conversations/${conv.id}/messages`, {
+      headers: { authorization: `Bearer ${await apiToken(creds)}` },
+    });
+    const body = (await res.json()) as { messages: { authorType: string; status: string; error: string | null }[] };
+    const summary = body.messages.find((m) => m.authorType === 'summary');
+    expect(summary?.status).toBe('error');
+    expect(summary?.error).toBe(FAIL_REASON);
+
+    const p = platform();
+    if (p !== 'web' && p !== 'electron') this.skip();
+
+    // The failure this guards against was reload-only: a failed summary row
+    // has no stats, and the card read "no stats" as still compacting.
+    await browser.execute(() => {
+      for (const key of Object.keys(window.localStorage)) {
+        if (key.startsWith('loxaic-cache:')) window.localStorage.removeItem(key);
+      }
+    });
+    await browser.refresh();
+    await waitForComposerReady();
+    await selectThread(conv.id);
+
+    await waitForTextIn('chat.compaction.error', FAIL_REASON);
+    await shot('compaction-error-after-reload');
   });
 });

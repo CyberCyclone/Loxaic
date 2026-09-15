@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApiMessage, StreamSnapshot } from '@loxaic/api-client';
 import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from './streamMessages';
 import type { Message } from './types';
+import { compactionCardState } from '@/components/chat/compactionState';
 
 /**
  * A failed turn has to say why on all three routes a message reaches the
@@ -82,6 +83,34 @@ describe('failed turns carry their reason', () => {
     const [m] = reconstructMessages([row({ status: 'error', error: null })]);
     expect(m.error).toBe(true);
     expect(m.errorText).toBeUndefined();
+  });
+
+  it('a failed compaction reloads as failed, not as a card still compacting', () => {
+    // A failed summary row never gets a compaction block, and "no stats" used
+    // to be all it took to render the live spinner.
+    const [m] = reconstructMessages([
+      row({ authorType: 'summary', status: 'error', error: REASON, content: [{ kind: 'text', text: 'partial sum' }] }),
+    ]);
+    expect(m.role).toBe('summary');
+    expect(m.error).toBe(true);
+    expect(m.errorText).toBe(REASON);
+    expect(m.compaction).toBeUndefined();
+    expect(compactionCardState(m.compaction, m.error)).toBe('failed');
+  });
+
+  it('a summary still streaming is live, and a finished one is not', () => {
+    const [streaming] = reconstructMessages([row({ authorType: 'summary', status: 'streaming', content: [] })]);
+    expect(compactionCardState(streaming.compaction, streaming.error)).toBe('live');
+    const [done] = reconstructMessages([
+      row({
+        authorType: 'summary',
+        content: [
+          { kind: 'text', text: 'summary' },
+          { kind: 'compaction', messages_compacted: 2, before_tokens: 10, after_tokens: 2, saved_tokens: 8, before_estimated: false },
+        ],
+      }),
+    ]);
+    expect(compactionCardState(done.compaction, done.error)).toBe('done');
   });
 
   it('never on a completed history row', () => {

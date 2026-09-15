@@ -123,6 +123,10 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         model: row.model ?? undefined,
         text: extractField(blocks, 'text'),
         compaction: extractCompaction(blocks),
+        // A failed summary has no compaction block, and a card with no stats
+        // renders as still compacting — so without these it spun forever.
+        error: row.status === 'error',
+        errorText: row.status === 'error' ? (row.error ?? undefined) : undefined,
       };
       out.push(msg);
       byId.set(row.id, msg);

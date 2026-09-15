@@ -60,7 +60,14 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
   // renders as a divider card, not a bubble, and skips everything below
   // (avatar, usage row, copy/fork actions) that assumes one.
   if (msg.role === 'summary') {
-    return <CompactionCard stats={msg.compaction} summaryText={msg.text || undefined} />;
+    return (
+      <CompactionCard
+        stats={msg.compaction}
+        summaryText={msg.text || undefined}
+        failed={msg.error}
+        errorText={msg.errorText}
+      />
+    );
   }
 
   const isUser = msg.role === 'user';
@@ -115,7 +122,10 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
                   <Icon as={AlertCircle} size="xs" className="mt-0.5 text-destructive" />
                   {/* The fallback is for rows that predate the stored reason.
                       It deliberately guesses at nothing: an invented cause is
-                      worse than admitting we were not told one. */}
+                      worse than admitting we were not told one. Plain Text,
+                      never Markdown: the reason is an upstream error body,
+                      stored and shown to every reader of the thread (see the
+                      server's streams/error-text.ts). */}
                   <Text testID="chat.message.error" className="flex-1 text-destructive">
                     {msg.errorText ?? 'This response failed.'}
                   </Text>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, Scissors } from 'lucide-react-native';
+import { AlertCircle, ChevronRight, Scissors } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
@@ -7,6 +7,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import type { CompactionStats } from '@/lib/types';
+import { compactionCardState } from './compactionState';
 
 const fmt = (n: number) => n.toLocaleString();
 
@@ -22,6 +23,10 @@ interface CompactionCardProps {
   stats?: CompactionStats;
   /** The summary itself. Empty for a skipped (no-op) compaction. */
   summaryText?: string;
+  /** The summary run failed. Its partial text is not a summary, so it is not shown. */
+  failed?: boolean;
+  /** Why, when the server recorded a reason. */
+  errorText?: string;
 }
 
 /**
@@ -30,8 +35,27 @@ interface CompactionCardProps {
  * is untouched and still on screen; this card just marks where prompt
  * assembly now starts.
  */
-export function CompactionCard({ stats, summaryText }: CompactionCardProps) {
+export function CompactionCard({ stats, summaryText, failed, errorText }: CompactionCardProps) {
   const [open, setOpen] = useState(false);
+
+  if (compactionCardState(stats, failed) === 'failed') {
+    return (
+      <Box className="my-2 items-center px-4">
+        <HStack space="xs" className="max-w-[820px] items-start">
+          <Icon as={AlertCircle} size="2xs" className="mt-0.5 text-destructive" />
+          {/* Plain Text, never Markdown: the reason is an upstream error body,
+              stored and shown to every reader of the thread (see the server's
+              streams/error-text.ts). */}
+          <Text testID="chat.compaction.error" size="xs" className="shrink text-destructive">
+            {`Compaction failed, so the conversation was not compacted. ${errorText ?? ''}`.trim()}
+          </Text>
+        </HStack>
+      </Box>
+    );
+  }
+
+  // Past the failed branch, "no stats" is exactly compactionCardState's
+  // `live` — kept as `!stats` so the checker narrows `stats` below.
   const live = !stats;
 
   if (stats?.skipped) {
