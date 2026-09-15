@@ -75,16 +75,26 @@ jobs:
           # closed pipe, and under pipefail the pipeline reads as false. That
           # race put v0.0.1-beta.3 down the stable branch: it was built and
           # published as production as well as beta. beta.1 and beta.2 simply
-          # won the race. A failed parse still fails the step here, through
-          # set -e on the assignment.
+          # won the race.
+          #
+          # set -e on the assignment only catches a non-zero exit. The branch
+          # below reads the value, so anything but exactly `true` or `false` —
+          # including --parse exiting 0 with no output, which this script has
+          # done before (see invokedDirectly()) — fails the step instead of
+          # falling through to production.
           parsed=$(node apps/desktop/scripts/stamp-version.mjs --parse "$TAG")
+          prerelease=$(sed -n 's/^prerelease=//p' <<< "$parsed")
+          case "$prerelease" in
+            true)  variants='["beta"]' ;;
+            false) variants='["production","beta"]' ;;
+            *)
+              echo "::error::could not read prerelease from stamp-version --parse for $TAG"
+              printf 'parse output was:\n%s\n' "$parsed"
+              exit 1 ;;
+          esac
           printf '%s\n' "$parsed" >> "$GITHUB_OUTPUT"
           echo "sha=$(git rev-list -n1 "$TAG")" >> "$GITHUB_OUTPUT"
-          if grep -qx 'prerelease=true' <<< "$parsed"; then
-            echo 'variants=["beta"]' >> "$GITHUB_OUTPUT"
-          else
-            echo 'variants=["production","beta"]' >> "$GITHUB_OUTPUT"
-          fi
+          echo "variants=$variants" >> "$GITHUB_OUTPUT"
 
   create-release:
     name: draft the release

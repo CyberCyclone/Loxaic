@@ -38,7 +38,10 @@ done
 if [ "$auth_stdin" = "true" ]; then
   IFS= read -r key || key=""
   in_env="false"
-  if [ -n "$key" ] && env | grep -qF -- "$key"; then in_env="true"; fi
+  # A here-string, never `env | grep -q`: grep -q exits on its first match,
+  # env's next write lands on a closed pipe, and under pipefail the pipeline
+  # reads false — which could only ever turn a leaked key into in_env=false.
+  if [ -n "$key" ] && grep -qF -- "$key" <<< "$(env)"; then in_env="true"; fi
   echo "FAKE_AUTH_KEY_SEEN len=${#key} in_env=${in_env}" >&2
 fi
 
