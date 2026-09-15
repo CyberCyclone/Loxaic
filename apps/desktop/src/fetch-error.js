@@ -45,27 +45,43 @@ export function describeFetchError(err, { url, appName = "this app", platform = 
     // An unparseable URL keeps the generic wording; the probe reports it anyway.
   }
 
+  const localNetworkFix = `turn it on in System Settings → Privacy & Security → Local Network, then press Check again.`;
+
   const e = /** @type {any} */ (err);
   if (e?.name === "TimeoutError" || e?.name === "AbortError") {
     return `${where} did not answer in time. Check the address, and that this computer is on the same network.`;
   }
 
-  const code = e?.cause?.code;
+  // A hostname with several addresses (localhost is ::1 and 127.0.0.1) fails
+  // through happy-eyeballs as an AggregateError: its `message` is empty, and
+  // its own `code` is copied from the first attempt only on newer Node. Fall
+  // back to the per-address errors so the switch still has something to read.
+  const code = e?.cause?.code ?? e?.cause?.errors?.find((x) => x?.code)?.code;
   switch (code) {
     case "EHOSTUNREACH":
     case "ENETUNREACH":
       if (platform === "darwin" && isLocalNetworkHost(hostname)) {
-        return (
-          `Can't reach ${where}. macOS may be blocking ${appName} from your local network: ` +
-          `turn it on in System Settings → Privacy & Security → Local Network, then press Check again.`
-        );
+        return `Can't reach ${where}. macOS may be blocking ${appName} from your local network: ${localNetworkFix}`;
       }
       return `No route to ${where}. Check that this computer is on the same network.`;
     case "ECONNREFUSED":
       return `${where} refused the connection — nothing is listening on that port.`;
     case "ENOTFOUND":
-    case "EAI_AGAIN":
+      // `.local` names resolve over mDNS, which the Local Network permission
+      // gates too — so a correctly spelled name fails to resolve for an app
+      // that lacks it, and "check the spelling" alone would send the person
+      // the wrong way. Spelling stays in the sentence: it is still possible.
+      if (platform === "darwin" && hostname.endsWith(".local")) {
+        return (
+          `${hostname} doesn't resolve to an address. macOS may be blocking ${appName} from your local network, ` +
+          `which also stops .local names resolving: ${localNetworkFix} If it's already on, check the spelling.`
+        );
+      }
       return `${hostname || where} doesn't resolve to an address. Check the spelling.`;
+    case "EAI_AGAIN":
+      // A temporary resolver failure — no DNS server reachable yet after a
+      // wake, a VPN still coming up — not a name that doesn't exist.
+      return `Couldn't look up ${hostname || where} — this computer can't reach a DNS server right now. Try again in a moment.`;
     default:
       break;
   }

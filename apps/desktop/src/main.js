@@ -798,7 +798,15 @@ async function runGui() {
         // Node's fetch says "fetch failed" for every network error; the reason
         // a person needs — including macOS refusing local network access —
         // is on err.cause. See fetch-error.js.
-        return { ok: false, reason: describeFetchError(err, { url: probeBase, appName: app.getName() }) };
+        //
+        // Named by `base`, not `probeBase`: on the tsnet path the request goes
+        // to the sidecar's loopback listener, an address the person never
+        // typed. And `appVariant().productName`, not `app.getName()`, which is
+        // `@loxaic/desktop` in a checkout — not a row System Settings shows.
+        return {
+          ok: false,
+          reason: describeFetchError(err, { url: base, appName: appVariant().productName }),
+        };
       }
     });
 
