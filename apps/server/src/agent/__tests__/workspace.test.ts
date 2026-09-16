@@ -94,7 +94,17 @@ afterAll(async () => {
 });
 
 async function connect(): Promise<void> {
-  await upsertConnection(userId, { token: "tok", login: "octo", name: "Octo", email: null, scopes: "repo" });
+  // Shaped like a real PAT, not a three-character stub. Redaction replaces the
+  // token wherever it appears in an error body, so a token short enough to be a
+  // substring of an ordinary English word ("tok" inside "token") silently
+  // rewrites GitHub's own message and changes what the code under test sees.
+  await upsertConnection(userId, {
+    token: `ghp_${"a1b2c3d4e5".repeat(3)}fghij`,
+    login: "octo",
+    name: "Octo",
+    email: null,
+    scopes: "repo",
+  });
 }
 
 describe("branch names", () => {

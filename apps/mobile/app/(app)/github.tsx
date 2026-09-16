@@ -85,23 +85,40 @@ export default function GithubScreen() {
                   <BadgeText className="text-success normal-case">Connected</BadgeText>
                 </Badge>
               </HStack>
-              {/* Rendering nothing when scopes are absent was the bug: a
-                  fine-grained token reports no scopes at all, so the one line
-                  that could have said "this may not be enough" disappeared for
-                  exactly the token type that needed it. Null means unknown,
-                  never "no access" — the rule stated on GithubConnection.scopes
-                  and in AGENTS.md — so the null branch says what we cannot
-                  know rather than staying silent. */}
-              {connection.scopes ? (
-                <Text size="xs" className="text-muted-foreground">
-                  Scopes: {connection.scopes}
-                </Text>
-              ) : (
+              {/* Three states, not two. Conflating them is how this screen
+                  named the wrong fix in both directions.
+
+                  `null` is a fine-grained token: GitHub sends no scopes header
+                  at all, so "unknown" is the only honest answer, and the fix
+                  lives in that token's repository permissions.
+
+                  `""` is a *classic* token reporting positively that it holds
+                  no scopes. That is not unknown, it is "no access", and the fix
+                  is the repo scope — nothing about Contents applies to it. A
+                  truthiness test put this case in the fine-grained branch and
+                  told the user to grant a permission their token type does not
+                  have.
+
+                  A non-empty string is just the scope list. Rendering nothing
+                  at all, which this once did, was the original bug. */}
+              {connection.scopes == null ? (
                 <Text testID="github.status.permissions" size="xs" className="text-muted-foreground">
                   Fine-grained token. GitHub does not report what these can reach, so Loxaic cannot
                   show it here. Connecting proved the token is yours, not that it can reach your
                   code: it needs Contents (read and write) on each repository you work in, and Pull
                   requests (read and write) to open a PR.
+                </Text>
+              ) : connection.scopes === '' ? (
+                <Text testID="github.status.permissions" size="xs" className="text-muted-foreground">
+                  Classic token with no scopes. GitHub reports this one as having no access at all,
+                  so nothing will work until you add the{' '}
+                  <Text size="xs" className="font-medium text-foreground">repo</Text> scope to it.
+                  Contents and Pull requests are fine-grained settings and do not apply to a classic
+                  token.
+                </Text>
+              ) : (
+                <Text size="xs" className="text-muted-foreground">
+                  Scopes: {connection.scopes}
                 </Text>
               )}
               <Button

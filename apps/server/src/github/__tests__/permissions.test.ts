@@ -24,11 +24,42 @@ describe("isGithubPermissionFailure", () => {
     expect(isGithubPermissionFailure(403, FORBIDDEN_BODY)).toBe(true);
   });
 
+  it("survives the redaction pass every message has already been through", () => {
+    // Real regression. Redaction splits the body on the token string with no
+    // minimum length, so a short token rewrites GitHub's own words: "personal
+    // access token" became "personal access [redacted]en" and a matcher
+    // anchored on that noun stopped recognising a refusal it had just been
+    // handed.
+    const mangled = 'GitHub API 403: {"message":"Resource not accessible by personal access [redacted]en"}';
+    expect(isGithubPermissionFailure(403, mangled)).toBe(true);
+    expect(describeGithubPermissionFailure({ status: 403, message: mangled, repo: "octo/real", need: "contents-read" }))
+      .toContain("Contents: Read");
+  });
+
   it("does not mistake a rate limit for a permission problem", () => {
     // GitHub spends 403 on both. Keying on the status alone would send someone
     // to edit a token that was never the problem, to fix something editing it
     // cannot fix.
     expect(isGithubPermissionFailure(403, RATE_LIMITED)).toBe(false);
+  });
+
+  it("keeps GitHub's own words when a 403 already explains itself", () => {
+    // All three are 403s that name a fix having nothing to do with the token's
+    // permissions. Rewriting them as "grant Contents" sends someone to grant
+    // what they already have, and discards the sentence that would have helped.
+    const archived = 'GitHub API 403: {"message":"Repository was archived so is read-only."}';
+    const saml =
+      'GitHub API 403: {"message":"Resource protected by organization SAML enforcement. ' +
+      'You must grant your Personal Access token access to this organization."}';
+    expect(isGithubPermissionFailure(403, archived)).toBe(false);
+    expect(isGithubPermissionFailure(403, saml)).toBe(false);
+    expect(describeGithubPermissionFailure({ status: 403, message: saml, need: "contents-read" })).toBeNull();
+  });
+
+  it("still treats a 403 that said nothing at all as a refusal", () => {
+    // Nothing of GitHub's to preserve here, so naming the likely permission is
+    // strictly better than an empty sentence.
+    expect(isGithubPermissionFailure(403, "GitHub API 403: ")).toBe(true);
   });
 
   it("leaves everything else alone", () => {

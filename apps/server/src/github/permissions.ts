@@ -32,9 +32,17 @@ export type GithubNeed = "contents-read" | "contents-write" | "pull-requests";
 /** The shapes GitHub uses to say "this token may not do that". The text branch
  * is load-bearing rather than a belt-and-braces extra: a failed clone arrives
  * as git's stderr with no HTTP status attached anywhere, so matching on the
- * message is the *only* way that case is ever recognised. */
-const PERMISSION_TEXT =
-  /not granted|resource not accessible by (a |an )?(personal access token|integration)|must have admin rights/i;
+ * message is the *only* way that case is ever recognised.
+ *
+ * Deliberately stops at "resource not accessible by" rather than requiring the
+ * noun that follows. Every message reaching this module has already been
+ * through a redaction pass that replaces the token string wherever it appears
+ * — and `client.ts`'s pass has no minimum length — so a short token turns
+ * GitHub's "personal access token" into "personal access [redacted]en" and a
+ * matcher anchored on that noun stops recognising the very case it exists for.
+ * Matching the part GitHub's wording owns, and redaction cannot reach, is the
+ * property worth having. */
+const PERMISSION_TEXT = /not granted|resource not accessible by|must have admin rights/i;
 
 /**
  * A 403 that is not about permissions at all.
@@ -46,10 +54,29 @@ const PERMISSION_TEXT =
  */
 const NOT_A_PERMISSION_PROBLEM = /rate limit|secondary rate|abuse detection|has been blocked/i;
 
+/** What GitHub itself said, with our own `GitHub API <status>: ` prefix
+ * stripped, so "did it explain itself?" is a question about GitHub's words
+ * rather than about ours. */
+function githubSaid(message: string): string {
+  return message.replace(/^GitHub API \d+:\s*/, "").trim();
+}
+
 export function isGithubPermissionFailure(status: number | undefined, message: string): boolean {
   if (NOT_A_PERMISSION_PROBLEM.test(message)) return false;
-  if (status === 403) return true;
-  return PERMISSION_TEXT.test(message);
+  if (PERMISSION_TEXT.test(message)) return true;
+  // A bare `status === 403` used to be enough, and it was too broad. GitHub
+  // spends 403 on refusals that name their own fix and have nothing to do with
+  // a token's permissions: an archived repository ("Repository was archived so
+  // is read-only"), SAML enforcement ("You must grant your Personal Access
+  // token access to this organization"), a push-protection or ruleset block
+  // naming the offending commit. Translating those threw away the one sentence
+  // that would have helped and substituted a permission the user had already
+  // granted — the same wrong-permission failure this module exists to prevent,
+  // arrived at from the other direction.
+  //
+  // So a 403 only counts on its own when GitHub said nothing at all, where
+  // there is no wording of its to preserve.
+  return status === 403 && githubSaid(message).length === 0;
 }
 
 /** What to grant, per operation. Split out so the three sentences below stay
