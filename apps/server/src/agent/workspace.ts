@@ -14,7 +14,8 @@ import type { Workspace } from "@loxaic/types";
 import type { SandboxMode } from "../sandbox/provider.ts";
 import { getConnection } from "../github/connection.ts";
 import { getOwnerToken, GithubTokenUnreadableError } from "../github/connection.ts";
-import { getRepo } from "../github/client.ts";
+import { getBranch, getRepo, GithubApiError } from "../github/client.ts";
+import { describeGithubPermissionFailure } from "../github/permissions.ts";
 import { getExecutor } from "../executor/registry.ts";
 
 export class WorkspaceError extends Error {
@@ -82,6 +83,12 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
     if (typeof input.repo !== "string" || !isRepoSlug(input.repo)) {
       throw new WorkspaceError("workspace.repo must be owner/name");
     }
+    // The new branch's name depends on nothing GitHub knows, so it is checked
+    // before any request goes out — a bad name should not cost a round trip.
+    const branch = input.branch === undefined ? `loxaic/${randomBranchSuffix()}` : input.branch;
+    if (typeof branch !== "string" || !isValidBranchName(branch)) {
+      throw new WorkspaceError("workspace.branch is not a valid branch name");
+    }
     const connection = await getConnection(ctx.userId);
     let token: string | null;
     try {
@@ -112,12 +119,34 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
     if (typeof baseBranch !== "string" || !isValidBranchName(baseBranch)) {
       throw new WorkspaceError("workspace.baseBranch is not a valid branch name");
     }
-    const branch = input.branch === undefined ? `loxaic/${randomBranchSuffix()}` : input.branch;
-    if (typeof branch !== "string" || !isValidBranchName(branch)) {
-      throw new WorkspaceError("workspace.branch is not a valid branch name");
-    }
     if (branch === baseBranch) {
       throw new WorkspaceError("workspace.branch must differ from baseBranch — the agent works on its own branch");
+    }
+
+    // The lookup above only proves `Metadata: read`. Cloning needs
+    // `Contents: read`, and until this check nothing between here and a
+    // container ever asked for it — so a fine-grained token holding Metadata
+    // alone got a green "Connected", a repository listed in the picker, a
+    // workspace created, and a `git clone` that failed minutes later inside a
+    // sandbox, reported only as GitHub's own misleading "Write access to
+    // repository not granted". One request settles both remaining questions:
+    // 403 is the missing permission, 404 is a base branch that is not there,
+    // 200 is both fine.
+    try {
+      await getBranch(token, owner, name, baseBranch);
+    } catch (err) {
+      const status = err instanceof GithubApiError ? err.status : undefined;
+      const permission = describeGithubPermissionFailure({
+        status,
+        message: (err as Error).message,
+        repo: repo.full_name,
+        need: "contents-read",
+      });
+      if (permission) throw new WorkspaceError(permission);
+      if (status === 404) {
+        throw new WorkspaceError(`GitHub has no branch named ${baseBranch} in ${repo.full_name}.`);
+      }
+      throw new WorkspaceError(`GitHub could not check ${repo.full_name}: ${(err as Error).message}`);
     }
     // `pr` is deliberately not read from the input: it is written by the
     // server when a pull request is opened, and a client claiming one exists

@@ -53,12 +53,22 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
   const [open, setOpen] = useState(false);
   const mcp = splitMcpTool(tool.tool);
   const ToolIcon = mcp ? Plug : (TOOL_ICONS[tool.tool] ?? HelpCircle);
-  const tint = mcp ? 'text-primary bg-primary/15' : (TOOL_TINT[tool.tool] ?? 'text-muted-foreground bg-muted');
+  // A failed call used to render identically to a successful one, so the only
+  // sign anything had gone wrong was the model talking about it afterwards —
+  // and a card collapsed by default hid the reason. Tinted on a positive
+  // `false` only: `ok` is absent on history rebuilt from REST, and absence is
+  // not success.
+  const failed = tool.ok === false;
+  const tint = failed
+    ? 'text-destructive bg-destructive/15'
+    : mcp
+      ? 'text-primary bg-primary/15'
+      : (TOOL_TINT[tool.tool] ?? 'text-muted-foreground bg-muted');
 
   return (
     <Box
       testID={tool.callId ? `chat.toolCall.${tool.callId}` : undefined}
-      className="my-1.5 rounded-md border border-border bg-card"
+      className={`my-1.5 rounded-md border bg-card ${failed ? 'border-destructive/40' : 'border-border'}`}
     >
       <Pressable onPress={() => { setOpen((o) => !o); }}>
         <HStack className="items-center gap-2 px-3 py-2">

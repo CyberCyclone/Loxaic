@@ -296,9 +296,19 @@ partway through a UI flow — see `resetSandboxSettings()` in `helpers/app.ts`.
 against `apps/e2e/scripts/mock-github.ts` — a minimal in-process HTTP server standing in for
 `api.github.com`, started by `standup.ts` before the test server and passed to it as
 `GITHUB_API_URL` (the same env var `apps/server/src/github/client.ts` reads at call time; see
-AGENTS.md's "GitHub connection" section). No spec ever reaches real GitHub. The mock accepts
-exactly one token (`VALID_TOKEN`, exported from `mock-github.ts`); anything else 401s, so the
-"bad token" case exercises the server's real validation path rather than a canned rejection.
+AGENTS.md's "GitHub connection" section). No spec ever reaches real GitHub. Anything that is not
+one of the two exported tokens 401s, so the "bad token" case exercises the server's real
+validation path rather than a canned rejection.
+
+The two tokens exist because the interesting GitHub failure is not a rejected token.
+`VALID_TOKEN` behaves like a classic PAT: it reports its scopes and can reach everything.
+`METADATA_ONLY_TOKEN` behaves like a fine-grained token granted `Metadata: read` and nothing
+else — it reports *no* scopes, lists and resolves repositories perfectly well, and is refused
+with a 403 on anything needing `Contents: read` (listing branches, and the single-branch lookup
+the workspace pre-flight makes). That is the combination that used to produce a green
+"Connected", a repository visible in the picker, and a clone that failed inside a container
+minutes later. A spec cannot reconfigure the mock — it is started once per stand-up and its URL
+crosses a process boundary — so both behaviours are reached by choosing a token.
 
 ## What the GitHub-workspace and mock-scenario specs cover
 

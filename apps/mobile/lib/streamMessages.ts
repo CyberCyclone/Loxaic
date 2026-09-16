@@ -202,6 +202,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
             result: tc.output ?? '',
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
+            ok: tc.ok,
           }))
         : undefined,
     usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
@@ -279,7 +280,9 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
         return {
           ...m,
           tools: m.tools.map((t) =>
-            t.callId === event.call_id ? { ...t, result: event.output, diff: diffLinesFor(event.diff) } : t,
+            t.callId === event.call_id
+              ? { ...t, result: event.output, diff: diffLinesFor(event.diff), ok: event.ok }
+              : t,
           ),
         };
       });

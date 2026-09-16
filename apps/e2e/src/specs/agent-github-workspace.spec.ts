@@ -13,7 +13,7 @@
  * `after` — the same discipline every sandbox spec follows for mode.
  */
 import { apiToken, provisionAdmin, provisionUser, uniqueCreds } from '../helpers/auth.ts';
-import { VALID_TOKEN } from '../../scripts/mock-github.ts';
+import { METADATA_ONLY_TOKEN, VALID_TOKEN } from '../../scripts/mock-github.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
@@ -29,6 +29,7 @@ import {
   resetSandboxSettings,
   sendMessage,
   signIn,
+  signOut,
   startNewAgentRun,
   waitForRunDone,
   waitForToolResult,
@@ -93,6 +94,41 @@ describe('agent workspace: GitHub repository', () => {
     await waitForTextIn('agent.inspector.workspace.kind', 'e2e/bugfix-app');
     await waitForTextIn('agent.inspector.workspace.kind', branch);
     await shot('github-workspace-inspector');
+  });
+
+  it('refuses a repo the token can see but cannot clone, before any container starts', async function () {
+    this.timeout(90_000);
+    // A fine-grained token holding `Metadata: read` and nothing else. The repo
+    // lists and resolves, so every check before this one passes — which is
+    // exactly how this used to reach a container and fail there, reported to
+    // the user only by the model quoting git's misleading "Write access to
+    // repository not granted" for a read it was refused.
+    const fine = uniqueCreds();
+    await provisionUser(fine);
+    await connectGithub(fine, METADATA_ONLY_TOKEN);
+    await signOut();
+    await signIn(fine);
+
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await tap('agent.workspace.button');
+    await waitForVisible('agent.workspace.dialog');
+    await tap('agent.workspace.source.github');
+    await waitForVisible('agent.workspace.repo.1');
+    await tap('agent.workspace.repo.1');
+
+    // Listing branches is the first call that needs Contents, so this is the
+    // earliest the chooser can say anything. It used to swallow the failure
+    // and show the default branch as though all were well.
+    await waitForVisible('agent.workspace.branchError');
+    await shot('github-workspace-branches-refused');
+
+    await tap('agent.workspace.confirm');
+    await sendMessage('start work');
+    // Refused at creation, naming the permission to add — not minutes later,
+    // inside a sandbox, in words about the wrong permission.
+    await waitForTextIn('shell.toast', 'Contents: Read');
+    await shot('github-workspace-contents-refused');
   });
 
   it('refuses GitHub in the chooser when sandboxes have no network, and says why', async () => {

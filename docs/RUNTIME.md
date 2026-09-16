@@ -100,7 +100,59 @@ happens inside the sandbox, so a deployment with network off cannot offer it;
 the workspace chooser says so and points at this setting. `SANDBOX_EXTRA_HOSTS`
 (`name:ip`, comma-separated; `host-gateway` is accepted as an ip) adds
 `/etc/hosts` entries to networked sandboxes, for reaching a service on the host
-machine by name from Linux or Podman.
+machine by name from Linux or Podman. Which token that clone uses, and what it
+has to be allowed to do, is the next section.
+
+### Connecting GitHub (which token, and which permissions)
+
+Agent chats that work in one of your repositories need a GitHub personal access
+token, connected per user under **Settings → GitHub**. A token rather than a
+GitHub app: there is nothing to register, no callback URL, and it works the same
+for a deployment nobody outside it can reach.
+
+**Both kinds of token work.**
+
+| What Loxaic does | Fine-grained token | Classic token |
+|---|---|---|
+| List and find your repositories | Metadata: Read | `repo` |
+| List branches, clone the repo | Contents: Read | `repo` |
+| Push your branch | Contents: Read and write | `repo` |
+| Open a pull request | Pull requests: Read and write | `repo` |
+
+Metadata: Read is mandatory and GitHub adds it for you as soon as you select any
+other repository permission. In practice a fine-grained token wants **Contents:
+Read and write** plus **Pull requests: Read and write**.
+
+#### Two fine-grained settings that are easy to miss
+
+- **Repository access.** Either "All repositories", or "Only select
+  repositories" with every repo you intend to work in listed. A repo that is not
+  on that list does not exist as far as the token is concerned.
+- **Resource owner.** Yourself, for your own repos. For an organisation's repo
+  you have to pick the organisation, that organisation has to allow fine-grained
+  tokens at all, and an owner may have to approve your token before it starts
+  working. Until then it is `pending` and answers as though it had no access.
+
+#### Why "Connected" is not the same as "it works"
+
+Connecting validates the token by asking GitHub who you are, and GitHub answers
+that for a fine-grained token holding **no permissions whatsoever**. So a green
+"Connected" proves the token is yours and nothing else. Two further things
+compound it: fine-grained tokens report no scope list, so the connection screen
+has nothing to show you, and listing a repository needs only Metadata, so a repo
+you cannot actually clone still appears in the picker.
+
+The clone is where it used to surface, inside a sandbox, minutes later, reported
+only as GitHub's own misleading wording:
+
+```
+remote: Write access to repository not granted.
+```
+
+That message says *write* even when the missing permission is **Contents: Read**
+and the operation was a read-only clone. Loxaic now checks Contents when you
+pick a repository, so a token that cannot reach the code is refused up front,
+naming the permission to add, rather than failing in a container later.
 
 ### How long a workspace lasts
 

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth/middleware";
 import { getRepo, getViewer, listBranches, listRepos, GithubApiError } from "../github/client.ts";
+import { describeGithubPermissionFailure } from "../github/permissions.ts";
 import {
   deleteConnection,
   getConnection,
@@ -21,6 +22,16 @@ function connectionError(err: unknown): { status: number; message: string } {
     // which is the caller's problem to fix, not ours — 400. Anything else
     // (rate limit, GitHub down) is a real 502.
     const status = err.status === 401 || err.status === 403 || err.status === 404 ? 400 : 502;
+    // A 401 is the one case where the raw body was actively unhelpful:
+    // `GitHub API 401: {"message":"Bad credentials"}` is not a sentence to put
+    // in front of someone who has just pasted a token, and it names neither of
+    // the two things that actually cause it.
+    if (err.status === 401) {
+      return {
+        status,
+        message: "That token was rejected by GitHub. Check you pasted it whole, and that it has not expired.",
+      };
+    }
     return { status, message: err.message };
   }
   return { status: 502, message: (err as Error).message };
@@ -129,8 +140,24 @@ export function githubRoutes(app: FastifyInstance) {
         return { default_branch: repoInfo.default_branch, branches };
       } catch (err) {
         const { status, message } = connectionError(err);
+        // Listing branches is the first call in the whole picker flow that
+        // needs `Contents: read` — the repo listing and the lookup beside it
+        // need only Metadata — so a refusal here is the earliest chance to say
+        // which permission is missing. Translated only on this route for that
+        // reason: the same 403 on the repo listing would mean Metadata, and
+        // naming Contents there would repeat the wrong-permission mistake this
+        // whole change exists to fix.
+        const permission =
+          err instanceof GithubApiError
+            ? describeGithubPermissionFailure({
+                status: err.status,
+                message: err.message,
+                repo: `${owner}/${repo}`,
+                need: "contents-read",
+              })
+            : null;
         reply.code(status);
-        return { error: redactToken(message, token) };
+        return { error: redactToken(permission ?? message, token) };
       }
     },
   );
