@@ -19,6 +19,7 @@ import { loadWorkspace, setWorkspacePr } from "../agent/workspace.ts";
 import { attachRunningSandbox } from "../agent/sandbox-manager.ts";
 import { getConnection, getOwnerToken } from "../github/connection.ts";
 import { createPull, GithubApiError, GithubPullExistsError } from "../github/client.ts";
+import { describeGithubPermissionFailure } from "../github/permissions.ts";
 import { gitCredentialArgs, gitEnv } from "../sandbox/git.ts";
 import type { Workspace } from "@loxaic/types";
 
@@ -259,7 +260,18 @@ export function gitRoutes(app: FastifyInstance) {
     );
     if (push.exitCode !== 0) {
       reply.code(400);
-      return { error: redact(push.stderr.trim() || "push failed", token) };
+      // The same misdirection as the clone, one permission along: GitHub
+      // refuses a push the token may not make with wording about write access
+      // that is equally true of a read refusal, and it arrives as raw stderr
+      // with no status to key on. Redaction stays outermost, over whichever
+      // string is chosen.
+      const stderr = push.stderr.trim() || "push failed";
+      const permission = describeGithubPermissionFailure({
+        message: stderr,
+        repo: ctx.workspace.repo,
+        need: "contents-write",
+      });
+      return { error: redact(permission ?? stderr, token) };
     }
     return { ok: true };
   });
@@ -315,7 +327,17 @@ export function gitRoutes(app: FastifyInstance) {
       // as GitHub's own words, which say what to do.
       if (err instanceof GithubApiError) {
         reply.code(400);
-        return { error: err.message };
+        // A 403 here means the token cannot open pull requests, which is its
+        // own permission and not the one the clone or the push would name.
+        // Every other status (the 422 family above all else) keeps GitHub's
+        // own words, which do say what to do.
+        const permission = describeGithubPermissionFailure({
+          status: err.status,
+          message: err.message,
+          repo: ctx.workspace.repo,
+          need: "pull-requests",
+        });
+        return { error: permission ?? err.message };
       }
       throw err;
     }

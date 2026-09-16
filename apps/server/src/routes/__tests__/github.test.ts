@@ -34,6 +34,11 @@ githubRoutes(app);
  * (`nextToken`) to swap between an accepted and a rejected token without
  * restarting the server. */
 let nextAccepted = "good-token";
+/** A fine-grained PAT holding `Metadata: read` and nothing else: it reports no
+ * scopes at all and is refused on anything needing `Contents: read`. Accepted
+ * alongside `nextAccepted` rather than swapped in, so a test can reach either
+ * behaviour without restarting the fixture. */
+const FINE_GRAINED = "fine-grained-token";
 let paginate = false;
 let mockServer: Server;
 let mockPort: number;
@@ -53,14 +58,21 @@ beforeAll(async () => {
       const token = auth.replace(/^Bearer /, "");
       const url = req.url ?? "";
 
-      if (token !== nextAccepted) {
+      if (token !== nextAccepted && token !== FINE_GRAINED) {
         res.writeHead(401, { "content-type": "application/json" });
         res.end(JSON.stringify({ message: "Bad credentials" }));
         return;
       }
+      const metadataOnly = token === FINE_GRAINED;
 
       if (url === "/user") {
-        res.writeHead(200, { "content-type": "application/json", "x-oauth-scopes": "repo" });
+        // No scopes header at all for a fine-grained token — the shape that
+        // made the connection card render nothing where it should have said
+        // "GitHub does not report this".
+        res.writeHead(200, {
+          "content-type": "application/json",
+          ...(metadataOnly ? {} : { "x-oauth-scopes": "repo" }),
+        });
         res.end(JSON.stringify({ login: "octocat", name: "The Octocat", email: "octocat@example.test" }));
         return;
       }
@@ -96,6 +108,14 @@ beforeAll(async () => {
         return;
       }
       if (url.startsWith("/repos/octocat/hello-world/branches")) {
+        // Branches are the first thing in the picker flow that needs
+        // `Contents: read`; the repo listing and lookup above need only
+        // Metadata, which is why a token like this got so far.
+        if (metadataOnly) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(JSON.stringify({ message: "Resource not accessible by personal access token" }));
+          return;
+        }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify([{ name: "main" }, { name: "dev" }]));
         return;
@@ -177,9 +197,22 @@ describe("PUT /v1/github/connection", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json<{ error: string }>().error).not.toContain("wrong-token");
+    // And in words, not GitHub's raw body: `GitHub API 401:
+    // {"message":"Bad credentials"}` named neither of the two things that
+    // actually cause it.
+    expect(res.json<{ error: string }>().error).toContain("rejected by GitHub");
 
     const row = await db.query.githubConnections.findFirst({ where: eq(githubConnections.userId, userId) });
     expect(row).toBeUndefined();
+  });
+
+  it("stores no scopes for a fine-grained token, which means unknown and not 'no access'", async () => {
+    const res = await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: FINE_GRAINED } });
+    expect(res.statusCode).toBe(200);
+    // Connecting succeeds for a token that can reach no code whatsoever: all
+    // this endpoint proves is identity. That is exactly why the screen has to
+    // say so rather than show a reassuring badge and nothing else.
+    expect(res.json<ConnectionBody>().scopes).toBeNull();
   });
 
   it("replaces an existing connection rather than duplicating the row", async () => {
@@ -289,5 +322,14 @@ describe("GET /v1/github/repos/:owner/:repo/branches", () => {
       default_branch: "main",
       branches: ["main", "dev"],
     });
+  });
+
+  it("names the missing permission when the token cannot read the repo's contents", async () => {
+    await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: FINE_GRAINED } });
+    const res = await app.inject({ method: "GET", url: "/v1/github/repos/octocat/hello-world/branches" });
+    expect(res.statusCode).toBe(400);
+    const { error } = res.json<{ error: string }>();
+    expect(error).toContain("Contents: Read");
+    expect(error).toContain("octocat/hello-world");
   });
 });

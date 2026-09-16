@@ -177,6 +177,38 @@ export async function listBranches(token: string, owner: string, repo: string): 
   return branches.map((b) => b.name);
 }
 
+/**
+ * One branch — and the cheapest honest answer to "can this token actually
+ * reach this repository's code?".
+ *
+ * GitHub gates this on `Contents: read`, where `getRepo` and the repo listing
+ * need only `Metadata: read`. That gap is the entire reason a workspace could
+ * be created against a repository whose clone would then be refused: a
+ * fine-grained token holding Metadata alone passed every check we made and
+ * failed inside a container minutes later.
+ *
+ * Preferred over `listBranches` for that check because listing paginates to
+ * MAX_PAGES: on a repository with more branches than that, a "does the base
+ * branch exist" test built on it would *falsely* refuse a workspace that would
+ * have cloned perfectly well — the same class of bug, pointing the other way.
+ */
+export async function getBranch(
+  token: string,
+  owner: string,
+  repo: string,
+  branch: string,
+): Promise<GithubBranch> {
+  // Encoded per segment rather than whole: branch names legitimately contain
+  // `/` (`release/1.0`), and encodeURIComponent would turn the separator into
+  // %2F. isValidBranchName has already refused traversal and control
+  // characters, so what is left is safe to rejoin.
+  const ref = branch.split("/").map(encodeURIComponent).join("/");
+  return request<GithubBranch>(
+    token,
+    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${ref}`,
+  );
+}
+
 export interface GithubPull {
   number: number;
   html_url: string;

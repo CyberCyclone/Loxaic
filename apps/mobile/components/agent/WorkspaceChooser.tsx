@@ -87,6 +87,7 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   const [search, setSearch] = useState('');
   const [repo, setRepo] = useState<GithubRepo | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
+  const [branchError, setBranchError] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState<string>('');
   const [branchName, setBranchName] = useState<string>('');
   const [executors, setExecutors] = useState<ExecutorView[]>([]);
@@ -129,6 +130,7 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     // got the *identical* `loxaic/<suffix>` and its `checkout -b` failed.
     setRepo(null);
     setBranches([]);
+    setBranchError(null);
     setBaseBranch('');
     setBranchName('');
     setWhere(value.kind === 'local' ? 'local' : 'remote');
@@ -164,14 +166,26 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
   useEffect(() => {
     if (!repo) {
       setBranches([]);
+      setBranchError(null);
       return;
     }
     const [owner, name] = repo.full_name.split('/');
     setBaseBranch(repo.default_branch);
     setBranchName(`loxaic/${Math.random().toString(16).slice(2, 10)}`);
+    setBranchError(null);
     getGithubBranches(owner, name)
-      .then((b) => { setBranches(b.branches); })
-      .catch(() => { setBranches([repo.default_branch]); });
+      .then((b) => { setBranches(b.branches); setBranchError(null); })
+      .catch((err: unknown) => {
+        // Listing branches is the first thing here that needs `Contents: read`,
+        // so this is the earliest a token that cannot reach the repo's code can
+        // possibly say so. Swallowing it silently and showing the default
+        // branch is what let someone pick a repo, start a chat, and only learn
+        // minutes later — from the model, quoting git — that nothing could be
+        // cloned. The fallback stays so an unrelated blip does not block
+        // selection; creation refuses clearly either way.
+        setBranches([repo.default_branch]);
+        setBranchError(err instanceof Error ? err.message : 'Could not list branches for this repository.');
+      });
   }, [repo]);
 
   // Default the machine to this one when it is connected, else the first.
@@ -528,6 +542,11 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
                         </Pressable>
                       ))}
                     </HStack>
+                    {branchError && (
+                      <Text testID="agent.workspace.branchError" size="xs" className="text-warning">
+                        {branchError}
+                      </Text>
+                    )}
                     <Text size="xs" className="text-muted-foreground">
                       Work on a new branch named
                     </Text>

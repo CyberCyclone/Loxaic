@@ -10,16 +10,32 @@
  * test seam it wires up.
  *
  * Deliberately not a full fixture library — just enough of `/user`,
- * `/user/repos`, `/repos/:owner/:repo`, and `/repos/:owner/:repo/branches` to
- * exercise every route `apps/server/src/routes/github.ts` calls. One fixed
- * token ("e2e-github-token") is "valid"; anything else 401s, matching a real
- * bad-credential response closely enough for the client's error handling to
- * be exercised honestly.
+ * `/user/repos`, `/repos/:owner/:repo`, `/repos/:owner/:repo/branches` and
+ * `/repos/:owner/:repo/branches/:branch` to exercise every route the server
+ * calls. Anything that is not one of the two tokens below 401s, matching a
+ * real bad-credential response closely enough for the client's error handling
+ * to be exercised honestly.
+ *
+ * **Two tokens, because the interesting failure is not a rejected one.**
+ * `VALID_TOKEN` behaves like a classic PAT: it reports its scopes and can
+ * reach everything. `METADATA_ONLY_TOKEN` reproduces the real bug this fixture
+ * exists for — a fine-grained token that reports *no* scopes at all, lists and
+ * resolves repositories perfectly well (`Metadata: read`), and is refused on
+ * anything needing `Contents: read`. That combination is what let a workspace
+ * be created against a repo whose clone was then refused inside a container.
+ * A spec cannot reconfigure this server (it is started once per stand-up and
+ * its URL crosses a process boundary), so both behaviours have to be reachable
+ * by choosing a token.
  */
 import { createServer, type Server } from 'node:http';
 import type { IncomingMessage } from 'node:http';
 
 export const VALID_TOKEN = 'e2e-github-token';
+
+/** A fine-grained token holding `Metadata: read` and nothing else. See the
+ * module comment: this is the token that connects successfully and still
+ * cannot clone. */
+export const METADATA_ONLY_TOKEN = 'e2e-github-metadata-only';
 
 interface RecordedPull {
   number: number;
@@ -95,10 +111,13 @@ export async function startMockGithub(opts?: {
 
     const auth = req.headers.authorization ?? '';
     const token = auth.replace(/^Bearer /, '');
-    if (token !== VALID_TOKEN) {
+    if (token !== VALID_TOKEN && token !== METADATA_ONLY_TOKEN) {
       json(res, 401, { message: 'Bad credentials' });
       return;
     }
+    const metadataOnly = token === METADATA_ONLY_TOKEN;
+    /** GitHub's own wording for a fine-grained token that may not do this. */
+    const forbidden = { message: 'Resource not accessible by personal access token' };
 
     const pullsMatch = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(url.pathname);
     if (pullsMatch && req.method === 'POST') {
@@ -118,6 +137,12 @@ export async function startMockGithub(opts?: {
     }
 
     if (url.pathname === '/user') {
+      // The header is the whole point of the split: a fine-grained token sends
+      // none, which is what makes the connection screen's scope line vanish.
+      if (metadataOnly) {
+        json(res, 200, { login: 'e2e-fine', name: 'E2E Fine-grained', email: 'e2e-fine@example.test' });
+        return;
+      }
       json(res, 200, { login: 'e2e-bot', name: 'E2E Bot', email: 'e2e-bot@example.test' }, { 'x-oauth-scopes': 'repo' });
       return;
     }
@@ -135,10 +160,26 @@ export async function startMockGithub(opts?: {
     }
     const branchesMatch = /^\/repos\/([^/]+)\/([^/]+)\/branches$/.exec(url.pathname);
     if (branchesMatch) {
+      if (metadataOnly) { json(res, 403, forbidden); return; }
       const fullName = `${branchesMatch[1]}/${branchesMatch[2]}`;
       const names = BRANCHES.get(fullName);
       if (!names) { json(res, 404, { message: 'Not Found' }); return; }
       json(res, 200, names.map((name) => ({ name })));
+      return;
+    }
+    // One branch. Gated on `Contents: read` exactly as the list above is, and
+    // served because the server's workspace pre-flight asks for it before
+    // anything is cloned — without this route every GitHub-workspace spec
+    // would be refused for a base branch the fixture does have. The trailing
+    // capture is greedy on purpose: branch names contain slashes.
+    const branchMatch = /^\/repos\/([^/]+)\/([^/]+)\/branches\/(.+)$/.exec(url.pathname);
+    if (branchMatch) {
+      if (metadataOnly) { json(res, 403, forbidden); return; }
+      const fullName = `${branchMatch[1]}/${branchMatch[2]}`;
+      const wanted = decodeURIComponent(branchMatch[3]);
+      const names = BRANCHES.get(fullName);
+      if (!names?.includes(wanted)) { json(res, 404, { message: 'Branch not found' }); return; }
+      json(res, 200, { name: wanted });
       return;
     }
     json(res, 404, { message: 'not found in e2e github fixture' });

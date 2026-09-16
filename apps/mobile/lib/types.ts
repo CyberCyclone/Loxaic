@@ -81,6 +81,12 @@ export interface ToolCall {
   diff?: DiffLine[]
   /** call_id from the agent protocol — used to join a later tool_result while streaming. Not from the design source. */
   callId?: string
+  /** Whether the call succeeded. Optional deliberately: the persisted
+   * `tool_result` content block carries no such field, so a message rebuilt
+   * from REST history cannot know — absence means "we were not told", never
+   * "it succeeded", and the card only tints on a positive `false`. Same rule
+   * as the omitted-attachments notice. */
+  ok?: boolean
 }
 
 export interface DiffLine {

@@ -29,6 +29,7 @@ import {
   markOverflowWritten,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
@@ -788,10 +789,16 @@ async function runOneToolCall(
     try {
       handle = await getConversationSandbox(userId, convId);
     } catch (err) {
-      // The underlying error (from the container provider) already names
-      // what was tried and how to fix it — see container-provider.ts's
-      // requireDocker().
-      const output = `Could not start a sandbox: ${(err as Error).message}`;
+      // The underlying error usually already names what was tried and how to
+      // fix it — see container-provider.ts's requireDocker(). A GitHub
+      // permission refusal is the exception, and it lands here: it arrives as
+      // git's own stderr, which says "Write access to repository not granted"
+      // even for a read-only clone it refused. That string is also what the
+      // *model* reads, so until it was translated the agent dutifully told
+      // people to grant write access to fix a missing read permission.
+      const raw = (err as Error).message;
+      const permission = describeGithubPermissionFailure({ message: raw, need: "contents-read" });
+      const output = `Could not start a sandbox: ${permission ?? raw}`;
       producer.emit({
         kind: "tool.result",
         message_id: assistantMsgId,

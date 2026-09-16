@@ -45,6 +45,27 @@ beforeAll(async () => {
           clone_url: "https://github.example/octo/real.git",
         }),
       );
+    } else if (url === "/repos/octo/real/branches/trunk") {
+      // The workspace pre-flight asks for the base branch by name, because
+      // that single call is the one thing that proves `Contents: read` before
+      // a clone is attempted. Without this route every github case here would
+      // now be refused for a branch the fixture does have.
+      res.end(JSON.stringify({ name: "trunk" }));
+    } else if (url === "/repos/octo/forbidden") {
+      // Visible on `Metadata: read` alone — the exact trap: the repo resolves
+      // perfectly well and its contents are refused.
+      res.end(
+        JSON.stringify({
+          id: 2,
+          full_name: "octo/forbidden",
+          private: true,
+          default_branch: "main",
+          clone_url: "https://github.example/octo/forbidden.git",
+        }),
+      );
+    } else if (url === "/repos/octo/forbidden/branches/main") {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ message: "Resource not accessible by personal access token" }));
     } else {
       res.statusCode = 404;
       res.end(JSON.stringify({ message: "Not Found" }));
@@ -152,6 +173,24 @@ describe("parseWorkspaceInput", () => {
     await expect(
       parseWorkspaceInput({ kind: "github", repo: "octo/real", branch: "trunk" }, { userId }),
     ).rejects.toThrow(/differ/);
+  });
+
+  it("refuses a token that can see the repo but not its contents, before anything is cloned", async () => {
+    await connect();
+    // The whole point of the pre-flight: `Metadata: read` resolves the
+    // repository, so every earlier check passed and the clone still could not
+    // happen. This used to be discovered inside a container, minutes later,
+    // and reported only as git's own "Write access ... not granted".
+    await expect(parseWorkspaceInput({ kind: "github", repo: "octo/forbidden" }, { userId })).rejects.toThrow(
+      /Contents: Read/,
+    );
+  });
+
+  it("refuses a base branch GitHub does not have", async () => {
+    await connect();
+    await expect(
+      parseWorkspaceInput({ kind: "github", repo: "octo/real", baseBranch: "nope" }, { userId }),
+    ).rejects.toThrow(/no branch named nope/);
   });
 
   it("never stores a client-supplied pr", async () => {
