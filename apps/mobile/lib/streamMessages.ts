@@ -175,6 +175,10 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         if (tc) {
           tc.result = b.output;
           tc.diff = diffLinesFor(b.diff);
+          // Carried through so a failed call still reads as failed after a
+          // reload. Undefined on rows written before the block gained the
+          // field, which the card treats as "not told" rather than success.
+          tc.ok = b.ok;
         }
       }
     }

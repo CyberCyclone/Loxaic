@@ -22,9 +22,11 @@ import { tap, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   SLOW_PROMPT,
   TOOL_PROMPT,
+  getToolResults,
   goToSurface,
   listConversations,
   listSandboxes,
+  selectThread,
   sendMessage,
   signUp,
   startNewAgentRun,
@@ -105,5 +107,40 @@ describe('stopping an agent run', () => {
     const token = await apiToken(creds);
     const sandboxes = await listSandboxes(token, conversation.id);
     expect(sandboxes.length).toBe(0);
+  });
+
+  it('still shows a stopped tool call as failed once the thread is reopened', async function () {
+    this.timeout(2 * 60_000);
+
+    // A stopped call is the cheapest real failure to produce: refused at the
+    // approval, so no sandbox and no Docker involved.
+    await startNewAgentRun();
+    await tap('agent.mode.manual');
+    await sendMessage(TOOL_PROMPT);
+    await waitForVisible('agent.permission.bar');
+    await tap('composer.stop');
+    await waitForTextIn('agent.run.status', 'Done', 30_000);
+
+    const [conversation] = await listConversations(creds);
+    await waitForRunDone(creds, conversation.id, 30_000);
+
+    // The verdict is persisted, not merely streamed — the half that was
+    // missing, and the only reason the assertion below can survive a reload.
+    const results = await getToolResults(creds, conversation.id);
+    expect(results).toHaveLength(1);
+    expect(results[0].ok).toBe(false);
+
+    const marker = `chat.toolCall.failed.${results[0].call_id}`;
+    await waitForVisible(marker);
+    await shot('agent-stop-tool-failed');
+
+    // Leaving the surface and selecting the thread again rebuilds it from
+    // REST rather than from the stream. That is exactly where the failure
+    // used to disappear: the card came back looking like a success.
+    await goToSurface('chat');
+    await goToSurface('agent');
+    await selectThread(conversation.id, 'agent');
+    await waitForVisible(marker);
+    await shot('agent-stop-tool-failed-after-reload');
   });
 });

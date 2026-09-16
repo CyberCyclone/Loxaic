@@ -72,7 +72,13 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
     >
       <Pressable onPress={() => { setOpen((o) => !o); }}>
         <HStack className="items-center gap-2 px-3 py-2">
-          <Box className={`h-5 w-5 items-center justify-center rounded-sm ${tint}`}>
+          {/* The failure is carried by colour alone otherwise, which no test
+              can select on and no screen reader can announce. */}
+          <Box
+            testID={failed && tool.callId ? `chat.toolCall.failed.${tool.callId}` : undefined}
+            accessibilityLabel={failed ? 'Tool call failed' : undefined}
+            className={`h-5 w-5 items-center justify-center rounded-sm ${tint}`}
+          >
             <Icon as={ToolIcon} size="xs" />
           </Box>
           <Text size="sm" className="flex-1 text-card-foreground" numberOfLines={1}>
