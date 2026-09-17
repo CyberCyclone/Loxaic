@@ -168,6 +168,29 @@ describe("MCP end-to-end through the agent loop", () => {
     expect(turn.toolResults[0].output).toBe("User denied this tool call.");
   }, 30_000);
 
+  it("reports an unanswered approval as a timeout, not as a denial", async () => {
+    // Pinned tiny and restored immediately: vitest shares one process across
+    // test files, so a value left behind here would silently shorten every
+    // other suite's approval window — the same hazard settings.test.ts
+    // documents for SANDBOX_IDLE_STOP_MS.
+    const previous = process.env.APPROVAL_TIMEOUT_MS;
+    process.env.APPROVAL_TIMEOUT_MS = "50";
+    try {
+      // `null` means nobody ever answers the prompt, which is exactly the
+      // case a person who has put their phone down produces.
+      const turn = await runTurn("please use mcp echo", "manual", null);
+      const output = turn.toolResults[0].output;
+      expect(output).toContain("went unanswered");
+      // The regression: this used to be byte-identical to a real refusal, so
+      // the model argued with a user who had never seen the prompt.
+      expect(output).not.toContain("denied");
+      expect(output).not.toBe("User denied this tool call.");
+    } finally {
+      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
+      else process.env.APPROVAL_TIMEOUT_MS = previous;
+    }
+  }, 30_000);
+
   it("does not offer non-readOnly MCP tools in planning mode", async () => {
     const turn = await runTurn("please use mcp echo", "planning", null);
     expect(turn.toolCalls).toEqual([]);
