@@ -1557,11 +1557,36 @@ replies.
 - **A stop is only as good as the places that check the signal.** `stream.stop` calls
   `run.abort.abort()` and nothing else; every part of the loop that can block has to notice.
   Two did not, and between them made "the stop button does nothing" the *ordinary* experience
-  (#113): `waitForApproval` settled only on approve/deny or the five-minute
-  `APPROVAL_TIMEOUT_MS`, so a stop at a permission prompt — manual mode, the default — parked
-  the run for up to five minutes; and the per-call loop never re-checked, so a stop during a
-  batch still ran every remaining call. A real session issued **five calls in one assistant
-  message** and took 6m39s over them.
+  (#113): `waitForApproval` settled only on approve/deny or the approval timeout, so a stop at a
+  permission prompt — manual mode, the default — parked the run for up to five minutes; and the
+  per-call loop never re-checked, so a stop during a batch still ran every remaining call. A real
+  session issued **five calls in one assistant message** and took 6m39s over them.
+- **An unanswered approval is not a denial.** `waitForApproval` returns an `ApprovalOutcome`
+  (`approved | denied | timeout | aborted | gone`) rather than a boolean, because the caller used
+  to render every `false` as "User denied this tool call." — a claim about a person that three of
+  the four cannot support. A beta session had the model conclude the user had refused the same
+  call twice, five minutes apart, when no prompt had ever reached them; the recorded gap was
+  5m06s, the timeout plus the generation before it. `denied` keeps that exact sentence, `aborted`
+  reuses the per-call stop wording, and `timeout` says plainly that nobody refused. The timeout
+  text deliberately stops there and does **not** suggest allowlisting: "Allow always" patches one
+  server's per-tool policy for an MCP tool but `user_prefs.tool_allowlist` — global and
+  mode-independent — for a builtin, and `timeout` is the one outcome carrying no evidence of what
+  the user wanted, so the branch with the weakest evidence must not carry the strongest
+  recommendation. The registry's resolver stays `(approved: boolean) => void`, so both WS
+  handlers need no change.
+- **`APPROVAL_TIMEOUT_MS` (milliseconds, default 5 min) is the knob**, read at call time — a
+  module-load read cannot be overridden by a test, since vitest shares one process across files,
+  and the timeout case would otherwise be untestable. Note this is *not* the `auto-compact.ts`
+  pattern, whose `AUTO_COMPACT_THRESHOLD` is a module-load IIFE. It is clamped to `2**31 - 1`:
+  Node stores a `setTimeout` delay as a signed 32-bit int and silently reduces anything larger to
+  **1 ms**, so setting thirty days to mean "never expire" would instead expire every approval
+  instantly and no gated tool could run in manual mode again.
+- **`case "aborted"` is unreachable in practice, and kept deliberately.** An abort does resolve
+  the wait, but `slot.yieldWhile` then re-enters the queue and `enter()` refuses an aborted
+  signal, throwing `RunSlotAbortedError` before the outcome is ever inspected. That ordering is
+  deterministic, not a race — the throw always wins — so the old boolean code could not have
+  written "denied" on an abort under any interleaving. The per-call catch writes the stop result,
+  which is what `stop-abort.test.ts` asserts.
 - **Tool calls in one message run in series, so abort is checked per call, not per iteration.**
   A skipped call still emits and persists a `tool_result` saying it was stopped — an
   assistant `tool_call` with no partner is the orphan case `loadHistory` has to strip, and

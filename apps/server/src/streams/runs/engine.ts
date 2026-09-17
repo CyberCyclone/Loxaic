@@ -45,8 +45,31 @@ import { markBackendErrors, turnErrorText } from "../error-text.ts";
 export const DEFAULT_MAX_ITERATIONS = 20;
 export const MIN_MAX_ITERATIONS = 1;
 export const MAX_MAX_ITERATIONS = 50;
-/** An approval request left unanswered this long is treated as a denial. */
-const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+/**
+ * How long an approval request waits for an answer before the call is given
+ * up on. An unanswered request is *not* a denial — see `ApprovalOutcome`.
+ *
+ * Read at call time rather than at module load, which is deliberately *not*
+ * what auto-compact.ts does — `AUTO_COMPACT_THRESHOLD` is a module-load IIFE,
+ * so there is no precedent here to follow. The reason is this module's own:
+ * vitest shares one process across test files, so a value captured at import
+ * cannot be overridden by a test that needs a window it can actually wait
+ * out, and the timeout test in this change would be impossible to write.
+ * It doubles as the operator knob for a deployment where five minutes is the
+ * wrong answer — a model that thinks for seven minutes before calling a tool
+ * leaves a person very little of it.
+ *
+ * Clamped below setTimeout's 32-bit ceiling. Node stores the delay as a
+ * signed 32-bit int and silently reduces anything larger to 1 ms, with only a
+ * TimeoutOverflowWarning on stderr — so "set it huge so it never expires"
+ * (APPROVAL_TIMEOUT_MS=2592000000, thirty days) would expire *every* approval
+ * instantly and no gated tool could run in manual mode again.
+ */
+const DEFAULT_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+function approvalTimeoutMs(): number {
+  const raw = Number(process.env.APPROVAL_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 2 ** 31 - 1) : DEFAULT_APPROVAL_TIMEOUT_MS;
+}
 /**
  * The smallest number of prior messages the replay window is ever narrowed
  * to. It is a floor, not a fixed size — see `historyAnchor`.
@@ -777,9 +800,9 @@ async function runOneToolCall(
     // through it would stall every other conversation on the deployment for
     // exactly as long as the user takes to click. Re-taken at the front of the
     // queue afterwards, so approving does not cost the user their place.
-    const approved = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id, ctx.signal));
-    if (!approved) {
-      const output = "User denied this tool call.";
+    const outcome = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id, ctx.signal));
+    if (outcome !== "approved") {
+      const output = approvalRefusalText(outcome);
       producer.emit({
         kind: "tool.result",
         message_id: assistantMsgId,
@@ -852,6 +875,55 @@ async function runOneToolCall(
   return { output: result.output, ok: result.ok, diff: result.diff };
 }
 
+/**
+ * Why an approval wait ended.
+ *
+ * These four used to be a single `false`, and the caller rendered every one of
+ * them as "User denied this tool call." Three of them cannot support that
+ * sentence: `timeout` means nobody answered, `aborted` means the run was
+ * stopped, and `gone` is our own bookkeeping losing the run. The distinction
+ * is not cosmetic — the model reads this text and reasons about it. Told it
+ * was refused, it apologises and argues its case; a real session had it
+ * conclude the user had denied the same call twice, five minutes apart, when
+ * they had never been shown a prompt at all.
+ */
+type ApprovalOutcome = "approved" | "denied" | "timeout" | "aborted" | "gone";
+
+/**
+ * What the model and the transcript are told when a tool call did not run.
+ *
+ * `denied` keeps its original wording exactly: a person really did refuse, and
+ * that is the one case the old sentence was right about. `aborted` reuses the
+ * per-call stop wording verbatim, so a stop reads identically wherever in the
+ * loop it lands.
+ *
+ * The timeout names the timeout and says plainly that nobody refused — and
+ * stops there. It deliberately does *not* suggest allowlisting the tool.
+ * "Allow always" is not one thing: for an MCP tool it patches that server's
+ * own per-tool policy, but for a builtin it patches `user_prefs.tool_allowlist`,
+ * which is global and mode-independent — so on `bash` or `fs_write` that
+ * sentence had the model lobbying for a deployment-wide write gate to be
+ * removed permanently. And `timeout` is precisely the outcome carrying *no*
+ * information about what the user wanted, since by definition nobody saw the
+ * prompt. The branch with the weakest evidence must not carry the strongest
+ * recommendation.
+ */
+function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): string {
+  switch (outcome) {
+    case "denied":
+      return "User denied this tool call.";
+    case "aborted":
+      return "Stopped by the user before this tool call ran.";
+    case "timeout":
+      return (
+        "The approval request went unanswered, so this tool call did not run. " +
+        "Nobody refused it — the request simply expired. Ask the user to approve it."
+      );
+    case "gone":
+      return "This run was no longer active when the tool call asked for approval, so it did not run.";
+  }
+}
+
 /** Approvals are run-scoped (registry), not connection-scoped — a different
  * device/socket than the one that started the run can approve or deny. */
 /**
@@ -860,41 +932,47 @@ async function runOneToolCall(
  * Takes the run's abort signal, and that is the whole point: without it, Stop
  * pressed at a permission prompt flipped `aborted` and then changed nothing
  * observable, because this promise only ever settled on approve/deny or the
- * five-minute `APPROVAL_TIMEOUT_MS`. Manual mode is the default, so "the stop
- * button does nothing" was the *ordinary* experience of stopping an agent
- * that was waiting on you — see #113.
+ * approval timeout. Manual mode is the default, so "the stop button does
+ * nothing" was the *ordinary* experience of stopping an agent that was
+ * waiting on you — see #113.
  *
- * An abort resolves `false`, which is the same answer a timeout gives: the
- * call is denied, the loop unwinds through the paths that already exist for a
- * cancelled run. Registered after the `aborted` re-check rather than before,
- * so an abort that fired while this was being set up cannot be missed.
+ * It reports *why* the wait ended, rather than a boolean. Four different
+ * endings used to collapse into one `false`, and the caller turned every one
+ * of them into "User denied this tool call." — a claim about a person that
+ * three of the four cannot support. Registered after the `aborted` re-check
+ * rather than before, so an abort that fired while this was being set up
+ * cannot be missed.
  */
-function waitForApproval(streamId: string, callId: string, signal: AbortSignal): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+function waitForApproval(streamId: string, callId: string, signal: AbortSignal): Promise<ApprovalOutcome> {
+  return new Promise<ApprovalOutcome>((resolve) => {
     if (signal.aborted) {
-      resolve(false);
+      resolve("aborted");
       return;
     }
     const run = getRun(streamId);
     if (!run) {
-      resolve(false);
+      resolve("gone");
       return;
     }
     // Every path below goes through `settle`, so the timer and the abort
     // listener are always torn down — a listener left on a long-lived signal
     // is a leak, and a stray timer would delete a *later* call's approval.
     let done = false;
-    const settle = (approved: boolean) => {
+    const settle = (outcome: ApprovalOutcome) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
       run.approvals.delete(callId);
-      resolve(approved);
+      resolve(outcome);
     };
-    const onAbort = () => { settle(false); };
-    const timer = setTimeout(() => { settle(false); }, APPROVAL_TIMEOUT_MS);
-    run.approvals.set(callId, settle);
+    const onAbort = () => { settle("aborted"); };
+    const timer = setTimeout(() => { settle("timeout"); }, approvalTimeoutMs());
+    // The registry's resolver stays `(approved: boolean) => void`, so the two
+    // WebSocket handlers that answer an approval need no change: only this
+    // function knows the difference between a person saying no and nobody
+    // answering at all.
+    run.approvals.set(callId, (approved: boolean) => { settle(approved ? "approved" : "denied"); });
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
