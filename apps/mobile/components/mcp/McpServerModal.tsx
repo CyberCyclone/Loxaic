@@ -188,7 +188,15 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody>
+        {/* `scrollEnabled` is a caller override, and it is load-bearing: the
+            vendored ModalBody (components/ui/modal/index.tsx) hardcodes
+            `scrollEnabled={false}` and spreads props after it, and this
+            dialog is capped at `max-h-[85%]`. Without both halves of that
+            fix, everything past the fold is clipped with no way to reach it
+            — which hid the Secrets field on the Add form, where two extra
+            fields (Slug, Transport) push it over the edge, and sent
+            credentials into the plaintext Environment box instead. */}
+        <ModalBody scrollEnabled>
           <VStack space="lg">
             <VStack space="xs">
               <Text size="xs" className="text-muted-foreground">
@@ -323,6 +331,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                 </Text>
                 <Textarea size="md" className="border-border bg-card">
                   <TextareaInput
+                    testID="mcp.serverModal.env"
                     value={envText}
                     onChangeText={setEnvText}
                     placeholder={'MY_SETTING=value'}
@@ -346,6 +355,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
               )}
               <Textarea size="md" className="border-border bg-card">
                 <TextareaInput
+                  testID="mcp.serverModal.secrets"
                   value={secretsText}
                   onChangeText={setSecretsText}
                   placeholder={'API_KEY=sk-...'}

@@ -529,6 +529,47 @@ export async function resetSandboxSettings(): Promise<void> {
   }
 }
 
+/**
+ * Opens the MCP Servers screen from the sidebar, on any layout.
+ *
+ * Waits on the header's Add control rather than on the list: a freshly
+ * provisioned account owns no servers, and the screen renders the built-in
+ * catalogue or an empty state in the list's place — so keying on `mcp.list`
+ * would hang for exactly the user a spec creates for itself. The Add button
+ * sits in the header and is there in every one of those states.
+ */
+export async function openMcpServers(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.nav.mcp');
+  await waitForVisible('mcp.addServer');
+}
+
+/**
+ * The caller's MCP servers, straight from the API.
+ *
+ * The encrypted blob never comes back — the route strips `secrets` and
+ * reports `secretKeys` in its place. That is what makes this the right probe
+ * for *where* a credential landed, rather than merely whether one saved: a
+ * key under `secretKeys` went through encryptSecrets, while a value still in
+ * `env` is sitting in the clear. The screen cannot show that difference, and
+ * it is the whole distinction the Secrets field exists to draw.
+ */
+export async function listMcpServers(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<{ id: string; name: string; env: Record<string, string> | null; secretKeys: string[] }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/mcp/servers`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing MCP servers failed (${String(res.status)})`);
+  return (await res.json()) as {
+    id: string;
+    name: string;
+    env: Record<string, string> | null;
+    secretKeys: string[];
+  }[];
+}
+
 // ── Desktop instance bridge (Electron, self-contained runs) ─────────────
 
 /** State the main process reports — the same shape preload.cjs exposes. One
