@@ -3,11 +3,17 @@ import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
 import { resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
 import { and, db, eq } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
-import { catalogDefaultPolicy } from "./catalog.ts";
+import { catalogDefaultPolicy, GITHUB_BUILTIN_KEY } from "./catalog.ts";
 import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
-import { compactSchemaForModel, extractResultText, MCP_SYSTEM_ADDENDUM, wrapResult } from "./sanitize.ts";
+import {
+  compactSchemaForModel,
+  extractResultText,
+  GITHUB_TOOLS_ADDENDUM,
+  MCP_SYSTEM_ADDENDUM,
+  wrapResult,
+} from "./sanitize.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 
 /** The tools available to one agent run: what the model is offered, plus the
@@ -82,12 +88,20 @@ export async function buildToolset(
     ),
   );
   const hasMcp = mcpEntries.size > 0;
+  // Offered tools, not merely an enabled row: planning mode hides the write
+  // ones, and a server that failed to connect contributes none at all.
+  const hasGithub = offered.some(
+    (t) => t.source.kind === "mcp" && t.source.serverSlug === GITHUB_BUILTIN_KEY,
+  );
+  const addendum = [hasMcp ? MCP_SYSTEM_ADDENDUM : null, hasGithub ? GITHUB_TOOLS_ADDENDUM : null]
+    .filter((line): line is string => line !== null)
+    .join(" ");
 
   return {
     openAiTools: offered.map(resolvedToOpenAiTool),
     get: (name) => byName.get(name),
     requiresApproval: toolsetRequiresApproval,
-    systemPromptAddendum: hasMcp ? MCP_SYSTEM_ADDENDUM : null,
+    systemPromptAddendum: addendum === "" ? null : addendum,
     dispatchMcp: (tool, args) => dispatchMcpTool(userId, tool, args, mcpEntries),
   };
 }

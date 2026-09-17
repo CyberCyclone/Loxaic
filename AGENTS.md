@@ -925,6 +925,12 @@ replies.
   list is marked `missing`, GitHub has renamed tools before (`get_issue_comments` → `issue_read`),
   and a stale pre-seeded name would sit in the Tools sheet as "missing" forever. The policy and
   the tool's hash are recorded together, so a schema change still revokes the grant.
+- **The prompt has to say the tools exist.** `GITHUB_TOOLS_ADDENDUM` (`mcp/sanitize.ts`) is appended
+  whenever a github tool is actually *offered* — not merely enabled, since planning mode hides the
+  write ones and a failed connect contributes none. Without it the first real session did exactly
+  what the sandbox invites: asked about issues, reached for `curl`, got nothing (a sandbox has no
+  network), and told the user it could not see GitHub at all — with all 45 tools sitting unused in
+  that same request. Knowing a tool is in the list is not the same as knowing to reach for it.
 - **The linked row cannot be deleted while GitHub is connected** (409 naming the two things that
   do what the user wants: switch it off, or disconnect GitHub) — deleting it would only have it
   come back on the next reconnect. Once the connection is gone it is an ordinary row, so a crash

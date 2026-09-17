@@ -195,6 +195,22 @@ describe("connecting with the connection's token", () => {
     expect(planning.get("github__ping")).toBeUndefined();
   }, 20_000);
 
+  it("tells the model the tools exist, since the sandbox has no network to reach GitHub any other way", async () => {
+    const userId = await makeUser();
+    await connect(userId);
+    await ensureGithubMcpServer(userId);
+
+    const ts = await buildToolset(userId, { mode: "manual" });
+    expect(ts.systemPromptAddendum).toMatch(/github__\* tools/);
+    expect(ts.systemPromptAddendum).toMatch(/UNTRUSTED/);
+
+    // Without the server there is nothing to point at, so the line is absent
+    // rather than describing tools this run was never offered.
+    await removeGithubMcpServer(userId);
+    const without = await buildToolset(userId, { mode: "manual" });
+    expect(without.systemPromptAddendum ?? "").not.toMatch(/github__\* tools/);
+  }, 20_000);
+
   it("uses a re-issued token straight away", async () => {
     const userId = await makeUser();
     await connect(userId, "ghp_stale-token-that-the-fixture-refuses");
