@@ -280,6 +280,34 @@ export async function getMessageTexts(
   );
 }
 
+/**
+ * The tool results a conversation has *stored*, straight from the API.
+ *
+ * Deliberately not "what the card shows": a call's verdict rides the live
+ * stream as an event, so a spec watching only the rendered card during a run
+ * cannot tell a verdict that was persisted from one that was merely
+ * broadcast. These are the blocks a reopened thread is rebuilt from, and
+ * `ok` was absent from them until failures started surviving a reload.
+ */
+export async function getToolResults(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<{ call_id: string; output: string; ok?: boolean }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] getting tool results failed (${String(res.status)})`);
+  const body = (await res.json()) as {
+    messages: { content: { kind: string; call_id?: string; output?: string; ok?: boolean }[] }[];
+  };
+  return body.messages.flatMap((m) =>
+    m.content
+      .filter((b) => b.kind === 'tool_result')
+      .map((b) => ({ call_id: b.call_id ?? '', output: b.output ?? '', ok: b.ok })),
+  );
+}
+
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and
  * non-admin sessions alike — the screen itself branches on role. */
 export async function openSandboxSettings(): Promise<void> {

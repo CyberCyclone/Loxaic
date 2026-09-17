@@ -64,7 +64,13 @@ export type ContentBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "tool_call"; call_id: string; tool: string; args: unknown }
-  | { kind: "tool_result"; call_id: string; output: string; diff?: FileDiff[] }
+  /** `ok` is optional only because rows written before it existed do not carry
+   * it — every result persisted now sets it, including successes. Absence
+   * therefore means "this row predates the field", never "it succeeded", and
+   * the client tints on a positive `false` for exactly that reason. Without it
+   * a failed call was indistinguishable from a successful one the moment the
+   * live stream ended and history was rebuilt from REST. */
+  | { kind: "tool_result"; call_id: string; output: string; ok?: boolean; diff?: FileDiff[] }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can
    * render the compaction card with its stats — the stream isn't the only

@@ -599,7 +599,7 @@ export async function runToolLoop(ctx: {
             output,
             ok: false,
           });
-          resultBlocks.push({ kind: "tool_result", call_id: call.id, output });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output, ok: false });
           chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
@@ -631,14 +631,18 @@ export async function runToolLoop(ctx: {
             output,
             ok: false,
           });
-          resultBlocks.push({ kind: "tool_result", call_id: call.id, output });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output, ok: false });
           chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
+        // Persisted alongside the output, not just emitted: the live event is
+        // gone the moment the stream ends, and without this the transcript
+        // could not tell a failed call from a successful one after a reload.
         resultBlocks.push({
           kind: "tool_result",
           call_id: call.id,
           output: outcome.output,
+          ok: outcome.ok,
           ...(outcome.diff ? { diff: outcome.diff } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
@@ -740,7 +744,14 @@ async function runOneToolCall(
     signal: AbortSignal;
   },
   call: ToolCall,
-): Promise<{ output: string; diff?: { path: string; oldContent: string | null; newContent: string | null }[] }> {
+): Promise<{
+  output: string;
+  /** Mirrors the `ok` on the `tool.result` event this function emits, so the
+   * caller can persist the same verdict rather than inferring one from the
+   * output text. Every return path sets it explicitly. */
+  ok: boolean;
+  diff?: { path: string; oldContent: string | null; newContent: string | null }[];
+}> {
   const { convId, userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
   const args = safeParseArgs(call.function.arguments);
@@ -756,7 +767,7 @@ async function runOneToolCall(
       output,
       ok: false,
     });
-    return { output };
+    return { output, ok: false };
   }
 
   if (toolset.requiresApproval(resolved, mode)) {
@@ -777,7 +788,7 @@ async function runOneToolCall(
         output,
         ok: false,
       });
-      return { output };
+      return { output, ok: false };
     }
   }
 
@@ -793,7 +804,7 @@ async function runOneToolCall(
       output: result.output,
       ok: result.ok,
     });
-    return { output: result.output };
+    return { output: result.output, ok: result.ok };
   }
 
   // The MCP branch returned above, so this is a builtin by construction — and
@@ -823,7 +834,7 @@ async function runOneToolCall(
         output,
         ok: false,
       });
-      return { output };
+      return { output, ok: false };
     }
   }
 
@@ -838,7 +849,7 @@ async function runOneToolCall(
     ok: result.ok,
     ...(result.diff ? { diff: result.diff } : {}),
   });
-  return { output: result.output, diff: result.diff };
+  return { output: result.output, ok: result.ok, diff: result.diff };
 }
 
 /** Approvals are run-scoped (registry), not connection-scoped — a different
