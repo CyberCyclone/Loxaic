@@ -20,10 +20,10 @@
  * changes, only whether the total content passes the fold.
  */
 import { browser } from '@wdio/globals';
-import { provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
-import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, testIdSelector, typeInto, waitForGone, waitForVisible } from '../helpers/selectors.ts';
-import { listMcpServers, openMcpServers, signIn } from '../helpers/app.ts';
+import { provisionUser, uniqueCreds, type Credentials } from '../../helpers/auth.ts';
+import { shot } from '../../helpers/screenshot.ts';
+import { isVisible, tap, testIdSelector, typeInto, waitForGone, waitForVisible } from '../../helpers/selectors.ts';
+import { listMcpServers, openMcpServers, signIn } from '../../helpers/app.ts';
 
 /**
  * Whether `id` can actually be brought on screen inside the modal, and not
@@ -42,18 +42,35 @@ import { listMcpServers, openMcpServers, signIn } from '../helpers/app.ts';
  * view. (Deliberately not asserted by setting `scrollTop` directly: a
  * hidden-overflow element still scrolls *programmatically*, which would pass
  * in both states and prove nothing.)
+ *
+ * `overflowing` is reported separately from `scrollable`, because folding the
+ * two together makes the verdict depend on the runner's window height: on a
+ * window tall enough for the form to fit inside `max-h-[85%]`, nothing
+ * overflows, no ancestor qualifies, and "not scrollable" would be reported for
+ * a modal that is working perfectly. The spec pins a short viewport so the
+ * overflow case is the one actually exercised, and asserts `overflowing` too —
+ * a tolerant assertion would instead pass trivially on a tall screen, which is
+ * the vacuity this spec had to be rewritten once already to escape.
  */
 async function reachabilityInModal(id: string): Promise<{
   found: boolean;
+  overflowing: boolean;
   scrollable: boolean;
   inView: boolean;
 }> {
   const result = await browser.execute((selector: string) => {
+    const miss = { found: false, overflowing: false, scrollable: false, inView: false };
     const el = document.querySelector<HTMLElement>(selector);
-    if (!el) return { found: false, scrollable: false, inView: false };
+    if (!el) return miss;
     let node = el.parentElement;
     let scroller: HTMLElement | null = null;
+    let overflowing = false;
     while (node) {
+      // Recorded regardless of overflow-y: "the content does not fit" is a
+      // fact about the layout, and it is what separates a real regression
+      // (it overflows and yet nothing can scroll) from a window so tall the
+      // question never arises.
+      if (node.scrollHeight > node.clientHeight) overflowing = true;
       const overflow = getComputedStyle(node).overflowY;
       if ((overflow === 'auto' || overflow === 'scroll') && node.scrollHeight > node.clientHeight) {
         scroller = node;
@@ -61,11 +78,16 @@ async function reachabilityInModal(id: string): Promise<{
       }
       node = node.parentElement;
     }
-    if (!scroller) return { found: true, scrollable: false, inView: false };
+    if (!scroller) return { found: true, overflowing, scrollable: false, inView: false };
     scroller.scrollTop += el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 40;
     const box = el.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
-    return { found: true, scrollable: true, inView: box.top >= view.top - 1 && box.bottom <= view.bottom + 1 };
+    return {
+      found: true,
+      overflowing,
+      scrollable: true,
+      inView: box.top >= view.top - 1 && box.bottom <= view.bottom + 1,
+    };
   }, testIdSelector(id));
   await browser.pause(300);
   return result;
@@ -75,6 +97,14 @@ describe('MCP servers', () => {
   let creds: Credentials;
 
   before(async () => {
+    // Pinned so the Add form genuinely overflows `max-h-[85%]`, which is the
+    // condition this spec's whole subject depends on. The web lane happens to
+    // pin 1440x900 itself (`wdio.web.ts`), but Electron opens the app's own
+    // 1280x800 resizable window with nothing fixing its height — so without
+    // this the same file could report "not scrollable" on a tall window for a
+    // modal that is working correctly. Width stays wide so the shell keeps its
+    // desktop layout, matching what the screenshots show.
+    await browser.setWindowSize(1440, 720);
     creds = uniqueCreds();
     await provisionUser(creds);
     await signIn(creds);
@@ -111,6 +141,10 @@ describe('MCP servers', () => {
     // This is the assertion that fails without the fix.
     const reach = await reachabilityInModal('mcp.serverModal.secrets');
     expect(reach.found).toBe(true);
+    // Asserted, not tolerated: if the form ever stops overflowing at this
+    // viewport the test has quietly stopped proving anything, and that should
+    // fail loudly here rather than pass as a vacuous success.
+    expect(reach.overflowing).toBe(true);
     expect(reach.scrollable).toBe(true);
     expect(reach.inView).toBe(true);
 

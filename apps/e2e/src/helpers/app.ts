@@ -532,11 +532,16 @@ export async function resetSandboxSettings(): Promise<void> {
 /**
  * Opens the MCP Servers screen from the sidebar, on any layout.
  *
- * Waits on the header's Add control rather than on the list: a freshly
- * provisioned account owns no servers, and the screen renders the built-in
- * catalogue or an empty state in the list's place — so keying on `mcp.list`
- * would hang for exactly the user a spec creates for itself. The Add button
- * sits in the header and is there in every one of those states.
+ * Waits on the header's Add control, because it is the one element common to
+ * all three of the screen's branches — loading, empty, and populated.
+ *
+ * Deliberately not `mcp.list`: that would work today but for the wrong reason.
+ * `mcp.tsx` builds its rows as unconfigured catalogue entries *followed by*
+ * servers, and `BUILTIN_CATALOG` always holds the Brave Search entry — so a
+ * brand-new account has one row, the list renders, and the empty state is
+ * never reached. The catalogue lives *inside* the list, not in its place. Key
+ * a future catalogue assertion on `mcp.list` accordingly; the genuinely-empty
+ * branch only appears if that catalogue is ever emptied.
  */
 export async function openMcpServers(): Promise<void> {
   await openSidebar();
