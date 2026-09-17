@@ -98,7 +98,11 @@ describe("a persisted tool result records whether it succeeded", () => {
     // written before this field looks like, and the client is required to read
     // that as "we were not told" rather than as success.
     expect(results[0].ok).toBe(true);
-  });
+    // Explicit, because vitest.config.ts sets testTimeout: 15_000 — without it
+    // the 30s allowance above is unreachable, a contended full-suite run fails
+    // at 15s, and the failure reads as a generic vitest timeout instead of the
+    // `timed out waiting for …` diagnostic the helper exists to produce.
+  }, 30_000);
 
   it("records the failure of a call the user denied, so a reload still shows it failed", async () => {
     const convId = await newConversation();
@@ -126,5 +130,5 @@ describe("a persisted tool result records whether it succeeded", () => {
     expect(results[0].output).toContain("denied");
     // The whole point: the verdict outlives the stream that reported it.
     expect(results[0].ok).toBe(false);
-  });
+  }, 30_000);
 });

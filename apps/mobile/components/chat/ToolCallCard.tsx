@@ -56,8 +56,10 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
   // A failed call used to render identically to a successful one, so the only
   // sign anything had gone wrong was the model talking about it afterwards —
   // and a card collapsed by default hid the reason. Tinted on a positive
-  // `false` only: `ok` is absent on history rebuilt from REST, and absence is
-  // not success.
+  // `false` only: all three paths now carry `ok` — the live event, the
+  // reconnect snapshot, and history rebuilt from REST — so an absent `ok`
+  // means the row predates the field. That is "we were not told", which is
+  // still not success. See the same note in `lib/types.ts`.
   const failed = tool.ok === false;
   const tint = failed
     ? 'text-destructive bg-destructive/15'
@@ -70,13 +72,26 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
       testID={tool.callId ? `chat.toolCall.${tool.callId}` : undefined}
       className={`my-1.5 rounded-md border bg-card ${failed ? 'border-destructive/40' : 'border-border'}`}
     >
-      <Pressable onPress={() => { setOpen((o) => !o); }}>
+      {/* The label goes on the Pressable, not on the tinted Box below it.
+          `components/ui/box/index.web.tsx` destructures only `className` and
+          `testID` and spreads the rest onto a raw `<div>`, so there is no
+          `accessibilityLabel` → `aria-label` mapping in that path: the prop
+          reaches the DOM as an unknown attribute and the card has no
+          accessible name on web or Electron. (Same `.web.tsx` override caveat
+          AGENTS.md records for testIDs, which work only because they were
+          patched in by hand.) Native is no better — a plain View with a label
+          but no `accessible` is not an accessibility element. The Pressable is
+          already the focusable element that owns the row, so the failure folds
+          into what it announces. */}
+      <Pressable
+        onPress={() => { setOpen((o) => !o); }}
+        accessibilityLabel={failed ? 'Tool call failed' : undefined}
+      >
         <HStack className="items-center gap-2 px-3 py-2">
           {/* The failure is carried by colour alone otherwise, which no test
-              can select on and no screen reader can announce. */}
+              can select on. */}
           <Box
             testID={failed && tool.callId ? `chat.toolCall.failed.${tool.callId}` : undefined}
-            accessibilityLabel={failed ? 'Tool call failed' : undefined}
             className={`h-5 w-5 items-center justify-center rounded-sm ${tint}`}
           >
             <Icon as={ToolIcon} size="xs" />
