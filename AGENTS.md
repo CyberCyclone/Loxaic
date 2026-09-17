@@ -169,10 +169,20 @@ replies.
   the fold simply extends past the viewport edge with nothing to scroll it into view. Adding
   one more settings row (GitHub, alongside MCP/Sandbox) pushed the Sandbox row off-screen and
   broke three e2e specs that clicked it, none of which had ever exercised the modal's actual
-  height. `McpServerModal.tsx` already carries the `max-h-[85%]` half of this fix; `scrollEnabled`
-  is a caller override on `<ModalBody>` (the creator spreads `{...props}` after its own
-  hardcoded default, so passing the prop wins) — **any modal expected to grow past a handful of
-  rows needs both**, not just the height cap.
+  height. `McpServerModal.tsx` carried only the `max-h-[85%]` half until #167, and the missing
+  half cost more there than an off-screen row: the Add form renders two fields the Edit form does
+  not (Slug, Transport), which pushed the encrypted **Secrets** box past the fold with nothing
+  able to scroll to it — leaving the plaintext **Environment** box as the only field still
+  reachable for a credential, and a real GitHub PAT was stored in the clear that way. Nothing
+  about the component tree changes, only whether the total content height crosses the fold, so no
+  snapshot of static props can catch it — and neither can `isDisplayed()`/`waitForVisible`, which
+  WebDriver reports true for a below-the-fold element, so a visibility assertion passes with the
+  bug and without it. `mcp-servers.spec.ts` therefore asserts *reachability*: an ancestor whose
+  computed `overflow-y` is `auto`/`scroll` with `scrollHeight > clientHeight`, then a
+  bounding-rect check (not `scrollTop`, which still moves on an `overflow: hidden` element and
+  would prove nothing). `scrollEnabled` is a caller override on `<ModalBody>` (the creator
+  spreads `{...props}` after its own hardcoded default, so passing the prop wins) — **any modal
+  expected to grow past a handful of rows needs both**, not just the height cap.
 
 ### testIDs and e2e selectors
 
