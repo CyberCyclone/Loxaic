@@ -37,6 +37,7 @@ import { fileRoutes } from "./routes/files";
 import { hostingBlockedReason, loadServerSettings } from "./settings";
 import { ensureCluster, registerHost } from "./cluster";
 import { startMcpReaper } from "./mcp/client-manager";
+import { backfillGithubMcpServers } from "./mcp/github-server.ts";
 import { startAttachmentReaper, sweepOrphanAttachments } from "./files/reaper";
 import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
 
@@ -267,6 +268,11 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
     .catch(() => { /* best-effort sweep */ });
   mcpReaperTimer = startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
+  // Users who connected GitHub before its MCP server was provisioned with the
+  // connection have a token and no server; give them one.
+  backfillGithubMcpServers((m) => { app.log.warn(m); })
+    .then((n) => { if (n > 0) app.log.info(`Set up GitHub tools for ${String(n)} existing GitHub connection(s)`); })
+    .catch((e: unknown) => { app.log.warn(`GitHub tools backfill skipped: ${e instanceof Error ? e.message : String(e)}`); });
   // Uploads that no message references — a picked-then-abandoned image has no
   // other reclaim path.
   sweepOrphanAttachments()

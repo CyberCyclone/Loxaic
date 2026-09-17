@@ -154,6 +154,22 @@ and the operation was a read-only clone. Loxaic now checks Contents when you
 pick a repository, so a token that cannot reach the code is refused up front,
 naming the permission to add, rather than failing in a container later.
 
+#### GitHub tools in chats
+
+Connecting the token also sets up GitHub's official MCP server for that user, so
+chats and agents can read and search issues, pull requests and code without a
+clone. Nothing else is configured and the token is not stored a second time;
+disconnecting removes the tools. Tools that only read run without asking, and
+anything that changes GitHub asks first, like every other MCP tool. The server
+appears under **MCP Servers**, where it can be switched off or have individual
+tools changed.
+
+It uses GitHub's hosted endpoint, `https://api.githubcopilot.com/mcp/`, so the
+Loxaic server needs to reach it. For a fine-grained token, reading issues also
+needs **Issues: Read** on those repositories. `GITHUB_MCP_URL` overrides the
+endpoint; set it only to an address you trust, because the private-network
+guard is lifted for it. GitHub Enterprise Server is not supported.
+
 ### How long a workspace lasts
 
 An agent's sandbox is where its work actually lives — the files it edited, the

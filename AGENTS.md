@@ -889,13 +889,48 @@ replies.
   `MCP_ENCRYPTION_KEY`, fallback `BETTER_AUTH_SECRET`) and `redact()`-ed out of every error
   path. stdio children get a minimal env (`PATH`/`HOME` + row env + secrets), never
   `process.env`. HTTP transports re-run the SSRF guard per request unless the user confirmed
-  `allowPrivateNetwork` in the GUI.
+  `allowPrivateNetwork` in the GUI — **the one exception is the GitHub server when an operator
+  sets `GITHUB_MCP_URL`** (below): that address is trusted the way `GITHUB_API_URL` is, and no
+  request can widen it (`PATCH` refuses `allowPrivateNetwork` on that row).
 - Connections are cached per `userId:serverId` with an idle reaper (`mcp/client-manager.ts`,
   mirrors sandbox-manager); a dead/hung server fails only its own tool calls, never the run.
+- **A failed connect is remembered for `CONNECT_FAILURE_TTL_MS` (30 s).** The registry connects
+  every enabled server at the start of every turn, and a failure used to be cached nowhere — so a
+  server nobody could reach cost `CONNECT_TIMEOUT_MS` on *every* turn. That was tolerable while
+  every row was one the user added by hand; it is not for a row provisioned automatically. An
+  edited row (new `updatedAt`) and `dropEntry` both clear it, which is why Test always really
+  tries.
 - Brave Search ships as a built-in catalog entry (`mcp/catalog.ts`) pinned to the official
   `@brave/brave-search-mcp-server` — spawned from the installed package's bin, never `npx`.
   The GUI lives at `/mcp` (mobile/web); per-conversation server switches are in the agent
   Inspector (`conversations.mcpOverrides`).
+- **GitHub is a second built-in, of a different kind: its credential is the GitHub connection.**
+  `CatalogEntry` is a union — stdio entries carry `secretKeys` the user types; the http entry
+  carries `credentials: "github-connection"` and stores nothing in the row. `PUT
+  /v1/github/connection` provisions it and `DELETE` removes it (`mcp/github-server.ts`, the only
+  code that creates or deletes that row); `client-manager.ts` reads the *row owner's* token through
+  `getOwnerToken()` and sends it as `Authorization: Bearer` to GitHub's hosted server
+  (`https://api.githubcopilot.com/mcp/`). One copy of the token, so rotating or revoking it in
+  Settings → GitHub is the whole story. Users who connected before this existed get the row from
+  `backfillGithubMcpServers()` at boot; tests must pass its `ownerId`, because an unscoped run
+  from a test provisions every connection in the shared database (its first draft did, 206 rows).
+- **Its address is resolved at connect time, never read from the row.** The row records the
+  public endpoint for display; the real one comes from `resolveUrl()` each time. Every server on a
+  machine shares one database, and the e2e harness boots with `GITHUB_MCP_URL` pointed at a mock —
+  storing that would leave other people's GitHub tools aimed at a dead loopback port, with the
+  SSRF guard lifted, after the harness exited.
+- **Read-only GitHub tools start allowed, decided on first discovery.** `reconcileTools` takes a
+  `defaultPolicyFor`, and `catalogDefaultPolicy(row)` answers allow+readOnly for names in
+  `GITHUB_READONLY_TOOLS`. Not pre-seeded into `toolPolicies`: a stored policy the server does not
+  list is marked `missing`, GitHub has renamed tools before (`get_issue_comments` → `issue_read`),
+  and a stale pre-seeded name would sit in the Tools sheet as "missing" forever. The policy and
+  the tool's hash are recorded together, so a schema change still revokes the grant.
+- **The linked row cannot be deleted while GitHub is connected** (409 naming the two things that
+  do what the user wants: switch it off, or disconnect GitHub) — deleting it would only have it
+  come back on the next reconnect. Once the connection is gone it is an ordinary row, so a crash
+  between disconnect's two deletes never leaves one stuck. A hand-made server already using slug
+  `github` is never renamed or taken over: connecting still succeeds and `mcp.ok: false` says why
+  the tools are missing.
 - Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
@@ -997,6 +1032,11 @@ replies.
 - `PUT /v1/github/connection` validates the token against GitHub (`getViewer`) before storing
   anything — a bad token fails at connect time, not on the first clone three steps later (a
   later stage).
+- **The token has a third consumer: the GitHub MCP server** (see "MCP servers"). It reaches that
+  server only as a request header built in `mcp/client-manager.ts`, and is redacted from every
+  error there via the connection entry's `redactions`. `getOwnerToken()` is still the only decrypt
+  site. `GET`/`PUT /v1/github/connection` report `mcp: { ok, serverId, enabled } | { ok: false,
+  error }`; a provisioning failure never fails the connect, because the token still clones.
 
 ### Git actions from the Inspector
 

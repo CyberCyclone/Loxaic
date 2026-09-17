@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
 import { db, eq } from "@loxaic/db";
-import { githubConnections, user } from "@loxaic/db/schema";
+import { githubConnections, mcpServers, user } from "@loxaic/db/schema";
 
 // Same convention as mcp/__tests__/registry.test.ts: the encryption module
 // throws without a key, and this repo's real BETTER_AUTH_SECRET is only
@@ -144,6 +144,7 @@ beforeAll(async () => {
 afterEach(async () => {
   nextAccepted = "good-token";
   await db.delete(githubConnections).where(eq(githubConnections.userId, userId));
+  await db.delete(mcpServers).where(eq(mcpServers.ownerId, userId));
 });
 
 afterAll(async () => {
@@ -159,6 +160,11 @@ interface ConnectionBody {
   email: string | null;
   scopes: string | null;
   validatedAt: string;
+  mcp: { ok: true; serverId: string; enabled: boolean } | { ok: false; error: string };
+}
+
+async function githubServerRows() {
+  return db.query.mcpServers.findMany({ where: eq(mcpServers.ownerId, userId) });
 }
 
 describe("PUT /v1/github/connection", () => {
@@ -170,8 +176,9 @@ describe("PUT /v1/github/connection", () => {
     });
     expect(res.statusCode).toBe(200);
     const body = res.json<ConnectionBody>();
-    const { validatedAt, ...rest } = body;
+    const { validatedAt, mcp, ...rest } = body;
     expect(rest).toEqual({ login: "octocat", name: "The Octocat", email: "octocat@example.test", scopes: "repo" });
+    expect(mcp).toMatchObject({ ok: true, enabled: true });
     expect(typeof validatedAt).toBe("string");
 
     const row = await db.query.githubConnections.findFirst({ where: eq(githubConnections.userId, userId) });
@@ -223,6 +230,52 @@ describe("PUT /v1/github/connection", () => {
   });
 });
 
+describe("the GitHub MCP server follows the connection", () => {
+  it("is set up by connecting, holding no copy of the token", async () => {
+    const res = await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    const { mcp } = res.json<ConnectionBody>();
+    if (!mcp.ok) throw new Error(`expected the GitHub tools to be set up: ${mcp.error}`);
+
+    const rows = await githubServerRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: mcp.serverId, builtinKey: "github", slug: "github", transport: "http", secrets: null });
+    expect(JSON.stringify(rows[0])).not.toContain("good-token");
+  });
+
+  it("is refreshed, not duplicated, when the token is replaced", async () => {
+    await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    const [before] = await githubServerRows();
+    await new Promise((r) => setTimeout(r, 5));
+    await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    const after = await githubServerRows();
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(before.id);
+    expect(after[0].updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+  });
+
+  it("is removed by disconnecting", async () => {
+    await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    await app.inject({ method: "DELETE", url: "/v1/github/connection" });
+    expect(await githubServerRows()).toHaveLength(0);
+  });
+
+  it("still connects GitHub when a server of the user's own holds the slug, and says why the tools are missing", async () => {
+    await db.insert(mcpServers).values({ ownerId: userId, name: "Mine", slug: "github", transport: "stdio", command: "true" });
+    const res = await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
+    expect(res.statusCode).toBe(200);
+    const { mcp } = res.json<ConnectionBody>();
+    expect(mcp.ok).toBe(false);
+    if (!mcp.ok) expect(mcp.error).toContain('slug "github"');
+    expect(await db.query.githubConnections.findFirst({ where: eq(githubConnections.userId, userId) })).toBeTruthy();
+
+    const get = await app.inject({ method: "GET", url: "/v1/github/connection" });
+    expect(get.json<ConnectionBody>().mcp).toEqual(mcp);
+    // Disconnecting does not take the user's own server with it.
+    await app.inject({ method: "DELETE", url: "/v1/github/connection" });
+    expect((await githubServerRows()).map((r) => r.name)).toEqual(["Mine"]);
+  });
+});
+
 describe("GET /v1/github/connection", () => {
   it("returns null when nothing is connected", async () => {
     const res = await app.inject({ method: "GET", url: "/v1/github/connection" });
@@ -234,7 +287,7 @@ describe("GET /v1/github/connection", () => {
     await app.inject({ method: "PUT", url: "/v1/github/connection", payload: { token: "good-token" } });
     const res = await app.inject({ method: "GET", url: "/v1/github/connection" });
     expect(Object.keys(res.json<ConnectionBody>()).sort()).toEqual(
-      ["email", "login", "name", "scopes", "validatedAt"].sort(),
+      ["email", "login", "mcp", "name", "scopes", "validatedAt"].sort(),
     );
   });
 });

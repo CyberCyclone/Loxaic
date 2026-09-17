@@ -20,10 +20,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createConnection } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockGithub } from './mock-github.ts';
+import { startMockGithub, VALID_TOKEN } from './mock-github.ts';
 import { startGitServer, type GitServer } from './git-server.ts';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -112,6 +112,36 @@ export function mockGithubUrl(): string {
   }
   const { url } = JSON.parse(readFileSync(MOCK_GITHUB_FILE, 'utf8')) as { url: string };
   return url;
+}
+
+/** The stand-in for GitHub's hosted MCP server, handed across processes the
+ * same way as the mock GitHub API (see `mockGithubUrl`). */
+const MOCK_GITHUB_MCP_FILE = path.join(RUN_DIR, 'mock-github-mcp.json');
+
+/** The mock GitHub MCP server's `/mcp` URL, from whichever process asks. */
+export function mockGithubMcpUrl(): string {
+  if (!existsSync(MOCK_GITHUB_MCP_FILE)) {
+    throw new Error(`[e2e] no mock GitHub MCP server recorded at ${MOCK_GITHUB_MCP_FILE} — was standup() run?`);
+  }
+  const { url } = JSON.parse(readFileSync(MOCK_GITHUB_MCP_FILE, 'utf8')) as { url: string };
+  return url;
+}
+
+/** The mock GitHub MCP server runs as its own process from apps/server's tree,
+ * because apps/e2e has no MCP SDK of its own. Started with the spawned server,
+ * stopped with it. */
+let mockGithubMcp: ChildProcess | null = null;
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      const port = typeof address === 'object' && address ? address.port : 0;
+      probe.close(() => { resolve(port); });
+    });
+  });
 }
 
 /**
@@ -291,6 +321,20 @@ async function ensureServer(): Promise<void> {
   const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
   stopMockGithub = mockGithub.stop;
   writeFileSync(MOCK_GITHUB_FILE, JSON.stringify({ url: mockGithub.url }), 'utf8');
+  // GitHub's hosted MCP server, standing in for api.githubcopilot.com. It
+  // refuses every bearer but the one the mock GitHub API accepts, so a GitHub
+  // tool answering at all proves the connection's token reached it.
+  const mcpPort = await freePort();
+  mockGithubMcp = spawn(path.join(REPO_ROOT, 'apps/server/node_modules/.bin/tsx'), ['test-fixtures/mock-mcp-http-server.ts'], {
+    cwd: path.join(REPO_ROOT, 'apps/server'),
+    stdio: 'ignore',
+    detached: false,
+    env: { ...process.env, MOCK_MCP_HTTP_PORT: String(mcpPort), MOCK_MCP_HTTP_TOKEN: VALID_TOKEN },
+  });
+  await waitUntil('the mock GitHub MCP server to listen', () => tcpOpen('127.0.0.1', mcpPort), 60_000);
+  const mockGithubMcpUrlValue = `http://127.0.0.1:${String(mcpPort)}/mcp`;
+  mkdirSync(RUN_DIR, { recursive: true });
+  writeFileSync(MOCK_GITHUB_MCP_FILE, JSON.stringify({ url: mockGithubMcpUrlValue }), 'utf8');
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
@@ -320,6 +364,10 @@ async function ensureServer(): Promise<void> {
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
       GITHUB_API_URL: mockGithub.url,
+      // Read when a GitHub MCP server connects, never stored in its row — so
+      // the rows this harness's boot backfill creates in the shared database
+      // keep pointing at GitHub once the harness has gone.
+      GITHUB_MCP_URL: mockGithubMcpUrlValue,
       MOCK_SCENARIOS_FILE: SCENARIOS_FIXTURE,
       // Lets a networked sandbox reach this machine's git server by name on
       // Linux and Podman; Docker Desktop resolves it without help. Network
@@ -402,6 +450,15 @@ export async function teardown(): Promise<void> {
     stopMockGithub = null;
   }
   rmSync(MOCK_GITHUB_FILE, { force: true });
+  if (mockGithubMcp?.pid !== undefined) {
+    try {
+      mockGithubMcp.kill();
+    } catch {
+      // Already gone.
+    }
+    mockGithubMcp = null;
+  }
+  rmSync(MOCK_GITHUB_MCP_FILE, { force: true });
   if (gitServer) {
     gitServer.stop();
     gitServer = null;

@@ -36,6 +36,10 @@ export function toolHash(tool: SanitizedToolMeta): string {
 export function reconcileTools(
   stored: { toolPolicies: ToolPolicies; knownTools: KnownTools },
   discovered: SanitizedToolMeta[],
+  /** The policy a tool seen for the first time starts with. Built-in catalog
+   * entries use this to start known read-only tools allowed (catalog.ts's
+   * `catalogDefaultPolicy`); everything else asks. */
+  defaultPolicyFor: (name: string) => ToolPolicy = () => ({ ...DEFAULT_POLICY }),
 ): { toolPolicies: ToolPolicies; knownTools: KnownTools; changedTools: string[] } {
   const policies: ToolPolicies = { ...stored.toolPolicies };
   const known: KnownTools = {};
@@ -50,7 +54,7 @@ export function reconcileTools(
     const prevPolicy = policies[tool.name];
 
     if (!prevPolicy) {
-      policies[tool.name] = { ...DEFAULT_POLICY };
+      policies[tool.name] = defaultPolicyFor(tool.name);
     } else if (prevHash !== undefined && prevHash !== hash) {
       // The tool the user allowlisted no longer exists in that form — any
       // standing "allow" or read-only grant is revoked until re-confirmed.

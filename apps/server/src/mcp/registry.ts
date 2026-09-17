@@ -3,6 +3,7 @@ import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
 import { resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
 import { and, db, eq } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
+import { catalogDefaultPolicy } from "./catalog.ts";
 import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
@@ -147,6 +148,7 @@ async function resolveMcpTools(
         knownTools: row.knownTools ?? {},
       },
       tools,
+      catalogDefaultPolicy(row),
     );
     // Persist the reconciliation so allowlist revocations stick even when the
     // change is first seen by a run rather than a test-connection.

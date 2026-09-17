@@ -174,6 +174,11 @@ const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, un
   { match: /\bmcp huge\b/i, name: "mockmcp__huge", args: {} },
   { match: /\bmcp evil\b/i, name: "mockmcp__evil", args: {} },
   { match: /\bmcp bad args\b/i, name: "mockmcp__echo", args: { wrong: 1 } },
+  // The GitHub MCP server provisioned from a GitHub connection. `get_me` is
+  // one of the tools that start allowed, so this one prompt shows both that
+  // the default policy applied (no approval asked) and that the connection's
+  // token reached the server.
+  { match: /\bgithub who am i\b/i, name: "github__get_me", args: {} },
   { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
   // Object keys deliberately NOT in an order Postgres jsonb preserves: it
   // re-sorts by key length then bytes, so these come back as id/text/status.

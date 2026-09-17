@@ -65,6 +65,13 @@ export const NEW_PROJECT_SCENARIO_DONE = 'node --test passes';
  * used to check that a sandbox actually executes, in whichever mode is
  * currently configured (container or host). See MOCK_TOOL_TRIGGERS in
  * apps/server/src/inference/provider.ts. */
+/** Calls `get_me` on the GitHub MCP server a GitHub connection sets up — see
+ * MOCK_TOOL_TRIGGERS. `get_me` starts allowed, so it runs without an approval
+ * prompt, and the harness's mock MCP server answers with this login only when
+ * the connection's token reached it. */
+export const GITHUB_MCP_PROMPT = 'github who am i';
+export const GITHUB_MCP_LOGIN = 'e2e-bot';
+
 export const BASH_PROMPT = 'run a bash command';
 
 /** Substring of the bash trigger's stdout, echoed back inside the mock's
@@ -589,7 +596,7 @@ export async function openMcpServers(): Promise<void> {
  */
 export async function listMcpServers(
   creds: Pick<Credentials, 'email' | 'password'>,
-): Promise<{ id: string; name: string; env: Record<string, string> | null; secretKeys: string[] }[]> {
+): Promise<{ id: string; name: string; builtinKey: string | null; env: Record<string, string> | null; secretKeys: string[] }[]> {
   const token = await apiToken(creds);
   const res = await fetch(`${BASE_URL}/v1/mcp/servers`, {
     headers: { authorization: `Bearer ${token}` },
@@ -598,6 +605,7 @@ export async function listMcpServers(
   return (await res.json()) as {
     id: string;
     name: string;
+    builtinKey: string | null;
     env: Record<string, string> | null;
     secretKeys: string[];
   }[];

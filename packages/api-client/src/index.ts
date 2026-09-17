@@ -761,7 +761,12 @@ export interface McpCatalogEntry {
   name: string;
   slug: string;
   description: string;
+  transport: "stdio" | "http";
   secretKeys: { env: string; label: string }[];
+  /** Set when the server's credential comes from another connection rather
+   * than from secrets typed here. A server made from such an entry follows
+   * that connection: it cannot be added without it, or deleted while it lasts. */
+  credentials: "github-connection" | null;
   configured: boolean;
 }
 
@@ -842,6 +847,11 @@ export async function testMcpServer(id: string): Promise<McpTestResult> {
 }
 
 // ── GitHub connection ────────────────────────────────────
+/** Whether connecting GitHub also set up its MCP tools, and if not, why. */
+export type GithubMcpStatus =
+  | { ok: true; serverId: string; enabled: boolean }
+  | { ok: false; error: string };
+
 export interface GithubConnection {
   login: string;
   name: string | null;
@@ -850,6 +860,7 @@ export interface GithubConnection {
    * so null means "unknown", never "no access". */
   scopes: string | null;
   validatedAt: string;
+  mcp: GithubMcpStatus;
 }
 
 export interface GithubRepo {

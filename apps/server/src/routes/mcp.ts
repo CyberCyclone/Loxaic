@@ -3,7 +3,9 @@ import { and, db, eq } from "@loxaic/db";
 import { mcpServers } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { assertPublicUrl } from "../agent/executor.ts";
-import { BUILTIN_CATALOG, catalogEntry } from "../mcp/catalog.ts";
+import { BUILTIN_CATALOG, catalogDefaultPolicy, catalogEntry, isCredentialLinked } from "../mcp/catalog.ts";
+import { ensureGithubMcpServer } from "../mcp/github-server.ts";
+import { getConnection } from "../github/connection.ts";
 import { closeServerClients, dropEntry, listServerTools, type McpServerRow } from "../mcp/client-manager.ts";
 import { reconcileTools, type ToolPolicies, type ToolPolicy } from "../mcp/change-detection.ts";
 import { isValidSlug, namespaceTool } from "../mcp/naming.ts";
@@ -89,7 +91,9 @@ export function mcpRoutes(app: FastifyInstance) {
       name: entry.name,
       slug: entry.slug,
       description: entry.description,
-      secretKeys: entry.secretKeys,
+      transport: entry.transport,
+      secretKeys: entry.transport === "stdio" ? entry.secretKeys : [],
+      credentials: entry.transport === "http" ? entry.credentials : null,
       configured: configured.has(entry.key),
     }));
   });
@@ -104,6 +108,26 @@ export function mcpRoutes(app: FastifyInstance) {
       if (!entry) {
         reply.code(400);
         return { error: `Unknown builtin "${body.builtinKey}"` };
+      }
+      if (entry.transport === "http") {
+        // Credential-linked: the row is made from the connection it depends
+        // on, and never without one. Normally the GitHub screen has already
+        // made it; this is the path for a user who removed it by hand.
+        if (!(await getConnection(userId))) {
+          reply.code(409);
+          return { error: "Connect GitHub under Settings → GitHub first; its tools are set up for you when you do." };
+        }
+        const status = await ensureGithubMcpServer(userId);
+        if (!status.ok) {
+          reply.code(409);
+          return { error: status.error };
+        }
+        const row = await findOwnedServer(status.serverId, userId);
+        if (!row) {
+          reply.code(404);
+          return { error: "Not found" };
+        }
+        return toApi(row);
       }
       const launch = entry.resolveLaunch();
       insert = {
@@ -195,6 +219,21 @@ export function mcpRoutes(app: FastifyInstance) {
     const body = (request.body ?? {}) as Record<string, unknown>;
     const patch: Partial<typeof mcpServers.$inferInsert> = {};
 
+    // A linked row's address and credential come from the connection it
+    // follows. allowPrivateNetwork is on the list because an operator-set
+    // GITHUB_MCP_URL is the only thing entitled to lift the SSRF guard for it.
+    if (isCredentialLinked(existing)) {
+      const locked = ["url", "headers", "secrets", "allowPrivateNetwork", "env", "command", "args"].filter(
+        (key) => body[key] !== undefined,
+      );
+      if (locked.length > 0) {
+        reply.code(400);
+        return {
+          error: `${existing.name} uses your GitHub connection, so ${locked.join(", ")} cannot be changed here.`,
+        };
+      }
+    }
+
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
     if (typeof body.command === "string" && existing.builtinKey === null) patch.command = body.command.trim();
@@ -242,6 +281,17 @@ export function mcpRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
+    // A linked row follows its connection. Deleting it here would only have it
+    // come back on the next reconnect, so the answer names the two things that
+    // do what the user wants. With no connection left (a crash between the two
+    // deletes on disconnect) it is an ordinary row and may go.
+    if (isCredentialLinked(existing) && (await getConnection(userId))) {
+      reply.code(409);
+      return {
+        error:
+          "GitHub tools follow your GitHub connection. Switch them off here, or disconnect GitHub under Settings → GitHub to remove them.",
+      };
+    }
     // Hard delete, unlike routines' soft-disable: stored credentials must not
     // outlive the user's intent to remove the server.
     await closeServerClients(existing.id);
@@ -267,6 +317,7 @@ export function mcpRoutes(app: FastifyInstance) {
           knownTools: existing.knownTools ?? {},
         },
         tools,
+        catalogDefaultPolicy(existing),
       );
       await db
         .update(mcpServers)
