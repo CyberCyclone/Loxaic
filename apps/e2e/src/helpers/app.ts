@@ -557,6 +557,52 @@ export async function resetSandboxSettings(): Promise<void> {
   }
 }
 
+/**
+ * Opens the MCP Servers screen from the sidebar, on any layout.
+ *
+ * Waits on the header's Add control, because it is the one element common to
+ * all three of the screen's branches — loading, empty, and populated.
+ *
+ * Deliberately not `mcp.list`: that would work today but for the wrong reason.
+ * `mcp.tsx` builds its rows as unconfigured catalogue entries *followed by*
+ * servers, and `BUILTIN_CATALOG` always holds the Brave Search entry — so a
+ * brand-new account has one row, the list renders, and the empty state is
+ * never reached. The catalogue lives *inside* the list, not in its place. Key
+ * a future catalogue assertion on `mcp.list` accordingly; the genuinely-empty
+ * branch only appears if that catalogue is ever emptied.
+ */
+export async function openMcpServers(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.nav.mcp');
+  await waitForVisible('mcp.addServer');
+}
+
+/**
+ * The caller's MCP servers, straight from the API.
+ *
+ * The encrypted blob never comes back — the route strips `secrets` and
+ * reports `secretKeys` in its place. That is what makes this the right probe
+ * for *where* a credential landed, rather than merely whether one saved: a
+ * key under `secretKeys` went through encryptSecrets, while a value still in
+ * `env` is sitting in the clear. The screen cannot show that difference, and
+ * it is the whole distinction the Secrets field exists to draw.
+ */
+export async function listMcpServers(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<{ id: string; name: string; env: Record<string, string> | null; secretKeys: string[] }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/mcp/servers`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing MCP servers failed (${String(res.status)})`);
+  return (await res.json()) as {
+    id: string;
+    name: string;
+    env: Record<string, string> | null;
+    secretKeys: string[];
+  }[];
+}
+
 // ── Desktop instance bridge (Electron, self-contained runs) ─────────────
 
 /** State the main process reports — the same shape preload.cjs exposes. One

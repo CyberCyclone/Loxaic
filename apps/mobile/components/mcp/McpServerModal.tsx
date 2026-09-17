@@ -188,7 +188,15 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody>
+        {/* `scrollEnabled` is a caller override, and it is load-bearing: the
+            vendored ModalBody (components/ui/modal/index.tsx) hardcodes
+            `scrollEnabled={false}` and spreads props after it, and this
+            dialog is capped at `max-h-[85%]`. Without both halves of that
+            fix, everything past the fold is clipped with no way to reach it
+            — which hid the Secrets field on the Add form, where two extra
+            fields (Slug, Transport) push it over the edge, and sent
+            credentials into the plaintext Environment box instead. */}
+        <ModalBody scrollEnabled>
           <VStack space="lg">
             <VStack space="xs">
               <Text size="xs" className="text-muted-foreground">
@@ -323,6 +331,7 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
                 </Text>
                 <Textarea size="md" className="border-border bg-card">
                   <TextareaInput
+                    testID="mcp.serverModal.env"
                     value={envText}
                     onChangeText={setEnvText}
                     placeholder={'MY_SETTING=value'}
@@ -336,8 +345,21 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
             )}
 
             <VStack space="xs">
+              {/* Not masked, and the label must not imply otherwise. React
+                  Native does not support `secureTextEntry` together with
+                  `multiline`, and the two platforms break it differently: on
+                  web `multiline` renders a <textarea>, which has no masked
+                  form at all (`type="password"` is an <input> feature), so the
+                  value is shown in clear; on native the conflict can drop
+                  `multiline` instead, and a second KEY=value line then cannot
+                  be typed. Keeping the textarea keeps multi-secret entry
+                  working, so the honest fix is to stop claiming masking — the
+                  encryption and the never-read-back half are both still true.
+                  A masked field here would have to be one single-line Input
+                  per key, as McpCatalogCard does for catalog entries. */}
               <Text size="xs" className="text-muted-foreground">
-                Secrets (KEY=value, one per line) — encrypted at rest, never shown again
+                Secrets (KEY=value, one per line) — encrypted at rest and never shown again once
+                saved, but visible here as you type
               </Text>
               {editing && editing.secretKeys.length > 0 && (
                 <Text size="xs" className="text-muted-foreground">
@@ -346,13 +368,13 @@ export function McpServerModal({ open, onClose, onSave, editing }: McpServerModa
               )}
               <Textarea size="md" className="border-border bg-card">
                 <TextareaInput
+                  testID="mcp.serverModal.secrets"
                   value={secretsText}
                   onChangeText={setSecretsText}
                   placeholder={'API_KEY=sk-...'}
                   multiline
                   autoCapitalize="none"
                   autoCorrect={false}
-                  secureTextEntry
                   style={{ height: 56, fontFamily: 'ui-monospace' }}
                 />
               </Textarea>
