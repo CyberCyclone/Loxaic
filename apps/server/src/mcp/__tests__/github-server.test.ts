@@ -4,7 +4,7 @@ import { and, db, eq } from "@loxaic/db";
 import { githubConnections, mcpServers, user } from "@loxaic/db/schema";
 import { deleteConnection, upsertConnection } from "../../github/connection.ts";
 import { startMockMcpHttp, type MockMcpHttp } from "./mock-mcp-http.ts";
-import { dropEntry, listServerTools } from "../client-manager.ts";
+import { dropEntry, listServerTools, reapIdleMcpClients, redactionsFor, CONNECT_FAILURE_TTL_MS } from "../client-manager.ts";
 import {
   backfillGithubMcpServers,
   describeGithubMcp,
@@ -236,6 +236,37 @@ describe("connecting with the connection's token", () => {
     const row = await mustRow(userId);
     expect(row.lastError).toBeTruthy();
     expect(row.lastError).not.toContain(wrong);
+  });
+
+  it("hands the token to an outer catch, which has only the row and its empty secrets", async () => {
+    const userId = await makeUser();
+    await connect(userId);
+    await ensureGithubMcpServer(userId);
+    const row = await mustRow(userId);
+
+    // What `/test` and the registry's warning redact with. The row's own
+    // secrets are null here, so redacting with those alone is a no-op.
+    expect(await redactionsFor(row)).toEqual({ GITHUB_TOKEN: TOKEN });
+    await deleteConnection(userId);
+    expect(await redactionsFor(row)).toEqual({});
+  });
+
+  it("forgets a failure once its window has passed, rather than holding it for the process's life", async () => {
+    const userId = await makeUser();
+    await connect(userId, "ghp_refused-so-this-failure-is-remembered");
+    await ensureGithubMcpServer(userId);
+    const row = await mustRow(userId);
+
+    await expect(listServerTools(userId, row)).rejects.toThrow();
+    const afterFirst = mock.requests();
+    await expect(listServerTools(userId, row)).rejects.toThrow();
+    expect(mock.requests()).toBe(afterFirst);
+
+    // The reaper is the only thing that sweeps it: nothing here names this
+    // (user, server) pair again.
+    await reapIdleMcpClients(Date.now() + CONNECT_FAILURE_TTL_MS + 1);
+    await expect(listServerTools(userId, row)).rejects.toThrow();
+    expect(mock.requests()).toBeGreaterThan(afterFirst);
   });
 
   it("says GitHub is not connected once the connection is gone", async () => {

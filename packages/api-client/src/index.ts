@@ -860,7 +860,12 @@ export interface GithubConnection {
    * so null means "unknown", never "no access". */
   scopes: string | null;
   validatedAt: string;
-  mcp: GithubMcpStatus;
+  /** Optional on purpose: a client outlives the server it points at (a desktop
+   * client against someone else's Host, an OTA update against an unchanged
+   * server), and a server older than the GitHub-tools change sends no `mcp` at
+   * all. Declaring it required made the compiler vouch for a field the wire
+   * need not carry, and the screen crashed on the deref. */
+  mcp?: GithubMcpStatus;
 }
 
 export interface GithubRepo {

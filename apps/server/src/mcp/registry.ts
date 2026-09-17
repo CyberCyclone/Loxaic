@@ -5,7 +5,7 @@ import { and, db, eq } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
 import { catalogDefaultPolicy, GITHUB_BUILTIN_KEY } from "./catalog.ts";
 import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
-import { callServerTool, listServerTools, type McpServerRow } from "./client-manager.ts";
+import { callServerTool, listServerTools, redactionsFor, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
 import {
   compactSchemaForModel,
@@ -14,7 +14,7 @@ import {
   MCP_SYSTEM_ADDENDUM,
   wrapResult,
 } from "./sanitize.ts";
-import { decryptSecrets, redact } from "./secrets.ts";
+import { redact } from "./secrets.ts";
 
 /** The tools available to one agent run: what the model is offered, plus the
  * lookup, approval policy, and dispatch for every name the model may come
@@ -148,9 +148,9 @@ async function resolveMcpTools(
     const result = settled[i];
     if (result.status === "rejected") {
       const row = activeRows[i];
-      const secrets = row.secrets ? safeDecrypt(row.secrets) : {};
+      const redactions = await redactionsFor(row);
       console.warn(
-        `MCP server "${row.name}" unavailable this run: ${redact(result.reason instanceof Error ? result.reason.message : String(result.reason), secrets)}`,
+        `MCP server "${row.name}" unavailable this run: ${redact(result.reason instanceof Error ? result.reason.message : String(result.reason), redactions)}`,
       );
       continue;
     }
@@ -269,18 +269,13 @@ async function dispatchMcpTool(
     const { text, ok } = extractResultText(raw);
     return { ok, output: wrapResult(serverSlug, remoteName, text) };
   } catch (err) {
-    const secrets = entry.row.secrets ? safeDecrypt(entry.row.secrets) : {};
+    // The linked row carries no secrets of its own, and this output goes into
+    // the model's transcript — redact with the credential actually in play.
+    const redactions = await redactionsFor(entry.row);
     return {
       ok: false,
-      output: `MCP server "${serverSlug}" failed: ${redact(err instanceof Error ? err.message : String(err), secrets)}`,
+      output: `MCP server "${serverSlug}" failed: ${redact(err instanceof Error ? err.message : String(err), redactions)}`,
     };
   }
 }
 
-function safeDecrypt(blob: string): Record<string, string> {
-  try {
-    return decryptSecrets(blob);
-  } catch {
-    return {};
-  }
-}

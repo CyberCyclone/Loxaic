@@ -222,6 +222,28 @@ export async function callServerTool(
   }
 }
 
+/**
+ * Every value to scrub from an error about this server: its own secrets, plus
+ * a linked credential (the GitHub token) the row does not store.
+ *
+ * Exported because the outer catches — the `/test` route and the registry's
+ * per-run warning — only have the row, and for a linked row its secrets are
+ * `{}` by construction, so redacting with those alone is a no-op. This repo
+ * redacts a GitHub token at the route layer as well as here, deliberately.
+ */
+export async function redactionsFor(row: McpServerRow): Promise<Record<string, string>> {
+  const secrets = rowSecrets(row);
+  if (!linkedEndpoint(row)) return secrets;
+  try {
+    const token = await getOwnerToken(row.ownerId);
+    return token ? { ...secrets, GITHUB_TOKEN: token } : secrets;
+  } catch {
+    // An unreadable token is nothing to redact — and this is an error path
+    // already, so it must not throw a second error over the first.
+    return secrets;
+  }
+}
+
 export async function dropEntry(userId: string, serverId: string): Promise<void> {
   const key = keyOf(userId, serverId);
   recentFailures.delete(key);
@@ -246,6 +268,14 @@ export async function closeServerClients(serverId: string): Promise<void> {
 }
 
 export async function reapIdleMcpClients(now = Date.now()): Promise<number> {
+  // A failure is only consulted for CONNECT_FAILURE_TTL_MS; after that the
+  // entry is dead weight holding an Error and its stack. Nothing else sweeps
+  // it — dropEntry/closeServerClients only fire for a pair someone names — so
+  // without this it is one retained Error per (user, server) that ever failed,
+  // for the life of the process.
+  for (const [key, failure] of recentFailures) {
+    if (now - failure.at > CONNECT_FAILURE_TTL_MS) recentFailures.delete(key);
+  }
   let reaped = 0;
   for (const [key, entry] of active) {
     if (now - entry.lastUsedAt > IDLE_TTL_MS) {

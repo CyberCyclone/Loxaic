@@ -126,7 +126,7 @@ export default function GithubScreen() {
               {/* The MCP tools are set up by connecting, so this card is where
                   someone learns they exist — and, when they could not be set
                   up, the only place that says why. */}
-              {connection.mcp.ok ? (
+              {connection.mcp?.ok ? (
                 <VStack space="xs" className="rounded-md border border-border bg-background p-3">
                   <Text testID="github.mcp.status" size="xs" className="text-foreground">
                     {connection.mcp.enabled
@@ -141,7 +141,10 @@ export default function GithubScreen() {
                 </VStack>
               ) : (
                 <Text testID="github.mcp.error" size="xs" className="text-warning">
-                  {connection.mcp.error}
+                  {/* An older server sends no `mcp` at all, and so no reason
+                      either — absence reads as "not set up here", never as a
+                      blank screen. */}
+                  {connection.mcp?.error ?? 'GitHub tools are not available on this server.'}
                 </Text>
               )}
               <Button

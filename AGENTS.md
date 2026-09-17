@@ -898,8 +898,10 @@ replies.
   every enabled server at the start of every turn, and a failure used to be cached nowhere — so a
   server nobody could reach cost `CONNECT_TIMEOUT_MS` on *every* turn. That was tolerable while
   every row was one the user added by hand; it is not for a row provisioned automatically. An
-  edited row (new `updatedAt`) and `dropEntry` both clear it, which is why Test always really
-  tries.
+  edited row (new `updatedAt`) **bypasses** the cached failure — that is what makes Test always
+  really try — while `dropEntry`/`closeServerClients` are what actually delete the entry, and the
+  idle reaper sweeps whatever neither names, since a failure past its window is an `Error` and its
+  stack retained for nothing.
 - Brave Search ships as a built-in catalog entry (`mcp/catalog.ts`) pinned to the official
   `@brave/brave-search-mcp-server` — spawned from the installed package's bin, never `npx`.
   The GUI lives at `/mcp` (mobile/web); per-conversation server switches are in the agent

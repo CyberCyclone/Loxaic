@@ -6,7 +6,13 @@ import { assertPublicUrl } from "../agent/executor.ts";
 import { BUILTIN_CATALOG, catalogDefaultPolicy, catalogEntry, isCredentialLinked } from "../mcp/catalog.ts";
 import { ensureGithubMcpServer } from "../mcp/github-server.ts";
 import { getConnection } from "../github/connection.ts";
-import { closeServerClients, dropEntry, listServerTools, type McpServerRow } from "../mcp/client-manager.ts";
+import {
+  closeServerClients,
+  dropEntry,
+  listServerTools,
+  redactionsFor,
+  type McpServerRow,
+} from "../mcp/client-manager.ts";
 import { reconcileTools, type ToolPolicies, type ToolPolicy } from "../mcp/change-detection.ts";
 import { isValidSlug, namespaceTool } from "../mcp/naming.ts";
 import { decryptSecrets, encryptSecrets, redact, secretKeys } from "../mcp/secrets.ts";
@@ -336,8 +342,10 @@ export function mcpRoutes(app: FastifyInstance) {
         })),
       };
     } catch (err) {
-      const secrets = existing.secrets ? decryptSecrets(existing.secrets) : {};
-      return { ok: false, error: redact((err as Error).message, secrets) };
+      // Not `existing.secrets`: a credential-linked row stores none, so that
+      // would redact with `{}` and put whatever the transport threw — a header
+      // echo, a 401 body — straight into the MCP screen.
+      return { ok: false, error: redact((err as Error).message, await redactionsFor(existing)) };
     }
   });
 }
