@@ -34,7 +34,8 @@ export **is** the web app, served same-origin by `apps/server` (see HANDOVER.md)
 
 ```bash
 pnpm install
-pnpm dev                          # turbo: server (4000) — mobile/web/desktop have their own dev scripts, see HANDOVER.md
+pnpm dev                          # turbo dev, unfiltered: server (4000) AND the desktop app — see below
+pnpm dev --filter=@loxaic/server  # just the API server, which is usually what you want
 docker compose up --build         # db + server (serves API + web same-origin) + inference + ntfy
 pnpm --filter @loxaic/mobile web # Expo web dev server (localhost:8081)
 pnpm --filter @loxaic/mobile ios # or android
@@ -47,6 +48,17 @@ pnpm test        # turbo test — vitest (only apps/server + apps/desktop have t
 pnpm lint        # turbo lint — eslint (apps/server)
 pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
 ```
+
+**`pnpm dev` is not server-only.** `turbo dev` is unfiltered and runs every package declaring a
+`dev` script — which is two of them: `apps/server` (`tsx watch`, port 4000) and `apps/desktop`
+(`electron .`, bringing up its own embedded stack on 4100). Mobile is absent because it has no
+`dev` script at all, not because turbo excludes it, so `pnpm --filter @loxaic/mobile start` (or
+`web`) remains a separate command. The desktop app loads its renderer from Metro on 8081 and
+**fails with `ERR_CONNECTION_REFUSED` without ever retrying** when Metro is not already up,
+leaving a blank window that waiting does not fix — so start Metro first, or use
+`pnpm dev --filter=@loxaic/server` when the API server is all you want. Running the unfiltered
+form beside an existing `pnpm --filter @loxaic/desktop dev` gives you two desktop instances
+contending for 4100, which is easy to do by accident and confusing to diagnose.
 
 Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
 
