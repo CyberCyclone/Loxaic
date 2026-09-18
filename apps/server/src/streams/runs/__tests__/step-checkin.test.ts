@@ -324,6 +324,15 @@ describe("step check-ins", () => {
     expect(
       rows.some((r) => (r.content as ContentBlock[]).some((b) => b.kind === "text" && b.text === CHECKIN_ANSWER_NUDGE)),
     ).toBe(false);
+
+    // The abort emits no `steps.decision` — nobody decided — so nothing in the
+    // record log ever clears the question, and the raw fold still carries it.
+    // That is why `delivery.ts` strips a pending question from a finished
+    // stream's snapshot: without it, the next resync put the banner back on a
+    // run that had already ended, with two buttons that could do nothing.
+    // Caught in the browser against a real run, not by any test here.
+    const stale = broker.foldSnapshot(await broker.readFrom(streamId, 0));
+    expect(stale.pending_checkin).toBeDefined();
   });
 
   it("asks early when the model repeats itself, long before the window runs out", async () => {

@@ -9,6 +9,9 @@ const STATE_LABEL: Record<RunState, string> = {
   queued: 'Queued',
   running: 'Running',
   awaiting_approval: 'Awaiting approval',
+  // Not "Awaiting answer": the run is asking a question, and the person it is
+  // asking is the one reading this.
+  awaiting_checkin: 'Waiting for you',
   stopping: 'Stopping…',
   done: 'Done',
   error: 'Error',
@@ -20,6 +23,7 @@ const STATE_DOT: Record<RunState, string> = {
   queued: 'bg-warning',
   running: 'bg-primary',
   awaiting_approval: 'bg-warning',
+  awaiting_checkin: 'bg-warning',
   // Amber too: asked to stop, but not stopped — the run is still winding up.
   stopping: 'bg-warning',
   done: 'bg-success',
@@ -45,7 +49,11 @@ export function RunHeader({ title, state, mode, iteration, queuePosition }: RunH
         <Box className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[state]}`} />
         <Text testID="agent.run.status" size="xs" className="text-muted-foreground">
           {STATE_LABEL[state]}
-          {state === 'running' && iteration ? ` · ${String(iteration.n)}/${String(iteration.max)}` : ''}
+          {/* Shown while parked too: the step count is what the check-in is
+              *about*, so hiding it at exactly that moment is backwards. */}
+          {(state === 'running' || state === 'awaiting_checkin') && iteration
+            ? ` · ${String(iteration.n)}/${String(iteration.max)}`
+            : ''}
           {state === 'queued' && queuePosition ? ` · #${String(queuePosition)}` : ''}
         </Text>
       </HStack>

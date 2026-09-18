@@ -15,6 +15,7 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
 import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
+import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
 import { Composer } from '@/components/composer/Composer';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
@@ -44,12 +45,14 @@ export default function ChatScreen() {
     queuePosition,
     responseStartedAt,
     pendingApproval,
+    pendingCheckin,
     handleSend,
     handleStop,
     handleCommand,
     handleNewChat,
     handleApprove,
     handleDeny,
+    handleSteps,
     handleAllowAlways,
     handleFork,
     handleDelete,
@@ -162,6 +165,20 @@ export default function ChatScreen() {
           />
         ) : (
           <PromptSuggestions onPick={(text) => { handleSend(text, selectedModel); }} />
+        )}
+        {/* Above the composer, in the flow — not a dialog. Deciding whether
+            the agent should carry on means reading what it has already done,
+            so the transcript must stay visible and scrollable. */}
+        {pendingCheckin && (
+          <StepCheckInBanner
+            n={pendingCheckin.n}
+            max={pendingCheckin.max}
+            reason={pendingCheckin.reason}
+            pattern={pendingCheckin.pattern}
+            onContinue={() => { handleSteps('continue'); }}
+            onAnswer={() => { handleSteps('answer'); }}
+            onStop={handleStop}
+          />
         )}
         <Composer
           onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}

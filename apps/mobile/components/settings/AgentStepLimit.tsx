@@ -6,19 +6,19 @@ import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
-/** Presets rather than a number field. The useful range is small, the exact
- * value almost never matters, and a free-text box invites 500 — which the API
- * would reject, so the user would meet an error instead of a setting. */
-const CHOICES = [5, 10, 20, 50] as const;
+/** Presets rather than a number field: the exact value almost never matters,
+ * and a free-text box invites a number the API rejects, so the user would meet
+ * an error instead of a setting. */
+const PRESETS = [20, 50, 100, 200] as const;
 
 /**
- * How many tool round-trips the agent may take for one message.
+ * How often the agent stops to ask whether it should keep going.
  *
- * Worth exposing because in auto mode it is the *only* brake — nothing else
- * asks permission — and people genuinely differ: some want the agent to stop
- * and check in early, others want it to finish a long job unattended. Both the
- * effect and the cost of guessing wrong are immediately visible, which is what
- * makes it a good setting rather than a knob.
+ * A cadence, not a ceiling — it never cuts the agent off, it pauses and asks
+ * (and asks sooner if it notices itself repeating). Worth exposing because
+ * people genuinely differ: some want to be consulted early, others want a long
+ * job finished unattended. The effect is immediately visible either way, which
+ * is what makes it a setting rather than a knob.
  */
 export function AgentStepLimit() {
   const { showToast } = useToastHelper();
@@ -66,13 +66,21 @@ export function AgentStepLimit() {
     })();
   };
 
+  // A value the user already has that is not one of the presets — an old 5 or
+  // 10 from before this was a cadence, or a number set through the API. Shown
+  // as an extra chip so the control never renders with nothing selected, which
+  // would read as "unset" and invite an accidental change.
+  const choices: number[] = PRESETS.includes(value as (typeof PRESETS)[number])
+    ? [...PRESETS]
+    : [value, ...PRESETS].sort((a, b) => a - b);
+
   return (
     <VStack space="xs">
       <Text size="xs" className="text-muted-foreground">
-        Agent steps per message
+        Steps between check-ins
       </Text>
       <HStack space="xs">
-        {CHOICES.map((n) => (
+        {choices.map((n) => (
           <Pressable
             key={n}
             testID={`settings.stepLimit.${String(n)}`}
@@ -87,9 +95,10 @@ export function AgentStepLimit() {
         ))}
       </HStack>
       <Text size="2xs" className="text-muted-foreground">
-        How many tool calls the agent may make while answering one message before it stops and
-        hands back. Lower means it checks in with you sooner; higher lets it finish longer jobs
-        unattended. It always stops on its own once it has an answer — this is only the ceiling.
+        How many tool calls the agent makes while answering one message before it pauses and asks
+        whether to keep going, answer with what it has, or stop. It also asks early if it notices
+        itself repeating the same calls. It is never cut off, and it always finishes on its own
+        once it has an answer.
       </Text>
     </VStack>
   );

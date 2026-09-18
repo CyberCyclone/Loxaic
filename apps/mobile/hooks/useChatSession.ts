@@ -8,6 +8,7 @@ import {
   stopStream,
   approveTool,
   denyTool,
+  sendStepsDecision,
   getConversations,
   getMessages,
   isUnreachableError,
@@ -18,6 +19,7 @@ import {
   updatePrefs,
   type ServerMessage,
   type AttachmentRef,
+  type StepsDecision,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { isOffline, setConnectionState } from '@/lib/connection';
@@ -26,8 +28,13 @@ import { useSession } from '@/lib/session';
 import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
+import type { PendingCheckin } from './useAgentSession';
 
 export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
+
+/** Imported from the agent hook rather than redeclared: both surfaces render
+ * the same banner, so a second definition is a second thing to keep in step. */
+export type { PendingCheckin };
 
 /** MCP tools arrive namespaced as `server__tool`; builtins never contain
  * `__` — mirrors ToolCallCard/PermissionBar's splitMcpTool. */
@@ -99,6 +106,9 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   // never show its dialog over whatever conversation the user has switched
   // to, and switching back to it should find the dialog still there.
   const [pendingApprovalByConv, setPendingApprovalByConv] = useState<Partial<Record<string, PendingApproval>>>({});
+  /** Keyed for the same reason as the approvals above: a check-in belongs to
+   * its conversation, not to whatever is on screen when it arrives. */
+  const [pendingCheckinByConv, setPendingCheckinByConv] = useState<Partial<Record<string, PendingCheckin>>>({});
   /** Which conversation the user asked to stop — see useAgentSession for why
    * this is keyed by id and why it exists at all (#113). */
   const [stoppingConvId, setStoppingConvId] = useState<string | null>(null);
@@ -106,6 +116,9 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
 
   const wsRef = useRef<WebSocket | null>(null);
   const loadingRef = useRef(false);
+  /** What each stream's failed message said — see useAgentSession for why a
+   * run-level error is only toasted when it differs. */
+  const lastMessageErrorRef = useRef(new Map<string, string>());
   // Held in a ref rather than read from the WS effect's closure: the effect
   // only re-runs on [token], and adding an inline callback to its deps would
   // tear down and rebuild the socket on every render of the parent screen.
@@ -422,6 +435,22 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
             }
             return { ...prev, [convId]: { callId: pa.call_id, tool: pa.tool, args: pa.args } };
           });
+          setPendingCheckinByConv((prev) => {
+            const pc = event.snapshot.pending_checkin;
+            if (!pc) {
+              if (!(convId in prev)) return prev;
+              return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+            }
+            return {
+              ...prev,
+              [convId]: {
+                n: pc.n,
+                max: pc.max,
+                reason: pc.reason,
+                ...(pc.pattern ? { pattern: pc.pattern } : {}),
+              },
+            };
+          });
         }
         if (event.status !== 'active') {
           // A reconnect's catch-up re-syncs the conversation's last few
@@ -517,6 +546,28 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
             if (prev[convId]?.callId !== inner.call_id) return prev;
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
+        } else if (inner.kind === 'steps.checkin') {
+          setPendingCheckinByConv((prev) => ({
+            ...prev,
+            [convId]: {
+              n: inner.n,
+              max: inner.max,
+              reason: inner.reason,
+              ...(inner.pattern ? { pattern: inner.pattern } : {}),
+            },
+          }));
+        } else if (inner.kind === 'steps.decision' || inner.kind === 'iteration') {
+          // Answered — here, on another device, or by the timeout. Reaching a
+          // new iteration means the same thing.
+          setPendingCheckinByConv((prev) => {
+            if (!(convId in prev)) return prev;
+            return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+          });
+        }
+        if (inner.kind === 'message.end' && inner.status === 'error' && inner.error) {
+          // See useAgentSession: remembered so stream.end can tell whether its
+          // run-level reason is something the bubble is not already saying.
+          lastMessageErrorRef.current.set(event.stream_id, inner.error);
         }
       } else if (event.type === 'stream.end') {
         // The message's own final state (text/usage/status) already landed
@@ -533,6 +584,18 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           if (!(convId in prev)) return prev;
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
         });
+        setPendingCheckinByConv((prev) => {
+          const convId = event.conversation_id;
+          if (!(convId in prev)) return prev;
+          return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+        });
+        // The run-level reason, which no message row carries — the step limit
+        // used to be exactly that and nothing showed it (#157). Only when the
+        // failed message is not already saying the same thing in red.
+        if (event.status === 'error' && event.error && lastMessageErrorRef.current.get(event.stream_id) !== event.error) {
+          showToast(event.error, 6000);
+        }
+        lastMessageErrorRef.current.delete(event.stream_id);
         // A run may have JIT-loaded the model, which changes the context
         // window out from under a model list fetched at mount.
         onStreamEndRef.current?.();
@@ -712,6 +775,24 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     [clearApproval],
   );
 
+  /** Answers a step check-in — see useAgentSession.handleSteps. Chat and agent
+   * share one tool loop, so chat runs park exactly the same way. */
+  const handleSteps = useCallback(
+    (decision: StepsDecision) => {
+      const id = activeIdRef.current;
+      const stream = id ? streamingByConvRef.current[id] : undefined;
+      if (!wsRef.current || !id || !stream || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
+        showToast('Not connected to this run — reload the page and try again', 4000);
+        return;
+      }
+      setPendingCheckinByConv((prev) => {
+        if (!(id in prev)) return prev;
+        return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id));
+      });
+    },
+    [showToast],
+  );
+
   /** "Allow always": persists the tool's approval policy before approving
    * this call — an MCP tool patches its server's per-tool policy (the same
    * allowlist the /mcp screen's tool sheet manages), a builtin patches the
@@ -815,12 +896,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
+    pendingCheckin: activeId ? (pendingCheckinByConv[activeId] ?? null) : null,
     handleSend,
     handleStop,
     handleCommand,
     handleNewChat,
     handleApprove,
     handleDeny,
+    handleSteps,
     handleAllowAlways,
     handleFork,
     handleDelete,
