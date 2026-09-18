@@ -6,7 +6,8 @@ import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/
 import type { CompactionStats, ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../index.ts";
 import { startChatRun } from "../chatRun.ts";
-import { loadHistory } from "../engine.ts";
+import { DEFAULT_MAX_ITERATIONS, loadHistory } from "../engine.ts";
+import { getRunByConversation } from "../../registry.ts";
 
 /**
  * The *wiring* of automatic compaction, which the pure policy test can't
@@ -157,14 +158,12 @@ describe("automatic compaction", () => {
     }
   });
 
-  it("stops at the user's step limit rather than the built-in default", async () => {
-    // The ceiling used to be a constant. In auto mode nothing else asks
-    // permission, so this is the only brake there is — and what matters is
-    // that the *user's* number bounds the loop, not merely that some number
-    // does. So the same prompt is run twice and the two are compared: the
-    // terminal error itself never reaches the durable log (producer.end
-    // finalizes the stream and emits in-process), so the assertion is on what
-    // the loop actually did.
+  it("checks in at the user's step cadence rather than the built-in default", async () => {
+    // The cadence used to be a constant, and used to be a *ceiling* — the run
+    // died at it. Now it pauses and asks (see step-checkin.test.ts for the
+    // three answers); what this case is about is whose number decides when,
+    // not what happens next. So the same prompt is run twice and compared: one
+    // run gets its answer, the other is parked with a question.
     const promptText = "make a todo list";
 
     const withDefault = await seedConversation(2);
@@ -186,21 +185,26 @@ describe("automatic compaction", () => {
     try {
       const limited = await seedConversation(2);
       await startChatRun({ userId, content: promptText, model: "llama-3.1-8b-instruct", conversationId: limited });
-      await waitFor(async () => {
-        const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, limited) });
-        return rows.some((r) => r.authorType === "tool") ? rows : null;
-      });
-      // Give the loop room to take a second iteration if the limit were being
-      // ignored — otherwise this would pass simply by asserting too early.
-      await new Promise((r) => setTimeout(r, 1000));
+      // Parked, not finished: the run holds a resolver nobody has answered.
+      // Waiting on that rather than on a sleep is also what keeps this honest
+      // — a loop ignoring the pref would sail past and end the run instead.
+      await waitFor(() => Promise.resolve(getRunByConversation(limited)?.stepsDecision ?? null));
 
       const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, limited) });
-      // One iteration's worth: the tool ran, and the loop was cut off before
-      // it could turn the result into an answer.
+      // One iteration's worth: the tool ran, and the loop stopped to ask
+      // before turning the result into an answer.
       expect(rows.filter((r) => r.authorType === "assistant" && r.model !== null)).toHaveLength(1);
       expect(rows.some((r) => r.authorType === "tool")).toBe(true);
+
+      // Answer it, so the run gives its inference slot back before the suite
+      // moves on — a parked run at concurrency 1 would stall everything after.
+      getRunByConversation(limited)?.stepsDecision?.("answer", userId);
+      await waitFor(() => Promise.resolve(getRunByConversation(limited) ? null : true));
     } finally {
-      await db.update(userPrefs).set({ maxIterations: 20 }).where(eq(userPrefs.userId, userId));
+      await db
+        .update(userPrefs)
+        .set({ maxIterations: DEFAULT_MAX_ITERATIONS })
+        .where(eq(userPrefs.userId, userId));
     }
   });
 

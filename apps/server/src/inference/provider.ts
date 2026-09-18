@@ -128,6 +128,16 @@ export type StreamEvent =
 export interface StreamOptions {
   tools?: OpenAiTool[];
   signal?: AbortSignal;
+  /**
+   * Whether the model may call a tool this request. Defaults to `"auto"`.
+   *
+   * `"none"` is what a check-in answered with "answer now" sends. The tools
+   * stay in the request either way, deliberately: llama.cpp renders their
+   * schemas into the prompt's system region, so dropping them would change the
+   * prefix and cost a full re-evaluation of the whole conversation on the one
+   * request that is supposed to wrap things up cheaply.
+   */
+  toolChoice?: "auto" | "none";
 }
 
 export async function* streamCompletion(
@@ -223,13 +233,21 @@ async function* mockStream(
   // running more than one tool in a turn — and takes priority over an
   // ordinary trigger when it fires.
   const toolStepIndex = currentTurn.filter((m) => m.role === "tool").length;
-  const scenarioDecision = scenarioDecisionFor(prompt, toolNames, toolStepIndex);
+  // `tool_choice: "none"` is a real constraint, not a hint, so the mock has to
+  // honour it or the one path that depends on it — a check-in answered with
+  // "answer now" — would be untestable in the mock lane. It must be decided
+  // *before* the scenario lookup: the nudge that turns tools off is itself a
+  // user message, so `lastUserIndex` has already moved and `toolStepIndex` is
+  // back at 0 — a scenario consulted here would cheerfully restart at step 1.
+  const noTools = options.toolChoice === "none";
+  const scenarioDecision = noTools ? null : scenarioDecisionFor(prompt, toolNames, toolStepIndex);
 
   // A list, because a scenario step may carry several calls for one assistant
   // message — what a real model does routinely, and what the tool loop's
   // per-call abort check needs in order to be testable at all (#113).
-  const triggered: { name: string; args: Record<string, unknown> }[] =
-    scenarioDecision?.type === "step"
+  const triggered: { name: string; args: Record<string, unknown> }[] = noTools
+    ? []
+    : scenarioDecision?.type === "step"
       ? scenarioDecision.calls.map((c) => ({ name: c.tool, args: c.args }))
       : alreadyRanTools
         ? []
@@ -304,6 +322,13 @@ async function* mockStream(
         function: { name: t.name, arguments: JSON.stringify(t.args) },
       });
     }
+  } else if (noTools) {
+    // Distinct wording so a spec can tell "the model wrapped up because it was
+    // told to" from the generic post-tool summary below, which it would
+    // otherwise be indistinguishable from.
+    const lastTool = [...currentTurn].reverse().find((m) => m.role === "tool");
+    fullText = `[Mock] Answering now without tools.${lastTool ? ` Last tool said: ${lastTool.content.slice(0, 200)}` : ""}`;
+    yield* emit(fullText);
   } else if (scenarioDecision?.type === "final") {
     // A finished scenario's own wrap-up text, in place of the generic one —
     // it can describe what the steps actually did (e.g. name the bug fixed).
@@ -418,7 +443,7 @@ async function* liveStream(
   // without tools we send no tool fields at all so plain chat is unaffected.
   if (options.tools?.length) {
     body.tools = options.tools;
-    body.tool_choice = "auto";
+    body.tool_choice = options.toolChoice ?? "auto";
   }
 
   // Not the global fetch: see transport.ts for the 300-second cut-off it has.

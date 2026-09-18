@@ -64,7 +64,9 @@ export interface PromptReuse {
   previousMessages: number;
 }
 
-function sha(input: string): string {
+/** Exported for the tool loop's loop detector, which hashes tool calls for the
+ * same reason and wants the same "same or not" guarantee. */
+export function sha(input: string): string {
   // 16 hex chars: this only ever answers "same or not" for values we produced
   // ourselves, and a conversation holds at most ~75 of them.
   return createHash("sha256").update(input).digest("hex").slice(0, 16);

@@ -65,7 +65,7 @@ describe("GET /v1/prefs", () => {
     // A user who has never touched settings must read the same as one whose
     // row says nothing — otherwise the feature looks disabled until they
     // happen to change something unrelated.
-    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true, maxIterations: 20 });
+    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true, maxIterations: 100 });
   });
 });
 
@@ -125,15 +125,14 @@ describe("PATCH /v1/prefs", () => {
   });
 
   it("refuses a step limit outside the supported range", async () => {
-    // In auto mode this ceiling is the only thing that asks the agent to stop,
-    // so it is rejected rather than silently clamped — a client that asked for
-    // 500 should be told it did not get 500.
-    for (const bad of [0, -1, 51, 1000, 2.5, "20", null]) {
+    // Rejected rather than silently clamped — a client that asked for 5000
+    // should be told it did not get 5000.
+    for (const bad of [0, -1, 501, 5000, 2.5, "20", null]) {
       expect((await patch({ maxIterations: bad })).statusCode).toBe(400);
     }
     // The boundaries themselves are valid.
     expect((await patch({ maxIterations: 1 })).statusCode).toBe(200);
-    expect((await patch({ maxIterations: 50 })).statusCode).toBe(200);
+    expect((await patch({ maxIterations: 500 })).statusCode).toBe(200);
   });
 
   it("rejects a patch with nothing in it, rather than writing an empty row", async () => {

@@ -1,3 +1,5 @@
+import type { StepsDecision } from "@loxaic/types";
+
 /**
  * Process-local registry of in-flight runs. This is deliberately NOT the
  * durable record of "what's active" (that's StreamLog meta, which survives
@@ -13,6 +15,19 @@ export interface RunHandle {
   /** call_id -> resolver. Approvals are run-scoped, not connection-scoped: a
    * different device/socket than the one that started the run can approve. */
   approvals: Map<string, (approved: boolean) => void>;
+  /**
+   * Set only while the run is parked at a step check-in, cleared the moment it
+   * is answered. Run-scoped like `approvals`, for the same reason — whoever
+   * can act on the conversation can answer, from any device.
+   *
+   * A plain field rather than a Map: a run has at most one check-in
+   * outstanding, and it is addressed by `stream_id`, which is ours and unique
+   * — unlike a model-supplied `call_id`, which is why approvals need a
+   * collision-tolerant plural lookup and this does not.
+   *
+   * `byUserId` is null when nobody answered and the timeout decided.
+   */
+  stepsDecision?: (decision: StepsDecision, byUserId: string | null) => void;
 }
 
 const runsByStreamId = new Map<string, RunHandle>();
@@ -61,6 +76,18 @@ export function isConversationBusy(conversationId: string): boolean {
  * silently swallow the legitimate one. Handing back all candidates lets the
  * caller pick the run they are actually allowed to answer for.
  */
+/**
+ * Whether a check-in answer off a socket is one we recognise.
+ *
+ * Takes `unknown` on purpose, the same way `isValidRef` does. The wire type
+ * already *says* `StepsDecision`, so a check written against that type is
+ * narrowed to a tautology and compiled away — but the type is a claim a client
+ * made, not a fact, and this is the only place it becomes one.
+ */
+export function isStepsDecision(value: unknown): value is StepsDecision {
+  return value === "continue" || value === "answer";
+}
+
 export function findRunsByApprovalCallId(callId: string): RunHandle[] {
   const out: RunHandle[] = [];
   for (const handle of runsByStreamId.values()) {

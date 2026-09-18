@@ -148,6 +148,13 @@
       "when": 1789441264521,
       "tag": "0020_brown_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789710326427,
+      "tag": "0021_zippy_odin",
+      "breakpoints": true
     }
   ]
 }
