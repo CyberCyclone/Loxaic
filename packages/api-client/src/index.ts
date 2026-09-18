@@ -761,7 +761,12 @@ export interface McpCatalogEntry {
   name: string;
   slug: string;
   description: string;
+  transport: "stdio" | "http";
   secretKeys: { env: string; label: string }[];
+  /** Set when the server's credential comes from another connection rather
+   * than from secrets typed here. A server made from such an entry follows
+   * that connection: it cannot be added without it, or deleted while it lasts. */
+  credentials: "github-connection" | null;
   configured: boolean;
 }
 
@@ -842,6 +847,11 @@ export async function testMcpServer(id: string): Promise<McpTestResult> {
 }
 
 // ── GitHub connection ────────────────────────────────────
+/** Whether connecting GitHub also set up its MCP tools, and if not, why. */
+export type GithubMcpStatus =
+  | { ok: true; serverId: string; enabled: boolean }
+  | { ok: false; error: string };
+
 export interface GithubConnection {
   login: string;
   name: string | null;
@@ -850,6 +860,12 @@ export interface GithubConnection {
    * so null means "unknown", never "no access". */
   scopes: string | null;
   validatedAt: string;
+  /** Optional on purpose: a client outlives the server it points at (a desktop
+   * client against someone else's Host, an OTA update against an unchanged
+   * server), and a server older than the GitHub-tools change sends no `mcp` at
+   * all. Declaring it required made the compiler vouch for a field the wire
+   * need not carry, and the screen crashed on the deref. */
+  mcp?: GithubMcpStatus;
 }
 
 export interface GithubRepo {

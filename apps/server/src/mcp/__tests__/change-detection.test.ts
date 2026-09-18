@@ -24,6 +24,18 @@ describe("mcp change detection", () => {
     expect(r.changedTools).toEqual([]);
   });
 
+  it("starts a newly discovered tool with the caller's default, and still revokes it on change", () => {
+    const readOnly = { enabled: true, approval: "allow" as const, readOnly: true };
+    const defaults = (name: string): ToolPolicy => (name === "a" ? { ...readOnly } : { ...DEFAULT_POLICY });
+    const first = reconcileTools({ toolPolicies: {}, knownTools: {} }, [tool("a"), tool("b")], defaults);
+    expect(policyFor(first.toolPolicies, "a")).toEqual(readOnly);
+    expect(policyFor(first.toolPolicies, "b")).toEqual(DEFAULT_POLICY);
+
+    const changed = reconcileTools(first, [tool("a", "now writes"), tool("b")], defaults);
+    expect(policyFor(changed.toolPolicies, "a")).toMatchObject({ approval: "ask", readOnly: false, changed: true });
+    expect(changed.changedTools).toEqual(["a"]);
+  });
+
   it("revokes allow and readOnly when a tool's definition changes", () => {
     const before = reconcileTools({ toolPolicies: {}, knownTools: {} }, [tool("a", "v1")]);
     const granted = {

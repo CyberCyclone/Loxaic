@@ -24,9 +24,12 @@ interface McpServerCardProps {
   onTools: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  /** The server follows another connection (GitHub): it has no address or
+   * credential of its own to show, and is removed by disconnecting that. */
+  linked?: boolean;
 }
 
-export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEdit, onDelete }: McpServerCardProps) {
+export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEdit, onDelete, linked }: McpServerCardProps) {
   const status = statusLine(server);
   const toolCount = Object.keys(server.knownTools).length;
 
@@ -45,7 +48,11 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
             )}
           </HStack>
           <Text size="xs" className="mt-0.5 text-muted-foreground" numberOfLines={1}>
-            {server.transport === 'stdio' ? (server.builtinKey ? 'stdio' : server.command) : server.url}
+            {linked
+              ? 'Uses your GitHub connection'
+              : server.transport === 'stdio'
+                ? (server.builtinKey ? 'stdio' : server.command)
+                : server.url}
           </Text>
         </Pressable>
         <Switch testID={`mcp.serverToggle.${server.id}`} value={server.enabled} onValueChange={onToggle} />
@@ -93,9 +100,11 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
         <Pressable testID={`mcp.serverEdit.${server.id}`} onPress={onEdit} className="p-1">
           <Icon as={Pencil} size="xs" className="text-muted-foreground" />
         </Pressable>
-        <Pressable testID={`mcp.serverDelete.${server.id}`} onPress={onDelete} className="p-1">
-          <Icon as={Trash2} size="xs" className="text-destructive" />
-        </Pressable>
+        {!linked && (
+          <Pressable testID={`mcp.serverDelete.${server.id}`} onPress={onDelete} className="p-1">
+            <Icon as={Trash2} size="xs" className="text-destructive" />
+          </Pressable>
+        )}
       </HStack>
     </Box>
   );

@@ -4,7 +4,31 @@
     {
       "name": "metro",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["--filter", "@loxaic/mobile", "web"],
+      "runtimeArgs": [
+        "--filter",
+        "@loxaic/mobile",
+        "web"
+      ],
+      "port": 8081
+    },
+    {
+      "name": "server",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@loxaic/server",
+        "dev"
+      ],
+      "port": 4000
+    },
+    {
+      "name": "expo",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--filter",
+        "@loxaic/mobile",
+        "start"
+      ],
       "port": 8081
     }
   ]

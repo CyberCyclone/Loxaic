@@ -11,6 +11,12 @@ import {
   toApi,
   upsertConnection,
 } from "../github/connection.ts";
+import {
+  describeGithubMcp,
+  ensureGithubMcpServer,
+  removeGithubMcpServer,
+  type GithubMcpStatus,
+} from "../mcp/github-server.ts";
 
 /** Turns a client failure into the response shape the connection screen
  * needs: a message safe to show (redacted, though a viewer/listing call can
@@ -64,7 +70,7 @@ export function githubRoutes(app: FastifyInstance) {
   app.get("/v1/github/connection", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const row = await getConnection(userId);
-    return row ? toApi(row) : null;
+    return row ? { ...toApi(row), mcp: await describeGithubMcp(userId) } : null;
   });
 
   app.put("/v1/github/connection", async (request, reply) => {
@@ -83,7 +89,16 @@ export function githubRoutes(app: FastifyInstance) {
         email: viewer.email,
         scopes,
       });
-      return toApi(row);
+      // Connecting GitHub also sets up its MCP tools. A failure there must not
+      // fail the connection — the token still clones and pushes — so it is
+      // reported beside it for the screen to show.
+      let mcp: GithubMcpStatus;
+      try {
+        mcp = await ensureGithubMcpServer(userId);
+      } catch (err) {
+        mcp = { ok: false, error: `GitHub tools could not be set up: ${redactToken((err as Error).message, token)}` };
+      }
+      return { ...toApi(row), mcp };
     } catch (err) {
       const { status, message } = connectionError(err);
       reply.code(status);
@@ -93,7 +108,13 @@ export function githubRoutes(app: FastifyInstance) {
 
   app.delete("/v1/github/connection", async (request, reply) => {
     const userId = await authenticate(request, reply);
+    // The credential goes first: if the second step never runs, what is left
+    // is a server row that can no longer connect (and may now be deleted by
+    // hand), not a token nobody can see.
     await deleteConnection(userId);
+    await removeGithubMcpServer(userId).catch((err: unknown) => {
+      request.log.warn(`Could not remove the GitHub MCP server: ${(err as Error).message}`);
+    });
     return { ok: true };
   });
 
