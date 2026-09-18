@@ -407,9 +407,12 @@ export type StreamEventKind =
       n: number;
       max: number;
       reason: CheckinReason;
-      /** `loop` only: the repeating unit, oldest first. Its args are already
-       * on the wire via `tool.call`, so this exposes nothing new. */
-      pattern?: { tool: string; args: Record<string, unknown> }[];
+      /** `loop` only: the repeating unit, oldest first — tool names alone.
+       * Not the arguments: an `fs_write` loop is exactly what this exists to
+       * catch, and its args carry the file content, which would then sit in
+       * the 24h record log and be re-sent in every resync's snapshot for a
+       * banner that reads nothing but `tool`. */
+      pattern?: { tool: string }[];
     }
   /** How a `steps.checkin` was answered. Emitted *before* the run re-enters
    * the inference queue, so a catching-up client never sees a stale check-in
@@ -474,7 +477,7 @@ export interface StreamSnapshot {
     n: number;
     max: number;
     reason: CheckinReason;
-    pattern?: { tool: string; args: Record<string, unknown> }[];
+    pattern?: { tool: string }[];
   };
 }
 

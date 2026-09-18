@@ -29,7 +29,7 @@ interface StepCheckInBannerProps {
   max: number;
   reason: CheckinReason;
   /** For a loop, the calls that keep repeating. */
-  pattern?: { tool: string; args: Record<string, unknown> }[];
+  pattern?: { tool: string }[];
   onContinue: () => void;
   onAnswer: () => void;
   onStop: () => void;

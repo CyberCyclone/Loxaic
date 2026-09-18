@@ -420,7 +420,7 @@ export async function runToolLoop(ctx: {
     // Iteration key -> the calls that produced it, so a loop check-in can name
     // what is repeating. Bounded: only the last few keys can ever be part of a
     // hit, and a 500-step run must not accumulate every argument string it saw.
-    const recentCalls = new Map<string, { tool: string; args: Record<string, unknown> }[]>();
+    const recentCalls = new Map<string, string[]>();
     // Set once the user asks for a final answer: the next request goes out
     // with `tool_choice: "none"` and the loop ends after it either way.
     let answerNow = false;
@@ -601,10 +601,32 @@ export async function runToolLoop(ctx: {
         .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
 
-      if (toolCalls.length === 0) {
+      /**
+       * Ends the turn as a success, from whichever branch got there.
+       *
+       * One closure rather than two copies because the two callers must stay
+       * identical in everything a client or the compaction policy can see:
+       * the usage on `message.end`, the compaction verdict from the measured
+       * prompt, and `producer.end` carrying that usage. The verdict is
+       * *returned* and assigned by the caller, not assigned in here: an
+       * assignment inside a closure is invisible to control-flow analysis,
+       * so the trigger past the `finally` would read `autoCompact` as the
+       * literal `false` it was declared with and lint it as never-true —
+       * correct at runtime, and exactly the kind of thing that stops being
+       * correct on the next refactor. The "answer now"
+       * fallback used to end with `producer.end("complete")` and a bare
+       * `return` — a successful turn that reported no token counts, dropped
+       * the omitted-attachments notice, and skipped the compaction check
+       * entirely, so a turn over the threshold left the *next* one to
+       * assemble an over-size prompt with nothing having intervened.
+       *
+       * Callers `break` afterwards, never `return`: the auto-compaction trigger
+       * sits past the `finally`, and only a `break` reaches it.
+       */
+      const endTurnComplete = async (leafId: string): Promise<boolean> => {
         await db
           .update(conversations)
-          .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
+          .set({ activeLeafId: leafId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
         // A window read before a JIT load is the model's max, not what the
         // backend allocated. Re-read it now that loading is done.
@@ -641,13 +663,18 @@ export async function runToolLoop(ctx: {
         // was assembled against are both in hand. The threshold leaves room
         // for the turn that follows, which is what makes acting after the
         // fact safe.
-        autoCompact = shouldAutoCompact({
+        const compact = shouldAutoCompact({
           usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
           windowTokens: breakdownMeta.windowTokens ?? null,
           historyMessages: history.messages.length,
         });
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
         await producer.end("complete", { usage });
+        return compact;
+      };
+
+      if (toolCalls.length === 0) {
+        autoCompact = await endTurnComplete(assistantMsgId);
         break;
       }
 
@@ -680,7 +707,6 @@ export async function runToolLoop(ctx: {
           });
           refusedBlocks.push({ kind: "tool_result", call_id: call.id, output: ANSWER_NOW_NOT_RUN, ok: false });
         }
-        producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete" });
         const refusedMsgId = uuid();
         await db.insert(messages).values({
           id: refusedMsgId,
@@ -693,12 +719,10 @@ export async function runToolLoop(ctx: {
           status: "complete",
           createdAt: new Date(),
         });
-        await db
-          .update(conversations)
-          .set({ activeLeafId: refusedMsgId, updatedAt: new Date() })
-          .where(eq(conversations.id, convId));
-        await producer.end("complete");
-        return;
+        // A successful turn, ended exactly like every other one — with its
+        // usage, and through `break` so the compaction check still runs.
+        autoCompact = await endTurnComplete(refusedMsgId);
+        break;
       }
 
       // ── Run each requested tool ───────────────────────────
@@ -812,7 +836,10 @@ export async function runToolLoop(ctx: {
         args: safeParseArgs(c.function.arguments),
       }));
       const iterationKey = sha(executed.map((c) => sha(`${c.tool}\0${canonicalJson(c.args)}`)).join("|"));
-      recentCalls.set(iterationKey, executed);
+      // Names only. The args went into the key above and are not needed
+      // again; keeping them here would put an `fs_write` loop's file content
+      // into the check-in event — see the `pattern` type for why not.
+      recentCalls.set(iterationKey, executed.map((c) => c.tool));
       // Only the last few keys can be part of a hit; anything older is dead
       // weight in a run that may take hundreds of steps.
       if (recentCalls.size > 8) {
@@ -828,7 +855,7 @@ export async function runToolLoop(ctx: {
         n: iteration,
         max: budgetEnd,
         reason,
-        ...(hit ? { pattern: hit.unit.flatMap((k) => recentCalls.get(k) ?? []) } : {}),
+        ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
       });
 
       let outcome: { decision: StepsDecision; byUserId: string | null };
@@ -905,6 +932,11 @@ export async function runToolLoop(ctx: {
       // prompt-prefix.test.ts for what a mismatch here costs.
       chatMessages.push({ role: "user", content: CHECKIN_ANSWER_NUDGE });
       parentId = nudgeId;
+      // The answer is one more iteration, and the window genuinely grants it:
+      // without this a budget check-in at 100/100 answered here would emit
+      // the final turn as `101/100`, and the header, the banner's "Step N of
+      // M" and the numbers the user just reasoned about would all disagree.
+      budgetEnd = Math.max(budgetEnd, iteration + 1);
       answerNow = true;
     }
   } catch (err) {

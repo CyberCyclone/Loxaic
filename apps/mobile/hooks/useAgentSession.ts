@@ -61,7 +61,7 @@ export interface PendingCheckin {
   n: number;
   max: number;
   reason: CheckinReason;
-  pattern?: { tool: string; args: Record<string, unknown> }[];
+  pattern?: { tool: string }[];
 }
 
 /** Per-conversation in-flight stream state — see useChatSession for why this

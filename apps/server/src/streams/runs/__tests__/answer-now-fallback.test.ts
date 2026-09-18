@@ -149,5 +149,20 @@ describe("answer now, against a backend that calls a tool anyway", () => {
     expect(defiant?.output).toContain("without tools");
     // ...and the tool it insisted on did not actually run.
     expect(blocks.some((b) => b.kind === "text" && b.text.includes("Here is what I found."))).toBe(true);
+
+    // A successful turn ends like every other successful turn. This branch
+    // used to end the stream with no usage at all — no token counts, no
+    // context breakdown — and `return` past the compaction check, so a turn
+    // over the threshold silently left the next one to build an over-size
+    // prompt. The usage on the final `message.end` is the observable half of
+    // both fixes: it is built by the same closure that decides compaction.
+    const records = await getStreamBroker().readFrom(streamId, 0);
+    const ends = records
+      .map((r) => r.event)
+      .filter((e): e is Extract<typeof e, { kind: "message.end" }> => e.kind === "message.end");
+    const finalEnd = ends.at(-1);
+    expect(finalEnd?.status).toBe("complete");
+    expect(finalEnd?.usage?.prompt_tokens).toBe(10);
+    expect(finalEnd?.usage?.completion_tokens).toBe(5);
   });
 });

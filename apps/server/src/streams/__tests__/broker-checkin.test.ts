@@ -26,7 +26,7 @@ describe("foldSnapshot carries a pending step check-in", () => {
   });
 
   it("carries the repeating calls of a loop check-in", () => {
-    const pattern = [{ tool: "grep", args: { pattern: "todo" } }];
+    const pattern = [{ tool: "grep" }, { tool: "fs_read" }];
     const snapshot = broker.foldSnapshot([
       rec(1, { kind: "steps.checkin", n: 3, max: 100, reason: "loop", pattern }),
     ]);

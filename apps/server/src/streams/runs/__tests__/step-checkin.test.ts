@@ -254,6 +254,10 @@ describe("step check-ins", () => {
 
     const events = await eventsOf(streamId);
     expect(events.find((e) => e.kind === "steps.decision")).toMatchObject({ decision: "answer", by: "user" });
+    // The answering iteration is granted by the window, not run past it: the
+    // budget was 1, the answer is iteration 2, and it must not read "2/1".
+    const finalIteration = events.filter((e) => e.kind === "iteration").at(-1);
+    expect(finalIteration).toEqual({ kind: "iteration", n: 2, max: 2 });
   });
 
   it("answers for itself when nobody replies, rather than holding the slot", async () => {
@@ -356,9 +360,9 @@ describe("step check-ins", () => {
     expect(checkin).toMatchObject({ n: 3, max: DEFAULT_MAX_ITERATIONS, reason: "loop" });
     // It names what is repeating, so the client can say so rather than just
     // "something".
-    expect(checkin && "pattern" in checkin ? checkin.pattern : undefined).toEqual([
-      { tool: "todo_write", args: same.args },
-    ]);
+    // Names only — never the args. This is the case a real loop looks like,
+    // and a real loop's args can be a whole file's contents.
+    expect(checkin && "pattern" in checkin ? checkin.pattern : undefined).toEqual([{ tool: "todo_write" }]);
 
     // Keep going re-arms rather than switching off — but the fourth step is
     // the last, so the run finishes without asking again.
