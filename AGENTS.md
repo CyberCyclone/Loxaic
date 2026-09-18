@@ -503,17 +503,74 @@ replies.
   always drew this distinction; the image branch did not, which meant the prompt itself was
   already saying the wrong thing whenever bytes outlived their row.
 
-### The agent step limit
+### The agent step check-in
 
-- **`user_prefs.max_iterations` (default 20, clamped 1-50) bounds the tool loop**, replacing a
-  hard-coded constant. Worth exposing because in auto mode it is the *only* brake — nothing
-  else asks permission — and people genuinely differ on how long they want the agent working
-  unattended.
+- **`user_prefs.max_iterations` (default 100, clamped 1-500) is a *cadence*, not a ceiling.**
+  It used to be a ceiling: the loop stopped dead at 20 and ended the stream with
+  `error: "Stopped after N tool iterations without a final answer."` — a sentence that rode
+  only on `stream.end.error`, which **neither client hook has ever read** and which nothing
+  persisted. What a user saw was a run going red with no reason given, and nothing at all
+  after a reload (#157). Twenty was also far too few: a planning run reading its way around
+  this repository spends it in a couple of minutes on a local model, and being cut off there
+  is not a safety property, just an interruption.
+- **So the loop pauses and asks** — `steps.checkin` → *Keep going* / *Answer now* / *Stop* —
+  handing its inference slot back through `slot.yieldWhile` exactly as a tool approval does.
+  `waitForStepsDecision` is a near-copy of `waitForApproval` deliberately: a check-in is the
+  same kind of pause (a run parked on a person) and the two should fail in the same ways.
+  Keyed by `stream_id` on the run handle rather than a map, since a run has at most one
+  check-in outstanding and stream ids are ours — unlike the model-supplied `call_id` an
+  approval has to tolerate colliding.
+- **The window is absolute, not a fresh count.** "Keep going" sets `budgetEnd = iteration +
+  maxIterations`, so the header reads `7/100` then `104/200`. A per-window count would make
+  "how far in am I?" unanswerable.
+- **Unanswered resolves to `CHECKIN_TIMEOUT_DECISION` (`"answer"`) after
+  `APPROVAL_TIMEOUT_MS`.** The run is holding a slot that at concurrency 1 is the entire
+  deployment and nobody is watching; a partial answer ends the turn and frees it, whereas
+  granting another window unattended is how one abandoned auto run blocks everyone for hours.
+- **Loop detection asks early**, which is the case the old ceiling was really standing in for.
+  `loop-detector.ts` keys each **iteration** (not each call) by a hash of its calls' names and
+  **arguments**, and fires on the same key three times running or a 2-3 key cycle twice back to
+  back. Per *call* would fire after two iterations on `[read a, read b]` twice — an ordinary
+  re-read after an edit did not apply. Args and never results, because `grep`/`glob` truncate
+  at 500 lines with no stable file order, so identical work can produce different output.
+  "Keep going" **resets** the detector rather than muting it: a run that really is stuck asks
+  again after fresh repeats instead of burning the window.
+- **"Answer now" sends `tool_choice: "none"` and keeps the tools in the request.** llama.cpp
+  renders the schemas into the prompt, so dropping them would rewrite the prefix and cost a
+  full re-evaluation on exactly the request meant to wrap up cheaply. Verified against the
+  LM Studio backend on .13 — same prompt and tools, `auto` calls the tool, `none` does not —
+  and against a real run, whose final turn reported 100% prompt reuse. A backend that ignores
+  it is still handled: each call it makes anyway is answered with `ANSWER_NOW_NOT_RUN`, because
+  an assistant `tool_call` with no partner is the orphan the next turn's replay cannot load.
+- **The instruction is persisted as a `user` row** (`CHECKIN_ANSWER_NUDGE`, fixed text, never
+  interpolated), not injected into the live prompt only: the next turn has to reproduce it byte
+  for byte or the prefix breaks. Not a `system` row — `loadHistory` replays user rows already,
+  several chat templates reject a system message that is not first, and `authorUserId` records
+  who pressed the button (null on timeout). The client renders that exact text as a subdued
+  notice rather than a user bubble, since nobody typed it.
+- **A finished stream's snapshot carries no pending question.** Stopping a run parked at a
+  check-in emits no `steps.decision` — nobody decided — so nothing in the record log ever
+  clears it, and `foldSnapshot` is pure over records and cannot see the terminal status
+  (`producer.end` writes no record). The next resync therefore put the banner back on a run
+  that had already ended, offering two buttons that could do nothing. `delivery.ts` strips both
+  `pending_checkin` and `pending_approval` from a non-active snapshot, which is the one place
+  the snapshot and the status are both in hand. Approvals escaped the same trap only by
+  accident, because their abort path records a `tool.result` the fold clears on. **Found by
+  driving a real run in a browser, not by any unit test.**
 - **Clamped on read as well as validated on write.** The route rejects out-of-range values
-  rather than silently clamping (a client that asked for 500 should be told it did not get
-  500), and `userMaxIterations` clamps anyway, because the column is plain data and a value
+  rather than silently clamping (a client that asked for 5000 should be told it did not get
+  5000), and `clampMaxIterations` clamps anyway, because the column is plain data and a value
   that arrived by some other route must not be able to remove the brake. A failed lookup falls
   back to the default, never to "unlimited".
+- **Migration `0021` moves rows still at the old default 20 to 100**, because a default only
+  applies to rows written after it and 20 now means something different — a check-in every
+  couple of minutes, which is worse than the behaviour being replaced. Anyone who chose 20
+  deliberately is indistinguishable here and loses their setting; that is the cheaper mistake,
+  since it is one visible control they can put back.
+- **The banner is a banner, not a dialog** (`components/chat/StepCheckInBanner.tsx`, both
+  surfaces). Answering means reading what the agent already did, so the transcript has to stay
+  visible and scrollable behind it — a modal would cover the one thing the decision depends on.
+  It is written in the agent's own voice for the same reason the decision is the user's.
 
 ### Automatic compaction
 
@@ -618,9 +675,9 @@ replies.
   the type checker narrows it to false after the first check and cannot see that the await
   changes it.
 - **The slot covers tool execution too**, and that is a stated trade-off: a run holds it across
-  every sandboxed `bash` up to `max_iterations`, giving it back only while a human is asked. At
-  concurrency 1 one long auto-mode run holds a shared deployment for the length of its tool
-  work with the backend idle. Yielding around tool calls would not recover that for free — a
+  every sandboxed `bash` up to `max_iterations`, giving it back only while a human is asked —
+  an approval, or a step check-in. At concurrency 1 one long auto-mode run holds a shared
+  deployment for the length of its tool work with the backend idle. Yielding around tool calls would not recover that for free — a
   run admitted in the gap evicts the prefix, and the yielding run re-evaluates its whole
   prompt on return. Per-user fairness and a cap on hold time are follow-ups.
 - **Any event that is not `run.queued` clears the queue position** — in `foldSnapshot` and in
@@ -639,7 +696,9 @@ replies.
 - **`run.queued` carries one number, a 1-based place in line.** Re-emitted as the queue moves
   so a client counts down instead of showing a stale figure, folded into the snapshot so a
   reconnecting client sees the wait, and cleared by `iteration` — reaching an iteration *is*
-  the run starting.
+  the run starting. `steps.decision` is emitted from *inside* `yieldWhile`, before the answered
+  run re-enters the queue, so the log reads `checkin → decision → run.queued → iteration` and a
+  second device never sees a stale check-in beside a queue position.
 - **The mock's `take your time` prompt** (`MOCK_SLOW_MATCH`) is the only way to observe a
   queue end to end: every other mock response lands in milliseconds, so without it a test
   would be racing the harness against itself. Keyed on the prompt rather than an env var so
@@ -1609,6 +1668,13 @@ replies.
   permission prompt — manual mode, the default — parked the run for up to five minutes; and the
   per-call loop never re-checked, so a stop during a batch still ran every remaining call. A real
   session issued **five calls in one assistant message** and took 6m39s over them.
+- **A stop at a step check-in unwinds the same way a stop at an approval does.**
+  `waitForStepsDecision` takes the run's abort signal for exactly the reason `waitForApproval`
+  does, and re-entering the queue for an aborted run throws `RunSlotAbortedError`, which the
+  check-in's own catch turns into `producer.end("cancelled")` after setting `activeLeafId`.
+  The tool results from before the question are real work and stay; no nudge is written,
+  because stopping is not asking for an answer. What this does *not* do is clear the question
+  from the record log — see "A finished stream's snapshot carries no pending question" above.
 - **An unanswered approval is not a denial.** `waitForApproval` returns an `ApprovalOutcome`
   (`approved | denied | timeout | aborted | gone`) rather than a boolean, because the caller used
   to render every `false` as "User denied this tool call." — a claim about a person that three of

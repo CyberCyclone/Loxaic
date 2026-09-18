@@ -78,8 +78,9 @@ export function sha(input: string): string {
  * data URI inline, so hashing every message on every tool iteration costs CPU
  * proportional to the entire attachment budget, repeatedly, on the single Node
  * thread. Measured at ~18 ms per 10 MB image per call, against a 32 MB image
- * budget and up to MAX_ITERATIONS iterations per run — a diagnostic that could
- * add seconds of synchronous work and hundreds of MB of transient strings.
+ * budget and for as many iterations as a run's check-in window allows — a
+ * diagnostic that could add seconds of synchronous work and hundreds of MB of
+ * transient strings.
  *
  * **The caller must guarantee those first N messages are unchanged.** The tool
  * loop can: `chatMessages` is only ever appended to within a run. Anything that

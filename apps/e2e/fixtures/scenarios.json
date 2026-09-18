@@ -69,5 +69,89 @@
       }
     ],
     "finalText": "[Mock] counted.\n"
+  },
+  {
+    "match": "check in after each step",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Sketch the shape",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Sketch the shape",
+              "status": "completed"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] Planned it in two steps and checked in on the way.\n"
+  },
+  {
+    "match": "repeat yourself until someone stops you",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Investigate",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Investigate",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Investigate",
+              "status": "in_progress"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Investigate",
+              "status": "in_progress"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] Stopped repeating.\n"
   }
 ]
