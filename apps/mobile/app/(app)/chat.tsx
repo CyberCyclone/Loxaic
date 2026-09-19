@@ -22,8 +22,11 @@ import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
-import { canEdit } from '@/lib/types';
+import { canEdit, isOwner } from '@/lib/types';
 import { ShareModal } from '@/components/chat/ShareModal';
+import { ConversationMenu } from '@/components/chat/ConversationMenu';
+import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
+import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -69,6 +72,10 @@ export default function ChatScreen() {
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [sharingId, setSharingId] = useState<string | null>(null);
+  // Both entry points — the header's ⋮ and the thread list's Delete — set
+  // this, so there is one dialog and one wording of what deleting does here.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const { config } = useServerConfig();
 
   const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
   const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
@@ -117,10 +124,12 @@ export default function ChatScreen() {
       }}
       onFork={handleFork}
       onRename={handleRename}
-      onDelete={handleDelete}
+      onDelete={(id) => { setDeletingId(id); }}
       onShare={(id) => { setSharingId(id); }}
     />
   );
+
+  const deletingConv = conversations.find((c) => c.id === deletingId) ?? null;
 
   return (
     <HStack className="h-full flex-1">
@@ -133,20 +142,39 @@ export default function ChatScreen() {
         title={conversations.find((c) => c.id === sharingId)?.title ?? ''}
       />
 
+      <DeleteConversationModal
+        title={deletingConv?.title ?? null}
+        area="chat"
+        retentionDays={config ? config.deletedChatRetentionDays : undefined}
+        onCancel={() => { setDeletingId(null); }}
+        onConfirm={() => {
+          const id = deletingId;
+          setDeletingId(null);
+          if (id) void handleDelete(id);
+        }}
+      />
+
       <VStack className="h-full flex-1">
         <MainHeader
           title={activeConv?.title ?? 'Chat'}
           onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
           right={
-            breakpoint !== 'wide' ? (
-              <Pressable
-                testID="chat.threadList.toggle"
-                onPress={() => { setThreadListOpen(true); }}
-                className="rounded-sm p-1.5 web:hover:bg-muted/50"
-              >
-                <Icon as={MessagesSquare} size="sm" className="text-foreground" />
-              </Pressable>
-            ) : undefined
+            <HStack space="xs" className="items-center">
+              {breakpoint !== 'wide' && (
+                <Pressable
+                  testID="chat.threadList.toggle"
+                  onPress={() => { setThreadListOpen(true); }}
+                  className="rounded-sm p-1.5 web:hover:bg-muted/50"
+                >
+                  <Icon as={MessagesSquare} size="sm" className="text-foreground" />
+                </Pressable>
+              )}
+              {/* Owner-only, and only with a conversation to act on: its one
+                  item is Delete, which the server refuses for anyone else. */}
+              {activeConv && isOwner(activeConv) && (
+                <ConversationMenu area="chat" onDelete={() => { setDeletingId(activeConv.id); }} />
+              )}
+            </HStack>
           }
         />
         <OfflineBanner />

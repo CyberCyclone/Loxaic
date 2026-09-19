@@ -11,6 +11,7 @@ import {
   denyTool,
   sendStepsDecision,
   createConversation,
+  deleteConversation,
   getConversations,
   getMessages,
   updateConversation,
@@ -712,7 +713,19 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   );
 
   const handleDelete = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      // Same as chat's: the server first, or the row comes back on the next
+      // load. An agent conversation also has a workspace, which the server
+      // destroys as part of the delete — so a failure here must not leave the
+      // sidebar claiming the run is gone while its container is still running.
+      if (isServerConvId(id)) {
+        try {
+          await deleteConversation(id);
+        } catch (err) {
+          showToast(`Could not delete: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
       setRuns((prev) => prev.filter((r) => r.id !== id));
       if (activeIdRef.current === id) handleNewRun();
       showToast('Run deleted');
