@@ -51,6 +51,13 @@ export async function deleteConversation(id: string, log: DeleteLogger): Promise
   }
 
   await db.update(conversations).set({ deletedAt: new Date() }).where(eq(conversations.id, id));
+  // The run stops on this path too. `resolveAccess` refuses a deleted row, so
+  // nothing *new* can start — but a run already in flight holds its own
+  // references and keeps generating into a conversation the user has been told
+  // is gone, and the cleanup below is about to destroy the sandbox its tool
+  // calls are using. Leaving it running would make "deleted" mean two
+  // different things depending on a setting the user cannot see.
+  getRunByConversation(id)?.abort.abort();
   // A retained conversation is still one the user is finished with, and its
   // sandbox is not retained by anything: nothing can reach the conversation to
   // resume it, and the admin audit view reads rows, not containers. So the

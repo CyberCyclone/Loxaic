@@ -287,6 +287,25 @@ describe("DELETE /v1/conversations/:id — retention on", () => {
     expect(ids).not.toContain(convId);
   });
 
+  it("stops an active run, the same as erasing does", async () => {
+    retentionOn();
+    const convId = await makeConversation();
+    const streamId = uuid();
+    const abort = new AbortController();
+    registerRun({ streamId, conversationId: convId, userId: owner, abort, approvals: new Map() });
+    try {
+      as(owner);
+      await app.inject({ method: "DELETE", url: `/v1/conversations/${convId}` });
+      // Keeping the record is not keeping the run: the user has been told the
+      // conversation is gone, and the cleanup is about to destroy the sandbox
+      // its tool calls are using. "Deleted" must not mean two different things
+      // depending on a setting the user cannot see.
+      expect(abort.signal.aborted).toBe(true);
+    } finally {
+      unregisterRun(streamId);
+    }
+  });
+
   it("still refuses the conversation to its owner and to a share-holder", async () => {
     retentionOn();
     const convId = await makeConversation();
