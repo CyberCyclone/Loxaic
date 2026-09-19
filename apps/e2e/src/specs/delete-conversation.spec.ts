@@ -22,13 +22,14 @@ import { browser } from '@wdio/globals';
 import { provisionUser, apiToken, adminCreds, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, tap, platform, waitForVisible, waitForGone, isVisible } from '../helpers/selectors.ts';
+import { byTestId, tap, platform, waitForVisible, waitForGone } from '../helpers/selectors.ts';
 import {
   listConversations,
   openThreadList,
   sendAndAwaitReply,
   signUp,
   mockEcho,
+  waitForComposerReady,
 } from '../helpers/app.ts';
 
 /** A first message long enough that its derived title cannot fit a phone
@@ -93,9 +94,9 @@ describe('deleting a conversation', () => {
     // Rect arithmetic, which Appium reports in device points on native and
     // CSS pixels on web — both fine, since every value compared here comes
     // from the same source.
-    const title = await byTestId('shell.header.title');
+    const title = byTestId('shell.header.title');
     await title.waitForDisplayed();
-    const menu = await byTestId('chat.header.menu');
+    const menu = byTestId('chat.header.menu');
     await menu.waitForDisplayed();
 
     const titleRect = { ...(await title.getLocation()), ...(await title.getSize()) };
@@ -149,15 +150,21 @@ describe('deleting a conversation', () => {
     await shot('delete-after-erase');
   });
 
-  it('offers no delete menu to someone the conversation is only shared with', async () => {
+  // Asserted over the API, not by signing the guest in: signing a second
+  // person into the same app instance signs the first one out, and what is
+  // being proved is the server's answer. The client-side gate (the ⋮ renders
+  // only for an owner) is a courtesy on top of this, not the enforcement.
+  it('refuses a shared editor\'s delete, silently and without deleting', async () => {
     const guest = await provisionUser();
     const guestToken = await apiToken(guest);
     const ownerToken = await apiToken(owner);
 
     await sendAndAwaitReply('a second thread', mockEcho('a second thread'));
-    secondId = (await listConversations(owner)).filter((c) => c.id !== convId)[0].id;
+    const second = (await listConversations(owner)).find((c) => c.id !== convId);
+    if (!second) throw new Error('[e2e] the second conversation was not created');
+    secondId = second.id;
 
-    const guestId = await userIdOf(guestToken);
+    const guestId = await userIdOf(guest);
     const share = await fetch(`${BASE_URL}/v1/conversations/${secondId}/shares`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${ownerToken}`, 'content-type': 'application/json' },
@@ -181,8 +188,12 @@ describe('deleting a conversation', () => {
   it('keeps a deleted chat for an audit when the server is set to, and says so first', async () => {
     await setRetention({ keepDeleted: true, keepDeletedDays: 30 });
     // The dialog reads the policy from /v1/config, which the app fetches on
-    // mount — reload so this is the page's own answer, not a cached one.
+    // mount — reload so this is the page's own answer, not a cached one. And
+    // wait for the app to come back up before reaching for its chrome: a
+    // refresh re-runs sign-in from stored session, and `openThreadList` fails
+    // on the toggle rather than on anything to do with this feature.
     await browser.refresh();
+    await waitForComposerReady();
     await openThreadList('chat');
     await tap(`threadList.item.${secondId}`);
 
@@ -240,12 +251,20 @@ describe('deleting a conversation', () => {
   });
 });
 
-/** The signed-in user's own id, which a share needs. */
-async function userIdOf(token: string): Promise<string> {
-  const res = await fetch(`${BASE_URL}/api/auth/get-session`, {
-    headers: { authorization: `Bearer ${token}` },
+/**
+ * A user's id, which a share is addressed to.
+ *
+ * From the sign-in response, which carries it — the same route `apiToken`
+ * uses, and the shape sharing.spec.ts's own `signInApi` reads.
+ */
+async function userIdOf(creds: { email: string; password: string }): Promise<string> {
+  const res = await fetch(`${BASE_URL}/api/auth/sign-in`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: creds.email, password: creds.password }),
   });
-  if (!res.ok) throw new Error(`[e2e] session lookup failed (${String(res.status)})`);
-  const body = (await res.json()) as { user: { id: string } };
+  if (!res.ok) throw new Error(`[e2e] sign-in failed (${String(res.status)}): ${await res.text()}`);
+  const body = (await res.json()) as { user?: { id: string } };
+  if (!body.user?.id) throw new Error(`[e2e] sign-in response carried no user: ${JSON.stringify(body)}`);
   return body.user.id;
 }

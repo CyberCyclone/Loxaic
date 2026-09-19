@@ -283,7 +283,7 @@ describe("DELETE /v1/conversations/:id — retention on", () => {
     expect(await countMessages(convId)).toBe(1);
 
     const list = await app.inject({ method: "GET", url: "/v1/conversations" });
-    const ids = (list.json() as { id: string }[]).map((c) => c.id);
+    const ids = list.json<{ id: string }[]>().map((c) => c.id);
     expect(ids).not.toContain(convId);
   });
 
@@ -329,9 +329,9 @@ describe("the admin audit routes", () => {
 
     as(admin);
     const list = await app.inject({ method: "GET", url: "/v1/admin/conversations" });
-    const row = (list.json() as { id: string; deletedAt: string | null; purgeAt: string | null }[]).find(
-      (r) => r.id === convId,
-    );
+    const row = list
+      .json<{ id: string; deletedAt: string | null; purgeAt: string | null }[]>()
+      .find((r) => r.id === convId);
     expect(row?.deletedAt).not.toBeNull();
     expect(new Date(row?.purgeAt ?? 0).getTime()).toBeCloseTo(deletedAt.getTime() + 30 * 86_400_000, -4);
 

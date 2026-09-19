@@ -94,7 +94,7 @@ export function waitForRunEnd(conversationId: string, timeoutMs: number): Promis
       done(false);
     }, timeoutMs);
     // Never hold the process open for a wait whose whole purpose is cleanup.
-    timer.unref?.();
+    timer.unref();
     const existing = runEndWaiters.get(conversationId);
     if (existing) existing.push(done);
     else runEndWaiters.set(conversationId, [done]);
