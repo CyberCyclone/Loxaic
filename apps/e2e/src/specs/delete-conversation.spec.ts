@@ -37,6 +37,11 @@ import {
 const LONG_PROMPT =
   'why does the conversation title overflow the header bar on a narrow phone screen and what should we do about it';
 
+/** A phone, for the one assertion that only means anything at that width. */
+const PHONE = { width: 390, height: 844 };
+/** What the rest of the suite expects to be looking at. */
+const DESKTOP = { width: 1440, height: 900 };
+
 async function setRetention(patch: { keepDeleted?: boolean; keepDeletedDays?: number }): Promise<void> {
   const token = await apiToken(adminCreds());
   const res = await fetch(`${BASE_URL}/v1/admin/settings/conversations`, {
@@ -75,6 +80,11 @@ describe('deleting a conversation', () => {
     // Deployment-wide: left on, every other spec's deletes would be kept and
     // the sandbox/agent specs would start finding conversations they deleted.
     await setRetention({ keepDeleted: false }).catch(() => undefined);
+    // Belt and braces on the window: a failure inside the phone-width test
+    // would otherwise leave this session narrow for everything after it.
+    if (platform() === 'web' || platform() === 'electron') {
+      await browser.setWindowSize(DESKTOP.width, DESKTOP.height).catch(() => undefined);
+    }
   });
 
   it('starts a conversation whose title is far wider than the header', async () => {
@@ -91,6 +101,17 @@ describe('deleting a conversation', () => {
   });
 
   it('keeps the header controls reachable beside that title', async function headerFits() {
+    // At the browser's default 1440px this assertion passes with the bug and
+    // without it — the title simply fits. #185 was reported from a phone, so
+    // the window is narrowed to one for the measurement and restored after.
+    // Native is already this size, and has no resizable window.
+    if (platform() === 'web' || platform() === 'electron') {
+      await browser.setWindowSize(PHONE.width, PHONE.height);
+      // The header re-lays out on the resize; wait for the narrow layout's own
+      // control to appear rather than racing it.
+      await waitForVisible('chat.threadList.toggle');
+    }
+
     // Rect arithmetic, which Appium reports in device points on native and
     // CSS pixels on web — both fine, since every value compared here comes
     // from the same source.
@@ -112,6 +133,10 @@ describe('deleting a conversation', () => {
     // One line: the fix is truncation, not wrapping into a taller header.
     expect(titleRect.height).toBeLessThan(40);
     await shot('delete-header-long-title');
+
+    if (platform() === 'web' || platform() === 'electron') {
+      await browser.setWindowSize(DESKTOP.width, DESKTOP.height);
+    }
   });
 
   it('asks before deleting, and cancelling changes nothing', async () => {
