@@ -4,6 +4,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 interface MainHeaderProps {
   title: string;
@@ -35,18 +36,19 @@ export function MainHeader({ title, subtitle, onOpenMenu, right }: MainHeaderPro
           </Pressable>
         )}
         <VStack className="min-w-0 flex-1">
-          {/* `truncate` as well as numberOfLines: on web this Text renders as
-              a raw span, where numberOfLines never reaches a renderer that
-              would act on it. */}
+          {/* Both mechanisms, because each covers a platform the other does
+              not: numberOfLines is the real one on native, TRUNCATE_TEXT is
+              the only one that works on web (see lib/truncate.ts). */}
           <Text
             testID="shell.header.title"
-            className="truncate font-semibold text-foreground"
+            className="font-semibold text-foreground"
             numberOfLines={1}
+            style={TRUNCATE_TEXT}
           >
             {title}
           </Text>
           {subtitle ? (
-            <Text size="xs" className="truncate text-muted-foreground" numberOfLines={1}>
+            <Text size="xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
               {subtitle}
             </Text>
           ) : null}

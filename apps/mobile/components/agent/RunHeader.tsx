@@ -4,6 +4,7 @@ import { Text } from '@/components/ui/text';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import type { AgentMode } from '@/lib/types';
 import type { RunState } from '@/hooks/useAgentSession';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 const STATE_LABEL: Record<RunState, string> = {
   queued: 'Queued',
@@ -45,7 +46,11 @@ export function RunHeader({ title, state, mode, iteration, queuePosition }: RunH
       {/* Same pair as MainHeader: the title may shrink and truncate, the two
           chips beside it may not give way. `flex-1` alone let a long run title
           squeeze them instead. */}
-      <Text className="min-w-0 flex-1 truncate font-medium text-foreground" numberOfLines={1}>
+      <Text
+        className="min-w-0 flex-1 font-medium text-foreground"
+        numberOfLines={1}
+        style={TRUNCATE_TEXT}
+      >
         {title}
       </Text>
       <HStack space="xs" className="shrink-0 items-center rounded-full bg-muted px-2 py-1">
