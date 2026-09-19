@@ -779,6 +779,63 @@ replies.
   is replaced by an explanation, so waiting on the input alone hangs for exactly the user the
   sharing spec signs in.
 
+### Deleting a conversation
+
+- **`conversations/delete.ts` is the only thing that knows what deleting means**, and what it
+  means is a deployment-wide setting: **erase** (the default) or **keep for an audit**. The
+  route authorizes and calls it; nothing else writes `deletedAt`. Owner-only, and the
+  deliberate identical `200 {ok:true}` for everyone else — an admin resolves to viewer, so an
+  admin cannot delete someone's conversation either, only erase one already deleted.
+- **The ordering in `purgeConversation` is load-bearing and is not the intuitive one.** The
+  conversation row goes **first**, in the same transaction as its messages: every
+  authorization path ends at `resolveAccess`, which refuses a row that is not there, so the
+  instant it commits nothing new can start a run, send, or read. Deleting the messages first
+  would leave a window in which an empty conversation still exists and a live socket can write
+  into it. **Only then** is the run aborted — anything it writes from here is an orphan by
+  construction, which the **second pass** after `waitForRunEnd` collects. That second pass is
+  what makes the wait an optimisation rather than a correctness requirement; a run wedged in a
+  tool call never reaches `unregisterRun`, and the cleanup still has to happen.
+- **Usage records are kept and detached** (`conversation_id`/`message_id` nulled), never
+  deleted. The tokens were spent, and the Stats screen's lifetime totals are made of them;
+  what must not survive is a row naming a conversation that no longer exists, which would sit
+  in "recent conversations" as an id nothing can resolve. **Only `conversation_shares` has a
+  foreign key to `conversations`** — messages, usage records and sandboxes have none — which
+  is exactly why this function exists rather than a bare DELETE.
+- **Uploads need nothing here**: `files/reaper.ts` keys on messages that no longer exist, so
+  erasing the messages *is* the reclaim. Under the old soft delete they were never reclaimed
+  at all, because the message rows survived forever.
+- **Sandbox rows are deleted only when their container is confirmed `destroyed`.** A row whose
+  destroy failed is the only record that a container exists; deleting it strands that container
+  where the abandoned reaper can never find it.
+- **The stream log holds the transcript too** — every delta of every run, for
+  `STREAM_TTL_SECONDS` — so erasing the messages and leaving those keeps the content readable
+  by a resync for another day. Best-effort: not every process that reaches this code has a
+  broker (route tests mount routes without one), hence `hasStreamBroker()`.
+- **Retention fails *on*, and the sweep stands down.** `getConversationSettings()` resolves
+  `keepDeleted` to true when the settings row could not be read — the opposite direction from
+  the sandbox mode's fail-closed, deliberately: there an unreadable row must not re-enable
+  execution, here the irreversible outcome is the *permissive* one. Both branches of
+  `sweepRetainedConversations` delete (off means "erase everything retained"), so guessing the
+  policy is the one guess that cannot be taken back. An **env pin makes the policy known**
+  without the database and outranks the failed read, the same way `SANDBOX_MODE` does.
+- **`conversationPurgeAt` is derived on read, never stored** — an admin shortening the window
+  moves every retained conversation with it, and a stored date would leave the admin screen
+  promising one the sweep will not honour. Same rule as `sandboxReapAt`.
+- **A hold survives a policy change.** It is an admin saying "not this one" mid-enquiry, and
+  turning retention off is not an answer to that.
+- **`resolveAccess` is never loosened for an admin.** A retained conversation stays unreachable
+  on every ordinary path including every socket; the admin transcript
+  (`GET /v1/admin/conversations/:id/messages`) is a separate, admin-gated, read-only door. Its
+  attachments are **named, not served** — `/v1/files/:ref` keeps its own `c.deleted_at IS NULL`
+  condition, and serving the bytes through a second door would quietly undo that.
+- **Restoring brings the shares back and not the workspace.** The shares were never deleted
+  (nothing cascaded — the row survived); the sandbox was destroyed at delete time, because
+  nothing could reach the conversation to resume it and the audit view reads rows, not
+  containers.
+- **The confirm dialog's wording comes from `/v1/config`**, because the answer differs by
+  deployment. While the config is still loading it claims neither outcome — guessing either
+  way is a promise about someone's data.
+
 ### File attachments
 
 - **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**
@@ -1261,6 +1318,18 @@ replies.
   folder's *name* with the full path left to the Inspector. Anywhere a data-derived string sits
   next to a control, both are needed: truncation alone still lets it win the space, and
   `shrink-0` on the neighbour alone still lets it overflow the row.
+- **Neither `numberOfLines` nor the `truncate` class truncates a gluestack `Text` on web —
+  `lib/truncate.ts`'s `TRUNCATE_TEXT` is what does.** `numberOfLines` is inert because the web
+  override renders a raw `<span>` and spreads props onto it. `truncate` is worse than inert
+  because it half-works: `overflow: hidden` and `text-overflow: ellipsis` land, so the class
+  looks applied, while its `white-space: nowrap` loses to the `whitespace-pre-wrap` that
+  `components/ui/text/styles.tsx` puts in the web base class of *every* Text. UniWind resolves
+  both to **inline styles**, so no stylesheet rule matches the element at all and no class
+  ordering, `!` or `web:` prefix can win — the symptom is a computed `white-space: pre-wrap` on
+  a span whose class list plainly contains `truncate`. This is how #185 was fixed twice: the
+  first fix added `truncate`, typechecked, read correctly, and changed nothing on screen. Pair
+  it with `min-w-0` on the flex parent, which is a separate requirement (above) — truncation
+  without it just moves the overflow.
 - Not yet: container isolation for a local folder (refused with a reason by both the chooser and
   `parseWorkspaceInput`), Windows executors (`agent/executor.ts`'s `resolvePath` is POSIX, as the
   host provider always was).
