@@ -123,6 +123,7 @@ export class StreamBroker {
     let iteration: StreamSnapshot["iteration"];
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
+    let pendingCheckin: StreamSnapshot["pending_checkin"];
 
     const ensure = (id: string): StreamSnapshotMessage => {
       let m = messages.get(id);
@@ -181,6 +182,24 @@ export class StreamBroker {
           break;
         case "iteration":
           iteration = { n: event.n, max: event.max };
+          // Reaching an iteration *is* the run moving on, so a check-in
+          // cannot still be outstanding. Belt and braces beside
+          // `steps.decision`, which is the real clear-point.
+          pendingCheckin = undefined;
+          break;
+        case "steps.checkin":
+          pendingCheckin = {
+            n: event.n,
+            max: event.max,
+            reason: event.reason,
+            ...(event.pattern ? { pattern: event.pattern } : {}),
+          };
+          // The question names the step it paused at, so a client that joins
+          // mid-wait can show "104/200" rather than nothing.
+          iteration = { n: event.n, max: event.max };
+          break;
+        case "steps.decision":
+          pendingCheckin = undefined;
           break;
         case "tool.call":
           ensure(event.message_id).tool_calls.push({
@@ -221,6 +240,7 @@ export class StreamBroker {
       ...(iteration ? { iteration } : {}),
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
+      ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
     };
   }
 }

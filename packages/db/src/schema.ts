@@ -407,14 +407,15 @@ export const userPrefs = pgTable("user_prefs", {
    */
   autoCompact: boolean("auto_compact").notNull().default(true),
   /**
-   * How many tool round-trips the agent may take for one message before it
-   * stops and hands back. The only brake in auto mode, where nothing else
-   * asks permission — which is why it is worth exposing rather than leaving
-   * as the constant it used to be. Bounded by the route, not just the column:
-   * a zero would make the agent unable to act at all, and an unbounded value
-   * is a way to spend a very long time without being asked.
+   * How many tool round-trips the agent takes for one message before it pauses
+   * and asks whether to keep going — a cadence, not a ceiling. It used to be a
+   * ceiling and the run simply died there (#157); now the loop hands its
+   * inference slot back and waits for an answer, exactly as it does at a tool
+   * approval. Bounded by the route, not just the column: a zero would make the
+   * agent unable to act at all, and an unbounded value is a way for one run to
+   * hold a shared backend for a very long time without anyone being asked.
    */
-  maxIterations: integer("max_iterations").notNull().default(20),
+  maxIterations: integer("max_iterations").notNull().default(100),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

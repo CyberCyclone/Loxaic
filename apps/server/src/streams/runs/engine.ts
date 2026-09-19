@@ -1,7 +1,16 @@
 import { v4 as uuid } from "uuid";
 import { and, count, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
-import { sanitizeFilename, type AttachmentRef, type ContentBlock, type ContextBreakdown, type TurnUsage } from "@loxaic/types";
+import {
+  CHECKIN_ANSWER_NUDGE,
+  sanitizeFilename,
+  type AttachmentRef,
+  type CheckinReason,
+  type ContentBlock,
+  type ContextBreakdown,
+  type StepsDecision,
+  type TurnUsage,
+} from "@loxaic/types";
 import {
   countDocumentParts,
   countImageParts,
@@ -18,7 +27,7 @@ import {
 } from "../../files/storage.ts";
 import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
-import { fingerprintPrompt, measureReuse, recordPrompt, type PromptReuse } from "../../inference/prompt-reuse.ts";
+import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import {
@@ -35,16 +44,42 @@ import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
+import { LoopDetector } from "./loop-detector.ts";
 
 /**
- * Tool round-trips one user message may take, when the user has expressed no
- * preference. Also the ceiling the API clamps to — in auto mode nothing else
- * asks permission, so this is the only thing standing between a confused model
- * and an unbounded amount of work.
+ * Tool round-trips one user message may take **between check-ins**, when the
+ * user has expressed no preference.
+ *
+ * This is a cadence, not a ceiling. It used to be one: the loop stopped dead
+ * at 20 and ended the stream with an error nothing on the client rendered, so
+ * a run that was working perfectly well simply went red with no reason given
+ * (#157). Twenty is also far too few — a planning run reading its way around a
+ * repository spends that in a couple of minutes on a local model, and being
+ * cut off there is not a safety property, just an interruption.
+ *
+ * So the loop now pauses at the window's edge and *asks*, handing its
+ * inference slot back exactly as a tool approval does. 100 is roughly a
+ * quarter of an hour of real tool work — long enough that an ordinary task
+ * never sees it, short enough that a genuinely confused model does not run
+ * unattended all afternoon. Loop detection asks sooner when the run is
+ * repeating itself, which is the case the old ceiling was really standing in
+ * for.
  */
-export const DEFAULT_MAX_ITERATIONS = 20;
+export const DEFAULT_MAX_ITERATIONS = 100;
 export const MIN_MAX_ITERATIONS = 1;
-export const MAX_MAX_ITERATIONS = 50;
+export const MAX_MAX_ITERATIONS = 500;
+/**
+ * What a check-in nobody answers within `APPROVAL_TIMEOUT_MS` resolves to.
+ *
+ * "Answer now" rather than "keep going": the run is holding a slot that at
+ * concurrency 1 is the entire deployment, and nobody is watching. A partial
+ * answer ends the turn, frees the slot and leaves something in the transcript
+ * to continue from — whereas granting another window unattended is how one
+ * abandoned auto-mode run blocks every other conversation for hours.
+ *
+ * One constant, so a deployment that disagrees changes it in one place.
+ */
+export const CHECKIN_TIMEOUT_DECISION: StepsDecision = "answer";
 /**
  * How long an approval request waits for an answer before the call is given
  * up on. An unanswered request is *not* a denial — see `ApprovalOutcome`.
@@ -372,18 +407,38 @@ export async function runToolLoop(ctx: {
     }
 
     let parentId = ctx.userMsgId;
-    let lastAssistantId: string | null = null;
-    let finished = false;
     // Set when any iteration triggered a JIT load, so the cached model list —
     // and with it the context window — can be dropped before the client refreshes.
     let jitLoaded = false;
 
-    for (let iteration = 1; iteration <= maxIterations; iteration++) {
-      if (abort.signal.aborted) break;
-      producer.emit({ kind: "iteration", n: iteration, max: maxIterations });
+    // The end of the *current* step window, absolute rather than relative:
+    // each "keep going" pushes it out by another `maxIterations`, so the
+    // client can render "7/100" and then "104/200" without having to track
+    // how many windows have been granted.
+    let budgetEnd = maxIterations;
+    const detector = new LoopDetector();
+    // Iteration key -> the calls that produced it, so a loop check-in can name
+    // what is repeating. Bounded: only the last few keys can ever be part of a
+    // hit, and a 500-step run must not accumulate every argument string it saw.
+    const recentCalls = new Map<string, string[]>();
+    // Set once the user asks for a final answer: the next request goes out
+    // with `tool_choice: "none"` and the loop ends after it either way.
+    let answerNow = false;
+
+    if (isAborted(abort)) {
+      // Stopped between getting the slot and the first iteration. This used to
+      // `break` into the tail below, which ended the stream as an *error*
+      // reporting a step limit the run had not come near.
+      await producer.end("cancelled");
+      return;
+    }
+
+    // Unbounded: the window is a checkpoint, not a ceiling — every exit from
+    // this loop now returns or breaks deliberately.
+    for (let iteration = 1; ; iteration++) {
+      producer.emit({ kind: "iteration", n: iteration, max: budgetEnd });
 
       const assistantMsgId = uuid();
-      lastAssistantId = assistantMsgId;
       await db.insert(messages).values({
         id: assistantMsgId,
         conversationId: convId,
@@ -458,7 +513,14 @@ export async function runToolLoop(ctx: {
         // only what the stream itself throws is stored as the reason, since
         // that text is re-served to everyone who can read the thread.
         for await (const event of markBackendErrors(
-          streamCompletion(model, chatMessages, { tools, signal: abort.signal }),
+          streamCompletion(model, chatMessages, {
+            tools,
+            signal: abort.signal,
+            // Tools stay in the request even when they may not be called —
+            // see StreamOptions.toolChoice for why dropping them would cost a
+            // full prompt re-evaluation on exactly the wrong request.
+            ...(answerNow ? { toolChoice: "none" as const } : {}),
+          }),
         )) {
           if (event.type === "delta") {
             text += event.content;
@@ -539,11 +601,32 @@ export async function runToolLoop(ctx: {
         .set({ content: blocks.length ? blocks : [{ kind: "text", text: "" }], status: "complete" })
         .where(eq(messages.id, assistantMsgId));
 
-      if (toolCalls.length === 0) {
-        finished = true;
+      /**
+       * Ends the turn as a success, from whichever branch got there.
+       *
+       * One closure rather than two copies because the two callers must stay
+       * identical in everything a client or the compaction policy can see:
+       * the usage on `message.end`, the compaction verdict from the measured
+       * prompt, and `producer.end` carrying that usage. The verdict is
+       * *returned* and assigned by the caller, not assigned in here: an
+       * assignment inside a closure is invisible to control-flow analysis,
+       * so the trigger past the `finally` would read `autoCompact` as the
+       * literal `false` it was declared with and lint it as never-true —
+       * correct at runtime, and exactly the kind of thing that stops being
+       * correct on the next refactor. The "answer now"
+       * fallback used to end with `producer.end("complete")` and a bare
+       * `return` — a successful turn that reported no token counts, dropped
+       * the omitted-attachments notice, and skipped the compaction check
+       * entirely, so a turn over the threshold left the *next* one to
+       * assemble an over-size prompt with nothing having intervened.
+       *
+       * Callers `break` afterwards, never `return`: the auto-compaction trigger
+       * sits past the `finally`, and only a `break` reaches it.
+       */
+      const endTurnComplete = async (leafId: string): Promise<boolean> => {
         await db
           .update(conversations)
-          .set({ activeLeafId: assistantMsgId, updatedAt: new Date() })
+          .set({ activeLeafId: leafId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
         // A window read before a JIT load is the model's max, not what the
         // backend allocated. Re-read it now that loading is done.
@@ -580,13 +663,18 @@ export async function runToolLoop(ctx: {
         // was assembled against are both in hand. The threshold leaves room
         // for the turn that follows, which is what makes acting after the
         // fact safe.
-        autoCompact = shouldAutoCompact({
+        const compact = shouldAutoCompact({
           usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
           windowTokens: breakdownMeta.windowTokens ?? null,
           historyMessages: history.messages.length,
         });
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
         await producer.end("complete", { usage });
+        return compact;
+      };
+
+      if (toolCalls.length === 0) {
+        autoCompact = await endTurnComplete(assistantMsgId);
         break;
       }
 
@@ -599,6 +687,43 @@ export async function runToolLoop(ctx: {
       );
       chatMessages.push(assistantMessageForPrompt(text, promptCalls));
       parentId = assistantMsgId;
+
+      if (answerNow) {
+        // The request went out with `tool_choice: "none"` and the backend
+        // called a tool anyway. Running it would ignore what the user actually
+        // asked for, but simply dropping the calls is not an option either: an
+        // assistant `tool_call` with no partner is the orphan `loadHistory` has
+        // to strip and most backends reject. So each one is answered, and the
+        // turn ends with whatever text the model did produce.
+        const refusedBlocks: ContentBlock[] = [];
+        for (const call of toolCalls) {
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output: ANSWER_NOW_NOT_RUN,
+            ok: false,
+          });
+          refusedBlocks.push({ kind: "tool_result", call_id: call.id, output: ANSWER_NOW_NOT_RUN, ok: false });
+        }
+        const refusedMsgId = uuid();
+        await db.insert(messages).values({
+          id: refusedMsgId,
+          conversationId: convId,
+          parentId: assistantMsgId,
+          authorType: "tool",
+          origin: "server",
+          lamport: nextLamport(),
+          content: refusedBlocks,
+          status: "complete",
+          createdAt: new Date(),
+        });
+        // A successful turn, ended exactly like every other one — with its
+        // usage, and through `break` so the compaction check still runs.
+        autoCompact = await endTurnComplete(refusedMsgId);
+        break;
+      }
 
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
@@ -699,18 +824,120 @@ export async function runToolLoop(ctx: {
         await producer.end("cancelled");
         return;
       }
-    }
 
-    if (!finished) {
-      if (lastAssistantId) {
+      // ── Check in, if this iteration earned one ─────────────
+      //
+      // Deliberately here: after the tool row is persisted (so a run stopped
+      // at the question keeps a complete transcript) and after the abort check
+      // (so a stop pressed during the last tool is not answered with a
+      // question), but before the next assistant row exists.
+      const executed = toolCalls.map((c) => ({
+        tool: c.function.name,
+        args: safeParseArgs(c.function.arguments),
+      }));
+      const iterationKey = sha(executed.map((c) => sha(`${c.tool}\0${canonicalJson(c.args)}`)).join("|"));
+      // Names only. The args went into the key above and are not needed
+      // again; keeping them here would put an `fs_write` loop's file content
+      // into the check-in event — see the `pattern` type for why not.
+      recentCalls.set(iterationKey, executed.map((c) => c.tool));
+      // Only the last few keys can be part of a hit; anything older is dead
+      // weight in a run that may take hundreds of steps.
+      if (recentCalls.size > 8) {
+        const oldest = recentCalls.keys().next().value;
+        if (oldest !== undefined) recentCalls.delete(oldest);
+      }
+      const hit = detector.push(iterationKey);
+      const reason: CheckinReason | null = hit ? "loop" : iteration >= budgetEnd ? "budget" : null;
+      if (!reason) continue;
+
+      producer.emit({
+        kind: "steps.checkin",
+        n: iteration,
+        max: budgetEnd,
+        reason,
+        ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
+      });
+
+      let outcome: { decision: StepsDecision; byUserId: string | null };
+      try {
+        outcome = await slot.yieldWhile(async () => {
+          const answered = await waitForStepsDecision(streamId, abort.signal);
+          const decision: StepsDecision =
+            answered.kind === "continue" || answered.kind === "answer" ? answered.kind : CHECKIN_TIMEOUT_DECISION;
+          const byUserId = answered.kind === "continue" || answered.kind === "answer" ? answered.byUserId : null;
+          // Emitted from inside `yieldWhile`, before the run re-enters the
+          // queue. A decision emitted after re-entry would leave a client
+          // catching up mid-wait showing "Queued" *and* the check-in bar for
+          // however long the queue took.
+          if (answered.kind !== "aborted") {
+            producer.emit({
+              kind: "steps.decision",
+              decision,
+              by: answered.kind === "timeout" || answered.kind === "gone" ? "timeout" : "user",
+            });
+          }
+          return { decision, byUserId };
+        });
+      } catch (err) {
+        // Stopped while parked. Re-entering the queue for an aborted run
+        // throws, which is how an abort at an approval unwinds too — the
+        // difference is only that there is no tool result to record here,
+        // because nothing was mid-flight.
+        if (!(err instanceof RunSlotAbortedError)) throw err;
         await db
           .update(conversations)
-          .set({ activeLeafId: lastAssistantId, updatedAt: new Date() })
+          .set({ activeLeafId: toolMsgId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
+        await producer.end("cancelled");
+        return;
       }
-      await producer.end("error", {
-        error: `Stopped after ${String(maxIterations)} tool iterations without a final answer.`,
+
+      if (outcome.decision === "continue") {
+        budgetEnd = iteration + maxIterations;
+        detector.reset();
+        continue;
+      }
+
+      // "Answer now". The instruction is persisted as a user message rather
+      // than injected only into the live prompt: the next turn's replay has to
+      // produce byte-identical bytes at this position or the whole prefix — and
+      // with it the backend's cache for this conversation — is lost. A `system`
+      // row would need a new branch in `loadHistory` *and* in the client, and
+      // several chat templates reject a system message that is not first.
+      const nudgeId = uuid();
+      await db.insert(messages).values({
+        id: nudgeId,
+        conversationId: convId,
+        parentId: toolMsgId,
+        authorType: "user",
+        // Null when the timeout decided: nobody asked for this, and recording
+        // a user who did not press the button would be a lie the transcript
+        // keeps forever.
+        authorUserId: outcome.byUserId,
+        origin: "server",
+        lamport: nextLamport(),
+        content: [{ kind: "text", text: CHECKIN_ANSWER_NUDGE }] as ContentBlock[],
+        status: "complete",
+        createdAt: new Date(),
       });
+      producer.emit({
+        kind: "message.start",
+        message_id: nudgeId,
+        author_type: "user",
+        parent_id: toolMsgId,
+        text: CHECKIN_ANSWER_NUDGE,
+      });
+      producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
+      // Key order matches loadHistory's own `{ role, content }` — see
+      // prompt-prefix.test.ts for what a mismatch here costs.
+      chatMessages.push({ role: "user", content: CHECKIN_ANSWER_NUDGE });
+      parentId = nudgeId;
+      // The answer is one more iteration, and the window genuinely grants it:
+      // without this a budget check-in at 100/100 answered here would emit
+      // the final turn as `101/100`, and the header, the banner's "Step N of
+      // M" and the numbers the user just reasoned about would all disagree.
+      budgetEnd = Math.max(budgetEnd, iteration + 1);
+      answerNow = true;
     }
   } catch (err) {
     // The one error this function is allowed to expect. It means the user
@@ -922,6 +1149,66 @@ function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): str
     case "gone":
       return "This run was no longer active when the tool call asked for approval, so it did not run.";
   }
+}
+
+/**
+ * Recorded against a tool call the model made *after* being told to answer
+ * without tools.
+ *
+ * `tool_choice: "none"` is supposed to prevent this, and on a backend that
+ * honours it this text is never written. It exists because a request that is
+ * ignored must not leave an assistant `tool_call` with no matching result:
+ * that is the orphan pair `loadHistory` has to strip, and most backends reject
+ * it outright on the next turn.
+ */
+const ANSWER_NOW_NOT_RUN = "Not run — the user asked for a final answer without tools.";
+
+/** How a step check-in ended. `continue`/`answer` are a person's answer;
+ * `timeout` and `gone` fall back to `CHECKIN_TIMEOUT_DECISION`, and `aborted`
+ * is a stop, which unwinds through the slot rather than being answered. */
+type CheckinOutcome =
+  | { kind: "continue" | "answer"; byUserId: string | null }
+  | { kind: "timeout" | "aborted" | "gone" };
+
+/**
+ * Waits for someone to answer a step check-in.
+ *
+ * Deliberately shaped like `waitForApproval` above — same `settle` teardown,
+ * same abort listener, same `approvalTimeoutMs()` window, registered after the
+ * `aborted` re-check so an abort landing mid-setup cannot be missed. A check-in
+ * is the same kind of pause as an approval (a run parked on a human), so the
+ * two should fail in the same ways rather than each inventing its own.
+ *
+ * The one difference is the key: this registers a single resolver on the run
+ * rather than an entry in a per-call map, because a run has at most one
+ * check-in outstanding and it is addressed by `stream_id` — ours and unique,
+ * unlike the model-supplied `call_id` an approval has to tolerate colliding.
+ */
+function waitForStepsDecision(streamId: string, signal: AbortSignal): Promise<CheckinOutcome> {
+  return new Promise<CheckinOutcome>((resolve) => {
+    if (signal.aborted) {
+      resolve({ kind: "aborted" });
+      return;
+    }
+    const run = getRun(streamId);
+    if (!run) {
+      resolve({ kind: "gone" });
+      return;
+    }
+    let done = false;
+    const settle = (outcome: CheckinOutcome) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      run.stepsDecision = undefined;
+      resolve(outcome);
+    };
+    const onAbort = () => { settle({ kind: "aborted" }); };
+    const timer = setTimeout(() => { settle({ kind: "timeout" }); }, approvalTimeoutMs());
+    run.stepsDecision = (decision, byUserId) => { settle({ kind: decision, byUserId }); };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Approvals are run-scoped (registry), not connection-scoped — a different

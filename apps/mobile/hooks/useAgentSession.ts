@@ -9,6 +9,7 @@ import {
   setAgentMode,
   approveTool,
   denyTool,
+  sendStepsDecision,
   createConversation,
   getConversations,
   getMessages,
@@ -18,6 +19,8 @@ import {
   type StreamSnapshot,
   type PermissionMode,
   type Todo,
+  type CheckinReason,
+  type StepsDecision,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
@@ -38,10 +41,28 @@ export type { WorkspaceChoice } from '@/lib/types';
  * it actually wound up, which for a run mid-tool-call is not instant — so the
  * button read as broken (#113). This is the acknowledgement, not a claim that
  * anything has stopped yet.
+ *
+ * `awaiting_checkin` is the run asking whether to keep going — the same kind
+ * of pause as `awaiting_approval` (slot handed back, waiting on a person),
+ * which is why it sits beside it rather than being folded into `running`.
  */
-export type RunState = 'queued' | 'running' | 'awaiting_approval' | 'stopping' | 'done' | 'error';
+export type RunState =
+  | 'queued'
+  | 'running'
+  | 'awaiting_approval'
+  | 'awaiting_checkin'
+  | 'stopping'
+  | 'done'
+  | 'error';
 
 export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
+
+export interface PendingCheckin {
+  n: number;
+  max: number;
+  reason: CheckinReason;
+  pattern?: { tool: string }[];
+}
 
 /** Per-conversation in-flight stream state — see useChatSession for why this
  * is preserved across a reconnect rather than cleared on close. */
@@ -60,6 +81,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const [mode, setModeState] = useState<PermissionMode>('manual');
   const [runState, setRunState] = useState<RunState>('done');
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  const [pendingCheckin, setPendingCheckin] = useState<PendingCheckin | null>(null);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   /**
@@ -102,6 +124,17 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const pendingUserMsgIdRef = useRef<string | null>(null);
   /** Last time we asked the server to resync a given stream. */
   const lastResyncAtRef = useRef<Record<string, number>>({});
+  /**
+   * The error each stream's failed *message* carried, keyed by stream id.
+   *
+   * `stream.end` carries a run-level reason that no message row holds — the
+   * step limit used to be exactly that, and nothing rendered it, so a run
+   * simply went red with no explanation (#157). Surfacing it unconditionally
+   * would double-report every ordinary backend failure, which already shows
+   * under the reply in red. So this remembers what the bubble said, and the
+   * toast speaks only when the run-level reason is something else.
+   */
+  const lastMessageErrorRef = useRef(new Map<string, string>());
   /**
    * Last applied seq per stream, tracked here rather than in React state so
    * it advances the instant an event is handled — see useChatSession: a
@@ -188,6 +221,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       setActiveId(id);
       setRunState('done');
       setPendingApproval(null);
+      setPendingCheckin(null);
       setIteration(null);
       setQueuePosition(null);
       setLiveTodos([]);
@@ -199,6 +233,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     setActiveId(null);
     setRunState('done');
     setPendingApproval(null);
+    setPendingCheckin(null);
     setIteration(null);
     setQueuePosition(null);
     setLiveTodos([]);
@@ -291,13 +326,25 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           ? { callId: snapshot.pending_approval.call_id, tool: snapshot.pending_approval.tool, args: snapshot.pending_approval.args }
           : null,
       );
+      setPendingCheckin(
+        snapshot.pending_checkin
+          ? {
+              n: snapshot.pending_checkin.n,
+              max: snapshot.pending_checkin.max,
+              reason: snapshot.pending_checkin.reason,
+              ...(snapshot.pending_checkin.pattern ? { pattern: snapshot.pending_checkin.pattern } : {}),
+            }
+          : null,
+      );
       setQueuePosition(snapshot.queued?.position ?? null);
       if (status === 'active') {
         // Order matters: a snapshot can carry both a queue position and a
         // pending approval (a run that yielded its slot to ask, then had to
         // queue to get it back). The approval is what the user can act on, so
-        // it wins.
+        // it wins — and a check-in is the same kind of thing, so it outranks
+        // the queue for the same reason.
         if (snapshot.pending_approval) setRunState('awaiting_approval');
+        else if (snapshot.pending_checkin) setRunState('awaiting_checkin');
         else if (snapshot.queued) setRunState('queued');
         else setRunState('running');
       } else setRunState(status === 'error' ? 'error' : 'done');
@@ -383,6 +430,11 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         // after an approval emits its tool results before its next iteration
         // — both left "Queued · #N" on screen with the response streaming
         // underneath it.
+        // What the failed *message* said, if anything, so stream.end can tell
+        // whether it would be repeating a bubble the user can already read.
+        if (inner.kind === 'message.end' && inner.status === 'error' && inner.error) {
+          lastMessageErrorRef.current.set(event.stream_id, inner.error);
+        }
         if (isActive && inner.kind !== 'run.queued') {
           setQueuePosition(null);
           setRunState((s) => (s === 'queued' ? 'running' : s));
@@ -412,6 +464,26 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
             setPendingApproval((prev) => (prev?.callId === inner.call_id ? null : prev));
             setRunState('running');
           }
+        } else if (inner.kind === 'steps.checkin') {
+          if (isActive) {
+            setRunState('awaiting_checkin');
+            setPendingCheckin({
+              n: inner.n,
+              max: inner.max,
+              reason: inner.reason,
+              ...(inner.pattern ? { pattern: inner.pattern } : {}),
+            });
+            // The header shows the step count, and this is the moment it
+            // matters most — so keep it in step with the question.
+            setIteration({ n: inner.n, max: inner.max });
+          }
+        } else if (inner.kind === 'steps.decision') {
+          // Someone answered — possibly on another device, possibly the
+          // timeout. Either way the question is gone.
+          if (isActive) {
+            setPendingCheckin(null);
+            setRunState('running');
+          }
         } else if (inner.kind === 'todos') {
           if (isActive) setLiveTodos(inner.todos);
         }
@@ -422,7 +494,15 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           setIteration(null);
           setQueuePosition(null);
           setPendingApproval(null);
+          setPendingCheckin(null);
         }
+        // The run-level reason, which no message carries. Most failures also
+        // mark their message, and the bubble says it better — so this speaks
+        // only when nothing else will (#157).
+        if (event.status === 'error' && event.error && lastMessageErrorRef.current.get(event.stream_id) !== event.error) {
+          showToast(event.error, 6000);
+        }
+        lastMessageErrorRef.current.delete(event.stream_id);
         // A run may have JIT-loaded the model, changing the context window.
         onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
@@ -595,6 +675,22 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     setPendingApproval(null);
   }, []);
 
+  /** Answers a step check-in. Stop is not one of these — the banner's Stop
+   * goes to `handleStop`, which works on any run whether parked or not. */
+  const handleSteps = useCallback((decision: StepsDecision) => {
+    const id = activeIdRef.current;
+    const stream = id ? streamingByConvRef.current[id] : undefined;
+    // Same reasoning as handleStop: a parked run is waiting on exactly this
+    // frame, so a press that goes nowhere has to say so rather than leave the
+    // question sitting there looking answerable.
+    if (!wsRef.current || !id || !stream || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
+      showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
+    setPendingCheckin(null);
+    setRunState('running');
+  }, [showToast]);
+
   const handleFork = useCallback(
     (id: string) => {
       setRuns((prev) => {
@@ -648,7 +744,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   // is real, it simply has not started. Stopping counts too: it has not ended
   // yet, and offering Send again would let a second turn race the first.
   const busy = effectiveRunState === 'queued' || effectiveRunState === 'running'
-    || effectiveRunState === 'awaiting_approval' || effectiveRunState === 'stopping';
+    || effectiveRunState === 'awaiting_approval' || effectiveRunState === 'awaiting_checkin'
+    || effectiveRunState === 'stopping';
 
   return {
     runs,
@@ -662,6 +759,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     loadingModel: activeStream?.loadingModel ?? false,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
+    pendingCheckin,
     iteration,
     queuePosition,
     pendingWorkspace,
@@ -675,6 +773,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     handleModeChange,
     handleApprove,
     handleDeny,
+    handleSteps,
     handleFork,
     handleDelete,
     handleRename,

@@ -1,7 +1,7 @@
 import { memo, useState } from 'react';
 import { AlertCircle, Copy, GitFork, Square } from 'lucide-react-native';
 import * as Clipboard from 'expo-clipboard';
-import { attachmentClass, attachmentUrl } from '@loxaic/api-client';
+import { attachmentClass, attachmentUrl, CHECKIN_ANSWER_NUDGE } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -67,6 +67,25 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
         failed={msg.error}
         errorText={msg.errorText}
       />
+    );
+  }
+
+  // The instruction the server writes when a check-in is answered with
+  // "answer now". It is stored as a user message because that is what replays
+  // identically into the next prompt (see engine.ts) — but nobody typed it, so
+  // rendering it as the user's own words would be a small lie in the
+  // transcript, and a confusing one: it reads as the user interrupting.
+  //
+  // Matched on the exact exported text, since `origin` does not reach the
+  // client. Someone could type this sentence verbatim; if they ever do, their
+  // message renders as this notice, which is cosmetic and beats the reverse.
+  if (msg.role === 'user' && msg.text === CHECKIN_ANSWER_NUDGE) {
+    return (
+      <Box testID="chat.message.checkinNudge" className="px-4 py-2">
+        <Text size="xs" className="text-center italic text-muted-foreground">
+          You asked for an answer with what it had so far.
+        </Text>
+      </Box>
     );
   }
 

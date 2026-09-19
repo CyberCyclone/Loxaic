@@ -1,4 +1,4 @@
-import type { ServerMessage, StreamStatus } from "@loxaic/types";
+import type { ServerMessage, StreamSnapshot, StreamStatus } from "@loxaic/types";
 import { assertConversationAccess } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
@@ -66,10 +66,29 @@ export function createDelivery(
     });
 
     const records = await broker.readFrom(streamId, 0);
-    const snapshot = broker.foldSnapshot(records);
+    const folded = broker.foldSnapshot(records);
     currentSeq = records.length ? records[records.length - 1].seq : 0;
     const meta = await broker.getMeta(streamId);
     const status: StreamStatus = meta?.status ?? "active";
+    // A finished run holds no questions. Both `pending_approval` and
+    // `pending_checkin` describe a run parked on a person, and neither can be
+    // answered once the stream has ended — so advertising one to a client
+    // catching up is offering a button that does nothing.
+    //
+    // Stripped here rather than in `foldSnapshot`, which is pure over the
+    // record log and cannot see the terminal status: `producer.end` writes no
+    // record, it only finalizes the meta. This is the one place the snapshot
+    // and the status are both in hand.
+    //
+    // Found by stopping a run parked at a check-in: the abort emits no
+    // `steps.decision` — nobody decided — so nothing in the log ever cleared
+    // the question, and the next resync put the banner back on a run that had
+    // already ended. An approval survives this by accident, because its abort
+    // path records a `tool.result` that the fold clears on.
+    const snapshot: StreamSnapshot =
+      status === "active"
+        ? folded
+        : (({ pending_approval: _a, pending_checkin: _c, ...rest }) => rest)(folded);
 
     if (currentSeq > cursor) {
       send({ type: "stream.sync", stream_id: streamId, conversation_id: conversationId, seq: currentSeq, status, snapshot });

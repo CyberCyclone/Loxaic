@@ -1023,8 +1023,9 @@ export interface UserPrefs {
    * setting", not as a value.
    */
   autoCompact?: boolean;
-  /** Tool round-trips the agent may take for one message before stopping and
-   * handing back. 1-50; defaults to 20. Optional — see `autoCompact`. */
+  /** Tool round-trips the agent takes for one message before it pauses and
+   * asks whether to keep going. A cadence, not a ceiling — the run is never
+   * cut off. 1-500; defaults to 100. Optional — see `autoCompact`. */
   maxIterations?: number;
 }
 
@@ -1147,17 +1148,20 @@ export type {
   ContextPart,
   PermissionMode,
   Todo,
+  CheckinReason,
+  StepsDecision,
   CompactionStats,
   CommandKind,
   CommandSurface,
   SlashCommand,
 } from "@loxaic/types";
-import type { ServerMessage } from "@loxaic/types";
+import type { ServerMessage, StepsDecision } from "@loxaic/types";
 export {
   BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
+  CHECKIN_ANSWER_NUDGE,
 } from "@loxaic/types";
 
 /** True if the send was actually written to the socket — false (never
@@ -1329,4 +1333,11 @@ export function approveTool(ws: WebSocket, callId: string): boolean {
 
 export function denyTool(ws: WebSocket, callId: string): boolean {
   return trySend(ws, { type: "agent.deny", call_id: callId });
+}
+
+/** Answers a `steps.checkin` — "keep going" or "answer with what you have".
+ * Stopping is not a decision here: that stays `stopStream`, which works on any
+ * run whether or not it is parked. */
+export function sendStepsDecision(ws: WebSocket, streamId: string, decision: StepsDecision): boolean {
+  return trySend(ws, { type: "agent.steps", stream_id: streamId, decision });
 }

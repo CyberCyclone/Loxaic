@@ -7,6 +7,26 @@ export type PermissionMode = "planning" | "manual" | "auto";
 
 export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
+/** Why a run stopped to ask whether to keep going: it reached the end of its
+ * step window, or it noticed itself repeating the same calls. */
+export type CheckinReason = "budget" | "loop";
+
+/** The answer to a `steps.checkin`. Stopping is not one of these — that is the
+ * existing `stream.stop`, which any run can be sent at any time. */
+export type StepsDecision = "continue" | "answer";
+
+/**
+ * Persisted as a user message when a check-in is answered with "answer now",
+ * and pushed into the live prompt at the same position.
+ *
+ * Fixed text, never interpolated, and exported so both paths use the identical
+ * string: it becomes part of the conversation's replay, and the prompt prefix
+ * only stays cacheable if the live push and the next turn's history load
+ * produce the same bytes (see prompt-prefix.test.ts).
+ */
+export const CHECKIN_ANSWER_NUDGE =
+  "Please stop using tools and give your best final answer now from what you have so far.";
+
 /** An uploaded file attached to a user message. `ref` is the id returned by
  * `POST /v1/files`; `mime` and `name` are advisory for rendering (the server's
  * DB row is the authority for both). */
@@ -373,6 +393,31 @@ export type StreamEventKind =
    */
   | { kind: "run.queued"; position: number }
   | { kind: "iteration"; n: number; max: number }
+  /**
+   * The run has paused to ask whether to keep going. It has given its
+   * inference slot back and is waiting for a `agent.steps` answer, exactly as
+   * it does at a tool approval — so this is not a failure, and the tool
+   * results already in the transcript are real and stay.
+   *
+   * `n` is the iteration just finished; `max` is the current window's end
+   * (absolute, so it grows on each "keep going": 100, then 200).
+   */
+  | {
+      kind: "steps.checkin";
+      n: number;
+      max: number;
+      reason: CheckinReason;
+      /** `loop` only: the repeating unit, oldest first — tool names alone.
+       * Not the arguments: an `fs_write` loop is exactly what this exists to
+       * catch, and its args carry the file content, which would then sit in
+       * the 24h record log and be re-sent in every resync's snapshot for a
+       * banner that reads nothing but `tool`. */
+      pattern?: { tool: string }[];
+    }
+  /** How a `steps.checkin` was answered. Emitted *before* the run re-enters
+   * the inference queue, so a catching-up client never sees a stale check-in
+   * beside a queue position. */
+  | { kind: "steps.decision"; decision: StepsDecision; by: "user" | "timeout" }
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
   | { kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> }
   | {
@@ -426,6 +471,14 @@ export interface StreamSnapshot {
   iteration?: { n: number; max: number };
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> };
+  /** Present while the run is parked at a step check-in waiting for an answer.
+   * Both surfaces carry it — chat and agent share one tool loop. */
+  pending_checkin?: {
+    n: number;
+    max: number;
+    reason: CheckinReason;
+    pattern?: { tool: string }[];
+  };
 }
 
 export type ServerMessage =
@@ -485,4 +538,8 @@ export type ClientMessage =
   | { type: "stream.stop"; stream_id: string }
   | { type: "agent.mode"; mode: PermissionMode }
   | { type: "agent.approve"; call_id: string }
-  | { type: "agent.deny"; call_id: string };
+  | { type: "agent.deny"; call_id: string }
+  /** Answer a `steps.checkin`. Keyed by `stream_id`, not by a model-supplied
+   * id like approve/deny — a run has at most one check-in outstanding, and
+   * stream ids are ours and unique, so no plural lookup is needed. */
+  | { type: "agent.steps"; stream_id: string; decision: StepsDecision };

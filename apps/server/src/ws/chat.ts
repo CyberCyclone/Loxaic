@@ -5,7 +5,7 @@ import { startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { NotFoundError, atLeast, resolveAccess } from "../streams/authz.ts";
-import { findRunsByApprovalCallId, getRun } from "../streams/registry.ts";
+import { findRunsByApprovalCallId, isStepsDecision, getRun } from "../streams/registry.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -180,6 +180,25 @@ export function chatWsHandler(app: FastifyInstance) {
           }
           // Silently no-op otherwise — unknown/foreign/already-resolved
           // call_id, same "no existence oracle" rule as stream.stop.
+        } else if (msg.type === "agent.steps") {
+          // Answering a step check-in. Keyed by stream_id rather than a
+          // model-supplied id, so unlike approve/deny there is exactly one run
+          // it could mean and no plural lookup is needed.
+          const run = getRun(msg.stream_id);
+          const resolve = run?.stepsDecision;
+          if (
+            run &&
+            resolve &&
+            isStepsDecision(msg.decision) &&
+            (await mayActOnRun(userId, run.conversationId))
+          ) {
+            run.stepsDecision = undefined;
+            resolve(msg.decision, userId);
+          }
+          // Silently no-op otherwise — a run that is not parked, not theirs,
+          // or already answered, same "no existence oracle" rule as
+          // stream.stop. `decision` is a claim off a socket, so it is checked
+          // here rather than trusted from the type.
         }
       } catch (err) {
         if (err instanceof NotFoundError) {

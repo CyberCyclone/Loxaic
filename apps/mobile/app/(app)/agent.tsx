@@ -56,6 +56,7 @@ export default function AgentScreen() {
     loadingModel,
     responseStartedAt,
     pendingApproval,
+    pendingCheckin,
     iteration,
     queuePosition,
     pendingWorkspace,
@@ -69,6 +70,7 @@ export default function AgentScreen() {
     handleModeChange,
     handleApprove,
     handleDeny,
+    handleSteps,
     handleFork,
     handleDelete,
     handleRename,
@@ -307,8 +309,12 @@ export default function AgentScreen() {
                 queuePosition={queuePosition}
                 responseStartedAt={responseStartedAt}
                 pendingApproval={pendingApproval}
+                pendingCheckin={pendingCheckin}
                 onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
                 onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
+                onCheckinContinue={() => { handleSteps('continue'); }}
+                onCheckinAnswer={() => { handleSteps('answer'); }}
+                onCheckinStop={handleStop}
               />
               <TerminalPanel
                 conversationId={activeRun?.id ?? null}
