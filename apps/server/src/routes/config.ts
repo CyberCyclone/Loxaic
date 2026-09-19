@@ -4,6 +4,7 @@ import { getCluster, listHosts } from "../cluster.ts";
 import { signUpClosedReason } from "../auth/index.ts";
 import { resolveSessionFromToken } from "../auth/middleware.ts";
 import { serverVersion } from "../version.ts";
+import { getConversationSettings } from "../settings.ts";
 
 /**
  * Unauthenticated, no-secrets, client-facing config — whether agent sandboxes
@@ -23,9 +24,23 @@ export function configRoutes(app: FastifyInstance) {
   app.get("/v1/config", async (request) => {
     // `signUpOpen` lets a sign-in screen stop offering "Create one" when the
     // server would refuse it; the refusal itself is enforced in auth.
-    const body: { sandbox: unknown; signUpOpen: boolean; version?: string | null } = {
+    const retention = getConversationSettings();
+    const body: {
+      sandbox: unknown;
+      signUpOpen: boolean;
+      deletedChatRetentionDays: number | null;
+      version?: string | null;
+    } = {
       sandbox: await getSandboxStatus(),
       signUpOpen: signUpClosedReason() === null,
+      // Null means deleting erases; a number means this deployment keeps
+      // deleted chats that long for an admin to audit. The confirm dialog says
+      // which, in those words, *before* the user commits to it — a delete that
+      // silently leaves a readable copy behind, or silently erases one the user
+      // thought was recoverable, is the same failure in two directions. Not
+      // gated on authentication like `version` is: it describes a policy the
+      // user is about to be subject to, not this build's attack surface.
+      deletedChatRetentionDays: retention.keepDeleted ? retention.keepDeletedDays : null,
     };
     // `version` only for a signed-in caller. Its consumers (the settings
     // row's server-vs-app skew line) are all behind the auth gate, so this

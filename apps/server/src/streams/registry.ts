@@ -45,7 +45,60 @@ export function unregisterRun(streamId: string): void {
   runsByStreamId.delete(streamId);
   if (runByConversation.get(handle.conversationId) === streamId) {
     runByConversation.delete(handle.conversationId);
+    const waiters = runEndWaiters.get(handle.conversationId);
+    if (waiters) {
+      runEndWaiters.delete(handle.conversationId);
+      for (const resolve of waiters) resolve(true);
+    }
   }
+}
+
+/** conversationId -> resolvers waiting for its run to finish. */
+const runEndWaiters = new Map<string, ((ended: boolean) => void)[]>();
+
+/**
+ * Resolves once no run holds `conversationId` — true if it ended, false if
+ * `timeoutMs` elapsed first.
+ *
+ * Deleting a conversation aborts its run and then has to wait for the loop to
+ * actually unwind before it can claim the work is gone: an aborting run is
+ * still writing (a stopped tool result, a cancelled assistant row), and those
+ * rows land *after* the delete transaction commits. Polling would do, but an
+ * abort is an event the registry already observes, and the wait is on the
+ * cleanup path of a user action — a 250 ms poll would add a quarter-second to
+ * every delete for nothing.
+ *
+ * Bounded, because the waiter is not the only thing that can go wrong: a run
+ * wedged inside a tool call never reaches `unregisterRun`, and the caller
+ * still has cleanup to do. Resolving false is a fact the caller logs, not an
+ * error — the second purge pass is what makes the wait an optimisation rather
+ * than a correctness requirement.
+ */
+export function waitForRunEnd(conversationId: string, timeoutMs: number): Promise<boolean> {
+  if (!runByConversation.has(conversationId)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const done = (ended: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ended);
+    };
+    const timer = setTimeout(() => {
+      const waiters = runEndWaiters.get(conversationId);
+      if (waiters) {
+        const next = waiters.filter((w) => w !== done);
+        if (next.length === 0) runEndWaiters.delete(conversationId);
+        else runEndWaiters.set(conversationId, next);
+      }
+      done(false);
+    }, timeoutMs);
+    // Never hold the process open for a wait whose whole purpose is cleanup.
+    timer.unref?.();
+    const existing = runEndWaiters.get(conversationId);
+    if (existing) existing.push(done);
+    else runEndWaiters.set(conversationId, [done]);
+  });
 }
 
 export function getRun(streamId: string): RunHandle | undefined {
