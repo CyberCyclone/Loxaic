@@ -21,17 +21,40 @@ import {
 } from '@/components/ui/actionsheet';
 import { isOwner, type Conversation } from '@/lib/types';
 
+/** The button in the header's corner. Defaults to "new chat"; a routine has no
+ * such thing, so it offers "Run now" in the same place instead. */
+export interface ThreadListNewAction {
+  icon: React.ComponentProps<typeof Icon>['as'];
+  testID: string;
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+}
+
 interface ThreadListProps {
   title: string;
   conversations: Conversation[];
   activeId: string | null;
   onSelect: (id: string) => void;
-  onNewChat: () => void;
-  onFork: (id: string) => void;
-  onRename: (id: string, name: string) => void;
+  onNewChat?: () => void;
+  /** Replaces the new-chat button entirely — same slot, same corner. */
+  newAction?: ThreadListNewAction;
+  /** Omitted where forking is meaningless: a routine's chats are a record of
+   * what it ran, and a fork of one belongs to no routine. */
+  onFork?: (id: string) => void;
+  /** Omitted where the title is not the user's to choose — a routine names its
+   * own chats after itself, and a rename is local-only anyway. */
+  onRename?: (id: string, name: string) => void;
   onDelete: (id: string) => void;
   /** Opens the share sheet. Omitted on surfaces that don't support sharing. */
   onShare?: (id: string) => void;
+  /**
+   * A second line for a row, replacing the kind badge.
+   *
+   * A routine's chats all carry the same title, so without this every row of
+   * its history reads identically and there is nothing to pick between them.
+   */
+  rowMeta?: (c: Conversation) => { badge: string; danger?: boolean; time: string } | null;
 }
 
 // Web's thread-row actions only appear on hover, which the design's own
@@ -43,10 +66,12 @@ export function ThreadList({
   activeId,
   onSelect,
   onNewChat,
+  newAction,
   onFork,
   onRename,
   onDelete,
   onShare,
+  rowMeta,
 }: ThreadListProps) {
   const [search, setSearch] = useState('');
   const [actionsFor, setActionsFor] = useState<Conversation | null>(null);
@@ -63,8 +88,14 @@ export function ThreadList({
         <Text size="sm" className="font-semibold text-foreground">
           {title}
         </Text>
-        <Pressable testID="threadList.newChat" onPress={onNewChat} className="rounded-sm p-1 web:hover:bg-muted/50">
-          <Icon as={Plus} size="sm" className="text-foreground" />
+        <Pressable
+          testID={newAction?.testID ?? 'threadList.newChat'}
+          accessibilityLabel={newAction?.label ?? 'New chat'}
+          onPress={newAction?.onPress ?? onNewChat}
+          disabled={newAction?.disabled}
+          className={`rounded-sm p-1 web:hover:bg-muted/50 ${newAction?.disabled ? 'opacity-40' : ''}`}
+        >
+          <Icon as={newAction?.icon ?? Plus} size="sm" className="text-foreground" />
         </Pressable>
       </HStack>
 
@@ -91,9 +122,25 @@ export function ThreadList({
               {item.title}
             </Text>
             <HStack space="xs" className="mt-1 items-center">
-              <Badge variant="outline" className="border-border">
-                <BadgeText className="text-2xs normal-case">{item.kind}</BadgeText>
-              </Badge>
+              {(() => {
+                const meta = rowMeta?.(item);
+                if (!meta) {
+                  return (
+                    <Badge variant="outline" className="border-border">
+                      <BadgeText className="text-2xs normal-case">{item.kind}</BadgeText>
+                    </Badge>
+                  );
+                }
+                return (
+                  <Badge
+                    testID={`threadList.status.${item.id}`}
+                    variant={meta.danger ? 'destructive' : 'outline'}
+                    className={meta.danger ? '' : 'border-border'}
+                  >
+                    <BadgeText className="text-2xs normal-case">{meta.badge}</BadgeText>
+                  </Badge>
+                );
+              })()}
               {/* Someone else's conversation, shared with this user. The role
                   matters as much as the fact: a viewer's composer is disabled,
                   so saying which they hold explains the difference before they
@@ -110,7 +157,7 @@ export function ThreadList({
                 </Badge>
               )}
               <Text size="2xs" className="text-muted-foreground">
-                {item.time}
+                {rowMeta?.(item)?.time ?? item.time}
               </Text>
             </HStack>
           </Pressable>
@@ -125,15 +172,17 @@ export function ThreadList({
           </ActionsheetDragIndicatorWrapper>
           {actionsFor && (
             <>
-              <ActionsheetItem
-                onPress={() => {
-                  onFork(actionsFor.id);
-                  setActionsFor(null);
-                }}
-              >
-                <ActionsheetIcon as={GitFork} />
-                <ActionsheetItemText>Fork conversation</ActionsheetItemText>
-              </ActionsheetItem>
+              {onFork && (
+                <ActionsheetItem
+                  onPress={() => {
+                    onFork(actionsFor.id);
+                    setActionsFor(null);
+                  }}
+                >
+                  <ActionsheetIcon as={GitFork} />
+                  <ActionsheetItemText>Fork conversation</ActionsheetItemText>
+                </ActionsheetItem>
+              )}
               {onShare && isOwner(actionsFor) && (
                 <ActionsheetItem
                   testID="threadList.share"
@@ -150,7 +199,7 @@ export function ThreadList({
                   refuses both for anyone else, so offering them to a guest
                   only produced a local change that silently reverted on the
                   next load. */}
-              {isOwner(actionsFor) && (
+              {onRename && isOwner(actionsFor) && (
                 <ActionsheetItem
                   onPress={() => {
                     setRenameText(actionsFor.title);
@@ -209,7 +258,7 @@ export function ThreadList({
                 onChangeText={setRenameText}
                 autoFocus
                 onSubmitEditing={() => {
-                  if (renaming && renameText.trim()) onRename(renaming.id, renameText.trim());
+                  if (onRename && renaming && renameText.trim()) onRename(renaming.id, renameText.trim());
                   setRenaming(null);
                 }}
               />

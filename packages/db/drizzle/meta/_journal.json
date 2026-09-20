@@ -169,6 +169,13 @@
       "when": 1789901647319,
       "tag": "0023_regular_molecule_man",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789906877461,
+      "tag": "0024_glamorous_impossible_man",
+      "breakpoints": true
     }
   ]
 }

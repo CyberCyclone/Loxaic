@@ -36,7 +36,7 @@ describe("assertConversationAccess", () => {
 
   it("grants the owner access to their own conversation", async () => {
     const grant = await assertConversationAccess(userA, ownedConvId);
-    expect(grant).toEqual({ conversationId: ownedConvId, role: "owner", viaAdmin: false });
+    expect(grant).toEqual({ conversationId: ownedConvId, role: "owner", viaAdmin: false, kind: "chat" });
   });
 
   it("throws NotFoundError for a non-owner, not a permissions-specific error", async () => {
@@ -67,7 +67,7 @@ describe("assertConversationAccess", () => {
     it("grants a shared viewer read access", async () => {
       await share("viewer");
       const grant = await assertConversationAccess(userB, ownedConvId);
-      expect(grant).toEqual({ conversationId: ownedConvId, role: "viewer", viaAdmin: false });
+      expect(grant).toEqual({ conversationId: ownedConvId, role: "viewer", viaAdmin: false, kind: "chat" });
     });
 
     it("refuses a viewer an editor action, indistinguishably from not sharing at all", async () => {

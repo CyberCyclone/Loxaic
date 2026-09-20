@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deleteConversationMessage } from './deleteMessage'
+import { deleteConversationMessage, deleteRoutineMessage } from './deleteMessage'
 
 /**
  * The dialog exists to tell someone what they are about to lose, so a wrong
@@ -65,5 +65,41 @@ describe('deleteConversationMessage', () => {
       expect(msg).not.toContain('days')
       expect(msg).toContain('cannot undo this yourself')
     })
+  })
+})
+
+describe('deleteRoutineMessage', () => {
+  it('names the routine and counts the chats that go with it', () => {
+    // The count is the part someone needs before agreeing: "delete this
+    // routine" reads very differently against 0 chats and against 40.
+    expect(deleteRoutineMessage('Morning digest', 3, null)).toContain('“Morning digest”')
+    expect(deleteRoutineMessage('x', 3, null)).toContain('Its 3 chats go with it')
+    expect(deleteRoutineMessage('x', 1, null)).toContain('Its 1 chat goes with it')
+    expect(deleteRoutineMessage('x', 0, null)).toContain('no chats yet')
+  })
+
+  it('says the schedule stops, which is the other half of what is lost', () => {
+    expect(deleteRoutineMessage('x', 0, null)).toContain('stop running on its schedule')
+  })
+
+  it('follows the same three-way retention split as a chat', () => {
+    expect(deleteRoutineMessage('x', 2, null)).toContain('erased')
+    const kept = deleteRoutineMessage('x', 2, 30)
+    expect(kept).toContain('30 days')
+    expect(kept).toContain('administrator')
+    // The routine row is never retained — only its chats are. Saying otherwise
+    // would promise a recovery this server will not do.
+    expect(kept).toContain('The routine itself is erased')
+  })
+
+  it('says "1 day" rather than "1 days"', () => {
+    expect(deleteRoutineMessage('x', 1, 1)).toContain('for 1 day ')
+  })
+
+  it('claims neither outcome while the policy is still unknown', () => {
+    const msg = deleteRoutineMessage('x', 2, undefined)
+    expect(msg).not.toContain('erased')
+    expect(msg).not.toContain('days')
+    expect(msg).toContain('cannot undo this yourself')
   })
 })

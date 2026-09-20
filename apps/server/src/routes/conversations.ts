@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { eq, and, isNull, desc, inArray, or } from "@loxaic/db";
+import { eq, ne, and, isNull, desc, inArray, or } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, messages, usageRecords } from "@loxaic/db/schema";
 import type { ContextBreakdown } from "@loxaic/types";
@@ -17,6 +17,12 @@ export function conversationRoutes(app: FastifyInstance) {
    * Each row carries the caller's `role`, because the sidebar has to render a
    * shared thread differently (a badge, and a read-only composer for a
    * viewer) and would otherwise have to ask per conversation.
+   *
+   * Routine chats are excluded. They are listed only by the routine that
+   * produced them (`GET /v1/routines/:id/conversations`), and both surface
+   * hooks have always dropped them client-side — but this query is capped at
+   * 50 rows, and an hourly routine now makes 24 real conversations a day, so
+   * leaving them in would push a user's actual chats out of their own list.
    */
   app.get("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
@@ -32,6 +38,7 @@ export function conversationRoutes(app: FastifyInstance) {
       .where(
         and(
           isNull(conversations.deletedAt),
+          ne(conversations.kind, "routine"),
           shared.length
             ? or(eq(conversations.ownerId, userId), inArray(conversations.id, [...sharedRoles.keys()]))
             : eq(conversations.ownerId, userId),

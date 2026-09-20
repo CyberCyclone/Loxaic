@@ -756,6 +756,14 @@ export interface Routine {
   prompt: string;
   target: unknown;
   enabled: boolean;
+  /**
+   * The model every run uses — the same opaque reference a conversation's
+   * `modelPref` holds. Null only for a routine written before the field
+   * existed; those fail every run until someone picks one, rather than being
+   * silently run on something else.
+   */
+  model: string | null;
+  createdAt: string;
   lastRunAt: string | null;
   nextRunAt: string | null;
 }
@@ -767,6 +775,18 @@ export interface RoutineRun {
   status: string;
   startedAt: string;
   finishedAt: string | null;
+}
+
+/** One of a routine's chats, as its own history list returns it: an ordinary
+ * conversation row plus the run that produced it. */
+export interface RoutineConversation extends Conversation {
+  active_run: boolean;
+  run: {
+    id: string;
+    status: string;
+    startedAt: string;
+    finishedAt: string | null;
+  };
 }
 
 async function authedFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -879,7 +899,12 @@ export async function getRoutines(): Promise<Routine[]> {
   return (await authedFetch("/v1/routines")).json() as Promise<Routine[]>;
 }
 
-export async function createRoutine(input: { name: string; cron: string; prompt: string }): Promise<Routine> {
+export async function createRoutine(input: {
+  name: string;
+  cron: string;
+  prompt: string;
+  model: string;
+}): Promise<Routine> {
   return (
     await authedFetch("/v1/routines", {
       method: "POST",
@@ -891,7 +916,10 @@ export async function createRoutine(input: { name: string; cron: string; prompt:
 
 export async function updateRoutine(
   id: string,
-  patch: Partial<{ name: string; cron: string; prompt: string; enabled: boolean }>,
+  // No `null` for model: it can be changed, never removed — the server
+  // refuses it, because a routine that once had one and now does not would
+  // start failing its runs for a reason nobody chose.
+  patch: Partial<{ name: string; cron: string; prompt: string; enabled: boolean; model: string }>,
 ): Promise<Routine> {
   return (
     await authedFetch(`/v1/routines/${id}`, {
@@ -912,6 +940,16 @@ export async function runRoutineNow(id: string): Promise<RoutineRun> {
 
 export async function getRoutineRuns(id: string): Promise<RoutineRun[]> {
   return (await authedFetch(`/v1/routines/${id}/runs`)).json() as Promise<RoutineRun[]>;
+}
+
+/**
+ * This routine's chats, newest run first — the history list behind the routine
+ * chat screen, scoped to the one routine by construction rather than by a
+ * filter the client applies. Routine chats are absent from
+ * `getConversations()` entirely.
+ */
+export async function getRoutineConversations(id: string): Promise<RoutineConversation[]> {
+  return (await authedFetch(`/v1/routines/${id}/conversations`)).json() as Promise<RoutineConversation[]>;
 }
 
 // ── MCP servers ───────────────────────────────────────────

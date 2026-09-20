@@ -52,3 +52,40 @@ export function deleteConversationMessage(
     `review them, and then erases them. You cannot reach it again yourself.`
   )
 }
+
+/**
+ * What deleting a *routine* takes with it.
+ *
+ * A separate sentence from the one above, because the thing being deleted is
+ * not a conversation: it is a schedule plus every chat its runs have produced,
+ * and the count is the part someone needs to see before they agree to it. The
+ * retention split is the same three-way one, for the same reason — those chats
+ * go through exactly the path "Delete chat" does.
+ */
+export function deleteRoutineMessage(
+  name: string,
+  chatCount: number,
+  retentionDays: number | null | undefined,
+): string {
+  const chats =
+    chatCount === 0
+      ? 'It has no chats yet.'
+      : chatCount === 1
+        ? 'Its 1 chat goes with it.'
+        : `Its ${String(chatCount)} chats go with it.`
+  const head = `“${name}” will stop running on its schedule. ${chats}`
+
+  if (retentionDays === undefined) {
+    // Same rule as above: while the policy is still loading, claim neither
+    // outcome rather than guessing at someone's data.
+    return `${head} You cannot undo this yourself.`
+  }
+  if (retentionDays === null) {
+    return `${head} This cannot be undone — the routine and its messages are erased.`
+  }
+  const days = retentionDays === 1 ? '1 day' : `${String(retentionDays)} days`
+  return (
+    `${head} The routine itself is erased; this server keeps its deleted chats for ${days} so an ` +
+    `administrator can review them. You cannot reach them again yourself.`
+  )
+}

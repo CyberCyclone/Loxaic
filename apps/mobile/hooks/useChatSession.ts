@@ -21,6 +21,7 @@ import {
   type ServerMessage,
   type AttachmentRef,
   type StepsDecision,
+  type Conversation as ApiConversation,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { isOffline, setConnectionState } from '@/lib/connection';
@@ -68,7 +69,92 @@ interface StreamState {
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
 
-export function useChatSession(token: string | null, onStreamEnd?: () => void) {
+/**
+ * Which set of conversations this session is over.
+ *
+ * Chat passes nothing and behaves exactly as it always has. A routine passes
+ * its own scope: the same socket, the same event handling, the same streaming
+ * and approval state — over its own list, with the things that only make sense
+ * for the Chat surface switched off.
+ *
+ * A parameter rather than a second copy of the hook, because what a routine
+ * chat needs is nine tenths of this file: ~300 lines of WebSocket event
+ * handling, resync cursors, per-conversation approval and check-in state. The
+ * codebase already has one copy of that in `useAgentSession`, and a third
+ * would be a third place to fix the next stream bug.
+ */
+export interface ChatScope {
+  /** The conversations this session lists. */
+  list: () => Promise<Conversation[]>;
+  /** Which `kind` belongs here — the cache and the list are filtered by it. */
+  kind: Conversation['kind'];
+  /**
+   * False for a scope whose conversations are made by something other than
+   * typing into the composer. A routine chat exists because a run created it;
+   * a send with nothing open would otherwise silently open a *chat*
+   * conversation on the routines screen.
+   */
+  allowCreate: boolean;
+  /**
+   * False for a scope with no offline cache. A routine's chats are not read
+   * back offline: they would take eviction slots from the user's own threads,
+   * and the chat surface's own list write prunes anything it does not
+   * recognise.
+   */
+  cache: boolean;
+  /**
+   * True to send `stream.subscribe` when a conversation is opened.
+   *
+   * The hook otherwise subscribes only on socket open and on a seq gap, which
+   * is enough for Chat, where a run always starts from this client. A routine
+   * run starts on the server, at 6am, so opening its chat is the first this
+   * client hears of it — without this the transcript sits there static while
+   * the run streams on.
+   */
+  subscribeOnSelect: boolean;
+  /** Opened instead of the newest, when present and still in the list. */
+  initialActiveId?: string | null;
+}
+
+/** The Chat surface's own scope: every conversation of kind `chat`, cached,
+ * created implicitly by sending. Module-level so its identity is stable across
+ * renders — it is in effect dependencies. */
+const CHAT_SCOPE: ChatScope = {
+  list: async () => {
+    const convs = await getConversations();
+    // Each surface shows only its own kind: general chats here, coding
+    // sessions under Agent, routine runs under Routines. See #117 — and note
+    // the server now excludes routine conversations from this endpoint
+    // outright, so this filter is the second of two.
+    //
+    // An empty `kind` is a chat: the column postdates some rows.
+    return convs
+      .filter((c) => (c.kind || 'chat') === 'chat')
+      .map(toConversation);
+  },
+  kind: 'chat',
+  allowCreate: true,
+  cache: true,
+  subscribeOnSelect: false,
+};
+
+/** An API row as the surfaces hold it. Shared so a scope's own `list` does not
+ * have to restate the mapping. */
+export function toConversation(c: ApiConversation): Conversation {
+  return {
+    id: c.id,
+    title: c.title,
+    kind: (c.kind || 'chat') as Conversation['kind'],
+    time: 'recent',
+    model: c.modelPref?.model ?? '',
+    location: 'server' as const,
+    msgs: [],
+    updatedAt: c.updatedAt,
+    role: c.role ?? 'owner',
+  };
+}
+
+export function useChatSession(token: string | null, onStreamEnd?: () => void, scope: ChatScope = CHAT_SCOPE) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
   // silently holding the old one until the app restarts.
@@ -100,7 +186,15 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   // real ones, permanently — and made an unreachable server indistinguishable
   // from a populated account.
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  /** Whether the list has come back at least once — the difference between
+   * "this routine has never run" and "we haven't asked yet", which are
+   * different screens. */
+  const [listLoaded, setListLoaded] = useState(false);
   const [activeId, setActiveIdState] = useState<string | null>(null);
+  // Read through a ref by the stable callbacks below (`setActiveId` must not
+  // re-create per render — `loadedConvIdsRef` dedupes against its identity).
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   // Keyed by conversation, unlike the agent surface's flat pendingApproval
   // (GitHub issue #1) — a background chat send that hits an approval must
@@ -190,7 +284,22 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     // one — see handleSend below) aren't fetchable: the server has never
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
-    if (!id || !isServerConvId(id) || loadedConvIdsRef.current.has(id)) return;
+    if (!id || !isServerConvId(id)) return;
+    // A run this client did not start — a routine firing on a schedule — is
+    // already streaming by the time the screen opens it. The socket-open
+    // resubscribe cannot cover that: nothing was open then. Sent *after* the
+    // history fetch settles, because a snapshot landing first fills the thread
+    // and the history fill below only applies to an empty one, so the older
+    // messages would be dropped.
+    const subscribeIfWanted = () => {
+      if (!scopeRef.current.subscribeOnSelect) return;
+      const ws = wsRef.current;
+      if (ws) subscribeStreams(ws, id);
+    };
+    if (loadedConvIdsRef.current.has(id)) {
+      subscribeIfWanted();
+      return;
+    }
     loadedConvIdsRef.current.add(id);
     getMessages(id)
       .then(({ messages: rows }) => {
@@ -212,14 +321,18 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
             c.id === id && (c.msgs.length === 0 || fromCache) ? { ...c, msgs } : c,
           );
           // Cache the thread as it now stands, so it can be read back offline.
-          const scope = cacheScopeRef.current;
+          const scope = scopeRef.current.cache ? cacheScopeRef.current : null;
           const conv = next.find((c) => c.id === id);
           if (scope && conv) writeCachedConversation(scope.endpoint, scope.userId, conv);
           return next;
         });
+        subscribeIfWanted();
       })
       .catch((err: unknown) => {
         loadedConvIdsRef.current.delete(id);
+        // Still subscribe: a failed history read says nothing about whether a
+        // run is going right now, and the live stream is the more urgent half.
+        subscribeIfWanted();
         // Only a request that never got an answer means the host is gone. A
         // 404 for a deleted row or a 500 for one bad query is a *reachable*
         // server saying no; treating those as offline locked the user out of
@@ -242,6 +355,59 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     );
   }, []);
 
+  /**
+   * Re-read the scope's list from the server.
+   *
+   * Extracted from the mount effect so a routine screen can call it after
+   * starting a run — that run's chat did not exist a moment ago, and nothing
+   * else would bring it into the list.
+   */
+  const refreshList = useCallback(async () => {
+    const active = scopeRef.current;
+    try {
+      const apiConversations = await active.list();
+      setConnectionState('online');
+      // Built outside the updater so the *merged* list — cached messages
+      // kept — is what reaches the cache. Passing `apiConversations` (every
+      // entry `msgs: []`) wrote an empty message list over every cached
+      // thread on each online start, defeating the cache it was feeding.
+      let merged: Conversation[] = apiConversations;
+      setConversations((prev) => {
+        const byId = new Map(prev.map((c) => [c.id, c]));
+        merged = apiConversations.map((c) => ({ ...c, msgs: byId.get(c.id)?.msgs ?? [] }));
+        // A conversation created optimistically while this fetch was in
+        // flight (`c<timestamp>`) can't be in the server's list yet; a pure
+        // rebuild from the server deleted it — and the message in it — from
+        // under the user, then jumped them to an unrelated thread.
+        const inFlight = prev.filter((c) => !isServerConvId(c.id));
+        return [...inFlight, ...merged];
+      });
+      const scope = active.cache ? cacheScopeRef.current : null;
+      if (scope) writeCachedList(scope.endpoint, scope.userId, merged);
+      // From the *filtered* list, not the raw one. Selecting `convs[0]`
+      // meant Chat could open — and then send into — an agent run: the list
+      // hid it, but the active id still pointed at it, so a message typed
+      // under Chat was written to an agent conversation. Worse than the
+      // display leak it accompanied, because it misroutes user content
+      // rather than just showing an extra row (#117).
+      if (merged.length > 0 && !activeIdRef.current) {
+        // A scope may ask for a particular conversation (a routine screen
+        // opened on `?c=`), and falls back to the newest when that one is not
+        // in the list — deleted, or belonging to another routine.
+        const wanted = active.initialActiveId;
+        const opening = wanted && merged.some((c) => c.id === wanted) ? wanted : merged[0].id;
+        setActiveId(opening);
+      }
+      setListLoaded(true);
+    } catch (err: unknown) {
+      if (isUnreachableError(err)) setConnectionState('offline');
+      // Still "loaded": the screen has to be able to tell "no chats yet" from
+      // "still asking", and a failure is neither — it says so through the
+      // offline banner instead of leaving a permanent spinner.
+      setListLoaded(true);
+    }
+  }, [setActiveId]);
+
   // Cached conversations first, then the server's list.
   //
   // The cache renders immediately so an unreachable host shows the user their
@@ -254,14 +420,14 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
     if (!token || loadingRef.current) return;
     loadingRef.current = true;
 
-    const scope = cacheScope();
+    const scope = scopeRef.current.cache ? cacheScope() : null;
     if (scope) {
       // Filtered on read as well as on fetch: the cache was written from the
       // same unfiltered list, so one already on disk holds agent runs. The
       // fetch rewrites it, but this render happens first — and on an offline
       // start there is no fetch to rewrite anything (#117).
       const cached = readCachedConversations(scope.endpoint, scope.userId)
-        .filter((c) => c.kind === 'chat');
+        .filter((c) => c.kind === scopeRef.current.kind);
       if (cached.length > 0) {
         // Remembered so the history fetch knows these came from the cache and
         // may overwrite them — see loadHistory.
@@ -279,62 +445,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       }
     }
 
-    getConversations()
-      .then((convs) => {
-        setConnectionState('online');
-        // Each surface shows only its own kind: general chats here, coding
-        // sessions under Agent, routine runs under Routines. All three read
-        // conversations from this one endpoint, and only the agent side
-        // filtered it, so every agent run — and every routine run, which the
-        // scheduler also creates as a conversation (kind: "routine") — showed
-        // up as a chat thread too. See #117.
-        //
-        // An empty `kind` is a chat: the column postdates some rows, and the
-        // mapping below has always defaulted it that way.
-        const apiConversations: Conversation[] = convs
-          .filter((c) => (c.kind || 'chat') === 'chat')
-          .map((c) => ({
-            id: c.id,
-            title: c.title,
-            kind: (c.kind || 'chat') as Conversation['kind'],
-            time: 'recent',
-            model: c.modelPref?.model ?? '',
-            location: 'server' as const,
-            msgs: [],
-            updatedAt: c.updatedAt,
-            role: c.role ?? 'owner',
-          }));
-        // Built outside the updater so the *merged* list — cached messages
-        // kept — is what reaches the cache. Passing `apiConversations` (every
-        // entry `msgs: []`) wrote an empty message list over every cached
-        // thread on each online start, defeating the cache it was feeding.
-        let merged: Conversation[] = apiConversations;
-        setConversations((prev) => {
-          const byId = new Map(prev.map((c) => [c.id, c]));
-          merged = apiConversations.map((c) => ({ ...c, msgs: byId.get(c.id)?.msgs ?? [] }));
-          // A conversation created optimistically while this fetch was in
-          // flight (`c<timestamp>`) can't be in the server's list yet; a pure
-          // rebuild from the server deleted it — and the message in it — from
-          // under the user, then jumped them to an unrelated thread.
-          const inFlight = prev.filter((c) => !isServerConvId(c.id));
-          return [...inFlight, ...merged];
-        });
-        if (scope) writeCachedList(scope.endpoint, scope.userId, merged);
-        // From the *filtered* list, not the raw one. Selecting `convs[0]`
-        // meant Chat could open — and then send into — an agent run: the list
-        // hid it, but the active id still pointed at it, so a message typed
-        // under Chat was written to an agent conversation. Worse than the
-        // display leak it accompanied, because it misroutes user content
-        // rather than just showing an extra row (#117).
-        if (merged.length > 0 && !activeIdRef.current) setActiveId(merged[0].id);
-      })
-      .catch((err: unknown) => {
-        if (isUnreachableError(err)) setConnectionState('offline');
-      })
-      .finally(() => {
-        loadingRef.current = false;
-      });
-  }, [token, setActiveId, cacheScope]);
+    void refreshList().finally(() => {
+      loadingRef.current = false;
+    });
+    // `setActiveId` is stable by construction (an empty dep list — see its
+    // definition, where `loadedConvIdsRef` dedupes against its identity), but
+    // the rule cannot see that across the ref it reads the scope through.
+  }, [token, refreshList, cacheScope, setActiveId]);
 
   /**
    * Keep the cache in step with what is on screen.
@@ -352,7 +469,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
    */
   const cachedIdentityRef = useRef<Record<string, string>>({});
   useEffect(() => {
-    const scope = cacheScope();
+    const scope = scopeRef.current.cache ? cacheScope() : null;
     if (!scope) return;
     for (const conversation of conversations) {
       if (!isServerConvId(conversation.id)) continue;
@@ -682,6 +799,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
       // The optimistic bubble keeps the full refs so it can render a thumbnail
       // immediately; the wire only needs the ids.
       const refs = attachments?.map((a) => a.ref);
+      if (!activeIdRef.current && !scopeRef.current.allowCreate) {
+        // A routine's chats exist because a run created them. Sending with
+        // nothing open would open a *chat* conversation from the routines
+        // screen — a thread that then belongs to neither surface.
+        showToast('Run this routine first — there is no chat to continue yet');
+        return;
+      }
       if (!activeIdRef.current) {
         const localId = `c${String(Date.now())}`;
         pendingLocalIdRef.current = localId;
@@ -873,12 +997,21 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
           return;
         }
       }
-      setConversations((prev) => prev.filter((c) => c.id !== id));
+      let remaining: Conversation[] = [];
+      setConversations((prev) => {
+        remaining = prev.filter((c) => c.id !== id);
+        return remaining;
+      });
       // The cache has no other pruning path that works offline — without
       // this the deleted thread came straight back on the next offline start.
-      const scope = cacheScopeRef.current;
+      const scope = scopeRef.current.cache ? cacheScopeRef.current : null;
       if (scope) removeCachedConversation(scope.endpoint, scope.userId, id);
-      if (activeIdRef.current === id) setActiveId(null);
+      if (activeIdRef.current === id) {
+        // In a scope that cannot create one, landing on nothing means an
+        // empty screen with no way off it — open the next chat along instead.
+        const next = scopeRef.current.allowCreate ? null : (remaining[0]?.id ?? null);
+        setActiveId(next);
+      }
       showToast('Conversation deleted');
     },
     [setActiveId, showToast],
@@ -904,6 +1037,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
 
   return {
     conversations,
+    listLoaded,
+    refreshList,
     activeId,
     activeConv,
     setActiveId,
