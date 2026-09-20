@@ -416,6 +416,9 @@ export default function AgentScreen() {
       <DeleteConversationModal
         title={deletingRun?.title ?? null}
         area="agent"
+        // Its own workspace, not the one currently selected: deleting from the
+        // thread list can name a run other than the open one.
+        workspaceKind={deletingRun?.workspace?.kind ?? 'scratch'}
         retentionDays={config ? config.deletedChatRetentionDays : undefined}
         onCancel={() => { setDeletingId(null); }}
         onConfirm={() => {

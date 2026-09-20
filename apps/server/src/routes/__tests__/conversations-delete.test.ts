@@ -267,6 +267,44 @@ describe("DELETE /v1/conversations/:id — an active run", () => {
     await settle();
     expect(await countMessages(convId)).toBe(0);
   });
+
+  it("collects what a wedged run writes after the first wait gave up on it", async () => {
+    // The case the timeout exists for, and the one the second pass alone does
+    // not cover: a run still going when the wait expires writes its rows
+    // *afterwards*, and nothing else ever looks for messages whose
+    // conversation is gone. They would sit in Postgres holding the content of
+    // a conversation the user was told was erased, and keep its uploads past
+    // every grace period — files/reaper.ts only collects an attachment no
+    // message references.
+    process.env.DELETE_RUN_UNWIND_TIMEOUT_MS = "50";
+    const convId = await makeConversation();
+    const streamId = uuid();
+    registerRun({
+      streamId,
+      conversationId: convId,
+      userId: owner,
+      abort: new AbortController(),
+      approvals: new Map(),
+    });
+    try {
+      as(owner);
+      await app.inject({ method: "DELETE", url: `/v1/conversations/${convId}` });
+
+      // Let the first wait expire with the run still registered, then write
+      // the row it would write on its way out.
+      await new Promise((r) => setTimeout(r, 250));
+      await addMessage(convId, "written by a wedged run");
+      expect(await countMessages(convId)).toBe(1);
+
+      // Whenever the run does finally end, the final pass has to collect it.
+      unregisterRun(streamId);
+      await new Promise((r) => setTimeout(r, 250));
+      expect(await countMessages(convId)).toBe(0);
+    } finally {
+      delete process.env.DELETE_RUN_UNWIND_TIMEOUT_MS;
+      unregisterRun(streamId);
+    }
+  }, 30_000);
 });
 
 describe("DELETE /v1/conversations/:id — retention on", () => {

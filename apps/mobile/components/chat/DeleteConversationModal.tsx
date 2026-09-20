@@ -1,9 +1,13 @@
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
+import { deleteConversationMessage, type WorkspaceKind } from '@/lib/deleteMessage';
 
 interface DeleteConversationModalProps {
   /** The conversation being deleted, or null when the dialog is closed. */
   title: string | null;
   area: 'chat' | 'agent';
+  /** The conversation's own workspace kind — what decides whether deleting
+   * takes its files with it. */
+  workspaceKind?: WorkspaceKind;
   /**
    * How long this deployment keeps a deleted conversation for an admin to
    * audit, from `/v1/config`; null means deleting erases it. Undefined while
@@ -13,36 +17,6 @@ interface DeleteConversationModalProps {
   retentionDays: number | null | undefined;
   onConfirm: () => void;
   onCancel: () => void;
-}
-
-/** What the user is agreeing to, in the words that match what will happen. */
-export function deleteConversationMessage(
-  title: string,
-  area: 'chat' | 'agent',
-  retentionDays: number | null | undefined,
-): string {
-  const noun = area === 'agent' ? 'run' : 'chat';
-  const shared = `“${title}” will be removed for you and for anyone it is shared with.`;
-  // An agent conversation's workspace is destroyed with it, and that is the
-  // part nobody guesses: files the agent wrote and commits nobody pushed are
-  // in there, and they are not in the transcript.
-  const workspace =
-    area === 'agent' ? ' Its workspace is destroyed too, including any commits that were never pushed.' : '';
-
-  if (retentionDays === undefined) {
-    // The honest answer while we do not know. Naming neither outcome is
-    // better than guessing: "permanently" understates what an admin can still
-    // read, and naming a window promises something this server may not do.
-    return `${shared}${workspace} You cannot undo this yourself.`;
-  }
-  if (retentionDays === null) {
-    return `${shared}${workspace} This cannot be undone — the messages are erased.`;
-  }
-  const days = retentionDays === 1 ? '1 day' : `${String(retentionDays)} days`;
-  return (
-    `${shared}${workspace} This server keeps deleted ${noun}s for ${days} so an administrator can ` +
-    `review them, and then erases them. You cannot reach it again yourself.`
-  );
 }
 
 /**
@@ -56,6 +30,7 @@ export function deleteConversationMessage(
 export function DeleteConversationModal({
   title,
   area,
+  workspaceKind,
   retentionDays,
   onConfirm,
   onCancel,
@@ -64,7 +39,7 @@ export function DeleteConversationModal({
     <WarningConfirmModal
       open={title !== null}
       title={area === 'agent' ? 'Delete this run?' : 'Delete this chat?'}
-      message={deleteConversationMessage(title ?? '', area, retentionDays)}
+      message={deleteConversationMessage(title ?? '', area, retentionDays, workspaceKind)}
       confirmLabel="Delete"
       testIDPrefix={`${area}.deleteConfirm`}
       onConfirm={onConfirm}

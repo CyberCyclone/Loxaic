@@ -211,10 +211,11 @@ export function hostingBlockedReason(): string | null {
 
 /** Set when loadServerSettings() couldn't read the row — see there. */
 let loadFailed = false;
-/** The same, for the conversation-retention row. Separate because the two
- * fail in opposite directions: an unreadable sandbox row disables execution,
- * an unreadable retention row keeps conversations. Either one means the
- * retention policy is unknown, which is why both are consulted below. */
+/** The same, for the conversation-retention row. Separate because the two fail
+ * in opposite directions: an unreadable sandbox row disables execution, an
+ * unreadable retention row keeps conversations. Separate *reads*, too — each
+ * has its own try — so a failure of one says nothing about the other, and
+ * neither flag may stand in for the other. */
 let conversationLoadFailed = false;
 
 /**
@@ -229,7 +230,13 @@ let conversationLoadFailed = false;
  */
 function retentionUnknown(): boolean {
   if (envBool("DELETED_CHAT_RETENTION_ENABLED") !== null) return false;
-  return loadFailed || conversationLoadFailed;
+  // Deliberately not `|| loadFailed`. The retention row has its own read and
+  // its own try in `loadServerSettings`, so a sandbox read that failed while
+  // this one succeeded leaves the policy perfectly well known — and treating
+  // it as unknown would keep every deleted conversation, and stand the sweep
+  // down, over a failure in an unrelated row. A failure broad enough to affect
+  // both (a missing table, an unreachable database) sets this flag itself.
+  return conversationLoadFailed;
 }
 
 // ── Environment reads ─────────────────────────────────────
@@ -530,6 +537,14 @@ export async function updateConversationSettings(input: unknown): Promise<Conver
     .values({ key: CONVERSATIONS_KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
   persistedConversations = next;
+  // A successful write proves the database is reachable and that this row is
+  // exactly what we just put in it, so whatever made the boot read fail no
+  // longer applies. Without this the flag outlives the failure for the life of
+  // the process: `retentionUnknown()` stays true, `getConversationSettings()`
+  // pins `keepDeleted` to true whatever an admin writes, and the sweep stands
+  // down — so turning retention *off* returns 200, the switch snaps back, and
+  // the deployment silently keeps every deleted conversation until a restart.
+  conversationLoadFailed = false;
   return getConversationSettings();
 }
 
@@ -853,6 +868,12 @@ async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
     .values({ key: SANDBOX_KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
   persisted = next;
+  // Same reasoning as the conversation write: the row we just wrote is now
+  // known, so the boot read's failure no longer applies. Fails closed rather
+  // than open while set (mode resolves to "off"), but an admin re-enabling
+  // sandboxes after a transient failure would otherwise get a 200 and a
+  // control that stays off until the process restarts.
+  loadFailed = false;
 
   const after = getSandboxSettings();
   const changed =

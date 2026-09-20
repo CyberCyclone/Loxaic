@@ -141,14 +141,33 @@ describe("when the policy cannot be read", () => {
     }
   });
 
-  it("an unreadable sandbox row also means an unknown retention policy", () => {
+  it("an unreadable *sandbox* row says nothing about it — the reads are separate", () => {
+    // Each group has its own try in loadServerSettings, so a sandbox failure
+    // while this row read fine leaves the policy perfectly well known.
+    // Treating it as unknown would keep every deleted conversation, and stand
+    // the sweep down, over a failure in an unrelated row.
     __setLoadFailedForTest(true);
     try {
-      expect(getConversationSettings().keepDeleted).toBe(true);
-      expect(conversationRetentionUnknown()).toBe(true);
+      expect(conversationRetentionUnknown()).toBe(false);
+      expect(getConversationSettings().keepDeleted).toBe(false);
     } finally {
       __setLoadFailedForTest(false);
     }
+  });
+
+  it("a successful write clears the failure — otherwise the admin's 'off' does nothing", async () => {
+    // The nastiest shape of this bug: the flag outlives the failure for the
+    // life of the process, so turning retention off returns 200, the switch
+    // snaps back to on, and the deployment keeps every deleted conversation
+    // with no sweep until someone restarts it. A successful write proves the
+    // database is reachable and that the row is what we just put in it.
+    __setConversationLoadFailedForTest(true);
+    expect(getConversationSettings().keepDeleted).toBe(true);
+
+    const after = await updateConversationSettings({ keepDeleted: false });
+    expect(after.keepDeleted).toBe(false);
+    expect(getConversationSettings().keepDeleted).toBe(false);
+    expect(conversationRetentionUnknown()).toBe(false);
   });
 
   it("but an env pin still wins — it needs no database", () => {

@@ -795,6 +795,14 @@ replies.
   construction, which the **second pass** after `waitForRunEnd` collects. That second pass is
   what makes the wait an optimisation rather than a correctness requirement; a run wedged in a
   tool call never reaches `unregisterRun`, and the cleanup still has to happen.
+- **A timed-out unwind wait gets a second, longer wait — the first erase is not the last.**
+  `waitForRunEnd` giving up is exactly the wedged-run case, and it is the one where rows land
+  *after* the purge pass. Nothing else ever looks for messages whose conversation is gone, so
+  those rows would hold the content of a conversation the user was told was erased, **and keep
+  its uploads forever**: `files/reaper.ts` only collects an attachment no message references, so
+  one orphan row pins the bytes past every grace period. Both waits are read from the
+  environment at call time (`DELETE_RUN_UNWIND_TIMEOUT_MS`), because a test cannot otherwise
+  reach the branch without spending thirty real seconds.
 - **Usage records are kept and detached** (`conversation_id`/`message_id` nulled), never
   deleted. The tokens were spent, and the Stats screen's lifetime totals are made of them;
   what must not survive is a row naming a conversation that no longer exists, which would sit
@@ -832,9 +840,28 @@ replies.
   (nothing cascaded — the row survived); the sandbox was destroyed at delete time, because
   nothing could reach the conversation to resume it and the audit view reads rows, not
   containers.
+- **A successful settings write clears the read-failure flag.** Without that the flag outlives
+  the failure for the life of the process: `retentionUnknown()` stays true, `keepDeleted`
+  resolves to true whatever an admin writes, and the sweep stands down — so turning retention
+  *off* returns 200, the switch snaps back, and the deployment quietly keeps every deleted
+  conversation until a restart. The write itself is the proof the database is reachable and the
+  row is what we just put in it. `updateSandboxSettings` does the same for `loadFailed`.
+- **`retentionUnknown()` consults only its own flag, never the sandbox read's.** The two groups
+  have separate reads and separate `try`s in `loadServerSettings`, so a sandbox failure while
+  this row read fine leaves the policy perfectly well known; treating it as unknown would keep
+  every deleted conversation over a failure in an unrelated row. A failure broad enough to
+  affect both sets this flag itself.
 - **The confirm dialog's wording comes from `/v1/config`**, because the answer differs by
   deployment. While the config is still loading it claims neither outcome — guessing either
   way is a promise about someone's data.
+- **What it says about an agent's files is keyed on the workspace, not the surface.** A scratch
+  or GitHub workspace is a server-side sandbox and is destroyed with the conversation; a
+  **local** one is a folder on the user's own machine and is untouched — `executor/service.ts`'s
+  destroy removes a container at most, "never the folder that was mounted into it", and for a
+  direct workspace is not called at all. Keying on `area === 'agent'` made the destructive
+  claim about every run, which is most alarming exactly where it is false: the one workspace
+  holding work a user can really lose. `lib/deleteMessage.ts` is a pure module so both of the
+  things this sentence varies on are unit-tested.
 
 ### File attachments
 

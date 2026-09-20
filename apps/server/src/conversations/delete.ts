@@ -34,7 +34,40 @@ export interface DeleteLogger {
  * request is aborted, but one parked mid-`bash` only notices between calls.
  * Nothing is lost by giving up early — the second purge pass runs regardless.
  */
-const RUN_UNWIND_TIMEOUT_MS = 30_000;
+const DEFAULT_RUN_UNWIND_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the *second* wait gives a run that missed the first one, before
+ * giving up and erasing anyway.
+ *
+ * Long, because by this point the only cost of waiting is a timer nothing is
+ * blocking on, and the alternative — orphan rows no reader can reach and no
+ * sweep can collect — is permanent. Bounded rather than unbounded so a run
+ * that never unregisters at all cannot pin this closure for the life of the
+ * process.
+ */
+const DEFAULT_RUN_UNWIND_CEILING_MS = 10 * 60_000;
+
+/**
+ * Both read at call time, never at module load, so a test can make the first
+ * wait expire without spending thirty real seconds on it — the same reason
+ * `APPROVAL_TIMEOUT_MS` is read this way (a module-load read cannot be
+ * overridden, since vitest shares one process across files).
+ */
+function unwindTimeoutMs(): number {
+  return positiveIntEnv("DELETE_RUN_UNWIND_TIMEOUT_MS") ?? DEFAULT_RUN_UNWIND_TIMEOUT_MS;
+}
+
+function unwindCeilingMs(): number {
+  return positiveIntEnv("DELETE_RUN_UNWIND_CEILING_MS") ?? DEFAULT_RUN_UNWIND_CEILING_MS;
+}
+
+function positiveIntEnv(name: string): number | null {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
 
 export type DeleteOutcome = "erased" | "retained";
 
@@ -105,7 +138,7 @@ function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean
     // Wait for the aborted run to actually finish before cleaning up: it is
     // still writing message rows, and its tool calls still hold the sandbox we
     // are about to destroy.
-    const ended = await waitForRunEnd(id, RUN_UNWIND_TIMEOUT_MS);
+    const ended = await waitForRunEnd(id, unwindTimeoutMs());
     if (!ended) {
       log.warn(
         { conversationId: id },
@@ -114,13 +147,11 @@ function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean
     }
 
     if (opts?.purge) {
-      // The second pass, and the reason the wait above is an optimisation
-      // rather than a correctness requirement. Two kinds of row can appear
-      // after the transaction committed: the ones an unwinding run wrote (its
-      // cancelled assistant message, a stopped tool result), and the ones a
-      // send that had already passed authorization was about to write. Both
-      // reference a conversation that no longer exists, so nothing but this
-      // will ever collect them.
+      // The second pass. Two kinds of row can appear after the transaction
+      // committed: the ones an unwinding run wrote (its cancelled assistant
+      // message, a stopped tool result), and the ones a send that had already
+      // passed authorization was about to write. Both reference a conversation
+      // that no longer exists, so nothing but this will ever collect them.
       await eraseRows(id).catch((err: unknown) => {
         log.warn({ err, conversationId: id }, "failed to re-erase rows after a deleted conversation's run ended");
       });
@@ -149,6 +180,33 @@ function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean
       await deleteDestroyedSandboxRows(id).catch((err: unknown) => {
         log.warn({ err, conversationId: id }, "failed to delete sandbox rows for a deleted conversation");
       });
+
+      // The pass above collects what had landed *by then*, which is everything
+      // when the run ended on its own. When the wait timed out it is not: a run
+      // wedged in a long tool call is exactly the case the timeout exists for,
+      // and it is the case where rows land afterwards — permanently, because
+      // nothing else looks for messages whose conversation is gone. Those rows
+      // keep the content of a conversation the user was told was erased, and
+      // they keep its uploads alive forever, since `files/reaper.ts` only
+      // collects an attachment no message references.
+      //
+      // So wait again, with a much longer ceiling, and erase once more. The
+      // sandbox was destroyed just above, which is what usually ends a wedged
+      // run; waiting is free (nothing is blocking on any of this, and the
+      // timer is unref'd) and the erase is idempotent, so the final pass runs
+      // whether or not the run was seen to end.
+      if (!ended) {
+        const endedLate = await waitForRunEnd(id, unwindCeilingMs());
+        await eraseRows(id).catch((err: unknown) => {
+          log.warn({ err, conversationId: id }, "failed the final erase for a deleted conversation");
+        });
+        if (!endedLate) {
+          log.warn(
+            { conversationId: id },
+            "a run outlived the delete cleanup — rows it writes from here reference a conversation that is gone",
+          );
+        }
+      }
     }
   })();
 }
