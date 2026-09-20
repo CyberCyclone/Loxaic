@@ -153,6 +153,14 @@ export default function RoutineChatScreen() {
   const modelName = model ? (isKnown(model) ? getName(model) : model) : 'No model';
   const context = useContextUsage(activeConv?.msgs, model ? getWindow(model) : null);
 
+  /** The schedule in words, or null when `humanizeCron` had none to give and
+   * handed back the raw expression. */
+  const schedule = (() => {
+    if (!routine) return null;
+    const human = humanizeCron(routine.cron);
+    return human === routine.cron ? null : human;
+  })();
+
   const approvalReason = pendingApproval
     ? activeConv?.msgs.find((m) => m.tools?.some((t) => t.callId === pendingApproval.callId))?.text
     : undefined;
@@ -191,10 +199,14 @@ export default function RoutineChatScreen() {
     (c: Conversation) => {
       const meta = runMeta[c.id];
       if (!meta) return null;
+      // Every chat here is named after the routine, which is also this
+      // panel's heading — so the run itself is what distinguishes one row
+      // from the next, and it leads.
       return {
+        title: `Run · ${runTimeLabel(meta.startedAt)}`,
         badge: runStatusLabel(meta.status),
         danger: runStatusIsError(meta.status),
-        time: runTimeLabel(meta.startedAt),
+        time: '',
       };
     },
     [runMeta],
@@ -265,7 +277,7 @@ export default function RoutineChatScreen() {
       <VStack className="h-full flex-1">
         <MainHeader
           title={routine?.name ?? 'Routine'}
-          subtitle={routine ? `${humanizeCron(routine.cron)} · ${modelName}` : undefined}
+          subtitle={routine ? [schedule, modelName].filter(Boolean).join(' · ') : undefined}
           // Back rather than the sidebar menu: this screen was arrived at from
           // the routines list, and going back there is what the issue asks for
           // ("go back to the routines list, and select that routine").
@@ -311,9 +323,12 @@ export default function RoutineChatScreen() {
             <Box testID="routineChat.empty" className="flex-1 items-center justify-center p-6">
               <Text className="mb-2 text-center text-foreground">This routine hasn&apos;t run yet</Text>
               <Text size="sm" className="mb-4 text-center text-muted-foreground">
-                {routine
-                  ? `It runs ${humanizeCron(routine.cron).toLowerCase()}. Each run starts its own chat, which you can read and carry on here.`
-                  : 'Each run starts its own chat, which you can read and carry on here.'}
+                {/* `humanizeCron` returns the raw expression for anything it
+                    does not recognise, and "It runs 0 4 1 1 *" is worse than
+                    not mentioning the schedule at all — so the sentence is
+                    only offered when there is a human one to offer. */}
+                {schedule ? `Its schedule is ${schedule}. ` : ''}
+                Each run starts its own chat, which you can read and carry on here.
               </Text>
               <Button
                 testID="routineChat.empty.runNow"

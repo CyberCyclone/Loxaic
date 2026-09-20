@@ -49,12 +49,14 @@ interface ThreadListProps {
   /** Opens the share sheet. Omitted on surfaces that don't support sharing. */
   onShare?: (id: string) => void;
   /**
-   * A second line for a row, replacing the kind badge.
+   * How a row reads, where its own title does not distinguish it.
    *
-   * A routine's chats all carry the same title, so without this every row of
-   * its history reads identically and there is nothing to pick between them.
+   * A routine's chats are all named after the routine, which is also this
+   * panel's own heading — so every row read identically and there was nothing
+   * to pick between them. `title` replaces the row's title (the run's time)
+   * and `badge` replaces the kind badge (its status).
    */
-  rowMeta?: (c: Conversation) => { badge: string; danger?: boolean; time: string } | null;
+  rowMeta?: (c: Conversation) => { title?: string; badge: string; danger?: boolean; time: string } | null;
 }
 
 // Web's thread-row actions only appear on hover, which the design's own
@@ -119,7 +121,7 @@ export function ThreadList({
             }`}
           >
             <Text size="sm" className="font-medium text-foreground" numberOfLines={1}>
-              {item.title}
+              {rowMeta?.(item)?.title ?? item.title}
             </Text>
             <HStack space="xs" className="mt-1 items-center">
               {(() => {
