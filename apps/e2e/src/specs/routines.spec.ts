@@ -35,7 +35,7 @@ import {
   openThreadList,
   runRoutine,
   sendMessage,
-  signUp,
+  signIn,
   waitForRunDone,
   type E2ERoutine,
 } from '../helpers/app.ts';
@@ -51,8 +51,10 @@ describe('routines', () => {
   let creds: Credentials;
 
   before(async () => {
+    // Provisioned over the API and then signed *in* — `signUp` would fill the
+    // form with an email that already exists and never reach the composer.
     creds = await provisionUser();
-    await signUp(creds);
+    await signIn(creds);
   });
 
   it('creates a routine, and makes you choose the model it will run on', async function () {

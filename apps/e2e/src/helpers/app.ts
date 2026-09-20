@@ -146,7 +146,23 @@ export async function openSidebar(): Promise<void> {
   await browser.waitUntil(
     async () => {
       if (await byTestId('sidebar.signOut').isDisplayed()) return true;
-      await tap('shell.menuButton');
+      // Bounded, and allowed to miss. On a wide layout the sidebar is pinned
+      // and `shell.menuButton` is never rendered at all, so this loop's only
+      // real exit is the check above — and `tap`'s own wait is the config's
+      // 20s, which is the whole outer budget. One attempt therefore consumed
+      // every retry, and the helper failed with "menuButton still not
+      // displayed" whenever the first check ran a moment too early: right
+      // after a `browser.refresh()`, which is exactly where agent-checkin
+      // uses it. Letting the tap miss keeps re-checking for the pinned
+      // sidebar instead of committing to a button that will never appear.
+      const menu = byTestId('shell.menuButton');
+      const tapped = await menu
+        .waitForDisplayed({ timeout: 2000 })
+        .then(async () => {
+          await menu.click();
+          return true;
+        }, () => false);
+      if (!tapped) return false;
       return await byTestId('sidebar.signOut')
         .waitForDisplayed({ timeout: 3000 })
         .then(() => true, () => false);
