@@ -35,6 +35,7 @@ import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 const MODES: AgentMode[] = ['planning', 'manual', 'auto'];
 const THINKING: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High'];
@@ -366,18 +367,28 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 }}
                 className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
               >
-                <HStack space="sm" className="items-center">
-                  <Icon as={Server} size="sm" className="text-muted-foreground" />
-                  <VStack>
+                {/* `min-w-0` and `shrink` on both the row and the label
+                    column, because this subtitle is the longest of the four
+                    and React Native defaults every view to `flexShrink: 0` —
+                    without them it pushed the chevron clean off the card on a
+                    phone, which is only visible on a narrow screen. */}
+                <HStack space="sm" className="min-w-0 shrink items-center">
+                  <Icon as={Server} size="sm" className="shrink-0 text-muted-foreground" />
+                  <VStack className="min-w-0 shrink">
                     <Text size="sm" className="text-foreground">
                       Model Providers
                     </Text>
-                    <Text size="2xs" className="text-muted-foreground">
-                      OpenRouter, OpenAI, Anthropic, or another local server
+                    <Text
+                      size="2xs"
+                      className="text-muted-foreground"
+                      numberOfLines={1}
+                      style={TRUNCATE_TEXT}
+                    >
+                      OpenRouter, OpenAI, or another server
                     </Text>
                   </VStack>
                 </HStack>
-                <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
               </Pressable>
             )}
 
