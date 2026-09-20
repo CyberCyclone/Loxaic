@@ -408,6 +408,31 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     }
   }, [setActiveId]);
 
+  /**
+   * A different scope is a different list, so start over.
+   *
+   * The mount effect below keys on `token`, which does not change when one
+   * routine's screen is reused for another — expo-router may keep the `[id]`
+   * component mounted across a param change, and the screen would then be
+   * showing the previous routine's chats with `activeId` still pointing into
+   * them. Chat never reaches this: `CHAT_SCOPE` is a module constant, so the
+   * identity it compares against never moves.
+   */
+  const lastScopeRef = useRef(scope);
+  useEffect(() => {
+    if (lastScopeRef.current === scope) return;
+    lastScopeRef.current = scope;
+    loadedConvIdsRef.current.clear();
+    activeIdRef.current = null;
+    setActiveIdState(null);
+    setConversations([]);
+    setListLoaded(false);
+    loadingRef.current = true;
+    void refreshList().finally(() => {
+      loadingRef.current = false;
+    });
+  }, [scope, refreshList]);
+
   // Cached conversations first, then the server's list.
   //
   // The cache renders immediately so an unreachable host shows the user their

@@ -170,6 +170,17 @@ describe('routines', () => {
     // An older run still opens, so the history is a way in rather than a label.
     await tap(`threadList.item.${first.conversationId}`);
     await waitForTextIn('chat.messageList', mockEcho(PROMPT));
+
+    // "If I want to see other routine chats, I need to go back to the
+    // routines list, and select that routine." Doing exactly that has to
+    // *change* the list: the screen is the same component with a different
+    // param, so a hook that keyed its fetch on the session alone would leave
+    // the previous routine's chats on screen with the active one still
+    // pointing into them.
+    await openRoutine(other);
+    await openThreadList('routineChat');
+    await waitForVisible(`threadList.item.${theirs.conversationId}`);
+    expect(await byTestId(`threadList.item.${second.conversationId}`).isDisplayed().catch(() => false)).toBe(false);
   });
 
   it('picks up a run that was already going when the screen opened', async () => {
