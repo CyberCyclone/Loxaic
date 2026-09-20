@@ -305,6 +305,37 @@ describe("one queue per backend", () => {
     expect(schedulerState("never-used")).toEqual({ running: 0, waiting: 0 });
   });
 
+  it("gives an unresolvable provider the floor, not the built-in backend's slot count", async () => {
+    // Review finding. A provider that cannot be resolved used to fall through
+    // to `probeTotalSlots(undefined)`, which means "the built-in backend" — so
+    // its queue was sized from local llama.cpp's `--parallel` and cached for a
+    // minute. The probe target here answers /props with eight slots; an
+    // unresolvable provider must still get one.
+    const { createServer } = await import("node:http");
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ total_slots: 8 }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const previousBase = process.env.INFERENCE_BASE_URL;
+    process.env.INFERENCE_BASE_URL = `http://127.0.0.1:${String(port)}`;
+    Reflect.deleteProperty(process.env, "INFERENCE_MAX_CONCURRENT_RUNS");
+    resetSlotProbe();
+    try {
+      // The built-in backend really does report eight — so the probe works,
+      // and the next assertion is not passing by accident.
+      await expect(resolveMaxConcurrent()).resolves.toBe(8);
+      await expect(resolveMaxConcurrent("00000000-0000-4000-8000-000000000000")).resolves.toBe(1);
+    } finally {
+      if (previousBase === undefined) Reflect.deleteProperty(process.env, "INFERENCE_BASE_URL");
+      else process.env.INFERENCE_BASE_URL = previousBase;
+      resetSlotProbe();
+      await new Promise<void>((resolve) => server.close(() => { resolve(); }));
+    }
+  });
+
   it("applies the environment pin to the built-in backend only", async () => {
     // INFERENCE_MAX_CONCURRENT_RUNS describes the deployment's own backend.
     // Someone else's API is not it, and has its own per-row setting instead.

@@ -327,8 +327,17 @@ export async function resolveMaxConcurrent(providerId: string = DEFAULT_PROVIDER
 
   const { getProviderById } = await import("./providers.ts");
   const provider = await getProviderById(providerId).catch(() => null);
-  if (provider?.maxConcurrentRuns != null) return provider.maxConcurrentRuns;
-  return (await probeBackendSlots(providerId, provider ?? undefined)) ?? 1;
+  // A provider that cannot be resolved — deleted mid-run, a key that no longer
+  // decrypts, a transient lookup failure — gets the floor, and is *not* probed.
+  // `probeTotalSlots(undefined)` means "the built-in backend", so probing here
+  // sized this provider's queue from local llama.cpp's `--parallel` and cached
+  // the answer under this provider's key for a minute: on a `--parallel 8`
+  // machine, eight concurrent runs against a backend assumed to be 1, which is
+  // the invisible direction the floor exists to prevent. Not cached either, so
+  // a transient failure costs one conservative answer rather than a window.
+  if (!provider) return 1;
+  if (provider.maxConcurrentRuns != null) return provider.maxConcurrentRuns;
+  return (await probeBackendSlots(providerId, provider)) ?? 1;
 }
 
 async function probeBackendSlots(providerId: string, provider: ResolvedProvider | undefined): Promise<number | null> {

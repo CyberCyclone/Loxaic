@@ -16,17 +16,21 @@ import { adminCreds, provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
 import { mockProviderApiBase } from '../../scripts/standup.ts';
 import { PROVIDER_MODELS, VALID_KEY, WRONG_KEY } from '../../scripts/mock-provider.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, tap, typeInto, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
+  clearConversationModel,
   deleteProvidersWithBaseUrl,
+  listConversations,
   listProviders,
   mockProviderRequests,
   openProviders,
   providerListStatus,
+  selectThread,
   sendAndAwaitReply,
   signIn,
   signOut,
   signUp,
+  startNewThread,
 } from '../helpers/app.ts';
 
 const PROVIDER_NAME = 'Acme Models';
@@ -44,6 +48,9 @@ async function fillProviderForm(opts: { name?: string; baseUrl?: string; apiKey?
 
 describe('external model providers', () => {
   const apiBase = mockProviderApiBase();
+  // The ordinary user, shared across cases so later ones can ask the API about
+  // the conversations an earlier one made.
+  const user = uniqueCreds();
 
   after(async () => {
     await deleteProvidersWithBaseUrl(apiBase);
@@ -119,7 +126,6 @@ describe('external model providers', () => {
   it("offers the provider's models to an ordinary user, grouped and searchable", async () => {
     const [provider] = await listProviders();
     await signOut();
-    const user = uniqueCreds();
     await signUp(user);
 
     await tap('composer.model');
@@ -203,17 +209,74 @@ describe('external model providers', () => {
     await waitForTextIn('composer.model', PROVIDER_MODELS[0].id);
   });
 
+  it('does not move an existing thread onto the last-used model', async () => {
+    // From review. "Last used" is for a conversation that does not exist yet.
+    // A thread with an id and no stored model — every thread from before
+    // `model_pref` was written — used to take it too, which pointed an old
+    // local-model thread at a paid provider the moment its owner tried one in
+    // a different chat, with nothing on screen saying it had moved.
+    const [conversation] = await listConversations(user);
+    await clearConversationModel(user, conversation.id);
+    await browser.refresh();
+    await waitForVisible('composer.model');
+    await selectThread(conversation.id);
+    // The user's most recent model is the provider's. This thread must not
+    // follow it: with no model of its own it falls to the built-in default.
+    await waitForTextIn('composer.model', 'llama-3.1-8b-instruct');
+    const pill = await byTestId('composer.model').getText();
+    if (pill.includes(PROVIDER_MODELS[0].id)) {
+      throw new Error('an existing thread was moved onto the last-used model');
+    }
+    await shot('existing-thread-keeps-its-backend');
+
+    // While a *new* conversation still opens on it.
+    await startNewThread();
+    await waitForTextIn('composer.model', PROVIDER_MODELS[0].id);
+  });
+
   it('is admin-only at the route, not merely hidden in the UI', async () => {
-    const user = uniqueCreds();
+    const outsider = uniqueCreds();
     await signOut();
-    await signUp(user);
+    await signUp(outsider);
     // The nav row is not rendered for them...
     await tap('sidebar.settings');
     if (await isVisible('settings.nav.providers')) {
       throw new Error('a non-admin was offered the providers screen');
     }
+    // Closed again, or the modal's backdrop swallows the next case's first tap.
+    await browser.keys('Escape');
+    await waitForGone('settings.name');
     // ...and the route refuses them, which is the boundary that matters.
-    const status = await providerListStatus(user);
+    const status = await providerListStatus(outsider);
     if (status !== 403) throw new Error(`expected 403 for a non-admin, got ${String(status)}`);
+  });
+
+  it('warns about a stored key on a plain-http address, and can remove the key', async () => {
+    // From review. The key field is blank whenever an existing provider is
+    // edited — no route returns a key — so a warning judged on the field alone
+    // stayed silent exactly when a real, stored key was about to travel in the
+    // clear. And with empty meaning "keep", there was no way to remove a key
+    // at all: re-pointing the address just sent the old bearer to a new host.
+    const [provider] = await listProviders();
+    if (!provider.hasApiKey) throw new Error('precondition: the provider should still hold its key');
+
+    await signOut();
+    await signIn(adminCreds());
+    await openProviders();
+    await tap(`providers.edit.${provider.id}`);
+    await waitForVisible('providers.modal.dialog');
+    // Nothing typed, and the mock's address is http:// — the warning is about
+    // the key that is *stored*.
+    await waitForVisible('providers.modal.insecureWarning');
+    await shot('providers-stored-key-http-warning');
+
+    await tap('providers.modal.removeKey');
+    await waitForGone('providers.modal.insecureWarning');
+    await shot('providers-remove-key');
+    await tap('providers.modal.save');
+    await waitForGone('providers.modal.dialog');
+
+    const [after] = await listProviders();
+    if (after.hasApiKey) throw new Error('the stored key survived being removed');
   });
 });

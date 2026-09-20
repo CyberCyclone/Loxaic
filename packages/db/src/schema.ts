@@ -429,7 +429,13 @@ export const inferenceProviders = pgTable(
     modelAllowlist: jsonb("model_allowlist"),
     lastCheckedAt: timestamp("last_checked_at"),
     lastError: text("last_error"),
-    createdBy: text("created_by").references(() => user.id),
+    /** Attribution only, so `set null` rather than the default `no action`
+     * (which would make an admin who ever added a provider undeletable) or
+     * `cascade` (which would remove deployment-wide configuration, and orphan
+     * every conversation referencing its slug, because the person who typed it
+     * in left). The row outlives its author, the way `usage_records` outlive
+     * the conversation they were spent on. */
+    createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },

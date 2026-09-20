@@ -100,6 +100,10 @@ export function ProviderModal({
   const [name, setName] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
+  // The only way a stored key can be removed. The field itself cannot mean
+  // "remove": it is never seeded (no route returns a key), so empty has to mean
+  // "keep" — which, without this, left no path to removal at all.
+  const [removeKey, setRemoveKey] = useState(false);
   const [concurrency, setConcurrency] = useState('');
   const [allowlist, setAllowlist] = useState<string[] | null>(null);
   const [modelSearch, setModelSearch] = useState('');
@@ -118,6 +122,7 @@ export function ProviderModal({
     // stored key, so there is nothing to seed it with. Empty means "leave the
     // stored one alone".
     setApiKey('');
+    setRemoveKey(false);
     setModelSearch('');
     setManualModel('');
     setError(null);
@@ -135,7 +140,22 @@ export function ProviderModal({
   };
 
   const hint = PRESETS.find((p) => p.key === preset)?.hint ?? '';
-  const insecureWithKey = apiKey.trim().length > 0 && baseUrl.trim().toLowerCase().startsWith('http://');
+  // Whether a key will be on this provider once saved — typed now, or already
+  // stored and not being removed. Keyed on the *stored* key as well as the
+  // field, because the field is blank whenever an existing provider is edited:
+  // judged on the field alone, re-pointing a keyed provider at an http://
+  // address showed no warning at exactly the moment a real key was about to
+  // travel in the clear.
+  const willHaveKey = apiKey.trim().length > 0 || (editing?.hasApiKey === true && !removeKey);
+  const insecureWithKey = willHaveKey && baseUrl.trim().toLowerCase().startsWith('http://');
+  // A stored key follows the row wherever its address goes. Changing the
+  // address of a keyed provider means the old key is about to be sent to a
+  // different host, which is worth saying before it happens.
+  const repointedWithStoredKey =
+    editing?.hasApiKey === true &&
+    !removeKey &&
+    apiKey.trim().length === 0 &&
+    baseUrl.trim().replace(/\/+$/, '') !== editing.baseUrl.replace(/\/+$/, '');
 
   const filteredModels = availableModels.filter(
     (m) =>
@@ -184,9 +204,11 @@ export function ProviderModal({
       maxConcurrentRuns,
       modelAllowlist: allowlist && allowlist.length > 0 ? allowlist : null,
     };
-    // Absent rather than empty: an empty string would be a key, and sending
-    // one would replace a working credential with nothing.
-    if (apiKey.trim()) input.apiKey = apiKey.trim();
+    // Three states, matching the server's: a string replaces the key, null
+    // removes it, and absent keeps it. Absent rather than empty for "keep" —
+    // an empty string would replace a working credential with nothing.
+    if (removeKey) input.apiKey = null;
+    else if (apiKey.trim()) input.apiKey = apiKey.trim();
 
     setSaving(true);
     setError(null);
@@ -293,22 +315,51 @@ export function ProviderModal({
                   not McpServerModal's deliberately-unmasked textarea, which is
                   unmasked only because React Native cannot do secureTextEntry
                   and multiline at once. */}
-              <Input className="border-border bg-card">
+              <Input className={`border-border bg-card ${removeKey ? 'opacity-40' : ''}`} isDisabled={removeKey}>
                 <InputField
                   testID="providers.modal.apiKey"
                   value={apiKey}
                   onChangeText={setApiKey}
-                  placeholder={editing?.hasApiKey ? 'Stored ••••  — type to replace' : 'sk-…'}
+                  placeholder={
+                    removeKey
+                      ? 'The stored key will be removed'
+                      : editing?.hasApiKey
+                        ? 'Stored ••••  — type to replace'
+                        : 'sk-…'
+                  }
                   autoCapitalize="none"
                   autoCorrect={false}
                   secureTextEntry
+                  editable={!removeKey}
                 />
               </Input>
               <Text size="2xs" className="text-muted-foreground">
-                {editing?.hasApiKey
-                  ? 'A key is stored. It is never shown again — leave this blank to keep it.'
-                  : 'Leave blank for a backend that needs no key, such as llama.cpp or LM Studio.'}
+                {removeKey
+                  ? 'Saving removes the stored key. Requests to this provider will carry no credential.'
+                  : editing?.hasApiKey
+                    ? 'A key is stored. It is never shown again — leave this blank to keep it.'
+                    : 'Leave blank for a backend that needs no key, such as llama.cpp or LM Studio.'}
               </Text>
+              {editing?.hasApiKey && (
+                <Pressable
+                  testID="providers.modal.removeKey"
+                  onPress={() => {
+                    setRemoveKey((on) => !on);
+                    setApiKey('');
+                  }}
+                  className="self-start"
+                >
+                  <Text size="xs" className={removeKey ? 'text-primary' : 'text-destructive'}>
+                    {removeKey ? 'Keep the stored key' : 'Remove the stored key'}
+                  </Text>
+                </Pressable>
+              )}
+              {repointedWithStoredKey && (
+                <Text testID="providers.modal.repointWarning" size="2xs" className="text-warning">
+                  The stored key will now be sent to this new address. If it belongs to the old one,
+                  remove it or type the new provider&apos;s key.
+                </Text>
+              )}
               {insecureWithKey && (
                 <Text testID="providers.modal.insecureWarning" size="2xs" className="text-warning">
                   This address is plain http, so the key travels unencrypted. Fine on your own machine or

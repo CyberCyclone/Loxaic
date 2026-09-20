@@ -264,6 +264,18 @@ const HEADER_VALUE_MAX = 2048;
 /** Headers a caller may not set: ours to build (auth, content), or the
  * transport's to own. An admin who could set `authorization` here would
  * silently defeat the encrypted key column beside it. */
+/**
+ * Headers that *are* a credential under another name. `x-api-key` is how
+ * Anthropic authenticates natively and `api-key` is Azure OpenAI's spelling, so
+ * an admin filling in headers for either has an entirely plausible reason to
+ * put a live key here — where it would be stored in the clear and returned to
+ * every admin by the list route, beside an encrypted column that exists to
+ * prevent exactly that. `redactSecrets` already treats header values as worth
+ * scrubbing; this is the write path agreeing with it. Refused by name, with a
+ * message that says where the key belongs.
+ */
+const CREDENTIAL_HEADERS = new Set(["x-api-key", "api-key", "proxy-authorization", "x-auth-token"]);
+
 const FORBIDDEN_HEADERS = new Set([
   "authorization",
   "host",
@@ -338,6 +350,11 @@ export function normalizeHeaderInput(raw: unknown): Record<string, string> | nul
   for (const [name, value] of entries) {
     if (typeof value !== "string") throw new ProviderInputError(`Header "${name}" must be a string`);
     if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name)) throw new ProviderInputError(`"${name}" is not a header name`);
+    if (CREDENTIAL_HEADERS.has(name.toLowerCase())) {
+      throw new ProviderInputError(
+        `"${name}" carries a credential, and headers are stored unencrypted and shown to every admin. Put the key in the API key field instead — it is sent as a bearer token.`,
+      );
+    }
     if (FORBIDDEN_HEADERS.has(name.toLowerCase())) {
       throw new ProviderInputError(`Loxaic sets the "${name}" header itself`);
     }

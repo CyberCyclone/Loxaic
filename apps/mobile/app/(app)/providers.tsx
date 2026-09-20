@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList } from 'react-native';
 import { Plus, ShieldAlert } from 'lucide-react-native';
 import { getProviderModels, type InferenceProvider, type ProviderInput } from '@loxaic/api-client';
@@ -38,24 +38,42 @@ export default function ProvidersScreen() {
 
   /** Asked for when the modal opens on an existing provider: the allowlist
    * editor needs what the provider lists, which only it can answer. */
+  // Which request's answer is still wanted. This awaits a *remote* provider —
+  // a LAN host that has gone away spends its whole timeout here — so opening
+  // provider A, closing it, and opening B let A's list land in B's editor.
+  // Nothing on screen tells the two catalogues apart, and ticking boxes from
+  // the wrong one saves them as B's allowlist: a server-enforced spending
+  // limit made of ids that resolve against neither provider. Every state
+  // write below, the spinner included, belongs to the latest request only.
+  const modelsRequest = useRef(0);
+
   const loadModels = useCallback(async (provider: InferenceProvider | null) => {
+    const request = ++modelsRequest.current;
+    const current = () => modelsRequest.current === request;
     setAvailableModels([]);
     setModelsError(null);
-    if (!provider) return;
+    if (!provider) {
+      setLoadingModels(false);
+      return;
+    }
     setLoadingModels(true);
     try {
       const result = await getProviderModels(provider.id);
+      if (!current()) return;
       setAvailableModels(result.models);
       setModelsError(result.error ?? null);
     } catch (err) {
+      if (!current()) return;
       setModelsError(err instanceof Error ? err.message : 'Could not reach this provider');
     } finally {
-      setLoadingModels(false);
+      if (current()) setLoadingModels(false);
     }
   }, []);
 
   useEffect(() => {
-    if (modalOpen) void loadModels(editing);
+    // Closing counts as a new request too, so an answer still in flight when
+    // the modal shuts cannot arrive into whatever is opened next.
+    void loadModels(modalOpen ? editing : null);
   }, [modalOpen, editing, loadModels]);
 
   const openCreate = () => {

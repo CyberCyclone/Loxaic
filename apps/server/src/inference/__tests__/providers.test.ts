@@ -235,6 +235,16 @@ describe("header validation", () => {
     expect(() => normalizeHeaderInput({ authorization: "Bearer sneaky" })).toThrow(ProviderInputError);
   });
 
+  it("refuses a header that is a credential under another name", () => {
+    // Review finding. `x-api-key` is how Anthropic authenticates natively and
+    // `api-key` is Azure OpenAI's, so an admin has a plausible reason to put a
+    // live key here — where it would be stored in the clear and returned to
+    // every admin, beside an encrypted column that exists to prevent that.
+    for (const name of ["x-api-key", "X-Api-Key", "api-key", "Proxy-Authorization"]) {
+      expect(() => normalizeHeaderInput({ [name]: "sk-live-key-0123456789" })).toThrow(/API key field/);
+    }
+  });
+
   it("refuses a line break in a value", () => {
     expect(() => normalizeHeaderInput({ "X-Thing": "a\r\nX-Injected: yes" })).toThrow(ProviderInputError);
   });
@@ -327,6 +337,32 @@ describe("updating the key", () => {
     await updateProvider(row.id, { apiKey: null });
     const { provider } = await resolveModelRef(`${row.slug}::m`);
     expect(provider.apiKey).toBeNull();
+  });
+});
+
+describe("deleting the admin who added a provider", () => {
+  it("keeps the provider and loses only the attribution", async () => {
+    // Review finding. The default `no action` made any admin who had ever added
+    // a provider undeletable; `cascade` would have removed deployment-wide
+    // configuration — and orphaned every conversation naming its slug — because
+    // the person who typed it in left.
+    const authorId = `test-providers-author-${uuid()}`;
+    await db.insert(user).values({
+      id: authorId,
+      name: "Departing Admin",
+      email: `${authorId}@example.test`,
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const row = await createProvider({ name: `T ${uuid().slice(0, 8)}`, baseUrl: "http://127.0.0.1:1/v1" }, authorId);
+    created.push(row.id);
+
+    await db.delete(user).where(eq(user.id, authorId));
+
+    const after = await db.query.inferenceProviders.findFirst({ where: eq(inferenceProviders.id, row.id) });
+    expect(after).toBeTruthy();
+    expect(after?.createdBy).toBeNull();
   });
 });
 

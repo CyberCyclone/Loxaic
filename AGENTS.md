@@ -489,6 +489,23 @@ replies.
   refused — they would sit in the clear in `base_url` beside an encrypted column that exists to
   stop exactly that. Custom headers refuse `authorization` (it would silently defeat that
   column), the hop-by-hop set, and any CR/LF; keyed fetches use `redirect: "error"`.
+- **`authorization` is not the only header that is a credential.** `x-api-key` is how Anthropic
+  authenticates natively and `api-key` is Azure OpenAI's, so an admin has a plausible reason to
+  put a live key in the headers box — where it is stored in the clear and returned to every
+  admin by the list route. `redactSecrets` already treated header values as secrets; the write
+  path now agrees, refusing those names (`CREDENTIAL_HEADERS`) with a message pointing at the
+  API key field. Found in review, not by any test.
+- **A stored key has three client states, and "remove" needs its own control.** The key field
+  is never seeded (no route returns a key), so empty has to mean "keep" — which left no path to
+  removal at all, and re-pointing a keyed provider's `baseUrl` kept sending the old bearer to
+  the new host. The edit form has an explicit Remove control (`apiKey: null`), warns when the
+  address of a keyed provider changes, and derives its plain-http warning from the *stored* key
+  as well as the field — judged on the field alone it was silent exactly when a real key was
+  about to travel in the clear.
+- **`created_by` is `ON DELETE SET NULL`.** The default `no action` made any admin who had ever
+  added a provider undeletable; `cascade` would remove deployment-wide configuration, and
+  orphan every conversation naming its slug, because its author left. Attribution is the only
+  thing that should go.
 - **The key is decrypted with the *cached* scrypt derive** (`inference/provider-secrets.ts`,
   modelled on `github/connection.ts`, not `mcp/secrets.ts`). It is on the path of every
   inference request, and an uncached scrypt costs ~16 MB and tens of milliseconds
@@ -514,7 +531,11 @@ replies.
   `acquireRunSlot`/`resolveMaxConcurrent`/`schedulerState`, so every pre-existing call site
   stands. Precedence for an added provider is the row's `maxConcurrentRuns` first — the
   deployment-wide `INFERENCE_MAX_CONCURRENT_RUNS` describes the deployment's own backend, not
-  someone else's API — then an authed `/props`, then the floor of 1.
+  someone else's API — then an authed `/props`, then the floor of 1. **A provider that cannot
+  be resolved gets the floor and is not probed**: `probeTotalSlots(undefined)` means "the
+  built-in backend", so probing sized a deleted or undecryptable provider's queue from local
+  llama.cpp's `--parallel` and cached it for a minute — the invisible direction the floor
+  exists to prevent. `scheduler.test.ts` holds it with a probe target that really does answer 8.
 - **The run path never fans out.** `getModelInfo(ref)`/`resolveWindow(ref)` touch only the
   ref's own provider; only `GET /v1/models` asks them all, in parallel, with a failure
   contributing an empty list. Searching every provider from `engine.ts` would put one
@@ -584,9 +605,22 @@ replies.
   group would render twice, and every duplicate is another row to read past. Recents are
   otherwise rendered *in addition to* their group, so a group stays a complete list of what
   that provider serves — hence `models.recent.<id>` and `models.row.<id>` as separate testIDs.
-- **A new conversation opens on the last-used model**, after the conversation's own
-  `model_pref` and any pending choice, and only when it is still offered (`isKnown`) — a
-  provider may have been deleted or its allowlist narrowed since.
+- **A new conversation opens on the last-used model — and only a new one.** The gate in
+  `lib/selectModel.ts` is "no conversation exists yet", not "this conversation has no
+  `model_pref`". Those are different sets: a thread from before `model_pref` was written, or
+  made by another client, has an id and no pref, and "last used anywhere" silently pointed
+  that old local-model thread at a paid provider the first time its owner tried one in a
+  different chat. A conversation that exists falls through to the built-in default. Gating on
+  the id is safe for the thread being started too: on both surfaces a conversation acquires
+  its id *as part of* its first send, which records the model on it, so the composer does not
+  flip when the conversation stops being new. Pure and unit-tested because it is one branch
+  away from billing someone; recents must also still be offered (`isKnown`).
+- **The allowlist editor discards a stale model list.** `loadModels` awaits a *remote* provider,
+  so opening a slow provider, closing it, and opening another let the first's catalogue land
+  in the second's editor — and saving ticked boxes wrote one provider's ids as another's
+  allowlist, a server-enforced spending limit made of ids that resolve against neither. Every
+  state write, the spinner included, is guarded by a request counter; closing the modal
+  retires the in-flight request too.
 - **`ModelModal` needed `max-h-[85%]` *and* `ModalBody scrollEnabled`**, neither of which it
   had. The vendored `ModalBody` hardcodes `scrollEnabled={false}` before its prop spread and
   `ModalContent` has no height cap, so a list past the fold extended past the viewport with

@@ -816,3 +816,25 @@ export async function mockProviderRequests(
   if (!res.ok) throw new Error(`[e2e] reading mock provider requests failed (${String(res.status)})`);
   return (await res.json()) as { path: string; authorization: string | null; model: string | null }[];
 }
+
+/**
+ * Strips a conversation's stored model, leaving it as every thread from before
+ * `model_pref` was written looks: an id, a history, and no model of its own.
+ *
+ * This client always records a model on a conversation's first send, so that
+ * state cannot be reached through the UI — and it is exactly the state in which
+ * "open on the last model used anywhere" would move an old thread onto a
+ * different, possibly paid, backend.
+ */
+export async function clearConversationModel(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<void> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ model_pref: {} }),
+  });
+  if (!res.ok) throw new Error(`[e2e] clearing the conversation's model failed (${String(res.status)})`);
+}

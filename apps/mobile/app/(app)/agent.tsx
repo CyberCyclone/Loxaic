@@ -27,6 +27,7 @@ import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
 import { useRecentModels } from '@/hooks/useRecentModels';
+import { pickSelectedModel } from '@/lib/selectModel';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useServerConfig } from '@/hooks/useServerConfig';
@@ -105,17 +106,17 @@ export default function AgentScreen() {
   const wide = breakpoint === 'wide';
 
   const prefModel = activeRun?.model;
-  const selectedModel =
-    (prefModel && (models.length === 0 || isKnown(prefModel)) ? prefModel : null) ??
-    pendingModel ??
-    // A new conversation opens on whatever this user last sent with — the
-    // single most likely answer, and the one that saves them finding it in the
-    // picker again. Skipped when that model is no longer offered (its provider
-    // was deleted, or an admin disallowed it), which is also why the list has
-    // to have loaded before it counts.
-    (models.length > 0 ? recentModels.find((ref) => isKnown(ref)) : undefined) ??
-    defaultModel?.id ??
-    '';
+  // See lib/selectModel.ts for the order, and for why "last used" applies only
+  // to a conversation that does not exist yet.
+  const selectedModel = pickSelectedModel({
+    prefModel,
+    hasConversation: Boolean(activeId),
+    pendingModel,
+    recentModels,
+    modelsLoaded: models.length > 0,
+    isKnown,
+    defaultModelId: defaultModel?.id,
+  });
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
   const mcpOverrides = useMcpOverrides(token, activeId);
