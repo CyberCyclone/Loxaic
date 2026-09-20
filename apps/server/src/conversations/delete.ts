@@ -17,7 +17,7 @@
  * The ordering below is the load-bearing part, and it is not the obvious one.
  */
 import { db, and, eq } from "@loxaic/db";
-import { conversations, messages, sandboxes, usageRecords } from "@loxaic/db/schema";
+import { conversations, messages, routineRuns, sandboxes, usageRecords } from "@loxaic/db/schema";
 import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
 import { getConversationSettings } from "../settings.ts";
 import { getRunByConversation, waitForRunEnd } from "../streams/registry.ts";
@@ -221,6 +221,12 @@ function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean
 async function eraseRows(id: string): Promise<void> {
   await db.transaction(async (tx) => {
     await tx.delete(messages).where(eq(messages.conversationId, id));
+    // A routine's run points at its conversation with no foreign key, so
+    // erasing the conversation without this leaves a row claiming a run whose
+    // chat is gone — listed in the routine's history, opening onto nothing.
+    // The routine itself is untouched: deleting one of its chats is not
+    // deleting it.
+    await tx.delete(routineRuns).where(eq(routineRuns.conversationId, id));
     // Usage rows are counts and timings — tokens, milliseconds, a model name —
     // with no content and no title. They are kept, because they are what the
     // Stats screen's lifetime totals are made of and deleting a conversation
@@ -264,12 +270,32 @@ async function deleteStreamLogs(id: string): Promise<void> {
  * conversation was deleted, and a workspace cannot be un-destroyed. An agent
  * conversation restored this way starts a fresh sandbox on its next tool call,
  * from the workspace it was created with.
+ *
+ * A routine's chat whose routine is gone comes back as an ordinary chat. Only
+ * a routine lists its own conversations, so restoring one as `kind: "routine"`
+ * with nothing left to list it would put it back where no surface can reach
+ * it — restored in name only.
  */
 export async function restoreConversation(id: string): Promise<void> {
+  const orphaned = await isOrphanedRoutineChat(id);
   await db
     .update(conversations)
-    .set({ deletedAt: null, deletedHold: false })
+    .set({ deletedAt: null, deletedHold: false, ...(orphaned ? { kind: "chat" as const } : {}) })
     .where(eq(conversations.id, id));
+}
+
+async function isOrphanedRoutineChat(id: string): Promise<boolean> {
+  const row = await db.query.conversations.findFirst({
+    where: eq(conversations.id, id),
+    columns: { kind: true },
+  });
+  if (row?.kind !== "routine") return false;
+  const runs = await db
+    .select({ id: routineRuns.id })
+    .from(routineRuns)
+    .where(eq(routineRuns.conversationId, id))
+    .limit(1);
+  return runs.length === 0;
 }
 
 /** Erases a batch of conversations, one at a time so a single failure does not

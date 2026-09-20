@@ -310,19 +310,45 @@ export const routines = pgTable("routines", {
   prompt: text("prompt").notNull(),
   target: jsonb("target"),
   enabled: boolean("enabled").notNull().default(true),
+  /**
+   * The model every run of this routine uses — one opaque reference, the same
+   * string a conversation's `model_pref` holds (`slug::id`, or a bare id for
+   * the built-in backend). Nothing ever substitutes for it: a run whose model
+   * is missing or unusable fails and says so, rather than quietly spending an
+   * admin's provider key on whatever else happens to be loaded.
+   *
+   * Nullable only for routines written before this column existed (and for an
+   * older client that posts without one). Those fail every run until someone
+   * edits the routine and picks a model.
+   */
+  model: text("model"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
   lastRunAt: timestamp("last_run_at"),
   nextRunAt: timestamp("next_run_at"),
 });
 
 // ── Routine Runs ──
-export const routineRuns = pgTable("routine_runs", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  routineId: uuid("routine_id").notNull(),
-  conversationId: uuid("conversation_id").notNull(),
-  status: text("status").notNull().default("running"),
-  startedAt: timestamp("started_at").defaultNow().notNull(),
-  finishedAt: timestamp("finished_at"),
-});
+export const routineRuns = pgTable(
+  "routine_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Cascades: deleting a routine must not leave rows pointing at it, and
+     * the delete route's own pass over the conversations is what erases the
+     * chats those rows name. */
+    routineId: uuid("routine_id")
+      .notNull()
+      .references(() => routines.id, { onDelete: "cascade" }),
+    conversationId: uuid("conversation_id").notNull(),
+    status: text("status").notNull().default("running"),
+    startedAt: timestamp("started_at").defaultNow().notNull(),
+    finishedAt: timestamp("finished_at"),
+  },
+  (t) => [
+    index("routine_runs_routine_started_idx").on(t.routineId, t.startedAt),
+    // Erasing any conversation now looks for run rows naming it.
+    index("routine_runs_conversation_idx").on(t.conversationId),
+  ],
+);
 
 // ── Model Registry ──
 export const modelRegistry = pgTable("model_registry", {

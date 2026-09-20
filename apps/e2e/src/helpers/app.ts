@@ -146,7 +146,23 @@ export async function openSidebar(): Promise<void> {
   await browser.waitUntil(
     async () => {
       if (await byTestId('sidebar.signOut').isDisplayed()) return true;
-      await tap('shell.menuButton');
+      // Bounded, and allowed to miss. On a wide layout the sidebar is pinned
+      // and `shell.menuButton` is never rendered at all, so this loop's only
+      // real exit is the check above — and `tap`'s own wait is the config's
+      // 20s, which is the whole outer budget. One attempt therefore consumed
+      // every retry, and the helper failed with "menuButton still not
+      // displayed" whenever the first check ran a moment too early: right
+      // after a `browser.refresh()`, which is exactly where agent-checkin
+      // uses it. Letting the tap miss keeps re-checking for the pinned
+      // sidebar instead of committing to a button that will never appear.
+      const menu = byTestId('shell.menuButton');
+      const tapped = await menu
+        .waitForDisplayed({ timeout: 2000 })
+        .then(async () => {
+          await menu.click();
+          return true;
+        }, () => false);
+      if (!tapped) return false;
       return await byTestId('sidebar.signOut')
         .waitForDisplayed({ timeout: 3000 })
         .then(() => true, () => false);
@@ -241,10 +257,20 @@ export async function sendAndAwaitReply(prompt: string, expected: string): Promi
   await waitForTextIn('chat.messageList', expected);
 }
 
-export async function goToSurface(surface: 'chat' | 'agent' | 'routines' | 'stats'): Promise<void> {
+/** What proves each surface has actually arrived. Chat and Agent both open on
+ * a composer; Routines is a list and has never rendered one, so waiting for
+ * `composer.input` there timed out rather than landing. */
+const SURFACE_ANCHOR = {
+  chat: 'composer.input',
+  agent: 'composer.input',
+  routines: 'routines.new',
+  stats: 'composer.input',
+} as const;
+
+export async function goToSurface(surface: keyof typeof SURFACE_ANCHOR): Promise<void> {
   await openSidebar();
   await tap(`sidebar.nav.${surface}`);
-  await waitForVisible('composer.input');
+  await waitForVisible(SURFACE_ANCHOR[surface]);
 }
 
 /**
@@ -256,10 +282,14 @@ export async function goToSurface(surface: 'chat' | 'agent' | 'routines' | 'stat
  * deciding from what is actually on screen rather than from a breakpoint the
  * spec would have to know.
  */
-export async function openThreadList(surface: 'chat' | 'agent' = 'chat'): Promise<void> {
-  if (await byTestId('threadList.newChat').isDisplayed().catch(() => false)) return;
+export async function openThreadList(surface: 'chat' | 'agent' | 'routineChat' = 'chat'): Promise<void> {
+  // A routine's list has no new-chat button — its runs are what make its
+  // chats — so the corner holds Run now instead, and that is what says the
+  // list is open there.
+  const anchor = surface === 'routineChat' ? 'threadList.runNow' : 'threadList.newChat';
+  if (await byTestId(anchor).isDisplayed().catch(() => false)) return;
   await tap(`${surface}.threadList.toggle`);
-  await waitForVisible('threadList.newChat');
+  await waitForVisible(anchor);
 }
 
 /** Starts a new thread on the given surface, on any layout. */
@@ -302,6 +332,93 @@ export async function listConversations(
   // from a chat thread without matching on titles. Optional because rows
   // predating the column don't carry one.
   return (await res.json()) as { id: string; title: string; kind?: 'chat' | 'agent' }[];
+}
+
+// ── Routines ──────────────────────────────────────────────
+//
+// Seeded through the API rather than the UI wherever the spec is about
+// something *else* — and on iOS, where the create form is a Modal overlay
+// XCUITest cannot resolve testIDs inside (see delete-conversation.spec.ts).
+
+export interface E2ERoutine {
+  id: string;
+  name: string;
+  cron: string;
+  prompt: string;
+  model: string | null;
+}
+
+async function routineFetch(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  path: string,
+  init?: RequestInit,
+): Promise<unknown> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${token}`, ...(init?.body ? { 'content-type': 'application/json' } : {}) },
+  });
+  if (!res.ok) {
+    throw new Error(`[e2e] ${init?.method ?? 'GET'} ${path} failed (${String(res.status)}): ${await res.text()}`);
+  }
+  return res.json();
+}
+
+export async function createRoutine(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  input: { name: string; cron?: string; prompt: string; model?: string | null },
+): Promise<E2ERoutine> {
+  return (await routineFetch(creds, '/v1/routines', {
+    method: 'POST',
+    // 04:00 on the 1st of January: valid, and far enough off that nothing
+    // fires during a run — a spec that wants one starts it itself.
+    body: JSON.stringify({ cron: '0 4 1 1 *', ...input }),
+  })) as E2ERoutine;
+}
+
+export async function listRoutines(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<E2ERoutine[]> {
+  return (await routineFetch(creds, '/v1/routines')) as E2ERoutine[];
+}
+
+/** Starts a run and returns it — the row comes back `running`, so a caller
+ * that wants the answer follows with `waitForRunDone`. */
+export async function runRoutine(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  id: string,
+): Promise<{ id: string; conversationId: string; status: string }> {
+  return (await routineFetch(creds, `/v1/routines/${id}/run`, { method: 'POST' })) as {
+    id: string;
+    conversationId: string;
+    status: string;
+  };
+}
+
+export async function listRoutineConversations(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  id: string,
+): Promise<{ id: string; title: string; run: { status: string } }[]> {
+  return (await routineFetch(creds, `/v1/routines/${id}/conversations`)) as {
+    id: string;
+    title: string;
+    run: { status: string };
+  }[];
+}
+
+/** The model each assistant message was answered on — how a spec proves a
+ * routine ran on the model it was given and not on something else. */
+export async function assistantModels(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<string[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] GET messages failed (${String(res.status)})`);
+  const body = (await res.json()) as { messages: { authorType: string; model: string | null }[] };
+  return body.messages.filter((m) => m.authorType === 'assistant').map((m) => m.model ?? '');
 }
 
 /**

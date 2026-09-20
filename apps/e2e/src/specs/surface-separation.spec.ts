@@ -11,11 +11,13 @@
  * Selected by `threadList.item.<id>` rather than by title, so this cannot be
  * fooled by two conversations that happen to read alike.
  *
- * Routine runs are the third kind — the scheduler creates a conversation with
- * kind "routine" for each one — and they are excluded by the same filter. Not
- * covered here: making one needs the scheduler to fire on its cron, and the
- * create route only accepts "chat" | "agent", so a spec cannot mint one
- * through the API the way it can the two below.
+ * Routine runs are the third kind — a run creates a conversation with kind
+ * "routine" — and they are excluded here twice over: the server now leaves
+ * them out of `GET /v1/conversations` entirely, and both hooks still filter on
+ * kind. `routines.spec.ts` covers that direction, minting one through
+ * `POST /v1/routines/:id/run` rather than waiting on a cron; it is asserted
+ * there because that spec is also where a routine's own scoped list lives, and
+ * the two claims are the same claim from opposite sides.
  */
 import { browser } from '@wdio/globals';
 import { provisionUser, uniqueCreds } from '../helpers/auth.ts';

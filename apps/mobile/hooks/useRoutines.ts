@@ -33,7 +33,7 @@ export function useRoutines(token: string | null) {
   }, [refresh]);
 
   const create = useCallback(
-    async (input: { name: string; cron: string; prompt: string }) => {
+    async (input: { name: string; cron: string; prompt: string; model: string }) => {
       const r = await createRoutine(input);
       setRoutines((prev) => [r, ...prev]);
       showToast('Routine created');
@@ -43,7 +43,11 @@ export function useRoutines(token: string | null) {
   );
 
   const update = useCallback(
-    async (id: string, patch: Partial<{ name: string; cron: string; prompt: string; enabled: boolean }>) => {
+    async (
+      id: string,
+      // No `null` for model: it can be changed, never removed.
+      patch: Partial<{ name: string; cron: string; prompt: string; enabled: boolean; model: string }>,
+    ) => {
       const r = await updateRoutine(id, patch);
       setRoutines((prev) => prev.map((x) => (x.id === r.id ? r : x)));
       return r;
@@ -61,11 +65,22 @@ export function useRoutines(token: string | null) {
 
   const remove = useCallback(
     async (id: string) => {
-      await deleteRoutine(id);
+      // The failure is reported rather than thrown at nobody: this is called
+      // as `void remove(id)` from a press handler, so a rejection was an
+      // unhandled one — and the row was dropped from the list either way, so
+      // a delete the server refused looked exactly like one that worked until
+      // the next refresh put it back.
+      try {
+        await deleteRoutine(id);
+      } catch (err) {
+        showToast(`Could not delete: ${err instanceof Error ? err.message : String(err)}`, 4000);
+        await refresh();
+        return;
+      }
       setRoutines((prev) => prev.filter((x) => x.id !== id));
       showToast('Routine deleted');
     },
-    [showToast],
+    [showToast, refresh],
   );
 
   const runNow = useCallback(

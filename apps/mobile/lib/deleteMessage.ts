@@ -52,3 +52,48 @@ export function deleteConversationMessage(
     `review them, and then erases them. You cannot reach it again yourself.`
   )
 }
+
+/**
+ * What deleting a *routine* takes with it.
+ *
+ * A separate sentence from the one above, because the thing being deleted is
+ * not a conversation: it is a schedule plus every chat its runs have produced,
+ * and the count is the part someone needs to see before they agree to it. The
+ * retention split is the same three-way one, for the same reason — those chats
+ * go through exactly the path "Delete chat" does.
+ */
+export function deleteRoutineMessage(
+  name: string,
+  /** Null while the count is unknown — still loading, or the request failed. */
+  chatCount: number | null,
+  retentionDays: number | null | undefined,
+): string {
+  // Unknown is not zero. Coercing it said "It has no chats yet." for a routine
+  // with forty of them — for the moment before the count arrived, and for good
+  // if the request failed — so someone confirmed a destructive action having
+  // been told nothing went with it. Same rule as the retention half below:
+  // when we were not told, say what is true either way and claim no number.
+  const chats =
+    chatCount === null
+      ? 'Every chat its runs have produced goes with it.'
+      : chatCount === 0
+        ? 'It has no chats yet.'
+        : chatCount === 1
+          ? 'Its 1 chat goes with it.'
+          : `Its ${String(chatCount)} chats go with it.`
+  const head = `“${name}” will stop running on its schedule. ${chats}`
+
+  if (retentionDays === undefined) {
+    // Same rule as above: while the policy is still loading, claim neither
+    // outcome rather than guessing at someone's data.
+    return `${head} You cannot undo this yourself.`
+  }
+  if (retentionDays === null) {
+    return `${head} This cannot be undone — the routine and its messages are erased.`
+  }
+  const days = retentionDays === 1 ? '1 day' : `${String(retentionDays)} days`
+  return (
+    `${head} The routine itself is erased; this server keeps its deleted chats for ${days} so an ` +
+    `administrator can review them. You cannot reach them again yourself.`
+  )
+}

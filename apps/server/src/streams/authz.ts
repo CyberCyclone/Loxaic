@@ -40,6 +40,11 @@ export interface AccessGrant {
    * explicit share. Callers that must not let an admin *act* (as opposed to
    * look) branch on this rather than on the role. */
   viaAdmin: boolean;
+  /** Which surface this conversation belongs to. Carried here because the
+   * access lookup already reads the row — a caller that needs it (the send
+   * path, which serves a routine conversation on its routine's model) would
+   * otherwise pay a second query on every send. */
+  kind: "chat" | "agent" | "routine";
 }
 
 /**
@@ -96,7 +101,7 @@ export async function resolveAccess(
 ): Promise<AccessGrant | null> {
   const row = await db.query.conversations.findFirst({
     where: eq(conversations.id, conversationId),
-    columns: { id: true, ownerId: true, deletedAt: true },
+    columns: { id: true, ownerId: true, deletedAt: true, kind: true },
   });
   // A soft-deleted conversation is absent for access purposes. The list
   // endpoint already hides it, but share rows outlive the delete, so without
@@ -104,7 +109,7 @@ export async function resolveAccess(
   // its attachments, and — as an editor — keep sending into it. "Delete" has
   // to mean revoke, for the owner too.
   if (!row || row.deletedAt) return null;
-  if (row.ownerId === userId) return { conversationId, role: "owner", viaAdmin: false };
+  if (row.ownerId === userId) return { conversationId, role: "owner", viaAdmin: false, kind: row.kind };
 
   const share = await db.query.conversationShares.findFirst({
     where: and(
@@ -113,9 +118,9 @@ export async function resolveAccess(
     ),
     columns: { role: true },
   });
-  if (share) return { conversationId, role: share.role, viaAdmin: false };
+  if (share) return { conversationId, role: share.role, viaAdmin: false, kind: row.kind };
 
-  if (await isAdmin(userId)) return { conversationId, role: "viewer", viaAdmin: true };
+  if (await isAdmin(userId)) return { conversationId, role: "viewer", viaAdmin: true, kind: row.kind };
   return null;
 }
 

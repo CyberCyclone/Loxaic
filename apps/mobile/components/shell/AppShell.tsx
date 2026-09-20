@@ -36,7 +36,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const overlaySidebar = breakpoint !== 'wide';
-  const activeSurface = (pathname.replace(/^\//, '') || 'chat') as SurfaceId;
+  // The first segment, not the whole path: a routine's chat lives at
+  // `/routines/<id>`, and matching on the full path would leave the sidebar
+  // with nothing highlighted the moment you opened one.
+  const activeSurface = (pathname.split('/')[1] || 'chat') as SurfaceId;
 
   const navigate = useCallback(
     (surface: SurfaceId) => {
