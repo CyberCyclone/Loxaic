@@ -170,6 +170,15 @@ export default function RoutineChatScreen() {
     try {
       const run = await runRoutineNow(routineId);
       await refreshList();
+      // The server answers non-2xx when no run was created, so this should
+      // always hold — but an older server said `200 {ok: true}` for that, and
+      // `setActiveId(undefined)` then blanked a screen `refreshList` had just
+      // filled, showing "hasn't run yet" over a full history with nothing
+      // saying the run never started.
+      if (!run.conversationId) {
+        showToast('The run could not be started. Try again.', 4000);
+        return;
+      }
       // Straight into the run that was just started — that is what pressing
       // it meant.
       setActiveId(run.conversationId);

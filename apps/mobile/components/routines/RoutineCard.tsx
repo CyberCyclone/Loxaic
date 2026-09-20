@@ -29,6 +29,10 @@ interface RoutineCardProps {
   /** What this routine runs on, for display. Null for one written before the
    * field existed — which cannot run at all until a model is chosen. */
   modelLabel: string | null;
+  /** The routine has a model and it no longer resolves — its provider was
+   * deleted or switched off. A different sentence from never having had one,
+   * because the fix is different: this one *was* working. */
+  modelUnavailable?: boolean;
   onToggle: (enabled: boolean) => void;
   onRunNow: () => void;
   /** Opens this routine's chats. The card's main body, because seeing what a
@@ -43,6 +47,7 @@ export function RoutineCard({
   routine,
   running,
   modelLabel,
+  modelUnavailable,
   onToggle,
   onRunNow,
   onOpen,
@@ -83,7 +88,7 @@ export function RoutineCard({
           numberOfLines={1}
           style={TRUNCATE_TEXT}
         >
-          {modelLabel ?? 'No model'}
+          {modelLabel ?? (modelUnavailable ? 'Model unavailable' : 'No model')}
         </Text>
         <Text testID={`routines.lastRun.${routine.id}`} size="2xs" className="text-muted-foreground">
           Last run: {formatTimestamp(routine.lastRunAt)}

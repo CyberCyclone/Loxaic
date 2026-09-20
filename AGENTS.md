@@ -1088,6 +1088,31 @@ replies.
   whole delete retryable), then one transaction deleting `routine_runs` `RETURNING` and the
   routine, then a second pass for a run that raced the first. DELETE now 404s for a routine that
   is not yours or does not exist, where it used to answer `{ok: true}` for both.
+- **`unscheduleRoutine` runs *after* the routine row is gone, never before.** Unscheduling first
+  looked tidier and left a hole: a throw in the conversation pass answers 500 with the routine
+  intact — deliberately, the delete is retryable — but nothing re-adds a job outside POST, PATCH
+  and boot, so the routine came back in the list looking enabled and never fired again until a
+  restart. A tick landing in the gap is harmless both ways: before the transaction its run row is
+  caught by `RETURNING`, after it `executeRoutine` finds no routine. `isRoutineScheduled()` exists
+  because the schedule is otherwise invisible from outside, which is how this went unnoticed.
+  Found in review, not by any test.
+- **`POST /:id/run` answers 409 when no run was created**, never `200 {ok: true}`. The client is
+  typed to read a 200 as a run, so it opened `conversationId: undefined` and blanked a screen of
+  history with "hasn't run yet" — while nothing said the run had not started.
+- **The delete dialog's count comes from `GET /:id/conversations/count`, not the listing.** The
+  listing is a 50-row page, right for a history panel and wrong for a sentence about what a
+  delete takes: a week-old hourly routine read "Its 50 chats go with it" and lost 168. And an
+  *unknown* count is `null`, never 0 — coerced, it said "It has no chats yet." until the fetch
+  landed, and permanently if it failed. `deleteRoutineMessage` has the same "we were not told"
+  branch for the count as for retention.
+- **An unresolvable model is "Model unavailable", and only a loaded model list may say so.**
+  `labelFor` once fell through to the raw ref, so a deleted provider's routine showed
+  `myprovider::llama-3` in a neutral badge — the warning suppressed in the one case where every
+  run fails. But `isKnown` is false for everything until the list arrives, so the verdict is
+  gated on `modelsLoaded` or every card flashes red on each visit.
+- **`nextRunAt` is node-cron's own `getNextRun()`**, written on schedule, on each tick, and
+  nulled on unschedule — asked of the live job rather than re-derived, so it cannot disagree
+  with what will fire.
 - **`eraseRows` owns the `routine_runs` cleanup**, because nothing else would: the column carries
   no foreign key to `conversations`, so erasing one of a routine's chats without this leaves a run
   row listed in the routine's history opening onto nothing.
@@ -1117,6 +1142,12 @@ replies.
   this client; a routine's does not, so opening its chat is the first this client hears of it.
   Sent *after* the history fetch settles: a snapshot landing first fills the thread, and the
   history fill only applies to an empty one, so the older messages would be dropped.
+- **Never read a result back out of a `setState` updater.** `handleDelete` assigned `remaining`
+  inside `setConversations(prev => …)` and read it on the next line. React runs an updater eagerly
+  only when the fiber has nothing pending; with another update queued (a background stream event,
+  the confirm dialog's own `setDeletingId(null)`) it is deferred to the render, and the variable
+  is still its initialiser. "Open the next chat along" therefore picked nothing, intermittently,
+  in exactly the scope it was written for. Decide from a ref before the update.
 - **`AppShell` derives the active surface from the first path segment.** `/routines/<id>` is a
   real route (so browser and Android back mean "back to the routines list", and a reload keeps the
   routine); matching on the whole path left the sidebar with nothing highlighted.

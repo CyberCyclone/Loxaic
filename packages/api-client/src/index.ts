@@ -948,6 +948,16 @@ export async function getRoutineRuns(id: string): Promise<RoutineRun[]> {
  * filter the client applies. Routine chats are absent from
  * `getConversations()` entirely.
  */
+/**
+ * How many chats deleting this routine takes with it — every one, not the page
+ * `getRoutineConversations` stops at. The delete dialog's sentence turns on
+ * this number, and counting a 50-row page under-reported a long-lived routine.
+ */
+export async function getRoutineChatCount(id: string): Promise<number> {
+  const body = (await (await authedFetch(`/v1/routines/${id}/conversations/count`)).json()) as { count: number };
+  return body.count;
+}
+
 export async function getRoutineConversations(id: string): Promise<RoutineConversation[]> {
   return (await authedFetch(`/v1/routines/${id}/conversations`)).json() as Promise<RoutineConversation[]>;
 }

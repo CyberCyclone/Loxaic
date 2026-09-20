@@ -370,8 +370,8 @@ export async function createRoutine(
 ): Promise<E2ERoutine> {
   return (await routineFetch(creds, '/v1/routines', {
     method: 'POST',
-    // Every hour of every day: far enough off that nothing fires during a run,
-    // and a spec that wants a run starts one itself.
+    // 04:00 on the 1st of January: valid, and far enough off that nothing
+    // fires during a run — a spec that wants one starts it itself.
     body: JSON.stringify({ cron: '0 4 1 1 *', ...input }),
   })) as E2ERoutine;
 }

@@ -78,6 +78,16 @@ describe('deleteRoutineMessage', () => {
     expect(deleteRoutineMessage('x', 0, null)).toContain('no chats yet')
   })
 
+  it('claims no number while the count is unknown', () => {
+    // Unknown used to be coerced to 0, which read "It has no chats yet." for a
+    // routine with forty — permanently, if the count request failed. That is a
+    // positive claim that nothing is lost, made at the moment of deciding.
+    const msg = deleteRoutineMessage('x', null, null)
+    expect(msg).not.toContain('no chats')
+    expect(msg).not.toMatch(/\d+ chats?/)
+    expect(msg).toContain('Every chat its runs have produced goes with it')
+  })
+
   it('says the schedule stops, which is the other half of what is lost', () => {
     expect(deleteRoutineMessage('x', 0, null)).toContain('stop running on its schedule')
   })

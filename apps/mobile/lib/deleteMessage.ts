@@ -64,15 +64,23 @@ export function deleteConversationMessage(
  */
 export function deleteRoutineMessage(
   name: string,
-  chatCount: number,
+  /** Null while the count is unknown — still loading, or the request failed. */
+  chatCount: number | null,
   retentionDays: number | null | undefined,
 ): string {
+  // Unknown is not zero. Coercing it said "It has no chats yet." for a routine
+  // with forty of them — for the moment before the count arrived, and for good
+  // if the request failed — so someone confirmed a destructive action having
+  // been told nothing went with it. Same rule as the retention half below:
+  // when we were not told, say what is true either way and claim no number.
   const chats =
-    chatCount === 0
-      ? 'It has no chats yet.'
-      : chatCount === 1
-        ? 'Its 1 chat goes with it.'
-        : `Its ${String(chatCount)} chats go with it.`
+    chatCount === null
+      ? 'Every chat its runs have produced goes with it.'
+      : chatCount === 0
+        ? 'It has no chats yet.'
+        : chatCount === 1
+          ? 'Its 1 chat goes with it.'
+          : `Its ${String(chatCount)} chats go with it.`
   const head = `“${name}” will stop running on its schedule. ${chats}`
 
   if (retentionDays === undefined) {

@@ -59,11 +59,40 @@ export function scheduleRoutine(routineId: string, cronExpr: string) {
     }
   });
   jobs.set(routineId, job);
+  void recordNextRun(routineId);
+}
+
+/**
+ * Write when this routine fires next, as node-cron itself computes it.
+ *
+ * The column is on the wire and the stub used to fill it with `now`, which was
+ * a lie; dropping that write left it permanently null, which is no better for
+ * a client that renders it. Asked of the live job rather than re-derived from
+ * the expression, so it cannot disagree with what will actually fire. Best
+ * effort: a failed write costs a label, never a run.
+ */
+async function recordNextRun(routineId: string) {
+  const next = jobs.get(routineId)?.getNextRun() ?? null;
+  await db
+    .update(routines)
+    .set({ nextRunAt: next })
+    .where(eq(routines.id, routineId))
+    .catch(() => undefined);
 }
 
 export function unscheduleRoutine(routineId: string) {
   const job = jobs.get(routineId);
   if (job) { void job.stop(); jobs.delete(routineId); }
+  // A disabled routine has no next run, and saying it still does is the same
+  // lie in the other direction. A no-op for a routine that was just deleted.
+  void recordNextRun(routineId);
+}
+
+/** Whether a cron job is live for this routine in this process. The schedule
+ * is otherwise invisible from outside, which is how a routine that was enabled
+ * in the database and scheduled nowhere went unnoticed. */
+export function isRoutineScheduled(routineId: string): boolean {
+  return jobs.has(routineId);
 }
 
 /** Stop every scheduled job so the process can exit cleanly. */
@@ -135,6 +164,8 @@ export async function executeRoutine(routineId: string): Promise<string | undefi
   }
 
   await db.update(routines).set({ lastRunAt: startedAt }).where(eq(routines.id, routineId));
+  // A tick has just been consumed, so the job's next fire time has moved.
+  void recordNextRun(routineId);
 
   if (!resolved.ok) {
     await recordFailedStart(routine, convId, runId, resolved.reason);

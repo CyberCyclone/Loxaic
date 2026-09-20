@@ -23,7 +23,7 @@ import { useToastHelper } from '@/hooks/useToastHelper';
 import { deleteRoutineMessage } from '@/lib/deleteMessage';
 import { pickSelectedModel } from '@/lib/selectModel';
 import { useSession } from '@/lib/session';
-import { getRoutineConversations, type Routine } from '@loxaic/api-client';
+import { getRoutineChatCount, type Routine } from '@loxaic/api-client';
 
 export default function RoutinesScreen() {
   const shell = useShell();
@@ -53,11 +53,34 @@ export default function RoutinesScreen() {
    */
   const [deleting, setDeleting] = useState<{ routine: Routine; chats: number | null } | null>(null);
 
-  /** What this model is called, or null when it is not one this server has —
-   * a provider that was deleted, or a routine that never had one. */
+  /**
+   * Whether this routine's stored model still resolves. Only a *loaded* list
+   * can say no: before it arrives `isKnown` is false for everything, and
+   * judging then would flash every card red on each visit.
+   */
+  const modelsLoaded = models.length > 0 || (!modelsLoading && !modelsError);
+  const isUnavailable = useCallback(
+    (model: string | null) => model !== null && modelsLoaded && !isKnown(model),
+    [isKnown, modelsLoaded],
+  );
+
+  /**
+   * What this model is called, or null when there is nothing usable to name —
+   * a routine that never had one, or one whose provider has since been deleted.
+   *
+   * The second case used to fall through to the raw reference, which rendered
+   * `myprovider::llama-3` in a neutral badge and as a chosen model in the form:
+   * the warning suppressed in exactly the case it matters most, since every
+   * run of that routine fails. The raw ref is shown only while the list is
+   * still loading, when it is the best available name rather than a verdict.
+   */
   const labelFor = useCallback(
-    (model: string | null) => (model && isKnown(model) ? getName(model) : model),
-    [getName, isKnown],
+    (model: string | null) => {
+      if (!model) return null;
+      if (isKnown(model)) return getName(model);
+      return modelsLoaded ? null : model;
+    },
+    [getName, isKnown, modelsLoaded],
   );
 
   const openCreate = () => {
@@ -84,7 +107,10 @@ export default function RoutinesScreen() {
     // Exactly what is stored, including null: a routine written before this
     // field existed opens with nothing chosen and cannot be saved until one
     // is, rather than being silently given a model nobody picked for it.
-    setFormModel(routine.model);
+    // A model that no longer resolves opens as nothing chosen too: saving it
+    // back would only be refused by the server, and showing it as the current
+    // choice hides the one thing the person has come here to fix.
+    setFormModel(isUnavailable(routine.model) ? null : routine.model);
     setModalOpen(true);
   };
 
@@ -109,12 +135,15 @@ export default function RoutinesScreen() {
 
   const openDelete = (routine: Routine) => {
     setDeleting({ routine, chats: null });
-    getRoutineConversations(routine.id)
-      .then((convs) => {
+    // The real count, not the length of the history list's 50-row page.
+    getRoutineChatCount(routine.id)
+      .then((n) => {
         // Only if the dialog is still about this routine: the fetch is
         // asynchronous and the user may have cancelled and opened another.
-        setDeleting((prev) => (prev?.routine.id === routine.id ? { ...prev, chats: convs.length } : prev));
+        setDeleting((prev) => (prev?.routine.id === routine.id ? { ...prev, chats: n } : prev));
       })
+      // Left null on failure, which the message reads as "unknown" and says so
+      // — never as zero.
       .catch(() => undefined);
   };
 
@@ -161,6 +190,7 @@ export default function RoutinesScreen() {
               routine={item}
               running={runningId === item.id}
               modelLabel={labelFor(item.model)}
+              modelUnavailable={isUnavailable(item.model)}
               onToggle={(enabled) => { void toggle(item.id, enabled); }}
               onRunNow={() => { void handleRunNow(item.id); }}
               onOpen={() => { router.push(`/routines/${item.id}`); }}
@@ -219,7 +249,7 @@ export default function RoutinesScreen() {
         title="Delete routine?"
         message={
           deleting
-            ? deleteRoutineMessage(deleting.routine.name, deleting.chats ?? 0, deleting.chats === null ? undefined : retentionDays)
+            ? deleteRoutineMessage(deleting.routine.name, deleting.chats, retentionDays)
             : ''
         }
         confirmLabel="Delete routine"

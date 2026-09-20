@@ -29,7 +29,27 @@ vi.mock("../../auth/middleware", () => ({
   requireAdmin: () => Promise.resolve(currentUser.id),
 }));
 
+/** Makes the next `deleteConversation` throw, once — the transient failure
+ * (a database blip, a retention read, a sandbox destroy surfacing) that the
+ * delete route has to survive without leaving the routine half-gone. */
+const failNextDelete = { on: false };
+
+vi.mock("../../conversations/delete.ts", async (original) => {
+  const real = await original<typeof import("../../conversations/delete.ts")>();
+  return {
+    ...real,
+    deleteConversation: (...args: Parameters<typeof real.deleteConversation>) => {
+      if (failNextDelete.on) {
+        failNextDelete.on = false;
+        return Promise.reject(new Error("transient failure"));
+      }
+      return real.deleteConversation(...args);
+    },
+  };
+});
+
 const { routineRoutes } = await import("../routines.ts");
+const { isRoutineScheduled, stopRoutineScheduler } = await import("../../routines/scheduler.ts");
 const { restoreConversation, purgeConversation } = await import("../../conversations/delete.ts");
 const { registerRun, unregisterRun } = await import("../../streams/registry.ts");
 
@@ -142,6 +162,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  stopRoutineScheduler();
   delete process.env.DELETED_CHAT_RETENTION_ENABLED;
   delete process.env.DELETED_CHAT_RETENTION_DAYS;
   await db.delete(user).where(inArray(user.id, everyone));
@@ -254,6 +275,35 @@ describe("DELETE /v1/routines/:id — retention on", () => {
     const conv = await conversationRow(convId);
     expect(conv?.deletedAt).toBeNull();
     expect(conv?.kind).toBe("chat");
+  });
+});
+
+describe("DELETE /v1/routines/:id — a delete that fails halfway", () => {
+  it("leaves the routine scheduled, so a retry is a retry and not a silent stop", async () => {
+    // Created through the route, because that is what schedules it.
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/routines",
+      payload: { name: "Halfway", cron: "0 6 * * *", prompt: "do the thing", model: "test-model" },
+    });
+    const routine = created.json<{ id: string }>();
+    await makeRun(routine.id);
+    expect(isRoutineScheduled(routine.id)).toBe(true);
+
+    failNextDelete.on = true;
+    const failed = await app.inject({ method: "DELETE", url: `/v1/routines/${routine.id}` });
+    expect(failed.statusCode).toBe(500);
+
+    // The row survives, which was always true. The schedule has to as well:
+    // unscheduling used to happen first, and nothing re-adds a job outside
+    // POST, PATCH and boot — so the routine came back in the list looking
+    // enabled and never fired again until a restart.
+    expect(await db.query.routines.findFirst({ where: eq(routines.id, routine.id) })).toBeDefined();
+    expect(isRoutineScheduled(routine.id)).toBe(true);
+
+    const retried = await app.inject({ method: "DELETE", url: `/v1/routines/${routine.id}` });
+    expect(retried.statusCode).toBe(200);
+    expect(isRoutineScheduled(routine.id)).toBe(false);
   });
 });
 

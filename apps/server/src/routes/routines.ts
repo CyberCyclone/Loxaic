@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import cron from "node-cron";
-import { eq, and, desc, isNull } from "@loxaic/db";
+import { eq, and, desc, isNull, count } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { routines, routineRuns, conversations } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
@@ -134,7 +134,16 @@ export function routineRoutes(app: FastifyInstance) {
     const run = runId
       ? await db.query.routineRuns.findFirst({ where: eq(routineRuns.id, runId) })
       : null;
-    return run ?? { ok: true };
+    if (!run) {
+      // `executeRoutine` returns nothing when it could not write the run at
+      // all — the routine deleted underneath it, or the insert failing. This
+      // used to answer `200 {ok: true}`, which the client is typed to read as
+      // a run: it opened `conversationId: undefined` and blanked a screen full
+      // of history, with nothing saying the run had never started.
+      reply.code(409);
+      return { error: "The run could not be started. Try again." };
+    }
+    return run;
   });
 
   /**
@@ -162,8 +171,6 @@ export function routineRoutes(app: FastifyInstance) {
       return { error: "Not found" };
     }
 
-    unscheduleRoutine(existing.id);
-
     const first = await db
       .select({ conversationId: routineRuns.conversationId })
       .from(routineRuns)
@@ -185,6 +192,16 @@ export function routineRoutes(app: FastifyInstance) {
       await tx.delete(routines).where(eq(routines.id, existing.id));
       return rows;
     });
+
+    // Only now, with the row gone. Unscheduling first looked tidier and left a
+    // hole: a throw in the pass above answers 500 with the routine intact —
+    // which is the point, the delete is retryable — but nothing re-adds a job
+    // outside POST, PATCH and boot, so the routine came back in the list
+    // looking enabled and silently never fired again until a restart. A tick
+    // that lands in the gap is harmless either way: before the transaction its
+    // run row is caught by RETURNING above, and after it `executeRoutine`
+    // finds no routine and returns.
+    unscheduleRoutine(existing.id);
 
     for (const row of straggler) {
       if (erased.has(row.conversationId)) continue;
@@ -240,6 +257,36 @@ export function routineRoutes(app: FastifyInstance) {
       active_run: getRunByConversation(conversation.id) !== undefined,
       run,
     }));
+  });
+
+  /**
+   * How many chats deleting this routine takes with it.
+   *
+   * Its own route because the listing above is a page: capped at 50, which is
+   * right for a history panel and wrong for the sentence in the delete dialog.
+   * An hourly routine a week old has ~168 chats, the dialog said "Its 50 chats
+   * go with it", and the delete — which walks every run row — then removed all
+   * of them. Same join as the listing, so it counts what the user can see.
+   */
+  app.get<{ Params: { id: string } }>("/v1/routines/:id/conversations/count", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const existing = await findOwnedRoutine(request.params.id, userId);
+    if (!existing) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    const [row] = await db
+      .select({ n: count() })
+      .from(routineRuns)
+      .innerJoin(conversations, eq(conversations.id, routineRuns.conversationId))
+      .where(
+        and(
+          eq(routineRuns.routineId, existing.id),
+          eq(conversations.ownerId, userId),
+          isNull(conversations.deletedAt),
+        ),
+      );
+    return { count: row.n };
   });
 
   app.get<{ Params: { id: string } }>("/v1/routines/:id/runs", async (request, reply) => {

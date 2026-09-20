@@ -24,7 +24,26 @@ vi.mock("../../auth/middleware", () => ({
   requireAdmin: () => Promise.resolve(currentUser.id),
 }));
 
+/** Makes the next `executeRoutine` report that it started nothing — what it
+ * does when the run row cannot be written at all. */
+const startNothing = { on: false };
+
+vi.mock("../../routines/scheduler", async (original) => {
+  const real = await original<typeof import("../../routines/scheduler.ts")>();
+  return {
+    ...real,
+    executeRoutine: (id: string) => {
+      if (startNothing.on) {
+        startNothing.on = false;
+        return Promise.resolve(undefined);
+      }
+      return real.executeRoutine(id);
+    },
+  };
+});
+
 const { routineRoutes } = await import("../routines.ts");
+const { stopRoutineScheduler } = await import("../../routines/scheduler.ts");
 const { conversationRoutes } = await import("../conversations.ts");
 const { registerRun, unregisterRun } = await import("../../streams/registry.ts");
 
@@ -119,6 +138,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  stopRoutineScheduler();
   await db.delete(user).where(inArray(user.id, everyone));
   await app.close();
 });
@@ -196,6 +216,50 @@ describe("writing a routine", () => {
     expect(res.statusCode).toBe(404);
     const row = await db.query.routines.findFirst({ where: eq(routines.id, routine.id) });
     expect(row?.name).toBe("Nightly");
+  });
+});
+
+describe("POST /v1/routines/:id/run", () => {
+  it("does not answer 200 for a run that never started", async () => {
+    const routine = await makeRoutine();
+    startNothing.on = true;
+    const res = await app.inject({ method: "POST", url: `/v1/routines/${routine.id}/run` });
+    // It used to be `200 {ok: true}`, which the client is typed to read as a
+    // run — it opened `conversationId: undefined` and blanked a screen full of
+    // history, with nothing saying the run had not started.
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string }>().error).toContain("could not be started");
+  });
+});
+
+describe("GET /v1/routines/:id/conversations/count", () => {
+  it("counts every chat, past the page the history list stops at", async () => {
+    const routine = await makeRoutine();
+    // One more than the listing's page: the delete dialog used to count that
+    // page, so a long-lived hourly routine read "Its 50 chats go with it"
+    // while the delete took all of them.
+    const convs = await db
+      .insert(conversations)
+      .values(Array.from({ length: 51 }, () => ({ ownerId: owner, title: "Routine: Nightly", kind: "routine" as const })))
+      .returning({ id: conversations.id });
+    await db.insert(routineRuns).values(
+      convs.map((c) => ({ routineId: routine.id, conversationId: c.id, status: "completed" })),
+    );
+    await makeRun(routine.id, { deleted: true });
+
+    const listed = await app.inject({ method: "GET", url: `/v1/routines/${routine.id}/conversations` });
+    expect(listed.json<unknown[]>()).toHaveLength(50);
+
+    const res = await app.inject({ method: "GET", url: `/v1/routines/${routine.id}/conversations/count` });
+    expect(res.statusCode).toBe(200);
+    // All 51, and not the one already deleted — it counts what the user can see.
+    expect(res.json<{ count: number }>().count).toBe(51);
+  });
+
+  it("404s for someone else's routine", async () => {
+    const routine = await makeRoutine({ ownerId: stranger });
+    const res = await app.inject({ method: "GET", url: `/v1/routines/${routine.id}/conversations/count` });
+    expect(res.statusCode).toBe(404);
   });
 });
 

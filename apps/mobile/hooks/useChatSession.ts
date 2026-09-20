@@ -195,6 +195,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
   // re-create per render — `loadedConvIdsRef` dedupes against its identity).
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
+  /** The list as of the last render, for callbacks that must *decide* from it.
+   * An updater passed to `setConversations` is not a place to read a result
+   * back out of — see handleDelete. */
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   // Keyed by conversation, unlike the agent surface's flat pendingApproval
   // (GitHub issue #1) — a background chat send that hits an approval must
@@ -1022,11 +1027,15 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
           return;
         }
       }
-      let remaining: Conversation[] = [];
-      setConversations((prev) => {
-        remaining = prev.filter((c) => c.id !== id);
-        return remaining;
-      });
+      // Decided from the ref, before the state update — never from inside the
+      // updater. React runs an updater eagerly only when the fiber has nothing
+      // pending; with another update already queued (a stream event from a
+      // background run, the confirm dialog's own `setDeletingId(null)`) it is
+      // deferred to the render, so a variable assigned inside it is still its
+      // initialiser on the next line. That made "open the next chat along"
+      // pick nothing, intermittently, in exactly the scope it was added for.
+      const nextAlong = conversationsRef.current.find((c) => c.id !== id)?.id ?? null;
+      setConversations((prev) => prev.filter((c) => c.id !== id));
       // The cache has no other pruning path that works offline — without
       // this the deleted thread came straight back on the next offline start.
       const scope = scopeRef.current.cache ? cacheScopeRef.current : null;
@@ -1034,8 +1043,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
       if (activeIdRef.current === id) {
         // In a scope that cannot create one, landing on nothing means an
         // empty screen with no way off it — open the next chat along instead.
-        const next = scopeRef.current.allowCreate ? null : (remaining[0]?.id ?? null);
-        setActiveId(next);
+        setActiveId(scopeRef.current.allowCreate ? null : nextAlong);
       }
       showToast('Conversation deleted');
     },
