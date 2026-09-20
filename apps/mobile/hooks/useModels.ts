@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getModels, type ModelInfo } from '@loxaic/api-client';
+import { DEFAULT_PROVIDER_ID, displayModelRef } from '@loxaic/types';
 
 export interface ModelWindow {
   /** The window actually in force — the only valid meter denominator. */
@@ -35,10 +36,27 @@ export function useModels(token: string | null) {
     void refresh();
   }, [refresh]);
 
-  const loadedModel = models.find((m) => m.loaded) ?? null;
-  const defaultModel = loadedModel ?? models.at(0) ?? null;
+  /**
+   * The built-in backend's models are preferred over an added provider's when
+   * nothing else decides.
+   *
+   * Without this, `models.find(m => m.loaded)` would pick a hosted model on
+   * any deployment whose local backend happens to have nothing loaded —
+   * every cloud model reports itself as loaded, because it is. A new
+   * conversation would then quietly start spending the admin's API credits.
+   * Something the user actually chose still wins: the conversation's own
+   * model, and their most recent one, are both consulted ahead of this.
+   */
+  const builtin = models.filter((m) => m.provider_id === DEFAULT_PROVIDER_ID);
+  const loadedModel = builtin.find((m) => m.loaded) ?? models.find((m) => m.loaded) ?? null;
+  const defaultModel =
+    builtin.find((m) => m.loaded) ?? builtin.at(0) ?? loadedModel ?? models.at(0) ?? null;
   const getName = useCallback(
-    (id: string) => models.find((m) => m.id === id)?.display_name ?? id,
+    // Falls back to the reference with its provider prefix stripped, never the
+    // raw `slug::model` — the slug is an internal identifier the user never
+    // chose, and this is reached exactly when the model is gone (a deleted
+    // provider, a list that has not loaded).
+    (id: string) => models.find((m) => m.id === id)?.display_name ?? displayModelRef(id),
     [models],
   );
   /** Everything the context meter needs to describe — and caveat — the window.

@@ -269,9 +269,12 @@ async function listViaOpenAiCompat(provider: ResolvedProvider): Promise<ModelInf
       id: m.id,
       display_name: m.name ?? m.display_name ?? m.id,
       quant: "—",
-      // Only a local llama.cpp is known to serve GGUF and nothing else. A
-      // hosted provider serves whatever it likes and says nothing about it.
-      format: provider.preset === null ? "gguf" : "—",
+      // "gguf" only when the backend actually identified itself as llama.cpp
+      // by answering /props — which is what `loadedCtx` being non-null means.
+      // Keying it on "has no preset" instead was a claim about the weights of
+      // every hand-entered provider, and it put a GGUF badge on Claude and
+      // GPT the first time a custom provider was pointed at a hosted API.
+      format: loadedCtx != null ? "gguf" : "—",
       // Still a number for display, but `context_source: "default"` is what
       // callers key on — see `windowFor`, which refuses to hand a guess to the
       // auto-compaction threshold.
@@ -337,25 +340,31 @@ export async function listProviderModelsUnfiltered(provider: ResolvedProvider): 
   if (provider.isDefault && MOCK_MODE()) return MOCK_MODELS;
 
   let models: ModelInfo[] = [];
-  let firstError: Error | null = null;
+  // The OpenAI-compatible endpoint's failure, deliberately, and never the
+  // native probe's. The probe is opportunistic — a guess that this backend
+  // might be LM Studio — and it fails on every backend that is not, at a path
+  // the admin never entered. Reporting "GET …/api/v0/models 401" to someone
+  // who configured `…/v1` sends them looking for a URL that is not theirs.
+  let reportable: Error | null = null;
   // LM Studio's native API is richer, but only a local backend has one; asking
   // a hosted provider for it spends a full timeout on a 404 every refresh.
   if (provider.preset === null) {
     try {
       models = await listViaLmStudioNative(provider);
-    } catch (err) {
-      firstError = asError(err);
+    } catch {
+      // Not LM Studio, or it is down — the OpenAI-compatible path below is
+      // what every backend has, and its answer is the one worth reporting.
     }
   }
   if (models.length === 0) {
     try {
       models = await listViaOpenAiCompat(provider);
     } catch (err) {
-      firstError ??= asError(err);
+      reportable = asError(err);
     }
   }
   if (models.length === 0 && provider.modelAllowlist) return listFromAllowlist(provider);
-  if (models.length === 0 && firstError) throw firstError;
+  if (models.length === 0 && reportable) throw reportable;
   return models;
 }
 

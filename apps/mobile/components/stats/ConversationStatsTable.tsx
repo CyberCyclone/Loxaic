@@ -4,6 +4,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { formatTokens } from './KpiCard';
 import type { ConversationStats } from '@loxaic/api-client';
+import { displayModelRef } from '@loxaic/types';
 
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);
@@ -43,7 +44,7 @@ export function ConversationStatsTable({ conversations }: { conversations: Conve
               </Box>
             </HStack>
             <Text size="2xs" className="text-muted-foreground">
-              {c.model} · {formatTimestamp(c.lastUsedAt)}
+              {displayModelRef(c.model)} · {formatTimestamp(c.lastUsedAt)}
               {c.avgTtftMs != null ? ` · ${String(Math.round(c.avgTtftMs))}ms ttft` : ''}
             </Text>
           </VStack>

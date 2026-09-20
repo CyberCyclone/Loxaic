@@ -227,6 +227,103 @@ export async function updateInferenceSettings(
   });
 }
 
+/**
+ * An LLM backend an admin added, as the API describes it.
+ *
+ * `hasApiKey` rather than the key: no route returns one, not even to the admin
+ * who typed it, so a client can only ever know whether there is one to
+ * replace. Same shape as `McpServer.secretKeys`, for the same reason.
+ */
+export interface InferenceProvider {
+  id: string;
+  name: string;
+  /** Immutable, derived from the name at creation, and baked into every model
+   * reference this provider serves — which is why a rename never moves it. */
+  slug: string;
+  preset: ProviderPreset | null;
+  /** The API base including its version segment. */
+  baseUrl: string;
+  hasApiKey: boolean;
+  headers: Record<string, string>;
+  enabled: boolean;
+  /** null = follow the backend's own slot count. */
+  maxConcurrentRuns: number | null;
+  /** Upstream model ids users may pick, or null for "everything it lists". */
+  modelAllowlist: string[] | null;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+}
+
+export type ProviderPreset = "openrouter" | "openai" | "anthropic";
+
+/** The backend `INFERENCE_BASE_URL` names — described so an admin can see it,
+ * never editable here. */
+export interface BuiltinProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  /** What *does* change it, since this screen cannot. */
+  envVar: string;
+}
+
+export interface ProviderList {
+  builtin: BuiltinProvider;
+  providers: InferenceProvider[];
+}
+
+export interface ProviderInput {
+  name?: string;
+  baseUrl?: string;
+  preset?: ProviderPreset | null;
+  /** A string sets the key, null clears it, absent leaves it alone. Absent has
+   * to mean "keep" because the key is never sent back to be round-tripped. */
+  apiKey?: string | null;
+  headers?: Record<string, string> | null;
+  maxConcurrentRuns?: number | null;
+  modelAllowlist?: string[] | null;
+  enabled?: boolean;
+}
+
+export async function getProviders(): Promise<ProviderList> {
+  return adminFetch("/v1/admin/providers");
+}
+
+export async function createProvider(input: ProviderInput): Promise<InferenceProvider> {
+  return adminFetch("/v1/admin/providers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateProvider(id: string, input: ProviderInput): Promise<InferenceProvider> {
+  return adminFetch(`/v1/admin/providers/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteProvider(id: string): Promise<void> {
+  await adminFetch(`/v1/admin/providers/${id}`, { method: "DELETE" });
+}
+
+/** Ask the provider what it can do, right now. Answers `{ok:false, error}`
+ * rather than throwing when the provider is simply unreachable — that is the
+ * question being asked, not a failure of the request. */
+export async function testProvider(id: string): Promise<{ ok: boolean; models?: number; error?: string }> {
+  return adminFetch(`/v1/admin/providers/${id}/test`, { method: "POST" });
+}
+
+/** Everything the provider lists, before its own allowlist is applied — the
+ * allowlist editor needs what is *not* yet allowed. */
+export async function getProviderModels(
+  id: string,
+): Promise<{ models: { id: string; display_name: string }[]; error?: string }> {
+  return adminFetch(`/v1/admin/providers/${id}/models`);
+}
+
 export async function getSandboxSettings(): Promise<SandboxSettings> {
   return adminFetch("/v1/admin/settings/sandbox");
 }
@@ -1134,6 +1231,14 @@ export interface UserPrefs {
    * asks whether to keep going. A cadence, not a ceiling — the run is never
    * cut off. 1-500; defaults to 100. Optional — see `autoCompact`. */
   maxIterations?: number;
+  /**
+   * Model references this user most recently sent with, newest first.
+   * **Read-only** — the server records it when a model is actually used, and
+   * `PATCH /v1/prefs` refuses the key. Optional for the same reason as
+   * `autoCompact`: a server that predates it omits it, and absence means
+   * "this server does not track it", never "nothing has been used".
+   */
+  recentModels?: string[];
 }
 
 export async function getPrefs(): Promise<UserPrefs> {

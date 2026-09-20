@@ -4,6 +4,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { formatTokens } from './KpiCard';
 import type { ModelStats } from '@loxaic/api-client';
+import { displayModelRef } from '@loxaic/types';
 
 function fmt(n: number | null, digits = 0): string {
   return n === null ? '—' : n.toFixed(digits);
@@ -44,7 +45,7 @@ export function ModelStatsTable({ models }: { models: ModelStats[] }) {
           <Box key={m.model} className="rounded-md border border-border bg-card p-3">
             <HStack className="items-center justify-between">
               <Text className="font-medium text-foreground" numberOfLines={1}>
-                {m.model}
+                {displayModelRef(m.model)}
               </Text>
               <Text size="xs" className="text-muted-foreground">
                 {m.conversations} conv{m.conversations === 1 ? '' : 's'}

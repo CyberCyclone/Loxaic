@@ -6,7 +6,13 @@ process.env.MCP_ENCRYPTION_KEY ??= "provider-wire-test-key";
 import { db, eq, inArray } from "@loxaic/db";
 import { inferenceProviders, user } from "@loxaic/db/schema";
 import { streamCompletion } from "../provider.ts";
-import { __resetModelCachesForTest, getModelInfo, listBackendModels, resolveWindow } from "../models.ts";
+import {
+  __resetModelCachesForTest,
+  getModelInfo,
+  listBackendModels,
+  probeProviderModels,
+  resolveWindow,
+} from "../models.ts";
 import { __resetProviderCacheForTest, createProvider } from "../providers.ts";
 import { startMockOpenAi, type MockOpenAi } from "./mock-openai-server.ts";
 
@@ -191,6 +197,32 @@ describe("listing an added provider's models", () => {
     const models = await listBackendModels();
     const mine = models.filter((m) => m.provider_id === row.id);
     expect(mine.map((m) => m.upstream_id)).toEqual(["hand-entered-model"]);
+  });
+
+  it("does not claim GGUF for a backend that never said so", async () => {
+    // Found by driving the real UI: a hand-entered provider has no preset, and
+    // keying the format on that put a GGUF badge on Claude and GPT. Only a
+    // backend that answered /props — which is llama.cpp identifying itself —
+    // is known to serve GGUF; the mock has no /props, like every hosted API.
+    const row = await makeProvider();
+    const info = await getModelInfo(`${row.slug}::mock-remote-model`);
+    expect(info?.format).toBe("—");
+  });
+
+  it("reports the endpoint the admin configured, not the probe's", async () => {
+    // Also found in the browser. The LM Studio probe is an opportunistic guess
+    // at a path nobody entered, and it fails on every backend that is not LM
+    // Studio — so reporting its 401 sent an admin who had configured `…/v1`
+    // looking for `…/api/v0/models`, a URL that is not theirs.
+    const row = await makeProvider({ apiKey: "sk-wrong-key-0123456789" });
+    let message = "";
+    try {
+      await probeProviderModels(row.id);
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toContain("/v1/models");
+    expect(message).not.toContain("/api/v0/models");
   });
 
   it("lets one unreachable provider fail without taking the list down", async () => {

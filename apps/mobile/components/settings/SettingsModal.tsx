@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, Plug } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, Plug, Server } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -45,7 +45,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [themePref, setThemePref] = useThemePreference();
   const router = useRouter();
   const { showToast } = useToastHelper();
-  const { signOut } = useSession();
+  const { signOut, isAdmin } = useSession();
   const [draft, setDraft] = useState<Settings>(settings);
   const [dirty, setDirty] = useState(false);
   const [confirmDetach, setConfirmDetach] = useState(false);
@@ -351,6 +351,35 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </HStack>
               <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
             </Pressable>
+
+            {/* Admin-only, and only here: unlike the sandbox row — which
+                everyone can open to read what the deployment allows — there
+                is nothing on the providers screen for a non-admin to do, and
+                its list is the deployment's own topology and credentials.
+                The route still refuses them; this only stops offering it. */}
+            {isAdmin && (
+              <Pressable
+                testID="settings.nav.providers"
+                onPress={() => {
+                  onClose();
+                  router.push('/providers');
+                }}
+                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+              >
+                <HStack space="sm" className="items-center">
+                  <Icon as={Server} size="sm" className="text-muted-foreground" />
+                  <VStack>
+                    <Text size="sm" className="text-foreground">
+                      Model Providers
+                    </Text>
+                    <Text size="2xs" className="text-muted-foreground">
+                      OpenRouter, OpenAI, Anthropic, or another local server
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+              </Pressable>
+            )}
 
             <Pressable
               testID="settings.nav.sandbox"

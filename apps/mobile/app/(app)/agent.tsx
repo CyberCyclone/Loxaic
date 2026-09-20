@@ -26,6 +26,7 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
+import { useRecentModels } from '@/hooks/useRecentModels';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useServerConfig } from '@/hooks/useServerConfig';
@@ -80,6 +81,7 @@ export default function AgentScreen() {
   } = useAgentSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
+  const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
   const { showToast } = useToastHelper();
 
   const [settings] = useSettings();
@@ -106,6 +108,12 @@ export default function AgentScreen() {
   const selectedModel =
     (prefModel && (models.length === 0 || isKnown(prefModel)) ? prefModel : null) ??
     pendingModel ??
+    // A new conversation opens on whatever this user last sent with — the
+    // single most likely answer, and the one that saves them finding it in the
+    // picker again. Skipped when that model is no longer offered (its provider
+    // was deleted, or an admin disallowed it), which is also why the list has
+    // to have loaded before it counts.
+    (models.length > 0 ? recentModels.find((ref) => isKnown(ref)) : undefined) ??
     defaultModel?.id ??
     '';
 
@@ -343,7 +351,11 @@ export default function AgentScreen() {
                 />
               </HStack>
               <Composer
-                onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
+                onSend={(text, attachments) => {
+                  // See chat.tsx — an optimistic local reorder.
+                  bumpRecentModel(selectedModel);
+                  handleSend(text, selectedModel, attachments);
+                }}
                 onStop={handleStop}
                 stopping={stopping}
                 streaming={busy}
@@ -434,8 +446,15 @@ export default function AgentScreen() {
         models={models}
         loading={modelsLoading}
         error={modelsError}
-        onRefresh={() => { void refreshModels(); }}
+        onRefresh={() => {
+          void refreshModels();
+          // Refetched with the list: another device may have used a model
+          // since this screen loaded, and the section is meant to answer
+          // "what was I using?" rather than "what did this tab see?".
+          void refreshRecentModels();
+        }}
         selectedModel={selectedModel}
+        recentModels={recentModels}
         onSelect={(id) => {
           if (activeId) setRunModel(activeId, id);
           else setPendingModel(id);
