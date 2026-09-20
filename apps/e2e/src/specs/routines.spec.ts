@@ -36,6 +36,7 @@ import {
   runRoutine,
   sendMessage,
   signIn,
+  SLOW_PROMPT,
   waitForRunDone,
   type E2ERoutine,
 } from '../helpers/app.ts';
@@ -169,6 +170,29 @@ describe('routines', () => {
     // An older run still opens, so the history is a way in rather than a label.
     await tap(`threadList.item.${first.conversationId}`);
     await waitForTextIn('chat.messageList', mockEcho(PROMPT));
+  });
+
+  it('picks up a run that was already going when the screen opened', async () => {
+    // The one genuinely new client mechanism: a scheduled run starts on the
+    // server, so opening its chat is the first this client hears of it. The
+    // hook otherwise only subscribes on socket open and on a seq gap, which
+    // is enough where every run starts from this client — here the transcript
+    // would sit static while the run streamed on.
+    const routine = await createRoutine(creds, {
+      name: `In flight ${String(Date.now())}`,
+      prompt: SLOW_PROMPT,
+      model: MODEL_A,
+    });
+    const run = await runRoutine(creds, routine.id);
+
+    await openRoutine(routine);
+    // Streaming, from a run this client never started: the stop control only
+    // exists while one is in flight.
+    await waitForVisible('composer.stop');
+    await shot('routine-inflight');
+
+    await waitForTextIn('chat.messageList', mockEcho(SLOW_PROMPT), 60_000);
+    await waitForRunDone(creds, run.conversationId);
   });
 
   it('goes back to the routines list', async () => {
