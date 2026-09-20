@@ -203,9 +203,11 @@ export default function RoutinesScreen() {
           setModelPickerOpen(false);
         }}
         // A routine has no per-conversation thinking level to set: its runs
-        // are started by the server, which reads no such preference.
+        // are started by the server, which reads no such preference. So the
+        // row is hidden rather than left there doing nothing.
         thinkingLevel={settings.defaultThinkingLevel}
         onThinkingLevel={() => undefined}
+        hideThinking
         onOpenSettings={() => {
           setModelPickerOpen(false);
           shell.openSettings();

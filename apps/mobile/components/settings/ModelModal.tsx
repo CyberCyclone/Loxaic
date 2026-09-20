@@ -35,6 +35,14 @@ interface ModelModalProps {
   recentModels: string[];
   thinkingLevel: ThinkingLevel;
   onThinkingLevel: (level: ThinkingLevel) => void;
+  /**
+   * Omit the thinking selector, for a caller with nowhere to put the answer.
+   *
+   * A routine's runs are started by the server, which reads no per-conversation
+   * thinking preference — so the row would be four buttons that silently do
+   * nothing, which is worse than not offering them.
+   */
+  hideThinking?: boolean;
   onOpenSettings: () => void;
 }
 
@@ -74,6 +82,7 @@ export function ModelModal({
   recentModels,
   thinkingLevel,
   onThinkingLevel,
+  hideThinking,
   onOpenSettings,
 }: ModelModalProps) {
   const [search, setSearch] = useState('');
@@ -262,23 +271,30 @@ export function ModelModal({
         </ModalBody>
         <ModalFooter className="justify-between border-t border-border">
           <HStack space="xs" className="items-center">
-            <Text size="2xs" className="text-muted-foreground">
-              Thinking
-            </Text>
-            {THINKING_LEVELS.map((level) => (
-              <Pressable
-                key={level}
-                testID={`models.thinking.${level}`}
-                onPress={() => { onThinkingLevel(level); }}
-                className={`rounded-md border px-2.5 py-1 ${
-                  thinkingLevel === level ? 'border-primary bg-primary' : 'border-border bg-background'
-                }`}
-              >
-                <Text size="2xs" className={thinkingLevel === level ? 'text-primary-foreground' : 'text-muted-foreground'}>
-                  {level}
+            {hideThinking ? null : (
+              <>
+                <Text size="2xs" className="text-muted-foreground">
+                  Thinking
                 </Text>
-              </Pressable>
-            ))}
+                {THINKING_LEVELS.map((level) => (
+                  <Pressable
+                    key={level}
+                    testID={`models.thinking.${level}`}
+                    onPress={() => { onThinkingLevel(level); }}
+                    className={`rounded-md border px-2.5 py-1 ${
+                      thinkingLevel === level ? 'border-primary bg-primary' : 'border-border bg-background'
+                    }`}
+                  >
+                    <Text
+                      size="2xs"
+                      className={thinkingLevel === level ? 'text-primary-foreground' : 'text-muted-foreground'}
+                    >
+                      {level}
+                    </Text>
+                  </Pressable>
+                ))}
+              </>
+            )}
           </HStack>
           <Pressable
             testID="models.settings"
