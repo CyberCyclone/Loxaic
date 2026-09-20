@@ -27,6 +27,7 @@ interface PrefsBody {
   toolAllowlist: string[];
   autoCompact: boolean;
   maxIterations: number;
+  recentModels: string[];
 }
 
 const userId = `test-prefs-${uuid()}`;
@@ -65,7 +66,7 @@ describe("GET /v1/prefs", () => {
     // A user who has never touched settings must read the same as one whose
     // row says nothing — otherwise the feature looks disabled until they
     // happen to change something unrelated.
-    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true, maxIterations: 100 });
+    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true, maxIterations: 100, recentModels: [] });
   });
 });
 

@@ -3,6 +3,7 @@ import { db, eq } from "@loxaic/db";
 import { userPrefs } from "@loxaic/db/schema";
 import { isToolName } from "@loxaic/agent";
 import { authenticate } from "../auth/middleware";
+import { normalizeRecentModels } from "../inference/recent-models.ts";
 import {
   clampMaxIterations,
   DEFAULT_MAX_ITERATIONS,
@@ -12,7 +13,12 @@ import {
 
 /** What the API exposes. Builtin tools only for the allowlist; MCP tools have
  * their own per-server toolPolicies allowlist (PATCH /v1/mcp/servers/:id). */
-function toApi(row: { toolAllowlist: unknown; autoCompact?: boolean; maxIterations?: number }) {
+function toApi(row: {
+  toolAllowlist: unknown;
+  autoCompact?: boolean;
+  maxIterations?: number;
+  recentModels?: unknown;
+}) {
   const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist.filter(isToolName) : [];
   // Default true, matching the column: a user who has never had a prefs row
   // must read the same as one whose row says nothing, or the setting would
@@ -27,6 +33,12 @@ function toApi(row: { toolAllowlist: unknown; autoCompact?: boolean; maxIteratio
     // trusted for the response either — otherwise the settings screen shows
     // one number while the agent enforces another.
     maxIterations: clampMaxIterations(row.maxIterations ?? DEFAULT_MAX_ITERATIONS),
+    // Read-only: written by the run starters when a model is actually sent
+    // with, and deliberately absent from the PATCH below. A client that could
+    // write it could put a model at the top of everyone's picker without
+    // anyone having run it — and more practically, two clients with stale
+    // copies would fight over the order.
+    recentModels: normalizeRecentModels(row.recentModels),
   };
 }
 
@@ -49,7 +61,15 @@ export function prefsRoutes(app: FastifyInstance) {
       toolAllowlist?: unknown;
       autoCompact?: unknown;
       maxIterations?: unknown;
+      recentModels?: unknown;
     };
+
+    // Named rather than ignored: silently dropping it would leave a client
+    // believing it had reordered the list.
+    if (body.recentModels !== undefined) {
+      reply.code(400);
+      return { error: "recentModels is recorded by the server when a model is used, and cannot be set" };
+    }
 
     const patch: { toolAllowlist?: string[]; autoCompact?: boolean; maxIterations?: number } = {};
     if (body.toolAllowlist !== undefined) {

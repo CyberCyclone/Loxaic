@@ -39,6 +39,15 @@ afterEach(() => {
   __resetSchedulerForTest();
 });
 
+/** Waits until a run has actually joined the given queue. */
+async function waitForWaiters(providerId?: string, count = 1): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (schedulerState(providerId).waiting >= count) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`no run joined the queue for ${providerId ?? "the built-in backend"}`);
+}
+
 /** A never-aborted signal, which is what an ordinary run has. */
 function live(): AbortSignal {
   return new AbortController().signal;
@@ -243,5 +252,98 @@ describe("how many runs are allowed at once", () => {
       else process.env.INFERENCE_BASE_URL = previousBase;
       resetSlotProbe();
     }
+  });
+});
+
+describe("one queue per backend", () => {
+  /**
+   * The thing being protected is *one backend's* cached prefix and *one
+   * backend's* capacity. Sharing a queue across backends would make a chat on
+   * a hosted provider — which has no prefix cache to protect and plenty of
+   * headroom — wait for a local run's tool work to finish, while the backend
+   * it was queued behind sat idle.
+   */
+  it("does not make one provider's run wait for another's", async () => {
+    // One slot each, and the built-in backend's is taken.
+    const local = await acquireRunSlot({ signal: live(), onQueued: noop });
+    expect(local).not.toBeNull();
+
+    // A run on another provider is admitted immediately, not queued.
+    const remote = await acquireRunSlot({ signal: live(), onQueued: noop, providerId: "prov-a" });
+    expect(remote).not.toBeNull();
+    expect(schedulerState("prov-a")).toEqual({ running: 1, waiting: 0 });
+    // And the built-in queue is untouched by it.
+    expect(schedulerState()).toEqual({ running: 1, waiting: 0 });
+
+    local?.release();
+    remote?.release();
+  });
+
+  it("still queues a second run on the same provider", async () => {
+    const first = await acquireRunSlot({ signal: live(), onQueued: noop, providerId: "prov-b" });
+    expect(first).not.toBeNull();
+
+    let admitted = false;
+    const second = acquireRunSlot({ signal: live(), onQueued: noop, providerId: "prov-b" }).then((s) => {
+      admitted = true;
+      return s;
+    });
+    // Polled rather than given one microtask: resolving a non-default
+    // provider's limit reads the provider cache, so joining the queue takes
+    // more than a tick and a fixed wait would be a race either way.
+    await waitForWaiters("prov-b");
+    expect(admitted).toBe(false);
+    expect(schedulerState("prov-b")).toEqual({ running: 1, waiting: 1 });
+
+    first?.release();
+    const slot = await second;
+    expect(slot).not.toBeNull();
+    slot?.release();
+  });
+
+  it("reports an untouched provider as idle rather than inventing a queue", () => {
+    expect(schedulerState("never-used")).toEqual({ running: 0, waiting: 0 });
+  });
+
+  it("gives an unresolvable provider the floor, not the built-in backend's slot count", async () => {
+    // Review finding. A provider that cannot be resolved used to fall through
+    // to `probeTotalSlots(undefined)`, which means "the built-in backend" — so
+    // its queue was sized from local llama.cpp's `--parallel` and cached for a
+    // minute. The probe target here answers /props with eight slots; an
+    // unresolvable provider must still get one.
+    const { createServer } = await import("node:http");
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ total_slots: 8 }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const previousBase = process.env.INFERENCE_BASE_URL;
+    process.env.INFERENCE_BASE_URL = `http://127.0.0.1:${String(port)}`;
+    Reflect.deleteProperty(process.env, "INFERENCE_MAX_CONCURRENT_RUNS");
+    resetSlotProbe();
+    try {
+      // The built-in backend really does report eight — so the probe works,
+      // and the next assertion is not passing by accident.
+      await expect(resolveMaxConcurrent()).resolves.toBe(8);
+      await expect(resolveMaxConcurrent("00000000-0000-4000-8000-000000000000")).resolves.toBe(1);
+    } finally {
+      if (previousBase === undefined) Reflect.deleteProperty(process.env, "INFERENCE_BASE_URL");
+      else process.env.INFERENCE_BASE_URL = previousBase;
+      resetSlotProbe();
+      await new Promise<void>((resolve) => server.close(() => { resolve(); }));
+    }
+  });
+
+  it("applies the environment pin to the built-in backend only", async () => {
+    // INFERENCE_MAX_CONCURRENT_RUNS describes the deployment's own backend.
+    // Someone else's API is not it, and has its own per-row setting instead.
+    pin(1);
+    await expect(resolveMaxConcurrent()).resolves.toBe(1);
+    // An unknown provider id resolves through the probe and lands on the
+    // floor of 1 — never "unlimited", which would restore the interleaving
+    // invisibly.
+    await expect(resolveMaxConcurrent("prov-unknown")).resolves.toBe(1);
   });
 });

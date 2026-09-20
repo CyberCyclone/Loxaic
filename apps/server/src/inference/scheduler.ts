@@ -1,5 +1,5 @@
 /**
- * One run at a time, unless the backend can genuinely do more.
+ * One run at a time per backend, unless that backend can genuinely do more.
  *
  * ## Why this exists
  *
@@ -15,6 +15,17 @@
  * all of its tool iterations — not the individual model call. Rotating between
  * runs per call would preserve fairness and destroy the cache on every single
  * iteration, which is the failure this exists to prevent.
+ *
+ * ## Why per provider
+ *
+ * The thing being protected is one backend's cache and one backend's capacity,
+ * and there is now more than one backend. A queue shared across them would make
+ * a chat on OpenRouter wait behind a local run's tool work — for a provider
+ * with no prefix cache to protect and sixteen requests of headroom — while the
+ * local backend it was queued for sat idle. So each provider gets its own
+ * queue, its own limit and its own probe, and "added" never means "cloud": a
+ * second llama.cpp host has exactly the single-prefix problem the first one
+ * has.
  *
  * ## Why not just let the backend sort it out
  *
@@ -45,7 +56,11 @@
  * Process-local, like the run registry beside it. #78 owns making this work
  * across a cluster.
  */
+import { DEFAULT_PROVIDER_ID } from "@loxaic/types";
 import { getInferenceSettings } from "../settings.ts";
+// Type-only, so it is erased: the value import stays dynamic below, because
+// `providers.ts` → `models.ts` → this module is a real runtime cycle.
+import type { ResolvedProvider } from "./providers.ts";
 
 /** What a queued run is told about its place, so the UI can say so. */
 export type QueuedListener = (position: number) => void;
@@ -80,11 +95,29 @@ interface Waiter {
   onAbort: () => void;
 }
 
-let running = 0;
-const waiting: Waiter[] = [];
+/** One backend's queue. Never deleted while it holds a run or a waiter — the
+ * map is small (one entry per configured provider) and dropping a live one
+ * would lose the accounting that decides who runs next. */
+interface Queue {
+  running: number;
+  waiting: Waiter[];
+  probed: { value: number | null; at: number } | null;
+}
+
+const queues = new Map<string, Queue>();
+
+function queueFor(providerId: string): Queue {
+  let q = queues.get(providerId);
+  if (!q) {
+    q = { running: 0, waiting: [], probed: null };
+    queues.set(providerId, q);
+  }
+  return q;
+}
 
 /**
- * Take an inference slot, waiting in line if the backend is busy.
+ * Take an inference slot on a provider, waiting in line if that backend is
+ * busy.
  *
  * Returns null when the run was aborted before it reached the front — the
  * caller ends the stream as cancelled. Deliberately not a rejection: the two
@@ -96,19 +129,23 @@ export async function acquireRunSlot(opts: {
   /** Called on enqueue, and again whenever the run moves up the queue, so a
    * waiting client sees "#3 → #2 → #1" rather than one number that goes stale. */
   onQueued: QueuedListener;
+  /** Which backend's queue to join. Defaults to the built-in one, so every
+   * caller that predates providers keeps its previous behaviour exactly. */
+  providerId?: string;
 }): Promise<RunSlot | null> {
-  const admitted = await enter(opts.signal, opts.onQueued, false);
+  const providerId = opts.providerId ?? DEFAULT_PROVIDER_ID;
+  const admitted = await enter(providerId, opts.signal, opts.onQueued, false);
   if (!admitted) return null;
-  return makeSlot(opts.signal, opts.onQueued);
+  return makeSlot(providerId, opts.signal, opts.onQueued);
 }
 
-function makeSlot(signal: AbortSignal, onQueued: QueuedListener): RunSlot {
+function makeSlot(providerId: string, signal: AbortSignal, onQueued: QueuedListener): RunSlot {
   let held = true;
   const give = () => {
     if (!held) return;
     held = false;
-    running--;
-    pump();
+    queueFor(providerId).running--;
+    pump(providerId);
   };
   return {
     release: give,
@@ -122,10 +159,10 @@ function makeSlot(signal: AbortSignal, onQueued: QueuedListener): RunSlot {
         // releases exactly one — then let the original error through, which is
         // always the more informative of the two. Deliberately not a `finally`
         // with a throw in it: that would swallow this error entirely.
-        held = await enter(signal, onQueued, true);
+        held = await enter(providerId, signal, onQueued, true);
         throw err;
       }
-      held = await enter(signal, onQueued, true);
+      held = await enter(providerId, signal, onQueued, true);
       if (!held) throw new RunSlotAbortedError();
       return result;
     },
@@ -143,6 +180,7 @@ export class RunSlotAbortedError extends Error {
 /** Joins the queue (or takes a free slot immediately). Resolves true when
  * admitted, false when aborted first. */
 async function enter(
+  providerId: string,
   signal: AbortSignal,
   onQueued: QueuedListener,
   priority: boolean,
@@ -152,13 +190,14 @@ async function enter(
   // the await below gives it every chance to change.
   const stopped = () => signal.aborted;
   if (stopped()) return false;
-  const max = await resolveMaxConcurrent();
+  const max = await resolveMaxConcurrent(providerId);
   // Both re-checks exist because of that await. resolveMaxConcurrent can hit
   // the network on a cold cache, which is easily long enough for the run to be
   // stopped, or for slots to free or fill.
   if (stopped()) return false;
-  if (running < max && waiting.length === 0) {
-    running++;
+  const q = queueFor(providerId);
+  if (q.running < max && q.waiting.length === 0) {
+    q.running++;
     return true;
   }
 
@@ -168,7 +207,7 @@ async function enter(
       notify: onQueued,
       admit: () => {
         signal.removeEventListener("abort", waiter.onAbort);
-        running++;
+        q.running++;
         resolve(true);
       },
       cancel: () => {
@@ -177,15 +216,15 @@ async function enter(
       },
       signal,
       onAbort: () => {
-        const i = waiting.indexOf(waiter);
-        if (i >= 0) waiting.splice(i, 1);
+        const i = q.waiting.indexOf(waiter);
+        if (i >= 0) q.waiting.splice(i, 1);
         waiter.cancel();
         // Someone leaving the middle of the line moves everyone behind them up.
-        notifyPositions();
+        notifyPositions(q);
       },
     };
-    if (priority) waiting.unshift(waiter);
-    else waiting.push(waiter);
+    if (priority) q.waiting.unshift(waiter);
+    else q.waiting.push(waiter);
     signal.addEventListener("abort", waiter.onAbort, { once: true });
     // An abort that fired during the await above has already run its
     // listeners, so registering one now would never hear it and the waiter
@@ -197,35 +236,50 @@ async function enter(
       waiter.onAbort();
       return;
     }
-    notifyPositions();
+    notifyPositions(q);
   });
 }
 
-/** Admits as many waiters as there is room for. */
-function pump(): void {
+/** Admits as many waiters as there is room for, on one provider's queue. */
+function pump(providerId: string): void {
   void (async () => {
-    const max = await resolveMaxConcurrent();
-    while (waiting.length > 0 && running < max) {
-      const next = waiting.shift();
+    const max = await resolveMaxConcurrent(providerId);
+    const q = queueFor(providerId);
+    while (q.waiting.length > 0 && q.running < max) {
+      const next = q.waiting.shift();
       if (next) next.admit();
     }
-    notifyPositions();
+    notifyPositions(q);
   })();
 }
 
 /**
- * Re-examines the queue against the *current* limit.
+ * Re-examines a queue against the *current* limit.
  *
  * `pump()` otherwise runs only when a slot is released, so an admin raising
  * the limit from 1 to 4 to unstick three waiting chats changed nothing until
  * the run holding the one slot finished — from the settings screen the
  * control looked dead for exactly as long as the slow run it was reached for.
- * Called by the settings route after the write lands. Also invalidates the
- * backend probe, so lowering back to "follow the backend" re-asks it.
+ * Called by the settings and provider routes after a write lands. Also
+ * invalidates the backend probe, so lowering back to "follow the backend"
+ * re-asks it.
+ *
+ * With no argument it kicks every queue: a provider write can change any of
+ * them, and a provider that was just deleted has a queue that must not keep
+ * its old limit.
  */
-export function kickScheduler(): void {
-  probed = null;
-  pump();
+export function kickScheduler(providerId?: string): void {
+  if (providerId === undefined) {
+    for (const [id, q] of queues) {
+      q.probed = null;
+      pump(id);
+    }
+    // A provider added since the last run has no queue yet; it will resolve
+    // its limit fresh when its first run arrives, so there is nothing to kick.
+    return;
+  }
+  queueFor(providerId).probed = null;
+  pump(providerId);
 }
 
 /** Tells every waiter where it now stands. 1-based: "#1" is next to run.
@@ -233,8 +287,8 @@ export function kickScheduler(): void {
  * One number, not a position plus a separate "runs ahead" count. With more than
  * one slot those two differ, and two numbers that can disagree is worse than
  * the one a client actually renders. */
-function notifyPositions(): void {
-  waiting.forEach((w, i) => {
+function notifyPositions(q: Queue): void {
+  q.waiting.forEach((w, i) => {
     try {
       w.notify(i + 1);
     } catch {
@@ -244,17 +298,18 @@ function notifyPositions(): void {
   });
 }
 
-// ── How many runs may hold the backend at once ────────────
+// ── How many runs may hold a backend at once ────────────
 
-let probed: { value: number | null; at: number } | null = null;
 /** Long enough that the probe costs nothing per run, short enough that
  * restarting llama.cpp with a different `--parallel` is picked up without
  * restarting this server. */
 const PROBE_TTL_MS = 60_000;
 
 /**
- * Precedence: environment pin > admin setting > what the backend says >
- * **1**.
+ * Precedence, for the built-in backend: environment pin > admin setting >
+ * what the backend says > **1**. For an added provider the row's own
+ * `maxConcurrentRuns` comes first instead, since the deployment-wide setting
+ * describes the deployment's own backend, not someone else's API.
  *
  * The floor is 1 rather than "unlimited" on purpose. Getting this wrong in the
  * permissive direction restores exactly the interleaving this module exists to
@@ -263,35 +318,54 @@ const PROBE_TTL_MS = 60_000;
  * assumed to have one, which is the truth for LM Studio and for llama.cpp's
  * own default.
  */
-export async function resolveMaxConcurrent(): Promise<number> {
-  const { maxConcurrentRuns } = getInferenceSettings();
-  if (maxConcurrentRuns !== null) return maxConcurrentRuns;
-  return (await probeBackendSlots()) ?? 1;
+export async function resolveMaxConcurrent(providerId: string = DEFAULT_PROVIDER_ID): Promise<number> {
+  if (providerId === DEFAULT_PROVIDER_ID) {
+    const { maxConcurrentRuns } = getInferenceSettings();
+    if (maxConcurrentRuns !== null) return maxConcurrentRuns;
+    return (await probeBackendSlots(providerId, undefined)) ?? 1;
+  }
+
+  const { getProviderById } = await import("./providers.ts");
+  const provider = await getProviderById(providerId).catch(() => null);
+  // A provider that cannot be resolved — deleted mid-run, a key that no longer
+  // decrypts, a transient lookup failure — gets the floor, and is *not* probed.
+  // `probeTotalSlots(undefined)` means "the built-in backend", so probing here
+  // sized this provider's queue from local llama.cpp's `--parallel` and cached
+  // the answer under this provider's key for a minute: on a `--parallel 8`
+  // machine, eight concurrent runs against a backend assumed to be 1, which is
+  // the invisible direction the floor exists to prevent. Not cached either, so
+  // a transient failure costs one conservative answer rather than a window.
+  if (!provider) return 1;
+  if (provider.maxConcurrentRuns != null) return provider.maxConcurrentRuns;
+  return (await probeBackendSlots(providerId, provider)) ?? 1;
 }
 
-async function probeBackendSlots(): Promise<number | null> {
-  if (probed && Date.now() - probed.at < PROBE_TTL_MS) return probed.value;
+async function probeBackendSlots(providerId: string, provider: ResolvedProvider | undefined): Promise<number | null> {
+  const q = queueFor(providerId);
+  if (q.probed && Date.now() - q.probed.at < PROBE_TTL_MS) return q.probed.value;
   const { probeTotalSlots } = await import("./models.ts");
-  const value = await probeTotalSlots();
-  probed = { value, at: Date.now() };
+  const value = await probeTotalSlots(provider ?? undefined);
+  q.probed = { value, at: Date.now() };
   return value;
 }
 
-/** Test seam: forget the cached backend probe. */
+/** Test seam: forget the cached backend probes. */
 export function resetSlotProbe(): void {
-  probed = null;
+  for (const q of queues.values()) q.probed = null;
 }
 
-/** Test seam: the queue is process-global, so a suite that leaves waiters
+/** Test seam: the queues are process-global, so a suite that leaves waiters
  * behind would hang the next one. */
 export function __resetSchedulerForTest(): void {
-  for (const w of [...waiting]) w.cancel();
-  waiting.length = 0;
-  running = 0;
-  probed = null;
+  for (const q of queues.values()) {
+    for (const w of [...q.waiting]) w.cancel();
+  }
+  queues.clear();
 }
 
-/** Diagnostics: what the queue looks like right now. */
-export function schedulerState(): { running: number; waiting: number } {
-  return { running, waiting: waiting.length };
+/** Diagnostics: what a queue looks like right now. Defaults to the built-in
+ * backend's, which is the one every existing caller means. */
+export function schedulerState(providerId: string = DEFAULT_PROVIDER_ID): { running: number; waiting: number } {
+  const q = queues.get(providerId);
+  return { running: q?.running ?? 0, waiting: q?.waiting.length ?? 0 };
 }

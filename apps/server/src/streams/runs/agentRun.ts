@@ -12,6 +12,8 @@ import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { runToolLoop } from "./engine.ts";
+import { assertModelUsable } from "../../inference/providers.ts";
+import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
 import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
 
@@ -65,6 +67,9 @@ export async function startAgentRun(input: {
   // leave a half-created conversation behind.
   const atts = input.attachments?.length ? await assertAttachmentsOwned(userId, input.attachments) : [];
 
+  // Same rule for the model — see chatRun.ts.
+  await assertModelUsable(model);
+
   let convId = input.conversationId;
   let workspace: Workspace = { kind: "scratch" };
   if (convId) {
@@ -113,6 +118,9 @@ export async function startAgentRun(input: {
     status: "complete",
     createdAt: new Date(),
   });
+
+  // See chatRun.ts: recorded once the send is committed to.
+  await recordModelUse(userId, model);
 
   const streamId = uuid();
   const producer = await broker.openProducer({

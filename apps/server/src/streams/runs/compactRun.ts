@@ -1,9 +1,16 @@
 import { v4 as uuid } from "uuid";
 import { db, desc, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
-import type { CompactionStats, ContentBlock, ContextBreakdown, TurnUsage } from "@loxaic/types";
+import {
+  DEFAULT_PROVIDER_ID,
+  type CompactionStats,
+  type ContentBlock,
+  type ContextBreakdown,
+  type TurnUsage,
+} from "@loxaic/types";
 import { streamCompletion, textOfContent, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
-import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
+import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
+import { assertModelUsable, resolveModelRef } from "../../inference/providers.ts";
 import { estimateTokens, summaryMessage } from "../../inference/context.ts";
 import { assertConversationAccess } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
@@ -141,6 +148,12 @@ export async function startCompactRun(input: {
   // /compact rewrites the conversation's replayed history, so it is an
   // editor action rather than a reader's convenience.
   await assertConversationAccess(userId, convId, "editor");
+
+  // Before the summary row is inserted: a compaction that cannot reach a
+  // backend must not leave a `streaming` summary in the transcript. Automatic
+  // compaction inherits the turn's model, so this only fires when the provider
+  // went away between that turn and this one.
+  await assertModelUsable(model);
 
   if (getRunByConversation(convId)) {
     throw new Error("A response is already in progress for this conversation");
@@ -314,6 +327,12 @@ async function runCompactGeneration(ctx: {
     slot = await acquireRunSlot({
       signal: abort.signal,
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
+      // The queue belonging to the backend this summary will actually be
+      // generated on — not the built-in one, which may be busy with the very
+      // conversation being compacted.
+      providerId: await resolveModelRef(model)
+        .then((r) => r.provider.id)
+        .catch(() => DEFAULT_PROVIDER_ID),
     });
     if (!slot) {
       // Stopped while waiting in line. Unlike the engine's equivalent, a row
@@ -328,10 +347,10 @@ async function runCompactGeneration(ctx: {
     }
 
     try {
-      const backendModels = await listBackendModels();
-      const targetModel = backendModels.find((m) => m.id === model);
-      windowTokens = targetModel?.loaded_context_tokens ?? targetModel?.context_tokens ?? null;
-      if (targetModel && !targetModel.loaded) {
+      // This model's own provider only — see the same lookup in engine.ts.
+      const info = await modelRunInfo(model);
+      windowTokens = info?.windowTokens ?? null;
+      if (info && !info.loaded) {
         jitLoaded = true;
         producer.emit({ kind: "model.loading", message_id: summaryMsgId });
       }
@@ -358,7 +377,7 @@ async function runCompactGeneration(ctx: {
     }
 
     if (jitLoaded) {
-      invalidateBackendModels();
+      invalidateBackendModels(await resolveModelRef(model).then((r) => r.provider.id).catch(() => undefined));
       windowTokens = (await resolveWindow(model)) ?? windowTokens;
     }
 

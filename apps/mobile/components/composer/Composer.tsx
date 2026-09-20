@@ -233,6 +233,7 @@ export function Composer({
               the context ring or send button off screen, so this is the only element
               allowed to shrink, and its name ellipsizes instead. */}
           <Pressable
+            testID="composer.model"
             onPress={onOpenModelModal}
             className="shrink flex-row items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1.5"
             style={{ maxWidth: '65%' }}

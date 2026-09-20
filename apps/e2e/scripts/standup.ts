@@ -24,6 +24,7 @@ import { createConnection, createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockGithub, VALID_TOKEN } from './mock-github.ts';
+import { startMockProvider } from './mock-provider.ts';
 import { startGitServer, type GitServer } from './git-server.ts';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -93,6 +94,7 @@ let spawnedServer: ChildProcess | null = null;
 /** Stop function for the in-process mock GitHub API server, or null when this
  * run didn't start the spawned server (and so never started this either). */
 let stopMockGithub: (() => Promise<void>) | null = null;
+let stopMockProvider: (() => Promise<void>) | null = null;
 /**
  * `standup()` runs in WebdriverIO's launcher process (the `onPrepare` hook);
  * a spec file runs in a separate worker process it forks — a different
@@ -112,6 +114,21 @@ export function mockGithubUrl(): string {
   }
   const { url } = JSON.parse(readFileSync(MOCK_GITHUB_FILE, 'utf8')) as { url: string };
   return url;
+}
+
+/** The stand-in for an external LLM provider, handed across processes the same
+ * way as the mock GitHub API (see `mockGithubUrl`). Unlike that one its URL
+ * never reaches the server's environment — a provider is a database row an
+ * admin creates, so the spec is what puts this address into one. */
+const MOCK_PROVIDER_FILE = path.join(RUN_DIR, 'mock-provider.json');
+
+/** The mock provider's API base, from whichever process asks. */
+export function mockProviderApiBase(): string {
+  if (!existsSync(MOCK_PROVIDER_FILE)) {
+    throw new Error(`[e2e] no mock provider recorded at ${MOCK_PROVIDER_FILE} — was standup() run?`);
+  }
+  const { apiBase } = JSON.parse(readFileSync(MOCK_PROVIDER_FILE, 'utf8')) as { apiBase: string };
+  return apiBase;
 }
 
 /** The stand-in for GitHub's hosted MCP server, handed across processes the
@@ -321,6 +338,10 @@ async function ensureServer(): Promise<void> {
   const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
   stopMockGithub = mockGithub.stop;
   writeFileSync(MOCK_GITHUB_FILE, JSON.stringify({ url: mockGithub.url }), 'utf8');
+
+  const mockProvider = await startMockProvider();
+  stopMockProvider = mockProvider.stop;
+  writeFileSync(MOCK_PROVIDER_FILE, JSON.stringify({ apiBase: mockProvider.apiBase }), 'utf8');
   // GitHub's hosted MCP server, standing in for api.githubcopilot.com. It
   // refuses every bearer but the one the mock GitHub API accepts, so a GitHub
   // tool answering at all proves the connection's token reached it.
@@ -450,6 +471,11 @@ export async function teardown(): Promise<void> {
     stopMockGithub = null;
   }
   rmSync(MOCK_GITHUB_FILE, { force: true });
+  if (stopMockProvider) {
+    await stopMockProvider();
+    stopMockProvider = null;
+  }
+  rmSync(MOCK_PROVIDER_FILE, { force: true });
   if (mockGithubMcp?.pid !== undefined) {
     try {
       mockGithubMcp.kill();

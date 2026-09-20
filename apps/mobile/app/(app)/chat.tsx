@@ -21,6 +21,8 @@ import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
+import { useRecentModels } from '@/hooks/useRecentModels';
+import { pickSelectedModel } from '@/lib/selectModel';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { canEdit, isOwner } from '@/lib/types';
 import { ShareModal } from '@/components/chat/ShareModal';
@@ -64,6 +66,7 @@ export default function ChatScreen() {
   } = useChatSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
+  const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
   const { showToast } = useToastHelper();
 
   const [settings] = useSettings();
@@ -82,11 +85,17 @@ export default function ChatScreen() {
   const thinkingLevel = storedThinkingLevel ?? settings.defaultThinkingLevel;
 
   const prefModel = activeConv?.model;
-  const selectedModel =
-    (prefModel && (models.length === 0 || isKnown(prefModel)) ? prefModel : null) ??
-    pendingModel ??
-    defaultModel?.id ??
-    '';
+  // See lib/selectModel.ts for the order, and for why "last used" applies only
+  // to a conversation that does not exist yet.
+  const selectedModel = pickSelectedModel({
+    prefModel,
+    hasConversation: Boolean(activeId),
+    pendingModel,
+    recentModels,
+    modelsLoaded: models.length > 0,
+    isKnown,
+    defaultModelId: defaultModel?.id,
+  });
 
   const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
 
@@ -192,7 +201,12 @@ export default function ChatScreen() {
             model={selectedModel ? getName(selectedModel) : undefined}
           />
         ) : (
-          <PromptSuggestions onPick={(text) => { handleSend(text, selectedModel); }} />
+          <PromptSuggestions
+            onPick={(text) => {
+              bumpRecentModel(selectedModel);
+              handleSend(text, selectedModel);
+            }}
+          />
         )}
         {/* Above the composer, in the flow — not a dialog. Deciding whether
             the agent should carry on means reading what it has already done,
@@ -209,7 +223,13 @@ export default function ChatScreen() {
           />
         )}
         <Composer
-          onSend={(text, attachments) => { handleSend(text, selectedModel, attachments); }}
+          onSend={(text, attachments) => {
+            // Reordered locally the moment the send happens, so reopening the
+            // picker is already right rather than a turn behind. The server
+            // records the same thing; the next fetch just confirms it.
+            bumpRecentModel(selectedModel);
+            handleSend(text, selectedModel, attachments);
+          }}
           onStop={handleStop}
           stopping={stopping}
           streaming={streaming}
@@ -254,8 +274,15 @@ export default function ChatScreen() {
         models={models}
         loading={modelsLoading}
         error={modelsError}
-        onRefresh={() => { void refreshModels(); }}
+        onRefresh={() => {
+          void refreshModels();
+          // Refetched with the list: another device may have used a model
+          // since this screen loaded, and the section is meant to answer
+          // "what was I using?" rather than "what did this tab see?".
+          void refreshRecentModels();
+        }}
         selectedModel={selectedModel}
+        recentModels={recentModels}
         onSelect={(id) => {
           if (activeId) setConversationModel(activeId, id);
           else setPendingModel(id);

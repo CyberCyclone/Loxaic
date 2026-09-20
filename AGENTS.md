@@ -448,6 +448,187 @@ replies.
   if missing — nothing needs to build it ahead of time (`ensureImage()` in
   `container-provider.ts`).
 
+### Inference providers
+
+- **The backend `INFERENCE_BASE_URL` names is not a row.** It is synthesized at call time by
+  `inference/providers.ts`'s `defaultProvider()` — id `default`, slug null — so a deployment
+  that never opens the providers screen behaves exactly as it did before the feature existed,
+  and an operator can still move it by editing the environment. Everything else is an
+  admin-added row in `inference_providers`, and every route that touches that table is behind
+  `requireAdmin`: one key pays for every user's requests.
+- **A model reference is one opaque string everywhere**, and the built-in backend's models keep
+  their bare upstream id. Every `conversations.model_pref`, `messages.model` and
+  `usage_records.model` written before this still resolves, untouched. An added provider's are
+  `slug::upstreamId` (`packages/types`' `parseModelRef`/`formatModelRef`); `::` because `/` and
+  `:` both occur inside real ids (`openai/gpt-4o`, `qwen2.5:7b`). One string rather than a
+  second `provider` field on the wire, because a native build predating this treats the id as
+  opaque and keeps working, where it would drop an unknown field and have the server answer
+  from the local model.
+- **An unresolvable reference is a typed error, never a fallthrough.** llama.cpp ignores the
+  `model` field entirely, so a deleted provider's reference sent to the built-in backend would
+  be answered by whatever is loaded with nothing anywhere saying the request had gone
+  somewhere else. `assertModelUsable` runs in all three run starters beside
+  `assertAttachmentsOwned`, before any conversation or message row is written — which is also
+  what makes the per-provider **model allowlist** a spending limit rather than a presentation
+  detail in the picker.
+- **The slug is immutable and the name is not.** The name is free text, renameable, and is the
+  group heading every user sees — two rows may share a preset (two OpenRouter keys, three
+  llama.cpp hosts), which is what makes it load-bearing. The slug is derived from it once, at
+  creation, and `PATCH` refuses to change it: it is stored in every message that used one of
+  that provider's models. Deleting a provider and recreating it under the same name rebinds
+  those references.
+- **`baseUrl` is the API base *including* its version segment.** "Origin plus `/v1`" cannot
+  express OpenRouter, whose API lives at `https://openrouter.ai/api/v1`. A bare origin gets
+  `/v1` appended (llama.cpp, LM Studio, vLLM, Ollama); an already-versioned path is left as
+  typed. `nativeRoot` strips a trailing `/v1` and is where the LM Studio-native and `/props`
+  probes go — **only for a provider with no preset**, since asking a hosted API for them spends
+  a full timeout on a 404 every refresh.
+- **Deliberately no SSRF guard.** A llama.cpp host at 192.168.1.13 is the core use case, this
+  is admin-only deployment configuration of the same kind `INFERENCE_BASE_URL` already is, and
+  the address never reaches a non-admin. Only http/https, and credentials in the URL are
+  refused — they would sit in the clear in `base_url` beside an encrypted column that exists to
+  stop exactly that. Custom headers refuse `authorization` (it would silently defeat that
+  column), the hop-by-hop set, and any CR/LF; keyed fetches use `redirect: "error"`.
+- **`authorization` is not the only header that is a credential.** `x-api-key` is how Anthropic
+  authenticates natively and `api-key` is Azure OpenAI's, so an admin has a plausible reason to
+  put a live key in the headers box — where it is stored in the clear and returned to every
+  admin by the list route. `redactSecrets` already treated header values as secrets; the write
+  path now agrees, refusing those names (`CREDENTIAL_HEADERS`) with a message pointing at the
+  API key field. Found in review, not by any test.
+- **A stored key has three client states, and "remove" needs its own control.** The key field
+  is never seeded (no route returns a key), so empty has to mean "keep" — which left no path to
+  removal at all, and re-pointing a keyed provider's `baseUrl` kept sending the old bearer to
+  the new host. The edit form has an explicit Remove control (`apiKey: null`), warns when the
+  address of a keyed provider changes, and derives its plain-http warning from the *stored* key
+  as well as the field — judged on the field alone it was silent exactly when a real key was
+  about to travel in the clear.
+- **`created_by` is `ON DELETE SET NULL`.** The default `no action` made any admin who had ever
+  added a provider undeletable; `cascade` would remove deployment-wide configuration, and
+  orphan every conversation naming its slug, because its author left. Attribution is the only
+  thing that should go.
+- **The key is decrypted with the *cached* scrypt derive** (`inference/provider-secrets.ts`,
+  modelled on `github/connection.ts`, not `mcp/secrets.ts`). It is on the path of every
+  inference request, and an uncached scrypt costs ~16 MB and tens of milliseconds
+  **synchronously** — it would stall the event loop, and so every other user's stream, once per
+  turn.
+- **Upstream error text is scrubbed before it becomes an Error, not after.** Whatever
+  `streamCompletion` throws is persisted on the message row and re-served to everyone on the
+  conversation, shared viewers included, and a rejected request routinely quotes the credential
+  it rejected ("Incorrect API key provided: sk-…"). A 401/403 from an added provider is
+  **replaced** with our own sentence rather than appended to, so no part of the vendor's
+  wording survives. `lastError` on the row is scrubbed the same way.
+- **Provider rows are read through a short async TTL cache, not a boot-loaded sync one.**
+  Nothing here has a sync contract the way `getSandboxMode()` does, a cluster shares one
+  database (so a boot snapshot would leave one instance serving a provider another had
+  deleted), and lookups by slug give test isolation for free. Resolved **per request, not per
+  run**, which is what makes deleting a provider to stop its spend take effect on a run already
+  in flight.
+- **One scheduler queue per provider.** What the queue protects is one backend's cached prefix
+  and one backend's capacity, and there is now more than one backend — a chat on a hosted
+  provider must not wait behind a local run's tool work, for a backend with no prefix cache and
+  plenty of headroom. "Added" never means "cloud": a second llama.cpp host has exactly the
+  single-prefix problem the first one has. `providerId` defaults to `"default"` on
+  `acquireRunSlot`/`resolveMaxConcurrent`/`schedulerState`, so every pre-existing call site
+  stands. Precedence for an added provider is the row's `maxConcurrentRuns` first — the
+  deployment-wide `INFERENCE_MAX_CONCURRENT_RUNS` describes the deployment's own backend, not
+  someone else's API — then an authed `/props`, then the floor of 1. **A provider that cannot
+  be resolved gets the floor and is not probed**: `probeTotalSlots(undefined)` means "the
+  built-in backend", so probing sized a deleted or undecryptable provider's queue from local
+  llama.cpp's `--parallel` and cached it for a minute — the invisible direction the floor
+  exists to prevent. `scheduler.test.ts` holds it with a probe target that really does answer 8.
+- **The run path never fans out.** `getModelInfo(ref)`/`resolveWindow(ref)` touch only the
+  ref's own provider; only `GET /v1/models` asks them all, in parallel, with a failure
+  contributing an empty list. Searching every provider from `engine.ts` would put one
+  unreachable LAN provider's timeout in front of every tool iteration of an unrelated run,
+  while that run holds an inference slot that may be the whole deployment.
+  `invalidateBackendModels(providerId?)` is per provider for the same reason: a JIT load on one
+  backend says nothing about another's catalogue, and dropping a hosted provider's
+  several-hundred-entry list costs a round trip to rebuild.
+- **An added provider's unknown context window is `null`, not the 8192 fallback.** OpenAI's
+  `/v1/models` reports no context length at all, so the default would have every GPT
+  conversation auto-compacting at about 7k tokens — a billed call and a full prompt
+  re-evaluation, over and over, on a model whose real window is twenty times that. `windowFor`
+  refuses to hand a `context_source: "default"` figure to the threshold; `context_tokens` stays
+  a number for display only. Parsed where a provider does say: `context_length` (OpenRouter),
+  `max_model_len` (vLLM), `max_input_tokens` (Anthropic), `meta.n_ctx_train` (llama.cpp).
+- **`format: "gguf"` requires the backend to have said so.** Only a backend that answered
+  `/props` has identified itself as llama.cpp. Keying it on "has no preset" instead put a GGUF
+  badge on Claude and GPT the first time a hand-entered provider was pointed at a hosted API —
+  found by driving the real UI, not by any test.
+- **A failed Test reports the endpoint the admin configured, never the probe's.** The LM Studio
+  probe is an opportunistic guess at `/api/v0/models`, a path nobody entered, and it fails on
+  every backend that is not LM Studio — so reporting its 401 sent an admin who had configured
+  `…/v1` looking for a URL that is not theirs. Same origin: found in the browser.
+- **A hosted model reports `loaded: true`.** It is. Reporting otherwise would emit
+  `model.loading` on every turn and re-resolve the window after each one, describing a JIT load
+  that does not exist. The built-in backend's models are returned **first**, and the client's
+  `defaultModel` prefers them, because every hosted model is "loaded" and
+  `find(m => m.loaded)` would otherwise start a new chat on a paid model whenever the local
+  backend had nothing loaded.
+- **`MOCK_INFERENCE` applies only to the built-in provider.** An added one stays live, which is
+  what lets the mock e2e lane exercise the whole provider path — bearer included — with nothing
+  stubbed (`apps/e2e/scripts/mock-provider.ts`, whose 401 quotes the key it rejected exactly as
+  OpenAI's does, because that is what the redaction has to survive).
+- **A non-null allowlist doubles as a manual model list** when a provider's own `/models` call
+  fails — which is the shape of any vendor whose listing endpoint needs different auth than its
+  completions endpoint. An **empty** array is treated as unset: the UI writes null for "all
+  models", and nobody means "no models at all" by it.
+- **Test isolation:** provider rows are deployment-wide and vitest shares one database, so a
+  suite creates rows under a unique name, asserts "contains" rather than an exact set, and
+  deletes by its own `createdBy`/base URL — never an unscoped delete, which would take another
+  suite's rows out from under it. A dead base URL is `http://127.0.0.1:1` (instant
+  ECONNREFUSED), never a blackhole address.
+
+### The picker's "recently used"
+
+- **Recorded on a send, not on a tap.** What belongs at the top is what the user ran; a model
+  they opened and thought better of is not that. Written by `recordModelUse` from the two run
+  starters, keyed to the **sender** rather than the conversation's owner, since on a shared
+  conversation the person choosing is the person typing. Never for compaction — an automatic
+  one is nobody's choice — and never for the literal `"default"`, which is the sentinel
+  `ws/chat.ts` sends when a client names no model.
+- **Stored in `user_prefs.recent_models`, not derived from `usage_records`**, which has no
+  index on `user_id` — that would be a sequential scan of the fastest-growing table every time
+  the picker opens.
+- **One SQL statement, so two racing sends cannot both read the same list** and write back two
+  different move-to-fronts. Skipped entirely via a per-process last-ref map when the model has
+  not changed, which is every turn of an ordinary conversation, so the ordinary case costs no
+  write. **Awaited** rather than fired and forgotten: a `user_prefs` row appearing after the
+  request that caused it is a foreign key waiting to be violated by a user deletion.
+- **`user_prefs` cascades on user delete** (matching `github_connections`). Now that every run
+  records a model, every active user has a row — without the cascade, deleting a user would be
+  blocked until something thought to delete a table it never touched.
+- **Read-only through `GET /v1/prefs`; `PATCH` refuses the key by name** rather than ignoring
+  it, so a client cannot believe it reordered the list. Absent on an older server means "this
+  server does not track it", never "nothing has been used".
+- **The section is hidden while searching.** A model matching both it and its own provider's
+  group would render twice, and every duplicate is another row to read past. Recents are
+  otherwise rendered *in addition to* their group, so a group stays a complete list of what
+  that provider serves — hence `models.recent.<id>` and `models.row.<id>` as separate testIDs.
+- **A new conversation opens on the last-used model — and only a new one.** The gate in
+  `lib/selectModel.ts` is "no conversation exists yet", not "this conversation has no
+  `model_pref`". Those are different sets: a thread from before `model_pref` was written, or
+  made by another client, has an id and no pref, and "last used anywhere" silently pointed
+  that old local-model thread at a paid provider the first time its owner tried one in a
+  different chat. A conversation that exists falls through to the built-in default. Gating on
+  the id is safe for the thread being started too: on both surfaces a conversation acquires
+  its id *as part of* its first send, which records the model on it, so the composer does not
+  flip when the conversation stops being new. Pure and unit-tested because it is one branch
+  away from billing someone; recents must also still be offered (`isKnown`).
+- **The allowlist editor discards a stale model list.** `loadModels` awaits a *remote* provider,
+  so opening a slow provider, closing it, and opening another let the first's catalogue land
+  in the second's editor — and saving ticked boxes wrote one provider's ids as another's
+  allowlist, a server-enforced spending limit made of ids that resolve against neither. Every
+  state write, the spinner included, is guarded by a request counter; closing the modal
+  retires the in-flight request too.
+- **`ModelModal` needed `max-h-[85%]` *and* `ModalBody scrollEnabled`**, neither of which it
+  had. The vendored `ModalBody` hardcodes `scrollEnabled={false}` before its prop spread and
+  `ModalContent` has no height cap, so a list past the fold extended past the viewport with
+  nothing able to reach it. Grouping by provider is exactly what makes this list long; one
+  provider's models are also capped at 50 rows behind a "N more — search" line, because the
+  list is a plain `.map` (a virtualized FlatList cannot nest in a ScrollView) and OpenRouter
+  lists several hundred.
+
 ### Prompt caching (why the history window is anchored)
 
 - **llama.cpp and LM Studio cache the KV state of a prompt *prefix*.** A turn is cheap only

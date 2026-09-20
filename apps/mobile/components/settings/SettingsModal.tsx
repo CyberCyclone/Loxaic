@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, Plug } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, Plug, Server } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -35,6 +35,7 @@ import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint, electronBridge, resolveEndpoint, setEndpoint } from '@/lib/endpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import type { AgentMode, Settings, ThinkingLevel } from '@/lib/types';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 const MODES: AgentMode[] = ['planning', 'manual', 'auto'];
 const THINKING: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High'];
@@ -45,7 +46,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [themePref, setThemePref] = useThemePreference();
   const router = useRouter();
   const { showToast } = useToastHelper();
-  const { signOut } = useSession();
+  const { signOut, isAdmin } = useSession();
   const [draft, setDraft] = useState<Settings>(settings);
   const [dirty, setDirty] = useState(false);
   const [confirmDetach, setConfirmDetach] = useState(false);
@@ -351,6 +352,45 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               </HStack>
               <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
             </Pressable>
+
+            {/* Admin-only, and only here: unlike the sandbox row — which
+                everyone can open to read what the deployment allows — there
+                is nothing on the providers screen for a non-admin to do, and
+                its list is the deployment's own topology and credentials.
+                The route still refuses them; this only stops offering it. */}
+            {isAdmin && (
+              <Pressable
+                testID="settings.nav.providers"
+                onPress={() => {
+                  onClose();
+                  router.push('/providers');
+                }}
+                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+              >
+                {/* `min-w-0` and `shrink` on both the row and the label
+                    column, because this subtitle is the longest of the four
+                    and React Native defaults every view to `flexShrink: 0` —
+                    without them it pushed the chevron clean off the card on a
+                    phone, which is only visible on a narrow screen. */}
+                <HStack space="sm" className="min-w-0 shrink items-center">
+                  <Icon as={Server} size="sm" className="shrink-0 text-muted-foreground" />
+                  <VStack className="min-w-0 shrink">
+                    <Text size="sm" className="text-foreground">
+                      Model Providers
+                    </Text>
+                    <Text
+                      size="2xs"
+                      className="text-muted-foreground"
+                      numberOfLines={1}
+                      style={TRUNCATE_TEXT}
+                    >
+                      OpenRouter, OpenAI, or another server
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
+              </Pressable>
+            )}
 
             <Pressable
               testID="settings.nav.sandbox"

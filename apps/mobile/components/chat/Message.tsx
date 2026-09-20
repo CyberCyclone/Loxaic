@@ -19,6 +19,7 @@ import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
 import type { Message as MessageType } from '@/lib/types';
+import { displayModelRef } from '@loxaic/types';
 
 interface MessageProps {
   msg: MessageType;
@@ -110,8 +111,12 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
           <VStack className="flex-1 pl-0" space="xs">
             <HStack space="xs" className="items-center">
               {!isUser && msg.model && (
+                // The reference with its provider prefix stripped. The slug is
+                // an internal identifier the user never chose, and this line
+                // is read most often on old messages — including ones whose
+                // provider has since been removed.
                 <Text size="xs" className="text-muted-foreground">
-                  {msg.model}
+                  {displayModelRef(msg.model)}
                 </Text>
               )}
             </HStack>

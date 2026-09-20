@@ -5,6 +5,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import type { ModelStats } from '@loxaic/api-client';
+import { displayModelRef } from '@loxaic/types';
 
 const PP_COLOR = '#0096ff';
 const TG_COLOR = '#22c55e';
@@ -80,7 +81,7 @@ export function ModelSpeedChart({ models, height = 200 }: ModelSpeedChartProps) 
       <HStack space="sm" className="flex-wrap px-1">
         {withSpeed.map((m) => (
           <Text key={m.model} size="2xs" className="text-muted-foreground" numberOfLines={1} style={{ maxWidth: 90 }}>
-            {m.model}
+            {displayModelRef(m.model)}
           </Text>
         ))}
       </HStack>

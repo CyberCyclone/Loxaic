@@ -1,9 +1,10 @@
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
+import { redactSecrets } from "./provider-secrets.ts";
+import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 
 // Read at call time, not module load — a supervisor sets these in the child's
 // env, and module-scope reads would freeze them before any caller could act.
-const BASE_URL = () => process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
 const MOCK_MODE = () => process.env.MOCK_INFERENCE === "true";
 
 /** An OpenAI-shaped tool call. `arguments` is a JSON *string*, per the spec. */
@@ -91,7 +92,14 @@ export interface CompletionResult {
   ttftMs: number | null;
   /** Total wall-clock duration (ms) of the inference call — model load (if any), prompt eval, and generation. */
   totalMs: number;
-  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+    /** OpenAI's (and OpenRouter's) spelling of what llama.cpp reports as
+     * `timings.cache_n`. Present only on providers that do report it. */
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
   timings: LlamaTimings | null;
   /**
    * Tokens the backend reported reusing from its KV cache. **Null means the
@@ -140,16 +148,30 @@ export interface StreamOptions {
   toolChoice?: "auto" | "none";
 }
 
+/**
+ * `model` is a stored model *reference*, not necessarily the id the backend
+ * knows: an added provider's models carry a `slug::` prefix, which is resolved
+ * here into which backend to call and what to call the model when we get
+ * there.
+ *
+ * Resolved per request rather than once per run, so deleting a provider to
+ * stop it spending takes effect on a run already in flight.
+ */
 export async function* streamCompletion(
   model: string,
   messages: ChatMessage[],
   options: StreamOptions = {},
 ): AsyncGenerator<StreamEvent, void, unknown> {
-  if (MOCK_MODE()) {
+  const { provider, upstreamModel } = await resolveModelRef(model);
+  // Mock mode stands in for the backend this deployment was configured with,
+  // not for a provider an admin added: an added one has a real address and a
+  // real key, so leaving it live is what lets the mock lane exercise the whole
+  // provider path — auth header included — with nothing stubbed.
+  if (provider.isDefault && MOCK_MODE()) {
     yield* mockStream(messages, options);
     return;
   }
-  yield* liveStream(model, messages, options);
+  yield* liveStream(provider, upstreamModel, messages, options);
 }
 
 // ── Mock ──────────────────────────────────────────────────
@@ -406,6 +428,8 @@ interface StreamChunkChoice {
   delta?: {
     content?: string | null;
     reasoning_content?: string | null;
+    /** OpenRouter's name for `reasoning_content`. */
+    reasoning?: string | null;
     tool_calls?: StreamChunkToolCallDelta[];
   };
   message?: {
@@ -424,7 +448,21 @@ interface StreamChunk {
   error?: string | { message?: string };
 }
 
+/**
+ * Everything a provider could echo back in an error.
+ *
+ * Whatever this function throws is persisted on the assistant's message row
+ * and re-served to everyone on the conversation, shared viewers included —
+ * and a rejected request routinely quotes the credential it rejected
+ * ("Incorrect API key provided: sk-…abcd"). So an upstream message is scrubbed
+ * before it becomes an Error, not after.
+ */
+function secretsOf(provider: ResolvedProvider): (string | null)[] {
+  return [provider.apiKey, ...Object.values(provider.headers)];
+}
+
 async function* liveStream(
+  provider: ResolvedProvider,
   model: string,
   messages: ChatMessage[],
   options: StreamOptions,
@@ -447,11 +485,20 @@ async function* liveStream(
   }
 
   // Not the global fetch: see transport.ts for the 300-second cut-off it has.
-  const response = await inferenceFetch(`${BASE_URL()}/v1/chat/completions`, {
+  const response = await inferenceFetch(`${provider.apiBase}/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...provider.headers,
+      // Last, so a custom header can never displace it — the write path
+      // refuses `authorization` too, and one of the two has to be the rule
+      // rather than both being a convention.
+      ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+    },
     body: JSON.stringify(body),
     signal: options.signal,
+    // A redirect would carry the Authorization header to wherever it points.
+    redirect: "error",
   });
 
   if (!response.ok) {
@@ -467,7 +514,19 @@ async function* liveStream(
     } catch {
       // Not JSON — use the raw text as-is.
     }
-    throw new Error(message || `Inference error ${String(response.status)}`);
+    // A rejected credential is the admin's problem, not the user's, and the
+    // upstream wording ("Incorrect API key provided", "No auth credentials
+    // found") tells whoever is reading the transcript nothing they can act on.
+    // Replaced rather than appended to, so no part of the vendor's own text —
+    // which may quote the key — reaches the conversation.
+    if (!provider.isDefault && (response.status === 401 || response.status === 403)) {
+      throw new Error(
+        `The "${provider.name}" provider rejected this server's API key. Ask an admin to check it in Settings → Model providers.`,
+      );
+    }
+    throw new Error(
+      redactSecrets(message || `Inference error ${String(response.status)}`, secretsOf(provider)),
+    );
   }
 
   if (!response.body) throw new Error("Inference response has no body");
@@ -516,7 +575,7 @@ async function* liveStream(
         if (parsed.error) {
           const detail =
             typeof parsed.error === "string" ? parsed.error : (parsed.error.message ?? JSON.stringify(parsed.error));
-          throw new Error(`Inference backend error: ${detail}`);
+          throw new Error(redactSecrets(`Inference backend error: ${detail}`, secretsOf(provider)));
         }
 
         const choice = parsed.choices?.[0];
@@ -525,7 +584,10 @@ async function* liveStream(
         // Reasoning models (and llama.cpp with a reasoning template) stream
         // chain-of-thought separately from the answer.
         const delta = choice?.delta;
-        const reasoning = delta?.reasoning_content;
+        // `reasoning_content` is llama.cpp's and LM Studio's spelling;
+        // OpenRouter uses `reasoning` for the same thing. Neither backend
+        // sends both, so taking whichever is present costs nothing.
+        const reasoning = delta?.reasoning_content ?? delta?.reasoning;
         if (typeof reasoning === "string" && reasoning.length > 0) {
           ttftMs ??= Date.now() - startTime;
           yield { type: "thinking", content: reasoning };
@@ -617,7 +679,12 @@ async function* liveStream(
       totalMs,
       usage,
       timings: lastTimings,
-      cachedTokens: lastTimings?.cache_n ?? null,
+      // llama.cpp's figure first, then the OpenAI-shaped one a hosted provider
+      // reports. Still null — never 0 — when neither is present: "the backend
+      // does not report this" is a different fact from "nothing was cached",
+      // and storing the second for the first is what pinned the stats screen
+      // at a permanent 0% hit rate.
+      cachedTokens: lastTimings?.cache_n ?? usage.prompt_tokens_details?.cached_tokens ?? null,
       promptTps,
       genTps,
     },
