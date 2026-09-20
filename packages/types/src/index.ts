@@ -108,9 +108,82 @@ export interface ModelInfo {
   host_name: string | null;
   price: number;
   loaded: boolean;
+  /** Which configured backend serves this model. `"default"` is the one
+   * INFERENCE_BASE_URL names; anything else is an admin-added provider row.
+   * The picker groups on this. */
+  provider_id: string;
+  /** The admin's label for that provider — the group header. Renameable, so
+   * never treat it as an identity. */
+  provider_name: string;
+  /** The id the *provider* knows this model by, with no `slug::` prefix. What
+   * goes on the wire to the backend, and what the allowlist matches. Equal to
+   * `id` for the default provider. */
+  upstream_id: string;
 }
 
 export interface ModelPref { model?: string }
+
+/**
+ * A model reference is one opaque string everywhere it is stored or sent —
+ * `conversations.model_pref`, `messages.model`, `usage_records.model`, the
+ * `model` field on every WS send. The default backend's models keep their bare
+ * upstream id, so every row written before providers existed stays valid; an
+ * added provider's models are `slug::upstreamId`.
+ *
+ * `::` rather than `/` or `:` because both of those appear inside real model
+ * ids (`openai/gpt-4o`, `qwen2.5:7b`), and a separator that can occur in the
+ * right-hand side would make the split ambiguous.
+ *
+ * One string rather than a second `provider` field on the wire: a native build
+ * that predates this feature treats the id as opaque and keeps working, where
+ * it would silently drop an unknown field and have the server route its
+ * request to the local model instead.
+ */
+export const MODEL_REF_SEPARATOR = "::";
+
+/** The one slug an added provider may not take: `ws/chat.ts` sends the literal
+ * `"default"` when a client names no model, and `DEFAULT_PROVIDER_ID` is what
+ * the synthesized built-in provider reports. */
+export const DEFAULT_PROVIDER_ID = "default";
+
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** True for a syntactically valid provider slug. Shared by the ref parser and
+ * the admin route's validation so the two cannot disagree about what a slug is. */
+export function isProviderSlug(value: string): boolean {
+  return SLUG_RE.test(value);
+}
+
+/**
+ * Split a stored reference into the provider that serves it and the id that
+ * provider knows it by. `providerSlug` is null for the default backend.
+ *
+ * A `::` whose left side is not slug-shaped is *not* a provider reference —
+ * the whole string belongs to the default backend, which is the conservative
+ * reading for an id some future backend invents.
+ */
+export function parseModelRef(ref: string): { providerSlug: string | null; upstreamModel: string } {
+  const at = ref.indexOf(MODEL_REF_SEPARATOR);
+  if (at <= 0) return { providerSlug: null, upstreamModel: ref };
+  const slug = ref.slice(0, at);
+  if (!isProviderSlug(slug)) return { providerSlug: null, upstreamModel: ref };
+  return { providerSlug: slug, upstreamModel: ref.slice(at + MODEL_REF_SEPARATOR.length) };
+}
+
+export function formatModelRef(providerSlug: string | null, upstreamModel: string): string {
+  return providerSlug === null ? upstreamModel : `${providerSlug}${MODEL_REF_SEPARATOR}${upstreamModel}`;
+}
+
+/**
+ * What to show when the model list has nothing to say about a ref — a message
+ * from a provider that has since been deleted, or a stats row for one. The
+ * slug is dropped rather than shown, because it is an internal identifier the
+ * user never chose; a live model renders its `display_name` instead and never
+ * reaches this.
+ */
+export function displayModelRef(ref: string): string {
+  return parseModelRef(ref).upstreamModel;
+}
 
 export * from "./stream-protocol";
 export * from "./commands";

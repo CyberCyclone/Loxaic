@@ -373,6 +373,69 @@ export const mcpServers = pgTable(
   (t) => [uniqueIndex("mcp_servers_owner_slug_idx").on(t.ownerId, t.slug)],
 );
 
+// ── Inference providers ──
+/**
+ * An LLM backend an admin added through the GUI, beyond the one
+ * `INFERENCE_BASE_URL` names. Every row is OpenAI-compatible
+ * (`POST {baseUrl}/chat/completions`), which covers OpenRouter, OpenAI,
+ * Anthropic's compatibility endpoint, and any other llama.cpp / LM Studio /
+ * vLLM / Ollama host on the network.
+ *
+ * There is deliberately no row for the built-in backend: it is synthesized
+ * from the environment variable at call time (see
+ * apps/server/src/inference/providers.ts), so a deployment that never opens
+ * this screen behaves exactly as it did before this table existed.
+ *
+ * Deployment-wide, not per-user: the key is the admin's and every signed-in
+ * user spends it, which is why `model_allowlist` exists and why every route
+ * that touches this table is behind `requireAdmin`.
+ */
+export const inferenceProviders = pgTable(
+  "inference_providers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Admin-chosen label, and exactly what users see as the group header in
+     * the model picker. Free text, renameable at any time — two rows may share
+     * a preset ("Work OpenRouter" / "Personal OpenRouter"), which is the case
+     * that makes it load-bearing rather than decorative. */
+    name: text("name").notNull(),
+    /** Immutable [a-z0-9-] identifier, derived from the name at creation. It is
+     * baked into every stored model reference (`slug::upstreamId`) in
+     * conversations.model_pref, messages.model and usage_records.model, so a
+     * rename must not touch it. */
+    slug: text("slug").notNull(),
+    /** Which vendor's defaults were used to fill this row in, or null for a
+     * hand-entered one. Decides whether the LM Studio-native and /props probes
+     * are worth attempting, and nothing else. */
+    preset: text("preset", { enum: ["openrouter", "openai", "anthropic"] }),
+    /** The API base *including* the version segment
+     * (`https://openrouter.ai/api/v1`). "Root plus /v1" cannot express
+     * OpenRouter, whose API lives under /api/v1. */
+    baseUrl: text("base_url").notNull(),
+    /** Encrypted blob (see apps/server/src/inference/provider-secrets.ts);
+     * never returned by any route, not even to an admin. */
+    encryptedApiKey: text("encrypted_api_key"),
+    /** Non-secret extra request headers, e.g. OpenRouter's HTTP-Referer and
+     * X-Title. Hop-by-hop and auth headers are refused on write. */
+    headers: jsonb("headers"),
+    enabled: boolean("enabled").notNull().default(true),
+    /** Outranks every other concurrency source for this provider's own queue.
+     * Null resolves through a /props probe and then the floor of 1. */
+    maxConcurrentRuns: integer("max_concurrent_runs"),
+    /** Model ids (upstream, unqualified) users may pick, or null for "whatever
+     * the provider lists". Enforced server-side at send time — hiding a model
+     * in the picker is presentation, not a spending limit. Doubles as a manual
+     * model list when the provider's own /models call fails. */
+    modelAllowlist: jsonb("model_allowlist"),
+    lastCheckedAt: timestamp("last_checked_at"),
+    lastError: text("last_error"),
+    createdBy: text("created_by").references(() => user.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("inference_providers_slug_idx").on(t.slug)],
+);
+
 /**
  * One row per server instance sharing this database. The set of rows *is* the
  * cluster: identity lives in the database, so pointing an instance at a
@@ -412,7 +475,12 @@ export const serverSettings = pgTable("server_settings", {
 });
 
 export const userPrefs = pgTable("user_prefs", {
-  userId: text("user_id").primaryKey().references(() => user.id),
+  /** Cascades, matching `github_connections`. A row here is settings *about* a
+   * user and has no meaning without them — and now that starting a run records
+   * a recently-used model, every active user has one, so without the cascade
+   * a user could not be deleted until something thought to delete a table it
+   * never touched. */
+  userId: text("user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
   /** Builtin tool names the user has allowlisted ("allow always") — these
    * stop asking for approval anywhere the tool loop runs (chat and agent
    * manual mode alike). MCP tools have their own per-server toolPolicies
@@ -437,6 +505,17 @@ export const userPrefs = pgTable("user_prefs", {
    * hold a shared backend for a very long time without anyone being asked.
    */
   maxIterations: integer("max_iterations").notNull().default(100),
+  /**
+   * Model references this user most recently *sent* with, newest first, capped
+   * at RECENT_MODELS_MAX. Stored rather than derived from `usage_records`,
+   * which has no index on user_id — a sequential scan every time the picker
+   * opens, on the table that grows fastest.
+   *
+   * Server-owned: written by the run starters, refused by PATCH /v1/prefs. A
+   * send is what counts as use, not a tap in the picker, so the list describes
+   * what the user actually ran rather than what they browsed past.
+   */
+  recentModels: jsonb("recent_models").notNull().default([]),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

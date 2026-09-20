@@ -11,6 +11,8 @@ import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { runToolLoop } from "./engine.ts";
+import { assertModelUsable } from "../../inference/providers.ts";
+import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
 
 /**
@@ -56,6 +58,12 @@ export async function startChatRun(input: {
   // leave a half-created conversation behind.
   const atts = input.attachments?.length ? await assertAttachmentsOwned(userId, input.attachments) : [];
 
+  // Same rule for the model: a reference naming a provider that was deleted,
+  // switched off, or never allowed this model cannot be served, and refusing
+  // it here is what keeps the allowlist a spending limit rather than a
+  // presentation detail in the picker.
+  await assertModelUsable(model);
+
   let convId = input.conversationId;
 
   if (convId) {
@@ -99,6 +107,12 @@ export async function startChatRun(input: {
     status: "complete",
     createdAt: new Date(),
   });
+
+  // After the send is committed to, so a refused turn never reorders the
+  // picker; before the run, so the next screen the user opens is already
+  // right. It swallows its own failures — the list is a convenience, the turn
+  // is not — but it is awaited, so the write cannot land after the request.
+  await recordModelUse(userId, model);
 
   const streamId = uuid();
   const producer = await broker.openProducer({

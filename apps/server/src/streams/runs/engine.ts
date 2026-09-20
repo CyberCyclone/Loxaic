@@ -3,6 +3,7 @@ import { and, count, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
+  DEFAULT_PROVIDER_ID,
   sanitizeFilename,
   type AttachmentRef,
   type CheckinReason,
@@ -25,7 +26,8 @@ import {
   DOCUMENT_SYSTEM_ADDENDUM,
   selectAffordableAttachments,
 } from "../../files/storage.ts";
-import { invalidateBackendModels, listBackendModels, resolveWindow } from "../../inference/models.ts";
+import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
+import { resolveModelRef } from "../../inference/providers.ts";
 import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
@@ -376,6 +378,15 @@ export async function runToolLoop(ctx: {
       return lastLamport;
     };
 
+    // Which backend this run's model lives on, for the queue it joins and the
+    // cache it invalidates. A reference that cannot be resolved queues on the
+    // built-in backend's queue and fails on its first request with the reason
+    // — the starters refuse it before any of this, so reaching here means the
+    // provider was deleted mid-run, which is exactly a run that should end.
+    const providerId = await resolveModelRef(model)
+      .then((r) => r.provider.id)
+      .catch(() => DEFAULT_PROVIDER_ID);
+
     // Everything above is database and bookkeeping work that touches no
     // backend, so it happens before queueing: a run should not hold a slot
     // while it loads its own history.
@@ -398,6 +409,10 @@ export async function runToolLoop(ctx: {
     slot = await acquireRunSlot({
       signal: abort.signal,
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
+      // Each backend has its own queue: the prefix cache being protected is
+      // one backend's, and a run on a hosted provider with sixteen slots
+      // should not wait behind a local run's tool work.
+      providerId,
     });
     if (!slot) {
       // Stopped while waiting in line. Nothing ran, so there is nothing to
@@ -466,10 +481,14 @@ export async function runToolLoop(ctx: {
 
       let windowTokens: number | null = null;
       try {
-        const backendModels = await listBackendModels();
-        const targetModel = backendModels.find((m) => m.id === model);
-        windowTokens = targetModel?.loaded_context_tokens ?? targetModel?.context_tokens ?? null;
-        if (targetModel && !targetModel.loaded) {
+        // This model's own provider, never the whole fan-out: searching every
+        // provider's list here would put an unreachable one's timeout in front
+        // of every tool iteration of a run that has nothing to do with it —
+        // while that run holds an inference slot that may be the deployment's
+        // only one.
+        const info = await modelRunInfo(model);
+        windowTokens = info?.windowTokens ?? null;
+        if (info && !info.loaded) {
           jitLoaded = true;
           producer.emit({ kind: "model.loading", message_id: assistantMsgId });
         }
@@ -631,7 +650,10 @@ export async function runToolLoop(ctx: {
         // A window read before a JIT load is the model's max, not what the
         // backend allocated. Re-read it now that loading is done.
         if (jitLoaded) {
-          invalidateBackendModels();
+          // Only this model's provider: a load on one backend says nothing
+          // about another's catalogue, and dropping a hosted provider's
+          // several-hundred-entry list would cost a round trip to rebuild it.
+          invalidateBackendModels(providerId);
           breakdownMeta.windowTokens = (await resolveWindow(model)) ?? breakdownMeta.windowTokens;
         }
         const usage: TurnUsage | undefined = doneResult
