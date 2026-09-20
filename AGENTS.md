@@ -1044,6 +1044,92 @@ replies.
   holding work a user can really lose. `lib/deleteMessage.ts` is a pure module so both of the
   things this sentence varies on are unit-tested.
 
+### Routines
+
+- **A routine run is an ordinary chat run.** `executeRoutine` creates the conversation
+  (`kind: "routine"`, `modelPref` set) and the `routine_runs` row in one transaction, then calls
+  `startChatRun` — the queue, the tool loop, usage records, the stream log, chat's manual-mode
+  approval semantics. It returns once the run has *started*; the row is still `running`. Before
+  #179 it was a stub that inserted `[Routine "X" executed at …]` and never called a model, which
+  is why the issue's "let me see the chat" had nothing worth seeing.
+- **Unattended is the normal case, and the existing timeouts are what make it safe.** A write
+  tool nobody allowlisted waits out `APPROVAL_TIMEOUT_MS` per call and is reported as "nobody
+  refused"; an unanswered step check-in resolves to `answer`. Someone who opens the run's chat
+  while it is going can approve live, which is most of why the chat is worth opening.
+- **`recordUse: false` on `startChatRun` keeps a scheduled run out of the picker's recents.** A
+  cron firing at 6am is nobody's choice of model, exactly as an automatic compaction is not.
+- **The terminal status comes from `broker.onEnd`, never from "we dispatched it".** `onSettled`
+  is wired before the loop starts (a run that fails in its first await would otherwise finalize
+  with nobody listening) and fires once. It settles on the *stream log's* finalize rather than on
+  `runToolLoop`'s promise, so the status is not held up by the automatic compaction that runs
+  after the loop's `finally`. `finishRun` is `UPDATE … WHERE status='running' RETURNING`: a
+  routine deleted mid-run has no row, and no row means no ntfy.
+- **`runToolLoop`'s promise is handled now, for every caller.** `engine.ts` rethrows anything
+  that is not `RunSlotAbortedError`, `chatRun.ts` called it as a bare `void`, and nothing
+  anywhere handles `unhandledRejection` — so such a run left the stream "active" forever and a
+  resync kept waiting on it. Latent while every run started from a socket; reachable the moment
+  a cron could start one.
+- **The routine's model is the only model its chats ever use, and there is no fallback.**
+  `routines.model` holds one opaque reference. A run whose model is null or unresolvable is
+  recorded `failed` with the reason written into its own chat (an assistant row `status: "error"`,
+  the shape `engine.ts` already persists) — never answered by the built-in default and never by
+  `recent_models[0]`. Every routine that predates the column is null, so a recents fallback would
+  have started spending an admin's provider key on a cron the first morning after an upgrade, on
+  a model nobody picked — the failure AGENTS already records for `selectModel`.
+- **A send into a `kind: "routine"` conversation is served on the routine's model too**, whatever
+  the client names (`routineModelFor` in `chatRun.ts`, reached only for that kind, so an ordinary
+  chat send pays nothing). That is what lets the routine chat screen have no model picker; an
+  older client naming a model cannot drift the conversation either. `AccessGrant.kind` exists to
+  make the check free — the access lookup already reads the row.
+- **Deleting a routine goes through `deleteConversation`, never `purgeConversation`.** Its chats
+  can be continued by hand, which makes them ordinary conversations as far as an audit is
+  concerned, so deleting the routine must not become a way around a deployment's retention
+  policy. Order: conversations first, one at a time (a throw leaves the routine intact and the
+  whole delete retryable), then one transaction deleting `routine_runs` `RETURNING` and the
+  routine, then a second pass for a run that raced the first. DELETE now 404s for a routine that
+  is not yours or does not exist, where it used to answer `{ok: true}` for both.
+- **`eraseRows` owns the `routine_runs` cleanup**, because nothing else would: the column carries
+  no foreign key to `conversations`, so erasing one of a routine's chats without this leaves a run
+  row listed in the routine's history opening onto nothing.
+- **`restoreConversation` flips an orphaned routine chat to `kind: "chat"`.** Only a routine lists
+  its own conversations; restored as `routine` with no routine left, it would come back where no
+  surface can reach it — restored in name only.
+- **Every routine-scoped listing inner-joins `conversations` on `deletedAt IS NULL`**, so a chat
+  the user deleted from inside the routine disappears from its history, the same way it does
+  everywhere else.
+- **`GET /v1/conversations` excludes `kind: "routine"` outright.** Both surface hooks already
+  filtered client-side (#117), but that query is capped at 50 rows and an hourly routine now makes
+  24 real conversations a day — left in, they would push a user's own chats out of their own list.
+- **The boot reconcile is bounded by a module-load `BOOT_AT`.** A process that died mid-run leaves
+  a row nothing would ever move; a "Run now" that lands while the scheduler is still starting must
+  not be caught by the same sweep. **The scheduler is single-process** — cron fires on every
+  instance, which was already true, and this reconcile would also fail another instance's live
+  runs.
+- **Client: the routine chat screen is `useChatSession` with a `scope`, not a third copy.** The
+  hook is ~300 lines of socket, cursor, approval and check-in handling and `useAgentSession` is
+  already one copy of it. A routine scope lists from `getRoutineConversations`, filters on kind
+  `routine`, refuses the implicit create (a send with nothing open would open an ordinary *chat*
+  conversation from the routines screen), and **reads and writes no offline cache** — those rows
+  would take eviction slots from the user's own threads, and Chat's own list write prunes what it
+  does not recognise.
+- **`subscribeOnSelect` exists because a scheduled run starts on the server.** The hook otherwise
+  subscribes only on socket open and on a seq gap, which is enough where every run starts from
+  this client; a routine's does not, so opening its chat is the first this client hears of it.
+  Sent *after* the history fetch settles: a snapshot landing first fills the thread, and the
+  history fill only applies to an empty one, so the older messages would be dropped.
+- **`AppShell` derives the active surface from the first path segment.** `/routines/<id>` is a
+  real route (so browser and Android back mean "back to the routines list", and a reload keeps the
+  routine); matching on the whole path left the sidebar with nothing highlighted.
+- **`RoutineModal` needed `max-h-[85%]` *and* `ModalBody scrollEnabled`** — adding the Model row
+  is exactly what pushes Save past the fold. Third time: see SettingsModal and McpServerModal,
+  where it cost a credential. `ModelModal` renders as a *sibling* from the screen with the model
+  lifted into it, never stacked on the routine form; nothing else in this app stacks modals.
+- **e2e:** `goToSurface('routines')` waits on `routines.new`, not `composer.input` — the routines
+  list has never rendered a composer, so the old helper timed out rather than landing.
+  `openThreadList('routineChat')` anchors on `threadList.runNow`, since a routine's list has no
+  new-chat button. iOS skips every Modal-overlay step and seeds through the API, same as
+  `delete-conversation.spec.ts`.
+
 ### File attachments
 
 - **Uploaded bytes live on disk under `UPLOADS_DIR`; only metadata is in Postgres**

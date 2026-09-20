@@ -202,8 +202,10 @@ sandboxes      (id uuid pk, owner_id fk, conversation_id fk null, container_id t
                 image text, status text, repo_url text null, branch text null,
                 limits jsonb, created_at, stopped_at null)
 routines       (id uuid pk, owner_id fk, name text, cron text, prompt text,
-                target jsonb, enabled bool, last_run_at, next_run_at)
-routine_runs   (id uuid pk, routine_id fk, conversation_id fk, status text, started_at, finished_at)
+                target jsonb, enabled bool, model text null,   -- the only model its runs use
+                created_at, last_run_at, next_run_at)
+routine_runs   (id uuid pk, routine_id fk cascade, conversation_id uuid, status text,
+                started_at, finished_at)   -- conversation_id carries no FK; see eraseRows
 model_registry (id text pk, display_name text, gguf_url text, size_bytes bigint,
                 quant text, context_tokens int, capabilities jsonb, location text) -- 'server'|'device'|'both'
 usage_records  (id uuid pk,                -- client-generated when device-originated
