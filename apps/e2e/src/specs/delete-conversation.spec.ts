@@ -139,7 +139,17 @@ describe('deleting a conversation', () => {
     }
   });
 
-  it('asks before deleting, and cancelling changes nothing', async () => {
+  it('asks before deleting, and cancelling changes nothing', async function asksFirst() {
+    // Skipped on iOS: the menu opens and renders "Delete chat" correctly (the
+    // failure screenshot from the run that found this shows it), but XCUITest
+    // does not resolve a testID inside the menu's overlay. It is not this
+    // component — `settings.nav.sandbox` inside the Settings modal fails the
+    // same way on the same machine, in a spec that predates this one, and the
+    // repo already treats overlay items on native as hand-verified (see
+    // helpers/attachments.ts on the camera and file paths). The header
+    // assertions above, which are what #185 is about, do run on iOS.
+    if (platform() === 'ios') this.skip();
+
     await tap('chat.header.menu');
     await waitForVisible('chat.header.delete');
     await shot('delete-header-menu');
@@ -159,7 +169,8 @@ describe('deleting a conversation', () => {
     expect((await listConversations(owner)).map((c) => c.id)).toContain(convId);
   });
 
-  it('erases it when confirmed, on the server and not just on screen', async () => {
+  it('erases it when confirmed, on the server and not just on screen', async function erases() {
+    if (platform() === 'ios') this.skip(); // see above
     await tap('chat.header.menu');
     await tap('chat.header.delete');
     await waitForVisible('chat.deleteConfirm.dialog');
@@ -210,7 +221,11 @@ describe('deleting a conversation', () => {
     expect(await readStatusAs(ownerToken, secondId)).toBe(200);
   });
 
-  it('keeps a deleted chat for an audit when the server is set to, and says so first', async () => {
+  it('keeps a deleted chat for an audit when the server is set to, and says so first', async function retained() {
+    // Web and Electron: it needs the menu (see the iOS note above) and a page
+    // reload, which is a browser command with no native equivalent — the app
+    // reads /v1/config on mount, and there is no way to remount it here.
+    if (platform() === 'ios' || platform() === 'android') this.skip();
     await setRetention({ keepDeleted: true, keepDeletedDays: 30 });
     // The dialog reads the policy from /v1/config, which the app fetches on
     // mount — reload so this is the page's own answer, not a cached one. And
