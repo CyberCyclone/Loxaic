@@ -37,5 +37,17 @@ export function getStreamBroker(): StreamBroker {
   return broker;
 }
 
+/**
+ * Whether a broker exists at all.
+ *
+ * For cleanup paths that would like to drop a conversation's stream logs but
+ * must not treat "this process never had a broker" as a failure — a route test
+ * mounts routes without one, and logging that as an error on every delete
+ * buries the failures that matter.
+ */
+export function hasStreamBroker(): boolean {
+  return broker !== null;
+}
+
 export type { StreamProducer, StreamProducerMeta } from "./broker.ts";
 export type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";

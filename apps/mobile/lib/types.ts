@@ -152,6 +152,19 @@ export function canEdit(conv: { role?: ConversationRole } | null | undefined): b
   return !conv?.role || conv.role === 'owner' || conv.role === 'editor'
 }
 
+/**
+ * Is this user the owner? Absent role means a conversation created locally
+ * this session, which is always the creator's own — only a server round-trip
+ * can make it otherwise.
+ *
+ * What the owner-only actions gate on: sharing, renaming, deleting. The server
+ * refuses all three for anyone else and says so silently, so offering them to
+ * a guest produces a local change that reverts on the next load.
+ */
+export function isOwner(conv: { role?: ConversationRole } | null | undefined): boolean {
+  return !!conv && (!conv.role || conv.role === 'owner')
+}
+
 export interface Routine {
   id: string
   name: string

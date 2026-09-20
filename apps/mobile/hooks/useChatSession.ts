@@ -9,6 +9,7 @@ import {
   approveTool,
   denyTool,
   sendStepsDecision,
+  deleteConversation,
   getConversations,
   getMessages,
   isUnreachableError,
@@ -853,7 +854,25 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void) {
   );
 
   const handleDelete = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      // The server first, and only then the local state. This used to be
+      // local-only: the row vanished from the sidebar, the server never heard
+      // about it, and it came back on the next load — a delete that undid
+      // itself. A conversation that never reached the server (created offline,
+      // not yet round-tripped) has nothing to delete there, so it is removed
+      // locally without one.
+      if (isServerConvId(id)) {
+        try {
+          await deleteConversation(id);
+        } catch (err) {
+          showToast(
+            isUnreachableError(err)
+              ? 'Could not delete — the server is unreachable'
+              : `Could not delete: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          return;
+        }
+      }
       setConversations((prev) => prev.filter((c) => c.id !== id));
       // The cache has no other pruning path that works offline — without
       // this the deleted thread came straight back on the next offline start.

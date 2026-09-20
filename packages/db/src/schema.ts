@@ -81,7 +81,28 @@ export const conversations = pgTable("conversations", {
   workspace: jsonb("workspace"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  /**
+   * When the owner deleted this conversation, on a deployment whose admin
+   * turned retention on. It is not the ordinary outcome of a delete: with
+   * retention off — the default — deleting erases the row and its messages
+   * outright (see `conversations/delete.ts`), and this column is never set.
+   *
+   * While set, the conversation is gone as far as every ordinary path is
+   * concerned: `resolveAccess` refuses it, so the owner, its share-holders and
+   * every socket see exactly what they would see if the row had been erased.
+   * Only the admin audit routes can still read it, until the sweep in
+   * `conversations/reaper.ts` erases it for good.
+   */
   deletedAt: timestamp("deleted_at"),
+  /**
+   * Holds a deleted conversation past its purge date, indefinitely, until an
+   * admin releases or erases it. Separate from `deletedAt` because the two
+   * answer different questions — "when did this become deleted" is a fact,
+   * "may the sweep have it" is a decision — and an admin who is auditing
+   * something must be able to make that decision without the retention window
+   * deciding for them halfway through.
+   */
+  deletedHold: boolean("deleted_hold").notNull().default(false),
 });
 
 /**

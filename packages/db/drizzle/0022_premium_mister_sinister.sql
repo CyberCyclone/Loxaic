@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "deleted_hold" boolean DEFAULT false NOT NULL;

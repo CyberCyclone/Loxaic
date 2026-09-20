@@ -31,7 +31,9 @@ import { useMcpOverrides } from '@/hooks/useMcpOverrides';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useGitPanel } from '@/hooks/useGitPanel';
-import { canEdit } from '@/lib/types';
+import { canEdit, isOwner } from '@/lib/types';
+import { ConversationMenu } from '@/components/chat/ConversationMenu';
+import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -86,6 +88,9 @@ export default function AgentScreen() {
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  // Set by both the header's ⋮ and the thread list's Delete, so one dialog
+  // words what deleting does on this deployment.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   // The Inspector renders its own copy of the context popup outside the
   // Composer's subtree — its Compact button reaches the input through this,
   // bumping `token` so pressing it twice in a row still re-seeds. See
@@ -190,9 +195,11 @@ export default function AgentScreen() {
       }}
       onFork={handleFork}
       onRename={handleRename}
-      onDelete={handleDelete}
+      onDelete={(id) => { setDeletingId(id); }}
     />
   );
+
+  const deletingRun = runs.find((r) => r.id === deletingId) ?? null;
 
   return (
     <HStack className="h-full flex-1">
@@ -235,6 +242,11 @@ export default function AgentScreen() {
                 >
                   <Icon as={MessagesSquare} size="sm" className="text-foreground" />
                 </Pressable>
+              )}
+              {/* Owner-only, and only with a run to act on — its one item is
+                  Delete, which the server refuses for anyone else. */}
+              {activeRun && isOwner(activeRun) && (
+                <ConversationMenu area="agent" onDelete={() => { setDeletingId(activeRun.id); }} />
               )}
             </HStack>
           }
@@ -400,6 +412,20 @@ export default function AgentScreen() {
         onChange={setPendingWorkspace}
         config={config}
         token={token}
+      />
+      <DeleteConversationModal
+        title={deletingRun?.title ?? null}
+        area="agent"
+        // Its own workspace, not the one currently selected: deleting from the
+        // thread list can name a run other than the open one.
+        workspaceKind={deletingRun?.workspace?.kind ?? 'scratch'}
+        retentionDays={config ? config.deletedChatRetentionDays : undefined}
+        onCancel={() => { setDeletingId(null); }}
+        onConfirm={() => {
+          const id = deletingId;
+          setDeletingId(null);
+          if (id) void handleDelete(id);
+        }}
       />
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal

@@ -103,9 +103,34 @@ export interface InferenceSettingsView extends InferenceSettings {
   envOverrides: { maxConcurrentRuns: boolean };
 }
 
-/** Row keys for the two settings groups. */
+/**
+ * What happens to a conversation its owner deletes.
+ *
+ * Off by default, and that default is the honest one: "Delete chat" says the
+ * chat is deleted, and on a personal install it is — row, messages and all.
+ * Retention exists for a deployment that carries other people's work and has
+ * to be able to answer a question about something after the fact, so it is a
+ * deliberate, deployment-wide choice by an admin rather than a default nobody
+ * was told about. The client reads the resolved window from `/v1/config` and
+ * says which of the two it is *before* the delete, in the confirm dialog.
+ */
+export interface ConversationSettings {
+  /** Keep deleted conversations, readable by an admin, instead of erasing them. */
+  keepDeleted: boolean;
+  /** For how long, when `keepDeleted`. Days rather than ms: unlike the sandbox
+   * timers, nothing here needs a sub-day window, and a retention policy is
+   * written down in days by whoever has to justify it. */
+  keepDeletedDays: number;
+}
+
+export interface ConversationSettingsView extends ConversationSettings {
+  envOverrides: { keepDeleted: boolean; keepDeletedDays: boolean };
+}
+
+/** Row keys for the settings groups. */
 const SANDBOX_KEY = "sandbox";
 const INFERENCE_KEY = "inference";
+const CONVERSATIONS_KEY = "conversations";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -144,6 +169,7 @@ export class SettingsError extends Error {
 
 let persisted: Partial<SandboxSettings> = {};
 let persistedInference: Partial<InferenceSettings> = {};
+let persistedConversations: Partial<ConversationSettings> = {};
 /**
  * True when this server is hosting for other users (the desktop supervisor
  * sets `LOXAIC_HOSTING=1` for Host mode).
@@ -185,6 +211,33 @@ export function hostingBlockedReason(): string | null {
 
 /** Set when loadServerSettings() couldn't read the row — see there. */
 let loadFailed = false;
+/** The same, for the conversation-retention row. Separate because the two fail
+ * in opposite directions: an unreadable sandbox row disables execution, an
+ * unreadable retention row keeps conversations. Separate *reads*, too — each
+ * has its own try — so a failure of one says nothing about the other, and
+ * neither flag may stand in for the other. */
+let conversationLoadFailed = false;
+
+/**
+ * Whether the retention policy is genuinely unknown.
+ *
+ * A failed read is not enough on its own: `DELETED_CHAT_RETENTION_ENABLED`
+ * outranks the row, so a deployment that pins it has told us the decisive
+ * fact without the database — the same reason `SANDBOX_MODE` still wins over
+ * the sandbox read's fail-closed branch. Only when nothing pins it does an
+ * unreadable row leave us guessing, and that is the state everything below
+ * answers by keeping.
+ */
+function retentionUnknown(): boolean {
+  if (envBool("DELETED_CHAT_RETENTION_ENABLED") !== null) return false;
+  // Deliberately not `|| loadFailed`. The retention row has its own read and
+  // its own try in `loadServerSettings`, so a sandbox read that failed while
+  // this one succeeded leaves the policy perfectly well known — and treating
+  // it as unknown would keep every deleted conversation, and stand the sweep
+  // down, over a failure in an unrelated row. A failure broad enough to affect
+  // both (a missing table, an unreachable database) sets this flag itself.
+  return conversationLoadFailed;
+}
 
 // ── Environment reads ─────────────────────────────────────
 // All at call time, never cached at module load, so a supervisor can set the
@@ -236,6 +289,12 @@ function envPositiveInt(name: string): number | null {
 
 function envReapEnabled(): boolean | null {
   const value = envStr("SANDBOX_REAP_ENABLED")?.toLowerCase();
+  if (value === undefined) return null;
+  return value === "1" || value === "true" || value === "yes";
+}
+
+function envBool(name: string): boolean | null {
+  const value = envStr(name)?.toLowerCase();
   if (value === undefined) return null;
   return value === "1" || value === "true" || value === "yes";
 }
@@ -351,6 +410,144 @@ export async function updateInferenceSettings(input: unknown): Promise<Inference
   return getInferenceSettings();
 }
 
+// ── Conversation retention ────────────────────────────────
+
+const CONVERSATION_DEFAULTS: ConversationSettings = { keepDeleted: false, keepDeletedDays: 30 };
+
+/** A day to ten years, matching the sandbox reaper's outer bound. Zero is not
+ * "keep nothing" — that is what turning it off means — and a window shorter
+ * than a day is indistinguishable from off for anyone who has to notice a
+ * deletion happened before they can look at it. */
+const KEEP_DELETED_DAYS_RANGE = { min: 1, max: 3650 };
+
+/**
+ * Resolved retention policy: env pin > persisted > default (off, 30 days).
+ *
+ * Sync against the same boot cache as the others, because the delete route
+ * consults it inline while deciding what "delete" means for that request.
+ *
+ * A failed settings read resolves `keepDeleted` to **true** — the opposite
+ * fail-closed direction from the sandbox mode above, deliberately. There, an
+ * unreadable row must not re-enable execution an admin disabled. Here the
+ * irreversible outcome is the *permissive* one: erasing a conversation because
+ * we could not read whether this deployment keeps them is not recoverable,
+ * while keeping one costs disk and an admin's later click. The sweep skips
+ * entirely in that state too (see `conversations/reaper.ts`), so nothing
+ * retained by a blip is erased by a policy we cannot read either.
+ */
+export function getConversationSettings(): ConversationSettingsView {
+  const keepDeleted = envBool("DELETED_CHAT_RETENTION_ENABLED");
+  const keepDeletedDays = envPositiveInt("DELETED_CHAT_RETENTION_DAYS");
+  const storedKeep = retentionUnknown()
+    ? true
+    : (persistedConversations.keepDeleted ?? CONVERSATION_DEFAULTS.keepDeleted);
+  return {
+    keepDeleted: keepDeleted ?? storedKeep,
+    keepDeletedDays:
+      keepDeletedDays ?? persistedConversations.keepDeletedDays ?? CONVERSATION_DEFAULTS.keepDeletedDays,
+    envOverrides: { keepDeleted: keepDeleted !== null, keepDeletedDays: keepDeletedDays !== null },
+  };
+}
+
+/**
+ * When a conversation deleted at `deletedAt` will be erased, or null when
+ * nothing will erase it — because an admin put it on hold, or because the
+ * window is unreadable.
+ *
+ * Derived on read, never stored, for the same reason `sandboxReapAt` is: an
+ * admin moving 30 days to 7 must move every retained conversation with it, and
+ * a stored date would leave the admin screen advertising a date the sweep will
+ * not honour. Retention being *off* does not make this null — it makes it now:
+ * everything not held is erased at the next sweep, which is what the settings
+ * card warns before the switch is flipped.
+ */
+export function conversationPurgeAt(deletedAt: Date, held: boolean): Date | null {
+  if (held) return null;
+  if (retentionUnknown()) return null;
+  const { keepDeleted, keepDeletedDays } = getConversationSettings();
+  if (!keepDeleted) return new Date(deletedAt.getTime());
+  return new Date(deletedAt.getTime() + keepDeletedDays * DAY_MS);
+}
+
+function coerceConversations(raw: unknown): Partial<ConversationSettings> {
+  if (typeof raw !== "object" || raw === null) return {};
+  const value = raw as Record<string, unknown>;
+  const out: Partial<ConversationSettings> = {};
+  if (typeof value.keepDeleted === "boolean") out.keepDeleted = value.keepDeleted;
+  if (
+    typeof value.keepDeletedDays === "number" &&
+    Number.isInteger(value.keepDeletedDays) &&
+    value.keepDeletedDays > 0
+  ) {
+    out.keepDeletedDays = value.keepDeletedDays;
+  }
+  return out;
+}
+
+/**
+ * Validates and persists a retention change. Partial, like `PATCH /v1/prefs`:
+ * a client that only flips the switch must not have to send the window back,
+ * or one holding a stale copy silently reverts the other field.
+ */
+export async function updateConversationSettings(input: unknown): Promise<ConversationSettingsView> {
+  if (typeof input !== "object" || input === null) {
+    throw new SettingsError("body must be an object", "invalid");
+  }
+  const raw = input as Record<string, unknown>;
+  const env = getConversationSettings().envOverrides;
+  const patch: Partial<ConversationSettings> = {};
+
+  if (raw.keepDeleted !== undefined) {
+    if (typeof raw.keepDeleted !== "boolean") {
+      throw new SettingsError("keepDeleted must be a boolean", "invalid");
+    }
+    if (env.keepDeleted) {
+      throw new SettingsError(
+        "keepDeleted is pinned by the DELETED_CHAT_RETENTION_ENABLED environment variable",
+        "envOverride",
+      );
+    }
+    patch.keepDeleted = raw.keepDeleted;
+  }
+
+  if (raw.keepDeletedDays !== undefined) {
+    if (typeof raw.keepDeletedDays !== "number" || !Number.isInteger(raw.keepDeletedDays)) {
+      throw new SettingsError("keepDeletedDays must be an integer number of days", "invalid");
+    }
+    if (raw.keepDeletedDays < KEEP_DELETED_DAYS_RANGE.min || raw.keepDeletedDays > KEEP_DELETED_DAYS_RANGE.max) {
+      throw new SettingsError(
+        `keepDeletedDays must be between ${String(KEEP_DELETED_DAYS_RANGE.min)} and ${String(KEEP_DELETED_DAYS_RANGE.max)}`,
+        "invalid",
+      );
+    }
+    if (env.keepDeletedDays) {
+      throw new SettingsError(
+        "keepDeletedDays is pinned by the DELETED_CHAT_RETENTION_DAYS environment variable",
+        "envOverride",
+      );
+    }
+    patch.keepDeletedDays = raw.keepDeletedDays;
+  }
+
+  if (Object.keys(patch).length === 0) throw new SettingsError("nothing to update", "invalid");
+
+  const next: ConversationSettings = { ...CONVERSATION_DEFAULTS, ...persistedConversations, ...patch };
+  await db
+    .insert(serverSettings)
+    .values({ key: CONVERSATIONS_KEY, value: next, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
+  persistedConversations = next;
+  // A successful write proves the database is reachable and that this row is
+  // exactly what we just put in it, so whatever made the boot read fail no
+  // longer applies. Without this the flag outlives the failure for the life of
+  // the process: `retentionUnknown()` stays true, `getConversationSettings()`
+  // pins `keepDeleted` to true whatever an admin writes, and the sweep stands
+  // down — so turning retention *off* returns 200, the switch snaps back, and
+  // the deployment silently keeps every deleted conversation until a restart.
+  conversationLoadFailed = false;
+  return getConversationSettings();
+}
+
 /**
  * The retention terms, as a conversation's owner needs to read them.
  *
@@ -451,6 +648,27 @@ export async function loadServerSettings(): Promise<void> {
       "[settings] could not read inference settings — run concurrency falls back to the backend probe: " +
         (err instanceof Error ? err.message : String(err)),
     );
+  }
+  // Its own try for the same reason the inference read has one: a blip here
+  // must not disable sandboxes. Note the `loadFailed` flag the sandbox read
+  // sets is what makes retention resolve *on* and the sweep stand down — this
+  // catch only clears the cached row, it does not claim the read succeeded.
+  try {
+    const conversationRow = await db.query.serverSettings.findFirst({
+      where: eq(serverSettings.key, CONVERSATIONS_KEY),
+    });
+    persistedConversations = coerceConversations(conversationRow?.value);
+  } catch (err) {
+    persistedConversations = {};
+    console.error(
+      "[settings] could not read conversation settings — deleted conversations are kept until this is fixed: " +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    // Its own flag, not the sandbox read's: that one disables execution, which
+    // this failure is no reason to do (the comment above the inference read
+    // is about exactly that coupling). All this says is "we do not know the
+    // retention policy", which resolves to keep-and-do-not-sweep.
+    conversationLoadFailed = true;
   }
 }
 
@@ -650,6 +868,12 @@ async function performUpdate(input: unknown): Promise<SandboxSettingsView> {
     .values({ key: SANDBOX_KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
   persisted = next;
+  // Same reasoning as the conversation write: the row we just wrote is now
+  // known, so the boot read's failure no longer applies. Fails closed rather
+  // than open while set (mode resolves to "off"), but an admin re-enabling
+  // sandboxes after a transient failure would otherwise get a 200 and a
+  // control that stays off until the process restarts.
+  loadFailed = false;
 
   const after = getSandboxSettings();
   const changed =
@@ -720,18 +944,34 @@ async function applySandboxSettings(
   resetEngineCache();
 }
 
+/** Whether the retention policy is unknown, and so whether the sweep may run
+ * at all. Exported for `conversations/reaper.ts`, which must not erase
+ * anything on a policy it could not read — including the "off means purge
+ * everything" branch, which is the destructive one. */
+export function conversationRetentionUnknown(): boolean {
+  return retentionUnknown();
+}
+
 /** Test seam: drops the in-memory cache so a suite can assert the
  * env-and-defaults path without a database. */
 export function resetServerSettingsCache(): void {
   persisted = {};
   persistedInference = {};
+  persistedConversations = {};
   loadFailed = false;
+  conversationLoadFailed = false;
 }
 
 /** Test seam: simulates a failed settings read, for asserting the
  * fail-closed behaviour without breaking the database. */
 export function __setLoadFailedForTest(value: boolean): void {
   loadFailed = value;
+}
+
+/** Test seam: simulates an unreadable retention row specifically — the state
+ * where sandboxes keep working but deletes must not erase anything. */
+export function __setConversationLoadFailedForTest(value: boolean): void {
+  conversationLoadFailed = value;
 }
 
 let applyEnabled = true;

@@ -5,7 +5,7 @@ import { conversationShares, conversations, messages, usageRecords } from "@loxa
 import type { ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
-import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
+import { deleteConversation } from "../conversations/delete.ts";
 import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
 import { getRunByConversation } from "../streams/registry.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
@@ -159,30 +159,23 @@ export function conversationRoutes(app: FastifyInstance) {
     return row;
   });
 
-  // Delete conversation (soft)
+  /**
+   * Delete a conversation.
+   *
+   * What that does to the data is the deployment's decision, not this route's
+   * — `deleteConversation` erases it outright, or keeps it for an admin to
+   * audit, according to the retention setting (see conversations/delete.ts).
+   * Either way it is gone for the user and everyone it was shared with.
+   *
+   * Owner-only, and silent either way: a non-owner's delete must look the same
+   * as deleting something that was already gone. An admin resolves to viewer
+   * (streams/authz.ts), so this refuses them too — seeing every conversation
+   * is not the same as being able to delete one.
+   */
   app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    // Owner-only, and silent either way: a non-owner's delete must look the
-    // same as deleting something that was already gone.
     if (await hasRole(userId, request.params.id, "owner")) {
-      await db
-        .update(conversations)
-        .set({ deletedAt: new Date() })
-        .where(eq(conversations.id, request.params.id));
-      // The conversation row is only soft-deleted, but its sandbox is not
-      // soft-anything: sandboxes now persist across idle periods rather than
-      // being cleaned up by a 30-minute timer, so without this a deleted
-      // conversation would leave a container holding its files running on the
-      // host with nothing left that could ever reach it — the user cannot
-      // open the conversation, and the abandoned reaper would take weeks.
-      // Deliberately not awaited into the response: reclaiming disk is not
-      // something the user's delete should wait on, or fail on.
-      void destroyConversationSandboxes(request.params.id).catch((err: unknown) => {
-        request.log.warn(
-          { err, conversationId: request.params.id },
-          "failed to destroy sandboxes for a deleted conversation",
-        );
-      });
+      await deleteConversation(request.params.id, request.log);
     }
     return { ok: true };
   });

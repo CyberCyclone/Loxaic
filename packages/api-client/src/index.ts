@@ -83,6 +83,16 @@ export interface ConfigResponse {
     retention: SandboxRetention;
     reason?: string;
   };
+  /**
+   * How long this deployment keeps a deleted conversation for an admin to
+   * audit, or null when deleting erases it outright (the default).
+   *
+   * Read before the delete, so the confirm dialog can say which of the two is
+   * about to happen — a delete that silently leaves a readable copy behind,
+   * and one that silently erases what the user thought was recoverable, are
+   * the same failure in two directions.
+   */
+  deletedChatRetentionDays: number | null;
   /** This server's build version, or null when nothing reported one (a bare
    * `node dist/index.js`, a hand-rolled Docker image, an unstamped desktop
    * build) or the call was not signed in — render as "—". */
@@ -114,8 +124,15 @@ export async function getConfig(): Promise<ConfigResponse> {
   if (!res.ok) throw new Error(`GET /v1/config ${String(res.status)}`);
   const body = (await res.json()) as Partial<ConfigResponse> & Pick<ConfigResponse, "sandbox">;
   // Absent — an older server, or an unauthenticated call — is the same
-  // answer as null, and the declared type promises one or the other.
-  return { ...body, signUpOpen: body.signUpOpen ?? true, version: body.version ?? null };
+  // answer as null, and the declared type promises one or the other. For
+  // retention that fallback is also the safe one: a server too old to report
+  // it is one that cannot keep anything.
+  return {
+    ...body,
+    signUpOpen: body.signUpOpen ?? true,
+    deletedChatRetentionDays: body.deletedChatRetentionDays ?? null,
+    version: body.version ?? null,
+  };
 }
 
 // ── Admin: server-level sandbox settings ──────────────────
@@ -344,6 +361,30 @@ export interface AdminConversation {
   updatedAt: string;
   createdAt: string;
   shareCount: number;
+  /** Set when the owner deleted it and this deployment keeps deleted
+   * conversations. It is gone everywhere else — this list is the only place
+   * one appears. */
+  deletedAt: string | null;
+  /** An admin held it past its window; the sweep leaves it alone. */
+  deletedHold: boolean;
+  /** When the sweep will erase it: null if it is held (nothing will), the
+   * deletion time itself if retention is off (the next sweep takes it).
+   * Derived by the server on every read, so shortening the window moves every
+   * retained conversation with it. */
+  purgeAt: string | null;
+}
+
+/** One message of a deleted conversation, as the admin transcript shows it.
+ * Content blocks are passed through untouched — the transcript renders text
+ * and names attachments, and never fetches their bytes. */
+export interface AdminMessage {
+  id: string;
+  authorType: "user" | "assistant" | "system" | "tool" | "summary";
+  authorUserId: string | null;
+  model: string | null;
+  content: unknown;
+  status: string;
+  createdAt: string;
 }
 
 export interface DirectoryUser {
@@ -405,6 +446,61 @@ export async function adminPatchShare(
     body: JSON.stringify(input),
   });
   return ((await res.json()) as { shares: ConversationShare[] }).shares;
+}
+
+/**
+ * A conversation's messages, read-only, for the admin screen.
+ *
+ * The only way to read a conversation this deployment retained after its
+ * owner deleted it. Live conversations are readable here too — an admin
+ * already resolves to a viewer on those — so the screen does not have to
+ * branch on which kind it is showing.
+ */
+export async function adminGetMessages(conversationId: string): Promise<AdminMessage[]> {
+  const res = await authedFetch(`/v1/admin/conversations/${conversationId}/messages`);
+  return ((await res.json()) as { messages: AdminMessage[] }).messages;
+}
+
+/** Give a retained conversation back to its owner. Its shares come back with
+ * it; its agent workspace does not, having been destroyed at delete time. */
+export async function adminRestoreConversation(conversationId: string): Promise<void> {
+  await authedFetch(`/v1/admin/conversations/${conversationId}/restore`, { method: "POST" });
+}
+
+/** Erase a retained conversation now rather than at the end of its window. */
+export async function adminPurgeConversation(conversationId: string): Promise<void> {
+  await authedFetch(`/v1/admin/conversations/${conversationId}/purge`, { method: "POST" });
+}
+
+/** Hold a retained conversation past its window, or release it back to it. */
+export async function adminSetConversationHold(conversationId: string, hold: boolean): Promise<void> {
+  await authedFetch(`/v1/admin/conversations/${conversationId}/hold`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ hold }),
+  });
+}
+
+/** How this deployment treats a deleted conversation. Admin-only, like every
+ * other server-level setting. */
+export interface ConversationRetentionSettings {
+  keepDeleted: boolean;
+  keepDeletedDays: number;
+  envOverrides: { keepDeleted: boolean; keepDeletedDays: boolean };
+}
+
+export async function getConversationRetention(): Promise<ConversationRetentionSettings> {
+  return adminFetch("/v1/admin/settings/conversations");
+}
+
+export async function updateConversationRetention(
+  patch: Partial<Pick<ConversationRetentionSettings, "keepDeleted" | "keepDeletedDays">>,
+): Promise<ConversationRetentionSettings> {
+  return adminFetch("/v1/admin/settings/conversations", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 }
 
 /** A conversation's workspace as the client sees it. `status` is the lifecycle
@@ -472,6 +568,17 @@ export async function getConversations(): Promise<Conversation[]> {
   });
   if (!res.ok) throw new ApiError(`Conversations failed: ${String(res.status)}`, res.status);
   return res.json() as Promise<Conversation[]>;
+}
+
+/**
+ * Delete a conversation. Owner-only, and deliberately silent about it: the
+ * server answers `{ok: true}` whether or not the caller was allowed, so a
+ * non-owner's delete is indistinguishable from deleting something already
+ * gone. Whether the server erases it or keeps it for an audit window is the
+ * deployment's policy — `getConfig().deletedChatRetentionDays` says which.
+ */
+export async function deleteConversation(id: string): Promise<{ ok: true }> {
+  return (await authedFetch(`/v1/conversations/${id}`, { method: "DELETE" })).json() as Promise<{ ok: true }>;
 }
 
 export async function updateConversation(

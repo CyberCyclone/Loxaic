@@ -19,7 +19,7 @@ import {
   ActionsheetItemText,
   ActionsheetIcon,
 } from '@/components/ui/actionsheet';
-import type { Conversation } from '@/lib/types';
+import { isOwner, type Conversation } from '@/lib/types';
 
 interface ThreadListProps {
   title: string;
@@ -32,12 +32,6 @@ interface ThreadListProps {
   onDelete: (id: string) => void;
   /** Opens the share sheet. Omitted on surfaces that don't support sharing. */
   onShare?: (id: string) => void;
-}
-
-/** Absent role means a conversation created locally this session, which is
- * always the creator's own — only a server round-trip can make it otherwise. */
-function isOwner(conv: Conversation): boolean {
-  return !conv.role || conv.role === 'owner';
 }
 
 // Web's thread-row actions only appear on hover, which the design's own
@@ -178,7 +172,11 @@ export function ThreadList({
               </ActionsheetItem>
               {isOwner(actionsFor) && (
                 <ActionsheetItem
+                  testID="threadList.delete"
                   onPress={() => {
+                    // Confirmed by the caller, not here: the sheet and the
+                    // header menu open the same dialog, so there is one place
+                    // that words what deleting does on this deployment.
                     onDelete(actionsFor.id);
                     setActionsFor(null);
                   }}

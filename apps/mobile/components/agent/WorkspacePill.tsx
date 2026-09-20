@@ -5,6 +5,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import type { Workspace } from '@loxaic/types';
 import type { WorkspaceChoice } from '@/lib/types';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 interface WorkspacePillProps {
   /** The active run's fixed workspace, or the pending choice for a new one. */
@@ -48,11 +49,13 @@ export function WorkspacePill({ workspace, editable, onPress }: WorkspacePillPro
     >
       <HStack space="xs" className="min-w-0 shrink items-center">
         <Icon as={icon} size="xs" className="text-muted-foreground" />
-        {/* `truncate`, not just numberOfLines: on web this Text renders as a
-            raw span (components/ui/text/index.web.tsx), so React Native's
-            numberOfLines never reaches a renderer that would act on it and the
-            label wraps to a second line instead of ellipsizing. */}
-        <Text size="xs" className="truncate text-muted-foreground" numberOfLines={1}>
+        {/* TRUNCATE_TEXT, not just numberOfLines: on web this Text renders as
+            a raw span (components/ui/text/index.web.tsx), so numberOfLines
+            never reaches a renderer that would act on it — and the `truncate`
+            class that used to stand in for it only half-works, because every
+            Text's web base class sets `whitespace-pre-wrap`. See
+            lib/truncate.ts. */}
+        <Text size="xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
           {label}
         </Text>
         {editable && <Icon as={ChevronDown} size="xs" className="text-muted-foreground" />}

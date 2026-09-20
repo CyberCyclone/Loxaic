@@ -4,6 +4,7 @@ import { Text } from '@/components/ui/text';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import type { AgentMode } from '@/lib/types';
 import type { RunState } from '@/hooks/useAgentSession';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 const STATE_LABEL: Record<RunState, string> = {
   queued: 'Queued',
@@ -42,10 +43,17 @@ interface RunHeaderProps {
 export function RunHeader({ title, state, mode, iteration, queuePosition }: RunHeaderProps) {
   return (
     <HStack space="sm" className="items-center border-b border-border px-4 py-2.5">
-      <Text className="flex-1 font-medium text-foreground" numberOfLines={1}>
+      {/* Same pair as MainHeader: the title may shrink and truncate, the two
+          chips beside it may not give way. `flex-1` alone let a long run title
+          squeeze them instead. */}
+      <Text
+        className="min-w-0 flex-1 font-medium text-foreground"
+        numberOfLines={1}
+        style={TRUNCATE_TEXT}
+      >
         {title}
       </Text>
-      <HStack space="xs" className="items-center rounded-full bg-muted px-2 py-1">
+      <HStack space="xs" className="shrink-0 items-center rounded-full bg-muted px-2 py-1">
         <Box className={`h-1.5 w-1.5 rounded-full ${STATE_DOT[state]}`} />
         <Text testID="agent.run.status" size="xs" className="text-muted-foreground">
           {STATE_LABEL[state]}
@@ -57,7 +65,7 @@ export function RunHeader({ title, state, mode, iteration, queuePosition }: RunH
           {state === 'queued' && queuePosition ? ` · #${String(queuePosition)}` : ''}
         </Text>
       </HStack>
-      <Badge variant="outline" className="border-border">
+      <Badge variant="outline" className="shrink-0 border-border">
         <BadgeText className="text-2xs normal-case">{mode}</BadgeText>
       </Badge>
     </HStack>

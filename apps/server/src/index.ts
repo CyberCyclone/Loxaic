@@ -40,6 +40,7 @@ import { startMcpReaper } from "./mcp/client-manager";
 import { backfillGithubMcpServers } from "./mcp/github-server.ts";
 import { startAttachmentReaper, sweepOrphanAttachments } from "./files/reaper";
 import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
+import { startConversationReaper, sweepRetainedConversations } from "./conversations/reaper";
 
 const app = Fastify({
   logger: {
@@ -245,6 +246,7 @@ let reaperTimer: NodeJS.Timeout | null = null;
 let mcpReaperTimer: NodeJS.Timeout | null = null;
 let attachmentReaperTimer: NodeJS.Timeout | null = null;
 let extractionReaperTimer: NodeJS.Timeout | null = null;
+let conversationReaperTimer: NodeJS.Timeout | null = null;
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
@@ -280,6 +282,16 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     .catch(() => { /* best-effort sweep */ });
   attachmentReaperTimer = startAttachmentReaper((n) => { app.log.info(`Swept ${String(n)} orphaned attachment(s)`); });
   extractionReaperTimer = startExtractionReaper((n) => { app.log.info(`Stopped ${String(n)} idle extraction sandbox(es)`); });
+  // Conversations a retention policy kept, now past their window — and, on a
+  // deployment with retention off, anything a previous policy left behind.
+  // Swept at boot as well as hourly: a window that expired while the server
+  // was down should not wait an hour to be honoured.
+  sweepRetainedConversations()
+    .then((n) => { if (n > 0) app.log.info(`Erased ${String(n)} deleted conversation(s) past the retention window`); })
+    .catch(() => { /* best-effort sweep */ });
+  conversationReaperTimer = startConversationReaper((n) => {
+    app.log.info(`Erased ${String(n)} deleted conversation(s) past the retention window`);
+  });
 });
 
 // ── Graceful shutdown ─────────────────────────────────────
@@ -296,6 +308,7 @@ async function shutdown(signal: string) {
     if (mcpReaperTimer) clearInterval(mcpReaperTimer);
     if (attachmentReaperTimer) clearInterval(attachmentReaperTimer);
     if (extractionReaperTimer) clearInterval(extractionReaperTimer);
+    if (conversationReaperTimer) clearInterval(conversationReaperTimer);
     await stopAllExtractionSandboxes().catch(() => undefined);
     await app.close();
     await closeDb();

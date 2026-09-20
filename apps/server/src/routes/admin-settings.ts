@@ -3,9 +3,11 @@ import { requireAdmin } from "../auth/middleware";
 import { getSandboxStatus } from "../sandbox/status.ts";
 import { probeEngines } from "../sandbox/container-provider.ts";
 import {
+  getConversationSettings,
   getInferenceSettings,
   getSandboxSettings,
   SettingsError,
+  updateConversationSettings,
   updateInferenceSettings,
   updateSandboxSettings,
 } from "../settings.ts";
@@ -48,6 +50,25 @@ export function adminSettingsRoutes(app: FastifyInstance) {
       throw err;
     }
     return inferenceView();
+  });
+
+  app.get("/v1/admin/settings/conversations", async (request, reply) => {
+    await requireAdmin(request, reply);
+    return getConversationSettings();
+  });
+
+  app.patch("/v1/admin/settings/conversations", async (request, reply) => {
+    await requireAdmin(request, reply);
+    try {
+      return await updateConversationSettings(request.body ?? {});
+    } catch (err) {
+      if (err instanceof SettingsError) {
+        return reply
+          .code(err.code === "envOverride" ? 409 : 400)
+          .send({ error: err.message, ...(err.code === "envOverride" ? { envOverride: true } : {}) });
+      }
+      throw err;
+    }
   });
 
   app.patch("/v1/admin/settings/sandbox", async (request, reply) => {
