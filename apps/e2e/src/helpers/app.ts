@@ -733,3 +733,86 @@ export async function returnToOnboarding(): Promise<void> {
   });
   await browser.url('app://-/onboarding');
 }
+
+// ── Model providers ─────────────────────────────────────────────
+
+/**
+ * Opens the Model Providers screen through Settings.
+ *
+ * Admin-only, unlike `openSandboxSettings`: the nav row is not rendered for
+ * anyone else, so a non-admin has to be checked by asking the route directly
+ * (see `providerListStatus`) rather than by navigating here and reading the
+ * screen. Waits on the built-in card, which is the one element present in
+ * every branch — it is described even when no provider has been added.
+ */
+export async function openProviders(): Promise<void> {
+  await openSidebar();
+  await tap('sidebar.settings');
+  await tap('settings.nav.providers');
+  await waitForVisible('providers.builtin');
+}
+
+/**
+ * What the provider list route answers for these credentials.
+ *
+ * Hiding the nav row is presentation; `requireAdmin` on the route is the
+ * boundary, and only a direct call can tell the two apart.
+ */
+export async function providerListStatus(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<number> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/admin/providers`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  return res.status;
+}
+
+/**
+ * The providers as the API describes them — never the API key, which no route
+ * returns. `hasApiKey` is the whole of what a client is told, which makes this
+ * the right probe for whether a key was stored at all.
+ */
+export async function listProviders(): Promise<
+  { id: string; name: string; slug: string; hasApiKey: boolean; baseUrl: string }[]
+> {
+  const token = await apiToken(adminCreds());
+  const res = await fetch(`${BASE_URL}/v1/admin/providers`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing providers failed (${String(res.status)})`);
+  const body = (await res.json()) as {
+    providers: { id: string; name: string; slug: string; hasApiKey: boolean; baseUrl: string }[];
+  };
+  return body.providers;
+}
+
+/**
+ * Removes every provider row this run created.
+ *
+ * Provider rows are deployment-wide and the database is shared, so this is
+ * scoped by base URL to the mock this run started — never "delete them all",
+ * which would take another suite's rows out from under it.
+ */
+export async function deleteProvidersWithBaseUrl(baseUrl: string): Promise<void> {
+  const token = await apiToken(adminCreds());
+  for (const provider of await listProviders()) {
+    if (provider.baseUrl !== baseUrl) continue;
+    await fetch(`${BASE_URL}/v1/admin/providers/${provider.id}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    });
+  }
+}
+
+/** What the mock provider actually received — the bearer it was sent and the
+ * model id it was asked for. The `slug::` prefix is ours and must never
+ * appear here. */
+export async function mockProviderRequests(
+  apiBase: string,
+): Promise<{ path: string; authorization: string | null; model: string | null }[]> {
+  const origin = new URL(apiBase).origin;
+  const res = await fetch(`${origin}/__e2e/requests`);
+  if (!res.ok) throw new Error(`[e2e] reading mock provider requests failed (${String(res.status)})`);
+  return (await res.json()) as { path: string; authorization: string | null; model: string | null }[];
+}
