@@ -162,8 +162,18 @@ describe("step check-ins", () => {
     return getStreamBroker();
   }
 
+  /** In conversation order, as the engine replays it. Unordered, Postgres
+   * returns heap order, which is not insertion order: a row's final UPDATE
+   * writes a new version wherever there is room, and another suite deleting
+   * its rows mid-run frees room *in front of* this conversation's. The final
+   * answer then came back first, `.at(-1)` picked an earlier assistant row,
+   * and "finishes the work" failed about one full-suite run in seven while
+   * never failing alone. */
   async function rowsOf(convId: string) {
-    return db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    return db.query.messages.findMany({
+      where: eq(messages.conversationId, convId),
+      orderBy: (m, { asc }) => [asc(m.lamport), asc(m.createdAt)],
+    });
   }
 
   it("pauses at the end of the window instead of ending the run", async () => {

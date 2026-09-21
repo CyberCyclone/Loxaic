@@ -252,6 +252,16 @@ replies.
   32-bit overflow ceiling on lifetime token sums). Columns typed `real` parse natively.
 - Migrations auto-run on server startup (`apps/server/src/db/migrate.ts`). Migration folder:
   `packages/db/drizzle/`. Run `pnpm --filter @loxaic/db db:generate` after schema changes.
+- **A read without `orderBy` has no order — tests included.** Postgres returns heap order, and
+  that is only insertion order until something disturbs the heap. A message row is inserted as
+  `streaming` and then UPDATEd with its content, and an update writes a new row version wherever
+  there is room. Under vitest's parallel workers another suite's `afterAll` deletes its rows
+  mid-run, so the room is often *in front of* this conversation's rows. `step-checkin`'s "keep
+  going" case read a conversation unordered and took `.at(-1)` as the final answer; about one
+  full-suite run in seven, the final row came back first, while the test never failed alone.
+  Reproduced by freeing heap space while a run was parked at its check-in, and fixed by ordering
+  on `lamport, created_at`, the key the engine replays with. Anything positional (`.at(-1)`,
+  `[0]`, "the last assistant row") needs an `orderBy`; `.find` by content does not.
 
 ### Inference
 
