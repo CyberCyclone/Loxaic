@@ -422,7 +422,12 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           const current = prev[convId];
           if (current?.streamId !== event.stream_id) return prev;
           const promptStats = foldPromptStats(current.promptStats, event.event);
-          return promptStats === current.promptStats ? prev : { ...prev, [convId]: { ...current, promptStats } };
+          // Measured progress means the model has loaded (see loadingAfter);
+          // every other change to loadingModel is handled below.
+          const loadingModel = event.event.kind === 'prompt.stats' && event.event.progress ? false : current.loadingModel;
+          return promptStats === current.promptStats && loadingModel === current.loadingModel
+            ? prev
+            : { ...prev, [convId]: { ...current, promptStats, loadingModel } };
         });
 
         const isActive = convId === activeIdRef.current;

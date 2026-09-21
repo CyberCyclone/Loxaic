@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { tallyChatMessages } from "../../../inference/context.ts";
 import { __resetPrefillRatesForTest, recordPrefill } from "../../../inference/prefill-rate.ts";
-import { promptStatsFor } from "../engine.ts";
+import type { StreamEventKind } from "@loxaic/types";
+import { promptProgressEmitter, promptStatsFor } from "../engine.ts";
 import { StreamBroker } from "../../broker.ts";
 import { MemoryStreamLogDriver } from "../../memory.ts";
 import type { StreamRecord } from "../../types.ts";
@@ -107,5 +108,50 @@ describe("foldSnapshot carries prompt stats until output starts", () => {
       rec(3, event),
     ]);
     expect(snapshot.prompt_stats).toBeUndefined();
+  });
+});
+
+describe("promptProgressEmitter", () => {
+  const base = stats();
+  const at = (processed: number) => ({
+    total_tokens: 1_000,
+    cached_tokens: 0,
+    processed_tokens: processed,
+    elapsed_ms: 0,
+    remaining_ms: null,
+  });
+
+  it("re-emits the request's stats with the progress merged in", () => {
+    const out: StreamEventKind[] = [];
+    promptProgressEmitter(base, (e) => out.push(e), () => 0)(at(100));
+    expect(out).toEqual([{ kind: "prompt.stats", ...base, progress: at(100) }]);
+  });
+
+  it("sends the first report, then at most one a second, and always the last", () => {
+    let now = 0;
+    const out: StreamEventKind[] = [];
+    const emit = promptProgressEmitter(base, (e) => out.push(e), () => now);
+    emit(at(100)); // first: always
+    now = 300;
+    emit(at(200)); // too soon
+    now = 999;
+    emit(at(300)); // still too soon
+    now = 1_000;
+    emit(at(400)); // a second after the last sent
+    now = 1_100;
+    emit(at(1_000)); // complete: always, or the bar stalls short of full
+    const sent = out.map((e) => (e.kind === "prompt.stats" ? e.progress?.processed_tokens : null));
+    expect(sent).toEqual([100, 400, 1_000]);
+  });
+
+  it("folds to the latest report, and still clears on the first output", () => {
+    const broker = new StreamBroker(new MemoryStreamLogDriver(86400), 0);
+    const rec = (seq: number, event: StreamRecord["event"]): StreamRecord => ({ seq, ts: 0, event });
+    const start = rec(1, { kind: "message.start", message_id: "a1", author_type: "assistant", parent_id: null });
+    const first = rec(2, { kind: "prompt.stats", ...base });
+    const later = rec(3, { kind: "prompt.stats", ...base, progress: at(600) });
+    expect(broker.foldSnapshot([start, first, later]).prompt_stats?.progress).toEqual(at(600));
+    const out = rec(4, { kind: "text.delta", message_id: "a1", text: "h" });
+    expect(broker.foldSnapshot([start, first, later, out]).prompt_stats).toBeUndefined();
   });
 });

@@ -37,6 +37,14 @@ export const TOOL_PROMPT = 'write a file called notes';
 export const SLOW_PROMPT = 'take your time and think about this';
 
 /**
+ * A slow prompt for which the mock also reports prompt-evaluation progress,
+ * the way llama.cpp does with `return_progress`. Separate from SLOW_PROMPT so
+ * the specs using that one keep seeing the estimate-only path. See
+ * MOCK_PROGRESS_MATCH in apps/server/src/inference/provider.ts.
+ */
+export const PROGRESS_PROMPT = 'take a while and report your progress';
+
+/**
  * Matches the `scenarios.json` fixture's bugfix scenario: run the tests (they
  * fail on the fixture's real off-by-one), fix it for real with `fs_edit`, and
  * rerun them (they pass) — three genuine tool calls in one turn, driven by

@@ -23,6 +23,7 @@ export interface RecordedRequest {
     messages?: { role: string; content?: unknown; name?: string; tool_calls?: unknown }[];
     tools?: unknown[];
     tool_choice?: unknown;
+    return_progress?: unknown;
   };
 }
 
@@ -37,7 +38,22 @@ export interface MockOpenAiOptions {
   reply?: string;
   /** Delay before the first token, for observing a queue. */
   delayMs?: number;
+  /** Answer `/props` the way llama.cpp does, identifying itself as a local
+   * runtime with this allocated window. */
+  nCtx?: number;
+  /** Stream `prompt_progress` chunks, in llama.cpp's exact shape, when the
+   * request asked with `return_progress` — one malformed one among them. */
+  progress?: boolean;
 }
+
+/** What `progress` streams before the reply: llama.cpp's 0% report as the
+ * slot starts, a bad one, then two batches. */
+export const MOCK_PROGRESS_CHUNKS = [
+  { total: 1000, cache: 200, processed: 200, time_ms: 0 },
+  { total: "lots", cache: 0, processed: 0, time_ms: 0 },
+  { total: 1000, cache: 200, processed: 600, time_ms: 100 },
+  { total: 1000, cache: 200, processed: 1000, time_ms: 200 },
+];
 
 export interface MockOpenAi {
   url: string;
@@ -103,6 +119,13 @@ export async function startMockOpenAi(options: MockOpenAiOptions = {}): Promise<
             Connection: "keep-alive",
           });
           const id = "chatcmpl-mock";
+          if (options.progress && body.return_progress === true) {
+            // Each carries an empty assistant delta with `content: null`,
+            // exactly as llama.cpp's do — which must not read as output.
+            for (const prompt_progress of MOCK_PROGRESS_CHUNKS) {
+              res.write(sse({ id, choices: [{ delta: { role: "assistant", content: null } }], prompt_progress }));
+            }
+          }
           res.write(sse({ id, choices: [{ delta: { role: "assistant" } }] }));
           res.write(sse({ id, choices: [{ delta: { content: reply } }] }));
           res.write(sse({ id, choices: [{ delta: {}, finish_reason: "stop" }] }));
@@ -125,6 +148,12 @@ export async function startMockOpenAi(options: MockOpenAiOptions = {}): Promise<
         };
         if (options.delayMs) setTimeout(send, options.delayMs);
         else send();
+        return;
+      }
+
+      if (req.url === "/props" && options.nCtx) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ default_generation_settings: { n_ctx: options.nCtx }, total_slots: 1 }));
         return;
       }
 

@@ -32,7 +32,7 @@ import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
-import { foldPromptStats } from '@/lib/promptStats';
+import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 
 export type { PendingApproval };
 
@@ -666,10 +666,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
                 [convId]: {
                   ...prev[convId],
                   // `prompt.stats` follows `model.loading` before the first
-                  // token, and must not end the "Loading model…" phase.
-                  loadingModel:
-                    event.event.kind === 'model.loading' ||
-                    (event.event.kind === 'prompt.stats' && prev[convId].loadingModel),
+                  // token, and must not end the "Loading model…" phase —
+                  // unless it carries the backend's progress, which only a
+                  // loaded model evaluating the prompt can report.
+                  loadingModel: loadingAfter(prev[convId].loadingModel, event.event),
                   promptStats: foldPromptStats(prev[convId].promptStats, event.event),
                   // Cleared by anything that is not itself a queue update:
                   // every other event means the run is past the queue, and a

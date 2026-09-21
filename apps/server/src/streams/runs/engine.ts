@@ -6,7 +6,9 @@ import {
   DEFAULT_CHECKIN_AUTO_CONTINUES,
   DEFAULT_LOOP_SENSITIVITY,
   DEFAULT_PROVIDER_ID,
+  type PromptProgress,
   type PromptStats,
+  type StreamEventKind,
   isLoopSensitivity,
   sanitizeFilename,
   type AttachmentRef,
@@ -333,6 +335,33 @@ export function promptStatsFor(input: {
   };
 }
 
+/** At most one progress re-emit per this many ms. */
+export const PROGRESS_EMIT_INTERVAL_MS = 1_000;
+
+/**
+ * Re-emits a request's `prompt.stats` with the backend's measured progress
+ * merged in — throttled, because every non-delta event forces a stream-log
+ * flush and is kept for `STREAM_TTL_SECONDS`, and llama.cpp reports once per
+ * decoded batch, which with a small `n_batch` is many times a second. The
+ * first report always goes (it is the proof the backend has started), and so
+ * does the one that reaches 100%, so the bar does not stall short of full.
+ * Emit-only: nothing here touches the prompt.
+ */
+export function promptProgressEmitter(
+  stats: PromptStats,
+  emit: (event: StreamEventKind) => void,
+  now: () => number = Date.now,
+): (progress: PromptProgress) => void {
+  let lastAt: number | null = null;
+  return (progress) => {
+    const t = now();
+    const complete = progress.processed_tokens >= progress.total_tokens;
+    if (lastAt !== null && !complete && t - lastAt < PROGRESS_EMIT_INTERVAL_MS) return;
+    lastAt = t;
+    emit({ kind: "prompt.stats", ...stats, progress });
+  };
+}
+
 function waitDeadline(chosenMs: number | null, adaptive: boolean, slowestTurnMs: number): WaitDeadline {
   const { ms, basis } = effectiveTimeoutMs({
     baseMs: chosenMs ?? serverDefaultTimeoutMs(),
@@ -581,6 +610,8 @@ export async function runToolLoop(ctx: {
       // A load inside this request's TTFT: no ETA can account for it, and the
       // request's timing must not become a prefill-rate sample.
       let loadingModel = false;
+      // Whether to ask the backend for prompt progress — see modelRunInfo.
+      let reportProgress = false;
       try {
         // This model's own provider, never the whole fan-out: searching every
         // provider's list here would put an unreachable one's timeout in front
@@ -589,6 +620,7 @@ export async function runToolLoop(ctx: {
         // only one.
         const info = await modelRunInfo(model);
         windowTokens = info?.windowTokens ?? null;
+        reportProgress = info?.nativeRuntime ?? false;
         if (info && !info.loaded) {
           jitLoaded = true;
           loadingModel = true;
@@ -644,6 +676,9 @@ export async function runToolLoop(ctx: {
         startedAt: requestStartedAt,
       });
       producer.emit({ kind: "prompt.stats", ...stats });
+      const emitProgress = promptProgressEmitter(stats, (e) => {
+        producer.emit(e);
+      });
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -656,6 +691,7 @@ export async function runToolLoop(ctx: {
             // see StreamOptions.toolChoice for why dropping them would cost a
             // full prompt re-evaluation on exactly the wrong request.
             ...(answerNow ? { toolChoice: "none" as const } : {}),
+            reportProgress,
           }),
         )) {
           if (event.type === "delta") {
@@ -664,6 +700,8 @@ export async function runToolLoop(ctx: {
           } else if (event.type === "thinking") {
             thinking += event.content;
             producer.emit({ kind: "thinking.delta", message_id: assistantMsgId, text: event.content });
+          } else if (event.type === "progress") {
+            emitProgress(event.progress);
           } else {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
