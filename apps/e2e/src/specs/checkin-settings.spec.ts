@@ -8,7 +8,7 @@
  * anything can scroll to it (see AGENTS.md on SettingsModal and
  * McpServerModal, where exactly that hid a field).
  */
-import { $, browser } from '@wdio/globals';
+import { browser } from '@wdio/globals';
 import { apiToken, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { platform, tap, testIdSelector, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
@@ -111,10 +111,13 @@ describe('the check-ins and approvals settings screen', () => {
         throw new Error('the lowest row is past the fold with nothing able to scroll to it');
       }
       if (!verdict.overflowing) throw new Error('window was not short enough to test scrolling');
-      await $(testIdSelector('settings.loopSensitivity.off')).scrollIntoView();
+      // The DOM's own scrollIntoView, not WebdriverIO's: that one is a wheel
+      // action over the page, which does not reach an inner scroll container
+      // — so it would fail for a screen that scrolls perfectly well.
       const inView = await browser.execute((selector: string) => {
         const el = document.querySelector(selector);
         if (!el) return false;
+        el.scrollIntoView({ block: 'nearest' });
         const r = el.getBoundingClientRect();
         return r.top >= 0 && r.bottom <= window.innerHeight;
       }, testIdSelector('settings.loopSensitivity.off'));
