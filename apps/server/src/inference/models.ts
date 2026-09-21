@@ -464,11 +464,20 @@ export async function resolveWindow(ref: string): Promise<number | null> {
 }
 
 /** The window plus whether the model is loaded, in one lookup — what the run
- * path needs before its first request. */
-export async function modelRunInfo(ref: string): Promise<{ windowTokens: number | null; loaded: boolean } | null> {
+ * path needs before its first request.
+ *
+ * `nativeRuntime` says the backend identified itself as a local runtime by
+ * reporting an allocated window — llama.cpp's `/props` or LM Studio's native
+ * listing — which is the gate for asking it to report prompt progress. Not
+ * "has no preset": a hand-entered provider pointed at a hosted API has none
+ * either (the GGUF-badge bug), and OpenAI refuses an unknown request field
+ * with a 400. LM Studio passes and ignores the field, which costs nothing. */
+export async function modelRunInfo(
+  ref: string,
+): Promise<{ windowTokens: number | null; loaded: boolean; nativeRuntime: boolean } | null> {
   const model = await getModelInfo(ref);
   if (!model) return null;
-  return { windowTokens: windowFor(model), loaded: model.loaded };
+  return { windowTokens: windowFor(model), loaded: model.loaded, nativeRuntime: model.loaded_context_tokens != null };
 }
 
 /**

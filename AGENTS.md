@@ -988,8 +988,45 @@ replies.
   token — the event that ends "Loading model…" is the same one that clears the stats — so a
   `!loadingModel` gate made it unreachable for exactly the runs that wait longest. The mock never
   reports a model as unloaded, so no spec can see that path. `reusable_tokens: 0` is shown as "0%": the
-  rule is never to turn null into 0, not never to show 0. Real backend progress (LM Studio's
-  `onPromptProcessingProgress`, llama.cpp `/slots`) is #197.
+  rule is never to turn null into 0, not never to show 0.
+- **Measured progress rides the completion request itself, not a `/slots` poll** (#197). llama.cpp's
+  server, asked with `return_progress: true`, sends `prompt_progress {total, cache, processed,
+  time_ms}` on content-less chunks of the *same* SSE stream — a 0% report when the slot starts, then
+  one per decoded batch. So there is no second request that could delay or fail the run, and no
+  slot to match to our request under `--parallel` > 1 (the question the issue raised; `/slots`
+  also lacks per-request progress, and `--no-slots` can remove it). The engine re-emits
+  `prompt.stats` with a `progress` object merged in; both folds already replace on `prompt.stats`,
+  so a reconnecting client gets the latest report and an older client ignores the field.
+  **`progress` is absent, never null-filled**, when the backend reported nothing.
+- **Ask only a backend that identified itself** (`modelRunInfo`'s `nativeRuntime`: it reported an
+  allocated window via llama.cpp's `/props` or LM Studio's native listing). Not "has no preset" — a
+  hand-entered provider pointed at a hosted API has none either, and OpenAI answers an unknown
+  request field with a 400, which would fail every turn. `liveStream` refuses the field for any
+  preset as a second lock. It is a body field, not a message, so the prompt prefix is untouched.
+- **Throttled to one re-emit a second** (`promptProgressEmitter`), the first report and the *first*
+  to reach 100% always sent. Every non-delta event forces a stream-log flush and is kept for
+  `STREAM_TTL_SECONDS`, and a small `n_batch` reports many times a second. The 100% exemption is
+  **latched**: a backend that finishes the prompt and then stalls before its first token keeps
+  reporting `processed == total`, and exempting each of those removed the bound exactly when a
+  request can run to the hour-long ceiling. Found in review, as were the two below.
+- **Completion is its own case on the client, and mid-flight tests cannot see it.** Two segments
+  floored independently (33% + 66%) left a finished prompt's bar at 99%, so at completion the
+  evaluated segment takes the remainder. And `remaining_ms` is **null once nothing is left**, not
+  0 — `formatEta` clamps up to "1 s", so a 0 read "100% evaluated · about 1 s left" for however
+  long the first token took. The client also guards `> 0`, for a server that predates the fix.
+- **The measured line drops `~` and "(estimate)"** and says "cached" — the backend's reuse, known
+  before prefill — never "reusable", which is ours. "% evaluated" is of the *uncached* part
+  (llama.cpp's own timed progress), so a big cache hit does not make the bar look nearly done.
+  `remaining_ms` divides only evaluated tokens and is null below `MIN_EVALUATED_TOKENS`; it is a
+  countdown, and never feeds `prompt_tps` or `prefill-rate.ts`. A progress report also ends
+  "Loading model…" (`loadingAfter`) — only a loaded model can be evaluating a prompt.
+- **LM Studio cannot report it over HTTP; do not re-probe.** Checked against the LM Studio on .13
+  (2026-09-21): `return_progress` is silently ignored, `/slots` and `/props` do not exist, and `/api/v1/chat`
+  — which does stream `prompt_processing.progress` — takes only `input` plus MCP integrations: no
+  message history, no caller-defined tools, so it cannot carry a run. The only route is moving the
+  completion call itself onto `@lmstudio/sdk`'s WebSocket, which is its own issue. Until then LM
+  Studio keeps the estimate. The mock's `report your progress` prompt (`MOCK_PROGRESS_MATCH`) plays
+  llama.cpp's reports out, and only when the engine asked for them.
 
 ### Conversation sharing and roles
 

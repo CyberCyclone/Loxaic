@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PromptStats } from '@loxaic/api-client';
-import { describePromptStats, foldPromptStats, formatTokens, showPromptStats } from './promptStats';
+import { describePromptStats, foldPromptStats, formatTokens, loadingAfter, promptProgressSegments, showPromptStats } from './promptStats';
 
 const stats: PromptStats = {
   message_id: 'a1',
@@ -66,5 +66,68 @@ describe('showPromptStats', () => {
     expect(showPromptStats({ promptStats: stats, queuePosition: 2 })).toBe(false);
     expect(showPromptStats({ promptStats: stats, compacting: true })).toBe(false);
     expect(showPromptStats({ promptStats: null })).toBe(false);
+  });
+});
+
+describe('measured progress', () => {
+  const measured: PromptStats = {
+    ...stats,
+    progress: { total_tokens: 12_000, cached_tokens: 4_000, processed_tokens: 7_200, elapsed_ms: 4_000, remaining_ms: 6_000 },
+  };
+
+  it('replaces the estimate with the backend’s figures, and says none of them is an estimate', () => {
+    // 3,200 of the 8,000 uncached tokens evaluated: 40%, not 60% of the whole.
+    expect(describePromptStats(measured)).toBe('12k tokens · 33% cached · 40% evaluated · about 6 s left');
+  });
+
+  it('omits the countdown until the backend has a rate, and a zero cache', () => {
+    const p = { total_tokens: 900, cached_tokens: 0, processed_tokens: 0, elapsed_ms: 0, remaining_ms: null };
+    expect(describePromptStats({ ...stats, progress: p })).toBe('900 tokens · 0% evaluated');
+  });
+
+  it('reads 100% evaluated when the whole prompt was cached', () => {
+    const p = { total_tokens: 900, cached_tokens: 900, processed_tokens: 900, elapsed_ms: 5, remaining_ms: null };
+    expect(describePromptStats({ ...stats, progress: p })).toBe('900 tokens · 100% cached · 100% evaluated');
+  });
+
+  it('gives the bar its two segments as shares of the whole prompt', () => {
+    expect(promptProgressSegments(measured)).toEqual({ cachedPct: 33, evaluatedPct: 26 });
+    expect(promptProgressSegments(stats)).toBeNull();
+  });
+
+  it('fills the bar at completion — two independent floors would stop at 99%', () => {
+    // 4,000 of 12,000 cached: 33.3% and 66.6% each floor down, to 99 between them.
+    const p = { total_tokens: 12_000, cached_tokens: 4_000, processed_tokens: 12_000, elapsed_ms: 8_000, remaining_ms: null };
+    expect(promptProgressSegments({ ...stats, progress: p })).toEqual({ cachedPct: 33, evaluatedPct: 67 });
+  });
+
+  it('claims no time left on a finished prefill, even from a server that sent 0', () => {
+    const p = { total_tokens: 12_000, cached_tokens: 4_000, processed_tokens: 12_000, elapsed_ms: 8_000, remaining_ms: 0 };
+    expect(describePromptStats({ ...stats, progress: p })).toBe('12k tokens · 33% cached · 100% evaluated');
+  });
+
+  it('never lets the segments exceed the track', () => {
+    const p = { total_tokens: 3, cached_tokens: 2, processed_tokens: 3, elapsed_ms: 1, remaining_ms: null };
+    const s = promptProgressSegments({ ...stats, progress: p });
+    expect((s?.cachedPct ?? 0) + (s?.evaluatedPct ?? 0)).toBeLessThanOrEqual(100);
+    expect(s?.cachedPct).toBe(66);
+  });
+
+  it('leaves the estimate line exactly as it was without progress', () => {
+    expect(describePromptStats(stats)).toBe('~84k tokens · 0% reusable · about 7 min (estimate)');
+  });
+});
+
+describe('loadingAfter', () => {
+  const ev = { kind: 'prompt.stats' as const, ...stats };
+  it('holds a model load through a plain prompt.stats', () => {
+    expect(loadingAfter(true, ev)).toBe(true);
+  });
+  it('ends it on measured progress, which only a loaded model can report', () => {
+    expect(loadingAfter(true, { ...ev, progress: { total_tokens: 1, cached_tokens: 0, processed_tokens: 0, elapsed_ms: 0, remaining_ms: null } })).toBe(false);
+  });
+  it('starts on model.loading and ends on output', () => {
+    expect(loadingAfter(false, { kind: 'model.loading', message_id: 'a1' })).toBe(true);
+    expect(loadingAfter(true, { kind: 'text.delta', message_id: 'a1', text: 'x' })).toBe(false);
   });
 });

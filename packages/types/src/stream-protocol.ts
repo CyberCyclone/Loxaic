@@ -548,6 +548,28 @@ export interface PromptStats {
   eta_ms: number | null;
   /** Server epoch ms the request was sent. */
   started_at: number;
+  /** The one measured part: what the backend itself reports about this
+   * request while evaluating it (llama.cpp's `return_progress`). `prompt.stats`
+   * is re-emitted, throttled, as it moves. **Absent** when the backend reports
+   * nothing — LM Studio and every hosted API today — and absence means "we
+   * were not told": the estimates above stand. Never null- or zero-filled. */
+  progress?: PromptProgress;
+}
+
+/** A backend's own account of how far prompt evaluation has got. */
+export interface PromptProgress {
+  /** The prompt as the backend tokenised it — not an estimate. */
+  total_tokens: number;
+  /** What the backend actually reused from its cache — ground truth, unlike
+   * `reusable_tokens`, which is what we offered. */
+  cached_tokens: number;
+  /** Evaluated so far, cached tokens included. */
+  processed_tokens: number;
+  /** The backend's own clock since it started on this request. */
+  elapsed_ms: number;
+  /** Time left at the rate measured so far on this request. Null until enough
+   * has been evaluated to call it a rate. */
+  remaining_ms: number | null;
 }
 
 /** Everything-so-far, folded server-side from the durable log. The client

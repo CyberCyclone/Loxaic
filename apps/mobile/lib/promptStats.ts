@@ -26,6 +26,18 @@ export function foldPromptStats(prev: PromptStats | null, event: StreamEventKind
 }
 
 /**
+ * Whether "Loading model…" still holds after `event`. Set by `model.loading`;
+ * carried through a plain `prompt.stats` (which the server sends after it,
+ * before the first token); ended by one that carries measured progress — only
+ * a loaded model evaluating the prompt can report that — and by anything else.
+ */
+export function loadingAfter(loading: boolean, event: StreamEventKind): boolean {
+  if (event.kind === 'model.loading') return true;
+  if (event.kind === 'prompt.stats') return loading && !event.progress;
+  return false;
+}
+
+/**
  * Whether the stats line belongs under the status right now.
  *
  * Deliberately **not** gated on a model load. The server still measures size
@@ -60,6 +72,49 @@ function formatEta(ms: number): string {
   return rest ? `${String(h)} h ${String(rest)} min` : `${String(h)} h`;
 }
 
+function floorPct(part: number, whole: number): number {
+  // Floored, like the usage row: 99.6% is not a perfect 100%.
+  return whole > 0 ? Math.max(0, Math.min(100, Math.floor((part / whole) * 100))) : 0;
+}
+
+/**
+ * The bar's two segments, as percentages of the whole prompt: what the
+ * backend reused from its cache, and what it has evaluated beyond that. Null
+ * when the backend reported no progress — the bar is for measurements only.
+ */
+export function promptProgressSegments(stats: PromptStats): { cachedPct: number; evaluatedPct: number } | null {
+  const p = stats.progress;
+  if (!p) return null;
+  const cachedPct = floorPct(p.cached_tokens, p.total_tokens);
+  // At completion the evaluated segment takes the remainder rather than its
+  // own floor: two independent floors (33% + 66%) leave a finished prompt's
+  // bar at 99% for the whole wait between the last report and the first token.
+  const evaluatedPct =
+    p.processed_tokens >= p.total_tokens
+      ? 100 - cachedPct
+      : Math.min(100 - cachedPct, floorPct(p.processed_tokens - p.cached_tokens, p.total_tokens));
+  return { cachedPct, evaluatedPct };
+}
+
+/**
+ * The line when the backend reported progress: "83k tokens · 33% cached ·
+ * 40% evaluated · about 3 min left". No `~` and no "(estimate)", because none
+ * of it is one. "cached" is the backend's word for what it reused, which is
+ * deliberately not "reusable" — that is our figure for what we offered.
+ * "evaluated" is of the part that was not cached (llama.cpp's own timed
+ * progress), so a big cache hit does not make the bar look nearly done.
+ */
+function describeMeasured(p: NonNullable<PromptStats['progress']>): string {
+  const parts = [`${formatTokens(p.total_tokens)} tokens`];
+  if (p.cached_tokens > 0) parts.push(`${String(floorPct(p.cached_tokens, p.total_tokens))}% cached`);
+  const toEvaluate = p.total_tokens - p.cached_tokens;
+  parts.push(`${String(toEvaluate > 0 ? floorPct(p.processed_tokens - p.cached_tokens, toEvaluate) : 100)}% evaluated`);
+  // `> 0`, not just non-null: formatEta clamps up to "1 s", which is right for
+  // a small estimate and wrong for none — and an older server sends 0 at 100%.
+  if (p.remaining_ms != null && p.remaining_ms > 0) parts.push(`about ${formatEta(p.remaining_ms)} left`);
+  return parts.join(' · ');
+}
+
 /**
  * The line itself: "~83k tokens · 0% reusable · about 7 min (estimate)".
  *
@@ -67,8 +122,12 @@ function formatEta(ms: number): string {
  * the ETA then reads "up to about", since it was computed as if nothing could
  * be reused. `0% reusable` is a real measurement (the prefix broke) and is
  * shown — the rule is never to turn null into 0, not never to show 0.
+ *
+ * Once the backend reports progress the whole line is the backend's figures
+ * instead — see describeMeasured.
  */
 export function describePromptStats(stats: PromptStats): string {
+  if (stats.progress) return describeMeasured(stats.progress);
   const parts = [`~${formatTokens(stats.prompt_tokens_est)} tokens`];
   const reuseKnown = stats.reusable_tokens != null;
   if (stats.reusable_tokens != null && stats.prompt_tokens_est > 0) {

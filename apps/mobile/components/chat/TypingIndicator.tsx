@@ -6,6 +6,7 @@ import { Spinner } from '@/components/ui/spinner';
 import type { PromptStats } from '@loxaic/api-client';
 import { describePromptStats, showPromptStats } from '@/lib/promptStats';
 import { LiveElapsed } from './LiveElapsed';
+import { PromptProgressBar } from './PromptProgressBar';
 
 interface TypingIndicatorProps {
   /** True when the backend reported the target model isn't loaded yet (LM Studio JIT load). */
@@ -32,14 +33,13 @@ interface TypingIndicatorProps {
 // window is genuinely prompt evaluation (prefill), not "thinking" — label
 // it that way instead of overclaiming.
 //
-// No tok/s here: unlike generation, prefill is one atomic batched compute on
-// the backend with zero incremental signal — the first thing we ever hear
-// back *is* the first generated token, which is also what ends this phase.
-// So there's nothing to count until it's already over. An elapsed-time
-// counter is the honest version of "live feedback" for this window — plus,
-// when the server sent it, the prompt's size, how much of it could be reused,
-// and an ETA from recent requests. Those are what tell twenty minutes of real
-// work on 80k fresh tokens apart from a hang.
+// No tok/s here: a prefill rate derived from what we can see is not a rate of
+// anything once part of the prompt was cached. What there is instead: an
+// elapsed-time counter, the server's estimate of the prompt's size, reuse and
+// an ETA — and, from a backend that reports it (llama.cpp's
+// `return_progress`), its own measured progress, which replaces the estimate
+// and adds a bar. Those are what tell twenty minutes of real work on 80k
+// fresh tokens apart from a hang; only the measured kind *proves* it.
 export function TypingIndicator({ loadingModel, since, model, compacting, queuePosition, promptStats }: TypingIndicatorProps) {
   // Shown through a model load too — see showPromptStats for why.
   const showStats = showPromptStats({ promptStats, queuePosition, compacting });
@@ -73,6 +73,7 @@ export function TypingIndicator({ loadingModel, since, model, compacting, queueP
               {describePromptStats(promptStats)}
             </Text>
           )}
+          {showStats && promptStats && <PromptProgressBar stats={promptStats} />}
         </VStack>
       </HStack>
     </Box>

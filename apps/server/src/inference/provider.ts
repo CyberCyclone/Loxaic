@@ -1,4 +1,6 @@
+import type { PromptProgress } from "@loxaic/types";
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
+import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
 import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
@@ -131,6 +133,9 @@ export interface CompletionResult {
 export type StreamEvent =
   | { type: "delta"; content: string }
   | { type: "thinking"; content: string }
+  /** The backend's own prompt-evaluation progress — only ever sent when
+   * `reportProgress` asked for it, and only before the first output. */
+  | { type: "progress"; progress: PromptProgress }
   | { type: "done"; result: CompletionResult };
 
 export interface StreamOptions {
@@ -146,6 +151,15 @@ export interface StreamOptions {
    * request that is supposed to wrap things up cheaply.
    */
   toolChoice?: "auto" | "none";
+  /**
+   * Ask the backend to report prompt-evaluation progress on the stream
+   * (llama.cpp's `return_progress`). The caller decides, because only it knows
+   * whether the backend identified itself as a local runtime: OpenAI answers
+   * an unknown request field with a 400, so sending this to a hosted API — or
+   * to a hand-entered provider pointed at one — would break every request.
+   * Adds a request-body field, never a message, so the prompt is unchanged.
+   */
+  reportProgress?: boolean;
 }
 
 /**
@@ -190,6 +204,33 @@ const MOCK_SLOW_MATCH = /\btake your time\b/i;
 /** Long enough for a second conversation to be started by hand or by a test
  * and observed waiting; short enough not to dominate a suite. */
 const MOCK_SLOW_MS = 8_000;
+
+/** A slow prompt that also reports progress the way llama.cpp does with
+ * `return_progress`. A separate phrase from MOCK_SLOW_MATCH, so the specs that
+ * use that one keep covering the estimate-only path every other backend has. */
+const MOCK_PROGRESS_MATCH = /\breport your progress\b/i;
+const MOCK_PROGRESS_TICK_MS = 1_000;
+/** Big enough that the countdown is past MIN_EVALUATED_TOKENS on the first
+ * tick, with a cached prefix so both bar segments render. */
+const MOCK_PROGRESS = { total: 12_000, cache: 4_000 };
+
+/** Resolves after `ms`, or at once on abort — callers follow it with
+ * throwIfAborted. See the MOCK_SLOW_MATCH branch for why the mock's waits have
+ * to be interruptible at all. */
+function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /** A prompt the mock fails the way LM Studio fails a model it cannot load: an
  * HTTP 400 before any token, whose `error.message` liveStream throws as-is.
@@ -285,24 +326,30 @@ async function* mockStream(
   // against itself. Keyed on the prompt rather than an environment variable so
   // it affects exactly the conversation that asked, leaving every other spec's
   // timing alone. See MOCK_TOOL_TRIGGERS above for the same idiom.
-  if (MOCK_SLOW_MATCH.test(prompt)) {
+  if (MOCK_PROGRESS_MATCH.test(prompt)) {
+    // llama.cpp's `return_progress`, played out over the same eight seconds
+    // as the slow prompt: a 0% report as the slot starts, then one a second.
+    // Only when asked, as the real backend only sends it when asked — so the
+    // engine's gate is exercised end to end, not assumed.
+    const steps = MOCK_SLOW_MS / MOCK_PROGRESS_TICK_MS;
+    for (let i = 0; i <= steps; i++) {
+      if (i > 0) await sleepUnlessAborted(MOCK_PROGRESS_TICK_MS, options.signal);
+      throwIfAborted(options.signal);
+      if (!options.reportProgress) continue;
+      const progress = parsePromptProgress({
+        total: MOCK_PROGRESS.total,
+        cache: MOCK_PROGRESS.cache,
+        processed: MOCK_PROGRESS.cache + Math.round(((MOCK_PROGRESS.total - MOCK_PROGRESS.cache) * i) / steps),
+        time_ms: i * MOCK_PROGRESS_TICK_MS,
+      });
+      if (progress) yield { type: "progress", progress };
+    }
+  } else if (MOCK_SLOW_MATCH.test(prompt)) {
     // Interruptible, because a real backend's fetch is: `signal` aborts the
     // live HTTP request in liveStream, so a mock that slept through a stop
     // would make the mock lane the *only* place where stopping mid-response
     // does nothing — precisely the bug being tested (#113).
-    await new Promise<void>((resolve) => {
-      const signal = options.signal;
-      if (signal?.aborted) { resolve(); return; }
-      const timer = setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve();
-      }, MOCK_SLOW_MS);
-      function onAbort() {
-        clearTimeout(timer);
-        resolve();
-      }
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
+    await sleepUnlessAborted(MOCK_SLOW_MS, options.signal);
     // Cut short is not the same as stopped. `liveStream`'s fetch throws
     // AbortError, which is what puts the engine on its cancel path; a mock
     // that merely woke early and then streamed its whole reply ended the
@@ -446,6 +493,8 @@ interface StreamChunk {
    * 200 status (llama.cpp/LM Studio: `event: error` + {"error": …}) — shape
    * varies, so both the bare-string and object forms are accepted. */
   error?: string | { message?: string };
+  /** llama.cpp with `return_progress`; validated by parsePromptProgress. */
+  prompt_progress?: unknown;
 }
 
 /**
@@ -483,6 +532,9 @@ async function* liveStream(
     body.tools = options.tools;
     body.tool_choice = options.toolChoice ?? "auto";
   }
+  // The preset check is a second lock behind the caller's: a named hosted API
+  // never gets a field it would refuse, whatever the caller believed.
+  if (options.reportProgress && provider.preset === null) body.return_progress = true;
 
   // Not the global fetch: see transport.ts for the 300-second cut-off it has.
   const response = await inferenceFetch(`${provider.apiBase}/chat/completions`, {
@@ -576,6 +628,16 @@ async function* liveStream(
           const detail =
             typeof parsed.error === "string" ? parsed.error : (parsed.error.message ?? JSON.stringify(parsed.error));
           throw new Error(redactSecrets(`Inference backend error: ${detail}`, secretsOf(provider)));
+        }
+
+        // Before anything else in the chunk, and deliberately not touching
+        // ttftMs: a progress chunk also carries an empty assistant delta
+        // (`content: null`), which is not output. Only reported until output
+        // starts — llama.cpp's last one can ride on the first token's chunk,
+        // and "evaluating" after the answer has begun would be false.
+        if (parsed.prompt_progress !== undefined && ttftMs === null) {
+          const progress = parsePromptProgress(parsed.prompt_progress);
+          if (progress) yield { type: "progress", progress };
         }
 
         const choice = parsed.choices?.[0];

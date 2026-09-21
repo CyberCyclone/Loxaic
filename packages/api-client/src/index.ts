@@ -1434,6 +1434,7 @@ export type {
   CheckinDecisionNote,
   WaitDeadlineFields,
   PromptStats,
+  PromptProgress,
   TimeoutBasis,
   LoopSensitivity,
   CompactionStats,
