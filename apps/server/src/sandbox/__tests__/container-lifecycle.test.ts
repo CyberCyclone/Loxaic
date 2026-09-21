@@ -97,7 +97,10 @@ describe.skipIf(!dockerReady)("container provider — stop, resume, destroy", ()
     const orphan = await getContainerProvider().create(userId, {});
     await orphan.stop();
 
-    await sweepOrphanSandboxes();
+    // Scoped to this suite's user: unscoped, the sweep pauses every other
+    // suite's live sandbox and destroys every rowless container on the engine,
+    // extraction pools included, in whichever workers happen to be running.
+    await sweepOrphanSandboxes(userId);
 
     await expect(paused.exists()).resolves.toBe(true);
     await paused.start();

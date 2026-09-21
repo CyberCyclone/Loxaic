@@ -798,8 +798,16 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
  *
  * Container provider only: host-mode sandboxes are plain directories with no
  * process to stop, and the identifying label only exists on containers.
+ *
+ * `ownerId` scopes all three directions to one user's rows and containers, and
+ * only a test passes it. Unscoped, this is a sweep of the whole engine and the
+ * whole table on the assumption that this process is the only one alive —
+ * true at boot, false in a test run, where vitest's parallel workers share the
+ * database and the engine: it paused every other suite's live sandbox and
+ * destroyed the extraction pool's containers (which have no row by design)
+ * mid-test. Same shape as reapAbandonedSandboxes' scope.
  */
-export async function sweepOrphanSandboxes(): Promise<number> {
+export async function sweepOrphanSandboxes(ownerId?: string): Promise<number> {
   // Every row that still claims a sandbox — **including paused ones**. That
   // distinction matters twice below: a paused sandbox is a live claim on its
   // container, so treating it as unclaimed would delete a user's work at every
@@ -807,7 +815,9 @@ export async function sweepOrphanSandboxes(): Promise<number> {
   // gone.
   const claimed = await db.query.sandboxes
     .findMany({
-      where: ne(sandboxes.status, "destroyed"),
+      where: ownerId
+        ? and(ne(sandboxes.status, "destroyed"), eq(sandboxes.ownerId, ownerId))
+        : ne(sandboxes.status, "destroyed"),
       columns: { id: true, containerId: true, provider: true, status: true },
     })
     .catch(() => []);
@@ -833,7 +843,7 @@ export async function sweepOrphanSandboxes(): Promise<number> {
   // Direction one: containers no row claims. Destroyed rather than stopped:
   // nothing can ever reach them again, since the only handle back to a sandbox
   // is its row.
-  const ids = await listSandboxContainers();
+  const ids = await listSandboxContainers(ownerId);
   if (ids.length === 0) return 0;
   const known = new Set<string>();
   for (const entry of active.values()) known.add(entry.ref);

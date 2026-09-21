@@ -187,3 +187,43 @@ describe("a signal that is already aborted never starts the command", () => {
     }, 90_000);
   });
 });
+
+/**
+ * A Stop that lands while the exec is still being *set up* — after the
+ * already-aborted check, during the Engine API round trips that create and
+ * start it. The abort listener used to be registered only once both had
+ * finished, and `addEventListener("abort")` on a signal that has already
+ * fired never fires: the Stop was silently lost and the command ran to
+ * completion. Docker under load makes that window hundreds of milliseconds;
+ * it was found as a batch call behind a Stop that echoed its output in a full
+ * suite run (stop-abort.test.ts), and never alone.
+ */
+describe.skipIf(!dockerReady)("a signal aborted while the exec is being set up", () => {
+  let handle: SandboxHandle;
+  beforeAll(async () => {
+    handle = await getContainerProvider().create(`exec-setup-abort-${Date.now().toString(36)}`, {});
+  }, 120_000);
+  afterAll(async () => {
+    await handle.destroy().catch(() => undefined);
+  });
+
+  it("still stops the command", async () => {
+    const marker = "/tmp/setup-abort-ran.txt";
+    const controller = new AbortController();
+    const started = Date.now();
+    const running = handle.exec(["bash", "-lc", `sleep 2; echo ran > ${marker}`], {
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+    // The next macrotask: exec() has passed its synchronous already-aborted
+    // check and is awaiting the engine, which cannot have answered yet.
+    setImmediate(() => { controller.abort(); });
+
+    const result = await running;
+    expect(result.exitCode).toBe(130);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await new Promise((r) => setTimeout(r, 3_000));
+    const after = await handle.exec(["bash", "-lc", `test -f ${marker} && echo LEAKED || echo clean`], {});
+    expect(after.stdout).toContain("clean");
+  }, 60_000);
+});

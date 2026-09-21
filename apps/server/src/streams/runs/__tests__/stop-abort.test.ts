@@ -332,8 +332,12 @@ describe("stopping a run", () => {
     // At least one, not exactly two: whether the stop lands before or during
     // the first call is a genuine race, and both outcomes are correct. What
     // must hold either way is that nothing *behind* the stop ran — asserted
-    // on the output, since a skipped call cannot have echoed.
+    // on the output, since a skipped call cannot have echoed. Compared as
+    // outputs rather than a count, so a failure says what actually ran: this
+    // one once failed only in full-suite runs as a bare "expected 1 to be 0",
+    // and it took a reproduction to find that a Stop landing while the exec
+    // was still being created was lost (container-engine.ts, exec-cancel.test.ts).
     expect(results.filter((r) => r.output.includes("Stopped by the user")).length).toBeGreaterThan(0);
-    expect(results.filter((r) => r.output.includes("two") || r.output.includes("three")).length).toBe(0);
+    expect(results.map((r) => r.output).filter((o) => o.includes("two") || o.includes("three"))).toEqual([]);
   }, 60_000);
 });

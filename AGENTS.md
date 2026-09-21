@@ -428,6 +428,15 @@ replies.
   than one host-provider suite — assert on the rows the test created instead. `reapAbandoned`
   takes an optional `kind` purely so a test's deliberately tiny retention window cannot destroy
   the container another suite is mid-run in.
+- **Nor may a test call a global sweep unscoped.** `sweepOrphanSandboxes()` assumes it is the
+  only process alive, which is true at boot and false under vitest's parallel workers: it pauses
+  every `running` row this process does not hold in memory, and destroys every container no row
+  claims — the extraction pool's included, which have no row by design. `container-lifecycle`
+  called it bare, and the symptoms landed in *other* files, one different each run: `hardening`
+  409 "container is not running", `lifecycle` `stopped` where `destroyed` was expected,
+  `extract-office` `failed`. How often depended only on which files happened to overlap it, so a
+  change that merely shifted test durations tripled the rate. It now takes an optional
+  `ownerId` (rows by owner, containers by `loxaic.user` label), like `reapAbandonedSandboxes`.
 - `web_fetch` always runs on the **server**, never in the sandbox — container sandboxes
   have no network (`NetworkMode: none`) and host-mode ones deliberately aren't trusted with
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
@@ -2152,6 +2161,18 @@ replies.
   finishes, so "the command is gone" is true when it returns. Host-mode children are
   `detached`, which also detaches them from the parent's death: live groups are killed on
   process exit.
+- **Checking `aborted` once, at the top, is not enough — re-check after every await that comes
+  before the listener.** `addEventListener("abort")` on a signal that has *already* fired never
+  fires. `execInContainer` checked, then awaited `container.exec()` and `exec.start()`, and only
+  then attached its listener, so a Stop landing during those Engine API round trips was lost
+  outright and the command ran to completion (a sweep of abort delays: every one under ~5 ms on
+  an idle engine, longer on a busy one). It now re-checks after `container.exec` (nothing has
+  started: return without starting) and after attaching the listener (the command is running:
+  take the kill path). It surfaced only as a batch call behind a Stop echoing its output in a
+  full-suite run of `stop-abort.test.ts`, never alone; `exec-cancel.test.ts` now aborts on the
+  next macrotask to hold it deterministically. The host provider has no await in that gap, and
+  `callExecutor` checks `aborted` where it registers — the pattern to copy anywhere a signal
+  crosses an await.
 - Needs `setsid -w` from util-linux: present in the Ubuntu-based sandbox image, **absent from
   busybox**, so a base-image change needs this re-checked. (Alpine's `ps` also lacks `-o pgid`,
   which is how the first draft was caught.)

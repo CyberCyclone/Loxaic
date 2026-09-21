@@ -419,6 +419,12 @@ async function killExecGroup(container: Docker.Container, pgidFile: string): Pro
   }
 }
 
+/** What a command the user stopped before it started reports: exit 130,
+ * like a SIGINT, and the same notice a cancelled one carries. */
+function stoppedBeforeStart(): ExecResult {
+  return { stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false };
+}
+
 async function execInContainer(
   container: Docker.Container,
   command: string[],
@@ -430,9 +436,7 @@ async function execInContainer(
   // wrapper: the killer read a PGID file the shell had not yet written,
   // found nothing, and the caller was told exit 130 for a command that then
   // ran to completion inside the container.
-  if (options?.signal?.aborted) {
-    return { stdout: "", stderr: "… [stopped by the user]", exitCode: 130, truncated: false, timedOut: false };
-  }
+  if (options?.signal?.aborted) return stoppedBeforeStart();
 
   // Every exec is wrapped, not only a cancellable one: the *timeout* needs
   // the same marker, and gating it on a signal left a timed-out clone, a
@@ -466,6 +470,14 @@ async function execInContainer(
     // than in a URL or a file. See sandbox/git.ts.
     ...(options?.env ? { Env: Object.entries(options.env).map(([k, v]) => `${k}=${v}`) } : {}),
   });
+
+  // Checked again after every await before the listener exists, because
+  // `addEventListener("abort")` on a signal that has already fired never
+  // fires. A Stop landing during these Engine API round trips — hundreds of
+  // milliseconds when Docker is busy — was otherwise lost outright, and the
+  // command ran to completion. Here nothing has started: the created exec is
+  // simply never started, and goes with the container.
+  if (options?.signal?.aborted) return stoppedBeforeStart();
 
   const stream = await exec.start({ hijack: true, stdin: false });
 
@@ -501,6 +513,9 @@ async function execInContainer(
       settle("cancelled");
     }
     signal?.addEventListener("abort", onAbort, { once: true });
+    // Aborted during `exec.start`: the command is running now, so this one
+    // takes the kill path rather than returning early.
+    if (signal?.aborted) onAbort();
 
     stream.on("end", () => { settle("done"); });
     stream.on("close", () => { settle("done"); });
@@ -883,11 +898,12 @@ export async function createSandboxContainer(
  * every one of them would accumulate on the host forever with nothing able to
  * find it. Observed directly: an afternoon of test runs left two dozen.
  */
-export async function listSandboxContainersOn(docker: Docker): Promise<string[]> {
+export async function listSandboxContainersOn(docker: Docker, userId?: string): Promise<string[]> {
   try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: ["loxaic.sandbox"] },
+      // `userId` narrows to one `loxaic.user` — a test's scoped sweep only.
+      filters: { label: userId ? ["loxaic.sandbox", `loxaic.user=${userId}`] : ["loxaic.sandbox"] },
     });
     // Containers a *local executor* made are excluded, and must be: they
     // carry the same marker but are claimed by no row in this database, so
