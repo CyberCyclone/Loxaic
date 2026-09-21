@@ -43,9 +43,18 @@ describe('choosing a server from the sign-in screen', () => {
     // below the wide breakpoint, and both the Electron window and the web
     // suite's browser are wide — so that guard could never fire, and a live
     // session from an earlier spec burned the full timeout instead.
-    if (!(await isVisible('login.submit')) && (await isVisible('sidebar.signOut'))) {
-      await signOut();
-    }
+    //
+    // Polled, and tolerant of a probe that throws: asked while the document is
+    // still loading, `isDisplayed()` does not answer false — the BiDi call
+    // rejects ("invalid argument"), which failed this hook, and so the whole
+    // file, on two web runs out of three.
+    const probe = (id: string) => isVisible(id).catch(() => false);
+    await browser.waitUntil(async () => (await probe('login.submit')) || (await probe('sidebar.signOut')), {
+      timeout: 20_000,
+      interval: 300,
+      timeoutMsg: 'neither the sign-in screen nor the signed-in shell appeared',
+    });
+    if (!(await probe('login.submit'))) await signOut();
     await waitForVisible('login.submit');
   });
 

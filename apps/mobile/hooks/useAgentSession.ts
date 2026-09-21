@@ -325,11 +325,13 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       if (tracked && tracked.streamId !== streamId) return;
       setIteration(snapshot.iteration ?? null);
       setLiveTodos(snapshot.todos ?? []);
-      // `serverNow` is always present alongside a deadline; without one the
-      // wait is re-based as if it had just started, which only ever errs long.
+      // `serverNow` is passed through as it arrived, never defaulted to `now`:
+      // absent, `localDeadline` re-bases the wait as if it had just started,
+      // which only errs long. Substituting `now` would instead read the
+      // server's `expires_at` straight off this device's clock, skew and all.
       const now = Date.now();
-      setPendingApproval(snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow ?? now) : null);
-      setPendingCheckin(snapshot.pending_checkin ? toPendingCheckin(snapshot.pending_checkin, now, serverNow ?? now) : null);
+      setPendingApproval(snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow) : null);
+      setPendingCheckin(snapshot.pending_checkin ? toPendingCheckin(snapshot.pending_checkin, now, serverNow) : null);
       setQueuePosition(snapshot.queued?.position ?? null);
       if (status === 'active') {
         // Order matters: a snapshot can carry both a queue position and a

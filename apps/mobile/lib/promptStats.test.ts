@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PromptStats } from '@loxaic/api-client';
-import { describePromptStats, foldPromptStats, formatTokens } from './promptStats';
+import { describePromptStats, foldPromptStats, formatTokens, showPromptStats } from './promptStats';
 
 const stats: PromptStats = {
   message_id: 'a1',
@@ -48,5 +48,23 @@ describe('foldPromptStats', () => {
     expect(foldPromptStats(set, { kind: 'text.delta', message_id: 'other', text: 'x' })).toBe(set);
     expect(foldPromptStats(set, { kind: 'thinking.delta', message_id: 'a1', text: 'x' })).toBeNull();
     expect(foldPromptStats(set, { kind: 'message.end', message_id: 'a1', status: 'complete' })).toBeNull();
+  });
+});
+
+describe('showPromptStats', () => {
+  it('shows through a model load, where the wait is longest', () => {
+    // No `loadingModel` input at all: a gate on it made the line unreachable
+    // for every run that JIT-loads, since both clear on the same event.
+    expect(showPromptStats({ promptStats: stats })).toBe(true);
+  });
+
+  it('shows a load-time event without its ETA', () => {
+    expect(describePromptStats({ ...stats, eta_ms: null })).not.toContain('about');
+  });
+
+  it('stays out of the way while queued or compacting, and with nothing to show', () => {
+    expect(showPromptStats({ promptStats: stats, queuePosition: 2 })).toBe(false);
+    expect(showPromptStats({ promptStats: stats, compacting: true })).toBe(false);
+    expect(showPromptStats({ promptStats: null })).toBe(false);
   });
 });

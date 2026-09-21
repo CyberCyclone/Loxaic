@@ -49,7 +49,15 @@ export default function CheckinsScreen() {
           and what it does if you are away.
         </Text>
 
-        <AgentStepLimit />
+        {/* `!= null` hides it against a server that predates the field, which
+            answers 200 with the key simply absent. */}
+        {prefs.maxIterations != null && (
+          <AgentStepLimit
+            value={prefs.maxIterations}
+            onChoose={(v) => { save({ maxIterations: v }); }}
+            disabled={busy}
+          />
+        )}
 
         {prefs.checkinTimeoutMs !== undefined && (
           <WaitTimeout

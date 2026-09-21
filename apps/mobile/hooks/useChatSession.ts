@@ -586,7 +586,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now ?? Date.now()) };
+            return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now) };
           });
           setPendingCheckinByConv((prev) => {
             const pc = event.snapshot.pending_checkin;
@@ -594,7 +594,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now ?? Date.now()) };
+            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now) };
           });
         }
         if (event.status !== 'active') {

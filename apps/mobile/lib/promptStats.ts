@@ -25,6 +25,24 @@ export function foldPromptStats(prev: PromptStats | null, event: StreamEventKind
   return prev;
 }
 
+/**
+ * Whether the stats line belongs under the status right now.
+ *
+ * Deliberately **not** gated on a model load. The server still measures size
+ * and reuse for a request that has to load its model first (it withholds only
+ * the ETA, which a load makes meaningless), and nothing is emitted between
+ * `prompt.stats` and the first token — the same event that ends "Loading
+ * model…" also clears the stats. So a `!loadingModel` gate meant the line
+ * never rendered for such a run, which is the longest silent gap there is.
+ */
+export function showPromptStats(input: {
+  promptStats: PromptStats | null | undefined;
+  queuePosition?: number | null;
+  compacting?: boolean;
+}): boolean {
+  return !!input.promptStats && !input.queuePosition && !input.compacting;
+}
+
 /** "83k", "1.2k", "640". */
 export function formatTokens(n: number): string {
   if (n >= 10_000) return `${String(Math.round(n / 1000))}k`;

@@ -75,6 +75,18 @@ describe('the check-ins and approvals settings screen', () => {
     await shot('checkin-settings');
   });
 
+  it('quotes the step limit back as the cost of keeping going, and keeps up when it changes', async () => {
+    // The two rows sit a few lines apart and used to hold separate copies of
+    // the pref, so this sentence went on saying "100" after the row above it
+    // had been moved.
+    await waitForTextIn('settings.autoContinues.copy', '100 more steps');
+    await tap('settings.stepLimit.200');
+    await waitForPref(creds, 'maxIterations', 200);
+    await waitForTextIn('settings.autoContinues.copy', '200 more steps');
+    await tap('settings.stepLimit.100');
+    await waitForPref(creds, 'maxIterations', 100);
+  });
+
   it('saves each setting to the server', async () => {
     await tap('settings.checkinTimeout.1800000');
     await waitForPref(creds, 'checkinTimeoutMs', 1_800_000);

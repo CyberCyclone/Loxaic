@@ -781,6 +781,24 @@ replies.
   twice, and these only make sense read together. `AgentStepLimit` moved there too. Each
   control hides itself when the server omits its field, and `checkin-settings.spec.ts`
   asserts the lowest row is *reachable*, not merely displayed.
+- **That screen has one copy of the prefs (`hooks/usePrefs.ts`), and every control on it is
+  controlled.** `AgentStepLimit` used to fetch and save for itself, so the row below it — which
+  quotes the step limit back as the cost of an auto-continue — went on saying "100 more steps"
+  after the limit had been moved to 200, four lines away. A failed save reverts **only the fields
+  it patched** (`lib/prefsRollback.ts`): restoring the whole pre-save snapshot also undid a later
+  save that had succeeded, leaving the screen disagreeing with the server. `busy` is a count of
+  saves in flight, not a flag, so the first to settle does not re-enable everything.
+- **`ToolApprovalDialog` was the fifth modal to need `ModalBody scrollEnabled`** (after
+  SettingsModal, McpServerModal, RoutineModal, ModelModal) — it had only the `max-h-[85%]` half,
+  and the countdown is the last row in the body, so it was the first thing pushed below a fold
+  nothing could reach. `approval-deadline.spec.ts` asserts reachability, stepping the window
+  down until the dialog really overflows. **Adding a row to any modal body means checking both
+  halves are there.** All five found in review or by hand, never by a test that existed.
+- **A snapshot's `server_now` is passed through as it arrived, never defaulted to `Date.now()`.**
+  Absent, `localDeadline` re-bases the wait from now, which only errs long. Substituting `now`
+  takes the *corrected* branch with zero correction — the server's `expires_at` read straight off
+  the device clock, so a fast phone shows less time than the server is honouring. Unreachable
+  today (`delivery.ts` always stamps it), but the comment once claimed the opposite of the code.
 
 ### Automatic compaction
 
@@ -964,7 +982,12 @@ replies.
   stored, never shown as a rate, and never feeds `prompt_tps`; if the backend evicted the
   prefix the sample reads slow and the ETA errs long, which is the safe side. Emit-only — it
   changes no prompt bytes — and folded into the snapshot until the message's first output, so
-  someone reconnecting mid-prefill still sees it. `reusable_tokens: 0` is shown as "0%": the
+  someone reconnecting mid-prefill still sees it. **The line shows through a model load**
+  (`showPromptStats` takes no `loadingModel`): the server measures size and reuse for that
+  request and withholds only the ETA, and nothing is emitted between `prompt.stats` and the first
+  token — the event that ends "Loading model…" is the same one that clears the stats — so a
+  `!loadingModel` gate made it unreachable for exactly the runs that wait longest. The mock never
+  reports a model as unloaded, so no spec can see that path. `reusable_tokens: 0` is shown as "0%": the
   rule is never to turn null into 0, not never to show 0. Real backend progress (LM Studio's
   `onPromptProcessingProgress`, llama.cpp `/slots`) is #197.
 

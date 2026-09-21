@@ -43,7 +43,10 @@ export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, 
         <ModalHeader>
           <Heading size="md">Tool call wants to run</Heading>
         </ModalHeader>
-        <ModalBody>
+        {/* Both halves, as everywhere else: the vendored ModalBody hardcodes
+            `scrollEnabled={false}`, so with only the height cap a long reason
+            pushes the countdown below a fold nothing can scroll to. */}
+        <ModalBody scrollEnabled>
           <VStack space="md">
             <HStack space="xs" className="flex-wrap items-baseline">
               {mcp ? (

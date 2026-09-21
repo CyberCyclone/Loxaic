@@ -310,5 +310,12 @@ export const Message = memo(
     prev.msg === next.msg &&
     prev.liveThinking === next.liveThinking &&
     prev.elapsedSince === next.elapsedSince &&
-    prev.onFork === next.onFork,
+    prev.onFork === next.onFork &&
+    // Compared because it changes *without* `msg` changing: when a newer reply
+    // arrives, the previous one keeps its object and only stops being newest.
+    // Left out, that reply went on showing its "wasn't sent to the model"
+    // notice beside the new one — intermittently, whenever nothing else
+    // happened to re-render it, which is what made attachment-budget.spec.ts
+    // flaky.
+    prev.isNewest === next.isNewest,
 );

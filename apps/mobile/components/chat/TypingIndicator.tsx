@@ -4,7 +4,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
 import type { PromptStats } from '@loxaic/api-client';
-import { describePromptStats } from '@/lib/promptStats';
+import { describePromptStats, showPromptStats } from '@/lib/promptStats';
 import { LiveElapsed } from './LiveElapsed';
 
 interface TypingIndicatorProps {
@@ -41,7 +41,8 @@ interface TypingIndicatorProps {
 // and an ETA from recent requests. Those are what tell twenty minutes of real
 // work on 80k fresh tokens apart from a hang.
 export function TypingIndicator({ loadingModel, since, model, compacting, queuePosition, promptStats }: TypingIndicatorProps) {
-  const showStats = !!promptStats && !queuePosition && !loadingModel && !compacting;
+  // Shown through a model load too — see showPromptStats for why.
+  const showStats = showPromptStats({ promptStats, queuePosition, compacting });
   return (
     <Box className="px-4 py-2">
       <HStack space="sm" className="items-start">
@@ -67,7 +68,7 @@ export function TypingIndicator({ loadingModel, since, model, compacting, queueP
             </Text>
             <LiveElapsed since={since} />
           </HStack>
-          {showStats && (
+          {showStats && promptStats && (
             <Text testID="chat.status.promptStats" size="2xs" className="text-muted-foreground">
               {describePromptStats(promptStats)}
             </Text>
