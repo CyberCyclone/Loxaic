@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Docker from "dockerode";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sandboxImageReady } from "./docker-available.ts";
 import { attachDirectory } from "../host-provider.ts";
@@ -220,6 +221,55 @@ describe.skipIf(!dockerReady)("a signal aborted while the exec is being set up",
     setImmediate(() => { controller.abort(); });
 
     const result = await running;
+    expect(result.exitCode).toBe(130);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await new Promise((r) => setTimeout(r, 3_000));
+    const after = await handle.exec(["bash", "-lc", `test -f ${marker} && echo LEAKED || echo clean`], {});
+    expect(after.stdout).toContain("clean");
+  }, 60_000);
+
+  it("still stops it when the abort lands after the command has started", async () => {
+    // The case above always lands in the *first* window — a setImmediate runs
+    // before the engine can have answered `container.exec` — so it covers the
+    // return-without-starting re-check and nothing else. This is the other
+    // one: the abort arrives inside `exec.start`, after that re-check has
+    // passed, so the command really is running by the time the listener is
+    // attached to a signal that has already fired. That branch has the moving
+    // parts — it destroys the stream before its end/close/error listeners
+    // exist, and kills a group whose PGID file may not be written yet.
+    //
+    // Placed exactly rather than timed: dockerode's own `exec` is wrapped so
+    // the abort fires at the moment `start` is called.
+    const marker = "/tmp/start-abort-ran.txt";
+    const controller = new AbortController();
+    const proto = Object.getPrototypeOf(new Docker().getContainer("unused")) as Docker.Container;
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- re-bound with `call` below.
+    const realExec = proto.exec;
+    let armed = true;
+    proto.exec = async function (this: Docker.Container, options: Docker.ExecCreateOptions) {
+      const exec = await (realExec as (o: Docker.ExecCreateOptions) => Promise<Docker.Exec>).call(this, options);
+      if (!armed) return exec;
+      // Once: the kill that follows makes an exec of its own.
+      armed = false;
+      const realStart = exec.start.bind(exec) as (o: Docker.ExecStartOptions) => Promise<unknown>;
+      exec.start = ((o: Docker.ExecStartOptions) => {
+        controller.abort();
+        return realStart(o);
+      }) as typeof exec.start;
+      return exec;
+    } as typeof proto.exec;
+
+    const started = Date.now();
+    let result;
+    try {
+      result = await handle.exec(["bash", "-lc", `sleep 2; echo ran > ${marker}`], {
+        timeoutMs: 30_000,
+        signal: controller.signal,
+      });
+    } finally {
+      proto.exec = realExec;
+    }
+    expect(armed).toBe(false);
     expect(result.exitCode).toBe(130);
     expect(Date.now() - started).toBeLessThan(2_000);
     await new Promise((r) => setTimeout(r, 3_000));

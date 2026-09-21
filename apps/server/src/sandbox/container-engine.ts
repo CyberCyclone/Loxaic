@@ -794,7 +794,9 @@ export async function probeEngines(): Promise<EngineProbe[]> {
 
 
 export interface CreateContainerOptions {
-  /** Recorded as the `loxaic.user` label, for the per-user bookkeeping. */
+  /** Recorded as the `loxaic.user` label. For a conversation sandbox this is
+   * the conversation's *owner* — the same id as the row's `ownerId` — so a
+   * sweep scoped to one user selects rows and containers by one identity. */
   userId: string;
   limits?: { memory?: number; cpu?: number; pids?: number };
   /** Whether the container may reach the network at all. */
@@ -898,13 +900,28 @@ export async function createSandboxContainer(
  * every one of them would accumulate on the host forever with nothing able to
  * find it. Observed directly: an afternoon of test runs left two dozen.
  */
-export async function listSandboxContainersOn(docker: Docker, userId?: string): Promise<string[]> {
+export async function listSandboxContainersOn(
+  docker: Docker,
+  scope: { userId?: string; createdBeforeMs?: number } = {},
+): Promise<string[]> {
+  const { userId, createdBeforeMs } = scope;
   try {
-    const containers = await docker.listContainers({
+    const listed = await docker.listContainers({
       all: true,
       // `userId` narrows to one `loxaic.user` — a test's scoped sweep only.
       filters: { label: userId ? ["loxaic.sandbox", `loxaic.user=${userId}`] : ["loxaic.sandbox"] },
     });
+    // `Created` is the engine's clock in whole seconds, rounded *down* — so
+    // the comparison is made in seconds too. Against milliseconds, a container
+    // made half a second after the cutoff carried a timestamp before it and
+    // read as old, which is the one direction this filter exists to prevent
+    // (found by checking the default against a real engine, not by a test:
+    // the container-lifecycle cases pin 0 and Infinity and cannot see it).
+    // The same second counts as young. See sweepOrphanSandboxes for what the
+    // cutoff is for and how clock skew degrades.
+    const cutoffSeconds = createdBeforeMs === undefined ? undefined : Math.floor(createdBeforeMs / 1000);
+    const containers =
+      cutoffSeconds === undefined ? listed : listed.filter((c) => c.Created < cutoffSeconds);
     // Containers a *local executor* made are excluded, and must be: they
     // carry the same marker but are claimed by no row in this database, so
     // the orphan sweep would destroy every one of them — and the engine is

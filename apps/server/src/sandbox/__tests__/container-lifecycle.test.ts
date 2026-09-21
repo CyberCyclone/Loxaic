@@ -2,8 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
-import { sandboxes, user } from "@loxaic/db/schema";
-import { getConversationSandbox, sweepOrphanSandboxes } from "../../agent/sandbox-manager.ts";
+import { conversations, sandboxes, user } from "@loxaic/db/schema";
+import {
+  __forgetActiveSandboxForTest,
+  getConversationSandbox,
+  sweepOrphanSandboxes,
+} from "../../agent/sandbox-manager.ts";
 import { getContainerProvider } from "../container-provider.ts";
 import type { SandboxHandle } from "../provider.ts";
 import { sandboxImageReady } from "./docker-available.ts";
@@ -100,12 +104,67 @@ describe.skipIf(!dockerReady)("container provider — stop, resume, destroy", ()
     // Scoped to this suite's user: unscoped, the sweep pauses every other
     // suite's live sandbox and destroys every rowless container on the engine,
     // extraction pools included, in whichever workers happen to be running.
-    await sweepOrphanSandboxes(userId);
+    //
+    // First with a cutoff nothing is older than — the rule the boot sweep
+    // applies with "when this process started". A rowless container younger
+    // than the cutoff is what an extraction-pool container, or a sandbox
+    // mid-creation, looks like while the server is already serving, and it
+    // must be left alone. Explicit cutoffs rather than the default, so the
+    // assertion does not depend on the engine's clock agreeing with ours.
+    await sweepOrphanSandboxes({ ownerId: userId, createdBefore: 0 });
+    await expect(orphan.exists()).resolves.toBe(true);
+
+    await sweepOrphanSandboxes({ ownerId: userId, createdBefore: Number.POSITIVE_INFINITY });
 
     await expect(paused.exists()).resolves.toBe(true);
     await paused.start();
     await expect(paused.readFile(pausedFile)).resolves.toBe("keep me");
     await expect(orphan.exists()).resolves.toBe(false);
+    // Left running, this leaked one container per run. Nobody noticed while
+    // the sweep was unscoped, because the *next* run's sweep collected it —
+    // as a rowless container, once afterAll had deleted its row.
+    await paused.destroy();
+  }, 180_000);
+
+  it("a sweep scoped to a shared editor leaves the owner's workspace alone", async () => {
+    // Rows are keyed on the conversation's owner. The container's label used
+    // to name whoever triggered the first tool call instead, so on a shared
+    // conversation the two disagreed: a sweep scoped to the editor listed the
+    // container by label, found no row of the editor's claiming it, and
+    // destroyed a workspace a row still claimed.
+    const editorId = `test-container-lifecycle-editor-${uuid()}`;
+    await db.insert(user).values({
+      id: editorId,
+      name: "Container Lifecycle Editor",
+      email: `${editorId}@example.test`,
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const [conv] = await db
+      .insert(conversations)
+      .values({ ownerId: userId, title: "shared", kind: "agent" })
+      .returning();
+    try {
+      // The editor's tool call is what creates the owner's sandbox.
+      const shared = await getConversationSandbox(editorId, conv.id);
+      await shared.writeFile(`${shared.workdir}/owners-work.txt`, "x");
+      await shared.stop();
+      // As after a restart: an entry in the in-memory map counts as a claim
+      // and would hide the bug, since the sweep never reaches the row check.
+      __forgetActiveSandboxForTest(conv.id);
+
+      await sweepOrphanSandboxes({ ownerId: editorId, createdBefore: Number.POSITIVE_INFINITY });
+      await expect(shared.exists()).resolves.toBe(true);
+      await sweepOrphanSandboxes({ ownerId: userId, createdBefore: Number.POSITIVE_INFINITY });
+      await expect(shared.exists()).resolves.toBe(true);
+
+      await shared.destroy();
+    } finally {
+      await db.delete(sandboxes).where(eq(sandboxes.conversationId, conv.id));
+      await db.delete(conversations).where(eq(conversations.id, conv.id));
+      await db.delete(user).where(eq(user.id, editorId));
+    }
   }, 180_000);
 
   it("destroy() removes it, and start() then throws rather than reporting success", async () => {

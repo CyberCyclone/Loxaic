@@ -428,15 +428,42 @@ replies.
   than one host-provider suite — assert on the rows the test created instead. `reapAbandoned`
   takes an optional `kind` purely so a test's deliberately tiny retention window cannot destroy
   the container another suite is mid-run in.
-- **Nor may a test call a global sweep unscoped.** `sweepOrphanSandboxes()` assumes it is the
-  only process alive, which is true at boot and false under vitest's parallel workers: it pauses
-  every `running` row this process does not hold in memory, and destroys every container no row
-  claims — the extraction pool's included, which have no row by design. `container-lifecycle`
-  called it bare, and the symptoms landed in *other* files, one different each run: `hardening`
-  409 "container is not running", `lifecycle` `stopped` where `destroyed` was expected,
-  `extract-office` `failed`. How often depended only on which files happened to overlap it, so a
-  change that merely shifted test durations tripled the rate. It now takes an optional
-  `ownerId` (rows by owner, containers by `loxaic.user` label), like `reapAbandonedSandboxes`.
+- **Nor may a test call a global sweep unscoped.** `sweepOrphanSandboxes()` pauses every
+  `running` row this process does not hold in memory, and destroys every container no row claims
+  — the extraction pool's included, which have no row by design. `container-lifecycle` called it
+  bare under vitest's parallel workers, and the symptoms landed in *other* files, one different
+  each run: `hardening` 409 "container is not running", `lifecycle` `stopped` where `destroyed`
+  was expected, `extract-office` `failed`. How often depended only on which files happened to
+  overlap it, so a change that merely shifted test durations tripled the rate. It takes a scope
+  now (`ownerId`: rows by owner, containers by `loxaic.user` label), like `reapAbandonedSandboxes`.
+- **The orphan sweep only considers containers created before this process started**
+  (`createdBefore`, defaulting to module load). "It is the only process alive at boot" was never
+  true: the boot call sits inside the `listen` callback, unawaited, and reaches the container
+  listing only after walking every row — seconds, with requests already being served. An upload
+  in that window made an extraction-pool container, which is rowless by design and therefore
+  exactly what the sweep destroys, so the extraction died mid-exec with nothing explaining it. A
+  crash orphan is by definition older than this boot; anything younger is ours. Age, rather than
+  folding the pool into the claimed set, because that would still leave the gap between a
+  container existing and being registered. Compared on the engine's clock: behind ours, a young
+  container can look old (the old behaviour); ahead, an orphan waits for a later boot. **Not
+  covered:** a second process on the same engine whose rowless container predates this boot.
+  **Compared in whole seconds, never milliseconds:** `Created` is seconds rounded *down*, so
+  against a millisecond cutoff a container made half a second after it read as older — the one
+  direction the rule exists to prevent. The first draft had exactly that, the real-container tests
+  (which pin 0 and Infinity) passed, and only running the default against a real engine showed a
+  just-created container being swept. `list-sandbox-containers.test.ts` holds it with a fake engine.
+- **A scoped sweep stops hiding other tests' leaks.** `container-lifecycle` resumed its paused
+  sandbox and never destroyed it — one running container leaked per run, for as long as the test
+  has existed, invisibly, because the *next* run's unscoped sweep collected it as a rowless
+  container. After changing what a global janitor covers, run `docker ps -a --filter
+  label=loxaic.sandbox` after a suite and expect nothing of the suite's left.
+- **The `loxaic.user` label names the conversation's owner, the same id as the row's `ownerId`.**
+  It used to name whoever triggered the first tool call, so on a shared conversation a sweep
+  scoped to the editor listed the container by label, found no row of theirs claiming it, and
+  destroyed a workspace a row still claimed — more destroyed, not less, so it did not fail safe.
+  Test-only reachable, since only a test passes a scope, but it was the first time the label was
+  load-bearing. `__forgetActiveSandboxForTest` exists because an entry in the in-memory map is a
+  claim: without evicting it the test passed with the bug in place.
 - `web_fetch` always runs on the **server**, never in the sandbox — container sandboxes
   have no network (`NetworkMode: none`) and host-mode ones deliberately aren't trusted with
   an unfiltered fetch either. It has a real SSRF guard (DNS-resolves and rejects
@@ -2169,8 +2196,10 @@ replies.
   an idle engine, longer on a busy one). It now re-checks after `container.exec` (nothing has
   started: return without starting) and after attaching the listener (the command is running:
   take the kill path). It surfaced only as a batch call behind a Stop echoing its output in a
-  full-suite run of `stop-abort.test.ts`, never alone; `exec-cancel.test.ts` now aborts on the
-  next macrotask to hold it deterministically. The host provider has no await in that gap, and
+  full-suite run of `stop-abort.test.ts`, never alone. `exec-cancel.test.ts` holds each re-check
+  with its own case, since one abort can only land in one window: a `setImmediate` always lands in
+  `container.exec`, and the `exec.start` one is placed exactly by wrapping dockerode's `exec` so
+  the abort fires as `start` is called. Each fails only when its own re-check is removed. The host provider has no await in that gap, and
   `callExecutor` checks `aborted` where it registers — the pattern to copy anywhere a signal
   crosses an await.
 - Needs `setsid -w` from util-linux: present in the Ubuntu-based sandbox image, **absent from

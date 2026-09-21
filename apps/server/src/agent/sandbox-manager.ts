@@ -159,6 +159,15 @@ export async function attachRunningSandbox(row: {
  * Never creates one — callers that must not spin up a container just because
  * they might want to write to it (e.g. attachment overflow handling) check
  * this first. */
+/** Test seam: forget one conversation's sandbox the way a restart forgets
+ * all of them, touching nothing else — the row and the container stay. What
+ * the boot sweep does to a sandbox this process is *not* tracking cannot
+ * otherwise be tested without a global stop, which would take other suites'
+ * sandboxes with it. */
+export function __forgetActiveSandboxForTest(conversationId: string): void {
+  active.delete(conversationId);
+}
+
 export function hasActiveSandbox(conversationId: string): boolean {
   return active.has(conversationId);
 }
@@ -423,13 +432,13 @@ async function createEntry(
   // Not for executor sandboxes: those run on the user's own machine and
   // cost this server nothing to hold open.
   if (provider.kind === "executor") {
-    return createEntryReserved(provider, userId, ownerId, conversationId, workspace);
+    return createEntryReserved(provider, ownerId, conversationId, workspace);
   }
   // Counted against the owner, whose row this becomes — the same id the
   // resume path above reserves against, so the two agree.
   await assertUnderUserLimit(ownerId);
   try {
-    return await createEntryReserved(provider, userId, ownerId, conversationId, workspace);
+    return await createEntryReserved(provider, ownerId, conversationId, workspace);
   } finally {
     releaseSandboxSlot(ownerId);
   }
@@ -478,7 +487,6 @@ async function createConfigFor(ownerId: string, workspace: Workspace): Promise<C
 
 async function createEntryReserved(
   provider: SandboxProvider,
-  userId: string,
   ownerId: string,
   conversationId: string,
   workspace: Workspace,
@@ -487,7 +495,13 @@ async function createEntryReserved(
   // call — see the insert below for why, and createEntry for where it is
   // loaded. The clone credentials are the owner's too.
   const config = await createConfigFor(ownerId, workspace);
-  const handle = await provider.create(userId, config);
+  // The owner here too, not the sender: the container's `loxaic.user` label
+  // is all `create` uses it for, and labelling the sender meant a shared
+  // editor's first tool call left a container labelled for one person and
+  // claimed by a row owned by another — so a sweep scoped to the editor
+  // listed it, found no row of theirs claiming it, and destroyed a live
+  // workspace.
+  const handle = await provider.create(ownerId, config);
   // Every sandbox route — terminal, exec, file read/write — authorizes on
   // `sandboxes.ownerId`, and terminal access is arbitrary code execution
   // rather than participation in a chat. Recording the sender here meant a
@@ -789,6 +803,10 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
   return stopped;
 }
 
+/** Module load — the closest this module gets to "when the process started".
+ * See sweepOrphanSandboxes. */
+const PROCESS_STARTED_AT = Date.now();
+
 /**
  * Boot-time counterpart of the DB recovery path, for containers the DB has
  * lost track of: a crash between `provider.create` and the row insert (or a
@@ -799,15 +817,36 @@ export async function stopAllSandboxes(kind?: SandboxKind): Promise<number> {
  * Container provider only: host-mode sandboxes are plain directories with no
  * process to stop, and the identifying label only exists on containers.
  *
- * `ownerId` scopes all three directions to one user's rows and containers, and
- * only a test passes it. Unscoped, this is a sweep of the whole engine and the
- * whole table on the assumption that this process is the only one alive —
- * true at boot, false in a test run, where vitest's parallel workers share the
- * database and the engine: it paused every other suite's live sandbox and
- * destroyed the extraction pool's containers (which have no row by design)
- * mid-test. Same shape as reapAbandonedSandboxes' scope.
+ * **Only containers created before this process started are candidates**
+ * (`createdBefore`, defaulting to module load). A crash orphan is by
+ * definition older than this boot; everything younger is this process's own
+ * and may simply not be tracked *yet* or *at all*. The boot call runs inside
+ * the `listen` callback, unawaited, and reaches the listing only after walking
+ * every row — seconds on a busy host, with requests already being served. An
+ * upload in that window creates an extraction-pool container, which has no
+ * row and no `active` entry by design: exactly the shape direction one
+ * destroys, so the extraction died mid-exec. Folding the pool into `known`
+ * would still leave the gap between a container existing and being
+ * registered; age has no such gap. Compared against the engine's clock: if
+ * that runs behind ours a young container can look old (the behaviour before
+ * this rule), and if ahead an orphan waits for a later boot.
+ *
+ * What this does **not** cover is a second process on the same engine — a
+ * desktop Solo instance beside a dev server. Rows are shared when the database
+ * is, but another process's rowless extraction container older than this boot
+ * is still swept.
+ *
+ * `ownerId` scopes all three directions to one user — rows by `ownerId`,
+ * containers by the `loxaic.user` label, which createEntryReserved sets to the
+ * same owner — and only a test passes it. Unscoped under vitest's parallel
+ * workers, which share the database and the engine, this paused every other
+ * suite's live sandbox and destroyed their rowless containers mid-test. Same
+ * shape as reapAbandonedSandboxes' scope.
  */
-export async function sweepOrphanSandboxes(ownerId?: string): Promise<number> {
+export async function sweepOrphanSandboxes(
+  scope: { ownerId?: string; createdBefore?: number } = {},
+): Promise<number> {
+  const { ownerId, createdBefore = PROCESS_STARTED_AT } = scope;
   // Every row that still claims a sandbox — **including paused ones**. That
   // distinction matters twice below: a paused sandbox is a live claim on its
   // container, so treating it as unclaimed would delete a user's work at every
@@ -843,7 +882,12 @@ export async function sweepOrphanSandboxes(ownerId?: string): Promise<number> {
   // Direction one: containers no row claims. Destroyed rather than stopped:
   // nothing can ever reach them again, since the only handle back to a sandbox
   // is its row.
-  const ids = await listSandboxContainers(ownerId);
+  const ids = await listSandboxContainers({
+    ...(ownerId ? { userId: ownerId } : {}),
+    // Infinity is "no cutoff", which a test uses to reclaim an orphan it has
+    // only just made.
+    ...(Number.isFinite(createdBefore) ? { createdBeforeMs: createdBefore } : {}),
+  });
   if (ids.length === 0) return 0;
   const known = new Set<string>();
   for (const entry of active.values()) known.add(entry.ref);
