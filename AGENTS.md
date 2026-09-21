@@ -704,10 +704,31 @@ replies.
 - **The window is absolute, not a fresh count.** "Keep going" sets `budgetEnd = iteration +
   maxIterations`, so the header reads `7/100` then `104/200`. A per-window count would make
   "how far in am I?" unanswerable.
-- **Unanswered resolves to `CHECKIN_TIMEOUT_DECISION` (`"answer"`) after
-  `APPROVAL_TIMEOUT_MS`.** The run is holding a slot that at concurrency 1 is the entire
-  deployment and nobody is watching; a partial answer ends the turn and frees it, whereas
-  granting another window unattended is how one abandoned auto run blocks everyone for hours.
+- **Unanswered follows a ladder, per user** (`timeouts.ts`'s `unattendedDecision`, #196).
+  The first `user_prefs.checkin_auto_continues` (0-3, default 2) unanswered check-ins *in a
+  row* keep going; the next one answers now. A person answering any check-in resets the
+  streak; a run that fell out of the registry (`gone`) always answers. There is **no "stop"
+  rung and none is needed**: answer-now sends `tool_choice: "none"` and the next iteration ends
+  the run whether or not the model obeys, so the worst an abandoned run can do is
+  `autoContinues × maxIterations` more steps, then one answer. That bound is what the settings
+  copy states, and it is the real cost: each auto-continue is another full window of
+  slot-holding work with nobody watching, whereas the *wait* itself is free (a parked run has
+  handed its slot back). A loop check-in is the cheap case — "continue" resets the detector.
+  `step-checkin.test.ts` walks the ladder and asserts no fourth check-in.
+- **The auto-continue notice is client-only, never a message.** A persisted row would enter the
+  next prompt (breaking the prefix) and the history anchor's `COUNT(*)`. It rides as
+  `steps.decision {by: "timeout", n, unattended, auto_continues}` and is folded onto the last
+  assistant message as `checkin_decision`, so it survives a reconnect but not the stream log's
+  TTL — after that it is simply absent, which reads as "we were not told", never as "nothing
+  happened".
+- **The "answer now" notice says who, from `authorUserId`, on all three paths** (REST row,
+  `message.start.author_user_id`, snapshot). It used to say "You asked…" for every nudge,
+  including a timeout's — the same lie AGENTS.md records being fixed for approvals ("an
+  unanswered approval is not a denial"). `lib/checkinNotice.ts` owns the wording: an id means
+  that person (you, or someone sharing the thread), **null means nobody** (timed out), and
+  *absent* (an older server's live event) gets the one sentence that claims neither. Keep the
+  three distinct end to end: `foldSnapshot` copies `author_user_id` only when the key is
+  present, and `applyEventToMsgs` likewise.
 - **Loop detection asks early**, which is the case the old ceiling was really standing in for.
   `loop-detector.ts` keys each **iteration** (not each call) by a hash of its calls' names and
   **arguments**, and fires on the same key three times running or a 2-3 key cycle twice back to
@@ -752,6 +773,14 @@ replies.
   surfaces). Answering means reading what the agent already did, so the transcript has to stay
   visible and scrollable behind it — a modal would cover the one thing the decision depends on.
   It is written in the agent's own voice for the same reason the decision is the user's.
+  It, the approval dialog and the agent's permission bar all carry a `DeadlineCountdown`
+  saying what happens if nobody answers, and when — the outcome was a surprise before, and a
+  surprise that looked like the user's own choice.
+- **The wait settings have their own screen** (`app/(app)/checkins.tsx`, reached from
+  `settings.nav.checkins`), not rows in the settings modal: that modal has run past its fold
+  twice, and these only make sense read together. `AgentStepLimit` moved there too. Each
+  control hides itself when the server omits its field, and `checkin-settings.spec.ts`
+  asserts the lowest row is *reachable*, not merely displayed.
 
 ### Automatic compaction
 
@@ -925,6 +954,19 @@ replies.
 - Traces are in-memory and bounded (LRU, 500 conversations). A server restart costs one turn
   reporting "no previous request", which is the conservative direction: the separately-hosted
   backend may well still hold the prefix, but we cannot prove it, so we claim nothing.
+- **`prompt.stats` is the one carve-out from "never divide by TTFT", and only because it is an
+  ETA, not a speed** (#196). Before each request the engine announces the prompt's estimated
+  size (the previous request's *measured* size plus an estimate of what was appended, when the
+  prefix is a strict extension), its reusable tokens, and an ETA from
+  `inference/prefill-rate.ts` — an in-memory median of recent samples per model. A sample is
+  llama.cpp's own `prompt_per_second`, or `(prompt_tokens − reusable) / ttft` **only** on an
+  exact strict-extension measurement with ≥ 256 evaluated tokens and no model load. It is never
+  stored, never shown as a rate, and never feeds `prompt_tps`; if the backend evicted the
+  prefix the sample reads slow and the ETA errs long, which is the safe side. Emit-only — it
+  changes no prompt bytes — and folded into the snapshot until the message's first output, so
+  someone reconnecting mid-prefill still sees it. `reusable_tokens: 0` is shown as "0%": the
+  rule is never to turn null into 0, not never to show 0. Real backend progress (LM Studio's
+  `onPromptProcessingProgress`, llama.cpp `/slots`) is #197.
 
 ### Conversation sharing and roles
 
@@ -1052,10 +1094,11 @@ replies.
   approval semantics. It returns once the run has *started*; the row is still `running`. Before
   #179 it was a stub that inserted `[Routine "X" executed at …]` and never called a model, which
   is why the issue's "let me see the chat" had nothing worth seeing.
-- **Unattended is the normal case, and the existing timeouts are what make it safe.** A write
-  tool nobody allowlisted waits out `APPROVAL_TIMEOUT_MS` per call and is reported as "nobody
-  refused"; an unanswered step check-in resolves to `answer`. Someone who opens the run's chat
-  while it is going can approve live, which is most of why the chat is worth opening.
+- **Unattended is the normal case, and the owner's wait settings are what make it safe.** A run
+  uses its owner's prefs. A write tool nobody allowlisted waits out the owner's approval window
+  per call and is reported as "nobody refused"; an unanswered step check-in walks the owner's
+  ladder (keep going up to `checkin_auto_continues` times, then answer). Someone who opens the
+  run's chat while it is going can approve live, which is most of why the chat is worth opening.
 - **`recordUse: false` on `startChatRun` keeps a scheduled run out of the picker's recents.** A
   cron firing at 6am is nobody's choice of model, exactly as an automatic compaction is not.
 - **The terminal status comes from `broker.onEnd`, never from "we dispatched it".** `onSettled`
@@ -2082,13 +2125,31 @@ replies.
   the user wanted, so the branch with the weakest evidence must not carry the strongest
   recommendation. The registry's resolver stays `(approved: boolean) => void`, so both WS
   handlers need no change.
-- **`APPROVAL_TIMEOUT_MS` (milliseconds, default 5 min) is the knob**, read at call time — a
-  module-load read cannot be overridden by a test, since vitest shares one process across files,
-  and the timeout case would otherwise be untestable. Note this is *not* the `auto-compact.ts`
-  pattern, whose `AUTO_COMPACT_THRESHOLD` is a module-load IIFE. It is clamped to `2**31 - 1`:
-  Node stores a `setTimeout` delay as a signed 32-bit int and silently reduces anything larger to
-  **1 ms**, so setting thirty days to mean "never expire" would instead expire every approval
-  instantly and no gated tool could run in manual mode again.
+- **How long a wait lasts is per user, with `APPROVAL_TIMEOUT_MS` as the server default**
+  (#196). Precedence: `user_prefs.checkin_timeout_ms` / `approval_timeout_ms` (separate — "may
+  this run?" and "keep going?" are different questions) → `APPROVAL_TIMEOUT_MS` (ms) → the
+  built-in **10 minutes** (it was 5, which a 22-minute prompt evaluation on the beta box made
+  incoherent). The columns are **nullable and null means "server default"** — a choice the
+  settings screen names with its actual length (`GET /v1/prefs` returns read-only
+  `serverDefaults`). Deliberately the *opposite* precedence to the sandbox settings, where an
+  env pin outranks the row: those are deployment-wide security decisions, this is how long one
+  person is willing to be waited on, and a parked run holds no slot for a pin to protect. The env
+  is read at call time (vitest shares one process; tests set it to 50 ms, below the 5 s floor a
+  pref may take). Everything is clamped to 24 h, far below Node's `2**31 - 1`, where a larger
+  `setTimeout` delay silently becomes **1 ms** and would expire every wait instantly.
+- **Adaptive windows stretch to twice the run's slowest model request** (`adaptive_timeout`,
+  default on): on a backend where one step takes twenty minutes, ten minutes to answer is not
+  a real offer. Timed around `streamCompletion` alone — never the iteration, which includes
+  approval waits, or one long-unanswered approval would lengthen every later window.
+- **One deadline per wait, computed before the event is emitted**, so the wire and the timer
+  agree: `approval.request` and `steps.checkin` carry `timeout_ms`, `expires_at` and
+  `timeout_basis`, and the check-in also `on_timeout`/`unattended`/`auto_continues` for the
+  countdown's "I'll keep going (1 of 2)". `expires_at` is on the server's clock, so the client
+  converts once on receipt (`lib/pendingWaits.ts`): a live event counts `timeout_ms` from now, a
+  snapshot is corrected by the `server_now` its `stream.sync` carries.
+- **Loop sensitivity is a pref too** (`normal` = the old fixed 3 / 2×, `relaxed` = 5 / 3×, `off`).
+  It only ever concerns identical *calls*; time spent waiting on the model is never repetition,
+  whatever it costs.
 - **`case "aborted"` is unreachable in practice, and kept deliberately.** An abort does resolve
   the wait, but `slot.yieldWhile` then re-enters the queue and `enter()` refuses an aborted
   signal, throwing `RunSlotAbortedError` before the outcome is ever inspected. That ordering is
