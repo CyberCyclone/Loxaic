@@ -71,7 +71,13 @@ export function AgentStream({
       </Box>
       {mode === 'planning' && <PlanningBanner />}
       {pendingApproval && (
-        <PermissionBar tool={pendingApproval.tool} args={pendingApproval.args} onAllow={onAllow} onDeny={onDeny} />
+        <PermissionBar
+          tool={pendingApproval.tool}
+          args={pendingApproval.args}
+          deadline={pendingApproval.deadline}
+          onAllow={onAllow}
+          onDeny={onDeny}
+        />
       )}
       {/* Never both: a run parked on an approval is not also parked on a
           check-in, and the approval is the more specific question. Both take
@@ -79,10 +85,7 @@ export function AgentStream({
           transcript is what either decision is made from. */}
       {!pendingApproval && pendingCheckin && (
         <StepCheckInBanner
-          n={pendingCheckin.n}
-          max={pendingCheckin.max}
-          reason={pendingCheckin.reason}
-          pattern={pendingCheckin.pattern}
+          {...pendingCheckin}
           onContinue={onCheckinContinue}
           onAnswer={onCheckinAnswer}
           onStop={onCheckinStop}

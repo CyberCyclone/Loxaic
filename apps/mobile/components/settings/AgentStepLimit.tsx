@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { getPrefs, updatePrefs } from '@loxaic/api-client';
-import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
-import { Pressable } from '@/components/ui/pressable';
+import { PresetChips } from './PresetChips';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
 /** Presets rather than a number field: the exact value almost never matters,
@@ -79,21 +78,13 @@ export function AgentStepLimit() {
       <Text size="xs" className="text-muted-foreground">
         Steps between check-ins
       </Text>
-      <HStack space="xs">
-        {choices.map((n) => (
-          <Pressable
-            key={n}
-            testID={`settings.stepLimit.${String(n)}`}
-            disabled={busy}
-            onPress={() => { choose(n); }}
-            className={`rounded-full px-3 py-1.5 ${value === n ? 'bg-primary/15' : 'bg-muted'}`}
-          >
-            <Text size="sm" className={value === n ? 'text-primary' : 'text-muted-foreground'}>
-              {n}
-            </Text>
-          </Pressable>
-        ))}
-      </HStack>
+      <PresetChips
+        chips={choices.map((n) => ({ value: n, label: String(n), key: String(n) }))}
+        value={value}
+        onChoose={choose}
+        disabled={busy}
+        testIDPrefix="settings.stepLimit"
+      />
       <Text size="2xs" className="text-muted-foreground">
         How many tool calls the agent makes while answering one message before it pauses and asks
         whether to keep going, answer with what it has, or stop. It also asks early if it notices

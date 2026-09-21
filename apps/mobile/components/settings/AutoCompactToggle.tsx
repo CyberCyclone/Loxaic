@@ -101,7 +101,7 @@ export function AutoCompactToggle() {
 
 /** The branch in force is readable; the other stays visible but dimmed, so the
  * consequence of flipping the switch is on screen before you flip it. */
-function Outcome({
+export function Outcome({
   active,
   label,
   body,

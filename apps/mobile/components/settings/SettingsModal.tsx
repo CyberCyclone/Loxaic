@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, Plug, Server } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, Hourglass, Plug, Server } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -20,7 +20,6 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { AutoCompactToggle } from './AutoCompactToggle';
-import { AgentStepLimit } from './AgentStepLimit';
 import { ServerSection } from './ServerSection';
 import { UpdatesRow } from './UpdatesRow';
 import { Icon, CloseIcon } from '@/components/ui/icon';
@@ -299,15 +298,33 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
             <Box className="h-px bg-border" />
 
-            <AgentStepLimit />
-
-            <Box className="h-px bg-border" />
-
             <AutoCompactToggle />
 
             <Box className="h-px bg-border" />
 
             <UpdatesRow />
+
+            <Pressable
+              testID="settings.nav.checkins"
+              onPress={() => {
+                onClose();
+                router.push('/checkins');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={Hourglass} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    Check-ins & approvals
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    How long the agent waits for you, and what it does if you are away
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
 
             <Pressable
               testID="settings.nav.mcp"

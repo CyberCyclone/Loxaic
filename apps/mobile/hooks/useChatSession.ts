@@ -30,9 +30,9 @@ import { useSession } from '@/lib/session';
 import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
-import type { PendingCheckin } from './useAgentSession';
+import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 
-export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
+export type { PendingApproval };
 
 /** Imported from the agent hook rather than redeclared: both surfaces render
  * the same banner, so a second definition is a second thing to keep in step. */
@@ -581,7 +581,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: { callId: pa.call_id, tool: pa.tool, args: pa.args } };
+            return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now ?? Date.now()) };
           });
           setPendingCheckinByConv((prev) => {
             const pc = event.snapshot.pending_checkin;
@@ -589,15 +589,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return {
-              ...prev,
-              [convId]: {
-                n: pc.n,
-                max: pc.max,
-                reason: pc.reason,
-                ...(pc.pattern ? { pattern: pc.pattern } : {}),
-              },
-            };
+            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now ?? Date.now()) };
           });
         }
         if (event.status !== 'active') {
@@ -687,7 +679,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         if (inner.kind === 'approval.request') {
           setPendingApprovalByConv((prev) => ({
             ...prev,
-            [convId]: { callId: inner.call_id, tool: inner.tool, args: inner.args },
+            [convId]: toPendingApproval(inner, Date.now()),
           }));
         } else if (inner.kind === 'tool.result') {
           setPendingApprovalByConv((prev) => {
@@ -695,15 +687,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
         } else if (inner.kind === 'steps.checkin') {
-          setPendingCheckinByConv((prev) => ({
-            ...prev,
-            [convId]: {
-              n: inner.n,
-              max: inner.max,
-              reason: inner.reason,
-              ...(inner.pattern ? { pattern: inner.pattern } : {}),
-            },
-          }));
+          setPendingCheckinByConv((prev) => ({ ...prev, [convId]: toPendingCheckin(inner, Date.now()) }));
         } else if (inner.kind === 'steps.decision' || inner.kind === 'iteration') {
           // Answered — here, on another device, or by the timeout. Reaching a
           // new iteration means the same thing.

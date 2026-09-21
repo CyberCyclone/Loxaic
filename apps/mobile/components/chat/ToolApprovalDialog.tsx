@@ -6,6 +6,8 @@ import { Text } from '@/components/ui/text';
 import { Heading } from '@/components/ui/heading';
 import { Button, ButtonText } from '@/components/ui/button';
 import { splitMcpTool } from '@/components/chat/ToolCallCard';
+import type { WaitDeadline } from '@/lib/pendingWaits';
+import { DeadlineCountdown } from './DeadlineCountdown';
 
 interface ToolApprovalDialogProps {
   tool: string;
@@ -13,6 +15,8 @@ interface ToolApprovalDialogProps {
   /** The assistant's own text alongside this call, if it said anything before
    * calling the tool. Chat's system prompt asks the model to state why. */
   reason?: string;
+  /** When the request stops waiting — the call then does not run. */
+  deadline?: WaitDeadline;
   onAllowOnce: () => void;
   onAllowAlways: () => void;
   onReject: () => void;
@@ -24,7 +28,7 @@ interface ToolApprovalDialogProps {
  * tool patches its server's policy; a builtin patches the user's global
  * allowlist — see useChatSession's handleAllowAlways). No backdrop-dismiss:
  * a pending tool call needs an explicit decision, not an accidental tap-away. */
-export function ToolApprovalDialog({ tool, args, reason, onAllowOnce, onAllowAlways, onReject }: ToolApprovalDialogProps) {
+export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, onAllowAlways, onReject }: ToolApprovalDialogProps) {
   const mcp = splitMcpTool(tool);
   const pretty = JSON.stringify(args, null, 2);
   // Explicit length check rather than `??`: a reason that trims to empty must
@@ -68,6 +72,7 @@ export function ToolApprovalDialog({ tool, args, reason, onAllowOnce, onAllowAlw
                 </Text>
               </ScrollView>
             </VStack>
+            <DeadlineCountdown kind="approval" deadline={deadline} testID="chat.approval.deadline" />
           </VStack>
         </ModalBody>
         <ModalFooter className="flex-wrap justify-end gap-2 border-t border-border">
