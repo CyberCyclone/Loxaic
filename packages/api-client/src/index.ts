@@ -1410,6 +1410,10 @@ export type {
   Todo,
   CheckinReason,
   StepsDecision,
+  CheckinDecisionNote,
+  WaitDeadlineFields,
+  TimeoutBasis,
+  LoopSensitivity,
   CompactionStats,
   CommandKind,
   CommandSurface,
@@ -1422,6 +1426,9 @@ export {
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
   CHECKIN_ANSWER_NUDGE,
+  DEFAULT_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS,
+  MAX_CHECKIN_AUTO_CONTINUES, DEFAULT_CHECKIN_AUTO_CONTINUES,
+  LOOP_SENSITIVITIES, DEFAULT_LOOP_SENSITIVITY,
 } from "@loxaic/types";
 
 /** True if the send was actually written to the socket — false (never
