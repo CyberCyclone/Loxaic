@@ -91,7 +91,18 @@ export function createDelivery(
         : (({ pending_approval: _a, pending_checkin: _c, ...rest }) => rest)(folded);
 
     if (currentSeq > cursor) {
-      send({ type: "stream.sync", stream_id: streamId, conversation_id: conversationId, seq: currentSeq, status, snapshot });
+      send({
+        type: "stream.sync",
+        stream_id: streamId,
+        conversation_id: conversationId,
+        seq: currentSeq,
+        status,
+        snapshot,
+        // A pending wait's `expires_at` is on the server's clock. With this a
+        // client can count down on its own clock without trusting the two to
+        // agree — a phone a minute fast would otherwise show a minute too few.
+        server_now: Date.now(),
+      });
     }
     syncSent = true;
     for (const record of pending) {

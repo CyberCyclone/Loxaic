@@ -1,3 +1,4 @@
+import type { PromptStats } from '@loxaic/api-client';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlatList, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Box } from '@/components/ui/box';
@@ -19,6 +20,8 @@ interface MessageListProps {
   queuePosition?: number | null;
   /** Model the in-flight send targeted — shown on the typing indicator before any assistant message exists yet. */
   model?: string;
+  /** What the in-flight request is evaluating — see TypingIndicator. */
+  promptStats?: PromptStats | null;
 }
 
 /**
@@ -36,7 +39,7 @@ interface MessageListProps {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
 
@@ -165,6 +168,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
             <TypingIndicator
               loadingModel={loadingModel}
               queuePosition={queuePosition}
+              promptStats={promptStats}
               since={responseStartedAt}
               model={model}
               compacting={lastMsg?.role === 'summary'}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { ApiMessage, StreamSnapshot } from '@loxaic/api-client';
+import { CHECKIN_ANSWER_NUDGE, type ApiMessage, type StreamSnapshot } from '@loxaic/api-client';
 import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from './streamMessages';
 import type { Message } from './types';
 import { compactionCardState } from '@/components/chat/compactionState';
@@ -117,5 +117,86 @@ describe('failed turns carry their reason', () => {
     const [m] = reconstructMessages([row({ content: [{ kind: 'text', text: 'fine' }] })]);
     expect(m.error).toBe(false);
     expect(m.errorText).toBeUndefined();
+  });
+});
+
+/**
+ * Who settled a check-in has to survive every route too. The client used to
+ * drop it on all three, so the transcript said "You asked" whatever happened.
+ */
+describe('check-in provenance', () => {
+  const nudge = (authorUserId: string | null) =>
+    row({ id: 'n1', authorType: 'user', authorUserId, model: null, content: [{ kind: 'text', text: CHECKIN_ANSWER_NUDGE }] });
+
+  it('from history: null means nobody, an id means that person', () => {
+    expect(reconstructMessages([nudge(null)])[0]).toHaveProperty('authorUserId', null);
+    expect(reconstructMessages([nudge('u1')])[0].authorUserId).toBe('u1');
+  });
+
+  it('from history: an ordinary user message carries none', () => {
+    const typed = row({ id: 'u2', authorType: 'user', authorUserId: 'u1', content: [{ kind: 'text', text: 'hello' }] });
+    expect(reconstructMessages([typed])[0]).not.toHaveProperty('authorUserId');
+  });
+
+  it('from message.start, keeping silence distinct from null', () => {
+    const withNull = applyEventToMsgs([], {
+      kind: 'message.start',
+      message_id: 'n1',
+      author_type: 'user',
+      parent_id: null,
+      text: CHECKIN_ANSWER_NUDGE,
+      author_user_id: null,
+    });
+    expect(withNull[0]).toHaveProperty('authorUserId', null);
+    const silent = applyEventToMsgs([], {
+      kind: 'message.start',
+      message_id: 'n1',
+      author_type: 'user',
+      parent_id: null,
+      text: CHECKIN_ANSWER_NUDGE,
+    });
+    expect(silent[0]).not.toHaveProperty('authorUserId');
+  });
+
+  it('from a snapshot, with the timed-out decision on its turn', () => {
+    const snapshot: StreamSnapshot = {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [],
+          status: 'complete',
+          checkin_decision: { decision: 'continue', by: 'timeout', n: 3, unattended: 1, auto_continues: 2 },
+        },
+        {
+          message_id: 'n1',
+          author_type: 'user',
+          parent_id: 'a1',
+          text: CHECKIN_ANSWER_NUDGE,
+          thinking: '',
+          tool_calls: [],
+          status: 'complete',
+          author_user_id: null,
+        },
+      ],
+    };
+    const msgs = applySnapshotToMsgs([], snapshot);
+    expect(msgs[0].checkinDecision).toMatchObject({ decision: 'continue', by: 'timeout', n: 3 });
+    expect(msgs[1]).toHaveProperty('authorUserId', null);
+  });
+
+  it('live: a timed-out decision lands on the newest assistant turn, and a person\'s does not', () => {
+    const msgs: Message[] = [
+      { id: 'a1', role: 'assistant', text: '' },
+      { id: 'u1', role: 'user', text: 'x' },
+      { id: 'a2', role: 'assistant', text: '' },
+    ];
+    const timed = applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'timeout', n: 4, unattended: 1, auto_continues: 2 });
+    expect(timed[2].checkinDecision).toEqual({ decision: 'continue', by: 'timeout', n: 4, unattended: 1, auto_continues: 2 });
+    expect(timed[0].checkinDecision).toBeUndefined();
+    expect(applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'user', n: 4 })).toBe(msgs);
   });
 });

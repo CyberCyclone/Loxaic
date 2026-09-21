@@ -3,6 +3,8 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
+import type { PromptStats } from '@loxaic/api-client';
+import { describePromptStats, showPromptStats } from '@/lib/promptStats';
 import { LiveElapsed } from './LiveElapsed';
 
 interface TypingIndicatorProps {
@@ -20,6 +22,8 @@ interface TypingIndicatorProps {
    * and the user is entitled to see how long they have been waiting, even
    * though none of it is the model's. */
   queuePosition?: number | null;
+  /** What is being evaluated, when the server said. */
+  promptStats?: PromptStats | null;
 }
 
 // Shown only before *any* token (reasoning or answer) has streamed — once
@@ -32,8 +36,13 @@ interface TypingIndicatorProps {
 // the backend with zero incremental signal — the first thing we ever hear
 // back *is* the first generated token, which is also what ends this phase.
 // So there's nothing to count until it's already over. An elapsed-time
-// counter is the honest version of "live feedback" for this window.
-export function TypingIndicator({ loadingModel, since, model, compacting, queuePosition }: TypingIndicatorProps) {
+// counter is the honest version of "live feedback" for this window — plus,
+// when the server sent it, the prompt's size, how much of it could be reused,
+// and an ETA from recent requests. Those are what tell twenty minutes of real
+// work on 80k fresh tokens apart from a hang.
+export function TypingIndicator({ loadingModel, since, model, compacting, queuePosition, promptStats }: TypingIndicatorProps) {
+  // Shown through a model load too — see showPromptStats for why.
+  const showStats = showPromptStats({ promptStats, queuePosition, compacting });
   return (
     <Box className="px-4 py-2">
       <HStack space="sm" className="items-start">
@@ -59,6 +68,11 @@ export function TypingIndicator({ loadingModel, since, model, compacting, queueP
             </Text>
             <LiveElapsed since={since} />
           </HStack>
+          {showStats && promptStats && (
+            <Text testID="chat.status.promptStats" size="2xs" className="text-muted-foreground">
+              {describePromptStats(promptStats)}
+            </Text>
+          )}
         </VStack>
       </HStack>
     </Box>

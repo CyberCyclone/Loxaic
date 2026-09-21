@@ -124,6 +124,7 @@ export class StreamBroker {
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
     let pendingCheckin: StreamSnapshot["pending_checkin"];
+    let promptStats: StreamSnapshot["prompt_stats"];
 
     const ensure = (id: string): StreamSnapshotMessage => {
       let m = messages.get(id);
@@ -159,15 +160,28 @@ export class StreamBroker {
           if (event.model) m.model = event.model;
           if (event.text) m.text = event.text;
           if (event.attachments?.length) m.attachments = event.attachments;
+          // Only when the key is present: absent means "not told", and folding
+          // it in as null would turn an old event into a claim that nobody
+          // answered.
+          if ("author_user_id" in event) m.author_user_id = event.author_user_id ?? null;
           break;
         }
         case "text.delta":
           ensure(event.message_id).text += event.text;
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           break;
         case "thinking.delta":
           ensure(event.message_id).thinking += event.text;
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           break;
+        case "prompt.stats": {
+          const { kind: _kind, ...stats } = event;
+          void _kind;
+          promptStats = stats;
+          break;
+        }
         case "message.end": {
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           const m = ensure(event.message_id);
           m.status = event.status;
           if (event.usage) m.usage = event.usage;
@@ -187,30 +201,48 @@ export class StreamBroker {
           // `steps.decision`, which is the real clear-point.
           pendingCheckin = undefined;
           break;
-        case "steps.checkin":
-          pendingCheckin = {
-            n: event.n,
-            max: event.max,
-            reason: event.reason,
-            ...(event.pattern ? { pattern: event.pattern } : {}),
-          };
+        case "steps.checkin": {
+          const { kind: _kind, ...question } = event;
+          void _kind;
+          // Every field, deadline included: someone reconnecting mid-wait is
+          // exactly who needs to know how long is left, and what happens then.
+          pendingCheckin = question;
           // The question names the step it paused at, so a client that joins
           // mid-wait can show "104/200" rather than nothing.
           iteration = { n: event.n, max: event.max };
           break;
-        case "steps.decision":
+        }
+        case "steps.decision": {
           pendingCheckin = undefined;
+          // An unattended decision is the one kind that leaves nothing else in
+          // the transcript — "keep going" writes no message — so it is kept
+          // here, on the assistant message whose tools the check-in followed.
+          // That is always the last assistant message seen: a check-in comes
+          // right after an iteration's tool results, before the next one starts.
+          if (event.by === "timeout") {
+            const lastAssistant = [...orderedMessages].reverse().find((m) => m.author_type === "assistant");
+            if (lastAssistant) {
+              const { kind: _kind, ...note } = event;
+              void _kind;
+              lastAssistant.checkin_decision = note;
+            }
+          }
           break;
+        }
         case "tool.call":
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           ensure(event.message_id).tool_calls.push({
             call_id: event.call_id,
             tool: event.tool,
             args: event.args,
           });
           break;
-        case "approval.request":
-          pendingApproval = { call_id: event.call_id, tool: event.tool, args: event.args };
+        case "approval.request": {
+          const { kind: _kind, ...request } = event;
+          void _kind;
+          pendingApproval = request;
           break;
+        }
         case "tool.result": {
           const m = ensure(event.message_id);
           const call = m.tool_calls.find((t) => t.call_id === event.call_id);
@@ -241,6 +273,7 @@ export class StreamBroker {
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
       ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
+      ...(promptStats ? { prompt_stats: promptStats } : {}),
     };
   }
 }

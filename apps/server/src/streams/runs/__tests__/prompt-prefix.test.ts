@@ -462,4 +462,37 @@ describe("prompt prefix across a step check-in", () => {
     const replayed = requests[afterAnswerNow];
     expect(replayed).toContain(JSON.stringify({ role: "user", content: CHECKIN_ANSWER_NUDGE }));
   });
+
+  it("holds when nobody answers: an auto-continue, then an automatic answer, then the next turn", async () => {
+    // The ladder writes nothing of its own on a keep-going — its notice is
+    // client-only — and the automatic answer persists the same fixed nudge a
+    // person's would. So neither may move the prefix.
+    process.env.MOCK_SCENARIOS_FILE = file;
+    __resetMockScenariosForTest();
+    const previous = process.env.APPROVAL_TIMEOUT_MS;
+    process.env.APPROVAL_TIMEOUT_MS = "50";
+    await db.update(userPrefs).set({ checkinAutoContinues: 1 }).where(eq(userPrefs.userId, userId));
+    try {
+      const result = await startChatRun({ userId, content: "check in on me", model: "llama-3.1-8b-instruct" });
+      const convId = result.conversationId;
+      convIds.push(convId);
+      const deadline = Date.now() + 20_000;
+      while (getRunByConversation(convId)) {
+        if (Date.now() > deadline) throw new Error("timed out waiting for the run to answer for itself");
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const afterAutoAnswer = requests.length;
+      expect(requestOptions.at(-1)?.toolChoice).toBe("none");
+      // Both steps ran: the first check-in kept going, the second wrapped up.
+      expect(requestOptions.filter((o) => o.toolChoice === undefined).length).toBeGreaterThanOrEqual(2);
+
+      await turn("thanks, what is next?", convId);
+      expectEachRequestExtendsTheLast();
+      expect(requests[afterAutoAnswer]).toContain(JSON.stringify({ role: "user", content: CHECKIN_ANSWER_NUDGE }));
+    } finally {
+      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
+      else process.env.APPROVAL_TIMEOUT_MS = previous;
+      await db.update(userPrefs).set({ checkinAutoContinues: 2 }).where(eq(userPrefs.userId, userId));
+    }
+  });
 });

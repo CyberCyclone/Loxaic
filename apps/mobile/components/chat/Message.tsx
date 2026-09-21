@@ -18,6 +18,7 @@ import { ImageViewer } from '@/components/viewer/ImageViewer';
 import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
+import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
 import type { Message as MessageType } from '@/lib/types';
 import { displayModelRef } from '@loxaic/types';
 
@@ -51,11 +52,12 @@ function listOmitted(atts: { mime: string; name?: string }[], max = 4): string {
 function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
-  const { token } = useSession();
+  const { token, user } = useSession();
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<NonNullable<MessageType['attachments']>[number] | null>(null);
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
   const omitted = msg.usage?.omittedAttachments ?? [];
+  const keptGoing = msg.role === 'assistant' ? autoContinueNotice(msg.checkinDecision) : null;
 
   // A compaction summary isn't a conversational turn from either party — it
   // renders as a divider card, not a bubble, and skips everything below
@@ -77,14 +79,19 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
   // rendering it as the user's own words would be a small lie in the
   // transcript, and a confusing one: it reads as the user interrupting.
   //
-  // Matched on the exact exported text, since `origin` does not reach the
-  // client. Someone could type this sentence verbatim; if they ever do, their
-  // message renders as this notice, which is cosmetic and beats the reverse.
+  // Matched on the exact exported text, since `origin` is "server" on every
+  // row and so tells nothing apart. Someone could type this sentence
+  // verbatim; if they ever do, their message renders as this notice, which is
+  // cosmetic and beats the reverse.
+  //
+  // Who it is attributed to decides the wording — see lib/checkinNotice.ts.
+  // It used to say "You asked" unconditionally, including when the check-in
+  // had simply timed out with nobody there.
   if (msg.role === 'user' && msg.text === CHECKIN_ANSWER_NUDGE) {
     return (
       <Box testID="chat.message.checkinNudge" className="px-4 py-2">
         <Text size="xs" className="text-center italic text-muted-foreground">
-          You asked for an answer with what it had so far.
+          {answerNowNotice(msg.authorUserId, user?.id)}
         </Text>
       </Box>
     );
@@ -170,6 +177,12 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
                   Stopped
                 </Text>
               </HStack>
+            )}
+
+            {keptGoing && (
+              <Text testID="chat.message.autoContinued" size="xs" className="pt-1 italic text-muted-foreground">
+                {keptGoing}
+              </Text>
             )}
 
             {/* While reasoning is live, ThinkingBlock already shows this same
@@ -297,5 +310,12 @@ export const Message = memo(
     prev.msg === next.msg &&
     prev.liveThinking === next.liveThinking &&
     prev.elapsedSince === next.elapsedSince &&
-    prev.onFork === next.onFork,
+    prev.onFork === next.onFork &&
+    // Compared because it changes *without* `msg` changing: when a newer reply
+    // arrives, the previous one keeps its object and only stops being newest.
+    // Left out, that reply went on showing its "wasn't sent to the model"
+    // notice beside the new one — intermittently, whenever nothing else
+    // happened to re-render it, which is what made attachment-budget.spec.ts
+    // flaky.
+    prev.isNewest === next.isNewest,
 );

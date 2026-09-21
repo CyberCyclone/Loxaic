@@ -132,6 +132,7 @@ export default function RoutineChatScreen() {
     streaming,
     stopping,
     loadingModel,
+    promptStats,
     queuePosition,
     responseStartedAt,
     pendingApproval,
@@ -318,6 +319,7 @@ export default function RoutineChatScreen() {
               conversation={activeConv}
               responseStartedAt={responseStartedAt}
               loadingModel={loadingModel}
+              promptStats={promptStats}
               queuePosition={queuePosition}
               model={model ? modelName : undefined}
             />
@@ -353,10 +355,7 @@ export default function RoutineChatScreen() {
           )}
           {pendingCheckin && (
             <StepCheckInBanner
-              n={pendingCheckin.n}
-              max={pendingCheckin.max}
-              reason={pendingCheckin.reason}
-              pattern={pendingCheckin.pattern}
+              {...pendingCheckin}
               onContinue={() => { handleSteps('continue'); }}
               onAnswer={() => { handleSteps('answer'); }}
               onStop={handleStop}
@@ -399,6 +398,7 @@ export default function RoutineChatScreen() {
         <ToolApprovalDialog
           tool={pendingApproval.tool}
           args={pendingApproval.args}
+          deadline={pendingApproval.deadline}
           reason={approvalReason}
           onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
           onAllowAlways={() => { void handleAllowAlways(pendingApproval.callId, pendingApproval.tool); }}

@@ -47,6 +47,7 @@ export default function ChatScreen() {
     streaming,
     stopping,
     loadingModel,
+    promptStats,
     queuePosition,
     responseStartedAt,
     pendingApproval,
@@ -197,6 +198,7 @@ export default function ChatScreen() {
             conversation={activeConv}
             responseStartedAt={responseStartedAt}
             loadingModel={loadingModel}
+            promptStats={promptStats}
             queuePosition={queuePosition}
             model={selectedModel ? getName(selectedModel) : undefined}
           />
@@ -213,10 +215,7 @@ export default function ChatScreen() {
             so the transcript must stay visible and scrollable. */}
         {pendingCheckin && (
           <StepCheckInBanner
-            n={pendingCheckin.n}
-            max={pendingCheckin.max}
-            reason={pendingCheckin.reason}
-            pattern={pendingCheckin.pattern}
+            {...pendingCheckin}
             onContinue={() => { handleSteps('continue'); }}
             onAnswer={() => { handleSteps('answer'); }}
             onStop={handleStop}
@@ -260,6 +259,7 @@ export default function ChatScreen() {
         <ToolApprovalDialog
           tool={pendingApproval.tool}
           args={pendingApproval.args}
+          deadline={pendingApproval.deadline}
           reason={approvalReason}
           onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
           onAllowAlways={() => { void handleAllowAlways(pendingApproval.callId, pendingApproval.tool); }}

@@ -2,6 +2,8 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
+import { DeadlineCountdown } from '@/components/chat/DeadlineCountdown';
+import type { WaitDeadline } from '@/lib/pendingWaits';
 
 function summarizeArgs(tool: string, args: Record<string, unknown>): string {
   if (typeof args.path === 'string') return args.path;
@@ -22,11 +24,12 @@ function splitMcpTool(name: string): { server: string; tool: string } | null {
 interface PermissionBarProps {
   tool: string;
   args: Record<string, unknown>;
+  deadline?: WaitDeadline;
   onAllow: () => void;
   onDeny: () => void;
 }
 
-export function PermissionBar({ tool, args, onAllow, onDeny }: PermissionBarProps) {
+export function PermissionBar({ tool, args, deadline, onAllow, onDeny }: PermissionBarProps) {
   const mcp = splitMcpTool(tool);
   return (
     <VStack
@@ -48,6 +51,7 @@ export function PermissionBar({ tool, args, onAllow, onDeny }: PermissionBarProp
           <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
         </Text>
       )}
+      <DeadlineCountdown kind="approval" deadline={deadline} testID="agent.permission.deadline" />
       <HStack space="sm" className="justify-end">
         <Button testID="agent.permission.deny" variant="outline" size="sm" onPress={onDeny}>
           <ButtonText>Deny</ButtonText>

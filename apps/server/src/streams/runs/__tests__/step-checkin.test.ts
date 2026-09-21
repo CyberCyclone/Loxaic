@@ -84,10 +84,37 @@ describe("step check-ins", () => {
   });
 
   async function setMaxIterations(n: number): Promise<void> {
+    await setPrefs({ maxIterations: n });
+  }
+
+  /** Every case starts from the defaults for the wait settings, so one case
+   * pinning a short window or no auto-continues cannot leak into the next. */
+  async function setPrefs(values: Partial<typeof userPrefs.$inferInsert>): Promise<void> {
+    const set = {
+      checkinTimeoutMs: null,
+      approvalTimeoutMs: null,
+      adaptiveTimeout: true,
+      checkinAutoContinues: 2,
+      loopSensitivity: "normal",
+      ...values,
+    };
     await db
       .insert(userPrefs)
-      .values({ userId, maxIterations: n, updatedAt: new Date() })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { maxIterations: n } });
+      .values({ userId, ...set, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: userPrefs.userId, set });
+  }
+
+  /** Runs `body` with `APPROVAL_TIMEOUT_MS` set, restoring it after — vitest
+   * shares one process across files. */
+  async function withServerTimeout(ms: string, body: () => Promise<void>): Promise<void> {
+    const previous = process.env.APPROVAL_TIMEOUT_MS;
+    process.env.APPROVAL_TIMEOUT_MS = ms;
+    try {
+      await body();
+    } finally {
+      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
+      else process.env.APPROVAL_TIMEOUT_MS = previous;
+    }
   }
 
   async function newConversation(): Promise<string> {
@@ -129,6 +156,10 @@ describe("step check-ins", () => {
   async function eventsOf(streamId: string): Promise<StreamEventKind[]> {
     const broker = getStreamBroker();
     return (await broker.readFrom(streamId, 0)).map((r) => r.event);
+  }
+
+  function broker() {
+    return getStreamBroker();
   }
 
   async function rowsOf(convId: string) {
@@ -192,11 +223,10 @@ describe("step check-ins", () => {
     await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
 
     const events = await eventsOf(streamId);
-    expect(events.find((e) => e.kind === "steps.decision")).toEqual({
-      kind: "steps.decision",
-      decision: "continue",
-      by: "user",
-    });
+    const decision = events.find((e) => e.kind === "steps.decision");
+    expect(decision).toMatchObject({ decision: "continue", by: "user", n: 2 });
+    // A person answered, so there is no streak to report.
+    expect(decision && "unattended" in decision).toBe(false);
     // The new window is absolute rather than a fresh count from zero, so the
     // step numbers keep climbing and the ceiling moves out under them.
     const iterations = events.filter((e) => e.kind === "iteration");
@@ -260,14 +290,9 @@ describe("step check-ins", () => {
     expect(finalIteration).toEqual({ kind: "iteration", n: 2, max: 2 });
   });
 
-  it("answers for itself when nobody replies, rather than holding the slot", async () => {
-    // Read at call time precisely so a test can shorten it — see
-    // approvalTimeoutMs. Restored in `finally` because vitest shares one
-    // process across files.
-    const previous = process.env.APPROVAL_TIMEOUT_MS;
-    process.env.APPROVAL_TIMEOUT_MS = "50";
-    try {
-      await setMaxIterations(1);
+  it("answers for itself when nobody replies and no auto-continues are allowed", async () => {
+    await withServerTimeout("50", async () => {
+      await setPrefs({ maxIterations: 1, checkinAutoContinues: 0 });
       useScenario("timeout", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
       const convId = await newConversation();
       const { streamId } = await startAgentRun({
@@ -281,22 +306,113 @@ describe("step check-ins", () => {
       await waitFor("the run to finish on its own", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
 
       const events = await eventsOf(streamId);
-      expect(events.find((e) => e.kind === "steps.decision")).toEqual({
-        kind: "steps.decision",
+      expect(events.find((e) => e.kind === "steps.checkin")).toMatchObject({ on_timeout: "answer", unattended: 0, auto_continues: 0 });
+      expect(events.find((e) => e.kind === "steps.decision")).toMatchObject({
         decision: "answer",
         by: "timeout",
+        n: 1,
+        unattended: 1,
+        auto_continues: 0,
       });
 
       const rows = await rowsOf(convId);
       const nudge = rows.find(
         (r) => r.authorType === "user" && (r.content as ContentBlock[]).some((b) => b.kind === "text" && b.text === CHECKIN_ANSWER_NUDGE),
       );
-      // Nobody asked for this, so nobody is credited with it.
+      // Nobody asked for this, so nobody is credited with it — on the row, and
+      // on the wire, which is what lets the client say so without a reload.
       expect(nudge?.authorUserId).toBeNull();
-    } finally {
-      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
-      else process.env.APPROVAL_TIMEOUT_MS = previous;
-    }
+      const start = events.find((e) => e.kind === "message.start" && e.message_id === nudge?.id);
+      expect(start).toMatchObject({ author_user_id: null });
+
+      // The snapshot carries the decision on the answer, so a client that
+      // reconnects can still tell it was nobody.
+      const broker = getStreamBroker();
+      const snapshot = broker.foldSnapshot(await broker.readFrom(streamId, 0));
+      const decided = snapshot.messages.filter((m) => m.checkin_decision);
+      expect(decided).toHaveLength(1);
+      expect(decided[0].checkin_decision).toMatchObject({ decision: "answer", by: "timeout" });
+    });
+  });
+
+  it("keeps going for the allowed number of unanswered check-ins, then wraps up — and never asks again", async () => {
+    await withServerTimeout("50", async () => {
+      await setPrefs({ maxIterations: 1, checkinAutoContinues: 2 });
+      // Distinct args every step, so only the window can ask — never the loop
+      // detector. More steps than the ladder can reach.
+      useScenario(
+        "ladder",
+        "work the ladder",
+        ["A", "B", "C", "D", "E", "F"].map((t) => todoStep(t)),
+        "[Mock] laddered.\n",
+      );
+      const convId = await newConversation();
+      const { streamId } = await startAgentRun({
+        userId,
+        content: "work the ladder",
+        model: "llama-3.1-8b-instruct",
+        mode: "auto",
+        conversationId: convId,
+      });
+
+      await waitFor("the run to finish on its own", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+
+      const events = await eventsOf(streamId);
+      const checkins = events.filter((e) => e.kind === "steps.checkin");
+      const decisions = events.filter((e) => e.kind === "steps.decision");
+      // Three questions and no fourth: the answer-now that ends the ladder
+      // ends the run, so the "stop" rung needs no code of its own.
+      expect(checkins.map((c) => ("on_timeout" in c ? c.on_timeout : undefined))).toEqual(["continue", "continue", "answer"]);
+      expect(decisions.map((d) => [d.decision, d.by, d.unattended])).toEqual([
+        ["continue", "timeout", 1],
+        ["continue", "timeout", 2],
+        ["answer", "timeout", 3],
+      ]);
+      expect((await broker().getMeta(streamId))?.status).toBe("complete");
+      expect((await rowsOf(convId)).filter((r) => r.authorType === "tool")).toHaveLength(3);
+    });
+  });
+
+  it("uses the user's own window over the server default, and the server default when unset", async () => {
+    await withServerTimeout("50", async () => {
+      await setPrefs({ maxIterations: 1, checkinTimeoutMs: 60_000, adaptiveTimeout: false });
+      useScenario("pref", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const convId = await newConversation();
+      const { streamId } = await startAgentRun({
+        userId,
+        content: "plan in two steps",
+        model: "llama-3.1-8b-instruct",
+        mode: "auto",
+        conversationId: convId,
+      });
+      const run = await parkedRun(convId);
+      const checkin = (await eventsOf(streamId)).find((e) => e.kind === "steps.checkin");
+      expect(checkin).toMatchObject({ timeout_ms: 60_000, timeout_basis: "setting" });
+      // The wire and the timer agree: expires_at is timeout_ms from now.
+      const expiresAt = checkin && "expires_at" in checkin ? (checkin.expires_at ?? 0) : 0;
+      expect(Math.abs(expiresAt - (Date.now() + 60_000))).toBeLessThan(DEADLINE_MS);
+      // Parked, not timed out, despite the server default being 50 ms.
+      expect(getRunByConversation(convId)?.stepsDecision).toBeDefined();
+      run.stepsDecision?.("answer", userId);
+      await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+    });
+
+    await withServerTimeout("123456", async () => {
+      await setPrefs({ maxIterations: 1, checkinTimeoutMs: null, adaptiveTimeout: false });
+      useScenario("envdefault", "plan in two steps", [todoStep("First"), todoStep("Second")], "[Mock] planned.\n");
+      const convId = await newConversation();
+      const { streamId } = await startAgentRun({
+        userId,
+        content: "plan in two steps",
+        model: "llama-3.1-8b-instruct",
+        mode: "auto",
+        conversationId: convId,
+      });
+      const run = await parkedRun(convId);
+      expect((await eventsOf(streamId)).find((e) => e.kind === "steps.checkin")).toMatchObject({ timeout_ms: 123_456 });
+      run.stepsDecision?.("answer", userId);
+      await waitFor("the run to finish", () => getRunByConversation(convId) === undefined, DEADLINE_MS);
+    });
   });
 
   it("ends cancelled when stopped while parked, keeping the work already done", async () => {

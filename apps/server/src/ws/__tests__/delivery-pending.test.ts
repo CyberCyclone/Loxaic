@@ -71,12 +71,25 @@ describe("a finished stream's snapshot", () => {
     const streamId = uuid();
     const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: "agent" });
     producer.emit({ kind: "iteration", n: 100, max: 100 });
-    producer.emit({ kind: "steps.checkin", n: 100, max: 100, reason: "budget" });
+    const expiresAt = Date.now() + 600_000;
+    producer.emit({
+      kind: "steps.checkin",
+      n: 100,
+      max: 100,
+      reason: "budget",
+      timeout_ms: 600_000,
+      expires_at: expiresAt,
+      timeout_basis: "setting",
+      on_timeout: "continue",
+    });
 
-    // Parked: the question is real and a reconnecting client needs it.
+    // Parked: the question is real and a reconnecting client needs it —
+    // with its deadline, and the server's clock to count it down against.
+    const before = Date.now();
     const live = await syncFor(streamId);
     expect(live?.status).toBe("active");
-    expect(live?.snapshot.pending_checkin).toMatchObject({ n: 100, reason: "budget" });
+    expect(live?.snapshot.pending_checkin).toMatchObject({ n: 100, reason: "budget", expires_at: expiresAt, on_timeout: "continue" });
+    expect(live?.server_now).toBeGreaterThanOrEqual(before);
 
     // Stopped while parked — the shape an abort leaves behind.
     await producer.end("cancelled");

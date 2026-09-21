@@ -58,6 +58,7 @@ export default function AgentScreen() {
     busy,
     stopping,
     loadingModel,
+    promptStats,
     responseStartedAt,
     pendingApproval,
     pendingCheckin,
@@ -327,6 +328,7 @@ export default function AgentScreen() {
                 mode={mode}
                 iteration={iteration}
                 loadingModel={loadingModel}
+                promptStats={promptStats}
                 queuePosition={queuePosition}
                 responseStartedAt={responseStartedAt}
                 pendingApproval={pendingApproval}

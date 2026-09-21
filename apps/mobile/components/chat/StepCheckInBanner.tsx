@@ -3,6 +3,8 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
+import type { WaitDeadline } from '@/lib/pendingWaits';
+import { DeadlineCountdown } from './DeadlineCountdown';
 
 /**
  * Shown when a run has paused to ask whether to keep going.
@@ -30,6 +32,11 @@ interface StepCheckInBannerProps {
   reason: CheckinReason;
   /** For a loop, the calls that keep repeating. */
   pattern?: { tool: string }[];
+  /** When the question stops waiting, and what happens then. */
+  deadline?: WaitDeadline;
+  onTimeout?: 'continue' | 'answer';
+  unattended?: number;
+  autoContinues?: number;
   onContinue: () => void;
   onAnswer: () => void;
   onStop: () => void;
@@ -43,7 +50,19 @@ function describePattern(pattern: { tool: string }[]): string {
   return names.join(' → ');
 }
 
-export function StepCheckInBanner({ n, max, reason, pattern, onContinue, onAnswer, onStop }: StepCheckInBannerProps) {
+export function StepCheckInBanner({
+  n,
+  max,
+  reason,
+  pattern,
+  deadline,
+  onTimeout,
+  unattended,
+  autoContinues,
+  onContinue,
+  onAnswer,
+  onStop,
+}: StepCheckInBannerProps) {
   const repeating = pattern?.length ? describePattern(pattern) : null;
   return (
     <VStack
@@ -73,8 +92,16 @@ export function StepCheckInBanner({ n, max, reason, pattern, onContinue, onAnswe
       {/* The window is worth saying out loud: it is a setting, and someone
           asked this every few minutes should be able to connect the two. */}
       <Text size="xs" className="text-muted-foreground">
-        {`Step ${String(n)} of ${String(max)} — you can change how often I check in from Settings.`}
+        {`Step ${String(n)} of ${String(max)} — you can change how often I check in, and how long I wait, from Settings.`}
       </Text>
+      <DeadlineCountdown
+        kind="checkin"
+        deadline={deadline}
+        onTimeout={onTimeout}
+        unattended={unattended}
+        autoContinues={autoContinues}
+        testID="checkin.deadline"
+      />
       <HStack space="sm" className="justify-end">
         <Button testID="checkin.stop" variant="link" size="sm" onPress={onStop}>
           <ButtonText>Stop</ButtonText>

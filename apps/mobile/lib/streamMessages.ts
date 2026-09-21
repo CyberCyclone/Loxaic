@@ -4,7 +4,7 @@ import type {
   StreamSnapshotMessage,
   ApiMessage,
 } from '@loxaic/api-client';
-import type { CompactionStats, ContentBlock, FileDiff } from '@loxaic/types';
+import { CHECKIN_ANSWER_NUDGE, type CompactionStats, type ContentBlock, type FileDiff } from '@loxaic/types';
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
@@ -111,6 +111,9 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         text: extractField(blocks, 'text'),
         attachments: extractAttachments(blocks),
       };
+      // Only the check-in instruction carries provenance worth rendering; a
+      // row is authoritative, so null here really does mean "nobody".
+      if (msg.text === CHECKIN_ANSWER_NUDGE) msg.authorUserId = row.authorUserId;
       out.push(msg);
       byId.set(row.id, msg);
       continue;
@@ -215,6 +218,8 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
     stopped: sm.status === 'cancelled',
     compaction: role === 'summary' ? sm.compaction : undefined,
     attachments: role === 'user' ? sm.attachments : undefined,
+    ...('author_user_id' in sm ? { authorUserId: sm.author_user_id } : {}),
+    ...(sm.checkin_decision ? { checkinDecision: sm.checkin_decision } : {}),
   };
 }
 
@@ -241,8 +246,27 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
           model: event.model,
           text: event.text ?? '',
           attachments: event.attachments,
+          // Kept absent, not undefined-valued, when the server said nothing:
+          // an older server's silence must not read as "nobody".
+          ...('author_user_id' in event ? { authorUserId: event.author_user_id } : {}),
         },
       ];
+    }
+    case 'steps.decision': {
+      // Mirrors the server's fold: a check-in nobody answered is noted on the
+      // assistant turn it followed, so the transcript can say the run kept
+      // going on its own. A person's decision needs no note.
+      if (event.by !== 'timeout') return msgs;
+      let idx = -1;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i].role === 'assistant') {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return msgs;
+      const { kind: _kind, ...note } = event;
+      return msgs.map((m, i) => (i === idx ? { ...m, checkinDecision: note } : m));
     }
     case 'text.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));

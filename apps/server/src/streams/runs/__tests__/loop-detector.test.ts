@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { LoopDetector } from "../loop-detector.ts";
+import { LoopDetector, loopDetectorOptions, type LoopDetectorOptions } from "../loop-detector.ts";
 
 /** Feeds a sequence and returns the index of the first push that tripped, or
  * null. Written as "when did it first speak up", because a detector that fires
  * a step later than it should is as wrong as one that never fires. */
-function firstHitAt(keys: string[]): number | null {
-  const d = new LoopDetector();
+function firstHitAt(keys: string[], options?: LoopDetectorOptions): number | null {
+  const d = new LoopDetector(options);
   for (const [i, k] of keys.entries()) {
     if (d.push(k)) return i;
   }
@@ -57,5 +57,25 @@ describe("LoopDetector", () => {
     expect(d.push("A")).toBeNull();
     // ...but a fresh set of repeats still speaks up.
     expect(d.push("A")).not.toBeNull();
+  });
+});
+
+describe("loop sensitivity", () => {
+  it("normal is exactly the detector's defaults", () => {
+    expect(firstHitAt(["A", "A", "A"], loopDetectorOptions("normal"))).toBe(2);
+    expect(firstHitAt(["A", "B", "A", "B"], loopDetectorOptions("normal"))).toBe(3);
+  });
+
+  it("relaxed waits for five repeats, or a cycle three times", () => {
+    const relaxed = loopDetectorOptions("relaxed");
+    expect(firstHitAt(["A", "A", "A", "A"], relaxed)).toBeNull();
+    expect(firstHitAt(["A", "A", "A", "A", "A"], relaxed)).toBe(4);
+    expect(firstHitAt(["A", "B", "A", "B"], relaxed)).toBeNull();
+    expect(firstHitAt(["A", "B", "A", "B", "A", "B"], relaxed)).toBe(5);
+    expect(firstHitAt(["A", "B", "C", "A", "B", "C", "A", "B", "C"], relaxed)).toBe(8);
+  });
+
+  it("off never speaks up", () => {
+    expect(firstHitAt(Array.from({ length: 20 }, () => "A"), loopDetectorOptions("off"))).toBeNull();
   });
 });

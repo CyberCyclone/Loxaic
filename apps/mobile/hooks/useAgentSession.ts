@@ -20,13 +20,15 @@ import {
   type StreamSnapshot,
   type PermissionMode,
   type Todo,
-  type CheckinReason,
   type StepsDecision,
+  type PromptStats,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
+import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { foldPromptStats } from '@/lib/promptStats';
 import { useToastHelper } from './useToastHelper';
 
 export type { WorkspaceChoice } from '@/lib/types';
@@ -56,18 +58,18 @@ export type RunState =
   | 'done'
   | 'error';
 
-export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
-
-export interface PendingCheckin {
-  n: number;
-  max: number;
-  reason: CheckinReason;
-  pattern?: { tool: string }[];
-}
+export type { PendingApproval, PendingCheckin } from '@/lib/pendingWaits';
 
 /** Per-conversation in-flight stream state — see useChatSession for why this
  * is preserved across a reconnect rather than cleared on close. */
-interface StreamState { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string }
+interface StreamState {
+  streamId: string;
+  loadingModel: boolean;
+  /** See useChatSession's StreamState. */
+  promptStats: PromptStats | null;
+  responseStartedAt: number;
+  model: string;
+}
 
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
@@ -310,6 +312,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       streamId: string,
       snapshot: StreamSnapshot,
       status: 'active' | 'complete' | 'error' | 'cancelled',
+      serverNow?: number,
     ) => {
       if (convId !== activeIdRef.current) return;
       // A reconnect's catch-up re-syncs the conversation's last few runs,
@@ -322,21 +325,13 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       if (tracked && tracked.streamId !== streamId) return;
       setIteration(snapshot.iteration ?? null);
       setLiveTodos(snapshot.todos ?? []);
-      setPendingApproval(
-        snapshot.pending_approval
-          ? { callId: snapshot.pending_approval.call_id, tool: snapshot.pending_approval.tool, args: snapshot.pending_approval.args }
-          : null,
-      );
-      setPendingCheckin(
-        snapshot.pending_checkin
-          ? {
-              n: snapshot.pending_checkin.n,
-              max: snapshot.pending_checkin.max,
-              reason: snapshot.pending_checkin.reason,
-              ...(snapshot.pending_checkin.pattern ? { pattern: snapshot.pending_checkin.pattern } : {}),
-            }
-          : null,
-      );
+      // `serverNow` is passed through as it arrived, never defaulted to `now`:
+      // absent, `localDeadline` re-bases the wait as if it had just started,
+      // which only errs long. Substituting `now` would instead read the
+      // server's `expires_at` straight off this device's clock, skew and all.
+      const now = Date.now();
+      setPendingApproval(snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow) : null);
+      setPendingCheckin(snapshot.pending_checkin ? toPendingCheckin(snapshot.pending_checkin, now, serverNow) : null);
       setQueuePosition(snapshot.queued?.position ?? null);
       if (status === 'active') {
         // Order matters: a snapshot can carry both a queue position and a
@@ -379,7 +374,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         updateRunMsgs(convId, (msgs) => applySnapshotToMsgs(msgs, event.snapshot));
-        applyRunLevelState(convId, event.stream_id, event.snapshot, event.status);
+        applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         if (event.status !== 'active') {
           const tracked = streamingByConvRef.current[convId];
           if (!tracked || tracked.streamId === event.stream_id) clearStream(convId);
@@ -391,10 +386,11 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
             ...prev,
             [convId]:
               prev[convId]?.streamId === event.stream_id
-                ? prev[convId]
+                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null }
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
+                    promptStats: event.snapshot.prompt_stats ?? null,
                     responseStartedAt: Date.now(),
                     model: assistantMsg?.model ?? '',
                   },
@@ -422,6 +418,12 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           promotePendingUserMsg(convId, event.event.message_id);
         }
         updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event));
+        setStreamingByConv((prev) => {
+          const current = prev[convId];
+          if (current?.streamId !== event.stream_id) return prev;
+          const promptStats = foldPromptStats(current.promptStats, event.event);
+          return promptStats === current.promptStats ? prev : { ...prev, [convId]: { ...current, promptStats } };
+        });
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
@@ -458,7 +460,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         } else if (inner.kind === 'approval.request') {
           if (isActive) {
             setRunState('awaiting_approval');
-            setPendingApproval({ callId: inner.call_id, tool: inner.tool, args: inner.args });
+            setPendingApproval(toPendingApproval(inner, Date.now()));
           }
         } else if (inner.kind === 'tool.result') {
           if (isActive) {
@@ -468,12 +470,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         } else if (inner.kind === 'steps.checkin') {
           if (isActive) {
             setRunState('awaiting_checkin');
-            setPendingCheckin({
-              n: inner.n,
-              max: inner.max,
-              reason: inner.reason,
-              ...(inner.pattern ? { pattern: inner.pattern } : {}),
-            });
+            setPendingCheckin(toPendingCheckin(inner, Date.now()));
             // The header shows the step count, and this is the moment it
             // matters most — so keep it in step with the question.
             setIteration({ n: inner.n, max: inner.max });
@@ -770,6 +767,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     busy,
     stopping,
     loadingModel: activeStream?.loadingModel ?? false,
+    promptStats: activeStream?.promptStats ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     pendingCheckin,

@@ -1287,6 +1287,27 @@ export interface UserPrefs {
    * "this server does not track it", never "nothing has been used".
    */
   recentModels?: string[];
+  /**
+   * How long a step check-in waits for an answer, in ms. **Null means the
+   * server default** (`serverDefaults.checkinTimeoutMs`) — a choice, not a
+   * missing value; PATCH null to go back to it. 5,000-86,400,000. Optional —
+   * see `autoCompact`.
+   */
+  checkinTimeoutMs?: number | null;
+  /** The same, for a tool approval. Separate because "may this run?" and
+   * "keep going?" are different questions. */
+  approvalTimeoutMs?: number | null;
+  /** Stretch a wait to twice this run's slowest model request when that is
+   * longer than the setting, so a slow backend is not answered for you. */
+  adaptiveTimeout?: boolean;
+  /** Unanswered check-ins in a row that keep going on their own before the
+   * next one wraps up. 0-3; default 2. */
+  checkinAutoContinues?: number;
+  /** How readily a repeating run is noticed. */
+  loopSensitivity?: import("@loxaic/types").LoopSensitivity;
+  /** **Read-only** — the window a null setting resolves to on this server.
+   * PATCH refuses it. */
+  serverDefaults?: { checkinTimeoutMs: number; approvalTimeoutMs: number };
 }
 
 export async function getPrefs(): Promise<UserPrefs> {
@@ -1410,6 +1431,11 @@ export type {
   Todo,
   CheckinReason,
   StepsDecision,
+  CheckinDecisionNote,
+  WaitDeadlineFields,
+  PromptStats,
+  TimeoutBasis,
+  LoopSensitivity,
   CompactionStats,
   CommandKind,
   CommandSurface,
@@ -1422,6 +1448,9 @@ export {
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
   CHECKIN_ANSWER_NUDGE,
+  DEFAULT_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS,
+  MAX_CHECKIN_AUTO_CONTINUES, DEFAULT_CHECKIN_AUTO_CONTINUES,
+  LOOP_SENSITIVITIES, DEFAULT_LOOP_SENSITIVITY,
 } from "@loxaic/types";
 
 /** True if the send was actually written to the socket — false (never

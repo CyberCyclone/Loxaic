@@ -21,6 +21,7 @@ import {
   type ServerMessage,
   type AttachmentRef,
   type StepsDecision,
+  type PromptStats,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
@@ -30,9 +31,10 @@ import { useSession } from '@/lib/session';
 import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
-import type { PendingCheckin } from './useAgentSession';
+import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { foldPromptStats } from '@/lib/promptStats';
 
-export interface PendingApproval { callId: string; tool: string; args: Record<string, unknown> }
+export type { PendingApproval };
 
 /** Imported from the agent hook rather than redeclared: both surfaces render
  * the same banner, so a second definition is a second thing to keep in step. */
@@ -62,6 +64,9 @@ interface StreamState {
    * Per-conversation like the rest of this state, so switching threads shows
    * the right one's status rather than the last event's. */
   queuePosition: number | null;
+  /** What the in-flight model request is evaluating — size, reuse, ETA —
+   * from just before it is sent until its first output. */
+  promptStats: PromptStats | null;
   responseStartedAt: number;
   model: string;
 }
@@ -581,7 +586,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: { callId: pa.call_id, tool: pa.tool, args: pa.args } };
+            return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now) };
           });
           setPendingCheckinByConv((prev) => {
             const pc = event.snapshot.pending_checkin;
@@ -589,15 +594,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return {
-              ...prev,
-              [convId]: {
-                n: pc.n,
-                max: pc.max,
-                reason: pc.reason,
-                ...(pc.pattern ? { pattern: pc.pattern } : {}),
-              },
-            };
+            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now) };
           });
         }
         if (event.status !== 'active') {
@@ -623,10 +620,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
             ...prev,
             [convId]:
               prev[convId]?.streamId === event.stream_id
-                ? prev[convId]
+                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null }
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
+                    promptStats: event.snapshot.prompt_stats ?? null,
                     // `run.queued` is only re-emitted when the queue moves, so
                     // a client that (re)connects while its run sits at a stable
                     // position hears nothing further until the run ahead ends —
@@ -667,7 +665,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
                 ...prev,
                 [convId]: {
                   ...prev[convId],
-                  loadingModel: event.event.kind === 'model.loading',
+                  // `prompt.stats` follows `model.loading` before the first
+                  // token, and must not end the "Loading model…" phase.
+                  loadingModel:
+                    event.event.kind === 'model.loading' ||
+                    (event.event.kind === 'prompt.stats' && prev[convId].loadingModel),
+                  promptStats: foldPromptStats(prev[convId].promptStats, event.event),
                   // Cleared by anything that is not itself a queue update:
                   // every other event means the run is past the queue, and a
                   // stale position would keep claiming otherwise.
@@ -687,7 +690,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         if (inner.kind === 'approval.request') {
           setPendingApprovalByConv((prev) => ({
             ...prev,
-            [convId]: { callId: inner.call_id, tool: inner.tool, args: inner.args },
+            [convId]: toPendingApproval(inner, Date.now()),
           }));
         } else if (inner.kind === 'tool.result') {
           setPendingApprovalByConv((prev) => {
@@ -695,15 +698,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
         } else if (inner.kind === 'steps.checkin') {
-          setPendingCheckinByConv((prev) => ({
-            ...prev,
-            [convId]: {
-              n: inner.n,
-              max: inner.max,
-              reason: inner.reason,
-              ...(inner.pattern ? { pattern: inner.pattern } : {}),
-            },
-          }));
+          setPendingCheckinByConv((prev) => ({ ...prev, [convId]: toPendingCheckin(inner, Date.now()) }));
         } else if (inner.kind === 'steps.decision' || inner.kind === 'iteration') {
           // Answered — here, on another device, or by the timeout. Reaching a
           // new iteration means the same thing.
@@ -1080,6 +1075,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     // streaming until it actually ends.
     stopping: activeId !== null && stoppingConvId === activeId,
     loadingModel: activeStream?.loadingModel ?? false,
+    promptStats: activeStream?.promptStats ?? null,
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,

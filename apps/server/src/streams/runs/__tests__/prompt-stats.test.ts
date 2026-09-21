@@ -1,0 +1,111 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ChatMessage } from "../../../inference/provider.ts";
+import { tallyChatMessages } from "../../../inference/context.ts";
+import { __resetPrefillRatesForTest, recordPrefill } from "../../../inference/prefill-rate.ts";
+import { promptStatsFor } from "../engine.ts";
+import { StreamBroker } from "../../broker.ts";
+import { MemoryStreamLogDriver } from "../../memory.ts";
+import type { StreamRecord } from "../../types.ts";
+
+const history: ChatMessage[] = [
+  { role: "system", content: "s".repeat(4_000) },
+  { role: "user", content: "u".repeat(8_000) },
+];
+
+function stats(overrides: Partial<Parameters<typeof promptStatsFor>[0]> = {}) {
+  return promptStatsFor({
+    messageId: "a1",
+    model: "m",
+    tally: tallyChatMessages(history),
+    chatMessages: history,
+    reuse: { tokens: null, sharedMessages: 0, previousMessages: 0 },
+    windowTokens: 32_768,
+    loadingModel: false,
+    startedAt: 123,
+    ...overrides,
+  });
+}
+
+describe("promptStatsFor", () => {
+  beforeEach(() => {
+    __resetPrefillRatesForTest();
+  });
+
+  it("estimates a first request from characters, with no ETA and no reuse claim", () => {
+    const s = stats();
+    expect(s).toMatchObject({ est_basis: "estimate", reusable_tokens: null, eta_ms: null, window_tokens: 32_768, started_at: 123 });
+    expect(s.prompt_tokens_est).toBe(3_000);
+  });
+
+  it("builds on the measured prefix, estimating only what was appended", () => {
+    const appended: ChatMessage[] = [...history, { role: "user", content: "x".repeat(4_000) }];
+    const s = stats({
+      chatMessages: appended,
+      tally: tallyChatMessages(appended),
+      reuse: { tokens: 3_210, sharedMessages: 2, previousMessages: 2 },
+    });
+    expect(s.est_basis).toBe("measured_prefix");
+    expect(s.reusable_tokens).toBe(3_210);
+    expect(s.prompt_tokens_est).toBe(3_210 + 1_000);
+  });
+
+  it("reports a broken prefix as zero reusable — a measurement, not an unknown", () => {
+    const s = stats({ reuse: { tokens: 0, sharedMessages: 1, previousMessages: 3 } });
+    expect(s.reusable_tokens).toBe(0);
+    expect(s.est_basis).toBe("estimate");
+  });
+
+  it("gives an ETA for the unreused part once there is a rate", () => {
+    recordPrefill("m", { promptTps: 200, promptTokens: 0, exactReusableTokens: null, ttftMs: null, loadedModel: false });
+    // 3,000 tokens, none reusable, at 200 tok/s.
+    expect(stats().eta_ms).toBe(15_000);
+    const appended: ChatMessage[] = [...history, { role: "user", content: "x".repeat(4_000) }];
+    // Only the 1,000 appended tokens need evaluating.
+    expect(
+      stats({ chatMessages: appended, tally: tallyChatMessages(appended), reuse: { tokens: 3_000, sharedMessages: 2, previousMessages: 2 } }).eta_ms,
+    ).toBe(5_000);
+  });
+
+  it("gives no ETA while the model is still loading", () => {
+    recordPrefill("m", { promptTps: 200, promptTokens: 0, exactReusableTokens: null, ttftMs: null, loadedModel: false });
+    expect(stats({ loadingModel: true }).eta_ms).toBeNull();
+  });
+});
+
+describe("foldSnapshot carries prompt stats until output starts", () => {
+  const broker = new StreamBroker(new MemoryStreamLogDriver(86400), 0);
+  const rec = (seq: number, event: StreamRecord["event"]): StreamRecord => ({ seq, ts: Date.now(), event });
+  const promptStats = {
+    kind: "prompt.stats" as const,
+    message_id: "a1",
+    prompt_tokens_est: 83_700,
+    est_basis: "estimate" as const,
+    reusable_tokens: 0,
+    window_tokens: 131_072,
+    eta_ms: 420_000,
+    started_at: 1,
+  };
+
+  it("is present while the prompt is being evaluated", () => {
+    const { kind: _kind, ...rest } = promptStats;
+    const snapshot = broker.foldSnapshot([
+      rec(1, { kind: "message.start", message_id: "a1", author_type: "assistant", parent_id: null }),
+      rec(2, promptStats),
+    ]);
+    expect(snapshot.prompt_stats).toEqual(rest);
+  });
+
+  it.each([
+    ["the first text", { kind: "text.delta", message_id: "a1", text: "h" }],
+    ["the first reasoning", { kind: "thinking.delta", message_id: "a1", text: "h" }],
+    ["a tool call", { kind: "tool.call", message_id: "a1", call_id: "c", tool: "bash", args: {} }],
+    ["the message ending", { kind: "message.end", message_id: "a1", status: "error" }],
+  ] as [string, StreamRecord["event"]][])("is cleared by %s", (_label, event) => {
+    const snapshot = broker.foldSnapshot([
+      rec(1, { kind: "message.start", message_id: "a1", author_type: "assistant", parent_id: null }),
+      rec(2, promptStats),
+      rec(3, event),
+    ]);
+    expect(snapshot.prompt_stats).toBeUndefined();
+  });
+});

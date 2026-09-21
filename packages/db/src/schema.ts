@@ -538,6 +538,26 @@ export const userPrefs = pgTable("user_prefs", {
    */
   maxIterations: integer("max_iterations").notNull().default(100),
   /**
+   * How long a step check-in waits for an answer, in ms. **Null means "the
+   * server's default"** (`APPROVAL_TIMEOUT_MS`, else ten minutes), and the
+   * nullability is load-bearing: a NOT NULL default here would override the
+   * operator's env for every user who has ever changed any other preference —
+   * and every test that pins a short window through the env for a user with a
+   * prefs row would then wait ten real minutes.
+   */
+  checkinTimeoutMs: integer("checkin_timeout_ms"),
+  /** The same, for a tool approval. Separate because an unanswered approval
+   * blocks the model mid-turn, which is a different thing to wait on. */
+  approvalTimeoutMs: integer("approval_timeout_ms"),
+  /** Stretch either window to twice the run's slowest model request, so a slow
+   * backend is not held to a deadline shorter than one of its own steps. */
+  adaptiveTimeout: boolean("adaptive_timeout").notNull().default(true),
+  /** How many unanswered check-ins in a row carry on by themselves before the
+   * run wraps up. Each is another full step window of unattended work. */
+  checkinAutoContinues: integer("checkin_auto_continues").notNull().default(2),
+  /** `off` | `relaxed` | `normal` — how eagerly the loop detector asks. */
+  loopSensitivity: text("loop_sensitivity").notNull().default("normal"),
+  /**
    * Model references this user most recently *sent* with, newest first, capped
    * at RECENT_MODELS_MAX. Stored rather than derived from `usage_records`,
    * which has no index on user_id — a sequential scan every time the picker
