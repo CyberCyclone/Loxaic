@@ -28,6 +28,12 @@ interface PrefsBody {
   autoCompact: boolean;
   maxIterations: number;
   recentModels: string[];
+  checkinTimeoutMs: number | null;
+  approvalTimeoutMs: number | null;
+  adaptiveTimeout: boolean;
+  checkinAutoContinues: number;
+  loopSensitivity: string;
+  serverDefaults: { checkinTimeoutMs: number; approvalTimeoutMs: number };
 }
 
 const userId = `test-prefs-${uuid()}`;
@@ -66,7 +72,30 @@ describe("GET /v1/prefs", () => {
     // A user who has never touched settings must read the same as one whose
     // row says nothing — otherwise the feature looks disabled until they
     // happen to change something unrelated.
-    expect(await get()).toEqual({ toolAllowlist: [], autoCompact: true, maxIterations: 100, recentModels: [] });
+    const { serverDefaults, ...prefs } = await get();
+    expect(serverDefaults).toBeDefined();
+    expect(prefs).toEqual({
+      toolAllowlist: [],
+      autoCompact: true,
+      maxIterations: 100,
+      recentModels: [],
+      checkinTimeoutMs: null,
+      approvalTimeoutMs: null,
+      adaptiveTimeout: true,
+      checkinAutoContinues: 2,
+      loopSensitivity: "normal",
+    });
+  });
+
+  it("reports the server's own window beside the user's, so the screen can name it", async () => {
+    const previous = process.env.APPROVAL_TIMEOUT_MS;
+    process.env.APPROVAL_TIMEOUT_MS = "90000";
+    try {
+      expect((await get()).serverDefaults).toEqual({ checkinTimeoutMs: 90_000, approvalTimeoutMs: 90_000 });
+    } finally {
+      if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
+      else process.env.APPROVAL_TIMEOUT_MS = previous;
+    }
   });
 });
 
@@ -138,5 +167,54 @@ describe("PATCH /v1/prefs", () => {
 
   it("rejects a patch with nothing in it, rather than writing an empty row", async () => {
     expect((await patch({})).statusCode).toBe(400);
+  });
+
+  it("sets each wait setting and reads it back, leaving the others alone", async () => {
+    expect((await patch({ checkinTimeoutMs: 30 * 60_000 })).statusCode).toBe(200);
+    expect((await patch({ approvalTimeoutMs: 5_000 })).statusCode).toBe(200);
+    expect((await patch({ adaptiveTimeout: false })).statusCode).toBe(200);
+    expect((await patch({ checkinAutoContinues: 0 })).statusCode).toBe(200);
+    expect((await patch({ loopSensitivity: "relaxed" })).statusCode).toBe(200);
+    expect(await get()).toMatchObject({
+      checkinTimeoutMs: 30 * 60_000,
+      approvalTimeoutMs: 5_000,
+      adaptiveTimeout: false,
+      checkinAutoContinues: 0,
+      loopSensitivity: "relaxed",
+    });
+  });
+
+  it("resets a window to the server default with null", async () => {
+    await patch({ checkinTimeoutMs: 60_000 });
+    expect((await patch({ checkinTimeoutMs: null })).statusCode).toBe(200);
+    expect((await get()).checkinTimeoutMs).toBeNull();
+  });
+
+  it("refuses wait settings outside the supported range", async () => {
+    for (const bad of [0, 4_999, 86_400_001, 1.5e4 + 0.5, "60000", true]) {
+      expect((await patch({ checkinTimeoutMs: bad })).statusCode).toBe(400);
+      expect((await patch({ approvalTimeoutMs: bad })).statusCode).toBe(400);
+    }
+    expect((await patch({ checkinTimeoutMs: 5_000 })).statusCode).toBe(200);
+    expect((await patch({ checkinTimeoutMs: 86_400_000 })).statusCode).toBe(200);
+    for (const bad of [-1, 4, 1.5, "2", null]) {
+      expect((await patch({ checkinAutoContinues: bad })).statusCode).toBe(400);
+    }
+    expect((await patch({ checkinAutoContinues: 3 })).statusCode).toBe(200);
+    for (const bad of ["strict", "", null, 1]) {
+      expect((await patch({ loopSensitivity: bad })).statusCode).toBe(400);
+    }
+    for (const bad of ["yes", null, 1]) {
+      expect((await patch({ adaptiveTimeout: bad })).statusCode).toBe(400);
+    }
+  });
+
+  it("refuses to write the server defaults, rather than pretending to", async () => {
+    expect((await patch({ serverDefaults: { checkinTimeoutMs: 1 } })).statusCode).toBe(400);
+  });
+
+  it("clamps a stored value that arrived some other way", async () => {
+    await db.update(userPrefs).set({ checkinTimeoutMs: 1, checkinAutoContinues: 99, loopSensitivity: "bogus" }).where(eq(userPrefs.userId, userId));
+    expect(await get()).toMatchObject({ checkinTimeoutMs: 5_000, checkinAutoContinues: 3, loopSensitivity: "normal" });
   });
 });

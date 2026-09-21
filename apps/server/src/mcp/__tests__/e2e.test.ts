@@ -2,9 +2,9 @@ import "./force-mock-inference.ts";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
-import { conversations, mcpServers, messages, sandboxes, usageRecords, user } from "@loxaic/db/schema";
+import { conversations, mcpServers, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
-import { initStreamBroker } from "../../streams/index.ts";
+import { getStreamBroker, initStreamBroker } from "../../streams/index.ts";
 import { getRun } from "../../streams/registry.ts";
 import { startAgentRun } from "../../streams/runs/agentRun.ts";
 import { startChatRun } from "../../streams/runs/chatRun.ts";
@@ -149,6 +149,7 @@ afterAll(async () => {
     await db.delete(conversations).where(inArray(conversations.id, convIds));
   }
   await db.delete(mcpServers).where(eq(mcpServers.ownerId, userId));
+  await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
 }, 30_000);
 
@@ -188,6 +189,31 @@ describe("MCP end-to-end through the agent loop", () => {
     } finally {
       if (previous === undefined) delete process.env.APPROVAL_TIMEOUT_MS;
       else process.env.APPROVAL_TIMEOUT_MS = previous;
+    }
+  }, 30_000);
+
+  it("waits on the approval window, not the check-in one, and says how long", async () => {
+    // A short check-in window must not shorten an approval: they are separate
+    // settings because they are separate questions — "may this run?" is often
+    // worth waiting longer for than "keep going?".
+    await db
+      .insert(userPrefs)
+      .values({ userId, checkinTimeoutMs: 5_000, approvalTimeoutMs: 60_000, adaptiveTimeout: false, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: userPrefs.userId,
+        set: { checkinTimeoutMs: 5_000, approvalTimeoutMs: 60_000, adaptiveTimeout: false },
+      });
+    try {
+      const turn = await runTurn("please use mcp echo", "manual", true);
+      expect(turn.sawApproval).toBe(true);
+      const events = (await getStreamBroker().readFrom(turn.streamId, 0)).map((r) => r.event);
+      expect(events.find((e) => e.kind === "approval.request")).toMatchObject({
+        timeout_ms: 60_000,
+        timeout_basis: "setting",
+        expires_at: expect.any(Number) as number,
+      });
+    } finally {
+      await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
     }
   }, 30_000);
 

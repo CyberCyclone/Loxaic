@@ -3,13 +3,18 @@ import { and, count, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
+  DEFAULT_CHECKIN_AUTO_CONTINUES,
+  DEFAULT_LOOP_SENSITIVITY,
   DEFAULT_PROVIDER_ID,
+  isLoopSensitivity,
   sanitizeFilename,
   type AttachmentRef,
   type CheckinReason,
   type ContentBlock,
   type ContextBreakdown,
+  type LoopSensitivity,
   type StepsDecision,
+  type TimeoutBasis,
   type TurnUsage,
 } from "@loxaic/types";
 import {
@@ -46,7 +51,14 @@ import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
-import { LoopDetector } from "./loop-detector.ts";
+import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
+import {
+  clampAutoContinues,
+  clampWaitTimeoutMs,
+  effectiveTimeoutMs,
+  serverDefaultTimeoutMs,
+  unattendedDecision,
+} from "./timeouts.ts";
 
 /**
  * Tool round-trips one user message may take **between check-ins**, when the
@@ -70,43 +82,9 @@ import { LoopDetector } from "./loop-detector.ts";
 export const DEFAULT_MAX_ITERATIONS = 100;
 export const MIN_MAX_ITERATIONS = 1;
 export const MAX_MAX_ITERATIONS = 500;
-/**
- * What a check-in nobody answers within `APPROVAL_TIMEOUT_MS` resolves to.
- *
- * "Answer now" rather than "keep going": the run is holding a slot that at
- * concurrency 1 is the entire deployment, and nobody is watching. A partial
- * answer ends the turn, frees the slot and leaves something in the transcript
- * to continue from — whereas granting another window unattended is how one
- * abandoned auto-mode run blocks every other conversation for hours.
- *
- * One constant, so a deployment that disagrees changes it in one place.
- */
-export const CHECKIN_TIMEOUT_DECISION: StepsDecision = "answer";
-/**
- * How long an approval request waits for an answer before the call is given
- * up on. An unanswered request is *not* a denial — see `ApprovalOutcome`.
- *
- * Read at call time rather than at module load, which is deliberately *not*
- * what auto-compact.ts does — `AUTO_COMPACT_THRESHOLD` is a module-load IIFE,
- * so there is no precedent here to follow. The reason is this module's own:
- * vitest shares one process across test files, so a value captured at import
- * cannot be overridden by a test that needs a window it can actually wait
- * out, and the timeout test in this change would be impossible to write.
- * It doubles as the operator knob for a deployment where five minutes is the
- * wrong answer — a model that thinks for seven minutes before calling a tool
- * leaves a person very little of it.
- *
- * Clamped below setTimeout's 32-bit ceiling. Node stores the delay as a
- * signed 32-bit int and silently reduces anything larger to 1 ms, with only a
- * TimeoutOverflowWarning on stderr — so "set it huge so it never expires"
- * (APPROVAL_TIMEOUT_MS=2592000000, thirty days) would expire *every* approval
- * instantly and no gated tool could run in manual mode again.
- */
-const DEFAULT_APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
-function approvalTimeoutMs(): number {
-  const raw = Number(process.env.APPROVAL_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 2 ** 31 - 1) : DEFAULT_APPROVAL_TIMEOUT_MS;
-}
+// What an unanswered wait does, and how long it lasts, live in timeouts.ts —
+// the check-in ladder and the adaptive window are pure functions there, and
+// the per-user choices come from `loadRunPrefs` below.
 /**
  * The smallest number of prior messages the replay window is ever narrowed
  * to. It is a floor, not a fixed size — see `historyAnchor`.
@@ -233,21 +211,87 @@ export function clampMaxIterations(value: number): number {
   return Math.min(MAX_MAX_ITERATIONS, Math.max(MIN_MAX_ITERATIONS, value));
 }
 
-async function loadRunPrefs(userId: string): Promise<{ maxIterations: number; allowlist: Set<string> }> {
+/**
+ * How long this run waits for a person, and what it does when nobody comes.
+ *
+ * The two windows are `null` when the user has not chosen one, and resolved
+ * against the server default at the moment of the wait — not here — so an
+ * operator's `APPROVAL_TIMEOUT_MS` read at call time keeps working for tests
+ * and deployments alike.
+ */
+export interface RunWaitPrefs {
+  checkinTimeoutMs: number | null;
+  approvalTimeoutMs: number | null;
+  adaptive: boolean;
+  autoContinues: number;
+  loopSensitivity: LoopSensitivity;
+}
+
+async function loadRunPrefs(
+  userId: string,
+): Promise<{ maxIterations: number; allowlist: Set<string>; waits: RunWaitPrefs }> {
   try {
     const row = await db.query.userPrefs.findFirst({
       where: eq(userPrefs.userId, userId),
-      columns: { maxIterations: true, toolAllowlist: true },
+      columns: {
+        maxIterations: true,
+        toolAllowlist: true,
+        checkinTimeoutMs: true,
+        approvalTimeoutMs: true,
+        adaptiveTimeout: true,
+        checkinAutoContinues: true,
+        loopSensitivity: true,
+      },
     });
     return {
       maxIterations: clampMaxIterations(row?.maxIterations ?? DEFAULT_MAX_ITERATIONS),
       allowlist: new Set(Array.isArray(row?.toolAllowlist) ? row.toolAllowlist.map(String) : []),
+      waits: {
+        checkinTimeoutMs: clampWaitTimeoutMs(row?.checkinTimeoutMs),
+        approvalTimeoutMs: clampWaitTimeoutMs(row?.approvalTimeoutMs),
+        adaptive: row?.adaptiveTimeout ?? true,
+        autoContinues: clampAutoContinues(row?.checkinAutoContinues) ?? DEFAULT_CHECKIN_AUTO_CONTINUES,
+        loopSensitivity: isLoopSensitivity(row?.loopSensitivity) ? row.loopSensitivity : DEFAULT_LOOP_SENSITIVITY,
+      },
     };
   } catch {
-    // Both halves fail safe: the default ceiling rather than "unlimited", and
+    // Every half fails safe: the default ceiling rather than "unlimited", and
     // an empty allowlist, which means every write tool asks rather than none.
-    return { maxIterations: DEFAULT_MAX_ITERATIONS, allowlist: new Set() };
+    // And **no** auto-continues: a run whose preferences could not be read
+    // must not be granted unattended work windows on a guess — it answers on
+    // the first unanswered check-in, as it always used to.
+    return {
+      maxIterations: DEFAULT_MAX_ITERATIONS,
+      allowlist: new Set(),
+      waits: {
+        checkinTimeoutMs: null,
+        approvalTimeoutMs: null,
+        adaptive: true,
+        autoContinues: 0,
+        loopSensitivity: DEFAULT_LOOP_SENSITIVITY,
+      },
+    };
   }
+}
+
+/**
+ * The deadline for one wait, as the event announces it and the timer enforces
+ * it. Computed once and used for both, so the countdown a person sees cannot
+ * disagree with when the run actually gives up.
+ */
+export interface WaitDeadline {
+  ms: number;
+  basis: TimeoutBasis;
+  expiresAt: number;
+}
+
+function waitDeadline(chosenMs: number | null, adaptive: boolean, slowestTurnMs: number): WaitDeadline {
+  const { ms, basis } = effectiveTimeoutMs({
+    baseMs: chosenMs ?? serverDefaultTimeoutMs(),
+    adaptive,
+    slowestTurnMs,
+  });
+  return { ms, basis, expiresAt: Date.now() + ms };
 }
 
 /**
@@ -329,7 +373,7 @@ export async function runToolLoop(ctx: {
     // again on the next line. (`userAllowsAutoCompact` is a third reader, and
     // deliberately not folded in — it is deferred until the compaction
     // threshold is actually crossed, so most turns never pay for it.)
-    const { maxIterations, allowlist } = await loadRunPrefs(userId);
+    const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
     const toolset = await buildToolset(userId, { mode, conversationId: convId, allowlist });
     const tools = toolset.openAiTools;
     // History is loaded before the system prompt is assembled, because whether
@@ -431,7 +475,7 @@ export async function runToolLoop(ctx: {
     // client can render "7/100" and then "104/200" without having to track
     // how many windows have been granted.
     let budgetEnd = maxIterations;
-    const detector = new LoopDetector();
+    const detector = new LoopDetector(loopDetectorOptions(waits.loopSensitivity));
     // Iteration key -> the calls that produced it, so a loop check-in can name
     // what is repeating. Bounded: only the last few keys can ever be part of a
     // hit, and a 500-step run must not accumulate every argument string it saw.
@@ -439,6 +483,12 @@ export async function runToolLoop(ctx: {
     // Set once the user asks for a final answer: the next request goes out
     // with `tool_choice: "none"` and the loop ends after it either way.
     let answerNow = false;
+    // The longest a single model request has taken in this run, send to done.
+    // The adaptive wait floor is built on it — see effectiveTimeoutMs.
+    let slowestTurnMs = 0;
+    // Check-ins in a row that nobody answered. A person answering resets it;
+    // it is what walks an abandoned run down the ladder in unattendedDecision.
+    let unattended = 0;
 
     if (isAborted(abort)) {
       // Stopped between getting the slot and the first iteration. This used to
@@ -527,6 +577,10 @@ export async function runToolLoop(ctx: {
         windowTokens,
       };
 
+      // Timed around the request alone. Not the iteration: that also holds
+      // tool execution and approval waits, and an approval nobody answered
+      // for an hour must not stretch every later wait to two.
+      const requestStartedAt = Date.now();
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -551,6 +605,7 @@ export async function runToolLoop(ctx: {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
             recordPrompt(convId, fingerprint, event.result.usage.prompt_tokens);
+            slowestTurnMs = Math.max(slowestTurnMs, Date.now() - requestStartedAt);
           }
         }
       } catch (err) {
@@ -776,7 +831,20 @@ export async function runToolLoop(ctx: {
         let outcome: Awaited<ReturnType<typeof runOneToolCall>>;
         try {
           outcome = await runOneToolCall(
-            { streamId, convId, userId, mode, toolset, producer, assistantMsgId, slot, signal: abort.signal },
+            {
+              streamId,
+              convId,
+              userId,
+              mode,
+              toolset,
+              producer,
+              assistantMsgId,
+              slot,
+              signal: abort.signal,
+              // A getter, not a value: each approval in a batch starts its own
+              // wait, and gets a deadline measured from its own start.
+              approvalDeadline: () => waitDeadline(waits.approvalTimeoutMs, waits.adaptive, slowestTurnMs),
+            },
             call,
           );
         } catch (err) {
@@ -872,21 +940,41 @@ export async function runToolLoop(ctx: {
       const reason: CheckinReason | null = hit ? "loop" : iteration >= budgetEnd ? "budget" : null;
       if (!reason) continue;
 
+      // One deadline, used for both the event and the timer, so the countdown a
+      // person sees is exactly when the run gives up waiting.
+      const deadline = waitDeadline(waits.checkinTimeoutMs, waits.adaptive, slowestTurnMs);
+      const onTimeout = unattendedDecision(unattended, waits.autoContinues, "timeout");
       producer.emit({
         kind: "steps.checkin",
         n: iteration,
         max: budgetEnd,
         reason,
         ...(hit ? { pattern: hit.unit.flatMap((k) => (recentCalls.get(k) ?? []).map((tool) => ({ tool }))) } : {}),
+        timeout_ms: deadline.ms,
+        expires_at: deadline.expiresAt,
+        timeout_basis: deadline.basis,
+        on_timeout: onTimeout,
+        unattended,
+        auto_continues: waits.autoContinues,
       });
 
       let outcome: { decision: StepsDecision; byUserId: string | null };
       try {
         outcome = await slot.yieldWhile(async () => {
-          const answered = await waitForStepsDecision(streamId, abort.signal);
-          const decision: StepsDecision =
-            answered.kind === "continue" || answered.kind === "answer" ? answered.kind : CHECKIN_TIMEOUT_DECISION;
-          const byUserId = answered.kind === "continue" || answered.kind === "answer" ? answered.byUserId : null;
+          const answered = await waitForStepsDecision(streamId, abort.signal, deadline.ms);
+          const byPerson = answered.kind === "continue" || answered.kind === "answer";
+          // The ladder: nobody answered, so this is decided by how many in a
+          // row have gone unanswered — carry on for the first few, then wrap
+          // up. `aborted` never reaches a decision (re-entering the queue for
+          // an aborted run throws); `gone` always wraps up.
+          const decision: StepsDecision = byPerson
+            ? answered.kind
+            : unattendedDecision(unattended, waits.autoContinues, answered.kind === "gone" ? "gone" : "timeout");
+          if (byPerson) {
+            unattended = 0;
+          } else if (answered.kind !== "aborted") {
+            unattended += 1;
+          }
           // Emitted from inside `yieldWhile`, before the run re-enters the
           // queue. A decision emitted after re-entry would leave a client
           // catching up mid-wait showing "Queued" *and* the check-in bar for
@@ -895,10 +983,12 @@ export async function runToolLoop(ctx: {
             producer.emit({
               kind: "steps.decision",
               decision,
-              by: answered.kind === "timeout" || answered.kind === "gone" ? "timeout" : "user",
+              by: byPerson ? "user" : "timeout",
+              n: iteration,
+              ...(byPerson ? {} : { unattended, auto_continues: waits.autoContinues }),
             });
           }
-          return { decision, byUserId };
+          return { decision, byUserId: byPerson ? answered.byUserId : null };
         });
       } catch (err) {
         // Stopped while parked. Re-entering the queue for an aborted run
@@ -948,6 +1038,10 @@ export async function runToolLoop(ctx: {
         author_type: "user",
         parent_id: toolMsgId,
         text: CHECKIN_ANSWER_NUDGE,
+        // The same fact the row records, on the wire: without it a client could
+        // only match the text, and printed "You asked for an answer" when
+        // nobody had.
+        author_user_id: outcome.byUserId,
       });
       producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
       // Key order matches loadHistory's own `{ role, content }` — see
@@ -1014,6 +1108,8 @@ async function runOneToolCall(
     slot: RunSlot;
     /** The run's abort signal, so a stop reaches the approval wait. */
     signal: AbortSignal;
+    /** This approval's deadline, measured from the moment it starts. */
+    approvalDeadline: () => WaitDeadline;
   },
   call: ToolCall,
 ): Promise<{
@@ -1043,13 +1139,22 @@ async function runOneToolCall(
   }
 
   if (toolset.requiresApproval(resolved, mode)) {
-    producer.emit({ kind: "approval.request", call_id: call.id, tool: toolName, args });
+    const deadline = ctx.approvalDeadline();
+    producer.emit({
+      kind: "approval.request",
+      call_id: call.id,
+      tool: toolName,
+      args,
+      timeout_ms: deadline.ms,
+      expires_at: deadline.expiresAt,
+      timeout_basis: deadline.basis,
+    });
     // The slot goes back while the question is on screen. A manual-mode
     // approval routinely sits for minutes, and holding an inference slot
     // through it would stall every other conversation on the deployment for
     // exactly as long as the user takes to click. Re-taken at the front of the
     // queue afterwards, so approving does not cost the user their place.
-    const outcome = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id, ctx.signal));
+    const outcome = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id, ctx.signal, deadline.ms));
     if (outcome !== "approved") {
       const output = approvalRefusalText(outcome);
       producer.emit({
@@ -1186,8 +1291,8 @@ function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): str
 const ANSWER_NOW_NOT_RUN = "Not run — the user asked for a final answer without tools.";
 
 /** How a step check-in ended. `continue`/`answer` are a person's answer;
- * `timeout` and `gone` fall back to `CHECKIN_TIMEOUT_DECISION`, and `aborted`
- * is a stop, which unwinds through the slot rather than being answered. */
+ * `timeout` and `gone` are decided by `unattendedDecision`, and `aborted` is a
+ * stop, which unwinds through the slot rather than being answered. */
 type CheckinOutcome =
   | { kind: "continue" | "answer"; byUserId: string | null }
   | { kind: "timeout" | "aborted" | "gone" };
@@ -1195,8 +1300,8 @@ type CheckinOutcome =
 /**
  * Waits for someone to answer a step check-in.
  *
- * Deliberately shaped like `waitForApproval` above — same `settle` teardown,
- * same abort listener, same `approvalTimeoutMs()` window, registered after the
+ * Deliberately shaped like `waitForApproval` below — same `settle` teardown,
+ * same abort listener, a window the caller computes, registered after the
  * `aborted` re-check so an abort landing mid-setup cannot be missed. A check-in
  * is the same kind of pause as an approval (a run parked on a human), so the
  * two should fail in the same ways rather than each inventing its own.
@@ -1206,7 +1311,7 @@ type CheckinOutcome =
  * check-in outstanding and it is addressed by `stream_id` — ours and unique,
  * unlike the model-supplied `call_id` an approval has to tolerate colliding.
  */
-function waitForStepsDecision(streamId: string, signal: AbortSignal): Promise<CheckinOutcome> {
+function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: number): Promise<CheckinOutcome> {
   return new Promise<CheckinOutcome>((resolve) => {
     if (signal.aborted) {
       resolve({ kind: "aborted" });
@@ -1227,7 +1332,7 @@ function waitForStepsDecision(streamId: string, signal: AbortSignal): Promise<Ch
       resolve(outcome);
     };
     const onAbort = () => { settle({ kind: "aborted" }); };
-    const timer = setTimeout(() => { settle({ kind: "timeout" }); }, approvalTimeoutMs());
+    const timer = setTimeout(() => { settle({ kind: "timeout" }); }, timeoutMs);
     run.stepsDecision = (decision, byUserId) => { settle({ kind: decision, byUserId }); };
     signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -1252,7 +1357,12 @@ function waitForStepsDecision(streamId: string, signal: AbortSignal): Promise<Ch
  * rather than before, so an abort that fired while this was being set up
  * cannot be missed.
  */
-function waitForApproval(streamId: string, callId: string, signal: AbortSignal): Promise<ApprovalOutcome> {
+function waitForApproval(
+  streamId: string,
+  callId: string,
+  signal: AbortSignal,
+  timeoutMs: number,
+): Promise<ApprovalOutcome> {
   return new Promise<ApprovalOutcome>((resolve) => {
     if (signal.aborted) {
       resolve("aborted");
@@ -1276,7 +1386,7 @@ function waitForApproval(streamId: string, callId: string, signal: AbortSignal):
       resolve(outcome);
     };
     const onAbort = () => { settle("aborted"); };
-    const timer = setTimeout(() => { settle("timeout"); }, approvalTimeoutMs());
+    const timer = setTimeout(() => { settle("timeout"); }, timeoutMs);
     // The registry's resolver stays `(approved: boolean) => void`, so the two
     // WebSocket handlers that answer an approval need no change: only this
     // function knows the difference between a person saying no and nobody

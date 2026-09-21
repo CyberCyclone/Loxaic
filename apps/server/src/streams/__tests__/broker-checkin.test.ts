@@ -61,4 +61,56 @@ describe("foldSnapshot carries a pending step check-in", () => {
     expect(snapshot.pending_checkin).toEqual({ n: 100, max: 100, reason: "budget" });
     expect(snapshot.queued).toEqual({ position: 1 });
   });
+
+  it("carries the deadline and what happens when it passes", () => {
+    const snapshot = broker.foldSnapshot([
+      rec(1, {
+        kind: "steps.checkin",
+        n: 5,
+        max: 5,
+        reason: "budget",
+        timeout_ms: 1_200_000,
+        expires_at: 1_700_000_000_000,
+        timeout_basis: "adaptive",
+        on_timeout: "continue",
+        unattended: 1,
+        auto_continues: 2,
+      }),
+    ]);
+    expect(snapshot.pending_checkin).toEqual({
+      n: 5,
+      max: 5,
+      reason: "budget",
+      timeout_ms: 1_200_000,
+      expires_at: 1_700_000_000_000,
+      timeout_basis: "adaptive",
+      on_timeout: "continue",
+      unattended: 1,
+      auto_continues: 2,
+    });
+  });
+
+  it("puts a timed-out decision on the answer it preceded, and nothing for a person's", () => {
+    const snapshot = broker.foldSnapshot([
+      rec(1, { kind: "message.start", message_id: "a1", author_type: "assistant", parent_id: null }),
+      rec(2, { kind: "steps.checkin", n: 1, max: 1, reason: "budget" }),
+      rec(3, { kind: "steps.decision", decision: "continue", by: "timeout", n: 1, unattended: 1, auto_continues: 2 }),
+      rec(4, { kind: "message.start", message_id: "a2", author_type: "assistant", parent_id: "a1" }),
+      rec(5, { kind: "steps.checkin", n: 2, max: 2, reason: "budget" }),
+      rec(6, { kind: "steps.decision", decision: "answer", by: "user", n: 2 }),
+    ]);
+    const byId = new Map(snapshot.messages.map((m) => [m.message_id, m]));
+    expect(byId.get("a1")?.checkin_decision).toEqual({ decision: "continue", by: "timeout", n: 1, unattended: 1, auto_continues: 2 });
+    expect(byId.get("a2")?.checkin_decision).toBeUndefined();
+  });
+
+  it("folds who wrote a server-inserted message, keeping null distinct from absent", () => {
+    const snapshot = broker.foldSnapshot([
+      rec(1, { kind: "message.start", message_id: "n1", author_type: "user", parent_id: null, text: "x", author_user_id: null }),
+      rec(2, { kind: "message.start", message_id: "u1", author_type: "user", parent_id: "n1", text: "y" }),
+    ]);
+    const byId = new Map(snapshot.messages.map((m) => [m.message_id, m]));
+    expect(byId.get("n1")).toHaveProperty("author_user_id", null);
+    expect(byId.get("u1")).not.toHaveProperty("author_user_id");
+  });
 });

@@ -176,6 +176,13 @@
       "when": 1789906877461,
       "tag": "0024_glamorous_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789959291149,
+      "tag": "0025_chemical_beast",
+      "breakpoints": true
     }
   ]
 }

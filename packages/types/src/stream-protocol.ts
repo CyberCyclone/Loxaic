@@ -1,4 +1,5 @@
 import type { FileDiff } from "./index";
+import type { TimeoutBasis } from "./waits";
 
 /** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
@@ -14,6 +15,45 @@ export type CheckinReason = "budget" | "loop";
 /** The answer to a `steps.checkin`. Stopping is not one of these — that is the
  * existing `stream.stop`, which any run can be sent at any time. */
 export type StepsDecision = "continue" | "answer";
+
+/**
+ * When a wait for a person runs out, carried on the event that starts the wait
+ * and on the snapshot's pending entry — so a client can show a countdown, and
+ * one that reconnects mid-wait still can.
+ *
+ * All optional: an older server sends none of them, and a client must then
+ * show no countdown at all rather than guess one.
+ */
+export interface WaitDeadlineFields {
+  /** How long the wait lasts, in ms — the value the server's timer uses. */
+  timeout_ms?: number;
+  /** When it runs out, in the *server's* epoch ms. A reconnecting client
+   * corrects for its own clock with `stream.sync.server_now`. */
+  expires_at?: number;
+  /** Why it is that long: the user's setting, or stretched to fit this run's
+   * slowest model request. */
+  timeout_basis?: TimeoutBasis;
+}
+
+/**
+ * What an unattended check-in did, recorded where a client can find it.
+ *
+ * An unanswered check-in that carries on leaves nothing in the transcript —
+ * no message is written, deliberately, because anything persisted as a message
+ * would enter the prompt. This is how a client can still say "nobody answered,
+ * so it kept going": folded onto the assistant message whose tools the
+ * check-in followed, from the stream's own log.
+ */
+export interface CheckinDecisionNote {
+  decision: StepsDecision;
+  by: "user" | "timeout";
+  /** The step the check-in happened at. */
+  n?: number;
+  /** Timeout only: 1-based position in the unanswered streak. */
+  unattended?: number;
+  /** Timeout only: how many unanswered check-ins carry on before it wraps up. */
+  auto_continues?: number;
+}
 
 /**
  * Persisted as a user message when a check-in is answered with "answer now",
@@ -371,6 +411,14 @@ export type StreamEventKind =
       text?: string;
       /** User messages only — images ride here the same way `text` does. */
       attachments?: AttachmentRef[];
+      /**
+       * Who wrote a message the *server* inserted on someone's behalf — today
+       * only the check-in "answer now" instruction. A user id when a person
+       * pressed the button; **null when nobody did** (the check-in timed out).
+       * Absent on every other message and from an older server, which a
+       * client must read as "not told", never as either answer.
+       */
+      author_user_id?: string | null;
     }
   | { kind: "text.delta"; message_id: string; text: string }
   | { kind: "thinking.delta"; message_id: string; text: string }
@@ -413,13 +461,21 @@ export type StreamEventKind =
        * the 24h record log and be re-sent in every resync's snapshot for a
        * banner that reads nothing but `tool`. */
       pattern?: { tool: string }[];
+    } & WaitDeadlineFields & {
+      /** What happens if nobody answers before `expires_at`. */
+      on_timeout?: StepsDecision;
+      /** How many check-ins in a row had already gone unanswered before this one. */
+      unattended?: number;
+      /** How many unanswered check-ins carry on by themselves before it wraps up. */
+      auto_continues?: number;
     }
   /** How a `steps.checkin` was answered. Emitted *before* the run re-enters
    * the inference queue, so a catching-up client never sees a stale check-in
-   * beside a queue position. */
-  | { kind: "steps.decision"; decision: StepsDecision; by: "user" | "timeout" }
+   * beside a queue position. The fields beyond `decision` and `by` are those
+   * of `CheckinDecisionNote`. */
+  | ({ kind: "steps.decision" } & CheckinDecisionNote)
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
-  | { kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> }
+  | ({ kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> } & WaitDeadlineFields)
   | {
       kind: "tool.result";
       message_id: string;
@@ -456,6 +512,11 @@ export interface StreamSnapshotMessage {
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;
   error?: string;
+  /** Folded from `message.start` when present — see its doc. */
+  author_user_id?: string | null;
+  /** Set on the assistant message a check-in followed, when nobody answered
+   * it — the only trace an unattended "keep going" leaves. */
+  checkin_decision?: CheckinDecisionNote;
 }
 
 /** Everything-so-far, folded server-side from the durable log. The client
@@ -470,7 +531,7 @@ export interface StreamSnapshot {
   // agent-only:
   iteration?: { n: number; max: number };
   todos?: Todo[];
-  pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> };
+  pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & WaitDeadlineFields;
   /** Present while the run is parked at a step check-in waiting for an answer.
    * Both surfaces carry it — chat and agent share one tool loop. */
   pending_checkin?: {
@@ -478,7 +539,10 @@ export interface StreamSnapshot {
     max: number;
     reason: CheckinReason;
     pattern?: { tool: string }[];
-  };
+    on_timeout?: StepsDecision;
+    unattended?: number;
+    auto_continues?: number;
+  } & WaitDeadlineFields;
 }
 
 export type ServerMessage =
@@ -495,6 +559,9 @@ export type ServerMessage =
       seq: number;
       status: StreamStatus;
       snapshot: StreamSnapshot;
+      /** The server's clock when this was sent, so a client can turn a
+       * snapshot's `expires_at` into a countdown on its own clock. */
+      server_now?: number;
     }
   | { type: "stream.event"; stream_id: string; conversation_id: string; seq: number; event: StreamEventKind }
   | {
