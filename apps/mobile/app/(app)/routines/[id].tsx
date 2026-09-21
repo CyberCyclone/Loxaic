@@ -132,6 +132,7 @@ export default function RoutineChatScreen() {
     streaming,
     stopping,
     loadingModel,
+    promptStats,
     queuePosition,
     responseStartedAt,
     pendingApproval,
@@ -318,6 +319,7 @@ export default function RoutineChatScreen() {
               conversation={activeConv}
               responseStartedAt={responseStartedAt}
               loadingModel={loadingModel}
+              promptStats={promptStats}
               queuePosition={queuePosition}
               model={model ? modelName : undefined}
             />

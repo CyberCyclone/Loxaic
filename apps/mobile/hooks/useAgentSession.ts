@@ -21,12 +21,14 @@ import {
   type PermissionMode,
   type Todo,
   type StepsDecision,
+  type PromptStats,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { foldPromptStats } from '@/lib/promptStats';
 import { useToastHelper } from './useToastHelper';
 
 export type { WorkspaceChoice } from '@/lib/types';
@@ -60,7 +62,14 @@ export type { PendingApproval, PendingCheckin } from '@/lib/pendingWaits';
 
 /** Per-conversation in-flight stream state — see useChatSession for why this
  * is preserved across a reconnect rather than cleared on close. */
-interface StreamState { streamId: string; loadingModel: boolean; responseStartedAt: number; model: string }
+interface StreamState {
+  streamId: string;
+  loadingModel: boolean;
+  /** See useChatSession's StreamState. */
+  promptStats: PromptStats | null;
+  responseStartedAt: number;
+  model: string;
+}
 
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
@@ -375,10 +384,11 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
             ...prev,
             [convId]:
               prev[convId]?.streamId === event.stream_id
-                ? prev[convId]
+                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null }
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
+                    promptStats: event.snapshot.prompt_stats ?? null,
                     responseStartedAt: Date.now(),
                     model: assistantMsg?.model ?? '',
                   },
@@ -406,6 +416,12 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           promotePendingUserMsg(convId, event.event.message_id);
         }
         updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event));
+        setStreamingByConv((prev) => {
+          const current = prev[convId];
+          if (current?.streamId !== event.stream_id) return prev;
+          const promptStats = foldPromptStats(current.promptStats, event.event);
+          return promptStats === current.promptStats ? prev : { ...prev, [convId]: { ...current, promptStats } };
+        });
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
@@ -749,6 +765,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     busy,
     stopping,
     loadingModel: activeStream?.loadingModel ?? false,
+    promptStats: activeStream?.promptStats ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     pendingCheckin,

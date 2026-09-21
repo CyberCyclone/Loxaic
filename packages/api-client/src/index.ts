@@ -1433,6 +1433,7 @@ export type {
   StepsDecision,
   CheckinDecisionNote,
   WaitDeadlineFields,
+  PromptStats,
   TimeoutBasis,
   LoopSensitivity,
   CompactionStats,

@@ -47,6 +47,7 @@ export default function ChatScreen() {
     streaming,
     stopping,
     loadingModel,
+    promptStats,
     queuePosition,
     responseStartedAt,
     pendingApproval,
@@ -197,6 +198,7 @@ export default function ChatScreen() {
             conversation={activeConv}
             responseStartedAt={responseStartedAt}
             loadingModel={loadingModel}
+            promptStats={promptStats}
             queuePosition={queuePosition}
             model={selectedModel ? getName(selectedModel) : undefined}
           />

@@ -43,6 +43,18 @@ export function estimateTokens(category: ContextCategory, text: string): number 
   return Math.round(text.length / CHARS_PER_TOKEN[category]);
 }
 
+/**
+ * A whole tally's estimated size in tokens. Only for *before* a request, when
+ * nothing measured exists yet — `apportion` is what splits a real count.
+ */
+export function estimateTallyTokens(tally: ContextTally): number {
+  let total = 0;
+  for (const [category, chars] of Object.entries(tally) as [ContextCategory, number][]) {
+    total += chars / CHARS_PER_TOKEN[category];
+  }
+  return Math.round(total);
+}
+
 /** How a compaction summary is replayed into subsequent prompts. One shared
  * constant: the loaders that build prompts with it and the tallies that
  * attribute its tokens must be measuring the same string. */

@@ -6,6 +6,7 @@ import {
   DEFAULT_CHECKIN_AUTO_CONTINUES,
   DEFAULT_LOOP_SENSITIVITY,
   DEFAULT_PROVIDER_ID,
+  type PromptStats,
   isLoopSensitivity,
   sanitizeFilename,
   type AttachmentRef,
@@ -33,7 +34,8 @@ import {
 } from "../../files/storage.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { resolveModelRef } from "../../inference/providers.ts";
-import { addChars, apportion, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { addChars, apportion, estimateTallyTokens, summaryMessage, tallyChatMessages, type ContextTally } from "../../inference/context.ts";
+import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
@@ -285,6 +287,52 @@ export interface WaitDeadline {
   expiresAt: number;
 }
 
+/** True when `reuse` is an exact measurement: the previous request's whole
+ * message list is a prefix of this one, so `tokens` is that request's measured
+ * size. Any other figure is a floor or a guess. */
+function isStrictExtension(reuse: PromptReuse): reuse is PromptReuse & { tokens: number } {
+  return reuse.tokens != null && reuse.tokens > 0 && reuse.previousMessages > 0 && reuse.sharedMessages === reuse.previousMessages;
+}
+
+/**
+ * The `prompt.stats` a request announces before it goes out. Reads only what
+ * the engine has already measured for this request — nothing here may touch
+ * the prompt itself.
+ */
+export function promptStatsFor(input: {
+  messageId: string;
+  model: string;
+  tally: ContextTally;
+  chatMessages: ChatMessage[];
+  reuse: PromptReuse;
+  windowTokens: number | null;
+  loadingModel: boolean;
+  startedAt: number;
+}): PromptStats {
+  const { reuse } = input;
+  const extension = isStrictExtension(reuse);
+  // On a strict extension the front of the prompt has a measured size, so
+  // only what was appended is estimated — far closer than estimating the
+  // whole thing from characters. The appended messages carry no tool schemas
+  // (those are in the measured prefix).
+  const estimate = extension
+    ? reuse.tokens + estimateTallyTokens(tallyChatMessages(input.chatMessages.slice(reuse.previousMessages)))
+    : estimateTallyTokens(input.tally);
+  // Unknown reuse is treated as none, so the ETA is an upper bound ("up to
+  // about") rather than an optimistic guess.
+  const toEvaluate = Math.max(0, estimate - (extension ? reuse.tokens : 0));
+  const rate = input.loadingModel ? null : prefillRate(input.model);
+  return {
+    message_id: input.messageId,
+    prompt_tokens_est: estimate,
+    est_basis: extension ? "measured_prefix" : "estimate",
+    reusable_tokens: reuse.tokens,
+    window_tokens: input.windowTokens,
+    eta_ms: rate ? Math.round((toEvaluate / rate) * 1000) : null,
+    started_at: input.startedAt,
+  };
+}
+
 function waitDeadline(chosenMs: number | null, adaptive: boolean, slowestTurnMs: number): WaitDeadline {
   const { ms, basis } = effectiveTimeoutMs({
     baseMs: chosenMs ?? serverDefaultTimeoutMs(),
@@ -530,6 +578,9 @@ export async function runToolLoop(ctx: {
       let doneResult: CompletionResult | null = null;
 
       let windowTokens: number | null = null;
+      // A load inside this request's TTFT: no ETA can account for it, and the
+      // request's timing must not become a prefill-rate sample.
+      let loadingModel = false;
       try {
         // This model's own provider, never the whole fan-out: searching every
         // provider's list here would put an unreachable one's timeout in front
@@ -540,6 +591,7 @@ export async function runToolLoop(ctx: {
         windowTokens = info?.windowTokens ?? null;
         if (info && !info.loaded) {
           jitLoaded = true;
+          loadingModel = true;
           producer.emit({ kind: "model.loading", message_id: assistantMsgId });
         }
       } catch {
@@ -581,6 +633,17 @@ export async function runToolLoop(ctx: {
       // tool execution and approval waits, and an approval nobody answered
       // for an hour must not stretch every later wait to two.
       const requestStartedAt = Date.now();
+      const stats = promptStatsFor({
+        messageId: assistantMsgId,
+        model,
+        tally,
+        chatMessages,
+        reuse,
+        windowTokens,
+        loadingModel,
+        startedAt: requestStartedAt,
+      });
+      producer.emit({ kind: "prompt.stats", ...stats });
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -606,6 +669,13 @@ export async function runToolLoop(ctx: {
             doneResult = event.result;
             recordPrompt(convId, fingerprint, event.result.usage.prompt_tokens);
             slowestTurnMs = Math.max(slowestTurnMs, Date.now() - requestStartedAt);
+            recordPrefill(model, {
+              promptTps: event.result.promptTps,
+              promptTokens: event.result.usage.prompt_tokens,
+              exactReusableTokens: isStrictExtension(reuse) ? reuse.tokens : null,
+              ttftMs: event.result.ttftMs,
+              loadedModel: loadingModel,
+            });
           }
         }
       } catch (err) {

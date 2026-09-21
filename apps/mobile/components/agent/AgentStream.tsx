@@ -1,3 +1,4 @@
+import type { PromptStats } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
@@ -15,6 +16,7 @@ interface AgentStreamProps {
   mode: AgentMode;
   iteration: { n: number; max: number } | null;
   loadingModel?: boolean;
+  promptStats?: PromptStats | null;
   queuePosition?: number | null;
   responseStartedAt?: number | null;
   pendingApproval: PendingApproval | null;
@@ -32,6 +34,7 @@ export function AgentStream({
   mode,
   iteration,
   loadingModel,
+  promptStats,
   queuePosition,
   responseStartedAt,
   pendingApproval,
@@ -66,6 +69,7 @@ export function AgentStream({
           conversation={run}
           responseStartedAt={responseStartedAt}
           loadingModel={loadingModel}
+          promptStats={promptStats}
           queuePosition={queuePosition}
         />
       </Box>

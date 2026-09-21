@@ -21,6 +21,7 @@ import {
   type ServerMessage,
   type AttachmentRef,
   type StepsDecision,
+  type PromptStats,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
@@ -31,6 +32,7 @@ import type { Conversation } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { foldPromptStats } from '@/lib/promptStats';
 
 export type { PendingApproval };
 
@@ -62,6 +64,9 @@ interface StreamState {
    * Per-conversation like the rest of this state, so switching threads shows
    * the right one's status rather than the last event's. */
   queuePosition: number | null;
+  /** What the in-flight model request is evaluating — size, reuse, ETA —
+   * from just before it is sent until its first output. */
+  promptStats: PromptStats | null;
   responseStartedAt: number;
   model: string;
 }
@@ -615,10 +620,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
             ...prev,
             [convId]:
               prev[convId]?.streamId === event.stream_id
-                ? prev[convId]
+                ? { ...prev[convId], promptStats: event.snapshot.prompt_stats ?? null }
                 : {
                     streamId: event.stream_id,
                     loadingModel: false,
+                    promptStats: event.snapshot.prompt_stats ?? null,
                     // `run.queued` is only re-emitted when the queue moves, so
                     // a client that (re)connects while its run sits at a stable
                     // position hears nothing further until the run ahead ends —
@@ -659,7 +665,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
                 ...prev,
                 [convId]: {
                   ...prev[convId],
-                  loadingModel: event.event.kind === 'model.loading',
+                  // `prompt.stats` follows `model.loading` before the first
+                  // token, and must not end the "Loading model…" phase.
+                  loadingModel:
+                    event.event.kind === 'model.loading' ||
+                    (event.event.kind === 'prompt.stats' && prev[convId].loadingModel),
+                  promptStats: foldPromptStats(prev[convId].promptStats, event.event),
                   // Cleared by anything that is not itself a queue update:
                   // every other event means the run is past the queue, and a
                   // stale position would keep claiming otherwise.
@@ -1064,6 +1075,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     // streaming until it actually ends.
     stopping: activeId !== null && stoppingConvId === activeId,
     loadingModel: activeStream?.loadingModel ?? false,
+    promptStats: activeStream?.promptStats ?? null,
     queuePosition: activeStream?.queuePosition ?? null,
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,

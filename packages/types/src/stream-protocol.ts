@@ -488,7 +488,8 @@ export type StreamEventKind =
   | { kind: "todos"; todos: Todo[] }
   /** Emitted once by a compact run, before its message.end — the stats the
    * card renders, attached to the summary message. */
-  | ({ kind: "compaction"; message_id: string } & CompactionStats);
+  | ({ kind: "compaction"; message_id: string } & CompactionStats)
+  | ({ kind: "prompt.stats" } & PromptStats);
 
 export interface StreamSnapshotMessage {
   message_id: string;
@@ -519,6 +520,36 @@ export interface StreamSnapshotMessage {
   checkin_decision?: CheckinDecisionNote;
 }
 
+/**
+ * What a model request is about to cost, sent before the request goes out —
+ * the only evidence a person has, for the minutes a big prompt can take to
+ * evaluate, that "Processing prompt…" is work and not a hang.
+ *
+ * Emit-only: computed from what the engine already measures before every
+ * request, so nothing about the prompt itself changes. Every figure is an
+ * estimate and is labelled as one; `null` always means "not known", never 0.
+ */
+export interface PromptStats {
+  message_id: string;
+  /** Estimated prompt size in tokens. */
+  prompt_tokens_est: number;
+  /** `measured_prefix`: the previous request's measured size plus an estimate
+   * of what was appended — the usual case, and close. `estimate`: characters
+   * over a per-kind ratio, for a first request or a broken prefix. */
+  est_basis: "measured_prefix" | "estimate";
+  /** Tokens repeated exactly from the previous request — what the backend was
+   * offered to reuse. 0 is a real measurement (the prefix broke); null is
+   * "no previous request to compare with". */
+  reusable_tokens: number | null;
+  window_tokens: number | null;
+  /** Estimated time to evaluate the part not reusable, from this deployment's
+   * recent prompt-processing rate for the model. Null when there is no rate
+   * yet (a fresh server, a new model) or the model is loading first. */
+  eta_ms: number | null;
+  /** Server epoch ms the request was sent. */
+  started_at: number;
+}
+
 /** Everything-so-far, folded server-side from the durable log. The client
  * renders this instantly on subscribe, then applies live `stream.event`s
  * with `seq` greater than this snapshot's `seq`. */
@@ -532,6 +563,10 @@ export interface StreamSnapshot {
   iteration?: { n: number; max: number };
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & WaitDeadlineFields;
+  /** Present from just before a model request until its first output — so a
+   * client reconnecting fifteen minutes into prompt evaluation is told what
+   * is being evaluated, not just that something is. */
+  prompt_stats?: PromptStats;
   /** Present while the run is parked at a step check-in waiting for an answer.
    * Both surfaces carry it — chat and agent share one tool loop. */
   pending_checkin?: {

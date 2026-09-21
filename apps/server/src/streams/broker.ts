@@ -124,6 +124,7 @@ export class StreamBroker {
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
     let pendingCheckin: StreamSnapshot["pending_checkin"];
+    let promptStats: StreamSnapshot["prompt_stats"];
 
     const ensure = (id: string): StreamSnapshotMessage => {
       let m = messages.get(id);
@@ -167,11 +168,20 @@ export class StreamBroker {
         }
         case "text.delta":
           ensure(event.message_id).text += event.text;
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           break;
         case "thinking.delta":
           ensure(event.message_id).thinking += event.text;
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           break;
+        case "prompt.stats": {
+          const { kind: _kind, ...stats } = event;
+          void _kind;
+          promptStats = stats;
+          break;
+        }
         case "message.end": {
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           const m = ensure(event.message_id);
           m.status = event.status;
           if (event.usage) m.usage = event.usage;
@@ -220,6 +230,7 @@ export class StreamBroker {
           break;
         }
         case "tool.call":
+          if (promptStats?.message_id === event.message_id) promptStats = undefined;
           ensure(event.message_id).tool_calls.push({
             call_id: event.call_id,
             tool: event.tool,
@@ -262,6 +273,7 @@ export class StreamBroker {
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
       ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
+      ...(promptStats ? { prompt_stats: promptStats } : {}),
     };
   }
 }
