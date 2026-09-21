@@ -47,12 +47,15 @@ export function parsePromptProgress(raw: unknown): PromptProgress | null {
  * "timed" progress, `(processed − cache) / time_ms`, so a cached prefix does
  * not read as blistering speed. Null below MIN_EVALUATED_TOKENS evaluated, for
  * the same reason prefill-rate.ts refuses such samples: fixed overheads
- * dominate that early.
+ * dominate that early. Null too once nothing is left: "how long is left" has
+ * no answer then, and a 0 reads downstream as a second of remaining work for
+ * however long the backend takes to produce its first token.
  *
  * Shown as a countdown only. It never becomes `prompt_tps` or a prefill-rate
  * sample; those keep using `timings.prompt_per_second`.
  */
 export function remainingMs(p: PromptProgress): number | null {
+  if (p.processed_tokens >= p.total_tokens) return null;
   const evaluated = p.processed_tokens - p.cached_tokens;
   if (evaluated < MIN_EVALUATED_TOKENS || p.elapsed_ms <= 0) return null;
   const perMs = evaluated / p.elapsed_ms;

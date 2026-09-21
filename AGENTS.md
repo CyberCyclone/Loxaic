@@ -1003,9 +1003,17 @@ replies.
   hand-entered provider pointed at a hosted API has none either, and OpenAI answers an unknown
   request field with a 400, which would fail every turn. `liveStream` refuses the field for any
   preset as a second lock. It is a body field, not a message, so the prompt prefix is untouched.
-- **Throttled to one re-emit a second** (`promptProgressEmitter`), the first and the 100% report
-  always sent. Every non-delta event forces a stream-log flush and is kept for
-  `STREAM_TTL_SECONDS`, and a small `n_batch` reports many times a second.
+- **Throttled to one re-emit a second** (`promptProgressEmitter`), the first report and the *first*
+  to reach 100% always sent. Every non-delta event forces a stream-log flush and is kept for
+  `STREAM_TTL_SECONDS`, and a small `n_batch` reports many times a second. The 100% exemption is
+  **latched**: a backend that finishes the prompt and then stalls before its first token keeps
+  reporting `processed == total`, and exempting each of those removed the bound exactly when a
+  request can run to the hour-long ceiling. Found in review, as were the two below.
+- **Completion is its own case on the client, and mid-flight tests cannot see it.** Two segments
+  floored independently (33% + 66%) left a finished prompt's bar at 99%, so at completion the
+  evaluated segment takes the remainder. And `remaining_ms` is **null once nothing is left**, not
+  0 — `formatEta` clamps up to "1 s", so a 0 read "100% evaluated · about 1 s left" for however
+  long the first token took. The client also guards `> 0`, for a server that predates the fix.
 - **The measured line drops `~` and "(estimate)"** and says "cached" — the backend's reuse, known
   before prefill — never "reusable", which is ours. "% evaluated" is of the *uncached* part
   (llama.cpp's own timed progress), so a big cache hit does not make the bar look nearly done.

@@ -344,8 +344,11 @@ export const PROGRESS_EMIT_INTERVAL_MS = 1_000;
  * flush and is kept for `STREAM_TTL_SECONDS`, and llama.cpp reports once per
  * decoded batch, which with a small `n_batch` is many times a second. The
  * first report always goes (it is the proof the backend has started), and so
- * does the one that reaches 100%, so the bar does not stall short of full.
- * Emit-only: nothing here touches the prompt.
+ * does the first to reach 100%, so the bar does not stall short of full —
+ * the *first*, latched: a backend that finishes the prompt and then stalls
+ * before its first token keeps reporting `processed == total`, and exempting
+ * every one of those would remove the bound exactly when a request can run
+ * to the hour-long ceiling. Emit-only: nothing here touches the prompt.
  */
 export function promptProgressEmitter(
   stats: PromptStats,
@@ -353,10 +356,13 @@ export function promptProgressEmitter(
   now: () => number = Date.now,
 ): (progress: PromptProgress) => void {
   let lastAt: number | null = null;
+  let sentComplete = false;
   return (progress) => {
     const t = now();
     const complete = progress.processed_tokens >= progress.total_tokens;
-    if (lastAt !== null && !complete && t - lastAt < PROGRESS_EMIT_INTERVAL_MS) return;
+    const forced = complete && !sentComplete;
+    if (lastAt !== null && !forced && t - lastAt < PROGRESS_EMIT_INTERVAL_MS) return;
+    if (complete) sentComplete = true;
     lastAt = t;
     emit({ kind: "prompt.stats", ...stats, progress });
   };

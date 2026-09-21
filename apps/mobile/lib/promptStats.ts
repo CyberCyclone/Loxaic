@@ -86,7 +86,13 @@ export function promptProgressSegments(stats: PromptStats): { cachedPct: number;
   const p = stats.progress;
   if (!p) return null;
   const cachedPct = floorPct(p.cached_tokens, p.total_tokens);
-  const evaluatedPct = Math.min(100 - cachedPct, floorPct(p.processed_tokens - p.cached_tokens, p.total_tokens));
+  // At completion the evaluated segment takes the remainder rather than its
+  // own floor: two independent floors (33% + 66%) leave a finished prompt's
+  // bar at 99% for the whole wait between the last report and the first token.
+  const evaluatedPct =
+    p.processed_tokens >= p.total_tokens
+      ? 100 - cachedPct
+      : Math.min(100 - cachedPct, floorPct(p.processed_tokens - p.cached_tokens, p.total_tokens));
   return { cachedPct, evaluatedPct };
 }
 
@@ -103,7 +109,9 @@ function describeMeasured(p: NonNullable<PromptStats['progress']>): string {
   if (p.cached_tokens > 0) parts.push(`${String(floorPct(p.cached_tokens, p.total_tokens))}% cached`);
   const toEvaluate = p.total_tokens - p.cached_tokens;
   parts.push(`${String(toEvaluate > 0 ? floorPct(p.processed_tokens - p.cached_tokens, toEvaluate) : 100)}% evaluated`);
-  if (p.remaining_ms != null) parts.push(`about ${formatEta(p.remaining_ms)} left`);
+  // `> 0`, not just non-null: formatEta clamps up to "1 s", which is right for
+  // a small estimate and wrong for none — and an older server sends 0 at 100%.
+  if (p.remaining_ms != null && p.remaining_ms > 0) parts.push(`about ${formatEta(p.remaining_ms)} left`);
   return parts.join(' · ');
 }
 

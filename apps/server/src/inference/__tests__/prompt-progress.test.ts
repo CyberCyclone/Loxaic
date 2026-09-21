@@ -59,6 +59,11 @@ describe("remainingMs", () => {
     expect(remainingMs(p(1_000, 0, 0))).toBeNull();
   });
 
+  it("has no answer once nothing is left — not zero, which reads as a second of work", () => {
+    expect(remainingMs(p(10_000, 0, 5_000))).toBeNull();
+    expect(parsePromptProgress({ total: 1000, cache: 200, processed: 1000, time_ms: 200 })?.remaining_ms).toBeNull();
+  });
+
   it("divides only what was evaluated, so a cache hit is not speed", () => {
     // 1,000 evaluated in 2 s beyond an 8,000-token cache: 500 tok/s, 1,000 left.
     expect(remainingMs(p(9_000, 8_000, 2_000))).toBe(2_000);

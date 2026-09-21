@@ -214,6 +214,9 @@ const MOCK_PROGRESS_TICK_MS = 1_000;
  * tick, with a cached prefix so both bar segments render. */
 const MOCK_PROGRESS = { total: 12_000, cache: 4_000 };
 
+/** Resolves after `ms`, or at once on abort — callers follow it with
+ * throwIfAborted. See the MOCK_SLOW_MATCH branch for why the mock's waits have
+ * to be interruptible at all. */
 function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise<void>((resolve) => {
     if (signal?.aborted) { resolve(); return; }
@@ -346,19 +349,7 @@ async function* mockStream(
     // live HTTP request in liveStream, so a mock that slept through a stop
     // would make the mock lane the *only* place where stopping mid-response
     // does nothing — precisely the bug being tested (#113).
-    await new Promise<void>((resolve) => {
-      const signal = options.signal;
-      if (signal?.aborted) { resolve(); return; }
-      const timer = setTimeout(() => {
-        signal?.removeEventListener("abort", onAbort);
-        resolve();
-      }, MOCK_SLOW_MS);
-      function onAbort() {
-        clearTimeout(timer);
-        resolve();
-      }
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
+    await sleepUnlessAborted(MOCK_SLOW_MS, options.signal);
     // Cut short is not the same as stopped. `liveStream`'s fetch throws
     // AbortError, which is what puts the engine on its cancel path; a mock
     // that merely woke early and then streamed its whole reply ended the

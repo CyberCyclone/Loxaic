@@ -144,6 +144,20 @@ describe("promptProgressEmitter", () => {
     expect(sent).toEqual([100, 400, 1_000]);
   });
 
+  it("forces the 100% report once — a backend stalled at 100% is throttled like any other", () => {
+    // Reaching 100% and then not producing a token (a contended slot, a wedged
+    // backend) keeps reporting `processed == total`. Each one is a persisted,
+    // broadcast, flush-forcing event, for up to the hour-long request ceiling.
+    let now = 0;
+    const out: StreamEventKind[] = [];
+    const emit = promptProgressEmitter(base, (e) => out.push(e), () => now);
+    emit(at(500));
+    for (now = 10; now <= 2_000; now += 10) emit(at(1_000));
+    // The first, the forced 100% at t=10, then one a second: t=1010, t=2000 is
+    // only 990 after that.
+    expect(out).toHaveLength(3);
+  });
+
   it("folds to the latest report, and still clears on the first output", () => {
     const broker = new StreamBroker(new MemoryStreamLogDriver(86400), 0);
     const rec = (seq: number, event: StreamRecord["event"]): StreamRecord => ({ seq, ts: 0, event });

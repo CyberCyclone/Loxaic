@@ -95,6 +95,17 @@ describe('measured progress', () => {
     expect(promptProgressSegments(stats)).toBeNull();
   });
 
+  it('fills the bar at completion — two independent floors would stop at 99%', () => {
+    // 4,000 of 12,000 cached: 33.3% and 66.6% each floor down, to 99 between them.
+    const p = { total_tokens: 12_000, cached_tokens: 4_000, processed_tokens: 12_000, elapsed_ms: 8_000, remaining_ms: null };
+    expect(promptProgressSegments({ ...stats, progress: p })).toEqual({ cachedPct: 33, evaluatedPct: 67 });
+  });
+
+  it('claims no time left on a finished prefill, even from a server that sent 0', () => {
+    const p = { total_tokens: 12_000, cached_tokens: 4_000, processed_tokens: 12_000, elapsed_ms: 8_000, remaining_ms: 0 };
+    expect(describePromptStats({ ...stats, progress: p })).toBe('12k tokens · 33% cached · 100% evaluated');
+  });
+
   it('never lets the segments exceed the track', () => {
     const p = { total_tokens: 3, cached_tokens: 2, processed_tokens: 3, elapsed_ms: 1, remaining_ms: null };
     const s = promptProgressSegments({ ...stats, progress: p });
