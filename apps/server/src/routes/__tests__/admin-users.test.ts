@@ -27,7 +27,9 @@ const { adminUserRoutes } = await import("../admin-users.ts");
 
 const adminId = `admin-users-${uuid()}`;
 const plainId = `plain-users-${uuid()}`;
-const ids = [adminId, plainId];
+const expiredBanId = `plain-users-expired-${uuid()}`;
+const activeBanId = `plain-users-banned-${uuid()}`;
+const ids = [adminId, plainId, expiredBanId, activeBanId];
 const app = Fastify();
 adminUserRoutes(app);
 
@@ -38,6 +40,8 @@ beforeAll(async () => {
   for (const id of ids) {
     await db.insert(user).values({ id, name: id, email: `${id}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
   }
+  await db.update(user).set({ banned: true, banExpires: new Date(Date.now() - 60_000) }).where(eq(user.id, expiredBanId));
+  await db.update(user).set({ banned: true, banExpires: new Date(Date.now() + 60_000) }).where(eq(user.id, activeBanId));
   await db.insert(account).values({
     id: uuid(), accountId: plainId, providerId: "credential", userId: plainId,
     password: "scrypt-hash-that-must-never-appear", createdAt: new Date(), updatedAt: new Date(),
@@ -85,6 +89,15 @@ describe("/v1/admin/users", () => {
     // Unfiltered, the total counts past the page.
     const all = await app.inject({ method: "GET", url: "/v1/admin/users" });
     expect(all.json<{ total: number }>().total).toBeGreaterThanOrEqual(2);
+  });
+
+  it("reports a ban only while the middleware would enforce it", async () => {
+    currentUser.id = adminId;
+    const res = await app.inject({ method: "GET", url: "/v1/admin/users?q=plain-users-" });
+    const users = res.json<{ users: UserRow[] }>().users;
+    expect(users.find((u) => u.id === expiredBanId)?.banned).toBe(false);
+    expect(users.find((u) => u.id === activeBanId)?.banned).toBe(true);
+    expect(res.body).not.toContain("banExpires");
   });
 
   it("resets a password: returns it once, flags the user, ends their sessions", async () => {

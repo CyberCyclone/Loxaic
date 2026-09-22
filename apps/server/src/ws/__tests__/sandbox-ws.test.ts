@@ -202,6 +202,27 @@ describe("/ws/sandbox/:id", () => {
     expect((await done).some((e) => e.type === "terminal.exit")).toBe(true);
   });
 
+  it("drops a shell whose session was revoked after it opened", async () => {
+    // A password reset and a ban both delete every session and promise the
+    // account is signed out everywhere; a shell opened beforehand used to be
+    // the exception, for as long as it stayed open. The mock answers with the
+    // *current* user id, so pointing it at someone else is the revocation.
+    const { sandboxId } = await sandboxFor();
+    const ws = open(sandboxId);
+    await collect(ws, (e) => e.some((x) => x.type === "terminal.ready"));
+    // Input is re-checked at most once per INPUT_RECHECK_MS (5 s), and the
+    // connect counts as a check — so the revocation has to land after that.
+    await new Promise((r) => setTimeout(r, 5_200));
+    currentUser.id = strangerId;
+    const closed = closeCode(ws);
+    const events = collect(ws, (e) => e.some((x) => x.type === "terminal.error"));
+    ws.send(JSON.stringify({ type: "terminal.input", data: "echo still-here\n" }));
+    expect((await events).find((e) => e.type === "terminal.error")?.message).toContain("session has ended");
+    expect(await closed).toBe(4001);
+    // The keystroke that triggered the check was never forwarded.
+    expect(outputOf(await events)).not.toContain("still-here");
+  }, 20_000);
+
   it("caps how many terminals one user may hold open, and frees the slot on close", async () => {
     // Under SANDBOX_MODE=host each terminal is an unbounded bash on the
     // server itself; the executor caps its own shells at the same number.

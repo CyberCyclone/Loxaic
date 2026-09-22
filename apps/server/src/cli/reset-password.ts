@@ -57,6 +57,11 @@ async function main(): Promise<number> {
   }
 }
 
+// exitCode, not process.exit(): stdout is asynchronous on a pipe — which both
+// `pnpm --filter` and `docker compose exec -T` are — and exit() drops what has
+// not been written yet. The reset is already committed by then, so the line
+// being dropped is the only copy of the temporary password. The pool is
+// closed in main's finally, so nothing keeps the loop alive.
 void main().then((code) => {
-  process.exit(code);
+  process.exitCode = code;
 });

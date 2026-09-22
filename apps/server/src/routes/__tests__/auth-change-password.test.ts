@@ -57,6 +57,18 @@ describe("POST /api/auth/change-password", () => {
     expect(short.json()).toMatchObject({ code: "PASSWORD_TOO_SHORT" });
   });
 
+  it("refuses to keep the current password, so a reset cannot be satisfied with the temporary one", async () => {
+    const u = await signUp();
+    const { temporaryPassword } = await resetUserPassword(u.id);
+    const signedIn = await auth.api.signInEmail({ body: { email: u.email, password: temporaryPassword } });
+    const res = await change(signedIn.token, { currentPassword: temporaryPassword, newPassword: temporaryPassword });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ code: "PASSWORD_UNCHANGED" });
+    const [row] = await db.select({ flag: user.mustChangePassword }).from(user).where(eq(user.id, u.id));
+    expect(row.flag).toBe(true);
+    expect(await sessionStatus(signedIn.token)).toBe(200);
+  });
+
   it("returns a new token and revokes every old session, this one included", async () => {
     const u = await signUp();
     const other = await auth.api.signInEmail({ body: { email: u.email, password: PASSWORD } });

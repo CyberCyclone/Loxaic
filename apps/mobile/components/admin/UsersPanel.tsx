@@ -24,6 +24,8 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
  * screen runs in. Account is the place to change your own password, and the
  * server-side command is the way back in for an admin who cannot sign in.
  */
+const SEARCH_DEBOUNCE_MS = 250;
+
 export function UsersPanel({ currentUserId }: { currentUserId: string | null }) {
   const { showToast } = useToastHelper();
   const [query, setQuery] = useState('');
@@ -33,9 +35,11 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<AdminUser | null>(null);
   const [result, setResult] = useState<{ email: string; temporaryPassword: string } | null>(null);
-  // Typing fires a search per keystroke; only the newest answer may land, or
-  // a slow early one overwrites the list for what was typed after it.
+  // Typing is debounced — each search is two scans of the user table on the
+  // server — and only the newest answer may land, or a slow early one
+  // overwrites the list for what was typed after it.
   const requestSeq = useRef(0);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async (q: string) => {
     const seq = ++requestSeq.current;
@@ -55,7 +59,16 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
 
   useEffect(() => {
     void load('');
+    return () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    };
   }, [load]);
+
+  const search = (q: string) => {
+    setQuery(q);
+    if (debounce.current) clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => { void load(q); }, SEARCH_DEBOUNCE_MS);
+  };
 
   const reset = async (target: AdminUser) => {
     setError(null);
@@ -114,10 +127,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
             testID="admin.users.search"
             placeholder="Search by email or name"
             value={query}
-            onChangeText={(v) => {
-              setQuery(v);
-              void load(v);
-            }}
+            onChangeText={search}
             autoCapitalize="none"
             autoCorrect={false}
           />

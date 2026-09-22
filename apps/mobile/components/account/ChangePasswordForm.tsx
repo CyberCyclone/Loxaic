@@ -52,6 +52,13 @@ export function ChangePasswordForm({
       setError('The new passwords do not match.');
       return;
     }
+    // The server refuses this too (PASSWORD_UNCHANGED). After a reset the
+    // current password is the temporary one an admin has seen, and keeping it
+    // would satisfy the forced change without changing anything.
+    if (next === current) {
+      setError('Choose a password you have not used before.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -149,6 +156,8 @@ function describe(err: unknown): string {
     switch (err.code) {
       case 'INVALID_PASSWORD':
         return 'The current password is wrong.';
+      case 'PASSWORD_UNCHANGED':
+        return 'Choose a password you have not used before.';
       case 'PASSWORD_TOO_SHORT':
         return `Use at least ${String(MIN_LENGTH)} characters for the new password.`;
       case 'PASSWORD_TOO_LONG':

@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { count, db, desc, ilike, or, user } from "@loxaic/db";
 import { requireAdmin } from "../auth/middleware";
+import { isBanned } from "../auth/ban.ts";
 import { resetUserPassword, UserNotFoundError } from "../auth/password-reset.ts";
 
 /**
@@ -39,6 +40,7 @@ export function adminUserRoutes(app: FastifyInstance) {
           name: user.name,
           role: user.role,
           banned: user.banned,
+          banExpires: user.banExpires,
           mustChangePassword: user.mustChangePassword,
           createdAt: user.createdAt,
         })
@@ -50,7 +52,11 @@ export function adminUserRoutes(app: FastifyInstance) {
         .limit(MAX_USERS),
       db.select({ n: count() }).from(user).where(where),
     ]);
-    return { users: rows.map((r) => ({ ...r, banned: r.banned === true })), total: n };
+    // `banned` means what the middleware enforces: an expired ban is lifted.
+    return {
+      users: rows.map(({ banExpires, ...r }) => ({ ...r, banned: isBanned({ banned: r.banned, banExpires }) })),
+      total: n,
+    };
   });
 
   /**

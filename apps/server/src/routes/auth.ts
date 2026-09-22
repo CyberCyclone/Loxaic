@@ -82,7 +82,16 @@ export function authRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "Current and new password required" };
     }
-    await authenticateForPasswordChange(request, reply);
+    // The one check better-auth does not make. After a reset the current
+    // password is the temporary one an admin read off a screen (or a terminal
+    // kept in its scrollback), and clearing the flag while it still works is
+    // the exact outcome the flag exists to prevent. Checked before the
+    // current password is verified, so it costs nothing and leaks nothing.
+    if (currentPassword === newPassword) {
+      reply.code(400);
+      return { error: "Choose a password you have not used before.", code: "PASSWORD_UNCHANGED" };
+    }
+    const session = await authenticateForPasswordChange(request, reply);
     const res = await auth.api.changePassword({
       body: { currentPassword, newPassword, revokeOtherSessions: true },
       headers: new Headers(request.headers as HeadersInit),
@@ -93,8 +102,16 @@ export function authRoutes(app: FastifyInstance) {
     // back as `{ code, message }` and are forwarded untouched; the client
     // branches on `code`.
     const body = await forwardAuthResponse(res, reply);
-    const userId = (body as { user?: { id?: unknown } } | null)?.user?.id;
-    if (ok && typeof userId === "string") await clearMustChangePassword(userId);
+    // The id is the authenticated session's, not a claim in the forwarded
+    // payload — and a failure here must not turn a change that has already
+    // happened (every old session revoked) into a 500 that reads as "failed".
+    if (ok) {
+      try {
+        await clearMustChangePassword(session.user.id);
+      } catch (err) {
+        request.log.error({ err, userId: session.user.id }, "password changed but must_change_password was not cleared");
+      }
+    }
     return body;
   });
 

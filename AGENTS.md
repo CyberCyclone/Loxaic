@@ -286,6 +286,22 @@ replies.
 - **The flag reaches clients through better-auth's `user.additionalFields`**, declared in
   `auth/index.ts`, so it is on the sign-in/sign-up response and `getSession().user` with no
   route of ours involved. `input: false` keeps a sign-up body from setting it.
+- **A reset is only complete once the temporary password stops working, so change-password refuses
+  `newPassword === currentPassword`** (`PASSWORD_UNCHANGED`, checked before the current password is
+  verified). better-auth does not compare them, and without this the forced change could be
+  satisfied by typing the temporary password twice, leaving the credential an admin read off a
+  screen live. Found in review.
+- **Revoking sessions did not close an open sandbox terminal.** `ws/sandbox.ts` authenticated once
+  at open; a shell opened before a reset or a ban kept arbitrary execution in the workspace for as
+  long as the socket lived, while three copy strings promised "signed out everywhere". It now
+  re-checks the session on input (at most once per 5 s — a keystroke is a frame, and a lookup is a
+  query, so not per frame as `ws/chat.ts` does) and every 60 s while idle, as `ws/executor.ts`
+  does. A lookup that *fails* keeps the shell; only a session that resolves to nobody, or to
+  someone else, drops it. Pre-existing; this feature is what made it load-bearing.
+- **`auth/ban.ts`'s `isBanned` is the one ban predicate.** The admin user list once reported
+  `banned === true`, badging "Suspended" accounts whose ban had expired and who signed in fine;
+  it now selects `banExpires` and asks the same function the middleware does. Pure and separate
+  from `middleware.ts` because route tests mock that module whole.
 - **`POST /api/auth/change-password` always passes `revokeOtherSessions: true`, and that revokes
   the caller's own session too.** better-auth deletes every session and mints one replacement,
   returned as `token`. `session.tsx`'s `changePassword` stores it; a client that does not is
@@ -296,7 +312,10 @@ replies.
   walks the import graph to hold that. It hashes with `better-auth/crypto`'s `hashPassword`, which
   is what better-auth's `ctx.context.password.hash` defaults to — true only while
   `emailAndPassword.password.hash` stays unset; customise it and the CLI's hashes stop verifying.
-  `password-reset.test.ts` signs in with a temporary password to catch that drift.
+  `password-reset.test.ts` signs in with a temporary password to catch that drift. The CLI ends
+  with `process.exitCode`, never `process.exit()`: stdout is asynchronous on a pipe, which both
+  `pnpm --filter` and `docker compose exec -T` are, and `exit()` drops the unwritten line — the
+  only copy of a temporary password whose reset has already committed.
 - **The desktop's `--reset-password` opens the database through `supervisor/index.js`'s
   `openDatabase`**, the same function `startStack` uses, so it lands in the same database the
   server would. `startPostgres` adopts a running cluster from `postmaster.pid` (its `stop` is then

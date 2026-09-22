@@ -46,6 +46,20 @@ const MAX_TERMINALS_PER_USER = 8;
  * transfer's would not be. */
 const MAX_BUFFERED_BYTES = 1024 * 1024;
 const openTerminalsByUser = new Map<string, number>();
+/**
+ * The session is re-checked after connect, because a terminal is the one
+ * socket whose whole content is arbitrary execution and the one most likely
+ * to sit open for hours. A password reset deletes every session and a ban
+ * revokes them all, and each of those promises the account is signed out
+ * everywhere — which was not true of a shell opened beforehand.
+ *
+ * Not per frame, as ws/chat.ts does: a keystroke is a frame here, and a
+ * session lookup is a database query. Instead: on input, at most once every
+ * INPUT_RECHECK_MS, so a revoked session loses the shell on the next thing it
+ * types; and on a timer for an idle one, as ws/executor.ts does.
+ */
+const INPUT_RECHECK_MS = 5_000;
+const IDLE_RECHECK_MS = 60_000;
 
 interface WsConnection {
   readonly readyState: number;
@@ -198,6 +212,30 @@ export function sandboxTerminalWs(app: FastifyInstance) {
       socket.close();
     });
 
+    // True while the session that opened this shell still resolves to the
+    // same user. Failing to *ask* is not evidence that it does not — a database
+    // blip keeps the shell, and the next check asks again.
+    let lastCheckedAt = Date.now();
+    let checking: Promise<boolean> | null = null;
+    const sessionStillValid = (): Promise<boolean> => {
+      checking ??= resolveSessionFromToken(token)
+        .then((fresh) => fresh?.user.id === session.user.id)
+        .catch(() => true)
+        .finally(() => {
+          checking = null;
+          lastCheckedAt = Date.now();
+        });
+      return checking;
+    };
+    const dropIfRevoked = async (): Promise<boolean> => {
+      if (await sessionStillValid()) return false;
+      if (socket.readyState !== socket.OPEN) return true;
+      send({ type: "terminal.error", message: "Your session has ended. Sign in again to open a terminal." });
+      socket.close(4001, "Session expired");
+      return true;
+    };
+    const idleRecheck = setInterval(() => { void dropIfRevoked(); }, IDLE_RECHECK_MS);
+
     socket.on("message", (raw: Buffer) => {
       let msg: ClientMessage;
       try {
@@ -206,8 +244,16 @@ export function sandboxTerminalWs(app: FastifyInstance) {
         return;
       }
       if (msg.type === "terminal.input") {
+        if (typeof msg.data !== "string") return;
+        const data = msg.data;
         // Raw: no newline appended. See the module comment.
-        if (typeof msg.data === "string") terminal.write(msg.data);
+        if (Date.now() - lastCheckedAt < INPUT_RECHECK_MS) {
+          terminal.write(data);
+          return;
+        }
+        void dropIfRevoked().then((dropped) => {
+          if (!dropped) terminal.write(data);
+        });
         return;
       }
       if (msg.type === "terminal.resize") {
@@ -217,6 +263,7 @@ export function sandboxTerminalWs(app: FastifyInstance) {
     });
 
     socket.on("close", () => {
+      clearInterval(idleRecheck);
       releaseSlot();
       terminal.close();
     });

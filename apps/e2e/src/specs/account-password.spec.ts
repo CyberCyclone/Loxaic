@@ -42,6 +42,14 @@ describe('Changing your password', () => {
     await shot('account-password-wrong-current');
   });
 
+  it('refuses keeping the current password', async () => {
+    // After a reset the current password is the temporary one an admin has
+    // seen; accepting it again would satisfy the forced change with nothing
+    // changed. The server refuses it too (PASSWORD_UNCHANGED).
+    await fillChangePassword(creds.password, creds.password);
+    await waitForTextIn('account.password.error', 'not used before');
+  });
+
   it('refuses mismatched new passwords before asking the server', async () => {
     await fillChangePassword(creds.password, NEW_PASSWORD, `${NEW_PASSWORD}x`);
     await waitForTextIn('account.password.error', 'do not match');
