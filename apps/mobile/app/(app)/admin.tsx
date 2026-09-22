@@ -16,6 +16,7 @@ import { useSession } from '@/lib/session';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import { AdminTranscript } from '@/components/admin/AdminTranscript';
 import { DeletedChatRetention } from '@/components/admin/DeletedChatRetention';
+import { UsersPanel } from '@/components/admin/UsersPanel';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useConversationRetention } from '@/hooks/useConversationRetention';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -50,8 +51,12 @@ import {
  * already open as a viewer.
  */
 export default function AdminScreen() {
-  const { isAdmin, token } = useSession();
+  const { isAdmin, token, user } = useSession();
   const shell = useShell();
+  // Two lists, one screen: conversations (what an admin oversees) and users
+  // (where a forgotten password is reset). A switch rather than both stacked,
+  // since each is a full-height list and they would fight for the height.
+  const [tab, setTab] = useState<'conversations' | 'users'>('conversations');
   const [rows, setRows] = useState<AdminConversation[]>([]);
   const [selected, setSelected] = useState<AdminConversation | null>(null);
   const [shares, setShares] = useState<ConversationShare[]>([]);
@@ -152,9 +157,26 @@ export default function AdminScreen() {
     <VStack className="h-full flex-1">
       <MainHeader
         title="Admin"
-        subtitle={subtitleFor(rows)}
+        subtitle={tab === 'conversations' ? subtitleFor(rows) : 'Accounts on this server'}
         onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined}
       />
+      <HStack space="xs" className="border-b border-border px-4 py-2">
+        {(['conversations', 'users'] as const).map((t) => (
+          <Pressable
+            key={t}
+            testID={`admin.tab.${t}`}
+            onPress={() => { setTab(t); }}
+            className={`rounded-md px-3 py-1.5 ${tab === t ? 'bg-muted' : 'web:hover:bg-muted/30'}`}
+          >
+            <Text size="sm" className={tab === t ? 'font-medium text-foreground' : 'text-muted-foreground'}>
+              {t === 'conversations' ? 'Conversations' : 'Users'}
+            </Text>
+          </Pressable>
+        ))}
+      </HStack>
+      {tab === 'users' ? (
+        <UsersPanel currentUserId={user?.id ?? null} />
+      ) : (
       <HStack className="flex-1">
         <VStack className="flex-1 border-r border-border">
           {error && (
@@ -331,6 +353,7 @@ export default function AdminScreen() {
           )}
         </ScrollView>
       </HStack>
+      )}
 
       <WarningConfirmModal
         open={purging !== null}

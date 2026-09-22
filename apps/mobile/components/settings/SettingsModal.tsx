@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, Hourglass, Plug, Server } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, Hourglass, Plug, Server, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -303,6 +303,28 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
             <Box className="h-px bg-border" />
 
             <UpdatesRow />
+
+            <Pressable
+              testID="settings.nav.account"
+              onPress={() => {
+                onClose();
+                router.push('/account');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={UserRound} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    Account
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Who you are signed in as, and your password
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
 
             <Pressable
               testID="settings.nav.checkins"

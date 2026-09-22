@@ -38,6 +38,31 @@ function externalDatabaseUrl(db, secrets) {
   return url.toString();
 }
 
+/**
+ * This install's database: the external one its config names, or the embedded
+ * Postgres under dataDir — started, or adopted when one is already running
+ * (startPostgres reads postmaster.pid), in which case `stop` is a no-op and it
+ * is left running for whoever owns it.
+ *
+ * Shared by startStack and the headless `--reset-password` path, so a reset
+ * always lands in the very database the server would use.
+ *
+ * Returns { url, embedded, port?, stop }.
+ */
+export async function openDatabase({ dataDir, instance = null, log = console.log }) {
+  mkdirSync(dataDir, { recursive: true });
+  const secrets = loadOrCreateSecrets(dataDir);
+  // An external database means no embedded Postgres at all — not one started
+  // and ignored.
+  const externalDb = instance?.host?.db?.kind === "external" ? instance.host.db : null;
+  if (externalDb) {
+    log(`[stack] using external database (no embedded Postgres)`);
+    return { url: externalDatabaseUrl(externalDb, secrets), embedded: false, stop: async () => {} };
+  }
+  const pg = await startPostgres({ dataDir, port: await freePort(), password: secrets.pgPassword, log });
+  return { url: pg.url, embedded: true, port: pg.port, stop: pg.stop };
+}
+
 async function isHealthyLoxaic(baseUrl) {
   try {
     const res = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(1500) });
@@ -181,18 +206,11 @@ export async function startStack({
   }
   await reapRecordedServer(serverPidFile, log);
 
-  // An external database means no embedded Postgres at all — not one started
-  // and ignored. `pg` stays null and every later reference is guarded, so a
+  const database = await openDatabase({ dataDir, instance, log });
+  // Null for an external database, so every later reference is guarded and a
   // stop() never tries to shut down a server that was never ours.
-  const externalDb = hostConfig?.db?.kind === "external" ? hostConfig.db : null;
-  let pg = null;
-  if (externalDb) {
-    log(`[stack] using external database (no embedded Postgres)`);
-  } else {
-    const pgPort = await freePort();
-    pg = await startPostgres({ dataDir, port: pgPort, password: secrets.pgPassword, log });
-  }
-  const databaseUrl = externalDb ? externalDatabaseUrl(externalDb, secrets) : pg.url;
+  const pg = database.embedded ? database : null;
+  const databaseUrl = database.url;
 
   /**
    * The server child's environment, as a function of the one thing that can

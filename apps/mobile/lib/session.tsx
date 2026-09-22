@@ -7,6 +7,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  changePassword as apiChangePassword,
   getSession as apiGetSession,
   signIn as apiSignIn,
   signUp as apiSignUp,
@@ -33,6 +34,19 @@ interface SessionState {
    * /onboarding, or the app layout routes straight back. */
   completeOnboarding: () => Promise<void>;
   isAdmin: boolean;
+  /**
+   * An administrator (or the server's reset command) reset this account's
+   * password, and the server refuses everything but a password change until
+   * it is replaced. The app layout routes to /change-password on it.
+   *
+   * Learned from the ordinary session read at launch: GET /api/auth/session
+   * is not behind the check (see apps/server/src/auth/middleware.ts), so
+   * bootstrap needs no special case.
+   */
+  mustChangePassword: boolean;
+  /** Always signs out every other device; rejects with the api-client's
+   * ApiError (branch on `code`). */
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   signIn: (email: string, password: string) => Promise<Session>;
   signUp: (email: string, password: string, name?: string) => Promise<Session>;
   signOut: () => Promise<void>;
@@ -187,6 +201,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const changePassword = useCallback(async (currentPassword: string, newPassword: string) => {
+    const result = await apiChangePassword(currentPassword, newPassword);
+    // The server revoked every session for this account, *this one included*,
+    // and minted a replacement. The token in the response is now the only
+    // live one; keeping the old token would be indistinguishable from being
+    // signed out by our own password change.
+    await saveToken(result.token); // also sets the api-client's AUTH_TOKEN
+    setToken(result.token);
+    setUser({ ...result.user, mustChangePassword: false });
+  }, []);
+
   const signOut = useCallback(async () => {
     // Sign-out is the moment a user expects their content to stop being
     // reachable on this device — and the cache is plaintext conversation
@@ -203,8 +228,20 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ ready, token, user, needsOnboarding, completeOnboarding, isAdmin: user?.role === 'admin', signIn, signUp, signOut }),
-    [ready, token, user, needsOnboarding, completeOnboarding, signIn, signUp, signOut],
+    () => ({
+      ready,
+      token,
+      user,
+      needsOnboarding,
+      completeOnboarding,
+      isAdmin: user?.role === 'admin',
+      mustChangePassword: user?.mustChangePassword === true,
+      changePassword,
+      signIn,
+      signUp,
+      signOut,
+    }),
+    [ready, token, user, needsOnboarding, completeOnboarding, changePassword, signIn, signUp, signOut],
   );
 
   return (

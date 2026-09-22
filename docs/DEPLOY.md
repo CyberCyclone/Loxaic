@@ -109,7 +109,8 @@ Flags: `--port` (default 4100, or `$LOXAIC_PORT`), `--host` (default
 `localhost`, persisted with `--as-host`; default `lan`), `--advertise-url`
 (persisted with `--as-host` — a reverse proxy or domain other machines
 should use instead of this one's own LAN address), `--inference-url`,
-`--mock-inference`, `--help`. The GUI's `--loxaic-port`/`--loxaic-data-dir`
+`--mock-inference`, `--reset-password <email>` (see "Resetting a password"
+below), `--help`. The GUI's `--loxaic-port`/`--loxaic-data-dir`
 names are accepted too, so one set of flags works with either entry point.
 
 The GUI and the headless server share the same data directory by default (an
@@ -141,6 +142,39 @@ automatically on next start — a failed migration is a **fatal boot error**
 in this mode (`MIGRATIONS_STRICT=1`), not a silent skip, so a broken upgrade
 can't leave the app quietly running against a stale schema. No separate
 "run migrations" step.
+
+### Resetting a password
+
+There is no email reset. A forgotten password is reset in one of two ways,
+and both do the same thing: the account's password is replaced with a
+temporary one, every device it was signed in on is signed out, and the next
+sign-in with the temporary password goes straight to a "choose a new
+password" screen that nothing else can be reached past.
+
+- **An admin resets someone else's**: Admin → Users → **Reset password**. The
+  temporary password is shown once, on that screen, for the admin to pass on.
+- **Whoever runs the server resets anyone's, admins included** — the way back
+  in for an admin who has forgotten their own. Run one of these on the machine
+  that hosts the server; it prints the temporary password:
+
+  ```bash
+  # Desktop app or headless install (safe while it is running)
+  Loxaic --headless --reset-password alice@example.com
+  # …or for a systemd install, with the same flags the unit uses:
+  ELECTRON_RUN_AS_NODE=1 /opt/loxaic/loxaic /opt/loxaic/resources/app/src/headless.js \
+    --data-dir=/var/lib/loxaic --reset-password alice@example.com
+
+  # Docker Compose
+  docker compose exec server node dist/reset-password.js alice@example.com
+
+  # A dev checkout
+  pnpm --filter @loxaic/server reset-password alice@example.com
+  ```
+
+  Run it from a shell, not from a service unit: the password goes to stdout,
+  and a journal would keep it. The server must have started once on a version
+  with this feature, because the column it sets comes from that version's
+  migrations; an older database is refused with a message saying so.
 
 ## Docker Compose (alternative / dev)
 

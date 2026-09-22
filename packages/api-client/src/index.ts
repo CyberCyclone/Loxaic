@@ -14,6 +14,9 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    /** The server's machine-readable reason, when it gave one — better-auth's
+     * `INVALID_PASSWORD`, or our own `password_change_required`. */
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -354,6 +357,9 @@ export interface Session {
     createdAt: string;
     updatedAt: string;
     role?: string | null;
+    /** Set by a password reset; the client must route to the change-password
+     * screen until it is cleared. Absent from an older server: read as false. */
+    mustChangePassword?: boolean;
   };
   redirect?: boolean;
 }
@@ -378,6 +384,28 @@ export async function signIn(email: string, password: string): Promise<Session> 
   });
   if (!res.ok) throw new Error(`Sign in failed: ${String(res.status)}`);
   return res.json() as Promise<Session>;
+}
+
+/**
+ * Change the signed-in user's password. The server always signs out every
+ * other device, and this one too — the returned `token` is the replacement
+ * session, and the caller must store it or it is signed out by its own
+ * password change.
+ *
+ * Rejects with an {@link ApiError} whose `code` is better-auth's own:
+ * `INVALID_PASSWORD` (the current password is wrong), `PASSWORD_TOO_SHORT`,
+ * `PASSWORD_TOO_LONG`.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ token: string; user: Session["user"] }> {
+  const res = await authedFetch("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  return (await res.json()) as { token: string; user: Session["user"] };
 }
 
 /** Shape of `GET /api/auth/session` — distinct from the sign-in/sign-up
@@ -567,6 +595,32 @@ export async function adminRestoreConversation(conversationId: string): Promise<
 /** Erase a retained conversation now rather than at the end of its window. */
 export async function adminPurgeConversation(conversationId: string): Promise<void> {
   await authedFetch(`/v1/admin/conversations/${conversationId}/purge`, { method: "POST" });
+}
+
+/** An account on this deployment, as the admin Users list shows it. */
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: string | null;
+  banned: boolean;
+  mustChangePassword: boolean;
+  createdAt: string;
+}
+
+/** Newest first, capped server-side; `total` counts every match, so a caller
+ * can say when the list is not all of them. `q` matches any part of an email
+ * or name. */
+export async function adminListUsers(q?: string): Promise<{ users: AdminUser[]; total: number }> {
+  const res = await authedFetch(`/v1/admin/users${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+  return (await res.json()) as { users: AdminUser[]; total: number };
+}
+
+/** Replace a user's password with a temporary one, returned only here. They
+ * are signed out everywhere and must choose a new one at next sign-in. */
+export async function adminResetUserPassword(userId: string): Promise<{ temporaryPassword: string }> {
+  const res = await authedFetch(`/v1/admin/users/${encodeURIComponent(userId)}/reset-password`, { method: "POST" });
+  return (await res.json()) as { temporaryPassword: string };
 }
 
 /** Hold a retained conversation past its window, or release it back to it. */
@@ -794,7 +848,10 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
   const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
-  if (!res.ok) throw new ApiError(await describeFailure(res, init?.method ?? "GET", path), res.status);
+  if (!res.ok) {
+    const { message, code } = await describeFailure(res, init?.method ?? "GET", path);
+    throw new ApiError(message, res.status, code);
+  }
   return res;
 }
 
@@ -805,14 +862,21 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
  * used to collapse into `POST /v1/conversations failed: 400` at exactly the
  * moment the user could have acted on the reason.
  */
-async function describeFailure(res: Response, method: string, path: string): Promise<string> {
+async function describeFailure(
+  res: Response,
+  method: string,
+  path: string,
+): Promise<{ message: string; code?: string }> {
   const fallback = `${method} ${path} failed: ${String(res.status)}`;
   try {
-    const body = (await res.json()) as { error?: unknown; message?: unknown };
+    const body = (await res.json()) as { error?: unknown; message?: unknown; code?: unknown };
     const detail = typeof body.error === "string" ? body.error : typeof body.message === "string" ? body.message : null;
-    return detail && detail.length > 0 ? detail : fallback;
+    return {
+      message: detail && detail.length > 0 ? detail : fallback,
+      code: typeof body.code === "string" ? body.code : undefined,
+    };
   } catch {
-    return fallback;
+    return { message: fallback };
   }
 }
 

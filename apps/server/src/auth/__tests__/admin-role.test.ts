@@ -5,7 +5,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { db, eq, inArray } from "@loxaic/db";
 import { account, session, user } from "@loxaic/db/schema";
 import { auth } from "../index.ts";
-import { authenticate, requireAdmin } from "../middleware.ts";
+import { authenticate, authenticateForPasswordChange, requireAdmin, resolveSessionFromToken } from "../middleware.ts";
 
 const PASSWORD = "password123";
 const emails: string[] = [];
@@ -134,6 +134,57 @@ describe("ban enforcement on the read path", () => {
     const { reply, calls } = fakeReply();
     await expect(authenticate(requestWithToken(res.token), reply)).resolves.toBe(res.user.id);
     expect(calls.code).toBeUndefined();
+  });
+});
+
+describe("forced password change", () => {
+  // Set the flag the way a reset does, without the reset's session purge, so
+  // the token in hand is still a live session for a flagged user.
+  const flag = (id: string, extra: Partial<typeof user.$inferInsert> = {}) =>
+    db.update(user).set({ mustChangePassword: true, ...extra }).where(eq(user.id, id));
+
+  it("refuses every authenticated route with a recognisable 403", async () => {
+    const res = await signUp(`must-change-${uuid()}@example.test`);
+    await flag(res.user.id);
+    const { reply, calls } = fakeReply();
+    await expect(authenticate(requestWithToken(res.token), reply)).rejects.toThrow();
+    expect(calls.code).toBe(403);
+    expect(calls.body).toMatchObject({ code: "password_change_required" });
+  });
+
+  it("refuses sockets too", async () => {
+    const res = await signUp(`must-change-ws-${uuid()}@example.test`);
+    await flag(res.user.id);
+    await expect(resolveSessionFromToken(res.token ?? "")).resolves.toBeNull();
+  });
+
+  it("outranks the admin role", async () => {
+    const res = await signUp(`must-change-admin-${uuid()}@example.test`);
+    await flag(res.user.id, { role: "admin" });
+    const { reply, calls } = fakeReply();
+    await expect(requireAdmin(requestWithToken(res.token), reply)).rejects.toThrow();
+    expect(calls.code).toBe(403);
+    expect(calls.body).toMatchObject({ code: "password_change_required" });
+  });
+
+  it("is let through by the change-password gate, and nothing else", async () => {
+    const res = await signUp(`must-change-gate-${uuid()}@example.test`);
+    await flag(res.user.id);
+    const { reply, calls } = fakeReply();
+    const session = await authenticateForPasswordChange(requestWithToken(res.token), reply);
+    expect(session.user.id).toBe(res.user.id);
+    expect(calls.code).toBeUndefined();
+  });
+
+  it("a ban is reported as a ban, even when the flag is also set", async () => {
+    const res = await signUp(`must-change-banned-${uuid()}@example.test`);
+    await flag(res.user.id, { banned: true });
+    for (const gate of [authenticate, authenticateForPasswordChange]) {
+      const { reply, calls } = fakeReply();
+      await expect(gate(requestWithToken(res.token), reply)).rejects.toThrow();
+      expect(calls.code).toBe(403);
+      expect(calls.body).toEqual({ error: "Account suspended" });
+    }
   });
 });
 

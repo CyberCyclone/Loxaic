@@ -7,7 +7,11 @@ export default defineConfig({
   // provider, but it is a separate program — it never imports the database,
   // settings, or the server entry, and executor/__tests__/isolation.test.ts
   // fails the build if that ever changes.
-  entry: { index: "src/index.ts", executor: "src/executor/main.ts" },
+  //
+  // A third, `reset-password`, is the password-reset CLI (src/cli/): it shares
+  // src/auth/password-reset.ts with the admin route and needs only
+  // DATABASE_URL, so like the executor it never imports the server entry.
+  entry: { index: "src/index.ts", executor: "src/executor/main.ts", "reset-password": "src/cli/reset-password.ts" },
   format: ["esm"],
   clean: true,
   // The packaged desktop build runs this output under Electron's Node

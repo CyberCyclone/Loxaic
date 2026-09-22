@@ -14,6 +14,7 @@ import { defaultDataDir, tsnetProxyPath } from "./supervisor/paths.js";
 import { startTsnet } from "./supervisor/tsnet.js";
 import { readSecrets } from "./supervisor/secrets.js";
 import { buildConfig, loadConfig, saveConfig } from "./supervisor/config.js";
+import { resetPassword } from "./supervisor/reset-password.js";
 
 const HELP = `Usage: loxaic-headless [options]
 
@@ -35,6 +36,12 @@ Options:
                        this one's own LAN address)
   --inference-url <u>  Inference backend base URL (sets INFERENCE_BASE_URL)
   --mock-inference     Use the mock inference provider (sets MOCK_INFERENCE=true)
+  --reset-password <email>
+                       Reset that user's password to a temporary one, print
+                       it, and exit. Uses this install's database (safe while
+                       the app or service is running); the server must have
+                       started once on this version. Run it from a shell, not
+                       a service unit: the password is printed to stdout.
   --help               Show this help and exit
 
 Instance mode is read from <data-dir>/config.json — the same file the desktop
@@ -121,6 +128,19 @@ async function main() {
         "Headless client mode isn't supported yet — run --as-host to convert it, or use the desktop app.",
     );
     process.exit(2);
+  }
+
+  // Before anything that would start a server: this is a one-shot command
+  // against this install's own database, for an admin who has forgotten their
+  // password (there is no email reset). A client install has no database,
+  // which the refusal above already covers.
+  if (hasFlag("reset-password") || process.argv.some((a) => a.startsWith("--reset-password="))) {
+    const email = getFlag("reset-password");
+    if (!email || email.startsWith("--")) {
+      console.error("Usage: --reset-password <email>");
+      process.exit(2);
+    }
+    process.exit(await resetPassword({ dataDir, instance, email, log: (line) => { console.error(line); } }));
   }
 
   const port = Number(

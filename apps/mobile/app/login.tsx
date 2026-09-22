@@ -27,6 +27,7 @@ export default function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [serverOpen, setServerOpen] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   // Stable, so the picker's effect fires on a new result rather than on every
   // render of this screen, which would yank the view down while typing.
@@ -188,6 +189,30 @@ export default function LoginScreen() {
                 {mode === 'sign-in' ? 'Sign in' : 'Create account'}
               </ButtonText>
             </Button>
+
+            {/* There is no email reset, so this explains rather than acts. No
+                /v1/config flag decides it: "ask your administrator" is the only
+                mode there is. One belongs there if an email flow ever lands. */}
+            {mode === 'sign-in' && (
+              <VStack space="xs" className="items-center">
+                <Pressable
+                  testID="login.forgotPassword"
+                  onPress={() => { setForgotOpen((v) => !v); }}
+                >
+                  <Text size="sm" className="text-link">
+                    Forgot password?
+                  </Text>
+                </Pressable>
+                {forgotOpen && (
+                  <Text testID="login.forgotPassword.hint" size="xs" className="text-center text-muted-foreground">
+                    Passwords on this server are reset by its administrator, from Admin → Users. They will give you a
+                    temporary password to sign in with, and you will choose a new one straight after. If you are the
+                    administrator, run the reset command on the machine that hosts the server — see “Resetting a
+                    password” in the deployment guide.
+                  </Text>
+                )}
+              </VStack>
+            )}
           </VStack>
 
           <HStack space="xs" className="justify-center">
@@ -199,6 +224,7 @@ export default function LoginScreen() {
               onPress={() => {
                 setMode(mode === 'sign-in' ? 'sign-up' : 'sign-in');
                 setError(null);
+                setForgotOpen(false);
               }}
             >
               <Text size="sm" className="text-link">

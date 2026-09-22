@@ -15,6 +15,12 @@ export const user = pgTable("user", {
   banned: boolean("banned").default(false),
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires"),
+  // Set by a password reset (an admin's, or the reset-password CLI's) and
+  // cleared by POST /api/auth/change-password. Enforced in
+  // apps/server/src/auth/middleware.ts beside `banned`: until it is cleared the
+  // user can sign in, read their session, change their password and sign out,
+  // and nothing else.
+  mustChangePassword: boolean("must_change_password").notNull().default(false),
 });
 
 export const session = pgTable("session", {

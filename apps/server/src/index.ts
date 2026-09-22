@@ -34,6 +34,7 @@ import { gitRoutes } from "./routes/git.ts";
 import { prefsRoutes } from "./routes/prefs";
 import { adminSettingsRoutes } from "./routes/admin-settings";
 import { adminProviderRoutes } from "./routes/admin-providers";
+import { adminUserRoutes } from "./routes/admin-users";
 import { fileRoutes } from "./routes/files";
 import { hostingBlockedReason, loadServerSettings } from "./settings";
 import { ensureCluster, registerHost } from "./cluster";
@@ -179,6 +180,7 @@ executorRoutes(app);
 prefsRoutes(app);
 adminSettingsRoutes(app);
 adminProviderRoutes(app);
+adminUserRoutes(app);
 fileRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
