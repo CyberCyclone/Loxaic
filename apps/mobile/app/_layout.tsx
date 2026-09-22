@@ -19,9 +19,11 @@ import { startUpdateChecks } from '@/lib/expo-updates';
 
 function ThemedApp() {
   const [themePref] = useThemePreference();
-  const { ready, token } = useSession();
-  // Above the auth gate on purpose — see useLocalExecutorSync.
-  useLocalExecutorSync(ready ? token : null);
+  const { ready, token, mustChangePassword } = useSession();
+  // Above the auth gate on purpose — see useLocalExecutorSync. Not while a
+  // password change is pending: the server refuses that token on every socket
+  // until it is done, and the change hands back a new token anyway.
+  useLocalExecutorSync(ready && !mustChangePassword ? token : null);
   // Also above the auth gate, and for a related reason: an update that fixes
   // a bug preventing sign-in is exactly the one a signed-out user needs. A
   // no-op everywhere updates don't exist (web, Expo Go, development).

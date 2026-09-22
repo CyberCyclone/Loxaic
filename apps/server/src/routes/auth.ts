@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { auth } from "../auth";
+import { authenticateForPasswordChange } from "../auth/middleware.ts";
+import { clearMustChangePassword } from "../auth/password-reset.ts";
 
 export function authRoutes(app: FastifyInstance) {
   // Sign up
@@ -61,6 +63,41 @@ export function authRoutes(app: FastifyInstance) {
     return result;
   });
 
+  // Change password. Always revokes every other session: a password change is
+  // most often "someone else may have it", and a checkbox to keep them signed
+  // in is a way to get that wrong. better-auth's revokeOtherSessions deletes
+  // *every* session, this one included, and mints a replacement — returned as
+  // `token` in the body (and set as the cookie). A client that does not swap
+  // to it is signed out by its own password change.
+  //
+  // Reachable for a user who must change their password (that is its whole
+  // purpose), which is why it authenticates through
+  // authenticateForPasswordChange rather than authenticate. Never log the body.
+  app.post("/api/auth/change-password", async (request, reply) => {
+    const { currentPassword, newPassword } = (request.body ?? {}) as {
+      currentPassword?: unknown;
+      newPassword?: unknown;
+    };
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string" || !currentPassword || !newPassword) {
+      reply.code(400);
+      return { error: "Current and new password required" };
+    }
+    await authenticateForPasswordChange(request, reply);
+    const res = await auth.api.changePassword({
+      body: { currentPassword, newPassword, revokeOtherSessions: true },
+      headers: new Headers(request.headers as HeadersInit),
+      asResponse: true,
+    });
+    const ok = res.ok;
+    // better-auth's own errors (INVALID_PASSWORD, PASSWORD_TOO_SHORT, …) come
+    // back as `{ code, message }` and are forwarded untouched; the client
+    // branches on `code`.
+    const body = await forwardAuthResponse(res, reply);
+    const userId = (body as { user?: { id?: unknown } } | null)?.user?.id;
+    if (ok && typeof userId === "string") await clearMustChangePassword(userId);
+    return body;
+  });
+
   // Token (for WebSocket / native Bearer auth)
   app.get("/api/auth/token", async (request, reply) => {
     const result = await auth.api.getSession({
@@ -83,6 +120,11 @@ async function forwardAuthResponse(res: Response, reply: FastifyReply) {
   for (const cookie of res.headers.getSetCookie()) {
     reply.header("set-cookie", cookie);
   }
+  // The bearer plugin's way of announcing a new session token (sign-in, and a
+  // password change that re-mints the session). Our clients read the token
+  // from the body; forwarded so the documented contract holds too.
+  const bearer = res.headers.get("set-auth-token");
+  if (bearer) reply.header("set-auth-token", bearer);
   reply.code(res.status);
   const text = await res.text();
   if (!text) return null;

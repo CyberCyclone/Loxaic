@@ -247,6 +247,8 @@ replies.
   it on every authenticated request (403, expired bans treated as lifted). Route handlers get
   this for free by going through `authenticate`/`requireAdmin`; anything that calls
   `auth.api.getSession` directly does not.
+- **`must_change_password` is enforced in the same two places, for the same reason** — see
+  "Passwords" below.
 - **Postgres/postgres.js returns `SUM()`/`AVG()` over `integer` columns as strings**
   (bigint/numeric precision preservation). Cast to `::float8` in SQL, not `::int` (avoids a
   32-bit overflow ceiling on lifetime token sums). Columns typed `real` parse natively.
@@ -262,6 +264,52 @@ replies.
   Reproduced by freeing heap space while a run was parked at its check-in, and fixed by ordering
   on `lamport, created_at`, the key the engine replays with. Anything positional (`.at(-1)`,
   `[0]`, "the last assistant row") needs an `orderBy`; `.find` by content does not.
+
+### Passwords
+
+- **There is no mail transport, and a reset does not need one.** A forgotten password is reset by
+  an admin (Admin → Users, `POST /v1/admin/users/:id/reset-password`) or by whoever runs the
+  server (`dist/reset-password.js`, reached as `pnpm --filter @loxaic/server reset-password`,
+  `docker compose exec server node dist/reset-password.js`, or the desktop's
+  `--headless --reset-password`). better-auth's `requestPasswordReset` is unused: it hard-fails
+  without `sendResetPassword`. The CLI is the only way back in for an admin who has forgotten their
+  own, which is why it exists at all.
+- **A reset sets `user.must_change_password`, and `auth/middleware.ts` refuses a flagged user
+  everywhere** — `verifyToken` answers 403 `{ code: "password_change_required" }` and
+  `resolveSessionFromToken` returns null, so sockets refuse too. What stays reachable is reachable
+  *by construction*, not by an allowlist: `routes/auth.ts` (sign-in, session, token, sign-out,
+  change-password) calls `auth.api.*` directly and never touches the middleware. A flagged user can
+  therefore sign in, learn who they are, change their password and sign out, which is exactly what
+  the client's top-level `/change-password` screen needs; the `(app)` layout redirects there
+  because everything inside the shell would 403. Adding an `/api/auth/*` route that should *not*
+  be reachable by a flagged user means authenticating it through the middleware.
+- **The flag reaches clients through better-auth's `user.additionalFields`**, declared in
+  `auth/index.ts`, so it is on the sign-in/sign-up response and `getSession().user` with no
+  route of ours involved. `input: false` keeps a sign-up body from setting it.
+- **`POST /api/auth/change-password` always passes `revokeOtherSessions: true`, and that revokes
+  the caller's own session too.** better-auth deletes every session and mints one replacement,
+  returned as `token`. `session.tsx`'s `changePassword` stores it; a client that does not is
+  signed out by its own password change, which looks exactly like a bug in the change.
+- **`auth/password-reset.ts` is shared by the admin route and the CLI**, and the CLI bundles it,
+  so it must never import fastify, the server entry, or `auth/index.ts` (the better-auth instance
+  reads `BETTER_AUTH_SECRET` and the whole auth config at import). `cli/__tests__/isolation.test.ts`
+  walks the import graph to hold that. It hashes with `better-auth/crypto`'s `hashPassword`, which
+  is what better-auth's `ctx.context.password.hash` defaults to — true only while
+  `emailAndPassword.password.hash` stays unset; customise it and the CLI's hashes stop verifying.
+  `password-reset.test.ts` signs in with a temporary password to catch that drift.
+- **The desktop's `--reset-password` opens the database through `supervisor/index.js`'s
+  `openDatabase`**, the same function `startStack` uses, so it lands in the same database the
+  server would. `startPostgres` adopts a running cluster from `postmaster.pid` (its `stop` is then
+  a no-op), which is what makes it safe beside a running app. A Postgres `42703` from the CLI means
+  the column does not exist yet: the server has to have started once on this version.
+- **The admin user list is capped (200), newest first, searchable, and reports `total`.** Oldest
+  first under a cap hid exactly the newest accounts, which are the ones most likely to need a
+  reset; the dev database's 2,000-odd test users made that visible at once.
+- **Booting a throwaway server install beside the dev stack destroys the dev stack's paused
+  container sandboxes.** A fresh database claims no containers, so its boot orphan sweep removes
+  every `loxaic.sandbox` container on the shared engine (the gap noted under "The orphan sweep only
+  considers containers created before this process started"). Verifying the headless reset that way
+  swept ten e2e leftovers. Stop, or accept losing, the other install's paused workspaces first.
 
 ### Inference
 

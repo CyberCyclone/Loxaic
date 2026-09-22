@@ -43,6 +43,20 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
+    // Leave `password.hash`/`password.verify` unset. auth/password-reset.ts
+    // hashes with better-auth/crypto's `hashPassword`, which is what these
+    // default to — so a hash the reset-password CLI writes (with no auth
+    // instance in sight) verifies at sign-in. Customise them and that stops
+    // being true.
+  },
+  user: {
+    // Declared here so better-auth returns it on every user object — the
+    // sign-in and sign-up responses and getSession() — which is how the
+    // client learns it must route to the change-password screen. `input:
+    // false`: a sign-up body cannot set it.
+    additionalFields: {
+      mustChangePassword: { type: "boolean", required: false, defaultValue: false, input: false },
+    },
   },
   // Lets sign-in/sign-up's raw session token be reused directly as an
   // `Authorization: Bearer <token>` header — used by REST auth middleware,

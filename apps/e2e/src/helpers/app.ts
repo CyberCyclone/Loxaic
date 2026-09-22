@@ -248,6 +248,26 @@ async function dismissIosSavePasswordPrompt(): Promise<void> {
   }
 }
 
+/**
+ * The change-password form, on either screen that renders it — Account, or
+ * the forced change after a reset (same component, same testIDs).
+ */
+export async function fillChangePassword(current: string, next: string, confirm = next): Promise<void> {
+  await typeInto('account.password.current', current);
+  await typeInto('account.password.new', next);
+  await typeInto('account.password.confirm', confirm);
+  await tap('account.password.submit');
+}
+
+/** Submits the login form without waiting for the composer, for the cases
+ * where signing in is expected to fail or to land somewhere else. */
+export async function submitLogin(email: string, password: string): Promise<void> {
+  await waitForVisible('login.submit');
+  await typeInto('login.email', email);
+  await typeInto('login.password', password);
+  await tap('login.submit');
+}
+
 export async function signOut(): Promise<void> {
   await openSidebar();
   await tap('sidebar.signOut');
@@ -273,6 +293,8 @@ const SURFACE_ANCHOR = {
   agent: 'composer.input',
   routines: 'routines.new',
   stats: 'composer.input',
+  // No composer either: the admin screen opens on its tab switch.
+  admin: 'admin.tab.conversations',
 } as const;
 
 export async function goToSurface(surface: keyof typeof SURFACE_ANCHOR): Promise<void> {

@@ -130,7 +130,7 @@ cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
 
 // dist/executor.js is the local executor the desktop spawns for Local
 // workspaces (supervisor/executor.js); `ws` is its one runtime dependency.
-for (const required of ["dist/index.js", "dist/executor.js", "node_modules/fastify", "node_modules/ws", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
+for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }
