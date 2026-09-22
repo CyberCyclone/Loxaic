@@ -779,7 +779,11 @@ export async function runToolLoop(ctx: {
       // backend allocated. Re-read it as soon as the request that caused the
       // load is done — not at the end of the turn — since every usage figure
       // from here on reports against it, and later iterations would otherwise
-      // keep reading the cached pre-load answer.
+      // keep reading the cached pre-load answer. Per request, not latched once
+      // per turn, on purpose: a backend that unloads on an idle TTL can load
+      // again after a long approval wait, and that load allocates the window
+      // anew — so each one re-invalidates, at the cost of refetching this
+      // provider's model list once per load.
       if (loadingModel && doneResult) {
         // Only this model's provider: a load on one backend says nothing
         // about another's catalogue, and dropping a hosted provider's
@@ -872,8 +876,6 @@ export async function runToolLoop(ctx: {
           .update(conversations)
           .set({ activeLeafId: leafId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
-        // This is the terminating iteration, so `tally` and `doneResult`
-        // describe the same call — the breakdown lines up exactly.
         const usage = iterationUsage;
         // Checked here rather than before the next turn starts: this is the
         // one point where the *measured* size of the prompt and the window it

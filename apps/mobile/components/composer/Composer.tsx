@@ -271,7 +271,6 @@ export function Composer({
                 >
                   <ContextRing percent={context.percent} />
                   <Text
-                    testID="composer.context.percent"
                     size="2xs"
                     className={
                       context.window != null && context.used > context.window
