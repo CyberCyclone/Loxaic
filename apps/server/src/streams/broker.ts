@@ -180,6 +180,12 @@ export class StreamBroker {
           promptStats = stats;
           break;
         }
+        case "message.usage":
+          // Folded, not transient: a client reconnecting mid-turn — parked at
+          // an approval, say — would otherwise see no context figure until the
+          // turn ended, which is #193 again by another route.
+          ensure(event.message_id).usage = event.usage;
+          break;
         case "message.end": {
           if (promptStats?.message_id === event.message_id) promptStats = undefined;
           const m = ensure(event.message_id);

@@ -28,7 +28,7 @@ import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
-import { foldPromptStats } from '@/lib/promptStats';
+import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { useToastHelper } from './useToastHelper';
 
 export type { WorkspaceChoice } from '@/lib/types';
@@ -422,9 +422,11 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           const current = prev[convId];
           if (current?.streamId !== event.stream_id) return prev;
           const promptStats = foldPromptStats(current.promptStats, event.event);
-          // Measured progress means the model has loaded (see loadingAfter);
-          // every other change to loadingModel is handled below.
-          const loadingModel = event.event.kind === 'prompt.stats' && event.event.progress ? false : current.loadingModel;
+          // The same rule chat uses. This used to be a hand-kept list of clear
+          // points (iteration, deltas, measured progress), so a request that
+          // loaded the model and answered with tool calls alone left "Loading
+          // model…" up for the whole approval wait that followed.
+          const loadingModel = loadingAfter(current.loadingModel, event.event);
           return promptStats === current.promptStats && loadingModel === current.loadingModel
             ? prev
             : { ...prev, [convId]: { ...current, promptStats, loadingModel } };
@@ -457,11 +459,6 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
             setRunState('running');
             setIteration({ n: inner.n, max: inner.max });
           }
-          setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
-        } else if (inner.kind === 'model.loading') {
-          setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: true } } : prev));
-        } else if (inner.kind === 'text.delta' || inner.kind === 'thinking.delta') {
-          setStreamingByConv((prev) => (prev[convId]?.streamId === event.stream_id ? { ...prev, [convId]: { ...prev[convId], loadingModel: false } } : prev));
         } else if (inner.kind === 'approval.request') {
           if (isActive) {
             setRunState('awaiting_approval');

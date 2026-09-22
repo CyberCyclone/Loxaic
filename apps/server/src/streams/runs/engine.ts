@@ -335,6 +335,39 @@ export function promptStatsFor(input: {
   };
 }
 
+/**
+ * What one finished model request cost, as the wire carries it. One builder
+ * for every place that reports it — the per-request `message.usage`, the
+ * deferred `message.end` of a tool-calling message, and the turn's final
+ * `message.end` — so the context meter reads the same figure however it
+ * arrived, and the same as a reload rebuilds from `usage_records`.
+ *
+ * `tally` and `result` must describe the same request, which is why this is
+ * built per iteration and never carried across one.
+ */
+export function turnUsageFor(input: {
+  result: CompletionResult;
+  reuse: PromptReuse;
+  tally: ContextTally;
+  omittedAttachments: AttachmentRef[];
+  meta: Parameters<typeof apportion>[3];
+}): TurnUsage {
+  const { result } = input;
+  return {
+    prompt_tokens: result.usage.prompt_tokens,
+    completion_tokens: result.usage.completion_tokens,
+    total_tokens: result.usage.total_tokens,
+    prompt_tps: result.promptTps,
+    gen_tps: result.genTps,
+    total_ms: result.totalMs,
+    ttft_ms: result.ttftMs,
+    cached_tokens: result.cachedTokens,
+    reusable_tokens: input.reuse.tokens,
+    ...(input.omittedAttachments.length ? { omitted_attachments: input.omittedAttachments } : {}),
+    context: apportion(input.tally, result.usage.prompt_tokens, result.usage.completion_tokens, input.meta),
+  };
+}
+
 /** At most one progress re-emit per this many ms. */
 export const PROGRESS_EMIT_INTERVAL_MS = 1_000;
 
@@ -549,10 +582,6 @@ export async function runToolLoop(ctx: {
     }
 
     let parentId = ctx.userMsgId;
-    // Set when any iteration triggered a JIT load, so the cached model list —
-    // and with it the context window — can be dropped before the client refreshes.
-    let jitLoaded = false;
-
     // The end of the *current* step window, absolute rather than relative:
     // each "keep going" pushes it out by another `maxIterations`, so the
     // client can render "7/100" and then "104/200" without having to track
@@ -628,7 +657,6 @@ export async function runToolLoop(ctx: {
         windowTokens = info?.windowTokens ?? null;
         reportProgress = info?.nativeRuntime ?? false;
         if (info && !info.loaded) {
-          jitLoaded = true;
           loadingModel = true;
           producer.emit({ kind: "model.loading", message_id: assistantMsgId });
         }
@@ -747,10 +775,42 @@ export async function runToolLoop(ctx: {
         return;
       }
 
-      // Outside the try above, and never allowed to fail the turn: a reply the
-      // model finished is not undone because its usage row could not be
-      // written, and a database error is not a reason the model failed.
+      // A window read before a JIT load is the model's max, not what the
+      // backend allocated. Re-read it as soon as the request that caused the
+      // load is done — not at the end of the turn — since every usage figure
+      // from here on reports against it, and later iterations would otherwise
+      // keep reading the cached pre-load answer. Per request, not latched once
+      // per turn, on purpose: a backend that unloads on an idle TTL can load
+      // again after a long approval wait, and that load allocates the window
+      // anew — so each one re-invalidates, at the cost of refetching this
+      // provider's model list once per load.
+      if (loadingModel && doneResult) {
+        // Only this model's provider: a load on one backend says nothing
+        // about another's catalogue, and dropping a hosted provider's
+        // several-hundred-entry list would cost a round trip to rebuild it.
+        invalidateBackendModels(providerId);
+        breakdownMeta.windowTokens = (await resolveWindow(model).catch(() => null)) ?? breakdownMeta.windowTokens;
+      }
+
+      // Built once per request, before any tool runs: the context meter reads
+      // the newest message that has usage, and a tool-calling message's
+      // `message.end` waits on its tools — an approval nobody has answered
+      // yet, a long `bash` — so emitting only there left the meter blank for
+      // the whole turn (#193). Emitted before the usage row is written for the
+      // same reason: a slow insert should not hold back what we already know.
+      let iterationUsage: TurnUsage | undefined;
       if (doneResult) {
+        iterationUsage = turnUsageFor({
+          result: doneResult,
+          reuse,
+          tally,
+          omittedAttachments: history.omittedAttachments,
+          meta: breakdownMeta,
+        });
+        producer.emit({ kind: "message.usage", message_id: assistantMsgId, usage: iterationUsage });
+        // Never allowed to fail the turn: a reply the model finished is not
+        // undone because its usage row could not be written, and a database
+        // error is not a reason the model failed.
         await recordUsage({
           runId: streamId,
           userId,
@@ -759,7 +819,7 @@ export async function runToolLoop(ctx: {
           model,
           result: doneResult,
           reuse,
-          context: apportion(tally, doneResult.usage.prompt_tokens, doneResult.usage.completion_tokens, breakdownMeta),
+          context: iterationUsage.context,
         }).catch((err: unknown) => {
           console.error(`recording usage failed for ${convId}:`, err);
         });
@@ -816,39 +876,7 @@ export async function runToolLoop(ctx: {
           .update(conversations)
           .set({ activeLeafId: leafId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
-        // A window read before a JIT load is the model's max, not what the
-        // backend allocated. Re-read it now that loading is done.
-        if (jitLoaded) {
-          // Only this model's provider: a load on one backend says nothing
-          // about another's catalogue, and dropping a hosted provider's
-          // several-hundred-entry list would cost a round trip to rebuild it.
-          invalidateBackendModels(providerId);
-          breakdownMeta.windowTokens = (await resolveWindow(model)) ?? breakdownMeta.windowTokens;
-        }
-        const usage: TurnUsage | undefined = doneResult
-          ? {
-              prompt_tokens: doneResult.usage.prompt_tokens,
-              completion_tokens: doneResult.usage.completion_tokens,
-              total_tokens: doneResult.usage.total_tokens,
-              prompt_tps: doneResult.promptTps,
-              gen_tps: doneResult.genTps,
-              total_ms: doneResult.totalMs,
-              ttft_ms: doneResult.ttftMs,
-              cached_tokens: doneResult.cachedTokens,
-              reusable_tokens: reuse.tokens,
-              ...(history.omittedAttachments.length
-                ? { omitted_attachments: history.omittedAttachments }
-                : {}),
-              // This is the terminating iteration, so `tally` and `doneResult`
-              // describe the same call — the breakdown lines up exactly.
-              context: apportion(
-                tally,
-                doneResult.usage.prompt_tokens,
-                doneResult.usage.completion_tokens,
-                breakdownMeta,
-              ),
-            }
-          : undefined;
+        const usage = iterationUsage;
         // Checked here rather than before the next turn starts: this is the
         // one point where the *measured* size of the prompt and the window it
         // was assembled against are both in hand. The threshold leaves room
@@ -999,7 +1027,7 @@ export async function runToolLoop(ctx: {
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
       }
-      producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete" });
+      producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
 
       const toolMsgId = uuid();
       await db.insert(messages).values({

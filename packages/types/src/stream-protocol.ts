@@ -429,6 +429,14 @@ export type StreamEventKind =
       usage?: TurnUsage;
       error?: string;
     }
+  /**
+   * The model request behind `message_id` has finished and this is what it
+   * cost. Emitted once per request, the moment it completes — so it can arrive
+   * long before that message's `message.end`, which a tool-calling message
+   * defers until its tool results (and any approval) have landed. Without it
+   * the context meter had nothing to show until the whole turn ended (#193).
+   */
+  | { kind: "message.usage"; message_id: string; usage: TurnUsage }
   | { kind: "model.loading"; message_id: string }
   /**
    * This run is waiting for an inference slot, and is `position` places from

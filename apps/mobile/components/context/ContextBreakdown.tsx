@@ -159,7 +159,7 @@ function LastTurnRows({ lastTurn }: { lastTurn: NonNullable<ContextView['lastTur
       <Text size="2xs" className="uppercase text-muted-foreground">
         Last turn
       </Text>
-      <Row label="Tokens in" value={fmt(lastTurn.in)} />
+      <Row testID="context.lastTurn.tokensIn" label="Tokens in" value={fmt(lastTurn.in)} />
       <Row label="Tokens out" value={fmt(lastTurn.out)} />
       {reuse && (
         // "Cached" is the backend's own count and proves a hit; "reused" is

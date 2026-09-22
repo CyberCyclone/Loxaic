@@ -723,6 +723,18 @@ replies.
 - **Rendered on the newest message only.** Being over budget is a standing condition,
   re-derived over the whole replay every turn, so a per-message notice staples the same
   sentence to every subsequent reply — including ones the user attached nothing to.
+- **Usage goes out per request, as `message.usage`, the moment the request finishes** (#193).
+  The context meter reads the newest message carrying usage, and usage used to ride only on
+  a turn's *final* `message.end` — while a tool-calling message's `message.end` is deferred
+  until its tools have run, which in manual mode means until someone answers the approval.
+  So the meter was empty (or stale) for as long as the turn lasted. A separate event rather
+  than an earlier `message.end`, because that deferral is deliberate; the deferred
+  `message.end` repeats the same figure for a client predating the event, and `foldSnapshot`
+  folds it so a reconnect mid-approval sees it too. All three copies come from one builder
+  (`turnUsageFor` in `engine.ts`), matching the per-iteration row `recordUsage` already wrote,
+  so the live figure and a reload's agree. The JIT window re-read therefore happens right
+  after the request that loaded the model, not at turn end: every figure from that point
+  reports against it.
 - **Unreadable is not unaffordable.** `selectAffordableAttachments` admits an image whose bytes
   are missing (costing no budget) rather than skipping it, so it reaches
   `attachmentContentParts`' `[image unavailable]` branch instead of being described — to the

@@ -200,3 +200,46 @@ describe('check-in provenance', () => {
     expect(applyEventToMsgs(msgs, { kind: 'steps.decision', decision: 'continue', by: 'user', n: 4 })).toBe(msgs);
   });
 });
+
+describe('usage arrives per request (#193)', () => {
+  const turn = {
+    prompt_tokens: 1200,
+    completion_tokens: 30,
+    total_tokens: 1230,
+    prompt_tps: null,
+    gen_tps: 40,
+    total_ms: 900,
+    context: {
+      used_tokens: 1230,
+      parts: [{ category: 'history' as const, tokens: 1230 }],
+      history_messages: 2,
+      history_limit: 50,
+      history_truncated: false,
+      window_tokens: 8192,
+    },
+  };
+
+  it('sets usage from message.usage, on that message only, before its message.end', () => {
+    const msgs: Message[] = [
+      { id: 'a0', role: 'assistant', text: 'earlier' },
+      { id: 'a1', role: 'assistant', text: '' },
+    ];
+    const next = applyEventToMsgs(msgs, { kind: 'message.usage', message_id: 'a1', usage: turn });
+    expect(next[0].usage).toBeUndefined();
+    expect(next[1].usage?.in).toBe(1200);
+    expect(next[1].usage?.context?.window_tokens).toBe(8192);
+    // The message is not ended by it — only told what its request cost.
+    expect(next[1].error).toBeUndefined();
+    expect(next[1].stopped).toBeUndefined();
+  });
+
+  it('keeps it through a message.end from a server that sent none there', () => {
+    const withUsage = applyEventToMsgs([{ id: 'a1', role: 'assistant', text: '' }], {
+      kind: 'message.usage',
+      message_id: 'a1',
+      usage: turn,
+    });
+    const [m] = applyEventToMsgs(withUsage, { kind: 'message.end', message_id: 'a1', status: 'complete' });
+    expect(m.usage?.in).toBe(1200);
+  });
+});

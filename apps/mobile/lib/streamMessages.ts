@@ -278,6 +278,11 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
       const stats = { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
       return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
     }
+    case 'message.usage':
+      // Arrives the moment a model request finishes, well before a
+      // tool-calling message's own message.end — it is what lets the context
+      // ring move during a long turn instead of only after it (#193).
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, usage: usageFromTurn(event.usage) } : m));
     case 'message.end':
       return msgs.map((m) =>
         m.id === event.message_id
