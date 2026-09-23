@@ -23,9 +23,9 @@ const CLUSTER_KEY = "cluster";
  * `ensureCluster` — so it is purely the product brand, and a stored value that
  * disagrees is a stale brand rather than someone's choice to preserve.
  *
- * That is why `ensureCluster` refreshes it. The name is minted once, so after
- * the Loxaic rename every database that had booted before kept announcing
- * "Shannon" — over `GET /v1/cluster`, the desktop `loxaic:probeHost` reply,
+ * That is why `ensureCluster` refreshes it. The name is minted once, so a
+ * database that booted before a brand change would otherwise keep announcing
+ * the old one — over `GET /v1/cluster`, the desktop `loxaic:probeHost` reply,
  * and the join screen a client sees before signing in. The cluster *id* is
  * the identity here and is never rewritten; the name is a label.
  */
