@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * The packaging config decides what a beta tester actually installs. Two of
@@ -95,6 +98,24 @@ describe("the electron-builder config", () => {
       expect(config.mac.extendInfo.NSLocalNetworkUsageDescription).toMatch(
         new RegExp(`^${config.productName} `),
       );
+    }
+  });
+
+  it("ships every licence the app redistributes, on every platform", () => {
+    // Shipping a binary built from MIT/BSD/Apache/LGPL code is conditional on
+    // shipping those notices, and nothing at runtime would notice them missing.
+    // Electron's and Chromium's in particular are not inside Electron.app, so a
+    // macOS bundle lacked them until they were listed here.
+    const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const resources = configFor(undefined).extraResources;
+    const shipped = Object.fromEntries(resources.map((r) => [r.to, r.from]));
+    for (const to of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "LICENSE.electron.txt", "LICENSES.chromium.html"]) {
+      expect(shipped[to], to).toBeDefined();
+    }
+    // Generated at package time, so only the checked-in and installed sources
+    // can be asserted to exist here.
+    for (const to of ["LICENSE", "NOTICE", "LICENSE.electron.txt", "LICENSES.chromium.html"]) {
+      expect(existsSync(path.resolve(desktopDir, shipped[to])), shipped[to]).toBe(true);
     }
   });
 });

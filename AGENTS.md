@@ -2161,6 +2161,22 @@ replies.
 
 ### Electron
 
+- **Every package ships `THIRD_PARTY_NOTICES.txt`, `LICENSE`, `NOTICE`, Electron's licence and
+  Chromium's, in the app's resources.** `scripts/third-party-notices.mjs` builds the first
+  from what the app actually carries — the server payload, the desktop's production
+  dependencies, the web client's (a superset, deliberately), embedded-postgres' bundled
+  libraries and the sidecar's Go modules — and runs in every `package*` script. It **fails the
+  build** on a required npm dependency that is not installed, a package with neither a licence
+  nor a licence file, or a shared library no entry in `licenses/native-libraries.json`
+  matches: those native libraries ship with no licence text, so the manifest (and the texts
+  beside it) is the only record of them, and a new one upstream must stop a release rather
+  than ship unattributed. The Windows build is the one that carries the most (libcurl,
+  wxWidgets, winpthreads, `libpqwalreceiver.dll`), and no local test sees it — after an
+  embedded-postgres bump, run `collectNative` over each platform's tarball. Electron's and
+  Chromium's licences are listed in `extraResources` by hand because they sit beside
+  `Electron.app`, not inside it: a macOS bundle had neither. `embedded-postgres` does not
+  export its `package.json`, so `require.resolve` cannot find its platform package — go
+  through `collectNpm`, which is how a test of this first passed without running.
 - **Instance mode lives in `<dataDir>/config.json`** (`supervisor/config.js`), read by both
   `main.js` and `headless.js` — they already share `defaultDataDir()`, so a machine set up
   through the GUI restarts headless unchanged. **Absence of that file is the only first-run
