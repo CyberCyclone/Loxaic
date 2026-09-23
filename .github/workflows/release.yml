@@ -57,6 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           # The tag's own commit is what `advance-branches` fast-forwards to,
           # and a shallow checkout cannot resolve it.
           fetch-depth: 0
@@ -111,6 +112,8 @@ jobs:
       PRERELEASE: ${{ needs.meta.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # Created here rather than left to electron-builder, which would
       # otherwise have three matrix legs racing to create the same release.
       # Idempotent, so re-running a failed release run is safe.
@@ -165,7 +168,6 @@ jobs:
     # line changes nothing: secrets still resolve from the repository.
     environment: release
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ needs.meta.outputs.tag }}
       # Which application this leg packages: its name, bundle id, data
       # directory and update feed all follow from it.
@@ -179,6 +181,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ needs.meta.outputs.tag }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
         with:
@@ -212,6 +215,10 @@ jobs:
         # cheaper than remembering which two of the five are sharp.
         shell: bash
         env:
+          # The write token is the upload credential, so it reaches this step
+          # only — job-wide it sat in the environment of `pnpm install` above,
+          # beside every postinstall script, exactly as the signing key did.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -303,6 +310,8 @@ jobs:
       VARIANTS: ${{ join(fromJSON(needs.meta.outputs.variants), ' ') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       # The moment this runs, every installed desktop app can see the release.
       # It is last on purpose: it needs every installer that *did* build to
       # have finished uploading — and at least one to exist, since a release
@@ -393,9 +402,10 @@ jobs:
     # installed app (AGENTS.md). Naming an environment is what lets it move
     # behind required reviewers and a tag-only deployment branch rule; until
     # it does, this line changes nothing and the secret still resolves from
-    # the repository. Before relying on it: dev-update.yml reads the same
-    # token on every push to `dev`, so the gate only protects anything once
-    # that workflow is given a token of its own.
+    # the repository. Before relying on it: dev-update.yml reads EXPO_TOKEN on
+    # every push to `dev`, so the gate only protects anything once its
+    # `dev-update` environment holds a token of its own and the repository
+    # copy is deleted.
     environment: release
     strategy:
       # One variant failing must not cancel the other: a release that reached
@@ -423,6 +433,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          persist-credentials: false
           ref: ${{ needs.meta.outputs.tag }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
         with:
@@ -431,6 +442,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # Before the Expo setup, never after: expo-github-action exports EXPO_TOKEN
+      # to every later step, and `pnpm install` runs third-party postinstall
+      # scripts that have no business seeing it.
+      - run: pnpm install --frozen-lockfile
       - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
         with:
           # Pinned to a major, not `latest`: the publish step reads eas-cli's
@@ -442,7 +457,6 @@ jobs:
           eas-version: 24.x
           token: ${{ secrets.EXPO_TOKEN }}
           packager: pnpm
-      - run: pnpm install --frozen-lockfile
 
       - name: Stamp the version from the tag
         run: node apps/desktop/scripts/stamp-version.mjs "$TAG"

@@ -6,25 +6,33 @@ name: CI
 # cover it: that checks `refs/pull/N/merge`, a throwaway merge computed when
 # the PR opened, and release.yml runs no lint, typecheck or test of its own —
 # so a hotfix merged and tagged would ship with nothing having run against the
-# tree that actually shipped. The release workflow will one day fast-forward
-# `master` itself, and those pushes use GITHUB_TOKEN, which by GitHub's rule
-# never triggers a workflow — so keeping master here costs nothing then either.
+# tree that actually shipped. The release workflow's own fast-forwards of
+# `master` use GITHUB_TOKEN, which by GitHub's rule never triggers a workflow —
+# so keeping master here costs nothing for those either.
 on:
   pull_request:
     branches: [dev, master]
   push:
     branches: [dev, master]
 
+# The only workflow a fork's pull request can run, so it holds nothing worth
+# stealing: a read-only token, no secrets, and every action pinned to a commit
+# (a tag can be moved to point at different code; a SHA cannot).
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
         with:
           version: 10.4.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22 # Expo SDK 57 needs >= 22.13; the `22` alias resolves to the latest 22.x
           cache: pnpm
@@ -35,11 +43,13 @@ jobs:
     name: typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
         with:
           version: 10.4.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -56,8 +66,10 @@ jobs:
       run:
         working-directory: infra/tsnet-proxy
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: infra/tsnet-proxy/go.mod
           cache-dependency-path: infra/tsnet-proxy/go.sum
@@ -104,11 +116,13 @@ jobs:
       MOCK_INFERENCE: "true"
       BETTER_AUTH_SECRET: ci-test-secret-not-for-production
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.4.0
         with:
           version: 10.4.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
