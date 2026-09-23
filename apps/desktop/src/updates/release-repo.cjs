@@ -1,2 +1,2 @@
-// CommonJS so builder-variants.cjs can require it; under src/ so the packaged app ships it.
+// CommonJS so builder-variants.cjs can require it; it bakes this into each build's app-update.yml.
 module.exports = { owner: "CyberCyclone", repo: "Loxaic" };

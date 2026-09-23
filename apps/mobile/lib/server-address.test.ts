@@ -5,7 +5,7 @@ describe('tailnetHint', () => {
   it('reminds you to connect Tailscale for a MagicDNS name', () => {
     // Testing a tailnet address with Tailscale off on the phone gave the same
     // bare "Could not reach it." as a typo, when the address was fine.
-    expect(tailnetHint('http://pheonix.tail47eac7.ts.net:4100')).toMatch(/Tailscale is connected/);
+    expect(tailnetHint('http://box.tail1234.ts.net:4100')).toMatch(/Tailscale is connected/);
     expect(tailnetHint('https://BOX.tail1234.TS.NET')).not.toBeNull();
     expect(tailnetHint('https://box.tail1234.ts.net./')).not.toBeNull();
   });
@@ -20,7 +20,7 @@ describe('tailnetHint', () => {
   });
 
   it('says nothing for any other address', () => {
-    expect(tailnetHint('http://192.168.1.13:4100')).toBeNull();
+    expect(tailnetHint('http://192.168.1.50:4100')).toBeNull();
     expect(tailnetHint('https://example.com')).toBeNull();
     // Containing "ts.net" is not being under it.
     expect(tailnetHint('https://ts.net.example.com')).toBeNull();

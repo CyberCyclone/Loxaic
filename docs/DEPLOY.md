@@ -634,9 +634,6 @@ Restarting into an update stops the embedded Postgres, the server, the executor 
 Tailscale sidecar first, and waits for them — the installer is about to replace the binary
 those children were spawned from.
 
-To test against this repository while it is still private, set `LOXAIC_GH_TOKEN` to a token
-that can read it. It is never persisted and never logged, and it is for local testing only.
-
 ### macOS: signing and notarization
 
 A macOS release build is signed with a Developer ID Application certificate and notarized by

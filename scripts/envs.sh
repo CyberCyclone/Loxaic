@@ -27,7 +27,7 @@
 #   ./scripts/envs.sh <slot> logs [svc]  # follow logs
 #
 # Configuration lives in scripts/envs.local, which is gitignored (`*.local`)
-# because this repository is going public and the box's address is nobody
+# because this repository is public and the box's address is nobody
 # else's business:
 #
 #   ENVS_SSH=you@192.168.1.50                 # where the environments run

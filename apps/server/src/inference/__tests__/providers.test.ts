@@ -194,8 +194,8 @@ describe("resolveModelRef", () => {
 describe("base URL normalization", () => {
   it("appends /v1 to a bare origin", () => {
     // What an admin pastes for llama.cpp, LM Studio, vLLM or Ollama.
-    expect(normalizeBaseUrl("http://192.168.1.13:1234")).toBe("http://192.168.1.13:1234/v1");
-    expect(normalizeBaseUrl("http://192.168.1.13:1234/")).toBe("http://192.168.1.13:1234/v1");
+    expect(normalizeBaseUrl("http://192.168.1.50:1234")).toBe("http://192.168.1.50:1234/v1");
+    expect(normalizeBaseUrl("http://192.168.1.50:1234/")).toBe("http://192.168.1.50:1234/v1");
   });
 
   it("leaves an already-versioned path alone", () => {
@@ -270,10 +270,10 @@ describe("names and slugs", () => {
   });
 
   it("de-duplicates a slug rather than colliding", async () => {
-    const a = await makeProvider({ name: "Pheonix" });
-    const b = await makeProvider({ name: "Pheonix" });
-    expect(a.slug).toBe("pheonix");
-    expect(b.slug).toBe("pheonix-2");
+    const a = await makeProvider({ name: "GPU Box" });
+    const b = await makeProvider({ name: "GPU Box" });
+    expect(a.slug).toBe("gpu-box");
+    expect(b.slug).toBe("gpu-box-2");
   });
 
   it("never allocates the reserved default slug", async () => {

@@ -153,7 +153,7 @@
             <div class="settings-modal-section" data-section="server">
               <h2>Server</h2>
               <p class="desc">Connection to your llama.cpp inference server.</p>
-              <div class="setting-row"><div><div class="setting-label">Tailscale address</div><div class="setting-hint">MagicDNS hostname for your tailnet</div></div><input class="input" style="width:240px" value="loxaic.tailscale.com" data-setting="tailscale"></div>
+              <div class="setting-row"><div><div class="setting-label">Tailscale address</div><div class="setting-hint">MagicDNS hostname for your tailnet</div></div><input class="input" style="width:240px" value="loxaic.example.ts.net" data-setting="tailscale"></div>
               <div class="setting-row"><div><div class="setting-label">Inference endpoint</div><div class="setting-hint">llama.cpp server URL</div></div><input class="input" style="width:240px" value="http://loxaic:8080" data-setting="endpoint"></div>
               <div class="setting-row"><div><div class="setting-label">Connection status</div><div class="setting-hint">Server reachable · llama.cpp v0.2.1</div></div><span class="badge badge-success">Connected</span></div>
             </div>

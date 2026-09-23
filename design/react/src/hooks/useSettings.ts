@@ -5,7 +5,7 @@ const DEFAULT_SETTINGS: Settings = {
   name: 'Casey Gibson',
   defaultMode: 'manual',
   defaultThinkingLevel: 'Medium',
-  tailscale: 'loxaic.tailscale.com',
+  tailscale: 'loxaic.example.ts.net',
   endpoint: 'http://loxaic:8080',
 }
 

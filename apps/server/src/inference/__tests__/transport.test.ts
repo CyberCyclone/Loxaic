@@ -168,7 +168,7 @@ describe("inference transport", () => {
   });
 
   it("an unrecognised network failure names its code but never the backend's address", () => {
-    const cause = Object.assign(new Error("connect EHOSTUNREACH 10.0.3.14:4002"), { code: "EHOSTUNREACH" });
+    const cause = Object.assign(new Error("connect EHOSTUNREACH 10.0.0.5:4002"), { code: "EHOSTUNREACH" });
     const err = inferenceNetworkError(new TypeError("fetch failed", { cause })) as Error;
     expect(err.message).toBe("The request to the model server failed (EHOSTUNREACH).");
     expect(err.message).not.toMatch(/10\.0\.3\.14|4002/);

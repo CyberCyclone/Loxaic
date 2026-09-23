@@ -65,7 +65,7 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
           <div className="account-avatar">CG</div>
           <div className="account-info">
             <div className="account-name">Casey Gibson</div>
-            <div className="account-plan">loxaic.tailscale.com</div>
+            <div className="account-plan">loxaic.example.ts.net</div>
           </div>
         </div>
       </div>

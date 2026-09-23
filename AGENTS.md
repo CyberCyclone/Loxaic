@@ -1,11 +1,11 @@
 # AGENTS.md
 
 **This file is the source of truth** for architecture, conventions, and gotchas.
-([`HANDOVER.md`](HANDOVER.md) is a legacy document kept for historical context only.)
 
 ## Project in one line
 
-Self-hosted, multi-user AI platform — a Claude + Claude Code replacement: llama.cpp
+Self-hosted, multi-user AI platform — an open-source alternative to hosted assistants and
+coding agents such as Claude and Claude Code: llama.cpp
 inference, a real agent tool-calling loop with sandboxed execution, one universal Expo
 frontend (iOS/Android/Web/Electron), reachable remotely over Tailscale (or your own
 reverse proxy).
@@ -22,13 +22,15 @@ reverse proxy).
 - `packages/api-client` — typed REST + WS client used by `apps/mobile`
 - `packages/db` — Drizzle schema + re-exported query operators
 - `packages/sync` — fork/conflict detection for the offline sync protocol
-- `packages/types` — shared primitive types (`ContentBlock`, `Result`, etc.)
+- `packages/types` — shared types (`ContentBlock`, `Result`, etc.) and the stream wire protocol
+  (`src/stream-protocol.ts`)
 - `packages/config-ts` — shared tsconfig bases
 - `infra/` — Dockerfiles, the `tsnet-proxy` Go module (Electron's embedded Tailscale sidecar), Tailscale Serve config
 - `design/` — the original static HTML/CSS prototype; historical reference only, not built or imported by anything
 
 There is no separate web app and no separate UI package — `apps/mobile`'s Expo web
-export **is** the web app, served same-origin by `apps/server` (see HANDOVER.md).
+export **is** the web app, served same-origin by `apps/server` (see docs/DEPLOY.md, "Website —
+served by the Loxaic server").
 
 ## Commands
 
@@ -264,6 +266,14 @@ replies.
   Reproduced by freeing heap space while a run was parked at its check-in, and fixed by ordering
   on `lamport, created_at`, the key the engine replays with. Anything positional (`.at(-1)`,
   `[0]`, "the last assistant row") needs an `orderBy`; `.find` by content does not.
+- **Messages form a tree on paper and a list in practice.** Every row carries `parent_id` and
+  the engine keeps `conversations.active_leaf_id` on the newest row, but nothing walks the
+  tree: `loadHistory` replays rows in `(lamport, created_at)` order regardless of `parent_id`,
+  `deleted_at` or the leaf, and the `forks` array `GET /v1/conversations/:id/messages` returns
+  is read by no client. That holds only because the per-conversation run lock never lets one
+  message get two children. Anything that creates a real in-thread branch must first make
+  `loadHistory` walk parent links back from `active_leaf_id`, or both branches are
+  interleaved into one prompt.
 
 ### Passwords
 
@@ -363,6 +373,40 @@ replies.
   shared viewers included. undici's timeouts run on ~1 s-resolution timers, so a test using a
   short one needs a delay of seconds, not milliseconds.
 
+### Streaming (the stream log)
+
+- **Clients never get a bare pipe.** Every chat, agent and compaction run writes its events to
+  a sequenced stream log — `streams/broker.ts` over a `StreamLogDriver` — and a client reads
+  it with `stream.subscribe {conversation_id, cursors}`: one folded `stream.sync` snapshot per
+  run, then live `stream.event`s. A dropped socket therefore loses nothing; the client
+  resubscribes. The wire types are `packages/types/src/stream-protocol.ts`.
+- **`STREAM_BACKEND=memory` (default) or `redis`.** Redis with an unreachable Redis **fails
+  boot** — there is no silent fallback to memory, since that would drop the durability resume
+  depends on. Redis *stores*; it does not deliver: live fan-out is an in-process
+  EventEmitter, which is the single-process assumption behind horizontal scaling. The desktop
+  supervisor always runs `memory`, so a desktop crash loses in-flight output.
+- **Retention is `STREAM_TTL_SECONDS` (default 86400).** Redis keys carry it as an idle TTL
+  refreshed on each append; memory sweeps only *finished* streams idle past it, every 60 s.
+  The TTL is a backstop — orphan recovery (`recovery.ts`) is the real cleanup: rows still
+  `streaming` after a restart are finished as `error` (Redis rewrites only messages still
+  `streaming`; in memory mode the 10-minute stale sweep is the whole story).
+- **Deltas are coalesced (`STREAM_COALESCE_MS`, default 25); nothing else is.** Only
+  `text.delta` and `thinking.delta` are buffered, and any other event flushes first, so order
+  is preserved. A record is appended to storage *before* it is sent live, so a subscriber only
+  ever sees stored events. `seq` is our own contiguous counter inside the record, never a
+  Redis entry id.
+- **Cursors decide whether to send, not what to read.** A subscribe always reads the run from
+  seq 0 and folds a full snapshot; the cursor only skips a run the client already has
+  (`lastSeq <= cursor`). Only the conversation's last three runs are considered, and a
+  finished run is snapshotted once per socket — repeating a long finished run's snapshot on
+  every subscribe saturated sockets and dropped the live events that mattered.
+- **The handoff is tap-then-read** (`ws/delivery.ts`): the live tap attaches before the
+  catch-up read and buffers what arrives meanwhile, and the subscription slot is reserved
+  synchronously so two racing subscribes cannot double-deliver. Past 512 KB of unsent socket
+  buffer, events are dropped and the client's gap detection resubscribes. `watchers.ts`
+  announces new runs per conversation, which is how a second device learns of a run it did not
+  start.
+
 ### Tool loop (Chat and Agent both)
 
 - **Chat and Agent share one tool loop** — `apps/server/src/streams/runs/engine.ts`'s
@@ -371,6 +415,10 @@ replies.
   they pass in; `agentRun.ts` additionally exposes planning/manual/auto modes. **Chat has no
   mode selector** — it always runs manual-mode approval semantics (write builtins and
   non-allowlisted MCP tools ask; read-only builtins run free).
+- **The three agent modes, exactly** (`toolsetRequiresApproval` in `mcp/registry.ts`):
+  `planning` does not offer write tools at all and adds a planning system prompt; `manual`
+  asks for write builtins and non-allowlisted MCP tools; `auto` asks for no builtin — but an
+  MCP tool still asks until the user allowlists it. There is no denylist.
 - `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
   server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
   policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below). The wire
@@ -596,7 +644,7 @@ replies.
   typed. `nativeRoot` strips a trailing `/v1` and is where the LM Studio-native and `/props`
   probes go — **only for a provider with no preset**, since asking a hosted API for them spends
   a full timeout on a 404 every refresh.
-- **Deliberately no SSRF guard.** A llama.cpp host at 192.168.1.13 is the core use case, this
+- **Deliberately no SSRF guard.** A llama.cpp host on the LAN (say 192.168.1.50) is the core use case, this
   is admin-only deployment configuration of the same kind `INFERENCE_BASE_URL` already is, and
   the address never reaches a non-admin. Only http/https, and credentials in the URL are
   refused — they would sit in the clear in `base_url` beside an encrypted column that exists to
@@ -865,7 +913,7 @@ replies.
 - **"Answer now" sends `tool_choice: "none"` and keeps the tools in the request.** llama.cpp
   renders the schemas into the prompt, so dropping them would rewrite the prefix and cost a
   full re-evaluation on exactly the request meant to wrap up cheaply. Verified against the
-  LM Studio backend on .13 — same prompt and tools, `auto` calls the tool, `none` does not —
+  a LAN LM Studio backend — same prompt and tools, `auto` calls the tool, `none` does not —
   and against a real run, whose final turn reported 100% prompt reuse. A backend that ignores
   it is still handled: each call it makes anyway is answered with `ANSWER_NOW_NOT_RUN`, because
   an assistant `tool_call` with no partner is the orphan the next turn's replay cannot load.
@@ -932,6 +980,12 @@ replies.
   least `AUTO_COMPACT_MIN_MESSAGES` (8) and the user hasn't turned it off. Policy lives in
   `streams/runs/auto-compact.ts`; `/compact` is the same machinery with `auto: false`, no
   threshold, and no pref check — asking for it is a decision.
+- **Compaction deletes nothing.** It inserts a `summary`-authored row, and `loadHistory`
+  replays only rows after the newest completed one — what is *sent* shrinks, what is *shown*
+  does not. A compaction with nothing new since the last summary (`already_compacted`) or
+  under two messages (`too_short`) still lands a card but makes no model call. Savings use the
+  last usage record's prompt + completion as "before"; if either side had to be estimated,
+  `before_estimated` is set and the card shows `~`.
 - **It is a per-user pref (`user_prefs.auto_compact`, default true), read only after the
   threshold has already been crossed** — so an ordinary turn costs no extra query. A failed
   prefs lookup **fails closed** (no compaction): not compacting costs one long prompt, whereas
@@ -1063,6 +1117,10 @@ replies.
 
 ### Reporting cache figures honestly
 
+- **`usage_records` has one row per completion** — each tool-loop iteration — with `run_id`
+  set to the stream id, written right after `message.usage` is emitted. The insert is
+  best-effort and never fails the turn: a reply the model finished is not undone because its
+  usage row could not be written. Compaction writes its own row.
 - **Only llama.cpp reports what it actually reused** (`timings.cache_n`). LM Studio reports
   nothing about caching anywhere — no field in `usage`, no `/tokenize`, no `/slots`, no
   `/props` (all probed and absent), and its native `stats` block carries only TTFT and the
@@ -1145,7 +1203,7 @@ replies.
   `remaining_ms` divides only evaluated tokens and is null below `MIN_EVALUATED_TOKENS`; it is a
   countdown, and never feeds `prompt_tps` or `prefill-rate.ts`. A progress report also ends
   "Loading model…" (`loadingAfter`) — only a loaded model can be evaluating a prompt.
-- **LM Studio cannot report it over HTTP; do not re-probe.** Checked against the LM Studio on .13
+- **LM Studio cannot report it over HTTP; do not re-probe.** Checked against a LAN LM Studio
   (2026-09-21): `return_progress` is silently ignored, `/slots` and `/props` do not exist, and `/api/v1/chat`
   — which does stream `prompt_processing.progress` — takes only `input` plus MCP integrations: no
   message history, no caller-defined tools, so it cannot carry a run. The only route is moving the
@@ -2435,7 +2493,7 @@ replies.
   port mapping, so the conventional `42001:8081` would advertise `exp://host:8081` — a port
   nothing serves.
 - **`scripts/envs.local` is gitignored (`*.local`) and holds the box's address.** The
-  repository is going public; where someone's home server lives does not belong in it. The
+  repository is public; where someone's home server lives does not belong in it. The
   script refuses to run rather than defaulting to anyone's machine.
 - **An environment is isolated from the *box*, not from the network.** No Docker socket and
   no credentials — but both containers have unrestricted egress to the LAN and the internet,
@@ -2853,22 +2911,29 @@ replies.
   binary is rejected, suspect the certificate type before suspecting a missed nested file.
   `security find-identity -v -p codesigning` names the type; check it before exporting the
   `.p12` into `CSC_LINK`.
+
 ## Conventions
 
 - pnpm workspaces + Turborepo; packages scoped `@loxaic/*`; TypeScript strict.
 - Minimal changes; match existing file style; don't add deps without a reason.
-- **`dev` is the trunk — every pull request targets it.** `master` is a git release pointer:
-  it is meant to mark what has shipped rather than what someone merged. A hotfix pull request
-  straight to it is the one legitimate exception, which is why CI still runs on both `master`
-  events. **Nothing advances `master` automatically yet** — the release workflow writes no git
-  ref today, so until the stage that adds that step, `master` moves only when a human merges
-  or pushes to it, and the repository's default branch should be `dev` so a fresh clone is not
-  looking at a frozen branch. Nothing is *developed* on `master` either way.
-- **`beta` and `production` are EAS update branches, not git branches.** `release.yml`
-  publishes with `eas update --branch beta`, which targets Expo's own branch/channel mapping
-  and never touches a git ref — see `docs/DEPLOY.md`. A git branch named `beta` also exists,
-  which is exactly why this is worth stating: the two are unrelated, and a release does not
-  move the git one.
+- **`dev` is the trunk — every pull request targets it**, and it is the default branch.
+  `master` and `beta` are git release pointers: they mark what has shipped, not what someone
+  merged. `release.yml`'s `advance-branches` job moves them once a release has fully
+  published — every tag fast-forwards `beta`, a stable tag also moves `master` — with a
+  non-forced `GITHUB_TOKEN` push. That is why their ruleset blocks only deletion and force
+  pushes: a user-owned repository cannot name the GitHub Actions app as a ruleset bypass, so
+  "restrict updates" would stop the release from moving them. `dev` requires a pull request
+  and the CI and DCO checks; `v*` tags can be created only by an admin.
+  A hotfix pull request straight to `master` is the one legitimate exception, which is why CI
+  still runs on both `master` events. Nothing is *developed* on either pointer.
+- **The git `beta` branch and the EAS `beta` channel are unrelated.** `release.yml` publishes
+  with `eas update --channel beta`, which targets Expo's own channel and never touches a git
+  ref — see `docs/DEPLOY.md`.
+- **Every commit carries a DCO sign-off** (`git commit -s`, which adds `Signed-off-by:`),
+  checked on each pull request by the DCO app — see `CONTRIBUTING.md`. That includes commits
+  an agent makes.
+- **Issue and PR numbers cited in this file and in code comments refer to this repository's
+  history**, including items opened while it was private.
 - **A release is cut from `dev` by pushing a `vX.Y.Z` tag**, which is the only thing that sets
   a version — `release.yml` fires on `push: tags: ['v*']`, with a `workflow_dispatch` input
   for re-publishing an existing one. See "Releases and over-the-air updates".

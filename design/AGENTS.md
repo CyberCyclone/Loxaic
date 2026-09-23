@@ -62,12 +62,12 @@ grep -rn '#[0-9a-fA-F]\{3,8\}' *.html *.css *.js assets/*.js | sort -u
 grep -rni 'third-party-product-names' *.html *.css *.js *.md docs/*.md
 # (should return nothing)
 
-# Sync to repo
+# Sync to the repository (LOXAIC_REPO = your checkout of it)
 cp loxaic.css loxaic-shared.js loxaic-*.html index.html assets/theme-init.js \
-   /Users/caseygibson/Documents/Git/Loxaic/design/
-cp -r assets/fonts/ /Users/caseygibson/Documents/Git/Loxaic/design/assets/fonts/
-cp docs/design-system.md /Users/caseygibson/Documents/Git/Loxaic/design/docs/
-cp AGENTS.md /Users/caseygibson/Documents/Git/Loxaic/design/
+   "$LOXAIC_REPO"/design/
+cp -r assets/fonts/ "$LOXAIC_REPO"/design/assets/fonts/
+cp docs/design-system.md "$LOXAIC_REPO"/design/docs/
+cp AGENTS.md "$LOXAIC_REPO"/design/
 ```
 
 ## Gotchas
