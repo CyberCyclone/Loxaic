@@ -16,12 +16,14 @@
 //   - the Go modules and Go runtime compiled into the tsnet-proxy sidecar, when
 //     the sidecar was built
 // Electron's LICENSE and Chromium's LICENSES.chromium.html ship beside this
-// file as they are (builder-variants.cjs's extraResources), not repeated here.
+// file as they are, copied into resources/electron-licenses/ by this step
+// (see electronLicences) and listed in builder-variants.cjs's extraResources.
 //
 // Run after build-server.mjs (it reads the deployed payload). No dependencies
 // of its own: this runs inside the release job, before anything is signed.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -274,7 +276,78 @@ export function renderNative(components, licensesDir) {
   return lines.join("\n");
 }
 
-function main() {
+const ELECTRON_LICENCES = { LICENSE: "LICENSE.electron.txt", "LICENSES.chromium.html": "LICENSES.chromium.html" };
+
+/**
+ * Copies the named top-level entries out of a zip, and nothing else — an
+ * Electron zip is ~100 MB of which these are two files. yauzl is borrowed from
+ * electron's own dependency tree (extract-zip), so this adds no dependency.
+ */
+export function extractZipEntries(yauzl, zipPath, wanted, outDir) {
+  mkdirSync(outDir, { recursive: true });
+  return new Promise((resolve, reject) => {
+    yauzl.open(zipPath, { lazyEntries: true }, (err, zip) => {
+      if (err) return reject(err);
+      const found = new Set();
+      zip.on("error", reject);
+      zip.on("end", () => {
+        const missing = Object.keys(wanted).filter((name) => !found.has(name));
+        if (missing.length > 0) reject(new Error(`${zipPath} has no ${missing.join(", ")}`));
+        else resolve();
+      });
+      zip.on("entry", (entry) => {
+        if (!Object.hasOwn(wanted, entry.fileName)) return zip.readEntry();
+        zip.openReadStream(entry, (streamErr, stream) => {
+          if (streamErr) return reject(streamErr);
+          const out = createWriteStream(path.join(outDir, wanted[entry.fileName]));
+          out.on("error", reject);
+          out.on("finish", () => {
+            found.add(entry.fileName);
+            zip.readEntry();
+          });
+          stream.pipe(out);
+        });
+      });
+      zip.readEntry();
+    });
+  });
+}
+
+/**
+ * Electron's and Chromium's licences, into resources/electron-licenses/.
+ *
+ * Not from node_modules/electron/dist: pnpm skips electron's install script
+ * (it is not in onlyBuiltDependencies), so CI and the release runners never
+ * have that directory — electron-builder downloads Electron for itself. When a
+ * developer's checkout does have it, it is used; otherwise the same release zip
+ * is fetched through electron's own downloader, checked against the checksums
+ * the electron package ships, from its cache after the first time.
+ */
+async function electronLicences(outDir) {
+  const electronDir = resolvePackageDir("electron", desktopDir);
+  if (!electronDir) throw new Error("[notices] electron is not installed");
+  const dist = path.join(electronDir, "dist");
+  if (Object.keys(ELECTRON_LICENCES).every((name) => existsSync(path.join(dist, name)))) {
+    mkdirSync(outDir, { recursive: true });
+    for (const [name, to] of Object.entries(ELECTRON_LICENCES)) copyFileSync(path.join(dist, name), path.join(outDir, to));
+    return "installed binary";
+  }
+  const electronRequire = createRequire(path.join(electronDir, "package.json"));
+  const { downloadArtifact } = electronRequire("@electron/get");
+  const yauzl = createRequire(electronRequire.resolve("extract-zip"))("yauzl");
+  const { version } = electronRequire("./package.json");
+  const zipPath = await downloadArtifact({
+    version,
+    artifactName: "electron",
+    platform: process.platform,
+    arch: process.arch,
+    checksums: electronRequire("./checksums.json"),
+  });
+  await extractZipEntries(yauzl, zipPath, ELECTRON_LICENCES, outDir);
+  return `release zip v${version}`;
+}
+
+async function main() {
   const problems = [];
   const licensesDir = path.join(desktopDir, "licenses");
   const serverDir = path.join(desktopDir, "resources/server");
@@ -333,6 +406,9 @@ function main() {
   ];
   if (go.length > 0) sections.push(renderGroup("Go modules compiled into the Tailscale sidecar (tsnet-proxy)", go));
 
+  const electronSource = await electronLicences(path.join(desktopDir, "resources/electron-licenses"));
+  console.log(`[notices] Electron and Chromium licences from the ${electronSource}`);
+
   const outFile = path.join(desktopDir, "resources/THIRD_PARTY_NOTICES.txt");
   mkdirSync(path.dirname(outFile), { recursive: true });
   writeFileSync(outFile, `${sections.join("\n")}\n`);
@@ -350,5 +426,8 @@ function invokedDirectly() {
   }
 }
 if (invokedDirectly()) {
-  main();
+  main().catch((err) => {
+    console.error(err instanceof Error ? err.message : err);
+    process.exitCode = 1;
+  });
 }
