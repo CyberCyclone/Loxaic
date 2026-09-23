@@ -4,6 +4,7 @@
   "description": "Loxaic — a self-hosted, multi-user AI platform, packaged with its own server and database.",
   "homepage": "https://github.com/CyberCyclone/Loxaic",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "main": "src/main.js",
   "scripts": {

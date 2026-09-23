@@ -1,0 +1,45 @@
+# Version updates target `dev`, the trunk, like every other pull request.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # One entry covers the whole pnpm workspace. Majors are left to a person:
+  # TypeScript is held at 5.9 on purpose, Electron's major is the packaged app's
+  # Node, and each one needs its own PR (see AGENTS.md). Everything the Expo SDK
+  # pins is upgraded with `npx expo install --fix`, never piecemeal, or the app
+  # drifts off the versions that SDK was tested with.
+  - package-ecosystem: npm
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "expo"
+      - dependency-name: "expo-*"
+      - dependency-name: "@expo/*"
+      - dependency-name: "react"
+      - dependency-name: "react-dom"
+      - dependency-name: "react-native"
+      - dependency-name: "react-native-*"
+
+  - package-ecosystem: gomod
+    directory: /infra/tsnet-proxy
+    target-branch: dev
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]

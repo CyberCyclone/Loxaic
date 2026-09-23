@@ -1,0 +1,16 @@
+Loxaic
+Copyright 2026 Casey Gibson
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It includes third-party components under their own licences:
+
+- apps/mobile/components/ui/ — generated from gluestack-ui (MIT); see the
+  LICENSE file in that directory.
+- .agents/skills/gluestack-ui-v5/ — from gluestack/agent-skills (MIT); see the
+  LICENSE file in that directory.
+- design/assets/fonts/ and design/react/assets/fonts/ — Public Sans (SIL Open
+  Font License 1.1); see OFL.txt in those directories.
+
+Packaged desktop builds additionally ship a THIRD_PARTY_NOTICES.txt listing the
+licences of every bundled dependency.
