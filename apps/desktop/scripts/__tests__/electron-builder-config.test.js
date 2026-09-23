@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +18,7 @@ import { fileURLToPath } from "node:url";
  *     Postgres data directories apart.
  */
 const require_ = createRequire(import.meta.url);
-const { configFor } = require_("../builder-variants.cjs");
+const { configFor, missingResources } = require_("../builder-variants.cjs");
 
 describe("the electron-builder config", () => {
   it("packages the stable app by default", () => {
@@ -122,6 +123,33 @@ describe("the electron-builder config", () => {
     }
     for (const to of ["THIRD_PARTY_NOTICES.txt", "LICENSE.electron.txt", "LICENSES.chromium.html"]) {
       expect(shipped[to], to).toMatch(/^resources\//);
+    }
+  });
+
+  it("names every extraResources source that is not on disk", () => {
+    // electron-builder packages past a missing source with a log line and exit
+    // 0; electron-builder.config.cjs throws on this list instead.
+    const config = configFor(undefined);
+    const root = mkdtempSync(path.join(os.tmpdir(), "loxaic-resources-"));
+    // Sources climb out of the project (`../../LICENSE`, `../mobile/dist`), so
+    // the project dir sits two levels down or they would land outside `root`.
+    const dir = path.join(root, "apps/desktop");
+    mkdirSync(dir, { recursive: true });
+    try {
+      expect(missingResources(config, dir)).toEqual(config.extraResources.map((r) => r.from));
+      for (const { from } of config.extraResources) {
+        const file = path.resolve(dir, from);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, "");
+      }
+      expect(missingResources(config, dir)).toEqual([]);
+      rmSync(path.join(dir, "resources/electron-licenses/LICENSES.chromium.html"));
+      expect(missingResources(config, dir)).toEqual(["resources/electron-licenses/LICENSES.chromium.html"]);
+      for (const { from } of config.extraResources) {
+        expect(path.resolve(dir, from).startsWith(root + path.sep), from).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

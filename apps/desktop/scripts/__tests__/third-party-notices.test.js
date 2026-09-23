@@ -209,15 +209,23 @@ describe("renderGroup", () => {
 
 describe("extractZipEntries", () => {
   // yauzl the way the notices step reaches it: through electron's own tree.
-  // Through its *real* path: pnpm keeps a package's dependencies beside the
-  // real directory, not beside the node_modules symlink to it.
-  const electronPkg = realpathSync(path.join(path.resolve(licensesDir, ".."), "node_modules/electron/package.json"));
-  const electronRequire = createRequire(electronPkg);
-  const yauzl = createRequire(electronRequire.resolve("extract-zip"))("yauzl");
+  // Through electron's *real* path: pnpm keeps a package's dependencies beside
+  // the real directory, not beside the node_modules symlink to it. Resolved in a
+  // try, not bare in the describe body: a throw at collection time would fail
+  // every suite in this file, not just these.
+  let yauzl;
+  try {
+    const electronPkg = realpathSync(path.join(path.resolve(licensesDir, ".."), "node_modules/electron/package.json"));
+    const electronRequire = createRequire(electronPkg);
+    yauzl = createRequire(electronRequire.resolve("extract-zip"))("yauzl");
+  } catch {
+    yauzl = undefined;
+  }
   let hasZip = true;
   try { execFileSync("zip", ["-v"], { stdio: "ignore" }); } catch { hasZip = false; }
+  const runnable = hasZip && yauzl !== undefined;
 
-  it.skipIf(!hasZip)("copies only the named entries out, under their new names", async () => {
+  it.skipIf(!runnable)("copies only the named entries out, under their new names", async () => {
     write("src/LICENSE", "electron licence");
     write("src/LICENSES.chromium.html", "<html>chromium</html>");
     write("src/Electron.app/binary", "not wanted");
@@ -228,11 +236,24 @@ describe("extractZipEntries", () => {
     expect(readFileSync(path.join(out, "LICENSE.electron.txt"), "utf8")).toBe("electron licence");
   });
 
-  it.skipIf(!hasZip)("fails when a named entry is missing rather than shipping without it", async () => {
+  it.skipIf(!runnable)("fails when a named entry is missing rather than shipping without it", async () => {
     write("src/LICENSE", "electron licence");
     execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
     await expect(
       extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "a", "LICENSES.chromium.html": "b" }, path.join(root, "out")),
     ).rejects.toThrow(/LICENSES\.chromium\.html/);
+  });
+
+  it.skipIf(!runnable)("rejects a corrupt entry instead of throwing out of band", async () => {
+    write("src/LICENSE", "x".repeat(4096));
+    execFileSync("zip", ["-qr", path.join(root, "e.zip"), "."], { cwd: path.join(root, "src") });
+    // Flip bytes inside the compressed data, which starts after the 30-byte local
+    // header, the name and the extra field (macOS zip writes one): the central
+    // directory still reads, the inflate does not.
+    const zip = readFileSync(path.join(root, "e.zip"));
+    const dataStart = 30 + zip.readUInt16LE(26) + zip.readUInt16LE(28);
+    for (let i = dataStart; i < dataStart + 8; i++) zip[i] ^= 0xff;
+    writeFileSync(path.join(root, "e.zip"), zip);
+    await expect(extractZipEntries(yauzl, path.join(root, "e.zip"), { LICENSE: "a" }, path.join(root, "out"))).rejects.toThrow();
   });
 });

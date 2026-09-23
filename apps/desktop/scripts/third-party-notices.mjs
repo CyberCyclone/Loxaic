@@ -300,6 +300,9 @@ export function extractZipEntries(yauzl, zipPath, wanted, outDir) {
         zip.openReadStream(entry, (streamErr, stream) => {
           if (streamErr) return reject(streamErr);
           const out = createWriteStream(path.join(outDir, wanted[entry.fileName]));
+          // pipe() does not forward a source error: a corrupt entry (bad CRC,
+          // truncated inflate) would otherwise throw out of band, past main's catch.
+          stream.on("error", reject);
           out.on("error", reject);
           out.on("finish", () => {
             found.add(entry.fileName);
@@ -427,7 +430,9 @@ function invokedDirectly() {
 }
 if (invokedDirectly()) {
   main().catch((err) => {
-    console.error(err instanceof Error ? err.message : err);
+    // Our own refusals ("[notices] …") say everything in their message; anything
+    // else is unexpected, and in an unattended release log the stack is all there is.
+    console.error(err instanceof Error && err.message.startsWith("[notices]") ? err.message : err);
     process.exitCode = 1;
   });
 }

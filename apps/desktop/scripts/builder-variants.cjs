@@ -148,4 +148,19 @@ function configFor(rawVariant) {
   };
 }
 
-module.exports = { configFor, VARIANTS };
+/**
+ * The extraResources sources that are not on disk, relative to `projectDir`.
+ *
+ * electron-builder only logs "file source doesn't exist" for one and packages
+ * on, exit 0 — so a build that skipped a step (build:notices above all, which
+ * is the only thing that writes the licences) produced a release-shaped app
+ * missing them, and nothing failed. electron-builder.config.cjs refuses to
+ * return a config while this is non-empty.
+ */
+function missingResources(config, projectDir) {
+  const { existsSync } = require("node:fs");
+  const path = require("node:path");
+  return config.extraResources.map((r) => r.from).filter((from) => !existsSync(path.resolve(projectDir, from)));
+}
+
+module.exports = { configFor, missingResources, VARIANTS };
