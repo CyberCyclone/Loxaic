@@ -12,9 +12,10 @@
     "build:web": "pnpm --filter @loxaic/mobile export:web",
     "build:tsnet-proxy": "bash ../../infra/tsnet-proxy/build.sh resources/tsnet-proxy",
     "build:server": "node scripts/build-server.mjs",
-    "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder --config electron-builder.config.cjs",
-    "package:publish": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && electron-builder --config electron-builder.config.cjs --publish always",
-    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && pnpm build:server && electron-builder --config electron-builder.config.cjs --dir",
+    "build:notices": "node scripts/third-party-notices.mjs",
+    "package": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && pnpm build:notices && electron-builder --config electron-builder.config.cjs",
+    "package:publish": "pnpm build:web && pnpm build:tsnet-proxy && pnpm build:server && pnpm build:notices && electron-builder --config electron-builder.config.cjs --publish always",
+    "package:dir": "mkdir -p resources/tsnet-proxy && pnpm build:web && pnpm build:server && pnpm build:notices && electron-builder --config electron-builder.config.cjs --dir",
     "typecheck": "echo ok",
     "test": "vitest run"
   },

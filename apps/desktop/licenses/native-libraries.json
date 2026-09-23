@@ -1,0 +1,138 @@
+{
+  "_comment": "The shared libraries embedded-postgres bundles beside PostgreSQL, which ship with no licence text of their own. `match` is tested against each library's file name; a library that matches nothing fails the notices build (scripts/third-party-notices.mjs), so a new one upstream is noticed rather than shipped unattributed. Texts are copied from each project's own repository at the version named in `source`.",
+  "components": [
+    {
+      "name": "PostgreSQL",
+      "license": "PostgreSQL",
+      "text": "PostgreSQL.txt",
+      "source": "https://www.postgresql.org/ftp/source/",
+      "match": ["^postgres", "^lib(pq|pqwalreceiver|ecpg|ecpg_compat|pgtypes)[.-]", "^testplug\\."]
+    },
+    {
+      "name": "OpenSSL 3",
+      "license": "Apache-2.0",
+      "text": "OpenSSL-3.txt",
+      "source": "https://github.com/openssl/openssl (openssl-3.0.0)",
+      "match": ["^lib(crypto|ssl)(\\.3|-3-x64|\\.dylib$)"]
+    },
+    {
+      "name": "OpenSSL 1.1",
+      "license": "OpenSSL AND SSLeay",
+      "text": "OpenSSL-1.1.txt",
+      "source": "https://github.com/openssl/openssl (OpenSSL_1_1_1w)",
+      "match": ["^lib(crypto|ssl)\\.so\\.1\\.1"]
+    },
+    {
+      "name": "ICU",
+      "license": "ICU",
+      "text": "ICU.txt",
+      "source": "https://github.com/unicode-org/icu (release-68-2)",
+      "match": ["^(lib)?icu"]
+    },
+    {
+      "name": "libxml2",
+      "license": "MIT",
+      "text": "libxml2.txt",
+      "source": "https://gitlab.gnome.org/GNOME/libxml2",
+      "match": ["^libxml2[.-]"]
+    },
+    {
+      "name": "libxslt",
+      "license": "MIT",
+      "text": "libxslt.txt",
+      "source": "https://gitlab.gnome.org/GNOME/libxslt",
+      "match": ["^libxslt[.-]"]
+    },
+    {
+      "name": "zlib",
+      "license": "Zlib",
+      "text": "zlib.txt",
+      "source": "https://github.com/madler/zlib",
+      "match": ["^libz\\.", "^zlib1\\."]
+    },
+    {
+      "name": "XZ Utils (liblzma)",
+      "license": "0BSD OR public domain",
+      "text": "xz.txt",
+      "source": "https://github.com/tukaani-project/xz (v5.2.5)",
+      "match": ["^liblzma[.-]"]
+    },
+    {
+      "name": "LZ4",
+      "license": "BSD-2-Clause",
+      "text": "lz4.txt",
+      "source": "https://github.com/lz4/lz4",
+      "match": ["^liblz4[.-]"]
+    },
+    {
+      "name": "Zstandard",
+      "license": "BSD-3-Clause",
+      "text": "zstd.txt",
+      "source": "https://github.com/facebook/zstd",
+      "match": ["^libzstd[.-]"]
+    },
+    {
+      "name": "MIT Kerberos (krb5, com_err)",
+      "license": "MIT",
+      "text": "krb5.txt",
+      "source": "https://github.com/krb5/krb5",
+      "match": ["^lib(gssapi_krb5|k5crypto|krb5|krb5support|com_err)[.-]"]
+    },
+    {
+      "name": "libedit",
+      "license": "BSD-3-Clause",
+      "text": "libedit.txt",
+      "source": "https://www.thrysoee.dk/editline/",
+      "match": ["^libedit[.-]"]
+    },
+    {
+      "name": "libuuid (util-linux)",
+      "license": "BSD-3-Clause",
+      "text": "libuuid.txt",
+      "source": "https://github.com/util-linux/util-linux",
+      "match": ["^libuuid\\."]
+    },
+    {
+      "name": "OSSP uuid",
+      "license": "MIT-style (OSSP)",
+      "text": "ossp-uuid.txt",
+      "source": "http://www.ossp.org/pkg/lib/uuid/",
+      "match": ["^libossp-uuid[.-]"]
+    },
+    {
+      "name": "GNU libiconv",
+      "license": "LGPL-2.1-or-later",
+      "text": "LGPL-2.1.txt",
+      "source": "https://ftp.gnu.org/pub/gnu/libiconv/ — the complete corresponding source. The library is dynamically linked and may be replaced with a modified version.",
+      "match": ["^libiconv[.-]"]
+    },
+    {
+      "name": "GNU gettext runtime (libintl)",
+      "license": "LGPL-2.1-or-later",
+      "text": "LGPL-2.1.txt",
+      "source": "https://ftp.gnu.org/pub/gnu/gettext/ — the complete corresponding source. The library is dynamically linked and may be replaced with a modified version.",
+      "match": ["^libintl[.-]"]
+    },
+    {
+      "name": "curl (libcurl)",
+      "license": "curl",
+      "text": "curl.txt",
+      "source": "https://github.com/curl/curl",
+      "match": ["^libcurl[.-]"]
+    },
+    {
+      "name": "MinGW-w64 winpthreads",
+      "license": "MIT AND BSD-3-Clause",
+      "text": "winpthreads.txt",
+      "source": "https://github.com/mingw-w64/mingw-w64",
+      "match": ["^libwinpthread[.-]"]
+    },
+    {
+      "name": "wxWidgets",
+      "license": "wxWindows",
+      "text": "wxWidgets.txt",
+      "source": "https://github.com/wxWidgets/wxWidgets (v3.2.1)",
+      "match": ["^wx(base|msw)"]
+    }
+  ]
+}

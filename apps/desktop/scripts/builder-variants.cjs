@@ -25,7 +25,13 @@
 // then every build here is the stable app, which is the right default but
 // means the beta feed described above has no artifacts behind it.
 
+const path = require("node:path");
 const releaseRepo = require("../src/updates/release-repo.cjs");
+
+// Electron's own licence and Chromium's. They sit beside Electron.app in the
+// electron package's dist/, not inside it, so a macOS bundle would otherwise
+// ship Chromium with none of its notices.
+const electronDist = path.join(path.dirname(require.resolve("electron/package.json")), "dist");
 
 const VARIANTS = {
   production: {
@@ -92,6 +98,13 @@ function configFor(rawVariant) {
       { from: "../mobile/dist", to: "web" },
       { from: "resources/tsnet-proxy", to: "tsnet-proxy" },
       { from: "resources/server", to: "server" },
+      // What the app redistributes and under which licences: our own, and
+      // everyone else's (scripts/third-party-notices.mjs, run by `package`).
+      { from: "../../LICENSE", to: "LICENSE" },
+      { from: "../../NOTICE", to: "NOTICE" },
+      { from: "resources/THIRD_PARTY_NOTICES.txt", to: "THIRD_PARTY_NOTICES.txt" },
+      { from: path.join(electronDist, "LICENSE"), to: "LICENSE.electron.txt" },
+      { from: path.join(electronDist, "LICENSES.chromium.html"), to: "LICENSES.chromium.html" },
     ],
     artifactName: variant.artifactName,
     publish: [
