@@ -128,7 +128,7 @@ export function inferenceNetworkError(err: unknown, signal?: AbortSignal): unkno
 
 /**
  * Names the error code and nothing else. undici's own message for these
- * ("connect EHOSTUNREACH 10.0.3.14:4002") carries the backend's address, and
+ * ("connect EHOSTUNREACH 10.0.0.5:4002") carries the backend's address, and
  * this sentence reaches every client on the conversation — shared viewers
  * included. The code is what someone debugging needs; the original error stays
  * on `cause` for the server side. Shape-checked so only a bare code gets in.

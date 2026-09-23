@@ -12,18 +12,18 @@ const netError = (code) => Object.assign(new TypeError("fetch failed"), { cause:
 describe("describeFetchError", () => {
   it("names macOS Local Network permission for an unreachable LAN host on a Mac", () => {
     const msg = describeFetchError(netError("EHOSTUNREACH"), {
-      url: "http://192.168.1.13:4100/health",
+      url: "http://192.168.1.50:4100/health",
       appName: "Loxaic Beta",
       platform: "darwin",
     });
-    expect(msg).toContain("192.168.1.13:4100");
+    expect(msg).toContain("192.168.1.50:4100");
     expect(msg).toContain("Loxaic Beta");
     expect(msg).toContain("Privacy & Security → Local Network");
   });
 
   it("does not blame macOS permission off a Mac, or for a public host", () => {
     for (const [url, platform] of [
-      ["http://192.168.1.13:4100", "linux"],
+      ["http://192.168.1.50:4100", "linux"],
       ["http://example.com:4100", "darwin"],
     ]) {
       const msg = describeFetchError(netError("EHOSTUNREACH"), { url, platform });
@@ -33,14 +33,14 @@ describe("describeFetchError", () => {
   });
 
   it("says nothing is listening for a refused connection", () => {
-    expect(describeFetchError(netError("ECONNREFUSED"), { url: "http://192.168.1.13:4100" })).toContain(
+    expect(describeFetchError(netError("ECONNREFUSED"), { url: "http://192.168.1.50:4100" })).toContain(
       "nothing is listening",
     );
   });
 
   it("says the name doesn't resolve for a DNS failure", () => {
-    expect(describeFetchError(netError("ENOTFOUND"), { url: "http://pheonix.example:4100" })).toContain(
-      "pheonix.example doesn't resolve",
+    expect(describeFetchError(netError("ENOTFOUND"), { url: "http://gpubox.example:4100" })).toContain(
+      "gpubox.example doesn't resolve",
     );
   });
 
@@ -65,9 +65,9 @@ describe("describeFetchError", () => {
   });
 
   it("treats EAI_AGAIN as a temporary lookup failure, not a misspelling", () => {
-    const msg = describeFetchError(netError("EAI_AGAIN"), { url: "http://pheonix.example:4100" });
+    const msg = describeFetchError(netError("EAI_AGAIN"), { url: "http://gpubox.example:4100" });
     expect(msg).not.toContain("spelling");
-    expect(msg).toContain("pheonix.example");
+    expect(msg).toContain("gpubox.example");
     expect(msg).toContain("Try again in a moment");
   });
 
@@ -107,13 +107,13 @@ describe("describeFetchError", () => {
 
 describe("isLocalNetworkHost", () => {
   it.each([
-    ["192.168.1.13", true],
+    ["192.168.1.50", true],
     ["10.1.2.3", true],
     ["172.20.0.1", true],
     ["172.32.0.1", false],
     ["169.254.10.1", true],
     ["printer.local", true],
-    ["100.93.38.95", false],
+    ["100.64.0.10", false],
     ["example.com", false],
   ])("%s -> %s", (host, expected) => {
     expect(isLocalNetworkHost(host)).toBe(expected);

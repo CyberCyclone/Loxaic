@@ -307,7 +307,7 @@ export function normalizeName(raw: unknown): string {
  * Normalize an admin-entered base URL into the API base a request is built on.
  *
  * Deliberately *not* behind the SSRF guard that `web_fetch` and http MCP
- * servers use. A llama.cpp host at 192.168.1.13 is the core case this feature
+ * servers use. A llama.cpp host at 192.168.1.50 is the core case this feature
  * exists for, this is admin-only deployment configuration of the same kind as
  * `INFERENCE_BASE_URL`, and the address never reaches a non-admin — network
  * errors are rewritten without host:port before they reach a client.

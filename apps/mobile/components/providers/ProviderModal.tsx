@@ -297,7 +297,7 @@ export function ProviderModal({
                   testID="providers.modal.baseUrl"
                   value={baseUrl}
                   onChangeText={setBaseUrl}
-                  placeholder="http://192.168.1.13:1234/v1"
+                  placeholder="http://192.168.1.50:1234/v1"
                   autoCapitalize="none"
                   autoCorrect={false}
                 />

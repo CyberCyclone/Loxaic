@@ -2,7 +2,11 @@ node_modules/
 dist/
 .turbo/
 .env
-.env.local
+# Every env file except the committed examples — .env.prod in particular holds a
+# real BETTER_AUTH_SECRET.
+.env.*
+!.env*.example
+*.env
 *.local
 models/
 .expo/
@@ -32,3 +36,19 @@ uploads/
 
 # macOS Finder metadata
 .DS_Store
+
+# Credentials that must never become a commit: signing certificates and keys,
+# keystores, and service-account / Firebase config files.
+*.p8
+*.p12
+*.pem
+*.keystore
+*.jks
+credentials.json
+secrets.json
+service-account*.json
+google-services.json
+GoogleService-Info.plist
+
+# Test run output anywhere, not just apps/e2e/artifacts/.
+/artifacts/

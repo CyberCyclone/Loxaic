@@ -252,4 +252,4 @@ Usage analytics dashboard:
 4. Add `<script src="assets/theme-init.js">` in `<head>` to any new HTML file
 5. Use `var(--token)` in inline styles — never raw hex values
 6. Run `grep -rn '#[0-9a-fA-F]\{3,8\}' *.html *.css *.js | sort -u` to verify literal discipline
-7. Sync to `/Users/caseygibson/Documents/Git/Loxaic/design/`
+7. Sync to `design/` in your checkout of the repository
