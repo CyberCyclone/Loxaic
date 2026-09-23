@@ -270,17 +270,24 @@ export function parseDeviceList(text: string): RuntimeDevice[] {
   return out;
 }
 
-/** GPUs smaller than this are left out of the default device set. */
+/** GPUs with less than this free are left out of the default device set. */
 export const MIN_DEFAULT_DEVICE_BYTES = 4 * 1024 ** 3;
 
 /**
- * The devices used when an admin has not chosen: every GPU with at least
- * 4 GB. On a machine with a real inference card and a small display card —
- * a 30 GB V620 beside a 2 GB GT 1030 is the case that motivated this — llama.cpp
- * would otherwise split layers across both and spill the small one. When every
- * GPU is small, use them all rather than none.
+ * The devices used when an admin has not chosen: every GPU with at least 4 GB
+ * **free** when llama.cpp lists them — which is at router start, before any of
+ * our own models are loaded, so "free" means "not held by something else".
+ *
+ * Free rather than total because of two real cases on one box: a 30 GB V620
+ * beside a 2 GB GT 1030 (a total-memory rule already leaves the small card
+ * out), and later a second V620 beside the first while LM Studio held 26 GB
+ * of the first — both are 30 GB cards, so only free memory tells them apart,
+ * and splitting a model onto the busy one fails to load. When no GPU has 4 GB
+ * free, fall back to the total-memory rule, then to every GPU rather than none.
  */
 export function defaultDevices(devices: RuntimeDevice[]): string[] {
+  const free = devices.filter((d) => d.freeBytes >= MIN_DEFAULT_DEVICE_BYTES);
+  if (free.length > 0) return free.map((d) => d.name);
   const big = devices.filter((d) => d.totalBytes >= MIN_DEFAULT_DEVICE_BYTES);
   return (big.length > 0 ? big : devices).map((d) => d.name);
 }

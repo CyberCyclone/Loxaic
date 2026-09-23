@@ -113,6 +113,17 @@ describe("hardware", () => {
     expect(defaultDevices(devices.slice(0, 1))).toEqual(["Vulkan0"]);
   });
 
+  it("leaves out a big GPU another program has filled (two V620s, LM Studio on one)", () => {
+    // What --list-devices really printed on the beta box.
+    const devices = parseDeviceList(
+      "  Vulkan0: AMD Radeon Pro V620 (RADV NAVI21) (30704 MiB, 3880 MiB free)\n  Vulkan1: AMD Radeon Pro V620 (RADV NAVI21) (30704 MiB, 30687 MiB free)\n",
+    );
+    expect(defaultDevices(devices)).toEqual(["Vulkan1"]);
+    // Both busy: fall back to the cards that are big at all.
+    const busy = devices.map((d) => ({ ...d, freeBytes: 1024 ** 3 }));
+    expect(defaultDevices(busy)).toEqual(["Vulkan0", "Vulkan1"]);
+  });
+
   it("auto never resolves to the CPU", () => {
     expect(resolveFlavour("auto", { flavour: null, platform: "linux" })).toBeNull();
     expect(resolveFlavour("cpu", { flavour: null, platform: "linux" })).toBe("cpu");

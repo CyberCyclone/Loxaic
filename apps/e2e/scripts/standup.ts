@@ -25,6 +25,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockGithub, VALID_TOKEN } from './mock-github.ts';
 import { startMockProvider } from './mock-provider.ts';
+import { startMockHf, type MockHf } from './mock-hf.ts';
 import { startGitServer, type GitServer } from './git-server.ts';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -95,6 +96,7 @@ let spawnedServer: ChildProcess | null = null;
  * run didn't start the spawned server (and so never started this either). */
 let stopMockGithub: (() => Promise<void>) | null = null;
 let stopMockProvider: (() => Promise<void>) | null = null;
+let stopMockHf: (() => Promise<void>) | null = null;
 /**
  * `standup()` runs in WebdriverIO's launcher process (the `onPrepare` hook);
  * a spec file runs in a separate worker process it forks — a different
@@ -130,6 +132,24 @@ export function mockProviderApiBase(): string {
   const { apiBase } = JSON.parse(readFileSync(MOCK_PROVIDER_FILE, 'utf8')) as { apiBase: string };
   return apiBase;
 }
+
+/** The stand-in for the HuggingFace Hub, handed across processes the same way
+ * (see `mockGithubUrl`). Unlike the provider mock its URL *does* reach the
+ * server — as `HF_ENDPOINT` — and the file also carries this run's repo names,
+ * which are suffixed per run because downloaded models are rows in a shared
+ * database. */
+const MOCK_HF_FILE = path.join(RUN_DIR, 'mock-hf.json');
+
+export function mockHf(): Pick<MockHf, 'url' | 'repos' | 'quants'> {
+  if (!existsSync(MOCK_HF_FILE)) {
+    throw new Error(`[e2e] no mock HuggingFace recorded at ${MOCK_HF_FILE} — was standup() run?`);
+  }
+  return JSON.parse(readFileSync(MOCK_HF_FILE, 'utf8')) as Pick<MockHf, 'url' | 'repos' | 'quants'>;
+}
+
+/** Where the server under test keeps its llama.cpp runtime and models, so a
+ * spec can read the preset file it wrote. */
+export const LLAMA_DIR = path.join(RUN_DIR, 'llama');
 
 /** The stand-in for GitHub's hosted MCP server, handed across processes the
  * same way as the mock GitHub API (see `mockGithubUrl`). */
@@ -296,9 +316,12 @@ async function ensureServer(): Promise<void> {
         '(LM Studio, llama.cpp --jinja, OpenRouter, …). See the README\'s "Real-model task suite".',
     );
   }
-  // /health's inference field genuinely round-trips GET <base>/v1/models — see
-  // apps/server/src/index.ts — so this is a real connectivity check, not a flag echo.
-  const expectedInference = REAL_MODEL ? 'ok' : 'mock';
+  // /health's inference field reports the built-in provider: "mock" under
+  // MOCK_INFERENCE, otherwise whether the local llama.cpp runtime is running.
+  // The real-model lane reaches its model through E2E_INFERENCE_URL, which the
+  // server converts into an added provider at boot — so the built-in runtime
+  // is not what it depends on, and the gate there is the database alone.
+  const expectedInference = REAL_MODEL ? null : 'mock';
 
   const existing = await fetchHealth();
   if (existing) {
@@ -338,6 +361,11 @@ async function ensureServer(): Promise<void> {
   const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
   stopMockGithub = mockGithub.stop;
   writeFileSync(MOCK_GITHUB_FILE, JSON.stringify({ url: mockGithub.url }), 'utf8');
+
+  const hf = await startMockHf();
+  stopMockHf = hf.stop;
+  writeFileSync(MOCK_HF_FILE, JSON.stringify({ url: hf.url, repos: hf.repos, quants: hf.quants }), 'utf8');
+  rmSync(LLAMA_DIR, { recursive: true, force: true });
 
   const mockProvider = await startMockProvider();
   stopMockProvider = mockProvider.stop;
@@ -401,6 +429,16 @@ async function ensureServer(): Promise<void> {
       // nothing about the timer that is the subject. Two seconds costs one
       // cheap query per tick and lets the spec observe the production path.
       SANDBOX_REAP_INTERVAL_MS: '2000',
+      // Local models without a GPU or a real llama.cpp: the runtime is a fake
+      // router speaking llama-server's router API, on fake hardware with one
+      // 24 GB GPU, and HuggingFace is the mock above. All three seams are
+      // test-only and inert without one another (see apps/server/src/llama).
+      LLAMA_MODE: 'managed',
+      LLAMA_DIR,
+      LOXAIC_LLAMA_SERVER_BIN: path.join(REPO_ROOT, 'apps/server/test-fixtures/fake-llama-server.mjs'),
+      LOXAIC_FAKE_HARDWARE: 'gpu',
+      LOXAIC_FAKE_DEVICES: 'FAKE0: E2E Fake GPU (24576 MiB, 24000 MiB free)',
+      HF_ENDPOINT: hf.url,
     },
   });
   spawnedServer = child;
@@ -408,10 +446,10 @@ async function ensureServer(): Promise<void> {
   writeFileSync(PID_FILE, String(child.pid ?? ''), 'utf8');
 
   await waitUntil(
-    `${BASE_URL}/health to report database=ok inference=${expectedInference}`,
+    `${BASE_URL}/health to report database=ok inference=${expectedInference ?? 'any'}`,
     async () => {
       const h = await fetchHealth();
-      return h?.services.database === 'ok' && h.services.inference === expectedInference;
+      return h?.services.database === 'ok' && (expectedInference === null || h.services.inference === expectedInference);
     },
     120_000,
   );
@@ -476,6 +514,11 @@ export async function teardown(): Promise<void> {
     stopMockProvider = null;
   }
   rmSync(MOCK_PROVIDER_FILE, { force: true });
+  if (stopMockHf) {
+    await stopMockHf();
+    stopMockHf = null;
+  }
+  rmSync(MOCK_HF_FILE, { force: true });
   if (mockGithubMcp?.pid !== undefined) {
     try {
       mockGithubMcp.kill();

@@ -407,16 +407,17 @@ export const mcpServers = pgTable(
 
 // ── Inference providers ──
 /**
- * An LLM backend an admin added through the GUI, beyond the one
- * `INFERENCE_BASE_URL` names. Every row is OpenAI-compatible
+ * An LLM backend an admin added through the GUI, beyond the built-in local
+ * llama.cpp runtime. Every row is OpenAI-compatible
  * (`POST {baseUrl}/chat/completions`), which covers OpenRouter, OpenAI,
  * Anthropic's compatibility endpoint, and any other llama.cpp / LM Studio /
  * vLLM / Ollama host on the network.
  *
- * There is deliberately no row for the built-in backend: it is synthesized
- * from the environment variable at call time (see
- * apps/server/src/inference/providers.ts), so a deployment that never opens
- * this screen behaves exactly as it did before this table existed.
+ * There is deliberately no row for the built-in backend: it is the managed
+ * llama.cpp router, synthesized at call time (see
+ * apps/server/src/inference/providers.ts). A deployment that used to set
+ * `INFERENCE_BASE_URL` has that backend converted into a row here once, at
+ * boot (inference/legacy-migration.ts).
  *
  * Deployment-wide, not per-user: the key is the admin's and every signed-in
  * user spends it, which is why `model_allowlist` exists and why every route

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, Hourglass, Plug, Server, UserRound } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, HardDrive, Hourglass, Plug, Server, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -424,6 +424,38 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       style={TRUNCATE_TEXT}
                     >
                       OpenRouter, OpenAI, or another server
+                    </Text>
+                  </VStack>
+                </HStack>
+                <Icon as={ChevronRight} size="sm" className="shrink-0 text-muted-foreground" />
+              </Pressable>
+            )}
+
+            {/* Admin-only, like providers: downloading models spends the
+                deployment's disk and bandwidth, and enabling one offers it to
+                every user. */}
+            {isAdmin && (
+              <Pressable
+                testID="settings.nav.localModels"
+                onPress={() => {
+                  onClose();
+                  router.push('/local-models');
+                }}
+                className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+              >
+                <HStack space="sm" className="min-w-0 shrink items-center">
+                  <Icon as={HardDrive} size="sm" className="shrink-0 text-muted-foreground" />
+                  <VStack className="min-w-0 shrink">
+                    <Text size="sm" className="text-foreground">
+                      Local Models
+                    </Text>
+                    <Text
+                      size="2xs"
+                      className="text-muted-foreground"
+                      numberOfLines={1}
+                      style={TRUNCATE_TEXT}
+                    >
+                      Download models from HuggingFace
                     </Text>
                   </VStack>
                 </HStack>

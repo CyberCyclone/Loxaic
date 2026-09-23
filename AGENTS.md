@@ -13,6 +13,7 @@ reverse proxy).
 ## Layout
 
 - `apps/server` — Fastify API + WS (chat + agent tool loop) + routines scheduler + agent sandbox providers (`src/sandbox/`)
+  + the managed llama.cpp runtime and HuggingFace downloads (`src/llama/`)
 - `apps/mobile` — the one frontend (Expo + expo-router + gluestack-ui v5), targets iOS/Android/Web
 - `apps/desktop` — the deployment artifact: an Electron GUI, a `--headless` entry (`src/headless.js`), and a
   service supervisor (`src/supervisor/`) that brings up an embedded Postgres + the bundled server so the app
@@ -345,9 +346,10 @@ replies.
 - **Set `MOCK_INFERENCE=true`** for dev without llama.cpp. Mock mode drives the full agent
   tool loop too — it emits a real (fake) tool call when the prompt mentions one, so the
   approval/deny/auto/planning paths are all testable without a GGUF.
-- Real inference needs llama.cpp started with `--jinja` (native OpenAI tool calling) at
-  `INFERENCE_BASE_URL` (default `http://localhost:4002`). See `docs/RUNTIME.md` for the
-  per-platform (Mac/Windows/Linux, Metal/CUDA/ROCm) setup matrix.
+- Real inference is the managed llama.cpp runtime ("Local models" below): the server installs
+  and runs it, and an admin downloads models from HuggingFace in the app. There is no backend
+  URL any more — `INFERENCE_BASE_URL` is converted once into an added provider at boot. Other
+  backends are added providers. See `docs/RUNTIME.md` for what gets chosen on which machine.
 - **Model requests go through `inference/transport.ts`, never the global `fetch`.** Node's
   built-in fetch is undici with a 300 s `headersTimeout` and `bodyTimeout`, and llama.cpp and
   LM Studio send **no response headers for a streaming completion until prompt processing has
@@ -611,12 +613,11 @@ replies.
 
 ### Inference providers
 
-- **The backend `INFERENCE_BASE_URL` names is not a row.** It is synthesized at call time by
-  `inference/providers.ts`'s `defaultProvider()` — id `default`, slug null — so a deployment
-  that never opens the providers screen behaves exactly as it did before the feature existed,
-  and an operator can still move it by editing the environment. Everything else is an
-  admin-added row in `inference_providers`, and every route that touches that table is behind
-  `requireAdmin`: one key pays for every user's requests.
+- **The built-in provider is not a row.** It is the local llama.cpp router ("Local models"
+  below), synthesized at call time by `inference/providers.ts`'s `defaultProvider()` — id
+  `default`, slug null — from wherever that router is listening right now. Everything else is
+  an admin-added row in `inference_providers`, and every route that touches that table is
+  behind `requireAdmin`: one key pays for every user's requests.
 - **A model reference is one opaque string everywhere**, and the built-in backend's models keep
   their bare upstream id. Every `conversations.model_pref`, `messages.model` and
   `usage_records.model` written before this still resolves, untouched. An added provider's are
@@ -645,7 +646,7 @@ replies.
   probes go — **only for a provider with no preset**, since asking a hosted API for them spends
   a full timeout on a 404 every refresh.
 - **Deliberately no SSRF guard.** A llama.cpp host on the LAN (say 192.168.1.50) is the core use case, this
-  is admin-only deployment configuration of the same kind `INFERENCE_BASE_URL` already is, and
+  is admin-only deployment configuration, and
   the address never reaches a non-admin. Only http/https, and credentials in the URL are
   refused — they would sit in the clear in `base_url` beside an encrypted column that exists to
   stop exactly that. Custom headers refuse `authorization` (it would silently defeat that
@@ -739,6 +740,88 @@ replies.
   deletes by its own `createdBy`/base URL — never an unscoped delete, which would take another
   suite's rows out from under it. A dead base URL is `http://127.0.0.1:1` (instant
   ECONNREFUSED), never a blackhole address.
+
+### Local models (the managed llama.cpp router)
+
+- **The built-in provider is a llama.cpp router this server runs** (`apps/server/src/llama/`):
+  one `llama-server` started without `-m`, which spawns a child per loaded model and picks it by
+  the request's `model` field. `LLAMA_MODE` is `managed` (default: install and supervise it),
+  `attach` (Compose: talk to the `inference` sidecar at `LLAMA_ROUTER_URL`, sharing the models
+  volume at the **same path**, because the preset names files absolutely) or `off`. Measured
+  against b11149 in a spike before any of this was written; the facts below are from that.
+- **A model is usable only when `status = ready AND enabled`**, and that is enforced at send
+  time in `resolveLocalRef` (`inference/providers.ts`), not by the picker. A bare reference that
+  is not such a row is `local_model_unavailable`; the `"default"` sentinel becomes the first
+  servable model rather than reaching the router, which answers an unknown name with a 400.
+  **Tests that used any bare model name now need one** — `llama/__tests__/servable-model.ts`
+  inserts an enabled row under a host id of the suite's own; do not loosen the rule instead.
+  Under `MOCK_INFERENCE` any bare reference still resolves, as it always has.
+- **The listing is our rows, never the router's.** `llama/listing.ts` builds `ModelInfo` from
+  `local_models` and asks the router only for live state (`GET /models`, and `/props?model=` —
+  the router 400s `/props` without `model`). `/props` reports `n_ctx` **per slot** already
+  (8192 over 4 non-unified slots reads 2048); `perRequestWindow` only predicts that before a load.
+- **The preset file is the only place admin input becomes process arguments, and one bad key
+  stops the router from starting at all** (`option 'mlock' not recognized in preset`, fatal at
+  boot; a live reload answers 500 and keeps the old list). So `load-settings.ts` is a whitelist
+  of typed, range-checked settings rendered by us, re-validated at render time, and a row that
+  no longer validates falls back to defaults rather than reaching the file. `mlock`/`no-mmap`
+  are **not** preset keys (`load-mode` is); `kv-offload` is a bool. Adding a setting means
+  confirming its key against a real router first.
+- **`GET /models?reload=1` re-reads the preset live**: new sections appear, removed ones go, and
+  a *changed or removed* section that is loaded is **unloaded** — mid-generation, if a run is
+  using it. `syncPreset` therefore defers the reload while a built-in run holds a slot and one of
+  the touched models is loaded, and the PATCH answers `appliesOnNextLoad`. Unchanged loaded
+  models survive a reload.
+- **The router is started with a random `LLAMA_API_KEY` in its environment** (not argv, so not
+  `ps`), bound to loopback, with an env built from scratch. Without a key it answers any page in
+  the user's browser: llama.cpp's own log says "CORS allows all origins". The key rides as the
+  built-in provider's `apiKey`.
+- **The runtime is a pinned build, verified before it is unpacked** (`runtime-manifest.ts`,
+  generated by `apps/server/scripts/update-llama-runtime.mjs <tag>` from GitHub's asset
+  digests). Never "latest": it is a binary the server executes. Extraction uses the system `tar`
+  (bsdtar reads zip on macOS/Windows). Older builds are pruned only after the new one answered
+  its health check. A first install waits for an admin to open the screen or queue a download;
+  an upgrade of an existing install fetches itself at boot.
+- **The CPU is never chosen automatically.** `auto` resolves to Metal/CUDA/Vulkan or to nothing
+  (`needs-gpu`), and a GPU build whose `--list-devices` finds no GPU is an *error*, not a
+  fallback — llama.cpp would otherwise quietly run everything on the CPU. CPU is an admin's
+  explicit choice, refused by the API without `cpuAcknowledged: true`, warned about twice over in
+  the UI (a GPU present gets the stronger warning), and flagged on the runtime card while active.
+  In `attach` mode the sidecar's entrypoint (`infra/docker/llama-router.sh`) writes its
+  `--list-devices` output into the shared volume so the same warning reaches Compose.
+- **The default device set is the GPUs with at least 4 GB *free*** when the router starts (so
+  before any of our own models load). Total memory was the first rule, and it handled a 30 GB
+  V620 beside a 2 GB GT 1030 — then the beta box turned out to have *two* V620s with LM Studio
+  holding 26 GB of one, and both are 30 GB cards. Splitting a model onto the busy one fails to
+  load. Fit labels use the same free figure. The admin can choose devices explicitly.
+- **`local_models` is keyed by `(host_id, id)`** and every query is scoped to this instance's
+  `LOXAIC_INSTANCE_ID` (`""` when unset): files are on one machine's disk. That scoping is also
+  what isolates test suites from each other. **Two servers with no instance id on one database
+  share host `""`**, and each one's download queue picks up the other's queued rows — so never
+  run `pnpm dev` beside an e2e lane (already the rule; this is one more reason).
+- **An orphaned router holds the GPU.** The exit hook kills it on a clean exit or crash but not on
+  SIGKILL (the desktop supervisor's last resort), so the router's pid is written to
+  `LLAMA_DIR/router.pid` and a stale one is reaped at the next start — only if `ps` shows our
+  preset path on its command line, since a pid is reused.
+- **Downloads verify HuggingFace's LFS sha256 before the rename**, so a file with its final name
+  is always whole and verified; `.part` files resume with `Range` (a 200 to a range request
+  restarts from zero rather than appending). Pinned to the commit sha read with the file list.
+  The GGUF header is read after download (`llama/gguf.ts`) for the layer count and trained
+  context, which HuggingFace's API does not report; the tokenizer arrays are skipped, not read.
+- **Fit labels are computed server-side and only there** (`llama/fit.ts`), so search results,
+  quants, installed rows and the settings sheet agree. `unknown` is never shown as "will fit".
+  A search result has no file list, so its label is for a ~4-bit quant (0.6 bytes a parameter).
+- **Test seams, all inert without `LOXAIC_LLAMA_SERVER_BIN`:** that variable runs
+  `apps/server/test-fixtures/fake-llama-server.mjs` (the router API, recording what each load was
+  given to `LOXAIC_FAKE_ROUTER_LOG`); `LOXAIC_FAKE_HARDWARE=gpu|none` replaces detection;
+  `LOXAIC_FAKE_DEVICES` is what the fake lists. `HF_ENDPOINT` and `LLAMA_RELEASES_URL` are read at
+  call time. The e2e lane wires all of them (`scripts/mock-hf.ts`), so no GPU is needed.
+- **The client polls** (`hooks/useLocalModels.ts`): every second while anything installs or
+  downloads, every fifteen otherwise. The settings sheet is given a snapshot of the row, not the
+  polled one — a poll hands back a new object each second and would reset the draft.
+- **A download finishing replaces the row's status node** (in-progress line → finished pill,
+  same testID). `waitForTextIn` holds one element reference and never sees the new one; the spec
+  re-queries (`waitForFreshText`).
 
 ### The picker's "recently used"
 

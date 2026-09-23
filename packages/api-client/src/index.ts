@@ -260,14 +260,15 @@ export interface InferenceProvider {
 
 export type ProviderPreset = "openrouter" | "openai" | "anthropic";
 
-/** The backend `INFERENCE_BASE_URL` names — described so an admin can see it,
- * never editable here. */
+/** The built-in provider — the local llama.cpp runtime, managed on the Local
+ * models screen. Described on the providers screen so an admin can see it,
+ * never editable there. */
 export interface BuiltinProvider {
   id: string;
   name: string;
-  baseUrl: string;
-  /** What *does* change it, since this screen cannot. */
-  envVar: string;
+  runtimeState: LocalRuntimeState;
+  /** How many local models are downloaded and enabled. */
+  models: number;
 }
 
 export interface ProviderList {
@@ -325,6 +326,235 @@ export async function getProviderModels(
   id: string,
 ): Promise<{ models: { id: string; display_name: string }[]; error?: string }> {
   return adminFetch(`/v1/admin/providers/${id}/models`);
+}
+
+// ── Local models (the managed llama.cpp runtime) ─────────────────────────────
+
+export type LocalRuntimeState = "off" | "not-installed" | "needs-gpu" | "installing" | "starting" | "running" | "error";
+export type LlamaBackend = "auto" | "metal" | "cuda" | "vulkan" | "rocm" | "cpu";
+export type FitLabel = "will-fit" | "might-fit" | "wont-fit" | "unknown";
+
+export interface FitEstimate {
+  label: FitLabel;
+  requiredBytes: number;
+  availableBytes: number | null;
+  target: "gpu" | "cpu";
+}
+
+export interface RuntimeDevice {
+  name: string;
+  description: string;
+  totalBytes: number;
+  freeBytes: number;
+}
+
+export interface LocalRuntimeView {
+  mode: "managed" | "attach" | "off";
+  state: LocalRuntimeState;
+  reason: string | null;
+  installProgress: { doneBytes: number; totalBytes: number } | null;
+  tag: string;
+  backend: LlamaBackend;
+  flavour: string | null;
+  hardware: {
+    platform: string;
+    arch: string;
+    gpus: { name: string; memoryBytes: number | null; vendor: string }[];
+    flavour: string | null;
+    reason: string | null;
+    ramBytes: number;
+  } | null;
+  devices: RuntimeDevice[];
+  activeDevices: string[] | "none";
+  /** Whether this machine has a GPU at all — which CPU warning to show. */
+  gpuAvailable: boolean;
+  cpuActive: boolean;
+  recentErrors: string[];
+}
+
+export interface LocalModelsSettings {
+  mode: "managed" | "attach" | "off";
+  backend: LlamaBackend;
+  cpuAcknowledged: boolean;
+  devices: string[] | null;
+  modelsMax: number;
+  hasHfToken: boolean;
+  envOverrides: { mode: boolean; backend: boolean; modelsMax: boolean; hfToken: boolean };
+}
+
+export type LoadSettingValue = number | string | boolean;
+export type LoadSettings = Partial<Record<string, LoadSettingValue>>;
+
+/** One control on the model settings sheet, described by the server so the
+ * client never has its own copy of the ranges. */
+export interface LoadSettingSpec {
+  key: string;
+  flag: string;
+  group: "context" | "offload" | "performance" | "sampling" | "other";
+  label: string;
+  help: string;
+  type: "int" | "float" | "bool" | "enum";
+  min?: number;
+  max?: number | "nCtxTrain" | "nLayers";
+  words?: string[];
+  values?: string[];
+}
+
+export interface LocalModel {
+  /** The model reference users send: `<repo>:<quant>`. */
+  id: string;
+  repo: string;
+  publisher: string;
+  displayName: string;
+  quant: string;
+  sizeBytes: number;
+  bytesDone: number;
+  status: "queued" | "downloading" | "paused" | "failed" | "ready";
+  error: string | null;
+  enabled: boolean;
+  loadSettings: LoadSettings;
+  meta: { nLayers?: number | null; nCtxTrain?: number | null; architecture?: string | null; expertCount?: number | null };
+  hasVision: boolean;
+  fit: FitEstimate;
+  runtimeStatus: string | null;
+  loadFailed: boolean;
+  createdAt: string;
+  /** Present on a PATCH answer: the model is answering someone and picks the
+   * change up on its next load. */
+  appliesOnNextLoad?: boolean;
+}
+
+export interface LocalModelsView {
+  runtime: LocalRuntimeView;
+  settings: LocalModelsSettings;
+  models: LocalModel[];
+  freeDiskBytes: number | null;
+  settingSpecs: LoadSettingSpec[];
+}
+
+export interface HfModelSummary {
+  repo: string;
+  publisher: string;
+  name: string;
+  downloads: number | null;
+  downloadsAllTime: number | null;
+  likes: number | null;
+  trendingScore: number | null;
+  createdAt: string | null;
+  lastModified: string | null;
+  license: string | null;
+  pipelineTag: string | null;
+  vision: boolean;
+  gated: boolean;
+  params: number | null;
+  architecture: string | null;
+  contextLength: number | null;
+  tags: string[];
+}
+
+export interface HfSearchResult extends HfModelSummary {
+  /** For a typical 4-bit quant of a model this size. */
+  fit: FitLabel;
+  /** Quants of this repo already in the download list. */
+  downloaded: string[];
+}
+
+export interface HfQuant {
+  quant: string;
+  files: { path: string; size: number; sha256: string | null }[];
+  sizeBytes: number;
+  fit: FitEstimate;
+  downloadStatus: LocalModel["status"] | null;
+}
+
+export interface HfRepoDetails {
+  summary: HfModelSummary;
+  baseModel: string | null;
+  languages: string[];
+  /** The model card's markdown. Untrusted: render it as text. */
+  card: string | null;
+  cardTruncated: boolean;
+  files: { revision: string; quants: HfQuant[]; mmproj: { path: string; size: number; sha256: string | null }[] };
+  bestFit: FitLabel;
+}
+
+export type HfSort = "downloads" | "likes" | "trending" | "recent";
+
+const json = (body: unknown): RequestInit => ({
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+});
+
+export async function getLocalModels(): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models");
+}
+
+export async function restartLocalRuntime(): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models/runtime/restart", { method: "POST" });
+}
+
+export async function updateLocalModelsSettings(patch: {
+  backend?: LlamaBackend;
+  cpuAcknowledged?: boolean;
+  devices?: string[] | null;
+  modelsMax?: number;
+  hfToken?: string | null;
+}): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models/settings", { method: "PATCH", ...json(patch) });
+}
+
+export async function searchHfModels(query: {
+  q?: string;
+  author?: string;
+  sort?: HfSort;
+  vision?: boolean;
+}): Promise<{ results: HfSearchResult[] }> {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.author) params.set("author", query.author);
+  if (query.sort) params.set("sort", query.sort);
+  if (query.vision) params.set("vision", "1");
+  return adminFetch(`/v1/admin/local-models/hf/search?${params.toString()}`);
+}
+
+export async function getHfRepoDetails(repo: string): Promise<HfRepoDetails> {
+  return adminFetch(`/v1/admin/local-models/hf/details?repo=${encodeURIComponent(repo)}`);
+}
+
+export async function downloadLocalModel(input: {
+  repo: string;
+  quant: string;
+  mmproj?: string | null;
+  force?: boolean;
+}): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/downloads", { method: "POST", ...json(input) });
+}
+
+export async function pauseLocalModel(id: string): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/pause", { method: "POST", ...json({ id }) });
+}
+
+export async function resumeLocalModel(id: string): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/resume", { method: "POST", ...json({ id }) });
+}
+
+export async function cancelLocalModel(id: string): Promise<void> {
+  await adminFetch("/v1/admin/local-models/cancel", { method: "POST", ...json({ id }) });
+}
+
+export async function updateLocalModel(
+  id: string,
+  patch: { enabled?: boolean; displayName?: string; loadSettings?: LoadSettings },
+): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/model", { method: "PATCH", ...json({ id, ...patch }) });
+}
+
+export async function estimateLocalModel(id: string, loadSettings: LoadSettings): Promise<{ fit: FitEstimate }> {
+  return adminFetch("/v1/admin/local-models/estimate", { method: "POST", ...json({ id, loadSettings }) });
+}
+
+export async function deleteLocalModel(id: string): Promise<void> {
+  await adminFetch(`/v1/admin/local-models/model?id=${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function getSandboxSettings(): Promise<SandboxSettings> {

@@ -110,6 +110,10 @@ const st: State = {
 
 /** Attach mode's last health answer, refreshed on a timer and on demand. */
 let attachHealthy: boolean | null = null;
+/** Attach mode: whether the sidecar has recorded what `--list-devices` found
+ * (infra/docker/llama-router.sh writes it into the shared volume). Until it
+ * has, "no devices" means "not told", never "running on the CPU". */
+let attachDevicesKnown = false;
 let attachTimer: NodeJS.Timeout | null = null;
 
 // ── Log capture ─────────────────────────────────────────────────────────────
@@ -582,6 +586,14 @@ async function stopChild(): Promise<void> {
   st.stopping = false;
 }
 
+/** The admin's device choice, narrowed to devices that exist; the default set
+ * when there is none. */
+function chosenDevices(devices: RuntimeDevice[]): string[] {
+  const known = new Set(devices.map((d) => d.name));
+  const chosen = getLocalModelsSettings().devices?.filter((d) => known.has(d)) ?? [];
+  return chosen.length > 0 ? chosen : defaultDevices(devices);
+}
+
 let ensuring: Promise<void> | null = null;
 
 /**
@@ -645,9 +657,7 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   if (flavour === "cpu") {
     st.activeDevices = "none";
   } else {
-    const known = new Set(st.devices.map((d) => d.name));
-    const chosen = settings.devices?.filter((d) => known.has(d)) ?? [];
-    st.activeDevices = chosen.length > 0 ? chosen : defaultDevices(st.devices);
+    st.activeDevices = chosenDevices(st.devices);
     if (st.devices.length === 0) {
       // The build started but found no GPU of its kind — a missing driver, or
       // the wrong backend for this card. Running anyway would silently put
@@ -698,6 +708,14 @@ export async function bootLocalRuntime(log: (m: string) => void): Promise<void> 
 }
 
 async function refreshAttachHealth(): Promise<void> {
+  try {
+    const text = await readFile(path.join(path.dirname(presetPath()), "router-devices.txt"), "utf8");
+    st.devices = parseDeviceList(text);
+    st.activeDevices = st.devices.length > 0 ? chosenDevices(st.devices) : "none";
+    attachDevicesKnown = true;
+  } catch {
+    attachDevicesKnown = false;
+  }
   const ep = routerEndpoint();
   if (!ep) {
     attachHealthy = false;
@@ -732,6 +750,10 @@ export function runtimeView(): RuntimeView {
   } else if (mode === "attach") {
     state = attachHealthy === null ? "starting" : attachHealthy ? "running" : "error";
     reason = attachHealthy === false ? routerUnavailableReason() : null;
+    if (attachDevicesKnown && st.devices.length === 0 && state === "running") {
+      reason =
+        "The llama.cpp container cannot see a GPU, so models run on the CPU. Start it with the Compose override for your GPU (docker-compose.vulkan.yml, .cuda.yml or .rocm.yml).";
+    }
   }
   return {
     mode,
@@ -744,8 +766,8 @@ export function runtimeView(): RuntimeView {
     hardware: st.hardware,
     devices: st.devices,
     activeDevices: st.activeDevices,
-    gpuAvailable,
-    cpuActive: st.flavour === "cpu",
+    gpuAvailable: mode === "attach" && attachDevicesKnown ? st.devices.length > 0 : gpuAvailable,
+    cpuActive: st.flavour === "cpu" || (mode === "attach" && attachDevicesKnown && st.devices.length === 0),
     recentErrors: recentErrors(),
   };
 }
@@ -762,9 +784,11 @@ export function offloadMemory(): { bytes: number | null; cpu: boolean } {
     return { bytes: os.totalmem(), cpu: true };
   }
   if (st.devices.length > 0) {
+    // Free, not total, as llama.cpp listed it at router start — memory another
+    // program holds is memory a model cannot use (see defaultDevices).
     const active = st.activeDevices === "none" ? [] : st.activeDevices;
     const devs = active.length > 0 ? st.devices.filter((d) => active.includes(d.name)) : st.devices;
-    return { bytes: devs.reduce((n, d) => n + d.totalBytes, 0) || null, cpu: false };
+    return { bytes: devs.reduce((n, d) => n + d.freeBytes, 0) || null, cpu: false };
   }
   const hw = st.hardware;
   if (hw?.flavour === null && hw.gpus.length === 0) return { bytes: os.totalmem(), cpu: true };
@@ -813,6 +837,7 @@ export async function __resetRouterForTest(): Promise<void> {
   reloadPending = false;
   lastReloadError = null;
   attachHealthy = null;
+  attachDevicesKnown = false;
   fastFails = 0;
   logTail.length = 0;
 }

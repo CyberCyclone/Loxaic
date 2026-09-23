@@ -1,15 +1,11 @@
-# Proxmox + AMD V620 (gfx1030) override
+# AMD GPUs through ROCm, e.g. a Radeon Pro V620 (gfx1030) on Proxmox.
 # Usage: docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
-
+#
+# The Vulkan override usually works on AMD as well, with less setup; use this
+# one when ROCm is what the host is built around.
 services:
   inference:
     image: ghcr.io/ggml-org/llama.cpp:server-rocm
-    command: >
-      --host 0.0.0.0 --port 8080
-      -m /models/model.gguf
-      --ctx-size 32768
-      --jinja
-      -ngl 999
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri

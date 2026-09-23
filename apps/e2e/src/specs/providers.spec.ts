@@ -2,7 +2,7 @@
  * Adding an external LLM provider, and then using one of its models.
  *
  * The whole point of this spec is that nothing about the provider path is
- * stubbed. `MOCK_INFERENCE` covers the backend `INFERENCE_BASE_URL` names and
+ * stubbed. `MOCK_INFERENCE` covers the built-in provider (the local llama.cpp runtime) and
  * deliberately not an added provider, so the requests this makes are real
  * HTTP requests to `scripts/mock-provider.ts` — which is what lets it assert
  * on the bearer that was sent and the model id it was asked for, neither of
@@ -64,7 +64,9 @@ describe('external model providers', () => {
 
     // The built-in backend is described but not editable — an admin needs to
     // see what is already there before deciding whether to add anything.
-    await waitForTextIn('providers.builtin', 'INFERENCE_BASE_URL');
+    // The built-in provider is the local runtime, described with a link to its
+    // own screen rather than an environment variable to go and edit.
+    await waitForTextIn('providers.builtin', 'Local models, run by llama.cpp');
     await shot('providers-empty');
 
     await tap('providers.addFirst');

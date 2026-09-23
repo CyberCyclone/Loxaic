@@ -108,7 +108,10 @@ Flags: `--port` (default 4100, or `$LOXAIC_PORT`), `--host` (default
 `$LOXAIC_DATA_DIR`), `--as-host`, `--host-name`, `--bind` (`lan` or
 `localhost`, persisted with `--as-host`; default `lan`), `--advertise-url`
 (persisted with `--as-host` — a reverse proxy or domain other machines
-should use instead of this one's own LAN address), `--inference-url`,
+should use instead of this one's own LAN address), `--inference-url`
+(deprecated: local models now run in the built-in llama.cpp runtime, and a URL
+given here is converted once into an added provider — see
+[docs/RUNTIME.md](RUNTIME.md#coming-from-inference_base_url)),
 `--mock-inference`, `--reset-password <email>` (see "Resetting a password"
 below), `--help`. The GUI's `--loxaic-port`/`--loxaic-data-dir`
 names are accepted too, so one set of flags works with either entry point.
