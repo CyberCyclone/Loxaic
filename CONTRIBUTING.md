@@ -25,7 +25,9 @@ Thanks for taking the time. Bug reports, fixes and features are all welcome.
    ```
 
    A single package or test: `pnpm --filter @loxaic/server test -- <pattern>`. The server
-   tests need Postgres and Redis — `docker compose up db redis` provides both.
+   tests need Postgres and Redis — `docker compose up db redis` provides both — and a schema,
+   which nothing in the test run applies. Once, before the first run (and after pulling a
+   migration): `pnpm --filter @loxaic/db db:migrate`.
 4. **User-visible changes need end-to-end coverage** — a spec in `apps/e2e/src/specs/`, and
    screenshots of the behaviour in the pull request description. See "End-to-end tests" in
    `AGENTS.md` and [`apps/e2e/README.md`](apps/e2e/README.md). If a change is not

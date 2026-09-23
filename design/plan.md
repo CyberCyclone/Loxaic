@@ -74,7 +74,7 @@ every surface.
 | C1 | chat | header model button ("Llama 3.1 8B") | "The belongs to the comment / reply section next to the 'workspace' selector." | Move model selector from header into composer tool row, beside workspace chips (U1) |
 | C2 | chat | model modal, Server Models group | "The modal also needs to have levels of 'thinking'. It would depend on what llama.cpp uses. E.g, None, Low, Medium, High" | Per-model thinking-level selector (U3) |
 | C3 | chat | model modal | "Add an option for remote models. I want to eventually add 'open router' etc. to the options. Also, add a search bar and a 'settings' button… opens the settings modal just jumped straight to the 'models' tab." | Search bar + Remote Models group + gear → U2 @ Models (U3) |
-| C4 | chat | sidebar account label ("Self-hosted") | "Change this to 'loxaic.tailscale.com'" | Text change; apply on all pages (shared sidebar) |
+| C4 | chat | sidebar account label ("Self-hosted") | "Change this to 'loxaic.example.ts.net'" | Text change; apply on all pages (shared sidebar) |
 | C5 | chat | message badge "chat" | "Chat messages should change this and 'agent' to 'Cloud' and 'Offline'" | Origin badges become location badges: **Server** (on the server, synced) / **On device** (local to this device only) — naming per Q1 |
 | C6 | chat | sidebar "New chat" button | "Move this into the chat history panel." | Button moves into thread-list panel header (next to search); same on agent page's run-history panel for consistency |
 | C7 | chat | composer kbd hint ("↵ Send · ⇧↵ Newline") | "Remove this. Enter will not send a message, that's very annoying. Only the button will send the message." | Remove hint + Enter-to-send handler; Enter = newline; send button only |
@@ -102,7 +102,7 @@ every surface.
    both persist via localStorage and reflect each other.
 7. No `chat` / `agent` text badges remain; **Server** / **On device** location badges
    used per Q1.
-8. Sidebar: New chat inside thread panel; account label `loxaic.tailscale.com`
+8. Sidebar: New chat inside thread panel; account label `loxaic.example.ts.net`
    everywhere.
 9. Agent: no header stop button, no header mode selector, no run-header stat spans;
    inspector slide-over behaves like chat's context panel (incl. mobile overlay).
