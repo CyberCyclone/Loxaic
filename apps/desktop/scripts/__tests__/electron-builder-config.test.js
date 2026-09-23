@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,7 +18,7 @@ import { fileURLToPath } from "node:url";
  *     Postgres data directories apart.
  */
 const require_ = createRequire(import.meta.url);
-const { configFor } = require_("../builder-variants.cjs");
+const { configFor, missingResources } = require_("../builder-variants.cjs");
 
 describe("the electron-builder config", () => {
   it("packages the stable app by default", () => {
@@ -105,17 +106,50 @@ describe("the electron-builder config", () => {
     // Shipping a binary built from MIT/BSD/Apache/LGPL code is conditional on
     // shipping those notices, and nothing at runtime would notice them missing.
     // Electron's and Chromium's in particular are not inside Electron.app, so a
-    // macOS bundle lacked them until they were listed here.
+    // macOS bundle lacked them until they were listed here. They come from the
+    // notices step (resources/electron-licenses), never node_modules/electron/
+    // dist: pnpm skips electron's install script, so CI and the release runners
+    // never have that directory — which is how the first version of this failed.
     const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
     const resources = configFor(undefined).extraResources;
     const shipped = Object.fromEntries(resources.map((r) => [r.to, r.from]));
     for (const to of ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt", "LICENSE.electron.txt", "LICENSES.chromium.html"]) {
       expect(shipped[to], to).toBeDefined();
     }
-    // Generated at package time, so only the checked-in and installed sources
-    // can be asserted to exist here.
-    for (const to of ["LICENSE", "NOTICE", "LICENSE.electron.txt", "LICENSES.chromium.html"]) {
+    // The rest are generated at package time; only the checked-in ones can be
+    // asserted to exist, and the generated ones must come from resources/.
+    for (const to of ["LICENSE", "NOTICE"]) {
       expect(existsSync(path.resolve(desktopDir, shipped[to])), shipped[to]).toBe(true);
+    }
+    for (const to of ["THIRD_PARTY_NOTICES.txt", "LICENSE.electron.txt", "LICENSES.chromium.html"]) {
+      expect(shipped[to], to).toMatch(/^resources\//);
+    }
+  });
+
+  it("names every extraResources source that is not on disk", () => {
+    // electron-builder packages past a missing source with a log line and exit
+    // 0; electron-builder.config.cjs throws on this list instead.
+    const config = configFor(undefined);
+    const root = mkdtempSync(path.join(os.tmpdir(), "loxaic-resources-"));
+    // Sources climb out of the project (`../../LICENSE`, `../mobile/dist`), so
+    // the project dir sits two levels down or they would land outside `root`.
+    const dir = path.join(root, "apps/desktop");
+    mkdirSync(dir, { recursive: true });
+    try {
+      expect(missingResources(config, dir)).toEqual(config.extraResources.map((r) => r.from));
+      for (const { from } of config.extraResources) {
+        const file = path.resolve(dir, from);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, "");
+      }
+      expect(missingResources(config, dir)).toEqual([]);
+      rmSync(path.join(dir, "resources/electron-licenses/LICENSES.chromium.html"));
+      expect(missingResources(config, dir)).toEqual(["resources/electron-licenses/LICENSES.chromium.html"]);
+      for (const { from } of config.extraResources) {
+        expect(path.resolve(dir, from).startsWith(root + path.sep), from).toBe(true);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

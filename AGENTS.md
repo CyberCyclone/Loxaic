@@ -2173,8 +2173,14 @@ replies.
   than ship unattributed. The Windows build is the one that carries the most (libcurl,
   wxWidgets, winpthreads, `libpqwalreceiver.dll`), and no local test sees it — after an
   embedded-postgres bump, run `collectNative` over each platform's tarball. Electron's and
-  Chromium's licences are listed in `extraResources` by hand because they sit beside
-  `Electron.app`, not inside it: a macOS bundle had neither. `embedded-postgres` does not
+  Chromium's licences sit beside `Electron.app`, not inside it, so a macOS bundle had neither;
+  the notices step copies them into `resources/electron-licenses/`. **Never from
+  `node_modules/electron/dist` alone**: pnpm skips electron's install script (it is not in
+  `onlyBuiltDependencies`), so CI and the release runners never have that directory —
+  electron-builder downloads Electron for itself. The step falls back to the same release
+  zip through electron's own `@electron/get`, checksum-verified. The first version read
+  `dist/` and passed every local run, and CI's first run after going public failed on it.
+  `embedded-postgres` does not
   export its `package.json`, so `require.resolve` cannot find its platform package — go
   through `collectNpm`, which is how a test of this first passed without running.
 - **Instance mode lives in `<dataDir>/config.json`** (`supervisor/config.js`), read by both

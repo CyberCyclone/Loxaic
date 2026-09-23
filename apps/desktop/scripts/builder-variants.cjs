@@ -25,13 +25,7 @@
 // then every build here is the stable app, which is the right default but
 // means the beta feed described above has no artifacts behind it.
 
-const path = require("node:path");
 const releaseRepo = require("../src/updates/release-repo.cjs");
-
-// Electron's own licence and Chromium's. They sit beside Electron.app in the
-// electron package's dist/, not inside it, so a macOS bundle would otherwise
-// ship Chromium with none of its notices.
-const electronDist = path.join(path.dirname(require.resolve("electron/package.json")), "dist");
 
 const VARIANTS = {
   production: {
@@ -103,8 +97,11 @@ function configFor(rawVariant) {
       { from: "../../LICENSE", to: "LICENSE" },
       { from: "../../NOTICE", to: "NOTICE" },
       { from: "resources/THIRD_PARTY_NOTICES.txt", to: "THIRD_PARTY_NOTICES.txt" },
-      { from: path.join(electronDist, "LICENSE"), to: "LICENSE.electron.txt" },
-      { from: path.join(electronDist, "LICENSES.chromium.html"), to: "LICENSES.chromium.html" },
+      // Electron's own licence and Chromium's, taken from the Electron release
+      // by the notices step: they sit beside Electron.app, not inside it, so a
+      // macOS bundle would otherwise ship Chromium with none of its notices.
+      { from: "resources/electron-licenses/LICENSE.electron.txt", to: "LICENSE.electron.txt" },
+      { from: "resources/electron-licenses/LICENSES.chromium.html", to: "LICENSES.chromium.html" },
     ],
     artifactName: variant.artifactName,
     publish: [
@@ -151,4 +148,19 @@ function configFor(rawVariant) {
   };
 }
 
-module.exports = { configFor, VARIANTS };
+/**
+ * The extraResources sources that are not on disk, relative to `projectDir`.
+ *
+ * electron-builder only logs "file source doesn't exist" for one and packages
+ * on, exit 0 — so a build that skipped a step (build:notices above all, which
+ * is the only thing that writes the licences) produced a release-shaped app
+ * missing them, and nothing failed. electron-builder.config.cjs refuses to
+ * return a config while this is non-empty.
+ */
+function missingResources(config, projectDir) {
+  const { existsSync } = require("node:fs");
+  const path = require("node:path");
+  return config.extraResources.map((r) => r.from).filter((from) => !existsSync(path.resolve(projectDir, from)));
+}
+
+module.exports = { configFor, missingResources, VARIANTS };
