@@ -604,6 +604,13 @@ there is a test for it.)
 
 Nothing installs itself behind your back: the download is automatic, the restart is a button.
 
+**Never create a repository named `CyberCyclone/Open-Shannon` again.** That was this
+repository's name until 2026-09-23, and every desktop build packaged before the rename has it
+baked into its `app-update.yml`. Those installs reach releases only through GitHub's rename
+redirect, and a new repository under the old name ends the redirect: they would check that
+repository's feed from then on and keep reporting "up to date", with no error. The repository
+builds publish to is set in `apps/desktop/src/updates/release-repo.cjs`.
+
 **What the channel verifies, and what it does not.** On macOS a signed, notarized build is
 verified by the OS on install. On Windows and Linux the installers are **not signed**, so the
 only integrity check on a downloaded update is the `sha512` in `latest.yml`/`beta.yml` — a file written

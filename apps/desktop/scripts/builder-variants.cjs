@@ -25,6 +25,8 @@
 // then every build here is the stable app, which is the right default but
 // means the beta feed described above has no artifacts behind it.
 
+const releaseRepo = require("../src/updates/release-repo.cjs");
+
 const VARIANTS = {
   production: {
     productName: "Loxaic",
@@ -95,8 +97,7 @@ function configFor(rawVariant) {
     publish: [
       {
         provider: "github",
-        owner: "CyberCyclone",
-        repo: "Loxaic",
+        ...releaseRepo,
         ...(variant.channel ? { channel: variant.channel } : {}),
       },
     ],

@@ -1,3 +1,4 @@
+import releaseRepo from "./release-repo.cjs";
 import { initialState, reduce } from "./state.js";
 
 /** How long after launch the first check runs. Long enough that it never
@@ -117,7 +118,7 @@ export function createUpdater({
         // token in an environment variable is not a shipping mechanism, so
         // say so where somebody will see it, and never write it anywhere.
         log("updates: using LOXAIC_GH_TOKEN to read a private release feed (testing only)");
-        autoUpdater.setFeedURL({ provider: "github", owner: "CyberCyclone", repo: "Loxaic", private: true, token });
+        autoUpdater.setFeedURL({ provider: "github", ...releaseRepo, private: true, token });
       }
 
       autoUpdater.on("checking-for-update", () => { apply({ type: "checking" }); });

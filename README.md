@@ -22,8 +22,8 @@ own builds has to repoint both before building:
   `apps/mobile/app.json` name our EAS project, so a fork's app built as-is would
   download *our* over-the-air updates. `npx eas-cli init` in `apps/mobile`
   creates a project of your own.
-- **Desktop updates** — the `publish` block in
-  `apps/desktop/scripts/builder-variants.cjs` names this GitHub repository, so a
+- **Desktop updates** — `apps/desktop/src/updates/release-repo.cjs` names this
+  GitHub repository, which both the packaging config and the updater read, so a
   fork's desktop app would update itself from our releases.
 
 Everything else forks cleanly — nothing in this repository is a credential, and
