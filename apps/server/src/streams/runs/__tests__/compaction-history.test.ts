@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { useServableModels } from "../../../llama/__tests__/servable-model.ts";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
@@ -37,9 +38,12 @@ import { startCompactRun } from "../compactRun.ts";
 describe("compaction: history cutoff + no-op guard", () => {
   const userId = `test-compact-${uuid()}`;
   const convIds: string[] = [];
+  // "test-model" is a bare reference, which is only usable as an enabled local model.
+  let cleanupServable: () => Promise<void> = () => Promise.resolve();
 
   beforeAll(async () => {
     await initStreamBroker();
+    cleanupServable = await useServableModels(["test-model"]);
     await db.insert(user).values({
       id: userId,
       name: "Test Compact",
@@ -57,6 +61,7 @@ describe("compaction: history cutoff + no-op guard", () => {
       await db.delete(conversations).where(eq(conversations.id, id));
     }
     await db.delete(user).where(eq(user.id, userId));
+    await cleanupServable();
   });
 
   async function newConv(): Promise<string> {

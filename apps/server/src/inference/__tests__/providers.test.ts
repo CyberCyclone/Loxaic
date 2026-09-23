@@ -10,6 +10,7 @@ import { db, eq, inArray } from "@loxaic/db";
 import { inferenceProviders, user } from "@loxaic/db/schema";
 import { DEFAULT_PROVIDER_ID, formatModelRef, parseModelRef } from "@loxaic/types";
 import { decryptApiKey, encryptApiKey, redactSecrets } from "../provider-secrets.ts";
+import { useServableModels } from "../../llama/__tests__/servable-model.ts";
 import {
   __resetProviderCacheForTest,
   allocateSlug,
@@ -143,11 +144,23 @@ describe("model references", () => {
 });
 
 describe("resolveModelRef", () => {
-  it("sends an unqualified reference to the built-in backend", async () => {
-    const { provider, upstreamModel } = await resolveModelRef("qwen2.5-14b-instruct");
-    expect(provider.id).toBe(DEFAULT_PROVIDER_ID);
-    expect(provider.isDefault).toBe(true);
-    expect(upstreamModel).toBe("qwen2.5-14b-instruct");
+  it("sends an unqualified reference to the built-in backend — when it is an enabled local model", async () => {
+    const cleanup = await useServableModels(["qwen2.5-14b-instruct"]);
+    try {
+      const { provider, upstreamModel } = await resolveModelRef("qwen2.5-14b-instruct");
+      expect(provider.id).toBe(DEFAULT_PROVIDER_ID);
+      expect(provider.isDefault).toBe(true);
+      expect(upstreamModel).toBe("qwen2.5-14b-instruct");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("refuses an unqualified reference that is not an enabled local model", async () => {
+    // The built-in provider is the local llama.cpp router now, and it serves
+    // exactly what an admin downloaded and enabled — never "whatever the
+    // backend happens to have". Enforced here, at send time.
+    await expect(resolveModelRef(`not-downloaded-${uuid()}`)).rejects.toMatchObject({ code: "local_model_unavailable" });
   });
 
   it("routes a qualified reference to its provider, under the upstream id", async () => {
@@ -367,16 +380,20 @@ describe("deleting the admin who added a provider", () => {
 });
 
 describe("the built-in provider", () => {
-  it("is synthesized from the environment, not a row", () => {
-    const previous = process.env.INFERENCE_BASE_URL;
-    process.env.INFERENCE_BASE_URL = "http://example.test:9999";
+  it("is synthesized from wherever the llama.cpp router is, not a row", () => {
+    const previous = { mode: process.env.LLAMA_MODE, url: process.env.LLAMA_ROUTER_URL };
+    process.env.LLAMA_MODE = "attach";
+    process.env.LLAMA_ROUTER_URL = "http://example.test:9999";
     try {
-      // Read at call time: a supervisor sets this in the child's environment.
+      // Read at call time: Compose's sidecar is named in the environment.
       expect(defaultProvider().apiBase).toBe("http://example.test:9999/v1");
       expect(defaultProvider().nativeRoot).toBe("http://example.test:9999");
+      expect(defaultProvider().id).toBe(DEFAULT_PROVIDER_ID);
     } finally {
-      if (previous === undefined) delete process.env.INFERENCE_BASE_URL;
-      else process.env.INFERENCE_BASE_URL = previous;
+      if (previous.mode === undefined) delete process.env.LLAMA_MODE;
+      else process.env.LLAMA_MODE = previous.mode;
+      if (previous.url === undefined) delete process.env.LLAMA_ROUTER_URL;
+      else process.env.LLAMA_ROUTER_URL = previous.url;
     }
   });
 });

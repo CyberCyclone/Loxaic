@@ -12,7 +12,18 @@ const HEALTH_TIMEOUT_MS = 30_000;
 /** Env vars a user may set on the app that pass straight through to the server. */
 const PASSTHROUGH_ENV = [
   "MOCK_INFERENCE",
+  // No longer names the built-in backend (that is the managed llama.cpp
+  // runtime now): the server converts it into an added provider once, at
+  // boot, and ignores it after that. Passed through so that conversion happens.
   "INFERENCE_BASE_URL",
+  "LLAMA_BACKEND",
+  "LLAMA_MODELS_MAX",
+  "HF_TOKEN",
+  // Test-only seams (see apps/server/src/llama): the Electron e2e runs a fake
+  // llama.cpp on machines with no GPU. Each is inert without the others.
+  "LOXAIC_LLAMA_SERVER_BIN",
+  "LOXAIC_FAKE_HARDWARE",
+  "HF_ENDPOINT",
   "CONTAINER_SOCKET",
   "SANDBOX_MODE",
   "SANDBOX_HOST_ROOT",
@@ -250,6 +261,10 @@ export async function startStack({
       // break the bundle's code signature. Same treatment as the Postgres data
       // dir: user data belongs under dataDir.
       UPLOADS_DIR: path.join(dataDir, "uploads"),
+      // The managed llama.cpp runtime and downloaded models — many gigabytes,
+      // so under dataDir for the same reason as uploads, and never inside the
+      // bundle an update replaces.
+      LLAMA_DIR: path.join(dataDir, "llama"),
     };
     // The bundled server records this in the hosts table. npm_package_version
     // only exists under `pnpm dev`; the packaged app has to say so itself —

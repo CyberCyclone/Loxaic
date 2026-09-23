@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { db, eq } from "@loxaic/db";
+import { localModels } from "@loxaic/db/schema";
+import { invalidateLocalModelCache } from "../../llama/catalog.ts";
 import {
   __resetSchedulerForTest,
   acquireRunSlot,
@@ -28,6 +31,22 @@ function pin(max: number) {
 }
 
 const noop = () => undefined;
+
+/** Point the built-in provider at a test backend, the way Compose's sidecar
+ * is attached. Returns the undo. */
+function attachBuiltin(url: string): () => void {
+  const prev = { mode: process.env.LLAMA_MODE, url: process.env.LLAMA_ROUTER_URL };
+  process.env.LLAMA_MODE = "attach";
+  process.env.LLAMA_ROUTER_URL = url;
+  resetSlotProbe();
+  return () => {
+    if (prev.mode === undefined) Reflect.deleteProperty(process.env, "LLAMA_MODE");
+    else process.env.LLAMA_MODE = prev.mode;
+    if (prev.url === undefined) Reflect.deleteProperty(process.env, "LLAMA_ROUTER_URL");
+    else process.env.LLAMA_ROUTER_URL = prev.url;
+    resetSlotProbe();
+  };
+}
 
 beforeEach(() => {
   __resetSchedulerForTest();
@@ -242,15 +261,11 @@ describe("how many runs are allowed at once", () => {
     // through the real probe rather than a module mock: mocking an ES export
     // means resetting the module registry, which every other suite sharing
     // this worker then inherits.
-    const previousBase = process.env.INFERENCE_BASE_URL;
-    process.env.INFERENCE_BASE_URL = "http://127.0.0.1:1";
-    resetSlotProbe();
+    const restore = attachBuiltin("http://127.0.0.1:1");
     try {
       await expect(resolveMaxConcurrent()).resolves.toBe(1);
     } finally {
-      if (previousBase === undefined) Reflect.deleteProperty(process.env, "INFERENCE_BASE_URL");
-      else process.env.INFERENCE_BASE_URL = previousBase;
-      resetSlotProbe();
+      restore();
     }
   });
 });
@@ -319,19 +334,38 @@ describe("one queue per backend", () => {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : 0;
-    const previousBase = process.env.INFERENCE_BASE_URL;
-    process.env.INFERENCE_BASE_URL = `http://127.0.0.1:${String(port)}`;
+    const restore = attachBuiltin(`http://127.0.0.1:${String(port)}`);
     Reflect.deleteProperty(process.env, "INFERENCE_MAX_CONCURRENT_RUNS");
-    resetSlotProbe();
+    // The router answers /props per model, so the built-in provider's slots
+    // are its one servable model's — this suite's own, under its own host id.
+    const host = `test-scheduler-${String(port)}`;
+    const previousHost = process.env.LOXAIC_INSTANCE_ID;
+    process.env.LOXAIC_INSTANCE_ID = host;
+    await db.insert(localModels).values({
+      id: "sched/one:Q4",
+      hostId: host,
+      repo: "sched/one",
+      revision: "0".repeat(40),
+      quant: "Q4",
+      files: [],
+      sizeBytes: 0,
+      status: "ready",
+      enabled: true,
+      displayName: "one",
+      publisher: "sched",
+    });
+    invalidateLocalModelCache();
     try {
       // The built-in backend really does report eight — so the probe works,
       // and the next assertion is not passing by accident.
       await expect(resolveMaxConcurrent()).resolves.toBe(8);
       await expect(resolveMaxConcurrent("00000000-0000-4000-8000-000000000000")).resolves.toBe(1);
     } finally {
-      if (previousBase === undefined) Reflect.deleteProperty(process.env, "INFERENCE_BASE_URL");
-      else process.env.INFERENCE_BASE_URL = previousBase;
-      resetSlotProbe();
+      restore();
+      await db.delete(localModels).where(eq(localModels.hostId, host));
+      if (previousHost === undefined) Reflect.deleteProperty(process.env, "LOXAIC_INSTANCE_ID");
+      else process.env.LOXAIC_INSTANCE_ID = previousHost;
+      invalidateLocalModelCache();
       await new Promise<void>((resolve) => server.close(() => { resolve(); }));
     }
   });

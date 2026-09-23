@@ -3,6 +3,8 @@ import { requireAdmin } from "../auth/middleware";
 import { kickScheduler } from "../inference/scheduler.ts";
 import { invalidateBackendModels, probeProviderModels } from "../inference/models.ts";
 import { ProviderKeyUnreadableError } from "../inference/provider-secrets.ts";
+import { listServableModels } from "../llama/catalog.ts";
+import { runtimeView } from "../llama/router.ts";
 import {
   createProvider,
   defaultProvider,
@@ -19,8 +21,7 @@ import {
  * The LLM backends this deployment can reach, admin-only.
  *
  * Admin-only for the same reason the sandbox settings are: one key pays for
- * every user's requests, and its base URL is deployment configuration of
- * exactly the kind `INFERENCE_BASE_URL` already is. Hiding the screen from a
+ * every user's requests, and its base URL is deployment configuration. Hiding the screen from a
  * non-admin is presentation; `requireAdmin` on every route here is the
  * boundary.
  *
@@ -33,14 +34,14 @@ export function adminProviderRoutes(app: FastifyInstance) {
     await requireAdmin(request, reply);
     const rows = await listProviderRows();
     return {
-      // The built-in backend, described but not editable: an admin needs to
-      // see what it is before deciding whether to add anything, and "set by an
-      // environment variable" is the answer to why they cannot change it here.
+      // The built-in provider is the local llama.cpp runtime, managed on its
+      // own screen. Described here so an admin sees it before deciding whether
+      // to add anything, with enough to link across.
       builtin: {
         id: defaultProvider().id,
         name: defaultProvider().name,
-        baseUrl: defaultProvider().apiBase,
-        envVar: "INFERENCE_BASE_URL",
+        runtimeState: runtimeView().state,
+        models: (await listServableModels()).length,
       },
       providers: rows.map(toApi),
     };

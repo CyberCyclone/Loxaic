@@ -474,6 +474,59 @@ export const inferenceProviders = pgTable(
   (t) => [uniqueIndex("inference_providers_slug_idx").on(t.slug)],
 );
 
+// ── Local models (the managed llama.cpp runtime) ──
+/**
+ * A GGUF an admin downloaded from HuggingFace for the built-in llama.cpp
+ * router to serve. The row's `id` *is* the model reference users send — bare,
+ * `<repo>:<quant>`, the default provider's namespace — and the router's preset
+ * section name, so the three can never disagree.
+ *
+ * A row is served only when `status = 'ready' AND enabled`, and that is
+ * enforced server-side at send time (`assertModelUsable`), not only in the
+ * picker. Downloading a model and offering it to every user are separate
+ * decisions.
+ */
+export const localModels = pgTable(
+  "local_models",
+  {
+    /** `<hf-repo>:<quant>`, e.g. `unsloth/Qwen3-8B-GGUF:Q4_K_M`. */
+    id: text("id").notNull(),
+    /** Which server instance holds the files — part of the key, because files
+     * live on one machine's disk: a cluster sharing this database must not
+     * offer another host's download as if it were here, and two hosts may each
+     * download the same model. `""` for an instance with no registered identity
+     * (a dev server, Compose). */
+    hostId: text("host_id").notNull().default(""),
+    repo: text("repo").notNull(),
+    /** The commit the files were resolved at — downloads are pinned to it, so
+     * a repo force-pushed mid-download cannot splice two revisions together. */
+    revision: text("revision").notNull(),
+    quant: text("quant").notNull(),
+    /** `[{ path, size, sha256 }]`, the weights in shard order. */
+    files: jsonb("files").notNull(),
+    /** The vision projector, when one was downloaded with the weights. */
+    mmproj: jsonb("mmproj"),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    status: text("status", { enum: ["queued", "downloading", "paused", "failed", "ready"] }).notNull(),
+    bytesDone: bigint("bytes_done", { mode: "number" }).notNull().default(0),
+    error: text("error"),
+    enabled: boolean("enabled").notNull().default(false),
+    /** Admin-set load settings (see apps/server/src/llama/load-settings.ts),
+     * validated before they are stored and again before they reach the preset
+     * file — an unknown key there stops the router from starting at all. */
+    loadSettings: jsonb("load_settings").notNull().default({}),
+    /** GGUF facts from HuggingFace, for the settings sheet's ranges and the
+     * fit estimate: `{ nLayers?, nCtxTrain?, nParams?, architecture? }`. */
+    meta: jsonb("meta").notNull().default({}),
+    displayName: text("display_name").notNull(),
+    publisher: text("publisher").notNull(),
+    createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.hostId, t.id] })],
+);
+
 /**
  * One row per server instance sharing this database. The set of rows *is* the
  * cluster: identity lives in the database, so pointing an instance at a

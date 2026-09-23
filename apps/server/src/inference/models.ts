@@ -1,5 +1,6 @@
 import { DEFAULT_PROVIDER_ID, formatModelRef, type ModelInfo } from "@loxaic/types";
 import { selfHost } from "../cluster.ts";
+import { builtinSlots, listLocalModelInfos } from "../llama/listing.ts";
 import { redactSecrets } from "./provider-secrets.ts";
 import {
   defaultProvider,
@@ -223,6 +224,9 @@ async function fetchLoadedCtx(provider: ResolvedProvider): Promise<number | null
  */
 export async function probeTotalSlots(provider?: ResolvedProvider): Promise<number | null> {
   const target = provider ?? defaultProvider();
+  // The router answers `/props` only per model, and which model's slots bound
+  // the built-in queue is a decision about the whole catalogue — listing.ts.
+  if (target.isDefault) return builtinSlots();
   // A hosted provider has no slots to report and would spend the whole probe
   // timeout returning a 404 page, once per probe window, forever.
   if (target.preset !== null) return null;
@@ -337,7 +341,14 @@ function asError(err: unknown): Error {
  * screen's allowlist editor needs the unfiltered set; everything else wants
  * `providerModels`. */
 export async function listProviderModelsUnfiltered(provider: ResolvedProvider): Promise<ModelInfo[]> {
-  if (provider.isDefault && MOCK_MODE()) return MOCK_MODELS;
+  if (provider.isDefault) {
+    // The built-in provider lists the local models an admin enabled, not
+    // whatever the router has — see llama/listing.ts. Under MOCK_INFERENCE the
+    // mock's own two models come first, so the mock lane keeps a loaded and an
+    // unloaded model to drive, and enabled local rows still appear after them.
+    const local = await listLocalModelInfos(provider);
+    return MOCK_MODE() ? [...MOCK_MODELS, ...local] : local;
+  }
 
   let models: ModelInfo[] = [];
   // The OpenAI-compatible endpoint's failure, deliberately, and never the
@@ -477,7 +488,11 @@ export async function modelRunInfo(
 ): Promise<{ windowTokens: number | null; loaded: boolean; nativeRuntime: boolean } | null> {
   const model = await getModelInfo(ref);
   if (!model) return null;
-  return { windowTokens: windowFor(model), loaded: model.loaded, nativeRuntime: model.loaded_context_tokens != null };
+  // The built-in provider is always llama.cpp now, loaded or not, so it may
+  // always be asked for prompt progress — including on the request that loads
+  // the model, which is the one that waits longest.
+  const nativeRuntime = model.loaded_context_tokens != null || (model.provider_id === DEFAULT_PROVIDER_ID && !MOCK_MODE());
+  return { windowTokens: windowFor(model), loaded: model.loaded, nativeRuntime };
 }
 
 /**

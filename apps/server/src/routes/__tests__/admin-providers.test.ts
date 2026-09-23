@@ -191,10 +191,13 @@ describe("the list", () => {
   it("describes the built-in backend without making it editable", async () => {
     const body = (
       await app.inject({ method: "GET", url: "/v1/admin/providers" })
-    ).json<{ builtin: { id: string; envVar: string }; providers: ProviderBody[] }>();
+    ).json<{ builtin: { id: string; runtimeState: string; models: number }; providers: ProviderBody[] }>();
     expect(body.builtin.id).toBe("default");
-    // An admin who cannot change it here needs to be told what does change it.
-    expect(body.builtin.envVar).toBe("INFERENCE_BASE_URL");
+    // The built-in provider is the local runtime, managed on its own screen:
+    // described here with enough to link across, and nothing to edit.
+    expect(typeof body.builtin.runtimeState).toBe("string");
+    expect(typeof body.builtin.models).toBe("number");
+    expect(body.builtin).not.toHaveProperty("baseUrl");
   });
 
   it("includes a provider this file created", async () => {

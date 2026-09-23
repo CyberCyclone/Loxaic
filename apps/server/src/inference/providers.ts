@@ -2,16 +2,20 @@ import { db, eq } from "@loxaic/db";
 import { inferenceProviders } from "@loxaic/db/schema";
 import { DEFAULT_PROVIDER_ID, isProviderSlug, parseModelRef } from "@loxaic/types";
 import { decryptApiKey, encryptApiKey, ProviderKeyUnreadableError } from "./provider-secrets.ts";
+import { listServableModels } from "../llama/catalog.ts";
+import { routerEndpoint } from "../llama/router.ts";
 
 /**
  * Which backends this deployment can reach, and which model reference goes to
  * which one.
  *
- * The backend `INFERENCE_BASE_URL` names is **not** a row. It is synthesized
- * here at call time, so a deployment that never opens the providers screen
- * behaves exactly as it did before this module existed, and so an operator can
- * still move it by editing the environment. Everything else is an admin-added
- * row in `inference_providers`.
+ * The built-in provider is **not** a row. It is the llama.cpp router this
+ * server manages (or attaches to — see `llama/router.ts`), synthesized here at
+ * call time from wherever that router is listening right now, and it serves
+ * exactly the local models an admin downloaded and enabled. Everything else is
+ * an admin-added row in `inference_providers`. (`INFERENCE_BASE_URL`, which
+ * used to name the built-in backend, is converted into one of those rows once
+ * at boot — see `legacy-migration.ts`.)
  *
  * Rows are read through a short-lived async cache rather than a boot-loaded
  * synchronous one like `settings.ts`'s. Nothing on this path has a synchronous
@@ -43,8 +47,9 @@ export interface ResolvedProvider {
   /** Upstream ids a user may pick, or null for "whatever it lists". */
   modelAllowlist: string[] | null;
   enabled: boolean;
-  /** True for the synthesized built-in backend. The mock inference backend and
-   * the `host_id` stamp apply to it and to nothing else. */
+  /** True for the synthesized built-in backend (the local llama.cpp router).
+   * The mock inference backend and the `host_id` stamp apply to it and to
+   * nothing else. */
   isDefault: boolean;
 }
 
@@ -56,7 +61,14 @@ export type ProviderRow = typeof inferenceProviders.$inferSelect;
  * provider's reference would be answered by the local model with nothing
  * anywhere saying the request had gone somewhere else. */
 export class ModelRefError extends Error {
-  readonly code: "unknown_provider" | "provider_disabled" | "model_not_allowed";
+  readonly code:
+    | "unknown_provider"
+    | "provider_disabled"
+    | "model_not_allowed"
+    /** A bare reference that is not a downloaded, enabled local model. */
+    | "local_model_unavailable"
+    /** The client named no model, and there is no local model to default to. */
+    | "no_local_model";
 
   constructor(message: string, code: ModelRefError["code"]) {
     super(message);
@@ -75,21 +87,27 @@ export class ProviderInputError extends Error {
 
 // ── The built-in backend ─────────────────────────────────────────────────────
 
-// Read at call time, not module load — the desktop supervisor sets this in the
-// child's environment, and a module-scope read would freeze it before any
-// caller could act. Same reason as `provider.ts`'s own closure.
-const DEFAULT_BASE_URL = () => process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
+// Read at call time, not module load — see provider.ts's own closure.
+const MOCK_MODE = () => process.env.MOCK_INFERENCE === "true";
 
+/**
+ * The built-in provider: the local llama.cpp router, wherever it is listening
+ * right now. When there is no router (not installed, starting, off) the
+ * address is a dead one on purpose — `streamCompletion` refuses the request
+ * with `routerUnavailableReason()` before it would be used, and a listing
+ * against it fails fast and contributes nothing.
+ */
 export function defaultProvider(): ResolvedProvider {
-  const root = DEFAULT_BASE_URL().replace(/\/+$/, "");
+  const ep = routerEndpoint();
+  const root = ep?.nativeRoot ?? "http://127.0.0.1:1";
   return {
     id: DEFAULT_PROVIDER_ID,
     slug: null,
     name: "Built-in",
     preset: null,
-    apiBase: `${root}/v1`,
+    apiBase: ep?.apiBase ?? `${root}/v1`,
     nativeRoot: root,
-    apiKey: null,
+    apiKey: ep?.apiKey ?? null,
     headers: {},
     maxConcurrentRuns: null,
     modelAllowlist: null,
@@ -216,7 +234,7 @@ export interface ResolvedModelRef {
  */
 export async function resolveModelRef(ref: string): Promise<ResolvedModelRef> {
   const { providerSlug, upstreamModel } = parseModelRef(ref);
-  if (providerSlug === null) return { provider: defaultProvider(), upstreamModel };
+  if (providerSlug === null) return resolveLocalRef(upstreamModel);
 
   const rows = await providerRows();
   const row = rows.find((r) => r.slug === providerSlug);
@@ -253,6 +271,40 @@ export async function resolveModelRef(ref: string): Promise<ResolvedModelRef> {
  */
 export async function assertModelUsable(ref: string): Promise<void> {
   await resolveModelRef(ref);
+}
+
+/**
+ * A bare reference: a local model, served by the built-in router.
+ *
+ * Only a model that finished downloading *and* that an admin enabled may be
+ * used — enforced here, at send time, so "enabled" is a server-side gate and
+ * not a picker filter. The literal `"default"` (what a client sends when it
+ * names no model) becomes the first servable model rather than reaching the
+ * router, which would answer "model not found".
+ *
+ * The mock backend accepts any bare reference, as it always has: it serves the
+ * built-in provider under MOCK_INFERENCE and has no real models to check.
+ */
+async function resolveLocalRef(upstreamModel: string): Promise<ResolvedModelRef> {
+  if (MOCK_MODE()) return { provider: defaultProvider(), upstreamModel };
+  const servable = await listServableModels();
+  if (upstreamModel === DEFAULT_PROVIDER_ID) {
+    const first = servable.at(0);
+    if (!first) {
+      throw new ModelRefError(
+        "There is no model to answer with yet. Pick a provider's model, or ask an admin to add one under Settings > Local models.",
+        "no_local_model",
+      );
+    }
+    return { provider: defaultProvider(), upstreamModel: first.id };
+  }
+  if (!servable.some((r) => r.id === upstreamModel)) {
+    throw new ModelRefError(
+      `"${upstreamModel}" is not available on this server. Pick another model.`,
+      "local_model_unavailable",
+    );
+  }
+  return { provider: defaultProvider(), upstreamModel };
 }
 
 // ── Admin write path ─────────────────────────────────────────────────────────
@@ -308,8 +360,8 @@ export function normalizeName(raw: unknown): string {
  *
  * Deliberately *not* behind the SSRF guard that `web_fetch` and http MCP
  * servers use. A llama.cpp host at 192.168.1.50 is the core case this feature
- * exists for, this is admin-only deployment configuration of the same kind as
- * `INFERENCE_BASE_URL`, and the address never reaches a non-admin — network
+ * exists for, this is admin-only deployment configuration, and the address
+ * never reaches a non-admin — network
  * errors are rewritten without host:port before they reach a client.
  */
 export function normalizeBaseUrl(raw: unknown): string {

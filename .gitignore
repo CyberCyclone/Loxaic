@@ -28,6 +28,9 @@ apps/mobile/keys/
 # real user images and must never be committed.
 apps/server/uploads/
 uploads/
+# The managed llama.cpp runtime and downloaded models: LLAMA_DIR, which falls
+# back to <cwd>/llama the same way. Many gigabytes; never commit.
+apps/server/llama/
 
 # `go build` with no -o drops a binary named after the module in the package
 # directory; build.sh always writes to an explicit output dir instead.
