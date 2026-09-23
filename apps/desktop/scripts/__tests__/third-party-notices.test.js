@@ -9,6 +9,7 @@ import {
   collectNpm,
   identifyLicence,
   licenceTextIn,
+  refusedLicence,
   renderGroup,
 } from "../third-party-notices.mjs";
 
@@ -45,6 +46,24 @@ describe("chooseLicense", () => {
   });
 });
 
+describe("refusedLicence", () => {
+  it("refuses a copyleft or non-commercial licence in use, in any term", () => {
+    expect(refusedLicence("GPL-3.0-or-later")).toBe(true);
+    expect(refusedLicence("AGPL-3.0")).toBe(true);
+    expect(refusedLicence("MIT AND GPL-2.0")).toBe(true);
+    expect(refusedLicence("GPL-2.0 OR LGPL-2.1")).toBe(true);
+    expect(refusedLicence("UNLICENSED")).toBe(true);
+    expect(refusedLicence("CC-BY-NC-4.0")).toBe(true);
+  });
+
+  it("accepts the permissive half a dual licence resolved to, and the LGPL", () => {
+    expect(refusedLicence("BSD-3-Clause (chosen from BSD-3-Clause OR GPL-2.0)")).toBe(false);
+    expect(refusedLicence("MIT")).toBe(false);
+    expect(refusedLicence("LGPL-2.1-or-later")).toBe(false);
+    expect(refusedLicence("CC-BY-4.0")).toBe(false);
+  });
+});
+
 describe("identifyLicence", () => {
   it("names the licence shapes Go modules actually use", () => {
     expect(identifyLicence("Apache License\nVersion 2.0, January 2004")).toBe("Apache-2.0");
@@ -64,6 +83,7 @@ describe("collectNpm", () => {
     // Hoisted one level up, as pnpm's virtual store and npm's flattening both do.
     write("node_modules/b/package.json", { name: "b", version: "2.0.0", license: "(MIT OR GPL-3.0)" });
     write("app/node_modules/dev/package.json", { name: "dev", version: "9.0.0", license: "MIT" });
+    write("app/node_modules/@loxaic/own/package.json", { name: "@loxaic/own", version: "0.0.0" });
 
     const problems = [];
     const found = collectNpm(path.join(root, "app"), new Map(), problems);
@@ -72,6 +92,18 @@ describe("collectNpm", () => {
     expect(found.get("a@1.0.0").text).toBe("MIT text for a");
     expect(found.get("b@2.0.0").license).toBe("MIT (chosen from MIT OR GPL-3.0)");
     // Another platform's optional binary is simply absent; that is not a problem.
+    expect(problems).toEqual([]);
+  });
+
+  it("walks through our own packages without listing them", () => {
+    // The server inlines @loxaic/* into dist/, but their npm dependencies stay
+    // external and ship in the deployed node_modules — so they must be listed.
+    write("app/package.json", { name: "app", dependencies: { "@loxaic/db": "1" } });
+    write("app/node_modules/@loxaic/db/package.json", { name: "@loxaic/db", version: "0.0.0", license: "Apache-2.0", dependencies: { "drizzle-orm": "1" } });
+    write("app/node_modules/drizzle-orm/package.json", { name: "drizzle-orm", version: "0.38.4", license: "Apache-2.0" });
+    const problems = [];
+    const found = collectNpm(path.join(root, "app"), new Map(), problems);
+    expect([...found.keys()]).toEqual(["drizzle-orm@0.38.4"]);
     expect(problems).toEqual([]);
   });
 
@@ -109,6 +141,18 @@ describe("collectNative", () => {
     expect(byName.zlib).toEqual(["libz.1.dylib", "zlib1.dll"]);
     expect(byName["GNU libiconv"]).toEqual(["libiconv.2.dylib"]);
     expect(byName.PostgreSQL).toEqual(["amcheck.dll", "libpqwalreceiver.dll", "pgcrypto.dylib"]);
+  });
+
+  it("lets a manifest entry win over the extension shape", () => {
+    // `zlib1.dll` and `wx*.dll` look like PostgreSQL extensions (lib/, no
+    // `lib` prefix); if a layout ever puts them there they must stay theirs.
+    write("native/lib/zlib1.dll", "");
+    write("native/lib/wxbase3210u_vc_x64_custom.dll", "");
+    const found = collectNative(path.join(root, "native"), manifest);
+    const byName = Object.fromEntries(found.map((f) => [f.component.name, f.files]));
+    expect(byName.zlib).toEqual(["zlib1.dll"]);
+    expect(byName.wxWidgets).toEqual(["wxbase3210u_vc_x64_custom.dll"]);
+    expect(byName.PostgreSQL).toEqual([]);
   });
 
   it("refuses a library the manifest does not know", () => {

@@ -29,11 +29,32 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopDir = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(desktopDir, "../..");
 
-/** Our own packages are covered by the repository's LICENSE, not listed here. */
+/**
+ * Our own packages are covered by the repository's LICENSE and get no entry —
+ * but the walk goes *through* them, because what they depend on ships.
+ */
 const OWN_SCOPE = "@loxaic/";
 
 /** Licences we are content to take when a package offers a choice. */
 const PERMISSIVE = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "ISC", "0BSD", "Unlicense", "BlueOak-1.0.0", "CC0-1.0", "Zlib", "Python-2.0"];
+
+/**
+ * Licences a distributed Apache-2.0 binary cannot carry. A match fails the
+ * build: that is a dependency decision to take on purpose, and unlike a
+ * missing licence file it cannot be fixed after a release has shipped.
+ */
+const REFUSED = /^(AGPL|GPL|SSPL|BUSL|UNLICENSED|CC-BY-NC|Commons-Clause)/i;
+
+/**
+ * Whether a resolved licence is one we refuse. Only the licence actually in
+ * use counts — "BSD-3-Clause (chosen from BSD-3-Clause OR GPL-2.0)" is BSD —
+ * and any term of a conjunction, or of a choice with no permissive option,
+ * is enough.
+ */
+export function refusedLicence(license) {
+  const inUse = String(license).split(" (chosen from ")[0];
+  return inUse.split(/\s+(?:AND|OR|WITH)\s+|[()]/).some((term) => REFUSED.test(term.trim()));
+}
 
 const LICENCE_FILE = /^(licen[cs]e|copying|notice)([.-].*)?$/i;
 
@@ -116,7 +137,6 @@ export function collectNpm(rootDir, into = new Map(), problems = []) {
       ...Object.keys(pkg.optionalDependencies ?? {}).map((name) => ({ name, optional: true })),
     ];
     for (const { name, optional } of deps) {
-      if (name.startsWith(OWN_SCOPE)) continue;
       const dir = resolvePackageDir(name, from);
       if (!dir) {
         if (!optional && !(pkg.optionalDependencies && name in pkg.optionalDependencies)) {
@@ -128,7 +148,7 @@ export function collectNpm(rootDir, into = new Map(), problems = []) {
       seenDirs.add(dir);
       const depPkg = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8"));
       const key = `${depPkg.name}@${depPkg.version}`;
-      if (!into.has(key)) {
+      if (!depPkg.name.startsWith(OWN_SCOPE) && !into.has(key)) {
         into.set(key, {
           name: depPkg.name,
           version: depPkg.version,
@@ -173,7 +193,10 @@ export function collectNative(nativeDir, manifest, problems = []) {
     const base = path.basename(file);
     const rel = path.relative(nativeDir, file).split(path.sep);
     const extension = (rel[0] === "lib" && rel[1] === "postgresql") || (rel[0] === "lib" && rel.length === 2 && !/^lib/i.test(base));
-    const component = extension ? components.find((c) => c.name === "PostgreSQL") : components.find((c) => c.re.some((r) => r.test(base)));
+    // A manifest match always wins: the extension rule is a shape, and on
+    // Windows `zlib1.dll` and `wx*.dll` have it too.
+    const named = components.find((c) => c.re.some((r) => r.test(base)));
+    const component = named ?? (extension ? components.find((c) => c.name === "PostgreSQL") : undefined);
     if (!component) {
       problems.push(`${path.relative(nativeDir, file)}: no entry in licenses/native-libraries.json`);
       continue;
@@ -283,6 +306,7 @@ function main() {
   // cannot say we have the right to ship.
   for (const p of [...bundled.values(), ...web.values(), ...go]) {
     if (!p.text && /^UNKNOWN|^see licence text/.test(p.license)) problems.push(`${p.name}@${p.version}: no licence declared or shipped`);
+    if (refusedLicence(p.license)) problems.push(`${p.name}@${p.version}: ${p.license} cannot ship in an Apache-2.0 binary`);
   }
 
   if (problems.length > 0) {
