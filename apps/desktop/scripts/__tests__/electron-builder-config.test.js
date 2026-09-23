@@ -68,7 +68,7 @@ describe("the electron-builder config", () => {
       expect(config.npmRebuild).toBe(false);
       expect(config.mac.notarize).toBe(true);
       expect(config.mac.hardenedRuntime).toBe(true);
-      expect(config.publish[0]).toMatchObject({ provider: "github", owner: "CyberCyclone", repo: "Open-Shannon" });
+      expect(config.publish[0]).toMatchObject({ provider: "github", owner: "CyberCyclone", repo: "Loxaic" });
     }
   });
 

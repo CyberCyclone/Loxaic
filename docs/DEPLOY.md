@@ -655,7 +655,7 @@ Both of those are the obvious guesses and both are wrong, so, concretely:
   file. GitHub injects them into the release build; `.github/workflows/release.yml` already
   reads all five in its `desktop` job. Add them at
   **Settings → Secrets and variables → Actions → New repository secret**
-  (`https://github.com/CyberCyclone/Open-Shannon/settings/secrets/actions`), or from a terminal:
+  (`https://github.com/CyberCyclone/Loxaic/settings/secrets/actions`), or from a terminal:
 
   ```bash
   # CSC_LINK is the certificate itself, base64-encoded — not a path to it.
