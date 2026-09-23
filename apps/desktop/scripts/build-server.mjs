@@ -34,7 +34,7 @@ function run(args, cwd = repoRoot) {
   // The command name itself is left bare, and must be. pnpm.cmd locates its
   // own JS entry through `%~dp0`, and cmd.exe resolves `%~dp0` against the
   // *current directory* when a batch file is invoked by a quoted bare name —
-  // so `"pnpm"` went looking for D:\a\Open-Shannon\pnpm\bin\pnpm.cjs, outside
+  // so `"pnpm"` went looking for D:\a\Loxaic\pnpm\bin\pnpm.cjs, outside
   // the checkout, and died with MODULE_NOT_FOUND. It is always the literal
   // `pnpm` here, which holds nothing cmd could re-parse.
   const win = process.platform === "win32";

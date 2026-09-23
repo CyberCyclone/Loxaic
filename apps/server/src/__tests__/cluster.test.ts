@@ -6,11 +6,11 @@ import { __resetClusterForTest, ensureCluster, getCluster } from "../cluster.ts"
 /**
  * The cluster name is the product brand, not user data — nothing but
  * `ensureCluster` ever writes this row — so a stored name that disagrees is a
- * stale brand. That is what these cover: the Loxaic rename left every
- * already-booted database announcing "Shannon" to clients, because the name is
- * minted once and the old `?? "Loxaic"` fallback only fires when it is absent.
+ * stale brand, and these cover refreshing one. The name is minted once, and a
+ * `?? "Loxaic"` fallback alone only fires when it is absent.
  */
 const CLUSTER_KEY = "cluster";
+const STALE_NAME = "Old Brand";
 
 async function seed(value: unknown): Promise<void> {
   await db
@@ -43,8 +43,8 @@ describe("ensureCluster", () => {
     expect(cluster.id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
-  it("refreshes a pre-rename name, and persists the refresh", async () => {
-    await seed({ id: "11111111-1111-4111-8111-111111111111", name: "Shannon" });
+  it("refreshes a stale name, and persists the refresh", async () => {
+    await seed({ id: "11111111-1111-4111-8111-111111111111", name: STALE_NAME });
 
     const cluster = await ensureCluster();
 
@@ -57,7 +57,7 @@ describe("ensureCluster", () => {
     // it — so a name refresh that regenerated it would silently fork the
     // cluster every existing host belongs to.
     const id = "22222222-2222-4222-8222-222222222222";
-    await seed({ id, name: "Shannon" });
+    await seed({ id, name: STALE_NAME });
 
     expect((await ensureCluster()).id).toBe(id);
     expect((await storedValue()).id).toBe(id);
@@ -82,12 +82,12 @@ describe("getCluster", () => {
     expect(await storedValue()).toEqual({});
   });
 
-  it("reports the current name for a pre-rename row without writing", async () => {
+  it("reports the current name for a stale row without writing", async () => {
     // It is reached by an unauthenticated route, so it must stay read-only —
     // ensureCluster runs at boot and is what actually repairs the row.
-    await seed({ id: "44444444-4444-4444-8444-444444444444", name: "Shannon" });
+    await seed({ id: "44444444-4444-4444-8444-444444444444", name: STALE_NAME });
 
     expect((await getCluster())?.name).toBe("Loxaic");
-    expect((await storedValue()).name).toBe("Shannon");
+    expect((await storedValue()).name).toBe(STALE_NAME);
   });
 });

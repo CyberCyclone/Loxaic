@@ -615,6 +615,16 @@ it on the next restart. Until Windows signing exists, treat desktop auto-update 
 convenient rather than trustworthy, and keep the release workflow's write access as narrow as
 it is.
 
+**The account name is part of that trust.** Every installed desktop app fetches updates from
+`CyberCyclone/Loxaic`, the name in `apps/desktop/src/updates/release-repo.cjs`, baked into each
+build's `app-update.yml` when it is packaged. Nobody else can create a repository under an
+account you hold, so the exposure is the account itself. Renaming or deleting `CyberCyclone`
+frees that name for anyone to register. Whoever does can create `Loxaic` under it, which ends
+GitHub's redirect: every installed app then follows their releases, and downloads and runs one
+on its next restart, with nothing here compromised. Never rename or give up the `CyberCyclone`
+account. If it ever has to change, register the old name again straight away (a new
+organisation is enough) and keep it.
+
 **Checks are off** — with the reason shown in Settings rather than a silent no-op — in a
 development build, when `LOXAIC_DISABLE_UPDATES=1` or `--loxaic-no-updates` is given, and on
 Linux unless the app is running as an AppImage. A `.deb` is owned by the package manager;
@@ -655,7 +665,7 @@ Both of those are the obvious guesses and both are wrong, so, concretely:
   file. GitHub injects them into the release build; `.github/workflows/release.yml` already
   reads all five in its `desktop` job. Add them at
   **Settings → Secrets and variables → Actions → New repository secret**
-  (`https://github.com/CyberCyclone/Open-Shannon/settings/secrets/actions`), or from a terminal:
+  (`https://github.com/CyberCyclone/Loxaic/settings/secrets/actions`), or from a terminal:
 
   ```bash
   # CSC_LINK is the certificate itself, base64-encoded — not a path to it.

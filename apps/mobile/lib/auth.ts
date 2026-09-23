@@ -3,28 +3,8 @@ import * as SecureStore from 'expo-secure-store';
 import { setAuthToken } from '@loxaic/api-client';
 import { currentEndpoint } from './endpoint';
 
-/**
- * The unscoped slot, used when no endpoint has resolved yet.
- *
- * Before the Loxaic rename this constant did double duty: the flat key and
- * the key older releases had written were the same string, so one name served
- * both. They are different strings now, and conflating them is how a rename
- * strands a credential — see `PRE_RENAME_TOKEN_KEY`.
- */
+/** The unscoped slot, used when no endpoint has resolved yet. */
 const FLAT_TOKEN_KEY = 'loxaic-session-token';
-
-/**
- * The flat key written by pre-rename (Shannon-branded) releases.
- *
- * Purged, never adopted. Carrying a bearer token across a rebrand would
- * contradict the clean break the rename is, and the alternative — leaving it
- * — is worse still: no code path reads this key any more, so nothing would
- * ever delete a credential that stays valid server-side for the life of its
- * session row. `storage.ts`'s `purgePreRenameKeys` handles the web side (and
- * everything else under the old prefix); this covers native SecureStore,
- * which has no key enumeration and so must name its keys exactly.
- */
-const PRE_RENAME_TOKEN_KEY = 'shannon-session-token';
 
 /**
  * One token per server, keyed by endpoint.
@@ -79,34 +59,6 @@ export async function loadToken(): Promise<string | null> {
   }
   setAuthToken(token);
   return token;
-}
-
-/**
- * Deletes any pre-rename token from native SecureStore. Web is covered by
- * `purgePreRenameKeys`, which can enumerate `localStorage`; SecureStore
- * cannot be enumerated, so both shapes a pre-rename release could have
- * written are named explicitly:
- *
- *   - the flat key, from before tokens were scoped per endpoint;
- *   - this endpoint's scoped key, which is the one an install upgrading from
- *     any recent release actually holds.
- *
- * Only the current endpoint's scoped key is reachable — a token stored for a
- * host this install has since stopped using can't be named without the
- * endpoint, and SecureStore won't list it. That residue is called out in the
- * upgrade notes; reinstalling clears the Keychain entry outright.
- */
-export async function purgePreRenameToken(endpoint: string | null): Promise<void> {
-  if (Platform.OS === 'web') return;
-  const stale = [PRE_RENAME_TOKEN_KEY];
-  if (endpoint) stale.push(`${PRE_RENAME_TOKEN_KEY}:${endpoint.replace(/\/+$/, '')}`);
-  for (const key of stale) {
-    try {
-      await SecureStore.deleteItemAsync(secureKey(key));
-    } catch {
-      // A locked device or a missing entitlement — retries next launch.
-    }
-  }
 }
 
 /**

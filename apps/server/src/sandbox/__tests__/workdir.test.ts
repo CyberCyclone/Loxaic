@@ -15,7 +15,7 @@ import { sandboxImageReady } from "./docker-available.ts";
  * the *root* while the host provider used the workdir, so the same REST call
  * or terminal landed somewhere different depending on the deployment's
  * sandbox mode. It had already cost a real debugging session (a build command
- * hard-coded to `cd /home/shannon/repo` failed under host mode and was
+ * hard-coded to `cd /home/loxaic/repo` failed under host mode and was
  * reported as a failing build), which is why the fix is a contract test
  * rather than a comment.
  *

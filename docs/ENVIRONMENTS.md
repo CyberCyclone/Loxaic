@@ -172,7 +172,7 @@ cat > ~/Library/LaunchAgents/com.loxaic.envs-sync.plist <<'EOF'
   <array>
     <string>/bin/bash</string>
     <string>-lc</string>
-    <string>cd ~/Documents/Git/Open-Shannon && ./scripts/envs.sh sync</string>
+    <string>cd ~/Documents/Git/Loxaic && ./scripts/envs.sh sync</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
   <key>StandardOutPath</key><string>/tmp/loxaic-envs-sync.log</string>

@@ -4,6 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createUpdater, whyDisabled } from "../updater.js";
+import { configFor } from "../../../scripts/builder-variants.cjs";
 
 let dataDir;
 beforeEach(() => { dataDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-updates-")); });
@@ -220,6 +221,8 @@ describe("the desktop updater", () => {
     await updater.check();
     const call = autoUpdater.calls.find((c) => Array.isArray(c) && c[0] === "setFeedURL");
     expect(call[1]).toMatchObject({ provider: "github", private: true, token: "ghp_secret_value" });
+    const { publish } = configFor("production");
+    expect(call[1]).toMatchObject({ owner: publish[0].owner, repo: publish[0].repo });
     // Said loudly enough that nobody ships with it set, without the value.
     expect(logs.some((l) => /testing only/i.test(l))).toBe(true);
     expect(logs.join("\n")).not.toContain("ghp_secret_value");
