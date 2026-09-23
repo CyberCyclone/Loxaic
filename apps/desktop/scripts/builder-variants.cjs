@@ -114,7 +114,7 @@ function configFor(rawVariant) {
       // until it is granted — so joining a host at http://192.168.x.x never
       // reaches the server, while `curl` from Terminal (exempt) succeeds. This
       // string is what the permission prompt shows; without it the prompt
-      // gives no reason. The first beta.3 Mac install failed to reach the .13
+      // gives no reason. The first beta.3 Mac install failed to reach a LAN
       // headless host exactly this way.
       extendInfo: {
         NSLocalNetworkUsageDescription: `${variant.productName} connects to Loxaic servers on your local network, such as a host you join by its LAN address.`,
