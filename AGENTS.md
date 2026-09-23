@@ -2920,7 +2920,10 @@ replies.
   `master` and `beta` are git release pointers: they mark what has shipped, not what someone
   merged. `release.yml`'s `advance-branches` job moves them once a release has fully
   published — every tag fast-forwards `beta`, a stable tag also moves `master` — with a
-  non-forced `GITHUB_TOKEN` push, which is why their rulesets exempt the GitHub Actions app.
+  non-forced `GITHUB_TOKEN` push. That is why their ruleset blocks only deletion and force
+  pushes: a user-owned repository cannot name the GitHub Actions app as a ruleset bypass, so
+  "restrict updates" would stop the release from moving them. `dev` requires a pull request
+  and the CI and DCO checks; `v*` tags can be created only by an admin.
   A hotfix pull request straight to `master` is the one legitimate exception, which is why CI
   still runs on both `master` events. Nothing is *developed* on either pointer.
 - **The git `beta` branch and the EAS `beta` channel are unrelated.** `release.yml` publishes
