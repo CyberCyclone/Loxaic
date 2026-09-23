@@ -12,6 +12,10 @@ import { getHfToken } from "./settings.ts";
 
 const TIMEOUT_MS = 15_000;
 const CARD_MAX_BYTES = 64 * 1024;
+/** The largest API answer read whole. A repo's recursive file tree is the
+ * biggest thing asked for, and even a repo with thousands of files is well
+ * under this. */
+const JSON_MAX_BYTES = 32 * 1024 * 1024;
 
 export function hfEndpoint(): string {
   return (process.env.HF_ENDPOINT ?? "https://huggingface.co").replace(/\/+$/, "");
@@ -36,32 +40,59 @@ export function hfHeaders(): Record<string, string> {
   return { "User-Agent": "loxaic", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 }
 
-async function hfFetch(pathname: string, opts: { accept?: string } = {}): Promise<Response> {
+/**
+ * One request, with a deadline that covers the *body*, not only the headers,
+ * and a byte cap enforced while reading rather than after. `res.text()` would
+ * buffer whatever the server sent before any cap applied, and a trickled body
+ * would run past the abort timer once headers had arrived — on the process
+ * that serves every other user's stream.
+ */
+async function hfFetchText(pathname: string, maxBytes: number): Promise<{ status: number; text: string; truncated: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, TIMEOUT_MS);
   try {
-    const res = await fetch(`${hfEndpoint()}${pathname}`, {
-      signal: controller.signal,
-      headers: { ...hfHeaders(), ...(opts.accept ? { Accept: opts.accept } : {}) },
-    });
-    return res;
+    const res = await fetch(`${hfEndpoint()}${pathname}`, { signal: controller.signal, headers: hfHeaders() });
+    const { text, truncated } = await readCapped(res, maxBytes);
+    return { status: res.status, text, truncated };
   } catch (err) {
-    throw new HfError(
-      redact(`Could not reach HuggingFace: ${err instanceof Error ? err.message : String(err)}`),
-      0,
-    );
+    throw new HfError(redact(`Could not reach HuggingFace: ${err instanceof Error ? err.message : String(err)}`), 0);
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function hfJson<T>(pathname: string): Promise<T> {
-  const res = await hfFetch(pathname);
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new HfError(redact(`HuggingFace answered HTTP ${String(res.status)}: ${body.slice(0, 300)}`), res.status);
+async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+  if (!res.body) return { text: "", truncated: false };
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (total + value.length > maxBytes) {
+      chunks.push(value.subarray(0, maxBytes - total));
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    total += value.length;
   }
-  return (await res.json()) as T;
+  return { text: Buffer.concat(chunks).toString("utf8"), truncated };
+}
+
+async function hfJson<T>(pathname: string): Promise<T> {
+  const { status, text, truncated } = await hfFetchText(pathname, JSON_MAX_BYTES);
+  if (status < 200 || status >= 300) {
+    throw new HfError(redact(`HuggingFace answered HTTP ${String(status)}: ${text.slice(0, 300)}`), status);
+  }
+  if (truncated) throw new HfError("HuggingFace's answer was too large to read", 502);
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new HfError("HuggingFace's answer was not JSON", 502);
+  }
 }
 
 // ── Validation ──────────────────────────────────────────────────────────────
@@ -249,11 +280,17 @@ export function quantOf(filePath: string): string {
 /** Group a repo's GGUF files into downloadable quants. A split model is one
  * quant made of every part; one missing a part is not offered. */
 export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; mmproj: QuantFile[] } {
-  const ggufs = entries.filter((e) => e.type === "file" && /\.gguf$/i.test(e.path));
+  // A GGUF with no LFS object id has no checksum to verify against, and a
+  // download this server will mmap and run must never be accepted on length
+  // alone — so such a file is simply not offered. On HuggingFace every GGUF is
+  // an LFS object; one that is not is a repo worth being suspicious of anyway.
+  const ggufs = entries.filter(
+    (e) => e.type === "file" && /\.gguf$/i.test(e.path) && typeof e.lfs?.oid === "string" && /^[0-9a-f]{64}$/.test(e.lfs.oid),
+  );
   const toFile = (e: RawTreeEntry): QuantFile => ({
     path: e.path,
     size: e.lfs?.size ?? e.size ?? 0,
-    sha256: typeof e.lfs?.oid === "string" && /^[0-9a-f]{64}$/.test(e.lfs.oid) ? e.lfs.oid : null,
+    sha256: e.lfs?.oid ?? null,
   });
   const mmproj = ggufs.filter((e) => /^mmproj/i.test(basename(e.path))).map(toFile).sort((a, b) => a.size - b.size);
   const groups = new Map<string, QuantFile[]>();
@@ -321,11 +358,11 @@ export async function repoDetails(repo: string): Promise<RepoDetails> {
   let card: string | null = null;
   let cardTruncated = false;
   try {
-    const res = await hfFetch(`/${repo}/resolve/${files.revision}/README.md`);
-    if (res.ok) {
-      const text = stripFrontMatter(await res.text());
-      cardTruncated = text.length > CARD_MAX_BYTES;
-      card = text.slice(0, CARD_MAX_BYTES);
+    // Read to the cap and no further: the card is a stranger's file of any size.
+    const res = await hfFetchText(`/${repo}/resolve/${files.revision}/README.md`, CARD_MAX_BYTES);
+    if (res.status === 200) {
+      card = stripFrontMatter(res.text);
+      cardTruncated = res.truncated;
     }
   } catch {
     // A missing card is not a failed lookup.

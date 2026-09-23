@@ -14,14 +14,23 @@ set -eu
 
 DIR="${LLAMA_DIR:-/data/llama}"
 PRESET="$DIR/models.ini"
+KEYFILE="$DIR/router.key"
 BIN="${LLAMA_SERVER_BIN:-/app/llama-server}"
 
 "$BIN" --list-devices > "$DIR/router-devices.txt" 2>&1 || true
 
-while [ ! -f "$PRESET" ]; do
-  echo "llama-router: waiting for $PRESET (the Loxaic server writes it when it starts)"
+# The router never runs unauthenticated: llama.cpp allows every CORS origin,
+# so without a key any page in the operator's browser could unload models or
+# reload the list. The server mints the key into the shared volume (0600)
+# unless LLAMA_API_KEY is set for both processes.
+while [ ! -f "$PRESET" ] || { [ -z "${LLAMA_API_KEY:-}" ] && [ ! -s "$KEYFILE" ]; }; do
+  echo "llama-router: waiting for $PRESET and $KEYFILE (the Loxaic server writes them when it starts)"
   sleep 2
 done
+if [ -z "${LLAMA_API_KEY:-}" ]; then
+  LLAMA_API_KEY="$(tr -d '[:space:]' < "$KEYFILE")"
+  export LLAMA_API_KEY
+fi
 
 exec "$BIN" \
   --host 0.0.0.0 \

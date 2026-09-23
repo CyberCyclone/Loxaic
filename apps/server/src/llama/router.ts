@@ -1,6 +1,6 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -110,6 +110,33 @@ const st: State = {
 
 /** Attach mode's last health answer, refreshed on a timer and on demand. */
 let attachHealthy: boolean | null = null;
+/**
+ * Attach mode's API key. The sidecar must not answer unauthenticated any more
+ * than the managed router may (llama.cpp allows every CORS origin, so a page in
+ * the operator's browser could otherwise unload models or reload the list), and
+ * the two processes have no channel but the shared volume — so the key lives
+ * there, in a 0600 file the server mints once and the sidecar's entrypoint
+ * reads before it starts. `LLAMA_API_KEY` in both environments overrides it.
+ */
+let attachKey: string | null = null;
+
+async function ensureAttachKey(): Promise<void> {
+  if (process.env.LLAMA_API_KEY?.trim()) return;
+  const file = path.join(path.dirname(presetPath()), "router.key");
+  try {
+    const existing = (await readFile(file, "utf8")).trim();
+    if (/^[0-9a-f]{32,}$/.test(existing)) {
+      attachKey = existing;
+      return;
+    }
+  } catch {
+    // not minted yet
+  }
+  const key = randomBytes(24).toString("hex");
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, `${key}\n`, { mode: 0o600 });
+  attachKey = key;
+}
 /** Attach mode: whether the sidecar has recorded what `--list-devices` found
  * (infra/docker/llama-router.sh writes it into the shared volume). Until it
  * has, "no devices" means "not told", never "running on the CPU". */
@@ -170,7 +197,7 @@ export function routerEndpoint(): RouterEndpoint | null {
     const url = process.env.LLAMA_ROUTER_URL;
     if (!url) return null;
     const root = url.replace(/\/+$/, "").replace(/\/v1$/, "");
-    return { apiBase: `${root}/v1`, nativeRoot: root, apiKey: process.env.LLAMA_API_KEY?.trim() ? process.env.LLAMA_API_KEY : null };
+    return { apiBase: `${root}/v1`, nativeRoot: root, apiKey: process.env.LLAMA_API_KEY?.trim() ? process.env.LLAMA_API_KEY : attachKey };
   }
   if (st.state !== "running" || st.port === null) return null;
   const root = `http://127.0.0.1:${String(st.port)}`;
@@ -330,7 +357,18 @@ export interface SyncResult {
  * loaded mid-run is not — so that case waits until the built-in provider is
  * idle.
  */
-export async function syncPreset(): Promise<SyncResult> {
+/** Rewrites are serialised: `syncPreset` is reachable from an admin's write
+ * and from the runtime starting, and two overlapping read-modify-writes of the
+ * preset would otherwise race each other's view of `lastSections`. */
+let presetChain: Promise<unknown> = Promise.resolve();
+
+export function syncPreset(): Promise<SyncResult> {
+  const next = presetChain.then(syncPresetNow, syncPresetNow);
+  presetChain = next.catch(() => undefined);
+  return next;
+}
+
+async function syncPresetNow(): Promise<SyncResult> {
   const mode = getLlamaMode();
   if (mode === "off") return { deferred: false };
   const rows = await listServableModels();
@@ -617,6 +655,10 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   if (opts.restart) {
     fastFails = 0;
     await stopChild();
+    // A deliberate Restart re-detects: the error it may be answering says
+    // "install the Vulkan loader and restart the runtime", and a cached
+    // detection would render the identical error back.
+    st.hardware = null;
   }
   const settings = getLocalModelsSettings();
   st.hardware ??= await detectHardware();
@@ -694,12 +736,17 @@ export async function bootLocalRuntime(log: (m: string) => void): Promise<void> 
     return;
   }
   if (mode === "attach") {
+    await ensureAttachKey().catch((e: unknown) => { log(`Could not write the router key: ${String(e)}`); });
     await refreshAttachHealth();
     attachTimer = setInterval(() => { void refreshAttachHealth(); }, 15_000);
     attachTimer.unref();
     await syncPreset().catch((e: unknown) => { log(`Could not write the llama.cpp preset: ${String(e)}`); });
     return;
   }
+  // Under MOCK_INFERENCE the built-in provider is served by the mock, so a
+  // real llama.cpp would only hold the GPU for nothing; the fake router the
+  // e2e lane points at (`LOXAIC_LLAMA_SERVER_BIN`) is the one exception.
+  if (process.env.MOCK_INFERENCE === "true" && !binOverride()) return;
   if (binOverride() || (await anyRuntimeInstalled())) {
     await ensureRuntime();
     if (st.state === "running") log(`llama.cpp ${RUNTIME_MANIFEST.tag} (${String(st.flavour)}) is running`);

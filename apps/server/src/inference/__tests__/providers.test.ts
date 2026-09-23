@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 // Before any encryption happens. `??=` because vitest shares one process
 // across files and another suite may have set it already — the value only has
@@ -159,8 +159,15 @@ describe("resolveModelRef", () => {
   it("refuses an unqualified reference that is not an enabled local model", async () => {
     // The built-in provider is the local llama.cpp router now, and it serves
     // exactly what an admin downloaded and enabled — never "whatever the
-    // backend happens to have". Enforced here, at send time.
-    await expect(resolveModelRef(`not-downloaded-${uuid()}`)).rejects.toMatchObject({ code: "local_model_unavailable" });
+    // backend happens to have". Enforced here, at send time. Under
+    // MOCK_INFERENCE (which CI sets for the whole job) any bare reference
+    // resolves, so the mock is switched off for this one case.
+    vi.stubEnv("MOCK_INFERENCE", "false");
+    try {
+      await expect(resolveModelRef(`not-downloaded-${uuid()}`)).rejects.toMatchObject({ code: "local_model_unavailable" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("routes a qualified reference to its provider, under the upstream id", async () => {

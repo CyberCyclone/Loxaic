@@ -3,7 +3,8 @@ import { inferenceProviders } from "@loxaic/db/schema";
 import { DEFAULT_PROVIDER_ID, isProviderSlug, parseModelRef } from "@loxaic/types";
 import { decryptApiKey, encryptApiKey, ProviderKeyUnreadableError } from "./provider-secrets.ts";
 import { listServableModels } from "../llama/catalog.ts";
-import { routerEndpoint } from "../llama/router.ts";
+import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
+import { getLlamaMode } from "../llama/settings.ts";
 
 /**
  * Which backends this deployment can reach, and which model reference goes to
@@ -287,6 +288,10 @@ export async function assertModelUsable(ref: string): Promise<void> {
  */
 async function resolveLocalRef(upstreamModel: string): Promise<ResolvedModelRef> {
   if (MOCK_MODE()) return { provider: defaultProvider(), upstreamModel };
+  // At pre-flight, before any row is written — the same place the enabled
+  // check happens — rather than inside `streamCompletion` after the
+  // conversation and message exist.
+  if (getLlamaMode() === "off") throw new ModelRefError(routerUnavailableReason(), "local_model_unavailable");
   const servable = await listServableModels();
   if (upstreamModel === DEFAULT_PROVIDER_ID) {
     const first = servable.at(0);

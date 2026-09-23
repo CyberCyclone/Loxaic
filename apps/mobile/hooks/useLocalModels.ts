@@ -109,7 +109,10 @@ export function useLocalModels(token: string | null) {
   const update = useCallback(
     async (id: string, patch: { enabled?: boolean; displayName?: string; loadSettings?: LoadSettings }): Promise<LocalModel | null> => {
       // Optimistic for the switch, which should not lag a poll behind the tap.
+      // Bumping `seq` is what makes that true: a poll already in flight would
+      // otherwise land with the server's pre-tap answer and flip it back.
       if (patch.enabled !== undefined) {
+        seq.current++;
         setView((v) => (v ? { ...v, models: v.models.map((m) => (m.id === id ? { ...m, enabled: patch.enabled ?? m.enabled } : m)) } : v));
       }
       return act(() => updateLocalModel(id, patch));

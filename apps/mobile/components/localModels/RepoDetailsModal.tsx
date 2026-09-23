@@ -146,7 +146,10 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                   </Text>
                 )}
                 {details.baseModel && (
-                  <Text size="xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                  // `min-w-0 shrink` on the flex item itself, or the ellipsis
+                  // never applies (see lib/truncate.ts): the base model is an
+                  // arbitrary repo id of any length.
+                  <Text size="xs" className="min-w-0 max-w-full shrink text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
                     based on {details.baseModel}
                   </Text>
                 )}

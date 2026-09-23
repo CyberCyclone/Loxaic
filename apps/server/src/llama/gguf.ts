@@ -22,6 +22,11 @@ export interface GgufFacts {
 const MAGIC = 0x46554747; // "GGUF", little-endian
 const MAX_STRING = 16 * 1024 * 1024;
 const MAX_KV = 100_000;
+/** The longest array skipped element by element. A vocabulary is the largest
+ * real one (a few hundred thousand tokens); a count past this is a malformed
+ * file, refused rather than iterated — each element is an awaited turn on the
+ * server's event loop. */
+const MAX_ARRAY = 2_000_000;
 
 class Reader {
   private buf = Buffer.alloc(0);
@@ -29,7 +34,16 @@ class Reader {
   private filePos = 0;
   private eof = false;
 
-  constructor(private readonly fh: FileHandle) {}
+  constructor(
+    private readonly fh: FileHandle,
+    private readonly size: number,
+  ) {}
+
+  /** Where the next read lands in the file. A skip that runs past the end is
+   * a count that outlived the data backing it. */
+  private offset(): number {
+    return this.filePos - (this.buf.length - this.pos);
+  }
 
   private async fill(n: number): Promise<void> {
     while (this.buf.length - this.pos < n && !this.eof) {
@@ -56,6 +70,7 @@ class Reader {
   skip(n: number): void {
     // Skipping within the buffer, then seeking the file for the rest — a
     // 150k-entry vocabulary is skipped a string at a time, but never held.
+    if (this.offset() + n > this.size) throw new Error("GGUF header runs past the end of the file");
     const inBuf = Math.min(n, this.buf.length - this.pos);
     this.pos += inBuf;
     const rest = n - inBuf;
@@ -111,6 +126,7 @@ async function skipValue(r: Reader, type: number): Promise<void> {
   if (type === 9) {
     const inner = await r.u32();
     const n = Number(await r.u64());
+    if (n > MAX_ARRAY) throw new Error("GGUF array too long");
     const width = FIXED[inner];
     if (inner === 8) for (let i = 0; i < n; i++) await skipValue(r, 8);
     else if (width !== undefined) r.skip(width * n);
@@ -126,7 +142,7 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
   const facts: GgufFacts = { architecture: null, nLayers: null, nCtxTrain: null, expertCount: null };
   const fh = await open(file, "r");
   try {
-    const r = new Reader(fh);
+    const r = new Reader(fh, (await fh.stat()).size);
     if ((await r.u32()) !== MAGIC) throw new Error("Not a GGUF file");
     const version = await r.u32();
     if (version < 2) throw new Error("GGUF v1 is not supported");

@@ -16,6 +16,13 @@ const PASSTHROUGH_ENV = [
   // runtime now): the server converts it into an added provider once, at
   // boot, and ignores it after that. Passed through so that conversion happens.
   "INFERENCE_BASE_URL",
+  // How the built-in provider reaches llama.cpp: `managed` (this server runs
+  // it), `attach` (an existing router at LLAMA_ROUTER_URL) or `off`. Absent
+  // from this list, `LLAMA_MODE=off` would resolve to `managed` and install a
+  // runtime the operator asked not to have.
+  "LLAMA_MODE",
+  "LLAMA_ROUTER_URL",
+  "LLAMA_API_KEY",
   "LLAMA_BACKEND",
   "LLAMA_MODELS_MAX",
   "HF_TOKEN",

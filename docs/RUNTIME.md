@@ -430,7 +430,10 @@ docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d     # AMD 
 ```
 
 Without one the container sees no GPU and runs models on the CPU, and the Local
-models screen says so. **Containers on macOS cannot reach the GPU at all**, so
+models screen says so. The router is never open: the server writes a key into
+the shared volume (`router.key`) that the sidecar starts with, and port 4002 is
+published on loopback only. Set `LLAMA_API_KEY` for both services to choose
+the key yourself. **Containers on macOS cannot reach the GPU at all**, so
 on a Mac run Loxaic itself natively (the desktop app, or `pnpm dev`) and let it
 manage llama.cpp.
 

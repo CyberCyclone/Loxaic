@@ -73,8 +73,11 @@ services:
     volumes:
       - llama:/data/llama
       - ./infra/docker/llama-router.sh:/opt/loxaic/llama-router.sh:ro
+    # Loopback only. The server reaches the router over the Compose network;
+    # this publish is for a curl from the host, and the router needs the key
+    # in the `llama` volume's router.key for anything but /health.
     ports:
-      - "4002:8080"
+      - "127.0.0.1:4002:8080"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s

@@ -69,7 +69,8 @@ describe("preset file", () => {
     ({
       id: "unsloth/Qwen3-0.6B-GGUF:Q4_K_M",
       repo: "unsloth/Qwen3-0.6B-GGUF",
-      files: [{ path: "Qwen3-0.6B-Q4_K_M.gguf", size: 1, sha256: null }],
+      revision: "50968a4468ef4233ed78cd7c3de230dd1d61a56b",
+      files: [{ path: "Qwen3-0.6B-Q4_K_M.gguf", size: 1, sha256: "a".repeat(64) }],
       mmproj: null,
       loadSettings: {},
       meta: {},
@@ -79,7 +80,8 @@ describe("preset file", () => {
   it("one section per model, named by the id users send", () => {
     const text = renderPreset([row({ loadSettings: { ctxSize: 4096 } })], { devices: ["Vulkan1"] });
     expect(text).toContain("[*]\njinja = true\ndevice = Vulkan1");
-    expect(text).toMatch(/\[unsloth\/Qwen3-0\.6B-GGUF:Q4_K_M\]\nmodel = .*Qwen3-0\.6B-Q4_K_M\.gguf\nctx-size = 4096/);
+    // The file path carries the revision the model was downloaded at.
+    expect(text).toMatch(/\[unsloth\/Qwen3-0\.6B-GGUF:Q4_K_M\]\nmodel = .*50968a4468ef.*Qwen3-0\.6B-Q4_K_M\.gguf\nctx-size = 4096/);
   });
 
   it("CPU only forces zero GPU layers, whatever the model's settings say", () => {
@@ -176,8 +178,8 @@ describe("HuggingFace file grouping", () => {
       { type: "file", path: "m-Q4_K_M.gguf", size: 400, lfs: { oid: sha, size: 400 } },
       { type: "file", path: "m-Q8_0-00001-of-00002.gguf", size: 500, lfs: { oid: sha, size: 500 } },
       { type: "file", path: "m-Q8_0-00002-of-00002.gguf", size: 300, lfs: { oid: sha, size: 300 } },
-      { type: "file", path: "m-F16-00001-of-00002.gguf", size: 900 },
-      { type: "file", path: "mmproj-F16.gguf", size: 80 },
+      { type: "file", path: "m-F16-00001-of-00002.gguf", size: 900, lfs: { oid: sha, size: 900 } },
+      { type: "file", path: "mmproj-F16.gguf", size: 80, lfs: { oid: sha, size: 80 } },
       { type: "file", path: "README.md", size: 10 },
       { type: "directory", path: "Q8_0" },
     ]);

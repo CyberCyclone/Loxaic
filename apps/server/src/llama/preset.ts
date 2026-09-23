@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { rowFiles, rowMeta, rowMmproj, type LocalModelRow } from "./catalog.ts";
@@ -42,12 +43,12 @@ export function modelSection(row: LocalModelRow, globals: PresetGlobals): string
   const files = rowFiles(row);
   if (files.length === 0 || !isSafeSectionName(row.id)) return [];
   const mmproj = rowMmproj(row);
-  const lines = [`[${row.id}]`, `model = ${safeValue(modelFilePath(row.repo, files[0].path))}`];
+  const lines = [`[${row.id}]`, `model = ${safeValue(modelFilePath(row.repo, row.revision, files[0].path))}`];
   const settings = (row.loadSettings ?? {}) as LoadSettings;
   const cpuOnly = globals.devices === "none";
   lines.push(
     ...presetLines(cpuOnly ? { ...settings, gpuLayers: 0 } : settings, {
-      mmprojPath: mmproj ? safeValue(modelFilePath(row.repo, mmproj.path)) : null,
+      mmprojPath: mmproj ? safeValue(modelFilePath(row.repo, row.revision, mmproj.path)) : null,
       facts: rowMeta(row),
     }),
   );
@@ -75,11 +76,13 @@ export function renderPreset(rows: LocalModelRow[], globals: PresetGlobals): str
 }
 
 /** Write the file atomically — the router may re-read it at any moment, and a
- * half-written file would fail the reload (or, at boot, the router). */
+ * half-written file would fail the reload (or, at boot, the router). The temp
+ * name is per *call*, not per process: two overlapping writes with one name
+ * would splice into each other, and the rename would publish the splice. */
 export async function writePreset(text: string): Promise<void> {
   const target = presetPath();
   await mkdir(path.dirname(target), { recursive: true });
-  const tmp = `${target}.${String(process.pid)}.tmp`;
+  const tmp = `${target}.${String(process.pid)}-${randomBytes(4).toString("hex")}.tmp`;
   await writeFile(tmp, text, { mode: 0o600 });
   await rename(tmp, target);
 }

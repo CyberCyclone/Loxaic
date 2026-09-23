@@ -17,7 +17,7 @@ import {
   startDownloadQueue,
   stopDownloads,
 } from "../downloads.ts";
-import { searchModels } from "../hf.ts";
+import { groupQuants, searchModels } from "../hf.ts";
 import { modelFilePath } from "../paths.ts";
 import { denseModel } from "./gguf-fixture.ts";
 
@@ -161,8 +161,8 @@ describe("downloads", () => {
     const done = await until(row.id, (s) => s === "ready");
     expect(done?.enabled).toBe(false);
     expect(done?.meta).toMatchObject({ architecture: "qwen3", nLayers: 28, nCtxTrain: 40960 });
-    expect(statSync(modelFilePath(repo, "Mini-Q4_K_M.gguf")).size).toBe(good.length);
-    expect(existsSync(`${modelFilePath(repo, "Mini-Q4_K_M.gguf")}.part`)).toBe(false);
+    expect(statSync(modelFilePath(repo, REV, "Mini-Q4_K_M.gguf")).size).toBe(good.length);
+    expect(existsSync(`${modelFilePath(repo, REV, "Mini-Q4_K_M.gguf")}.part`)).toBe(false);
   });
 
   it("refuses the same model twice", async () => {
@@ -173,14 +173,14 @@ describe("downloads", () => {
     const row = await queueDownload({ repo, quant: "Q5_K_M" }, userId);
     const failed = await until(row.id, (s) => s === "failed");
     expect(failed?.error).toMatch(/did not match HuggingFace's checksum/);
-    expect(existsSync(modelFilePath(repo, "Mini-Q5_K_M.gguf"))).toBe(false);
-    expect(existsSync(`${modelFilePath(repo, "Mini-Q5_K_M.gguf")}.part`)).toBe(false);
+    expect(existsSync(modelFilePath(repo, REV, "Mini-Q5_K_M.gguf"))).toBe(false);
+    expect(existsSync(`${modelFilePath(repo, REV, "Mini-Q5_K_M.gguf")}.part`)).toBe(false);
   });
 
   it("pauses mid-file and resumes from where it stopped", async () => {
     const row = await queueDownload({ repo, quant: "Q8_0" }, userId);
     await until(row.id, (s) => s === "downloading");
-    const part = `${modelFilePath(repo, "Mini-Q8_0.gguf")}.part`;
+    const part = `${modelFilePath(repo, REV, "Mini-Q8_0.gguf")}.part`;
     const end = Date.now() + 10_000;
     while (!(existsSync(part) && statSync(part).size > 256 * 1024)) {
       if (Date.now() > end) throw new Error("no progress");
@@ -195,7 +195,7 @@ describe("downloads", () => {
     await resumeDownload(row.id);
     await until(row.id, (s) => s === "ready", 20_000);
     expect(rangeRequests.some((r) => r.startsWith("bytes=") && Number(/\d+/.exec(r)?.[0]) > 0)).toBe(true);
-    expect(statSync(modelFilePath(repo, "Mini-Q8_0.gguf")).size).toBe(slow.length);
+    expect(statSync(modelFilePath(repo, REV, "Mini-Q8_0.gguf")).size).toBe(slow.length);
   });
 
   it("cancel removes the row and its files; a finished model must be deleted instead", async () => {
@@ -204,6 +204,16 @@ describe("downloads", () => {
     invalidateLocalModelCache();
     expect(await getLocalModelRow(failedId)).toBeNull();
     await expect(cancelDownload(`${repo}:Q4_K_M`)).rejects.toBeInstanceOf(DownloadError);
+  });
+
+  it("never offers a file HuggingFace publishes no checksum for", () => {
+    // Every GGUF on the Hub is an LFS object with an oid; one without is not
+    // something this server will mmap and run on length alone.
+    const { quants } = groupQuants([
+      { type: "file", path: "m-Q4_K_M.gguf", size: 5, lfs: { oid: "a".repeat(64), size: 5 } },
+      { type: "file", path: "m-Q8_0.gguf", size: 5 },
+    ]);
+    expect(quants.map((q) => q.quant)).toEqual(["Q4_K_M"]);
   });
 
   it("refuses a quant the repo does not have and a repo name that is not one", async () => {

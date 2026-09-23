@@ -46,10 +46,19 @@ export function repoDir(repo: string): string {
   return dir;
 }
 
-/** Where one of a repo's files lives. HuggingFace paths may contain
- * subdirectories (a quant per folder is common for split models). */
-export function modelFilePath(repo: string, file: string): string {
-  const dir = repoDir(repo);
+/**
+ * Where one of a repo's files lives: under the repo, then the commit it was
+ * downloaded at. HuggingFace paths may contain subdirectories (a quant per
+ * folder is common for split models).
+ *
+ * The revision is in the path so a file from an older commit can never be
+ * mistaken for the current one — two downloads of "the same" file at different
+ * revisions are different files with different checksums, and the queue adopts
+ * a file that is already in place without re-downloading it.
+ */
+export function modelFilePath(repo: string, revision: string, file: string): string {
+  if (!/^[0-9a-f]{7,64}$/.test(revision)) throw new Error("Refusing a model path with a malformed revision");
+  const dir = path.join(repoDir(repo), revision.slice(0, 12));
   const full = path.resolve(dir, ...file.split("/"));
   if (!full.startsWith(dir + path.sep)) throw new Error(`Refusing a model file outside ${dir}`);
   return full;

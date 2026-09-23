@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, rename, rm, stat, statfs, truncate } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -39,6 +39,10 @@ import { offloadMemory } from "./router.ts";
 
 const CONCURRENCY = 2;
 const FLUSH_MS = 3000;
+/** A transfer that sends nothing for this long is treated as dead. Idle time,
+ * not a wall-clock deadline: a multi-gigabyte download is legitimately long,
+ * but one that has gone quiet holds a queue slot for nothing. */
+const STALL_MS = 60_000;
 /** Left free on the disk after a download, so a full disk is refused up front
  * rather than discovered mid-file. */
 const DISK_MARGIN_BYTES = 2 * 1024 ** 3;
@@ -62,6 +66,10 @@ interface Active {
 const active = new Map<string, Active>();
 /** Live byte counts, ahead of the row by up to FLUSH_MS. */
 const liveBytes = new Map<string, number>();
+/** Files being written right now, by final path. Two quants of one vision
+ * repo share a projector, and with two downloads running at once both rows
+ * would otherwise open the same `.part` and interleave into it. */
+const inflightTargets = new Map<string, Promise<void>>();
 let log: (m: string) => void = () => undefined;
 let started = false;
 
@@ -218,10 +226,12 @@ export async function cancelDownload(id: string): Promise<boolean> {
 /** Remove a model's files. Other rows sharing the repo directory keep theirs. */
 export async function removeFiles(row: LocalModelRow): Promise<void> {
   const others = (await listLocalModelRows()).filter((r) => r.id !== row.id && r.repo === row.repo);
-  const shared = new Set(others.flatMap((r) => [...rowFiles(r).map((f) => f.path), rowMmproj(r)?.path].filter(Boolean)));
+  const shared = new Set(
+    others.filter((r) => r.revision === row.revision).flatMap((r) => [...rowFiles(r).map((f) => f.path), rowMmproj(r)?.path].filter(Boolean)),
+  );
   for (const f of [...rowFiles(row), rowMmproj(row)].filter((x): x is ModelFile => x !== null)) {
     if (shared.has(f.path)) continue;
-    const full = modelFilePath(row.repo, f.path);
+    const full = modelFilePath(row.repo, row.revision, f.path);
     await rm(full, { force: true });
     await rm(`${full}.part`, { force: true });
   }
@@ -274,28 +284,42 @@ async function run(row: LocalModelRow, entry: Active): Promise<void> {
   liveBytes.set(row.id, 0);
 
   for (const file of all) {
-    const target = modelFilePath(row.repo, file.path);
-    if (existsSync(target)) {
-      // Renamed into place only after verification, so its presence is proof.
+    if (!file.sha256) throw new Error(`HuggingFace published no checksum for ${path.basename(file.path)}, so it cannot be verified.`);
+    const target = modelFilePath(row.repo, row.revision, file.path);
+    // Another row may be writing this very file (a shared vision projector):
+    // wait for it rather than writing the same `.part` twice.
+    const other = inflightTargets.get(target);
+    if (other) await other.catch(() => undefined);
+    const present = await stat(target).catch(() => null);
+    if (present?.size === file.size) {
+      // Renamed into place only after its checksum matched, at this very
+      // revision (the path carries it), so its presence is proof.
       doneBefore += file.size;
       liveBytes.set(row.id, doneBefore);
       continue;
     }
+    if (present) await rm(target, { force: true });
     await mkdir(path.dirname(target), { recursive: true });
-    await downloadFile(row, file, target, entry.controller.signal, (fileBytes) => {
+    const job = downloadFile(row, file, target, entry.controller.signal, (fileBytes) => {
       liveBytes.set(row.id, doneBefore + fileBytes);
       if (Date.now() - lastFlush > FLUSH_MS) {
         lastFlush = Date.now();
         void updateLocalModelRow(row.id, { bytesDone: doneBefore + fileBytes }).catch(() => undefined);
       }
     });
+    inflightTargets.set(target, job);
+    try {
+      await job;
+    } finally {
+      inflightTargets.delete(target);
+    }
     doneBefore += file.size;
   }
 
   let meta: LocalModelMeta = {};
   try {
     const first = rowFiles(row)[0];
-    const facts = await readGgufFacts(modelFilePath(row.repo, first.path));
+    const facts = await readGgufFacts(modelFilePath(row.repo, row.revision, first.path));
     meta = {
       architecture: facts.architecture,
       nLayers: facts.nLayers,
@@ -333,10 +357,26 @@ async function downloadFile(
     await truncate(part, 0);
     offset = 0;
   }
-  const res = await fetch(resolveUrl(row.repo, row.revision, file.path), {
-    signal,
-    headers: { ...hfHeaders(), ...(offset > 0 ? { Range: `bytes=${String(offset)}-` } : {}) },
-  });
+  // The user's cancel, plus a stall timer re-armed by every chunk: a transfer
+  // that goes quiet is aborted rather than holding a queue slot for ever.
+  const stall = new AbortController();
+  let stallTimer = setTimeout(() => { stall.abort(new Error("stalled")); }, STALL_MS);
+  const touch = () => {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => { stall.abort(new Error("stalled")); }, STALL_MS);
+  };
+  const combined = AbortSignal.any([signal, stall.signal]);
+  let res: Response;
+  try {
+    res = await fetch(resolveUrl(row.repo, row.revision, file.path), {
+      signal: combined,
+      headers: { ...hfHeaders(), ...(offset > 0 ? { Range: `bytes=${String(offset)}-` } : {}) },
+    });
+  } catch (err) {
+    clearTimeout(stallTimer);
+    if (stall.signal.aborted) throw new Error(`${path.basename(file.path)} sent nothing for ${String(STALL_MS / 1000)} s. Resume to try again.`);
+    throw err;
+  }
   if (!res.ok || !res.body) throw new Error(downloadErrorMessage(res.status, row.repo));
   // A server that ignores Range answers 200 with the whole file: start over
   // rather than appending the beginning to the middle.
@@ -351,22 +391,38 @@ async function downloadFile(
   const body = Readable.fromWeb(res.body as unknown as WebReadableStream<Uint8Array>);
   const counter = new Transform({
     transform(chunk: Buffer, _enc, cb) {
-      hash.update(chunk);
+      touch();
       written += chunk.length;
+      // A response that keeps sending past the declared size is stopped here,
+      // before it writes past the disk margin reserved for that size — not
+      // after the pipeline has finished.
+      if (written > file.size) {
+        cb(new Error(`${path.basename(file.path)} is larger than HuggingFace said it was; discarded.`));
+        return;
+      }
+      hash.update(chunk);
       onBytes(written);
       cb(null, chunk);
     },
   });
-  await pipeline(body, counter, createWriteStream(part, { flags: offset > 0 ? "a" : "w" }), { signal });
+  try {
+    await pipeline(body, counter, createWriteStream(part, { flags: offset > 0 ? "a" : "w" }), { signal: combined });
+  } catch (err) {
+    if (stall.signal.aborted) throw new Error(`${path.basename(file.path)} sent nothing for ${String(STALL_MS / 1000)} s. Resume to try again.`);
+    if (written > file.size) await rm(part, { force: true });
+    throw err;
+  } finally {
+    clearTimeout(stallTimer);
+  }
   if (written !== file.size) {
     throw new Error(`${path.basename(file.path)} ended after ${String(written)} of ${String(file.size)} bytes. Resume to continue.`);
   }
-  if (file.sha256) {
-    const actual = hash.digest("hex");
-    if (actual !== file.sha256) {
-      await rm(part, { force: true });
-      throw new Error(`${path.basename(file.path)} did not match HuggingFace's checksum and was discarded. Retry to download it again.`);
-    }
+  // Never conditional: a file without a checksum was refused before this
+  // point, so every file that reaches its final name was verified.
+  const actual = hash.digest("hex");
+  if (actual !== file.sha256) {
+    await rm(part, { force: true });
+    throw new Error(`${path.basename(file.path)} did not match HuggingFace's checksum and was discarded. Retry to download it again.`);
   }
   await rename(part, target);
 }

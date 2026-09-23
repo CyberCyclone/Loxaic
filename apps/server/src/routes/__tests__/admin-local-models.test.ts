@@ -14,7 +14,9 @@ import { localModels } from "@loxaic/db/schema";
  * that has not finished, load settings are validated before they are stored,
  * and enabling is what makes a model usable — at send time, not just listed.
  *
- * LLAMA_MODE=off keeps this suite from starting (or installing) a runtime.
+ * Attached to a dead port rather than `off`: `off` is refused at send-time
+ * pre-flight (nothing local can ever be usable then), while `attach` to
+ * nothing starts and installs no runtime and still lets enabling be tested.
  */
 const currentUser = { id: "" };
 
@@ -58,7 +60,8 @@ function row(id: string, status: "ready" | "downloading") {
 
 beforeAll(async () => {
   vi.stubEnv("LOXAIC_INSTANCE_ID", host);
-  vi.stubEnv("LLAMA_MODE", "off");
+  vi.stubEnv("LLAMA_MODE", "attach");
+  vi.stubEnv("LLAMA_ROUTER_URL", "http://127.0.0.1:1");
   vi.stubEnv("LLAMA_DIR", dir);
   vi.stubEnv("MOCK_INFERENCE", "false");
   await app.ready();
@@ -98,7 +101,7 @@ describe("admin local models", () => {
     const body = res.json<{ models: { id: string; fit: { label: string } }[]; settingSpecs: { key: string }[]; runtime: { state: string } }>();
     expect(body.models.map((m) => m.id)).toEqual(expect.arrayContaining([ready, pending]));
     expect(body.settingSpecs.map((s) => s.key)).toContain("gpuLayers");
-    expect(body.runtime.state).toBe("off");
+    expect(body.runtime.state).toBe("starting");
   });
 
   it("enabling is what makes a model usable at send time", async () => {
