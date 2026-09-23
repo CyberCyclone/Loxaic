@@ -96,7 +96,7 @@ function configFor(rawVariant) {
       {
         provider: "github",
         owner: "CyberCyclone",
-        repo: "Open-Shannon",
+        repo: "Loxaic",
         ...(variant.channel ? { channel: variant.channel } : {}),
       },
     ],
