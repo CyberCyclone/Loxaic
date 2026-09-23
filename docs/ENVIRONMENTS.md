@@ -24,7 +24,7 @@ your workstation:
 The obvious design is a GitHub Actions job that deploys to the box: a
 self-hosted runner, or an SSH key in repository secrets, or a tunnel. All three
 end the same way — something in GitHub holds a credential to a machine on your
-home network, and once this repository is public, a pull request from a fork is
+home network, and in a public repository a pull request from a fork is
 a stranger's code running on hardware you own.
 
 So the direction is inverted. `envs.sh` runs on **your workstation**, which is

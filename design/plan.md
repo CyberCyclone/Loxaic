@@ -4,7 +4,7 @@
 
 Build a high-fidelity, self-contained HTML prototype of the **Loxaic** client —
 a self-hosted, multi-user **AI assistant with agent harness** (per
-`docs/IMPLEMENTATION.md` §1) — with five surfaces: **Chat**, **Agent console**,
+the original implementation plan, §1, since removed) — with five surfaces: **Chat**, **Agent console**,
 **Routines**, **Settings**, and **Stats**. The Stats surface's layout is a faithful
 clone of a React analytics dashboard
 (`https://example.com/dashboard/analytics`); the other four follow the
@@ -435,7 +435,7 @@ No open questions remain in this round.
 
 | Input | Value | Status |
 |---|---|---|
-| Product | Self-hosted AI assistant with agent harness; llama.cpp inference, agent harness, sandboxes, routines, offline-first sync with conversation forks (IMPLEMENTATION.md §1) | Locked |
+| Product | Self-hosted AI assistant with agent harness; llama.cpp inference, agent harness, sandboxes, routines, offline-first sync with conversation forks (original implementation plan §1) | Locked |
 | Clone target | Reference analytics dashboard layout — governs **Stats surface layout only** | Locked |
 | Theme engine | Repo ground truth (§2): `config-style` tokens + gluestack-v5 skill rules | Locked |
 | Palette (hybrid — user decision 2026-08-11) | Neutrals from repo `design-tokens.js`: bg `#18181b` / `#27272a` / `#3f3f46` · fg `#f4f4f5` / `#a1a1aa` / `#71717a` · border `#3f3f46` · danger `#dc2626` · success `#16a34a`. Accent = **aqua** `#0096ff`, hover `#1da1f2` (overrides repo violet `#6d28d9` / `#7c3aed`) | **Locked** |
@@ -445,7 +445,7 @@ No open questions remain in this round.
 
 ## 2. Repo ground truth (read 2026-08-11)
 
-Sources: `AGENTS.md`, `docs/IMPLEMENTATION.md`,
+Sources: `AGENTS.md`, the original implementation plan (since removed),
 `.agents/skills/gluestack-ui-v5/SKILL.md`, `packages/config-style/design-tokens.js`,
 `packages/ui/src/{layout/AppShell.tsx,layout/components.tsx,components/index.tsx,theme/index.ts}`.
 
@@ -464,7 +464,7 @@ Hard constraints the design must respect:
   `ThreadList` (280px, rows = title + kind Badge + relative time) + main pane
   (`ChatView` + `Composer`, min-height-44 input). The prototype elevates this shell,
   it doesn't reinvent it.
-- **Data model (§6 of IMPLEMENTATION.md):** conversations have `kind` =
+- **Data model (§6 of the original implementation plan):** conversations have `kind` =
   `chat | agent | routine`; messages are a **tree** (`parent_id`) with visible
   **forks**; `ContentBlock` = text | thinking | tool_call | tool_result | attachment;
   usage is tracked per completion in `usage_records` (input/cached/output tokens,
@@ -592,7 +592,7 @@ Section nav (left rail / top tabs on mobile):
 ### 5.5 Stats (`loxaic-stats.html`) — Analytics dashboard layout, `usage_records` content
 
 Layout follows standard analytics dashboard patterns (§8); content follows
-IMPLEMENTATION.md §6.5:
+the original implementation plan's §6.5:
 
 - **Range tabs:** Session / Today / Week / Month / Year (drive all widgets).
 - **KPI card row** (stat-card pattern): tokens today, cache-hit %, avg TTFT,

@@ -1,14 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { createUpdater, whyDisabled } from "../updater.js";
-import { configFor } from "../../../scripts/builder-variants.cjs";
-
-let dataDir;
-beforeEach(() => { dataDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-updates-")); });
-afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); });
 
 /** Stands in for electron-updater's autoUpdater: the same event surface, the
  * same two flags this code is allowed to set, and a record of what was asked
@@ -27,7 +19,6 @@ function fakeUpdater() {
     set: (value) => { channel = value; updater.allowDowngrade = true; },
   });
   updater.checkForUpdates = () => { updater.calls.push("check"); return Promise.resolve(null); };
-  updater.setFeedURL = (options) => { updater.calls.push(["setFeedURL", options]); };
   updater.quitAndInstall = (...args) => { updater.calls.push(["quitAndInstall", ...args]); };
   return updater;
 }
@@ -214,21 +205,6 @@ describe("the desktop updater", () => {
     expect(updater.state()).toMatchObject({ status: "error" });
     expect(updater.state().error).toMatch(/postgres refused to stop/);
     expect(autoUpdater.calls.some((c) => Array.isArray(c) && c[0] === "quitAndInstall")).toBe(false);
-  });
-
-  it("uses a private feed only when told to, and never logs the token", async () => {
-    const { updater, autoUpdater, logs } = make({ env: { LOXAIC_GH_TOKEN: "ghp_secret_value" } });
-    await updater.check();
-    const call = autoUpdater.calls.find((c) => Array.isArray(c) && c[0] === "setFeedURL");
-    expect(call[1]).toMatchObject({ provider: "github", private: true, token: "ghp_secret_value" });
-    const { publish } = configFor("production");
-    expect(call[1]).toMatchObject({ owner: publish[0].owner, repo: publish[0].repo });
-    // Said loudly enough that nobody ships with it set, without the value.
-    expect(logs.some((l) => /testing only/i.test(l))).toBe(true);
-    expect(logs.join("\n")).not.toContain("ghp_secret_value");
-    for (const file of readdirSync(dataDir)) {
-      expect(readFileSync(path.join(dataDir, file), "utf8")).not.toContain("ghp_secret_value");
-    }
   });
 
   it("checks after a delay and then on an interval, and stops when told", async () => {
