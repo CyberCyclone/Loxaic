@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
@@ -259,6 +259,26 @@ export default function AgentScreen() {
   // Choosing a model swaps the panel for the model list and back: the two are
   // siblings, never stacked (see RoutineModal in AGENTS.md).
   const [pickingPlanModel, setPickingPlanModel] = useState<string | null>(null);
+  // The model list opens a moment after the sheet starts closing (see
+  // onPickModel), so the timer is kept to be called off. A plan that goes away
+  // in the meantime — another thread opened, the screen left — must not have
+  // the list open over whatever is there now, nor have the choice made in it
+  // written against a plan nobody is looking at while the conversation's own
+  // model goes unchanged.
+  const pickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (pickingPlanModel === null || pickingPlanModel === openPlanId) return;
+    if (pickTimer.current) clearTimeout(pickTimer.current);
+    pickTimer.current = null;
+    setPickingPlanModel(null);
+    setModelModalOpen(false);
+  }, [pickingPlanModel, openPlanId]);
+  useEffect(
+    () => () => {
+      if (pickTimer.current) clearTimeout(pickTimer.current);
+    },
+    [],
+  );
   // Every decision is an ordinary send, in the mode the decision implies — see
   // PLAN_ACCEPTED_MESSAGE for why the words are fixed.
   const decidePlan = (text: string, decisionMode: 'planning' | 'manual' | 'auto', model: string) => {
@@ -534,7 +554,10 @@ export default function AgentScreen() {
           // After the sheet has gone, not with it: iOS will not present a
           // second modal while the first is still being dismissed, and left
           // the sheet on screen behind the model list.
-          setTimeout(() => { setModelModalOpen(true); }, SHEET_EXIT_MS);
+          pickTimer.current = setTimeout(() => {
+            pickTimer.current = null;
+            setModelModalOpen(true);
+          }, SHEET_EXIT_MS);
         }}
         onAccept={(m) => { decidePlan(PLAN_ACCEPTED_MESSAGE, m, executionModel); }}
         onSuggest={(text) => { decidePlan(text, 'planning', selectedModel); }}

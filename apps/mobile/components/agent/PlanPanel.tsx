@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as Clipboard from 'expo-clipboard';
 import { Check, ChevronDown, ClipboardList, Copy } from 'lucide-react-native';
 import { Button, ButtonText } from '@/components/ui/button';
@@ -76,6 +76,15 @@ export function PlanPanel({
   // sent against this one.
   const [suggestion, setSuggestion] = useState<{ callId: string; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // The tick goes back to the copy icon after a moment, as CodeBlock's does,
+  // so a second copy shows feedback too.
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
   const [acceptMenu, setAcceptMenu] = useState(false);
 
   const callId = plan?.callId ?? null;
@@ -116,7 +125,16 @@ export function PlanPanel({
           accessibilityLabel="Copy plan"
           onPress={() => {
             if (!plan) return;
-            void Clipboard.setStringAsync(plan.text).then(() => { setCopied(true); });
+            // A refused copy (web: the page not focused, or not a secure
+            // context) keeps the copy icon rather than rejecting unhandled.
+            // No toast: on native it would render under the sheet.
+            void Clipboard.setStringAsync(plan.text)
+              .then(() => {
+                setCopied(true);
+                if (copiedTimer.current) clearTimeout(copiedTimer.current);
+                copiedTimer.current = setTimeout(() => { setCopied(false); }, 1500);
+              })
+              .catch(() => undefined);
           }}
           className="rounded-sm p-1.5 web:hover:bg-muted/50"
         >

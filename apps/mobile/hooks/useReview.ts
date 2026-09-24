@@ -50,7 +50,7 @@ export function useReview(input: {
   // array — does not hand every card a new context value. JSON rather than a
   // joined string: a call id is the model's, and some backends put ":" in them
   // ("functions.propose_plan:0").
-  const signature = JSON.stringify([...reviewStatuses(msgs, items)]);
+  const signature = useMemo(() => JSON.stringify([...reviewStatuses(msgs, items)]), [msgs, items]);
   const statuses = useMemo(() => new Map(JSON.parse(signature) as [string, ReviewStatus | null][]), [signature]);
   const latestStatus = latest ? (statuses.get(latest.callId) ?? null) : null;
 

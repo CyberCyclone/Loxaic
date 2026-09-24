@@ -21,7 +21,10 @@ import {
   getMessageTexts,
   goToSurface,
   listConversations,
+  openThreadList,
+  selectThread,
   sendMessage,
+  startNewAgentRun,
   signUp,
   waitForRunDone,
 } from '../helpers/app.ts';
@@ -181,5 +184,35 @@ describe('planning ends in a plan or questions', () => {
     await waitForVisible('chat.message.planNudge');
     await waitForTextIn('chat.message.planNudge', 'Asked the agent to finish with a plan or questions');
     await shot('planning-prose-nudged');
+  });
+
+  it('calls off the model list when the plan it was opened for goes away first', async function () {
+    this.timeout(3 * 60_000);
+    // This thread's plan is pending; a second thread to switch to.
+    const withPlan = await newestConversationId(creds);
+    await startNewAgentRun();
+    await chooseScratchWorkspace();
+    await tap('agent.mode.manual');
+    await sendMessage('Say hello.');
+    const other = await newestConversationId(creds);
+    await waitForRunDone(creds, other);
+    await selectThread(withPlan, 'agent');
+    await tap('agent.plan.bar');
+    await waitForVisible('agent.plan.panel');
+
+    // "Run with", then another thread, inside the moment the list waits for
+    // the sheet to leave. One script, so the second tap lands in that window.
+    await openThreadList('agent');
+    await browser.execute((otherId: string) => {
+      for (const id of ['agent.plan.model', `threadList.item.${otherId}`]) {
+        (document.querySelectorAll(`[data-testid="${id}"]`)[0] as HTMLElement | undefined)?.click();
+      }
+    }, other);
+    await waitForGone('agent.plan.panel');
+    // Well past the wait: nothing asked for a model list over this thread.
+    await browser.pause(1_500);
+    if (await byTestId('models.dialog').isDisplayed().catch(() => false)) {
+      throw new Error('the model list opened over another thread after its plan had gone');
+    }
   });
 });
