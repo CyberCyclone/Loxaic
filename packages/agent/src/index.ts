@@ -1,4 +1,14 @@
-export type ToolName = "fs_read" | "fs_write" | "fs_edit" | "bash" | "grep" | "glob" | "web_fetch" | "todo_write";
+export type ToolName =
+  | "fs_read"
+  | "fs_write"
+  | "fs_edit"
+  | "bash"
+  | "grep"
+  | "glob"
+  | "web_fetch"
+  | "todo_write"
+  | "propose_plan"
+  | "ask_questions";
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
@@ -138,6 +148,97 @@ export const TOOLS: ToolDef[] = [
   },
 ];
 
+/** The wire name of `PLAN_TOOL`. The client matches it to render a plan
+ * rather than a tool card (its own copy lives in apps/mobile/lib/plan.ts). */
+export const PLAN_TOOL_NAME = "propose_plan";
+
+/**
+ * How planning mode hands its plan to the user (#199). Offered in planning
+ * mode only, and a successful call **ends the turn**: what happens next is the
+ * user's decision — accept, suggest changes, or reject — and it arrives as
+ * their next message.
+ *
+ * A tool rather than "the last message of a planning run" so the plan has an
+ * exact boundary (not whatever prose the model wrapped around it), its own
+ * call id, and survives a reload exactly as written. Kept out of `TOOLS`, so no
+ * other mode or surface can be offered it and `isToolName` keeps it off the
+ * "Allow always" list — see `resolveBuiltinTools`.
+ */
+export const PLAN_TOOL: ToolDef = {
+  name: PLAN_TOOL_NAME,
+  description:
+    "Submit your finished plan to the user for review. Pass the complete plan as Markdown; it is shown to the " +
+    "user as written, in a panel where they accept it, suggest changes, or reject it. Your turn ends when you " +
+    "call this, so call it last, once the plan is ready.",
+  parameters: {
+    type: "object",
+    properties: {
+      plan: { type: "string", description: "The complete plan, in Markdown" },
+    },
+    required: ["plan"],
+  },
+  requiresApproval: false,
+};
+
+/** The wire name of `QUESTIONS_TOOL` (the client's copy is in
+ * apps/mobile/lib/plan.ts). */
+export const QUESTIONS_TOOL_NAME = "ask_questions";
+
+/** Bounds on an `ask_questions` call, enforced by the executor before anything
+ * reaches the user — the panel shows one question per step, so a model asking
+ * twenty would be twenty steps. */
+export const QUESTION_LIMITS = { maxQuestions: 4, minOptions: 2, maxOptions: 4, maxText: 300 } as const;
+
+/**
+ * The other way planning mode can end its turn (#199): questions whose answers
+ * would change the plan, shown one at a time with options to pick and room to
+ * write another answer. Planning mode only, like `PLAN_TOOL`, and it ends the
+ * turn the same way — the answers arrive as the user's next message.
+ */
+export const QUESTIONS_TOOL: ToolDef = {
+  name: QUESTIONS_TOOL_NAME,
+  description:
+    "Ask the user questions whose answers would change your plan, instead of guessing. Each question offers " +
+    "2-4 short options; the user picks one (or several, with multiSelect) or writes their own answer. Ask at " +
+    "most 4 questions. Your turn ends when you call this; the answers arrive as the user's next message.",
+  parameters: {
+    type: "object",
+    properties: {
+      questions: {
+        type: "array",
+        description: "1-4 questions, in the order to ask them",
+        items: {
+          type: "object",
+          properties: {
+            question: { type: "string", description: "The question, as a full sentence" },
+            header: { type: "string", description: "A 1-3 word label for the question" },
+            options: {
+              type: "array",
+              description: "2-4 answers to choose from",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string", description: "The answer, in a few words" },
+                  description: { type: "string", description: "What choosing it means" },
+                },
+                required: ["label"],
+              },
+            },
+            multiSelect: { type: "boolean", description: "True if more than one option may be chosen" },
+          },
+          required: ["question", "options"],
+        },
+      },
+    },
+    required: ["questions"],
+  },
+  requiresApproval: false,
+};
+
+/** The tools that hand the turn to the user: a successful call to either ends
+ * the turn with no further model request. */
+export const HANDOVER_TOOL_NAMES: ReadonlySet<string> = new Set([PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME]);
+
 export function toolRequiresApproval(tool: ToolName, mode: PermissionMode): boolean {
   if (mode === "auto") return false;
   if (mode === "planning") {
@@ -196,8 +297,11 @@ export interface ResolvedTool {
   source: ToolSource;
 }
 
-export function resolveBuiltinTools(): ResolvedTool[] {
-  return TOOLS.map((t) => ({
+/** Every builtin a run in `mode` may be offered — `PLAN_TOOL` and
+ * `QUESTIONS_TOOL` in planning mode only. Write tools are still included here; hiding them from a planning run
+ * is the toolset's job, since it has MCP tools to judge the same way. */
+export function resolveBuiltinTools(mode?: PermissionMode): ResolvedTool[] {
+  return (mode === "planning" ? [...TOOLS, PLAN_TOOL, QUESTIONS_TOOL] : TOOLS).map((t) => ({
     name: t.name,
     description: t.description,
     parameters: t.parameters,

@@ -2,6 +2,7 @@ import { promises as dns } from "node:dns";
 import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
+import { QUESTION_LIMITS } from "@loxaic/agent";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
 const SANDBOX_TOOLS: ToolName[] = ["fs_read", "fs_write", "fs_edit", "bash", "grep", "glob"];
@@ -90,12 +91,79 @@ export async function executeTool(
     switch (tool) {
       case "web_fetch": return await runWebFetch(args);
       case "todo_write": return runTodoWrite(args);
+      case "propose_plan": return runProposePlan(args);
+      case "ask_questions": return runAskQuestions(args);
       default:
         return { ok: false, output: `Unknown tool: ${tool}` };
     }
   } catch (err) {
     return { ok: false, output: `Error: ${(err as Error).message}` };
   }
+}
+
+// ── Plan ──────────────────────────────────────────────────
+
+/**
+ * What the model reads once its plan has been handed over (#199). Nothing is
+ * executed — the plan is in the call's own arguments, which is what the client
+ * renders — and the engine ends the turn after a successful call, so the model
+ * reads this beside the user's decision, on its next turn. Written for that
+ * moment, and fixed: it is replayed in every later prompt.
+ */
+export const PLAN_SUBMITTED = "The plan was shown to the user for review.";
+
+function runProposePlan(args: Record<string, unknown>): ToolResult {
+  // Refused with a reason rather than accepted: an empty plan would give the
+  // user a panel with nothing to decide on, and a refusal does not end the
+  // turn, so the model gets to call again with a real one.
+  if (typeof args.plan !== "string" || args.plan.trim() === "") {
+    return { ok: false, output: "plan must be a non-empty Markdown string." };
+  }
+  return { ok: true, output: PLAN_SUBMITTED };
+}
+
+/** What the model reads once its questions have been handed over — see
+ * PLAN_SUBMITTED for why it is fixed. */
+export const QUESTIONS_SUBMITTED = "The questions were shown to the user.";
+
+/**
+ * Validates an `ask_questions` call. Every refusal says what to fix: it does
+ * not end the turn, so the model calls again, and a vague refusal gets the same
+ * malformed call back. The client renders exactly what passes, so anything it
+ * could not show well (no options, twenty questions, an essay for a label) is
+ * refused here rather than worked around there.
+ */
+export function questionsProblem(args: Record<string, unknown>): string | null {
+  const { maxQuestions, minOptions, maxOptions, maxText } = QUESTION_LIMITS;
+  const qs = args.questions;
+  if (!Array.isArray(qs) || qs.length === 0) return "questions must be a non-empty array.";
+  if (qs.length > maxQuestions) return `Ask at most ${String(maxQuestions)} questions at once.`;
+  for (const [i, q] of qs.entries()) {
+    const n = `Question ${String(i + 1)}`;
+    if (typeof q !== "object" || q === null) return `${n} must be an object.`;
+    const { question, options, header, multiSelect } = q as Record<string, unknown>;
+    if (typeof question !== "string" || question.trim() === "") return `${n} needs a non-empty question.`;
+    if (question.length > maxText) return `${n} is longer than ${String(maxText)} characters.`;
+    if (header !== undefined && typeof header !== "string") return `${n}'s header must be a string.`;
+    if (multiSelect !== undefined && typeof multiSelect !== "boolean") return `${n}'s multiSelect must be true or false.`;
+    if (!Array.isArray(options) || options.length < minOptions || options.length > maxOptions) {
+      return `${n} needs ${String(minOptions)}-${String(maxOptions)} options.`;
+    }
+    for (const o of options as unknown[]) {
+      const { label, description } = (o ?? {}) as Record<string, unknown>;
+      if (typeof label !== "string" || label.trim() === "") return `${n} has an option without a label.`;
+      if (label.length > maxText || (typeof description === "string" && description.length > maxText)) {
+        return `${n} has an option longer than ${String(maxText)} characters.`;
+      }
+      if (description !== undefined && typeof description !== "string") return `${n} has a description that is not a string.`;
+    }
+  }
+  return null;
+}
+
+function runAskQuestions(args: Record<string, unknown>): ToolResult {
+  const problem = questionsProblem(args);
+  return problem ? { ok: false, output: problem } : { ok: true, output: QUESTIONS_SUBMITTED };
 }
 
 // ── Filesystem ────────────────────────────────────────────

@@ -66,7 +66,7 @@ export async function buildToolset(
   },
 ): Promise<Toolset> {
   const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
-  const resolved = resolveBuiltinTools().map((t) =>
+  const resolved = resolveBuiltinTools(opts.mode).map((t) =>
     allowlist.has(t.name) ? { ...t, requiresApproval: false } : t,
   );
   const mcpEntries = new Map<string, McpToolEntry>();

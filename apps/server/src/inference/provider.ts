@@ -1,4 +1,5 @@
 import type { PromptProgress } from "@loxaic/types";
+import { PLAN_REQUIRED_NUDGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
 import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
@@ -151,8 +152,13 @@ export interface StreamOptions {
    * schemas into the prompt's system region, so dropping them would change the
    * prefix and cost a full re-evaluation of the whole conversation on the one
    * request that is supposed to wrap things up cheaply.
+   *
+   * `"required"` is what a planning turn that answered in prose is re-asked
+   * with (#199): it must call a tool — in practice, propose_plan or
+   * ask_questions. Sent on that one request only, so every other request is
+   * unchanged. OpenAI, llama.cpp and vLLM honour it.
    */
-  toolChoice?: "auto" | "none";
+  toolChoice?: "auto" | "none" | "required";
   /**
    * Ask the backend to report prompt-evaluation progress on the stream
    * (llama.cpp's `return_progress`). The caller decides, because only it knows
@@ -256,7 +262,50 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promis
 const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
-const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
+/**
+ * The mock's plan (#199), built from the prompt it answers so a revision is
+ * visibly a different plan from the one it revises, and long enough — forty
+ * lines — that the plan panel's body has to scroll on a short window, which is
+ * what its reachability check needs.
+ */
+function mockPlan(prompt: string): string {
+  const steps = Array.from({ length: 36 }, (_, i) => `${String(i + 1)}. Step ${String(i + 1)} of the mock plan.`);
+  return ["## Mock plan", "", `Asked: ${prompt}`, "", ...steps].join("\n");
+}
+
+/**
+ * The mock's questions (#199): two, the second multi-select, so the panel's
+ * steps, both kinds of choice and "Other" are all exercised by one prompt.
+ */
+const MOCK_QUESTIONS = {
+  questions: [
+    {
+      question: "Which part should the plan cover first?",
+      header: "Scope",
+      options: [
+        { label: "The API", description: "Server routes and their tests" },
+        { label: "The UI", description: "Screens and components" },
+      ],
+    },
+    {
+      question: "Which checks should the plan include?",
+      header: "Checks",
+      multiSelect: true,
+      options: [{ label: "Unit tests" }, { label: "End-to-end tests" }, { label: "Manual QA" }],
+    },
+  ],
+};
+
+/** A planning prompt the mock answers in prose — the one way to drive the
+ * server's "finish with a plan or questions" nudge (#199). */
+const MOCK_PROSE_MATCH = /\banswer in prose\b/i;
+
+const MOCK_TOOL_TRIGGERS: {
+  match: RegExp;
+  name: string;
+  /** Fixed arguments, or arguments built from the prompt. */
+  args: Record<string, unknown> | ((prompt: string) => Record<string, unknown>);
+}[] = [
   // MCP entries first — a trigger only fires when the tool is actually in
   // options.tools, so these double as a wiring test of the MCP registry.
   { match: /\bmcp echo\b/i, name: "mockmcp__echo", args: { text: "hello from mcp" } },
@@ -269,6 +318,14 @@ const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, un
   // the default policy applied (no approval asked) and that the connection's
   // token reached the server.
   { match: /\bgithub who am i\b/i, name: "github__get_me", args: {} },
+  // Planning mode's hand-off. Before the `plan` trigger below, which would
+  // otherwise take the same prompt for todo_write; only planning mode offers
+  // propose_plan, so everywhere else this falls through to that one. Neither
+  // plan-decision message matches it.
+  { match: /\bpropose (?:a|the) plan\b/i, name: "propose_plan", args: (prompt) => ({ plan: mockPlan(prompt) }) },
+  // Questions instead of a plan — planning mode only offers the tool, so
+  // this falls through everywhere else.
+  { match: /\bask me\b|\bquestions?\b/i, name: "ask_questions", args: MOCK_QUESTIONS },
   { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
   // Object keys deliberately NOT in an order Postgres jsonb preserves: it
   // re-sorts by key length then bytes, so these come back as id/text/status.
@@ -322,6 +379,24 @@ async function* mockStream(
   const noTools = options.toolChoice === "none";
   const scenarioDecision = noTools ? null : scenarioDecisionFor(prompt, toolNames, toolStepIndex);
 
+  // Planning mode ends every turn in a plan or questions (#199), whatever was
+  // asked, the way a real model given the planning prompt does — a trigger
+  // still runs first (a model looks around before it plans), and the turn
+  // then ends in a plan rather than "[Mock] Done". The one exception is the
+  // prose prompt, answered in prose until tool_choice says it may not be.
+  const planning = toolNames.has("propose_plan");
+  const planningFinish = (): { name: string; args: Record<string, unknown> }[] => {
+    if (!planning) return [];
+    if (options.toolChoice !== "required" && MOCK_PROSE_MATCH.test(prompt)) return [];
+    // After the nudge the prompt is the nudge itself; plan from what was
+    // actually asked, the user message before it.
+    const asked =
+      prompt === PLAN_REQUIRED_NUDGE
+        ? textOfContent(messages.slice(0, lastUserIndex).filter((m) => m.role === "user").at(-1)?.content)
+        : prompt;
+    return [{ name: "propose_plan", args: { plan: mockPlan(asked) } }];
+  };
+
   // A list, because a scenario step may carry several calls for one assistant
   // message — what a real model does routinely, and what the tool loop's
   // per-call abort check needs in order to be testable at all (#113).
@@ -330,10 +405,17 @@ async function* mockStream(
     : scenarioDecision?.type === "step"
       ? scenarioDecision.calls.map((c) => ({ name: c.tool, args: c.args }))
       : alreadyRanTools
-        ? []
+        ? planningFinish()
         : (() => {
+            if (planning && MOCK_PROSE_MATCH.test(prompt) && options.toolChoice !== "required") return [];
+            // The nudge's own words ("your plan") would match the todo trigger;
+            // it is asking for the plan, so that is what it gets.
+            if (planning && prompt === PLAN_REQUIRED_NUDGE) return planningFinish();
+            // Answers are what the plan was waiting for, and they mention
+            // "questions" — which would otherwise ask the same ones again.
+            if (planning && prompt.startsWith(QUESTIONS_ANSWERED_PREFIX)) return planningFinish();
             const t = MOCK_TOOL_TRIGGERS.find((x) => toolNames.has(x.name) && x.match.test(prompt));
-            return t ? [{ name: t.name, args: t.args }] : [];
+            return t ? [{ name: t.name, args: typeof t.args === "function" ? t.args(prompt) : t.args }] : planningFinish();
           })();
 
   // A prompt that takes long enough to still be running when the next one

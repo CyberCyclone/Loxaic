@@ -27,7 +27,8 @@ export const md = {
   codespan: 'bg-code rounded-sm px-1 text-[13px]',
   link: 'text-link underline',
   listRow: 'items-start',
-  listMarker: 'w-5 text-muted-foreground',
+  // No fixed width: the column is sized per list (markerWidth in blocks.tsx).
+  listMarker: 'shrink-0 text-muted-foreground',
   listContent: 'flex-1',
   blockquote: 'border-l-2 border-border pl-3 my-1',
   tableHeadRow: 'border-b border-border',

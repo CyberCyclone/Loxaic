@@ -23,6 +23,9 @@ export function ModeSelector({ mode, onChange }: ModeSelectorProps) {
         <Pressable
           key={m.value}
           testID={`agent.mode.${m.value}`}
+          // Says which mode is on to a screen reader, not only by colour —
+          // and to the e2e, which checks the mode an accepted plan chose.
+          aria-selected={mode === m.value}
           onPress={() => { onChange(m.value); }}
           className={`rounded-full px-2.5 py-1 ${mode === m.value ? 'bg-primary/15' : 'bg-muted'}`}
         >

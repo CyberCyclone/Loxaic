@@ -10,7 +10,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Markdown } from '@/components/markdown/Markdown';
 import { ThinkingBlock } from './ThinkingBlock';
-import { ToolCallCard } from './ToolCallCard';
+import { ToolOrPlanCard } from './PlanCard';
 import { LiveElapsed } from './LiveElapsed';
 import { CompactionCard } from './CompactionCard';
 import { AttachmentThumbs } from './AttachmentThumbs';
@@ -19,6 +19,7 @@ import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
 import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
+import { PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import type { Message as MessageType } from '@/lib/types';
 import { displayModelRef } from '@loxaic/types';
 
@@ -97,6 +98,18 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
     );
   }
 
+  // The server's one reminder, in planning mode, that a turn ends in a plan or
+  // questions (#199). Nobody typed it, so it is not a bubble.
+  if (msg.role === 'user' && msg.text === PLAN_REQUIRED_NUDGE) {
+    return (
+      <Box testID="chat.message.planNudge" className="px-4 py-2">
+        <Text size="xs" className="text-center italic text-muted-foreground">
+          Asked the agent to finish with a plan or questions
+        </Text>
+      </Box>
+    );
+  }
+
   const isUser = msg.role === 'user';
 
   return (
@@ -129,7 +142,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
             </HStack>
 
             {msg.thinking && <ThinkingBlock text={msg.thinking} live={liveThinking} since={elapsedSince} />}
-            {msg.tools?.map((tool, i) => <ToolCallCard key={i} tool={tool} />)}
+            {msg.tools?.map((tool, i) => <ToolOrPlanCard key={i} tool={tool} />)}
             {isUser && !!msg.attachments?.length && (
               <AttachmentThumbs
                 attachments={msg.attachments}

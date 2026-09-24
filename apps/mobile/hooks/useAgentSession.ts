@@ -570,9 +570,22 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     };
   }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
 
+  const handleModeChange = useCallback((next: PermissionMode) => {
+    setModeState(next);
+    if (wsRef.current) setAgentMode(wsRef.current, next);
+  }, []);
+
+  /**
+   * `modeOverride` sends in a mode other than the selector's, and moves the
+   * selector to it: a plan decision carries its own mode (accepting leaves
+   * planning; a suggestion or a rejection stays in it), and the selector must
+   * then say what the run is actually doing (#199).
+   */
   const handleSend = useCallback(
-    (text: string, model: string, attachments?: AttachmentRef[]) => {
+    (text: string, model: string, attachments?: AttachmentRef[], modeOverride?: PermissionMode) => {
       if (!wsRef.current) return;
+      const sendMode = modeOverride ?? mode;
+      if (modeOverride && modeOverride !== mode) handleModeChange(modeOverride);
 
       const convId = activeIdRef.current;
       const localMsgId = `lm${String(Date.now())}`;
@@ -600,7 +613,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         if (chosen.kind === 'scratch') {
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
-          sendAgentMessage(wsRef.current, text, mode, undefined, undefined, model, refs);
+          sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs);
         } else {
           // Anything else is created first, so the server can validate the
           // choice (does the repo exist under your token?) and refuse it
@@ -615,7 +628,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           createConversation({ kind: 'agent', workspace: chosen })
             .then((created) => {
               const ws = wsRef.current;
-              const sent = ws !== null && sendAgentMessage(ws, text, mode, created.id, undefined, model, refs);
+              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs);
               if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
             })
             .catch((err: unknown) => {
@@ -633,10 +646,10 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
               : r,
           ),
         );
-        sendAgentMessage(wsRef.current, text, mode, convId, undefined, model, refs);
+        sendAgentMessage(wsRef.current, text, sendMode, convId, undefined, model, refs);
       }
     },
-    [mode, setActiveId, showToast],
+    [mode, handleModeChange, setActiveId, showToast],
   );
 
   const handleStop = useCallback(() => {
@@ -670,11 +683,6 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     const id = activeIdRef.current;
     if (!wsRef.current || !id) return;
     sendCommand(wsRef.current, name, id, model, args || undefined);
-  }, []);
-
-  const handleModeChange = useCallback((next: PermissionMode) => {
-    setModeState(next);
-    if (wsRef.current) setAgentMode(wsRef.current, next);
   }, []);
 
   const handleApprove = useCallback((callId: string) => {

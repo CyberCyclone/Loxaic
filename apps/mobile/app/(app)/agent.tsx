@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
@@ -35,11 +35,24 @@ import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useGitPanel } from '@/hooks/useGitPanel';
 import { canEdit, isOwner } from '@/lib/types';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
+import { PlanReviewContext, type PlanReview } from '@/components/chat/PlanCard';
+import { PlanPanel } from '@/components/agent/PlanPanel';
+import { PlanReviewBar } from '@/components/agent/PlanReviewBar';
+import { QuestionsPanel } from '@/components/agent/QuestionsPanel';
+import { useReview } from '@/hooks/useReview';
+import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode, formatAnswers, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
+
+/** Stable, so a screen with no run open does not hand useReview a new
+ * array — and so a new list of plans — on every render. */
+const NO_MESSAGES: never[] = [];
+
+/** Long enough for the plan sheet's exit animation (200ms) to finish. */
+const SHEET_EXIT_MS = 300;
 
 export default function AgentScreen() {
   const connection = useConnection();
@@ -212,6 +225,69 @@ export default function AgentScreen() {
 
   const deletingRun = runs.find((r) => r.id === deletingId) ?? null;
 
+  // ── Plans (#199) ─────────────────────────────────────────
+  // Why a panel's buttons are not offered right now, or null when they are —
+  // worded for what the panel is holding, a plan or questions.
+  const blockedReason = (what: 'decide on this plan' | 'answer these questions'): string | null =>
+    activeRun && !canEdit(activeRun)
+      ? `This run is shared with you for viewing — only the people who can send in it can ${what}.`
+      : connection !== 'online'
+        ? `You're offline — you can ${what} once your server is reachable.`
+        : busy
+          ? 'The agent is still working in this conversation.'
+          : null;
+  const planReview = useReview({
+    convId: activeId,
+    msgs: activeRun?.msgs ?? NO_MESSAGES,
+    busy,
+    canDecide: Boolean(activeRun && canEdit(activeRun)) && connection === 'online',
+  });
+  const planContext = useMemo<PlanReview>(
+    () => ({ open: planReview.openItem, statusOf: planReview.statusOf }),
+    [planReview.openItem, planReview.statusOf],
+  );
+  const planMode = acceptMode(settings.defaultMode);
+  // The model Accept runs the work on — the conversation's own until someone
+  // picks another in the panel. Keyed to the plan, so a choice made for one
+  // plan never carries silently onto the next.
+  const [planModelChoice, setPlanModelChoice] = useState<{ callId: string; model: string } | null>(null);
+  const openPlan = planReview.open?.kind === 'plan' ? planReview.open : null;
+  const openQuestions = planReview.open?.kind === 'questions' ? planReview.open : null;
+  const openPlanId = openPlan?.callId ?? null;
+  const executionModel =
+    (openPlanId !== null && planModelChoice?.callId === openPlanId ? planModelChoice.model : undefined) ?? selectedModel;
+  // Choosing a model swaps the panel for the model list and back: the two are
+  // siblings, never stacked (see RoutineModal in AGENTS.md).
+  const [pickingPlanModel, setPickingPlanModel] = useState<string | null>(null);
+  // The model list opens a moment after the sheet starts closing (see
+  // onPickModel), so the timer is kept to be called off. A plan that goes away
+  // in the meantime — another thread opened, the screen left — must not have
+  // the list open over whatever is there now, nor have the choice made in it
+  // written against a plan nobody is looking at while the conversation's own
+  // model goes unchanged.
+  const pickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (pickingPlanModel === null || pickingPlanModel === openPlanId) return;
+    if (pickTimer.current) clearTimeout(pickTimer.current);
+    pickTimer.current = null;
+    setPickingPlanModel(null);
+    setModelModalOpen(false);
+  }, [pickingPlanModel, openPlanId]);
+  useEffect(
+    () => () => {
+      if (pickTimer.current) clearTimeout(pickTimer.current);
+    },
+    [],
+  );
+  // Every decision is an ordinary send, in the mode the decision implies — see
+  // PLAN_ACCEPTED_MESSAGE for why the words are fixed.
+  const decidePlan = (text: string, decisionMode: 'planning' | 'manual' | 'auto', model: string) => {
+    planReview.close();
+    if (model !== selectedModel && activeId) setRunModel(activeId, model);
+    bumpRecentModel(model);
+    handleSend(text, model, undefined, decisionMode);
+  };
+
   return (
     <HStack className="h-full flex-1">
       {wide && threadList}
@@ -254,10 +330,21 @@ export default function AgentScreen() {
                   <Icon as={MessagesSquare} size="sm" className="text-foreground" />
                 </Pressable>
               )}
-              {/* Owner-only, and only with a run to act on — its one item is
-                  Delete, which the server refuses for anyone else. */}
-              {activeRun && isOwner(activeRun) && (
-                <ConversationMenu area="agent" onDelete={() => { setDeletingId(activeRun.id); }} />
+              {/* Each item is gated on its own: View plan for anyone who can
+                  see the run, Delete for its owner only. */}
+              {activeRun && (
+                <ConversationMenu
+                  area="agent"
+                  onDelete={isOwner(activeRun) ? () => { setDeletingId(activeRun.id); } : undefined}
+                  review={
+                    planReview.latest
+                      ? {
+                          kind: planReview.latest.kind,
+                          open: () => { if (planReview.latest) planReview.openItem(planReview.latest.callId); },
+                        }
+                      : undefined
+                  }
+                />
               )}
             </HStack>
           }
@@ -323,30 +410,40 @@ export default function AgentScreen() {
         >
           <HStack className="flex-1 overflow-hidden">
             <VStack className="flex-1">
-              <AgentStream
-                run={activeRun}
-                state={runState}
-                mode={mode}
-                iteration={iteration}
-                loadingModel={loadingModel}
-                promptStats={promptStats}
-                queuePosition={queuePosition}
-                responseStartedAt={responseStartedAt}
-                pendingApproval={pendingApproval}
-                pendingCheckin={pendingCheckin}
-                history={history}
-                onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
-                onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
-                onCheckinContinue={() => { handleSteps('continue'); }}
-                onCheckinAnswer={() => { handleSteps('answer'); }}
-                onCheckinStop={handleStop}
-              />
+              <PlanReviewContext.Provider value={planContext}>
+                <AgentStream
+                  run={activeRun}
+                  state={runState}
+                  mode={mode}
+                  iteration={iteration}
+                  loadingModel={loadingModel}
+                  promptStats={promptStats}
+                  queuePosition={queuePosition}
+                  responseStartedAt={responseStartedAt}
+                  pendingApproval={pendingApproval}
+                  pendingCheckin={pendingCheckin}
+                  history={history}
+                  onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
+                  onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
+                  onCheckinContinue={() => { handleSteps('continue'); }}
+                  onCheckinAnswer={() => { handleSteps('answer'); }}
+                  onCheckinStop={handleStop}
+                />
+              </PlanReviewContext.Provider>
               <TerminalPanel
                 conversationId={activeRun?.id ?? null}
                 token={token}
                 open={terminalOpen && !!activeRun}
                 onClose={() => { setTerminalOpen(false); }}
               />
+              {planReview.showBar && planReview.latest && (
+                <PlanReviewBar
+                  item={planReview.latest}
+                  status={planReview.latestStatus}
+                  busy={busy}
+                  onOpen={() => { if (planReview.latest) planReview.openItem(planReview.latest.callId); }}
+                />
+              )}
               <HStack className="items-center justify-between pr-3">
                 <ModeSelector mode={mode} onChange={handleModeChange} />
                 <WorkspacePill
@@ -444,10 +541,48 @@ export default function AgentScreen() {
           if (id) void handleDelete(id);
         }}
       />
+      <PlanPanel
+        plan={openPlan?.plan ?? null}
+        hidden={pickingPlanModel !== null}
+        status={openPlan ? (planReview.openStatus as PlanStatus | null) : null}
+        blockedReason={blockedReason('decide on this plan')}
+        defaultMode={planMode}
+        executionModelName={executionModel ? getName(executionModel) : 'Select model'}
+        onPickModel={() => {
+          if (!openPlanId) return;
+          setPickingPlanModel(openPlanId);
+          // After the sheet has gone, not with it: iOS will not present a
+          // second modal while the first is still being dismissed, and left
+          // the sheet on screen behind the model list.
+          pickTimer.current = setTimeout(() => {
+            pickTimer.current = null;
+            setModelModalOpen(true);
+          }, SHEET_EXIT_MS);
+        }}
+        onAccept={(m) => { decidePlan(PLAN_ACCEPTED_MESSAGE, m, executionModel); }}
+        onSuggest={(text) => { decidePlan(text, 'planning', selectedModel); }}
+        onReject={() => { decidePlan(PLAN_REJECTED_MESSAGE, 'planning', selectedModel); }}
+        onClose={planReview.close}
+      />
+      <QuestionsPanel
+        questions={openQuestions?.questions ?? null}
+        status={openQuestions ? (planReview.openStatus as QuestionsStatus | null) : null}
+        blockedReason={blockedReason('answer these questions')}
+        // Answers are one message, sent in planning: the agent is still
+        // refining the plan, and the reply it owes is a plan or more questions.
+        onSubmit={(answers) => {
+          if (openQuestions) decidePlan(formatAnswers(openQuestions.questions.questions, answers), 'planning', selectedModel);
+        }}
+        onClose={planReview.close}
+      />
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal
         open={modelModalOpen}
-        onClose={() => { setModelModalOpen(false); }}
+        onClose={() => {
+          setModelModalOpen(false);
+          // Back to the plan the model was being chosen for.
+          setPickingPlanModel(null);
+        }}
         models={models}
         loading={modelsLoading}
         error={modelsError}
@@ -458,10 +593,13 @@ export default function AgentScreen() {
           // "what was I using?" rather than "what did this tab see?".
           void refreshRecentModels();
         }}
-        selectedModel={selectedModel}
+        selectedModel={pickingPlanModel ? executionModel : selectedModel}
         recentModels={recentModels}
         onSelect={(id) => {
-          if (activeId) setRunModel(activeId, id);
+          // Choosing for a plan is choosing what Accept will run on, not
+          // changing the conversation's model before anyone has accepted.
+          if (pickingPlanModel) setPlanModelChoice({ callId: pickingPlanModel, model: id });
+          else if (activeId) setRunModel(activeId, id);
           else setPendingModel(id);
         }}
         thinkingLevel={thinkingLevel}

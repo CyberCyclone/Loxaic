@@ -67,6 +67,43 @@ export interface CheckinDecisionNote {
 export const CHECKIN_ANSWER_NUDGE =
   "Please stop using tools and give your best final answer now from what you have so far.";
 
+/**
+ * What a planning run's plan panel sends (#199). Each decision is an ordinary
+ * message from the person who pressed the button — accepting starts a run in a
+ * working mode, a suggestion or a rejection stays in planning — so the
+ * decision is in the transcript for every device and every reload, and a
+ * plan's status is read back from the reply that follows it.
+ *
+ * Fixed text, never interpolated, for that reading back: the client matches on
+ * these exact strings. Rejecting costs one short model reply, deliberately —
+ * without one, the next message would put two user rows in a row, which some
+ * chat templates refuse. The rejection asks for that reply to be questions,
+ * agreeing with the planning prompt: it used to say "wait for my next
+ * message", which a model obeys with prose, and so every rejection also
+ * earned the prose nudge and a second request before the questions came.
+ */
+export const PLAN_ACCEPTED_MESSAGE = "I accept this plan. Go ahead and implement it.";
+export const PLAN_REJECTED_MESSAGE = "I'm rejecting this plan — don't implement it. Ask me what I'd like instead.";
+
+/**
+ * Persisted as a user row when a planning turn answers in prose (#199): the
+ * server asks, once, for a plan or questions, and sends that one request with
+ * `tool_choice: "required"`. Fixed text, never interpolated, for the reason
+ * CHECKIN_ANSWER_NUDGE is — the next turn has to replay it byte for byte —
+ * and so the client can render it as a notice rather than as something the
+ * user typed. Its row's author is null: nobody typed it.
+ */
+export const PLAN_REQUIRED_NUDGE =
+  "Finish by calling propose_plan with your plan, or ask_questions if you need answers from me first.";
+
+/**
+ * The first line of the message the questions panel sends (#199). The rest is
+ * one numbered line per question with its answer; the client builds it
+ * (formatAnswers in apps/mobile/lib/plan.ts) and reads it back to render a
+ * question set as answered.
+ */
+export const QUESTIONS_ANSWERED_PREFIX = "Answers to your questions:";
+
 /** An uploaded file attached to a user message. `ref` is the id returned by
  * `POST /v1/files`; `mime` and `name` are advisory for rendering (the server's
  * DB row is the authority for both). */

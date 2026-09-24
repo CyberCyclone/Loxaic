@@ -1,11 +1,11 @@
-import { TOOLS } from "@loxaic/agent";
+import { PLAN_TOOL, QUESTIONS_TOOL, TOOLS } from "@loxaic/agent";
 import { MAX_TOOL_NAME } from "./sanitize.ts";
 
 /** Server slugs namespace tool names as `slug__tool`. No builtin tool name
  * contains a double underscore, so namespaced names can never shadow one. */
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-const BUILTIN_NAMES = new Set<string>(TOOLS.map((t) => t.name));
+const BUILTIN_NAMES = new Set<string>([...TOOLS, PLAN_TOOL, QUESTIONS_TOOL].map((t) => t.name));
 
 export function isValidSlug(slug: string): boolean {
   // Rejecting builtin names as slugs is defense in depth on top of the

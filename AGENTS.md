@@ -1147,6 +1147,114 @@ replies.
   the device clock, so a fast phone shows less time than the server is honouring. Unreachable
   today (`delivery.ts` always stamps it), but the comment once claimed the opposite of the code.
 
+### Plan review (planning mode's panel, #199)
+
+- **A plan is a `propose_plan` call, and a successful one ends the turn.** The tool
+  (`PLAN_TOOL` in `packages/agent`) is kept out of `TOOLS` and appended by
+  `resolveBuiltinTools(mode)` in planning mode only, so chat, routines and the working modes are
+  never offered it and `isToolName` keeps it off the "Allow always" list. It runs in-process — a
+  planning run that only plans never creates a sandbox — and the engine ends the turn after the
+  tool row, before the check-in block, through `endTurnComplete(toolMsgId, true)` (the flag
+  skips the second `message.end`) and `break`, so auto-compaction still runs. An empty plan is
+  `ok: false` with a reason and the loop continues; a call after a successful plan in the same
+  message is recorded not run (`HANDOVER_ALREADY_SUBMITTED`), so no approval can appear after a
+  plan has been handed over.
+- **Planning ends every turn in a plan or questions, whatever was asked.** `ask_questions`
+  (`QUESTIONS_TOOL`, planning only, same in-process shape) is the other hand-off, and both are in
+  `HANDOVER_TOOL_NAMES` — a successful call to either ends the turn. The questions are validated
+  (`questionsProblem`: 1–4 questions, 2–4 options each) so a malformed call is `ok: false` and the
+  model retries; "Other" is the client's, never the model's. The prompt asks for one of the two on
+  every turn, including a request that is not a coding task.
+- **A planning turn that ends in prose is nudged once.** The engine ends the prose message,
+  persists `PLAN_REQUIRED_NUDGE` as a user row (`authorUserId: null`, like the check-in nudge —
+  a persisted row so the next turn replays it byte for byte), and asks again with
+  `tool_choice: "required"`. A second prose answer ends the turn and is shown as it is. Never on
+  an answer-now turn, which asked for words. `required` is sent on that one request only — the
+  flag is cleared as the request goes out, because a nudged request may call a read tool
+  instead of handing over, and a flag left set forced a tool on every request after it, so the
+  model could never answer in words and worked on, holding the slot, until the step check-in
+  (found in review; `planning-handover.test.ts` has the detour case). Every ordinary request is
+  unchanged; checked against LM Studio (it called `propose_plan` when
+  asked for words), and llama.cpp, vLLM and OpenAI document it. The client renders the row as a
+  notice (`chat.message.planNudge`), not a bubble nobody typed.
+- **Answers are one message, sent in planning** (`formatAnswers`: `QUESTIONS_ANSWERED_PREFIX`,
+  then each question with its chosen labels and any "Other" text). A question set is `answered`
+  once any user row follows it. A rejected plan is answered with questions about what to do
+  instead, never with another plan — and `PLAN_REJECTED_MESSAGE` itself asks for them. It used to
+  say "wait for my next message", which contradicts the prompt: a model that obeys it answers in
+  prose, which costs every rejection the nudge and a second request. The mock hid that by
+  special-casing the rejection text; it now reads the rejection's own words ("Ask me…") like any
+  other prompt, so the wording is what the test checks.
+- **A panel's draft is keyed to its call id, never reset by an effect.** The panels stay mounted
+  with a null item while closed, so an effect on the call id fired on every close and threw away
+  half-answered questions or a half-typed suggestion. State that carries the call id it belongs
+  to survives closing and reopening the same item, and reads as empty on the first frame of a
+  different one. Statuses come from one pass over the thread (`reviewStatuses`) — they are
+  recomputed on every streamed token.
+- **The turn ends rather than blocking, deliberately.** A run parked on the plan would hold the
+  conversation's run lock (no sending while reading), lose the plan with the in-memory registry
+  on a restart (its `tool_call` would have no result, and `loadHistory` strips it), need a
+  timeout no plan review fits, and still need a new run for Accept — a run's mode, system prompt
+  and toolset are fixed for its life, and switching them mid-run breaks the prefix invariant
+  `prompt-prefix.test.ts` holds.
+- **Every decision is an ordinary message.** Accept sends `PLAN_ACCEPTED_MESSAGE` in the Default
+  mode from Settings (Manual when that is Planning) — named on the button — or in whichever mode
+  its dropdown picks, on the model chosen in the panel. The dropdown is a list *inside the sheet*,
+  not a floating `Menu`: a second native overlay over the sheet is what stranded it on iOS; a
+  suggestion is the typed text, and Reject `PLAN_REJECTED_MESSAGE`, both in planning. The texts
+  are fixed (`packages/types`) because the client reads a plan's status back from the reply
+  after it (`lib/plan.ts`), which is what makes the status survive a reload and agree across
+  devices with nothing stored. Reject costs one short model reply: without one, the next message
+  would put two user rows in a row, which some chat templates refuse.
+- **Only `ok === true` counts as a plan** on the client — a refused, stopped, answer-now-skipped
+  or unknown-tool call has `ok: false`, and one with no result yet has been shown to no one.
+- **Switching mode costs one full prompt re-evaluation.** Planning and the working modes differ
+  in system prompt and tool list, so Accept's first request re-evaluates the prompt. That was
+  already true of pressing the mode selector; the plan panel just does it for you.
+- **The panel opens by itself for the newest plan or question set while it is pending**
+  (`useReview`), for someone who can decide, with nothing running — once per item per session.
+  Closing it, or sending a suggestion, leaves `PlanReviewBar` above the toolbar until the plan is
+  accepted or rejected or the questions answered; the ⋮ item reads "View plan" or "View
+  questions", following the newest. Viewers get the bar, never a sheet over the thread. Both
+  panels share `ReviewSheet`, which holds the sizing and keyboard lessons below — a second copy
+  would have to learn them again.
+- **The mock plans in planning whatever is asked** (`planningFinish` in `inference/provider.ts`):
+  a trigger's tool runs first and the turn then ends in `propose_plan` instead of "[Mock] Done";
+  "ask me"/"questions" asks `MOCK_QUESTIONS` (which is also how a rejection gets its questions);
+  answers and the nudge go straight to a plan;
+  "answer in prose" answers in prose until `tool_choice` is `required`, which is how the nudge is
+  tested end to end.
+- **The model picker is a sibling of the panel, never stacked on it**: choosing swaps the sheet
+  for `ModelModal` and back, the rule `RoutineModal` set. The model list opens `SHEET_EXIT_MS`
+  *after* the sheet starts closing — iOS will not present a second modal while the first is still
+  being dismissed, and left the sheet on screen behind the list. A model chosen for a plan is keyed
+  to that plan's call id, so it never carries onto the next one, and it becomes the conversation's
+  model only when Accept is pressed.
+- **The sheet's height is set on its content, never by a class on `ActionsheetContent`.** On
+  native the vendored sheet appends `height: snapPoints ? … : undefined` *after* the caller's
+  styles, and `undefined` wins the flatten, so an `h-[92%]` class was erased on iOS and Android:
+  the sheet sized to the plan and pushed the whole footer off the screen — while web, which keeps
+  the class, passed its e2e. `snapPoints` is no fix either: it reads the window height once, at
+  module load, so a resized browser keeps the old one. `ReviewSheet` sizes an inner view from
+  `useWindowDimensions()` and the safe-area insets instead. **Found only on the simulator.**
+- **The keyboard is padded for by hand.** The sheet's overlay is out of reach of the screen's
+  `KeyboardAvoidingView`, and one inside the sheet mis-measures it (the sheet is placed by a
+  transform), leaving the suggestion box under the keyboard on Android. `useKeyboardHeight`
+  pads the content instead — less the bottom inset on iOS, whose keyboard height includes it, and
+  whole on Android, whose does not. **Found only on the emulator**; the simulator uses the Mac's
+  keyboard, so the iOS side of this is unverified by eye.
+- **Markdown list markers are sized per list** (`markerWidth` in `components/markdown/blocks.tsx`).
+  A fixed `w-5` fitted "9." and not "10.": on native the dot wrapped onto its own line, on web it
+  ran into the text. Plans are numbered lists, which is how it surfaced; chat had it too.
+- **Answer-now in planning mode still produces prose**: `tool_choice: "none"` forbids the tool,
+  and the nudge stands aside for it.
+- **`aria-selected`, not `accessibilityState`, on the mode chips.** react-native-web did not turn
+  the latter into an attribute through the gluestack `Pressable`, so the e2e — which checks that
+  Accept from the dropdown really switched to Auto — could not see it while the screen plainly
+  showed Auto.
+- **A client without this update shows a plan as a plain tool card**, and the model no longer
+  restates the plan as prose — the over-the-air update is what brings the panel.
+
 ### Automatic compaction
 
 - **The server compacts on its own** once a finished turn's `prompt + completion` crosses

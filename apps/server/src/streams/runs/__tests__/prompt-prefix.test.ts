@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE } from "@loxaic/types";
+import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 
@@ -494,5 +494,57 @@ describe("prompt prefix across a step check-in", () => {
       else process.env.APPROVAL_TIMEOUT_MS = previous;
       await db.update(userPrefs).set({ checkinAutoContinues: 2 }).where(eq(userPrefs.userId, userId));
     }
+  });
+});
+
+describe("prompt prefix across a plan review (#199)", () => {
+  /** One planning-surface turn, finished. */
+  async function agentTurn(content: string, mode: "planning" | "manual", conversationId?: string): Promise<string> {
+    const { startAgentRun } = await import("../agentRun.ts");
+    const result = await startAgentRun({
+      userId,
+      content,
+      model: "llama-3.1-8b-instruct",
+      mode,
+      ...(conversationId === undefined ? {} : { conversationId }),
+    });
+    if (!convIds.includes(result.conversationId)) convIds.push(result.conversationId);
+    await waitForRun(result.conversationId);
+    return result.conversationId;
+  }
+
+  it("holds from a plan, through a suggestion, to the revised plan", async () => {
+    // A plan ends its turn on a tool row, so the suggestion is a user row
+    // straight after it — the replay boundary this case is about.
+    const convId = await agentTurn("look around and propose a plan", "planning");
+    await agentTurn("Add a test step, then propose a plan again.", "planning", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("holds across a nudged turn: prose, the nudge, then the plan, and the turn after", async () => {
+    // The prose and the nudge are pushed live and replayed from rows; both
+    // sides must produce the same bytes, empty prose included.
+    const convId = await agentTurn("Please answer in prose, then plan it.", "planning");
+    await agentTurn("Add a test step, then propose a plan again.", "planning", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("holds from questions, through the answers, to the plan", async () => {
+    const convId = await agentTurn("Ask me some questions before you plan.", "planning");
+    await agentTurn(`${QUESTIONS_ANSWERED_PREFIX}\n\n1. Which part first? — The API`, "planning", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("changes only the system prompt when the plan is accepted", async () => {
+    const convId = await agentTurn("look around and propose a plan", "planning");
+    const planning = requests.length;
+    await agentTurn(PLAN_ACCEPTED_MESSAGE, "manual", convId);
+    // Accepting leaves planning, and a mode is a system prompt and a tool
+    // list: that one message may differ, by design. Everything after it must
+    // be what the planning turn sent, byte for byte.
+    const before = requests[planning - 1];
+    const after = requests[planning];
+    expect(after[0]).not.toEqual(before[0]);
+    expect(after.slice(1, before.length)).toEqual(before.slice(1));
   });
 });
