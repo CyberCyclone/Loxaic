@@ -4,6 +4,7 @@ import { scenarioDecisionFor } from "./mock-scenarios.ts";
 import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
 import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
+import { routerModelName } from "../llama/preset.ts";
 import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { listServableModels } from "../llama/catalog.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
@@ -203,7 +204,10 @@ export async function* streamCompletion(
   // so, rather than letting the request fail as "connection refused" against
   // an address nobody configured.
   if (provider.isDefault && !routerEndpoint()) throw new Error(routerUnavailableReason());
-  yield* liveStream(provider, upstreamModel, messages, options);
+  // The built-in backend is the router, which knows a model by its router name
+  // rather than its id (see routerModelName). An added provider gets the id it
+  // listed, untouched.
+  yield* liveStream(provider, provider.isDefault ? routerModelName(upstreamModel) : upstreamModel, messages, options);
 }
 
 async function servedByLocalRouter(upstreamModel: string): Promise<boolean> {

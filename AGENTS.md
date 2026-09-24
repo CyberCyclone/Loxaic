@@ -809,6 +809,18 @@ replies.
   `local_models` and asks the router only for live state (`GET /models`, and `/props?model=` —
   the router 400s `/props` without `model`). `/props` reports `n_ctx` **per slot** already
   (8192 over 4 non-unified slots reads 2048); `perRequestWindow` only predicts that before a load.
+- **The router knows a model by its id with "@" for ":"** (`routerModelName` in
+  `llama/preset.ts`), and every call that names a model to it — the preset section, the chat
+  request's `model`, `/props?model=`, `/models/unload` — goes through that; `/models` answers are
+  read back with `modelIdFromRouterName`. b11149 reads a section name with a ":" as a HuggingFace
+  `repo:quant` reference and serves it under a *rewritten* name (quant uppercased, a leading
+  `UD-` dropped), so a downloaded `unsloth/…:UD-Q5_K_XL` was listed as `…:Q5_K_XL` and every chat
+  with it answered "model … not found" — on the beta, with the file, the settings and the row all
+  correct. The rewrite also merges names (`q4_k_m` and `Q4_K_M` became one model), which "@"
+  cannot, since no id contains one. The id stays the reference everywhere else, so nothing stored
+  changes. `fake-llama-server.mjs` imitates the rewrite and the mock HuggingFace offers an Unsloth
+  `UD-` quant: the fake used to keep every name and every mock quant was already canonical, which
+  is exactly how this shipped.
 - **The preset file is the only place admin input becomes process arguments, and one bad key
   stops the router from starting at all** (`option 'mlock' not recognized in preset`, fatal at
   boot; a live reload answers 500 and keeps the old list). So `load-settings.ts` is a whitelist

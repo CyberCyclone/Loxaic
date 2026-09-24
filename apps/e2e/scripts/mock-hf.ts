@@ -94,7 +94,10 @@ export async function startMockHf(): Promise<MockHf> {
   interface File { path: string; size: number; sha: string; body?: Buffer }
   const tree: Record<string, File[]> = {
     [repos.tiny]: [
-      { path: 'Tiny-Q4_K_M.gguf', size: tinyBody.length, sha: tinySha, body: tinyBody },
+      // Unsloth's naming, deliberately: the real router rewrites a "UD-" quant
+      // in a preset section name, and a downloaded Unsloth model once shipped
+      // unusable because every quant here was already in the router's form.
+      { path: 'Tiny-UD-Q4_K_XL.gguf', size: tinyBody.length, sha: tinySha, body: tinyBody },
       { path: 'Tiny-Q5_K_M.gguf', size: cancelBody.length, sha: cancelSha, body: cancelBody },
       { path: 'Tiny-Q8_0.gguf', size: Math.round(21 * GiB), sha: 'c'.repeat(64) },
       { path: 'Tiny-F16.gguf', size: 40 * GiB, sha: 'd'.repeat(64) },
@@ -202,7 +205,7 @@ export async function startMockHf(): Promise<MockHf> {
   return {
     url: `http://127.0.0.1:${String(port)}`,
     repos,
-    quants: { download: 'Q4_K_M', cancel: 'Q5_K_M', mightFit: 'Q8_0', wontFit: 'F16' },
+    quants: { download: 'UD-Q4_K_XL', cancel: 'Q5_K_M', mightFit: 'Q8_0', wontFit: 'F16' },
     stop: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
