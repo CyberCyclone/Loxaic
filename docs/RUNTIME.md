@@ -212,14 +212,16 @@ The limit follows the model server by default:
 
 | Backend | Resolved limit |
 |---|---|
-| `llama.cpp --parallel N` | N — it really does keep N prompt caches |
+| Local models, one enabled | Its *Max concurrent predictions* setting (llama.cpp's `--parallel`) — it really does keep that many prompt caches |
+| Local models, several enabled | 1 — runs on two different models side by side would make llama.cpp swap models mid-reply |
+| An added llama.cpp host (`--parallel N`) | N |
 | LM Studio | 1 — it reports nothing about slots |
-| Anything else | 1 |
+| Anything else | 1, or the provider's own setting |
 
 An admin can pin a number in **Settings → Agent Sandbox → Concurrent runs**, or
 a deployment can pin it with `INFERENCE_MAX_CONCURRENT_RUNS`. Setting it higher
 than the server can actually hold makes *every* conversation slower and reports
-no error, so raise it only to match a `--parallel` you actually configured.
+no error, so raise it only to match what the model is configured for.
 
 ### Hosting for others requires a container engine
 
@@ -340,58 +342,109 @@ and how they coexist with a dev stack on the same machine.
 **Docker Compose**: unchanged — the `db` service (`postgres:17-alpine`), same
 as always.
 
-## Inference backend
+## Local models (llama.cpp)
 
-`llama.cpp` is launched with `--jinja` for tool-calling support. Where it runs
-is controlled by `INFERENCE_BASE_URL` and is fully decoupled from the container
-engine above — set it to wherever your `llama-server` (or the Docker Compose
-`inference` service) is listening.
+Loxaic runs **llama.cpp itself**. An admin opens **Settings → Local models**,
+searches HuggingFace, downloads a model, and switches it on; from then on it is
+in everyone's model picker under *Built-in*. There is no backend URL to
+configure. External backends (OpenRouter, OpenAI, another llama.cpp or LM Studio
+host) are added separately under **Settings → Model Providers**.
 
-**Containers on macOS cannot access the GPU** (no Metal passthrough), so a
-containerized llama.cpp on a Mac would be CPU-only. Run it natively there.
+### The runtime installs itself
 
-| Platform / GPU | Recommended setup |
+The first time an admin opens Local models, Loxaic looks at the hardware, picks
+the llama.cpp build that uses the GPU, downloads it from llama.cpp's GitHub
+releases, checks it against a SHA-256 recorded in this repository, and starts
+it. That is the same arrangement LM Studio uses for its runtimes, with one
+difference: the build is **pinned** (`apps/server/src/llama/runtime-manifest.ts`)
+rather than "whatever is newest", because it is a binary the server executes.
+Updating llama.cpp is a reviewed change to that file.
+
+| Machine | Build chosen automatically |
 |---|---|
-| **macOS (Apple Silicon)** | Run `llama-server` **natively** with Metal: `brew install llama.cpp` or build from source, then `llama-server --host 0.0.0.0 --port 4002 --jinja -m model.gguf -ngl 999`. Set `INFERENCE_BASE_URL=http://localhost:4002`. |
-| **Windows / NVIDIA** | Either a CUDA-enabled `llama.cpp` container (via Docker Desktop + WSL2 GPU passthrough) or the native Windows binary from the llama.cpp releases. Both work with the default `docker-compose.yml` `inference` service if you swap the image for a CUDA build. |
-| **Linux / Proxmox / AMD (ROCm)** | Use the provided override: `docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d`. Tuned for the AMD V620 (gfx1030, `HSA_OVERRIDE_GFX_VERSION=10.3.0`) — adjust that value for other RDNA2/3 cards per the [ROCm gfx compatibility table](https://rocm.docs.amd.com/en/latest/reference/gpu-arch-specs.html). |
-| **Linux / NVIDIA** | The default `docker-compose.yml` `inference` image, or swap for a CUDA build + `--gpus all` in a compose override, similar to the ROCm one. |
+| **macOS (Apple Silicon)** | Metal |
+| **Linux / Windows with NVIDIA** | CUDA 13 (driver 580+) or CUDA 12 (525+); Vulkan with an older driver |
+| **Linux / Windows with AMD or Intel** | Vulkan — Linux needs the Vulkan loader (`libvulkan1`) |
+| **ROCm** | Not chosen automatically; pick it under Runtime settings |
 
-## Vision models
+Runtime settings on the same screen override the backend and choose which GPUs
+to use. **By default only GPUs with at least 4 GB free are used**, so neither a
+small display card nor a card another program (LM Studio, a game) has already
+filled ends up with part of a model.
 
-Picture attachments (see the composer's **+** button) are always sendable, but
-the loaded model only *sees* them if `llama-server` was started with a
-multimodal projector. Without one, llama.cpp rejects the request and the chat
-shows a friendly "this model can't see images" message instead of failing
-silently — the message and image are still saved either way.
+**The CPU is never chosen automatically.** With no usable GPU, the screen says
+so and offers the CPU as an explicit choice, with a warning that only small
+models (a few billion parameters) reply at a usable speed. Choosing the CPU on a
+machine that *has* a GPU gives a stronger warning naming the GPU that would sit
+idle. `LLAMA_BACKEND=cpu` in the environment is the operator saying so directly.
 
-A vision model is two files: the main GGUF and its `mmproj` (multimodal
-projector) GGUF, usually published in the same Hugging Face repo. Pass both to
-`llama-server`:
+Downloaded models and the runtime live under `LLAMA_DIR` — `<data dir>/llama`
+in the desktop app, `./llama` beside a bare server (gitignored). Models are many
+gigabytes; the screen shows free disk space and refuses a download that would
+leave less than 2 GB.
+
+### Choosing a model
+
+Search by model name, by publisher, or both (`unsloth/qwen`). Every result and
+every quant carries a **Will fit / Might fit / Won't fit** label, estimated from
+the file size, a KV cache for the context, and the memory of the GPUs in use (or
+system RAM, on the CPU). A download labelled *Won't fit* asks first. The label
+is an estimate; llama.cpp itself shrinks the context or leaves layers on the CPU
+when a model almost fits, which is the *Might fit* band.
+
+Downloads resume after a pause or a restart, and every file is checked against
+HuggingFace's own SHA-256 before it is used. Gated models (Llama, Gemma and the
+like) need a HuggingFace token — under Runtime settings, or `HF_TOKEN` — and
+their terms accepted on huggingface.co.
+
+### Per-model settings
+
+Each downloaded model has a Settings sheet with everything LM Studio offers when
+loading a model: context length, GPU offload (how many layers on the GPU),
+MoE experts on the CPU, KV cache offload and type, flash attention, threads,
+batch sizes, parallel predictions, memory mapping, the vision projector, seed,
+and default sampling (temperature, top-k/p, min-p, penalties). They are set once
+by an admin and **apply every time the model loads, for everyone**. A live
+estimate says whether the model still fits with what has been chosen. Blank
+means llama.cpp's own default.
+
+### Vision models
+
+A vision model is the weights plus a small *projector* file. The download dialog
+offers the projector alongside the model (on by default for a vision model), and
+the model's settings can switch vision off to save memory. Without a projector,
+image attachments are still saved but the model cannot see them, and the chat
+says so.
+
+### Docker Compose
+
+In Compose the server does not run llama.cpp itself (`LLAMA_MODE=attach`): the
+`inference` service runs it in router mode against the same `llama` volume, and
+the server downloads into that volume and tells the router when to re-read its
+model list. Give the container your GPU with the matching override:
 
 ```bash
-# Native (e.g. macOS/Metal)
-llama-server --host 0.0.0.0 --port 4002 --jinja \
-  -m Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf \
-  --mmproj Qwen2.5-VL-7B-Instruct-mmproj-F16.gguf \
-  -ngl 999
+docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d   # AMD/Intel/NVIDIA via Vulkan
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d     # NVIDIA via CUDA (Container Toolkit)
+docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d     # AMD via ROCm (tuned for gfx1030)
 ```
 
-For the Docker Compose `inference` service, drop both GGUFs into `./models/`
-and add the flag to `command`:
+Without one the container sees no GPU and runs models on the CPU, and the Local
+models screen says so. The router is never open: the server writes a key into
+the shared volume (`router.key`) that the sidecar starts with, and port 4002 is
+published on loopback only. Set `LLAMA_API_KEY` for both services to choose
+the key yourself. **Containers on macOS cannot reach the GPU at all**, so
+on a Mac run Loxaic itself natively (the desktop app, or `pnpm dev`) and let it
+manage llama.cpp.
 
-```yaml
-  inference:
-    command: >
-      --host 0.0.0.0 --port 8080
-      -m /models/model.gguf
-      --mmproj /models/mmproj.gguf
-      --ctx-size 8192
-      --jinja
-```
+### Coming from `INFERENCE_BASE_URL`
 
-Any llama.cpp-supported VLM works (Qwen2.5-VL, Gemma 3, LLaVA, etc.) as long
-as the `mmproj` file matches the main model's release.
+`INFERENCE_BASE_URL` (and the desktop's `--inference-url`) used to name the
+backend Loxaic talked to. It is no longer read. A deployment that still sets it
+has that backend converted **once**, at the first boot of this version, into an
+added provider called *Migrated backend*, and every conversation, routine and
+recently-used entry that named one of its models is pointed at it. Nothing is
+lost; remove the variable once you have seen the provider appear.
 
 ## Document attachments
 
@@ -434,11 +487,10 @@ extracts to nothing useful, the same limitation the underlying tools have.
 # it's auto-discovered. Without one, SANDBOX_MODE=host or =off still work.
 open Loxaic.dmg   # or: ./loxaic --headless
 
-# Docker Compose — Mac: native inference, Docker Desktop/OrbStack for everything else
-llama-server --host 0.0.0.0 --port 4002 --jinja -m model.gguf -ngl 999 &
-docker compose up db server   # skip the `inference` service
+# Docker Compose — Linux with a GPU: everything in Docker
+docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d
 
-# Docker Compose — Proxmox / AMD ROCm: everything in Docker
+# Docker Compose — Proxmox / AMD ROCm
 docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d
 
 # Docker Compose — Podman anywhere

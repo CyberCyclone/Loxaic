@@ -1,6 +1,10 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { v4 as uuid } from "uuid";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { db, eq } from "@loxaic/db";
+import { localModels } from "@loxaic/db/schema";
+import { invalidateLocalModelCache } from "../../llama/catalog.ts";
 import { streamCompletion, type StreamEvent } from "../provider.ts";
 import {
   INFERENCE_TIMEOUT_CEILING_MS,
@@ -30,6 +34,18 @@ let server: http.Server;
 let base: string;
 /** Resolves when the backend sees a request's connection close. */
 let onHangClosed: (() => void) | null = null;
+
+/**
+ * The built-in provider is the local llama.cpp router; these tests reach its
+ * live path by attaching it to this backend, with one servable model ("m")
+ * under a host id of this suite's own so no other suite sees it.
+ */
+const host = `test-transport-${uuid()}`;
+const previousHost = process.env.LOXAIC_INSTANCE_ID;
+function attach(url: string): void {
+  vi.stubEnv("LLAMA_MODE", "attach");
+  vi.stubEnv("LLAMA_ROUTER_URL", url);
+}
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -65,9 +81,28 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  process.env.LOXAIC_INSTANCE_ID = host;
+  await db.insert(localModels).values({
+    id: "m",
+    hostId: host,
+    repo: "test/m",
+    revision: "0".repeat(40),
+    quant: "Q4",
+    files: [],
+    sizeBytes: 0,
+    status: "ready",
+    enabled: true,
+    displayName: "m",
+    publisher: "test",
+  });
+  invalidateLocalModelCache();
 });
 
 afterAll(async () => {
+  await db.delete(localModels).where(eq(localModels.hostId, host));
+  if (previousHost === undefined) Reflect.deleteProperty(process.env, "LOXAIC_INSTANCE_ID");
+  else process.env.LOXAIC_INSTANCE_ID = previousHost;
+  invalidateLocalModelCache();
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 });
@@ -97,14 +132,14 @@ describe("inference transport", () => {
 
   it("the real inference path waits out slow headers and a mid-reply stall", async () => {
     vi.stubEnv("MOCK_INFERENCE", "false");
-    vi.stubEnv("INFERENCE_BASE_URL", `${base}/slow`);
+    attach(`${base}/slow`);
     const text = await collect(streamCompletion("m", [{ role: "user", content: "hi" }]));
     expect(text).toBe("hello world");
   });
 
   it("Stop still works while waiting for headers: rejects promptly with AbortError and closes the connection", async () => {
     vi.stubEnv("MOCK_INFERENCE", "false");
-    vi.stubEnv("INFERENCE_BASE_URL", `${base}/hang`);
+    attach(`${base}/hang`);
     const closed = new Promise<void>((resolve) => {
       onHangClosed = resolve;
     });
@@ -146,7 +181,7 @@ describe("inference transport", () => {
     const dispatch = vi.spyOn(dispatcher, "dispatch");
     try {
       vi.stubEnv("MOCK_INFERENCE", "false");
-      vi.stubEnv("INFERENCE_BASE_URL", `${base}/fast`);
+      attach(`${base}/fast`);
       expect(await collect(streamCompletion("m", [{ role: "user", content: "hi" }]))).toBe("hi");
       expect(dispatch).toHaveBeenCalled();
     } finally {
@@ -156,7 +191,7 @@ describe("inference transport", () => {
 
   it("an early exit mid-stream cancels the response, so the backend sees the connection close", async () => {
     vi.stubEnv("MOCK_INFERENCE", "false");
-    vi.stubEnv("INFERENCE_BASE_URL", `${base}/sse-error`);
+    attach(`${base}/sse-error`);
     const closed = new Promise<void>((resolve) => {
       onHangClosed = resolve;
     });
@@ -186,7 +221,7 @@ describe("inference transport", () => {
     await new Promise((resolve) => dead.close(resolve));
 
     vi.stubEnv("MOCK_INFERENCE", "false");
-    vi.stubEnv("INFERENCE_BASE_URL", `http://127.0.0.1:${String(port)}`);
+    attach(`http://127.0.0.1:${String(port)}`);
     await expect(collect(streamCompletion("m", [{ role: "user", content: "hi" }]))).rejects.toThrow(
       /Could not reach the model server: the connection was refused/,
     );

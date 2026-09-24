@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { useServableModels } from "../../llama/__tests__/servable-model.ts";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
 import { and, db, eq, inArray, isNull } from "@loxaic/db";
@@ -22,6 +23,8 @@ import { conversations, messages, routineRuns, routines, usageRecords, user } fr
  * audit is concerned — so deleting the routine must go through the same
  * policy-aware path "Delete chat" does, and must not become a way around it.
  */
+/** "test-model" is a bare reference, which is only usable as an enabled local model. */
+let cleanupServable: () => Promise<void> = () => Promise.resolve();
 const currentUser = { id: "" };
 
 vi.mock("../../auth/middleware", () => ({
@@ -120,6 +123,7 @@ async function settle() {
 }
 
 beforeAll(async () => {
+  cleanupServable = await useServableModels(["test-model"]);
   routineRoutes(app);
   await app.ready();
   await db.insert(user).values(
@@ -162,6 +166,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
+  await cleanupServable();
   stopRoutineScheduler();
   delete process.env.DELETED_CHAT_RETENTION_ENABLED;
   delete process.env.DELETED_CHAT_RETENTION_DAYS;

@@ -34,7 +34,9 @@ Options:
   --advertise-url <u>  Persisted public address, with --as-host (a reverse
                        proxy or domain other machines should use instead of
                        this one's own LAN address)
-  --inference-url <u>  Inference backend base URL (sets INFERENCE_BASE_URL)
+  --inference-url <u>  Deprecated. An inference backend this install used before
+                       it ran llama.cpp itself: converted once into a provider
+                       (Settings > Model Providers), then ignored
   --mock-inference     Use the mock inference provider (sets MOCK_INFERENCE=true)
   --reset-password <email>
                        Reset that user's password to a temporary one, print
@@ -87,7 +89,15 @@ async function main() {
     return;
   }
 
-  if (hasFlag("inference-url")) process.env.INFERENCE_BASE_URL = getFlag("inference-url");
+  if (hasFlag("inference-url")) {
+    // Still accepted so an existing service unit keeps starting; the server
+    // turns it into an added provider on first boot and ignores it after.
+    process.env.INFERENCE_BASE_URL = getFlag("inference-url");
+    console.warn(
+      "[loxaic] --inference-url is deprecated: local models are now served by the built-in llama.cpp runtime. " +
+        "The URL is kept as a provider under Settings > Model Providers; remove the flag once that is done.",
+    );
+  }
   if (hasFlag("mock-inference")) process.env.MOCK_INFERENCE = "true";
 
   const dataDir = getFlag("data-dir", "loxaic-data-dir") ?? process.env.LOXAIC_DATA_DIR ?? defaultDataDir();

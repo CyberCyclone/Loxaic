@@ -104,7 +104,10 @@ the app bundle and advertised by Metro is one that resolves from anywhere.
 ### A real model for dev, a mock for previews
 
 `DEV_INFERENCE_URL` points the dev slot at a real backend (LM Studio on the box
-at `:1234`). Previews stay on `MOCK_INFERENCE`, and the two differ on purpose:
+at `:1234`). The slot's server converts it into an added provider on first boot
+— the built-in provider is now the managed llama.cpp runtime, which the slots
+turn off (`LLAMA_MODE=off`: no GPU in there). Previews stay on
+`MOCK_INFERENCE`, and the two differ on purpose:
 
 - A preview runs **unreviewed** code and exists to check a flow quickly. The
   mock drives the full agent tool loop — approvals, tool calls, the lot —

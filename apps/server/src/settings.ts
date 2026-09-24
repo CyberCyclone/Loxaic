@@ -18,6 +18,7 @@
 import { db, eq } from "@loxaic/db";
 import { serverSettings } from "@loxaic/db/schema";
 import type { SandboxKind, SandboxMode } from "./sandbox/provider.ts";
+import { __resetLocalModelsSettingsForTest, loadLocalModelsSettings } from "./llama/settings.ts";
 
 /** Which container engine to talk to. "auto" is the historical discovery
  * behaviour (try the default Docker socket, then Podman's, then Colima's);
@@ -670,6 +671,8 @@ export async function loadServerSettings(): Promise<void> {
     // retention policy", which resolves to keep-and-do-not-sweep.
     conversationLoadFailed = true;
   }
+  // Has its own try inside, and fails toward the defaults — see there.
+  await loadLocalModelsSettings();
 }
 
 /** The one place an env-pinned `SANDBOX_REAP_AFTER_MS <= SANDBOX_IDLE_STOP_MS`
@@ -960,6 +963,7 @@ export function resetServerSettingsCache(): void {
   persistedConversations = {};
   loadFailed = false;
   conversationLoadFailed = false;
+  __resetLocalModelsSettingsForTest();
 }
 
 /** Test seam: simulates a failed settings read, for asserting the

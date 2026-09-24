@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { router } from 'expo-router';
 import { FlatList } from 'react-native';
 import { Plus, ShieldAlert } from 'lucide-react-native';
 import { getProviderModels, type InferenceProvider, type ProviderInput } from '@loxaic/api-client';
@@ -135,11 +136,14 @@ export default function ProvidersScreen() {
         ListHeaderComponent={
           <VStack space="sm" className="mb-2">
             {builtin && (
-              // Described, never editable: an admin needs to see what is
-              // already there before deciding whether to add anything, and
-              // "set by an environment variable" is the answer to why this
-              // screen cannot change it.
-              <Box testID="providers.builtin" className="rounded-md border border-border bg-muted/40 p-3">
+              // Described here, managed on its own screen: an admin needs to
+              // see what is already there before deciding whether to add
+              // anything.
+              <Pressable
+                testID="providers.builtin"
+                onPress={() => { router.push('/local-models'); }}
+                className="rounded-md border border-border bg-muted/40 p-3 web:hover:bg-muted/60"
+              >
                 <HStack className="items-center justify-between">
                   <Text className="font-medium text-foreground">{builtin.name}</Text>
                   <Text size="2xs" className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
@@ -147,12 +151,13 @@ export default function ProvidersScreen() {
                   </Text>
                 </HStack>
                 <Text size="xs" className="mt-0.5 text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-                  {builtin.baseUrl}
+                  Local models, run by llama.cpp on this server ·{' '}
+                  {builtin.models === 1 ? '1 model' : `${String(builtin.models)} models`} offered
                 </Text>
-                <Text size="2xs" className="mt-1 text-muted-foreground">
-                  Set by the {builtin.envVar} environment variable, so it cannot be changed here.
+                <Text size="2xs" className="mt-1 text-primary">
+                  Manage under Local Models ›
                 </Text>
-              </Box>
+              </Pressable>
             )}
             {providers.length === 0 && (
               <VStack space="xs" className="px-1 pt-2">

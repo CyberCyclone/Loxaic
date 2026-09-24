@@ -1,0 +1,12 @@
+# NVIDIA GPUs through CUDA. Needs the NVIDIA Container Toolkit on the host.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d
+services:
+  inference:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

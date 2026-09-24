@@ -3,6 +3,8 @@ import { scenarioDecisionFor } from "./mock-scenarios.ts";
 import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
 import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
+import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
+import { listServableModels } from "../llama/catalog.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 
 // Read at call time, not module load — a supervisor sets these in the child's
@@ -181,11 +183,26 @@ export async function* streamCompletion(
   // not for a provider an admin added: an added one has a real address and a
   // real key, so leaving it live is what lets the mock lane exercise the whole
   // provider path — auth header included — with nothing stubbed.
-  if (provider.isDefault && MOCK_MODE()) {
+  // One exception: a downloaded, enabled local model with a router running to
+  // serve it goes to that router, mock or not. Nothing else would ever send a
+  // request to the router under the mock — which is what the e2e lane runs —
+  // and the whole local-models path (the router's key, its streaming, the
+  // settings it loaded the model with) would be exercised by no test at all.
+  // Without a router the mock answers, as it always has.
+  if (provider.isDefault && MOCK_MODE() && !(await servedByLocalRouter(upstreamModel))) {
     yield* mockStream(messages, options);
     return;
   }
+  // No router right now (not installed yet, still starting, turned off): say
+  // so, rather than letting the request fail as "connection refused" against
+  // an address nobody configured.
+  if (provider.isDefault && !routerEndpoint()) throw new Error(routerUnavailableReason());
   yield* liveStream(provider, upstreamModel, messages, options);
+}
+
+async function servedByLocalRouter(upstreamModel: string): Promise<boolean> {
+  if (!routerEndpoint()) return false;
+  return (await listServableModels()).some((r) => r.id === upstreamModel);
 }
 
 // ── Mock ──────────────────────────────────────────────────

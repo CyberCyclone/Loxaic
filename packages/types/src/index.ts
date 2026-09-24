@@ -108,8 +108,8 @@ export interface ModelInfo {
   host_name: string | null;
   price: number;
   loaded: boolean;
-  /** Which configured backend serves this model. `"default"` is the one
-   * INFERENCE_BASE_URL names; anything else is an admin-added provider row.
+  /** Which configured backend serves this model. `"default"` is the
+   * local llama.cpp runtime; anything else is an admin-added provider row.
    * The picker groups on this. */
   provider_id: string;
   /** The admin's label for that provider — the group header. Renameable, so

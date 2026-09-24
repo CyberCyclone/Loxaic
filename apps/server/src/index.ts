@@ -35,6 +35,10 @@ import { prefsRoutes } from "./routes/prefs";
 import { adminSettingsRoutes } from "./routes/admin-settings";
 import { adminProviderRoutes } from "./routes/admin-providers";
 import { adminUserRoutes } from "./routes/admin-users";
+import { adminLocalModelRoutes } from "./routes/admin-local-models.ts";
+import { migrateLegacyInferenceUrl } from "./inference/legacy-migration.ts";
+import { bootLocalRuntime, runtimeView, stopLocalRuntime } from "./llama/router.ts";
+import { startDownloadQueue, stopDownloads } from "./llama/downloads.ts";
 import { fileRoutes } from "./routes/files";
 import { hostingBlockedReason, loadServerSettings } from "./settings";
 import { ensureCluster, registerHost } from "./cluster";
@@ -88,6 +92,15 @@ await loadServerSettings();
 const hostingBlocked = hostingBlockedReason();
 if (hostingBlocked) throw new Error(hostingBlocked);
 
+// ── INFERENCE_BASE_URL, once ──────────────────────────────
+// The variable used to name the built-in backend; the built-in provider is now
+// the managed llama.cpp router. A deployment still setting it gets that
+// backend as an ordinary provider, with its conversations pointed at it.
+// Best-effort: a failure here must not take the server down with it.
+await migrateLegacyInferenceUrl((m) => { app.log.warn(m); }).catch((e: unknown) => {
+  app.log.error(`Could not convert INFERENCE_BASE_URL into a provider: ${e instanceof Error ? e.message : String(e)}`);
+});
+
 // ── Cluster identity ──────────────────────────────────────
 // The cluster is the set of instances sharing this database; its id is minted
 // here on first boot. Registration is a no-op without LOXAIC_INSTANCE_ID
@@ -135,22 +148,12 @@ app.get("/health", async () => {
     dbStatus = "error";
   }
 
-  let inferenceStatus: "mock" | "ok" | "unavailable" = "unavailable";
-  if (process.env.MOCK_INFERENCE === "true") {
-    inferenceStatus = "mock";
-  } else {
-    const base = process.env.INFERENCE_BASE_URL ?? "http://localhost:4002";
-    const controller = new AbortController();
-    const timer = setTimeout(() => { controller.abort(); }, 1500);
-    try {
-      const res = await fetch(`${base}/v1/models`, { signal: controller.signal });
-      inferenceStatus = res.ok ? "ok" : "unavailable";
-    } catch {
-      inferenceStatus = "unavailable";
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+  // The built-in provider's state: the managed (or attached) llama.cpp
+  // router. Added providers are not probed here — one unreachable hosted API
+  // is not this server being unhealthy.
+  const runtime = runtimeView();
+  const inferenceStatus: "mock" | "ok" | "unavailable" =
+    process.env.MOCK_INFERENCE === "true" ? "mock" : runtime.state === "running" ? "ok" : "unavailable";
 
   return {
     status: dbStatus === "ok" ? "ok" : "degraded",
@@ -158,6 +161,7 @@ app.get("/health", async () => {
     services: {
       database: dbStatus,
       inference: inferenceStatus,
+      localRuntime: runtime.state,
     },
   };
 });
@@ -181,6 +185,7 @@ prefsRoutes(app);
 adminSettingsRoutes(app);
 adminProviderRoutes(app);
 adminUserRoutes(app);
+adminLocalModelRoutes(app);
 fileRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────
@@ -293,6 +298,12 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   sweepRetainedConversations()
     .then((n) => { if (n > 0) app.log.info(`Erased ${String(n)} deleted conversation(s) past the retention window`); })
     .catch(() => { /* best-effort sweep */ });
+  // The managed llama.cpp router, if one was set up before. Not awaited: an
+  // upgrade may download a new build first, and the API is already serving.
+  bootLocalRuntime((m) => { app.log.info(m); }).catch((e: unknown) => {
+    app.log.warn(`llama.cpp did not start: ${e instanceof Error ? e.message : String(e)}`);
+  });
+  startDownloadQueue((m) => { app.log.info(m); });
   conversationReaperTimer = startConversationReaper((n) => {
     app.log.info(`Erased ${String(n)} deleted conversation(s) past the retention window`);
   });
@@ -314,6 +325,8 @@ async function shutdown(signal: string) {
     if (extractionReaperTimer) clearInterval(extractionReaperTimer);
     if (conversationReaperTimer) clearInterval(conversationReaperTimer);
     await stopAllExtractionSandboxes().catch(() => undefined);
+    await stopDownloads().catch(() => undefined);
+    await stopLocalRuntime().catch(() => undefined);
     await app.close();
     await closeDb();
   } catch (e) {

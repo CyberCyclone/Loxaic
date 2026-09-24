@@ -1,0 +1,11 @@
+# Give the llama.cpp sidecar the host's GPUs through Vulkan — AMD, Intel, and
+# NVIDIA with its Vulkan driver.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d
+#
+# If the host has a small display card beside the inference card, choose which
+# GPUs to use under Settings > Local models > Runtime settings. By default
+# only GPUs with 4 GB free are used.
+services:
+  inference:
+    devices:
+      - /dev/dri:/dev/dri

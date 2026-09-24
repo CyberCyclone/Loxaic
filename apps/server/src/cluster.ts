@@ -135,10 +135,10 @@ export async function registerHost(): Promise<string | null> {
   await ensureCluster();
   const name = process.env.LOXAIC_HOST_NAME ?? "Loxaic Host";
   const advertiseUrl = process.env.LOXAIC_ADVERTISE_URL ?? `http://localhost:${process.env.PORT ?? "4000"}`;
-  const inferenceBaseUrl = process.env.INFERENCE_BASE_URL ?? null;
-  // Neither env var reaching here used to mean the column was always null —
-  // and the upsert never refreshed it, so even a value that did arrive was
-  // frozen at first registration.
+  // The built-in backend is this host's own llama.cpp router, on a loopback
+  // port that changes every start — nothing another host could use. The column
+  // stays for rows written before, and is cleared on the next registration.
+  const inferenceBaseUrl = null;
   const version = serverVersion();
 
   await db

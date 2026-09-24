@@ -247,7 +247,10 @@ carries a `testID` (`composer.attach.camera`) and is verified by hand.
 3. **Web export** — built if `apps/mobile/dist/index.html` is missing. Must happen *before* the
    server starts: static serving is only registered at boot, and only if the export exists.
 4. **Server** — started with `MOCK_INFERENCE=true` (or `INFERENCE_BASE_URL` under
-   `E2E_REAL_MODEL=1`). **Never reused**, even if something is already healthy at `E2E_BASE_URL`:
+   `E2E_REAL_MODEL=1`, which the server converts into an added provider at boot). Local
+   models run against `scripts/mock-hf.ts` (as `HF_ENDPOINT`) and a fake llama.cpp router
+   (`apps/server/test-fixtures/fake-llama-server.mjs`, as `LOXAIC_LLAMA_SERVER_BIN`) on fake
+   hardware with one 24 GB GPU (`LOXAIC_FAKE_HARDWARE=gpu`), so no GPU or model is needed. **Never reused**, even if something is already healthy at `E2E_BASE_URL`:
    a health check can't confirm that server was wired with *this* run's `GITHUB_API_URL`,
    `MOCK_SCENARIOS_FILE`, or sandbox network settings, so stand-up always starts its own —
    `E2E_NO_STANDUP=1` is the documented way to point a run at a server on purpose. Attachment
@@ -369,8 +372,8 @@ E2E_REAL_MODEL=1 E2E_INFERENCE_URL=http://localhost:1234 pnpm --filter @loxaic/e
 ```
 
 `E2E_INFERENCE_URL` points at any OpenAI-compatible endpoint — LM Studio, `llama.cpp` started
-with `--jinja` (see `docs/RUNTIME.md`), OpenRouter, etc. — the same thing `INFERENCE_BASE_URL`
-means everywhere else in this repo. Pick a model with real tool-calling support; a small local
+with `--jinja` (see `docs/RUNTIME.md`), OpenRouter, etc. It reaches the server as
+`INFERENCE_BASE_URL`, which the server converts into an added provider at boot. Pick a model with real tool-calling support; a small local
 "coder" model (e.g. `qwen2.5-coder-7b-instruct`) is enough for the task described below.
 
 **Never part of `pnpm test`, and never run in CI.** It needs a real (often local, often

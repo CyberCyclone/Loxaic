@@ -68,7 +68,12 @@ services:
       # things only a real model shows (tool-call formatting, streaming
       # timing, the prompt-reuse figures) are exactly what it is for.
       MOCK_INFERENCE: "${SLOT_MOCK_INFERENCE:?envs.sh writes this}"
-      INFERENCE_BASE_URL: "${SLOT_INFERENCE_URL:-http://localhost:4002}"
+      # The dev slot's real model is a backend elsewhere on the LAN, not one
+      # this container runs: the server converts this URL into an added
+      # provider on first boot (and on every fresh database), and ignores it
+      # after that. The slots have no GPU, so local models are off.
+      INFERENCE_BASE_URL: "${SLOT_INFERENCE_URL:-}"
+      LLAMA_MODE: "off"
       SANDBOX_MODE: "${SLOT_SANDBOX_MODE:-off}"
       UPLOADS_DIR: /data/uploads
       # Per slot, written once by envs.sh and kept in its env file. A shared

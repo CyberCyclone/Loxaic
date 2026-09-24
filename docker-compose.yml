@@ -33,7 +33,13 @@ services:
     environment:
       PORT: 4000
       DATABASE_URL: postgresql://postgres:postgres@db:5432/loxaic
-      INFERENCE_BASE_URL: http://inference:8080
+      # Local models: this server downloads GGUFs into the shared `llama`
+      # volume and writes the preset; the `inference` sidecar runs llama.cpp
+      # in router mode against it. Both mount the volume at the same path,
+      # because the preset names model files by absolute path.
+      LLAMA_MODE: attach
+      LLAMA_ROUTER_URL: http://inference:8080
+      LLAMA_DIR: /data/llama
       BETTER_AUTH_SECRET: dev-secret-change-me
       STREAM_BACKEND: redis
       REDIS_URL: redis://redis:6379
@@ -42,6 +48,7 @@ services:
       - "4000:4000"
     volumes:
       - uploads:/data/uploads
+      - llama:/data/llama
     depends_on:
       db:
         condition: service_healthy
@@ -50,17 +57,27 @@ services:
       redis:
         condition: service_healthy
 
+  # llama.cpp in router mode: one process that loads whichever model a request
+  # names, from the models the server downloaded. The Vulkan build runs on AMD,
+  # Intel and NVIDIA GPUs — but only if the container can see one. Add the
+  # override for your GPU, or it runs on the CPU (and the admin screen says so):
+  #   docker compose -f docker-compose.yml -f docker-compose.vulkan.yml up -d   # AMD/Intel/NVIDIA via Vulkan
+  #   docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d     # NVIDIA via CUDA
+  #   docker compose -f docker-compose.yml -f docker-compose.rocm.yml up -d     # AMD via ROCm
+  # macOS containers cannot reach the GPU at all; run Loxaic natively there.
   inference:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    command: >
-      --host 0.0.0.0 --port 8080
-      -m /models/model.gguf
-      --ctx-size 8192
-      --jinja
+    image: ghcr.io/ggml-org/llama.cpp:server-vulkan
+    entrypoint: ["/bin/sh", "/opt/loxaic/llama-router.sh"]
+    environment:
+      LLAMA_DIR: /data/llama
     volumes:
-      - ./models:/models:ro
+      - llama:/data/llama
+      - ./infra/docker/llama-router.sh:/opt/loxaic/llama-router.sh:ro
+    # Loopback only. The server reaches the router over the Compose network;
+    # this publish is for a curl from the host, and the router needs the key
+    # in the `llama` volume's router.key for anything but /health.
     ports:
-      - "4002:8080"
+      - "127.0.0.1:4002:8080"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 10s
@@ -80,3 +97,5 @@ volumes:
   pgdata:
   redisdata:
   uploads:
+  # Downloaded models and the router preset. Many gigabytes.
+  llama:
