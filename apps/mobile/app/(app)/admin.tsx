@@ -84,6 +84,9 @@ export default function AdminScreen() {
   }, [isAdmin]);
 
   const openDetail = useCallback(async (row: AdminConversation) => {
+    // Set here, not only by the effect below: the check after the await must
+    // see this row even if the response wins the race with the render.
+    selectedIdRef.current = row.id;
     setSelected(row);
     setQuery('');
     setResults([]);
@@ -97,6 +100,12 @@ export default function AdminScreen() {
       adminGetShares(row.id).catch(() => []),
       adminGetMessages(row.id).catch(() => ({ messages: [], before: null })),
     ]);
+    // Another row may have been opened while these were in flight. Its own
+    // request fills the pane; this one must change nothing — not the shares,
+    // not the transcript, and above all not the cursor, which "Load older"
+    // would send against the other conversation and get a 400 for. Not even
+    // the spinner: the newer request is still loading.
+    if (selectedIdRef.current !== row.id) return;
     setShares(nextShares);
     setMessages(nextMessages.messages);
     setOlderCursor(nextMessages.before ?? null);

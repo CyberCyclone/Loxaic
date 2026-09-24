@@ -41,21 +41,49 @@ async function listContains(text: string): Promise<boolean> {
 }
 
 /**
- * Scrolls back the way a person does — real wheel input over the list — until
- * the list holds `text`.
+ * How a reader moves back through the thread. react-native-web reports drags
+ * only for touch, so neither of these tells the list "the user is scrolling":
  *
- * Deliberately not `scrollIntoView`. react-native-web reports drags only for
- * touch, so the list has to learn from wheel events that the reader has moved
- * away from the newest message; a programmatic scroll sends none, and a first
- * version of this spec passed while the list threw the reader back to the
- * bottom each time an older page arrived.
+ * - `wheel` — real wheel input over the list, as a mouse or trackpad sends;
+ * - `scrollbar` — the scroll position set directly, with no wheel and no
+ *   touch: what dragging the scrollbar, or Page Up and the arrow keys, look
+ *   like to the page. A first fix counted wheel events as the reader's and
+ *   nothing else, and this input still threw them back to the newest message.
  */
-async function scrollBackTo(text: string): Promise<void> {
-  const list = byTestId('chat.messageList');
+type ScrollInput = 'wheel' | 'scrollbar';
+
+/** Moves the list back through history by one step of `how`. */
+async function scrollBack(how: ScrollInput, px = 1500): Promise<void> {
+  if (how === 'wheel') {
+    await browser.action('wheel').scroll({ origin: byTestId('chat.messageList'), deltaY: -px, duration: 150 }).perform();
+    return;
+  }
+  // Inverted, so older history is further from offset 0.
+  await browser.execute((d: number) => {
+    const list = document.querySelector('[data-testid="chat.messageList"]');
+    if (!list) return;
+    for (const n of [list, ...Array.from(list.querySelectorAll('*'))] as HTMLElement[]) {
+      const o = getComputedStyle(n).overflowY;
+      if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) {
+        n.scrollTop += d;
+        return;
+      }
+    }
+  }, px);
+}
+
+/**
+ * Scrolls back the way a person does until the list holds `text`.
+ *
+ * Deliberately not `scrollIntoView`, which puts the target on screen whatever
+ * the list does next: a first version of this spec passed that way while the
+ * list threw the reader back to the bottom each time an older page arrived.
+ */
+async function scrollBackTo(text: string, how: ScrollInput): Promise<void> {
   await browser.waitUntil(
     async () => {
       if (await listContains(text)) return true;
-      await browser.action('wheel').scroll({ origin: list, deltaY: -1500, duration: 150 }).perform();
+      await scrollBack(how);
       return false;
     },
     { timeout: 90_000, interval: 400, timeoutMsg: `scrolling back never reached "${text}"` },
@@ -92,8 +120,14 @@ describe('a thread longer than one page of history', () => {
     await patchPrefs(creds, { maxIterations: 100 });
   });
 
-  for (const surface of ['agent', 'chat'] as const) {
-    it(`reopens a long ${surface} thread on its newest messages, and pages back to the first`, async function () {
+  // One input per surface: each surface has its own session hook, and both
+  // share the list, so this covers both hooks and both kinds of input without
+  // a third 200-row thread.
+  for (const [surface, how] of [
+    ['agent', 'wheel'],
+    ['chat', 'scrollbar'],
+  ] as const) {
+    it(`reopens a long ${surface} thread on its newest messages, and pages back to the first (${how})`, async function () {
       this.timeout(4 * 60_000);
       const first = `The very first ${surface} message, sent before the long turn.`;
 
@@ -124,12 +158,12 @@ describe('a thread longer than one page of history', () => {
       }
       await shot(`history-${surface}-newest-page`);
 
-      await scrollBackTo(first);
+      await scrollBackTo(first, how);
       // The whole thread is loaded now, so there is nothing older to offer.
       await waitForGone('chat.history.loadOlder', 30_000);
       // And the reader is still where they scrolled to: nothing snapped the
       // list back to the newest message when the page arrived.
-      await browser.action('wheel').scroll({ origin: byTestId('chat.messageList'), deltaY: -3000, duration: 150 }).perform();
+      await scrollBack(how, 3000);
       await browser.pause(1_000);
       if (!(await onScreen(first))) {
         throw new Error('the first message loaded, but the list did not stay scrolled back to it');

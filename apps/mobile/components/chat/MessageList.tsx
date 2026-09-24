@@ -1,6 +1,6 @@
 import type { PromptStats } from '@loxaic/api-client';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { FlatList, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
+import { FlatList, Platform, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Box } from '@/components/ui/box';
 import { Pressable } from '@/components/ui/pressable';
 import { Spinner } from '@/components/ui/spinner';
@@ -12,8 +12,6 @@ import type { Conversation, Message as MessageType } from '@/lib/types';
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
 const STICKY_THRESHOLD = 120;
-/** How long after a wheel event the list's scroll events count as the user's. */
-const WHEEL_WINDOW_MS = 300;
 
 interface MessageListProps {
   conversation: Conversation | null;
@@ -63,18 +61,11 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // where the user actually is — scrolling away to read earlier messages must
   // not get yanked back on the next token.
   const isNearBottomRef = useRef(true);
-  // Whether the *user* is the one moving the list. `onScroll` fires for
-  // programmatic scrolls too, so without this the auto-follow reads its own
-  // scroll back and can latch stickiness off mid-stream.
+  // Whether the *user* is the one moving the list, on native. `onScroll`
+  // fires for programmatic scrolls too, so without this the auto-follow reads
+  // its own scroll back and can latch stickiness off mid-stream. The web does
+  // not use it — see handleScroll.
   const userDraggingRef = useRef(false);
-  // The web's half of the same fact. react-native-web reports drags only for
-  // touch: a mouse wheel or trackpad fires no onScrollBeginDrag, so on a
-  // desktop the list believed the reader was always at the newest message,
-  // and every change in content size — a streamed token, or an older page
-  // arriving at the top (#213) — threw them back to the bottom. A wheel event
-  // counts as the user moving the list for a moment after it; the scrolls it
-  // causes land well inside that window.
-  const wheelUntilRef = useRef(0);
 
   const scrollToNewest = useCallback(() => {
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
@@ -100,7 +91,16 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   };
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    if (!userDraggingRef.current && Date.now() > wheelUntilRef.current) return;
+    // Native reports every drag, so only a drag's scrolls count there. The
+    // web reports drags for touch only — a wheel, a trackpad, the scrollbar
+    // and the keyboard all arrive as bare scroll events — and gating on them
+    // left a desktop reader stuck to the newest message: every streamed token,
+    // and every older page landing at the top (#213), threw them back down.
+    // A window after each wheel event fixed the wheel and nothing else. So on
+    // the web every scroll event is taken at its word: the list's own scrolls
+    // only ever go to the newest message, offset 0, which reads back as
+    // exactly that.
+    if (Platform.OS !== 'web' && !userDraggingRef.current) return;
     updateStickiness(e);
   };
 
@@ -233,9 +233,6 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
         userDraggingRef.current = true;
       }}
       onScrollEndDrag={handleScrollEndDrag}
-      // @ts-expect-error -- web only: react-native-web forwards it to the
-      // scroll node, and FlatList's native types do not declare it.
-      onWheel={() => { wheelUntilRef.current = Date.now() + WHEEL_WINDOW_MS; }}
       onMomentumScrollEnd={handleMomentumScrollEnd}
       onContentSizeChange={handleContentSizeChange}
       scrollEventThrottle={100}

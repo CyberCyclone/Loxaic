@@ -32,3 +32,27 @@ export function prependOlder(current: readonly Message[], older: readonly Messag
   const have = new Set(current.flatMap((m) => (m.id ? [m.id] : [])))
   return [...older.filter((m) => !m.id || !have.has(m.id)), ...current]
 }
+
+/**
+ * A thread with its newest page of history applied — always applied, never
+ * skipped, which is what keeps the page's cursor true.
+ *
+ * - An empty thread is the page.
+ * - A thread filled from the offline cache is replaced by it: the server's copy
+ *   has whatever other devices added since.
+ * - A thread a live run has already started filling keeps those messages, with
+ *   the page's history in front (prependOlder: the live copy of a message both
+ *   have wins). A live run is always the newest thing in the thread, so it
+ *   belongs at the end.
+ *
+ * Skipping the page in that last case was the old rule, and it made the page's
+ * cursor a lie: paging back from the page's oldest row, with the page itself
+ * never shown, skipped every row in between. Deciding whether to record the
+ * cursor from a ref instead only moved the lie, since the ref and the state
+ * update can see different threads. Applying the page every time leaves nothing
+ * to decide.
+ */
+export function withNewestPage(current: readonly Message[], page: readonly Message[], fromCache: boolean): Message[] {
+  if (current.length === 0 || fromCache) return [...page]
+  return prependOlder(current, page)
+}

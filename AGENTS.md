@@ -431,13 +431,28 @@ replies.
   page when there is history left to scroll to (it arrives in order from the older page). No
   `lamport` — an older server — appends, as before. A finished run cannot be skipped on absence
   alone: it may equally be a *newer* run this device missed while disconnected.
-- **react-native-web reports drags for touch only.** A wheel or trackpad fires no
-  `onScrollBeginDrag`, so `MessageList` believed a desktop reader was always at the newest message
-  and snapped back on every content-size change — a streamed token, or an older page arriving at
-  the top, which made scroll-back impossible with a mouse. A wheel event now marks the next
-  `WHEEL_WINDOW_MS` of scroll events as the user's. `thread-history.spec.ts` scrolls with **real
-  wheel input**: the first version used `scrollIntoView`, which sends no wheel events, and passed
-  while a real reader could not get past the first page.
+- **react-native-web reports drags for touch only.** A wheel, a trackpad, a scrollbar drag and
+  the keyboard all fire no `onScrollBeginDrag`, so `MessageList` believed a desktop reader was
+  always at the newest message and snapped back on every content-size change — a streamed token,
+  or an older page arriving at the top, which made scroll-back impossible. On native only a drag's
+  scroll events count (the list's own scrolls must not latch stickiness off); **on the web every
+  scroll event counts**, because the list's own scrolls only ever go to offset 0, which reads back
+  as "at the newest message" anyway. The first fix counted a window after each *wheel* event and
+  so fixed the wheel alone — found in review. `thread-history.spec.ts` scrolls the agent case with
+  **real wheel input** and the chat case by setting the scroll position with neither wheel nor
+  touch (what a scrollbar or the keyboard looks like to the page); the latter fails on the
+  wheel-only version. Neither uses `scrollIntoView`, which puts its target on screen whatever the
+  list does next and so passed while a real reader could not get past the first page.
+- **The newest page is always applied** (`withNewestPage` in `lib/historyPages.ts`): merged in
+  front of a live run that filled the thread first, rather than skipped. Skipping it made the
+  page's cursor wrong — paging back from a page never shown skipped every row in between — and
+  deciding whether to record the cursor from a ref only moved the problem, since a ref and a
+  state update can see different threads (found in review). Applying the page every time also
+  means a thread opened while a run is live shows its history, not only the run.
+- **A late admin transcript response changes nothing.** `openDetail` checks the selected row after
+  its await; without that, a slow conversation's response installed its transcript *and cursor*
+  under another selected row, and "Load older" sent that cursor against the wrong conversation for
+  a 400.
 - **Follow-newest re-arms on the newest message's id, not the count** — prepending a page changes
   the count too.
 - The offline cache (`lib/message-cache.ts`) keeps only the newest 100 messages per thread, so

@@ -204,6 +204,36 @@ describe("GET /v1/conversations/:id/messages", () => {
     }
   });
 
+  it("refuses a real message id from another conversation, the same way", async () => {
+    // A row the caller can see, in a conversation they own: only the scoping
+    // of the cursor lookup to *this* conversation stands between it and a
+    // page cut against someone else's thread. Same 400 as an unknown id, so a
+    // cursor's validity is not something to probe.
+    const [other] = await db.insert(conversations).values({ ownerId: owner, title: "other", kind: "agent" }).returning();
+    const foreign = uuid();
+    await db.insert(messages).values({
+      id: foreign,
+      conversationId: other.id,
+      authorType: "user",
+      lamport: 1,
+      content: [{ kind: "text", text: "elsewhere" }],
+      status: "complete",
+      createdAt: new Date(),
+    });
+    try {
+      as(owner);
+      const res = await app.inject({ method: "GET", url: `/v1/conversations/${convId}/messages?before=${foreign}` });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "Unknown cursor" });
+      as(admin);
+      const adminRes = await app.inject({ method: "GET", url: `/v1/admin/conversations/${convId}/messages?before=${foreign}` });
+      expect(adminRes.statusCode).toBe(400);
+    } finally {
+      await db.delete(messages).where(eq(messages.conversationId, other.id));
+      await db.delete(conversations).where(eq(conversations.id, other.id));
+    }
+  });
+
   it("still 404s for someone who cannot see the conversation", async () => {
     as(stranger);
     const res = await app.inject({ method: "GET", url: `/v1/conversations/${convId}/messages` });

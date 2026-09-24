@@ -26,7 +26,7 @@ import {
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
-import { prependOlder, type HistoryPaging } from '@/lib/historyPages';
+import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
@@ -82,8 +82,6 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   // silently holding the old one until the app restarts.
   const endpoint = useEndpoint();
   const [runs, setRuns] = useState<Conversation[]>([]);
-  const runsRef = useRef(runs);
-  runsRef.current = runs;
   // Scroll-back through a run's history, a page at a time (#213).
   const applyOlder = useCallback((convId: string, older: Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: prependOlder(r.msgs, older) } : r)));
@@ -204,13 +202,10 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       .then((page) => {
         const msgs = reconstructMessages(page.messages);
         if (msgs.length === 0) return;
-        // The cursor only describes a run this page fills — see
-        // useChatSession for why. Decided from the ref, before the update.
-        const existing = runsRef.current.find((r) => r.id === id);
-        if (existing?.msgs.length === 0) recordPaging(id, page);
-        // Only fill a run that is still empty: one already streaming (or
-        // already populated by this same fetch) must not be clobbered.
-        setRuns((prev) => prev.map((r) => (r.id === id && r.msgs.length === 0 ? { ...r, msgs } : r)));
+        // Always applied — in front of a run already streaming, never instead
+        // of it — so the cursor is always true (see withNewestPage).
+        recordPaging(id, page);
+        setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
       })
       .catch(() => undefined);
   }, [recordPaging]);
