@@ -24,13 +24,27 @@ function listMarker(item: Tokens.ListItem, ordered: boolean, start: number, inde
   return ordered ? `${String(start + index)}.` : '•';
 }
 
+/**
+ * The marker column's width, from the widest marker in the list. A fixed 20px
+ * (`w-5`) fitted "9." and not "10.": on native the dot wrapped onto a line of
+ * its own, on web it ran into the item's text — and a plan (#199) is usually a
+ * numbered list long enough to show it. Sized per list rather than per item,
+ * so every item's text starts in the same column.
+ */
+function markerWidth(token: Tokens.List, start: number, ctx: RenderCtx): number {
+  const digits = token.ordered ? String(start + token.items.length - 1).length : 1;
+  const perDigit = ctx.size === 'sm' ? 8 : 9;
+  return 20 + Math.max(0, digits - 1) * perDigit;
+}
+
 function renderList(token: Tokens.List, ctx: RenderCtx, key: number): ReactNode {
   const start = typeof token.start === 'number' ? token.start : 1;
+  const width = markerWidth(token, start, ctx);
   return (
     <VStack key={key} className="my-1">
       {token.items.map((item, i) => (
         <HStack key={i} className={md.listRow}>
-          <Text size={ctx.size} className={md.listMarker}>
+          <Text size={ctx.size} className={md.listMarker} style={{ width }}>
             {listMarker(item, token.ordered, start, i)}
           </Text>
           <VStack className={md.listContent}>{renderBlocks(item.tokens, ctx)}</VStack>

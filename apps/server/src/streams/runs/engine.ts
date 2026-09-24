@@ -40,6 +40,7 @@ import { addChars, apportion, estimateTallyTokens, summaryMessage, tallyChatMess
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
+import { PLAN_TOOL_NAME } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import {
   attachActiveSandbox,
@@ -873,7 +874,7 @@ export async function runToolLoop(ctx: {
        * Callers `break` afterwards, never `return`: the auto-compaction trigger
        * sits past the `finally`, and only a `break` reaches it.
        */
-      const endTurnComplete = async (leafId: string): Promise<boolean> => {
+      const endTurnComplete = async (leafId: string, messageEnded = false): Promise<boolean> => {
         await db
           .update(conversations)
           .set({ activeLeafId: leafId, updatedAt: new Date() })
@@ -889,7 +890,11 @@ export async function runToolLoop(ctx: {
           windowTokens: breakdownMeta.windowTokens ?? null,
           historyMessages: history.messages.length,
         });
-        producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
+        // A turn ended by a handed-over plan has already sent this: its tools
+        // ran first, and message.end follows their results.
+        if (!messageEnded) {
+          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
+        }
         await producer.end("complete", { usage });
         return compact;
       };
@@ -948,7 +953,28 @@ export async function runToolLoop(ctx: {
 
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
+      // Set once a plan has been handed over in this message — see the end of
+      // the turn below.
+      let planHandedOver = false;
       for (const call of toolCalls) {
+        // Nothing runs after a plan in the same message. The turn ends on the
+        // plan, so the user is looking at it; a write queued behind it would
+        // otherwise put an approval in front of them for work nobody has
+        // agreed to. Recorded rather than dropped — every tool_call needs its
+        // tool_result partner, or the next replay carries an orphan.
+        if (planHandedOver) {
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output: PLAN_ALREADY_SUBMITTED,
+            ok: false,
+          });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: PLAN_ALREADY_SUBMITTED, ok: false });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, PLAN_ALREADY_SUBMITTED));
+          continue;
+        }
         // Checked per call, not just per iteration. A model routinely emits
         // several calls in one message — five was an ordinary turn in the
         // session that prompted #113 — and they run in series, `bash` capped
@@ -1028,6 +1054,7 @@ export async function runToolLoop(ctx: {
           ...(outcome.diff ? { diff: outcome.diff } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
+        if (call.function.name === PLAN_TOOL_NAME && outcome.ok) planHandedOver = true;
       }
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
 
@@ -1057,6 +1084,19 @@ export async function runToolLoop(ctx: {
           .where(eq(conversations.id, convId));
         await producer.end("cancelled");
         return;
+      }
+
+      // ── A handed-over plan ends the turn ───────────────────
+      //
+      // No further model request: what happens next is the user's decision on
+      // the plan, and it arrives as their next message (#199). Letting the loop
+      // run on would have the model restate the plan, or start on one nobody
+      // accepted. Before the check-in, so a plan is never followed by a
+      // question about whether to keep going; after the abort check, so a stop
+      // pressed during the plan's own call still ends the turn cancelled.
+      if (planHandedOver) {
+        autoCompact = await endTurnComplete(toolMsgId, true);
+        break;
       }
 
       // ── Check in, if this iteration earned one ─────────────
@@ -1435,6 +1475,10 @@ function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): str
  * it outright on the next turn.
  */
 const ANSWER_NOW_NOT_RUN = "Not run — the user asked for a final answer without tools.";
+
+/** A call made after a plan in the same message. Fixed text — it is replayed
+ * in every later prompt. */
+export const PLAN_ALREADY_SUBMITTED = "Not run — a plan was submitted earlier in the same message, which ends the turn.";
 
 /** How a step check-in ended. `continue`/`answer` are a person's answer;
  * `timeout` and `gone` are decided by `unattendedDecision`, and `aborted` is a

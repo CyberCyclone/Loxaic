@@ -90,12 +90,34 @@ export async function executeTool(
     switch (tool) {
       case "web_fetch": return await runWebFetch(args);
       case "todo_write": return runTodoWrite(args);
+      case "propose_plan": return runProposePlan(args);
       default:
         return { ok: false, output: `Unknown tool: ${tool}` };
     }
   } catch (err) {
     return { ok: false, output: `Error: ${(err as Error).message}` };
   }
+}
+
+// ── Plan ──────────────────────────────────────────────────
+
+/**
+ * What the model reads once its plan has been handed over (#199). Nothing is
+ * executed — the plan is in the call's own arguments, which is what the client
+ * renders — and the engine ends the turn after a successful call, so the model
+ * reads this beside the user's decision, on its next turn. Written for that
+ * moment, and fixed: it is replayed in every later prompt.
+ */
+export const PLAN_SUBMITTED = "The plan was shown to the user for review.";
+
+function runProposePlan(args: Record<string, unknown>): ToolResult {
+  // Refused with a reason rather than accepted: an empty plan would give the
+  // user a panel with nothing to decide on, and a refusal does not end the
+  // turn, so the model gets to call again with a real one.
+  if (typeof args.plan !== "string" || args.plan.trim() === "") {
+    return { ok: false, output: "plan must be a non-empty Markdown string." };
+  }
+  return { ok: true, output: PLAN_SUBMITTED };
 }
 
 // ── Filesystem ────────────────────────────────────────────

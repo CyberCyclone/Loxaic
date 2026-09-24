@@ -10,7 +10,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Markdown } from '@/components/markdown/Markdown';
 import { ThinkingBlock } from './ThinkingBlock';
-import { ToolCallCard } from './ToolCallCard';
+import { ToolOrPlanCard } from './PlanCard';
 import { LiveElapsed } from './LiveElapsed';
 import { CompactionCard } from './CompactionCard';
 import { AttachmentThumbs } from './AttachmentThumbs';
@@ -129,7 +129,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
             </HStack>
 
             {msg.thinking && <ThinkingBlock text={msg.thinking} live={liveThinking} since={elapsedSince} />}
-            {msg.tools?.map((tool, i) => <ToolCallCard key={i} tool={tool} />)}
+            {msg.tools?.map((tool, i) => <ToolOrPlanCard key={i} tool={tool} />)}
             {isUser && !!msg.attachments?.length && (
               <AttachmentThumbs
                 attachments={msg.attachments}

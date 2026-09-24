@@ -256,7 +256,23 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promis
 const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
-const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, unknown> }[] = [
+/**
+ * The mock's plan (#199), built from the prompt it answers so a revision is
+ * visibly a different plan from the one it revises, and long enough — forty
+ * lines — that the plan panel's body has to scroll on a short window, which is
+ * what its reachability check needs.
+ */
+function mockPlan(prompt: string): string {
+  const steps = Array.from({ length: 36 }, (_, i) => `${String(i + 1)}. Step ${String(i + 1)} of the mock plan.`);
+  return ["## Mock plan", "", `Asked: ${prompt}`, "", ...steps].join("\n");
+}
+
+const MOCK_TOOL_TRIGGERS: {
+  match: RegExp;
+  name: string;
+  /** Fixed arguments, or arguments built from the prompt. */
+  args: Record<string, unknown> | ((prompt: string) => Record<string, unknown>);
+}[] = [
   // MCP entries first — a trigger only fires when the tool is actually in
   // options.tools, so these double as a wiring test of the MCP registry.
   { match: /\bmcp echo\b/i, name: "mockmcp__echo", args: { text: "hello from mcp" } },
@@ -269,6 +285,11 @@ const MOCK_TOOL_TRIGGERS: { match: RegExp; name: string; args: Record<string, un
   // the default policy applied (no approval asked) and that the connection's
   // token reached the server.
   { match: /\bgithub who am i\b/i, name: "github__get_me", args: {} },
+  // Planning mode's hand-off. Before the `plan` trigger below, which would
+  // otherwise take the same prompt for todo_write; only planning mode offers
+  // propose_plan, so everywhere else this falls through to that one. Neither
+  // plan-decision message matches it.
+  { match: /\bpropose (?:a|the) plan\b/i, name: "propose_plan", args: (prompt) => ({ plan: mockPlan(prompt) }) },
   { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
   // Object keys deliberately NOT in an order Postgres jsonb preserves: it
   // re-sorts by key length then bytes, so these come back as id/text/status.
@@ -333,7 +354,7 @@ async function* mockStream(
         ? []
         : (() => {
             const t = MOCK_TOOL_TRIGGERS.find((x) => toolNames.has(x.name) && x.match.test(prompt));
-            return t ? [{ name: t.name, args: t.args }] : [];
+            return t ? [{ name: t.name, args: typeof t.args === "function" ? t.args(prompt) : t.args }] : [];
           })();
 
   // A prompt that takes long enough to still be running when the next one

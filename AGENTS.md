@@ -1147,6 +1147,67 @@ replies.
   the device clock, so a fast phone shows less time than the server is honouring. Unreachable
   today (`delivery.ts` always stamps it), but the comment once claimed the opposite of the code.
 
+### Plan review (planning mode's panel, #199)
+
+- **A plan is a `propose_plan` call, and a successful one ends the turn.** The tool
+  (`PLAN_TOOL` in `packages/agent`) is kept out of `TOOLS` and appended by
+  `resolveBuiltinTools(mode)` in planning mode only, so chat, routines and the working modes are
+  never offered it and `isToolName` keeps it off the "Allow always" list. It runs in-process — a
+  planning run that only plans never creates a sandbox — and the engine ends the turn after the
+  tool row, before the check-in block, through `endTurnComplete(toolMsgId, true)` (the flag
+  skips the second `message.end`) and `break`, so auto-compaction still runs. An empty plan is
+  `ok: false` with a reason and the loop continues; a call after a successful plan in the same
+  message is recorded not run (`PLAN_ALREADY_SUBMITTED`), so no approval can appear after a plan
+  has been handed over.
+- **The turn ends rather than blocking, deliberately.** A run parked on the plan would hold the
+  conversation's run lock (no sending while reading), lose the plan with the in-memory registry
+  on a restart (its `tool_call` would have no result, and `loadHistory` strips it), need a
+  timeout no plan review fits, and still need a new run for Accept — a run's mode, system prompt
+  and toolset are fixed for its life, and switching them mid-run breaks the prefix invariant
+  `prompt-prefix.test.ts` holds.
+- **Every decision is an ordinary message.** Accept sends `PLAN_ACCEPTED_MESSAGE` in the Default
+  mode from Settings (Manual when that is Planning), on the model chosen in the panel; a
+  suggestion is the typed text, and Reject `PLAN_REJECTED_MESSAGE`, both in planning. The texts
+  are fixed (`packages/types`) because the client reads a plan's status back from the reply
+  after it (`lib/plan.ts`), which is what makes the status survive a reload and agree across
+  devices with nothing stored. Reject costs one short model reply: without one, the next message
+  would put two user rows in a row, which some chat templates refuse.
+- **Only `ok === true` counts as a plan** on the client — a refused, stopped, answer-now-skipped
+  or unknown-tool call has `ok: false`, and one with no result yet has been shown to no one.
+- **Switching mode costs one full prompt re-evaluation.** Planning and the working modes differ
+  in system prompt and tool list, so Accept's first request re-evaluates the prompt. That was
+  already true of pressing the mode selector; the plan panel just does it for you.
+- **The panel opens by itself for the newest plan while it is pending**, for someone who can
+  decide, with nothing running — once per plan per session. Closing it, or sending a suggestion,
+  leaves `PlanReviewBar` above the toolbar until the plan is accepted or rejected. Viewers get
+  the bar, never a sheet over the thread.
+- **The model picker is a sibling of the panel, never stacked on it**: choosing swaps the sheet
+  for `ModelModal` and back, the rule `RoutineModal` set. The model list opens `SHEET_EXIT_MS`
+  *after* the sheet starts closing — iOS will not present a second modal while the first is still
+  being dismissed, and left the sheet on screen behind the list. A model chosen for a plan is keyed
+  to that plan's call id, so it never carries onto the next one, and it becomes the conversation's
+  model only when Accept is pressed.
+- **The sheet's height is set on its content, never by a class on `ActionsheetContent`.** On
+  native the vendored sheet appends `height: snapPoints ? … : undefined` *after* the caller's
+  styles, and `undefined` wins the flatten, so an `h-[92%]` class was erased on iOS and Android:
+  the sheet sized to the plan and pushed the whole footer off the screen — while web, which keeps
+  the class, passed its e2e. `snapPoints` is no fix either: it reads the window height once, at
+  module load, so a resized browser keeps the old one. `PlanPanel` sizes an inner view from
+  `useWindowDimensions()` and the safe-area insets instead. **Found only on the simulator.**
+- **The keyboard is padded for by hand.** The sheet's overlay is out of reach of the screen's
+  `KeyboardAvoidingView`, and one inside the sheet mis-measures it (the sheet is placed by a
+  transform), leaving the suggestion box under the keyboard on Android. `useKeyboardHeight`
+  pads the content instead — less the bottom inset on iOS, whose keyboard height includes it, and
+  whole on Android, whose does not. **Found only on the emulator**; the simulator uses the Mac's
+  keyboard, so the iOS side of this is unverified by eye.
+- **Markdown list markers are sized per list** (`markerWidth` in `components/markdown/blocks.tsx`).
+  A fixed `w-5` fitted "9." and not "10.": on native the dot wrapped onto its own line, on web it
+  ran into the text. Plans are numbered lists, which is how it surfaced; chat had it too.
+- **Answer-now in planning mode still produces prose**: `tool_choice: "none"` forbids the tool.
+  Documented, not changed.
+- **A client without this update shows a plan as a plain tool card**, and the model no longer
+  restates the plan as prose — the over-the-air update is what brings the panel.
+
 ### Automatic compaction
 
 - **The server compacts on its own** once a finished turn's `prompt + completion` crosses

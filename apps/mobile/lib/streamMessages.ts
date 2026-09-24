@@ -8,6 +8,7 @@ import { CHECKIN_ANSWER_NUDGE, type CompactionStats, type ContentBlock, type Fil
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
+import { PLAN_TOOL, planOf, planTitle } from '@/lib/plan';
 
 /** Every conversation id the server hands out is a Postgres row id, and so a
  * real UUID. The client's own optimistic placeholders
@@ -69,6 +70,10 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
       return typeof args.pattern === 'string' ? args.pattern : JSON.stringify(args);
     case 'web_fetch':
       return typeof args.url === 'string' ? args.url : JSON.stringify(args);
+    case PLAN_TOOL: {
+      const plan = planOf(tool, args);
+      return plan ? planTitle(plan) : 'Plan';
+    }
     case 'todo_write': {
       const todos = args.todos;
       const n = Array.isArray(todos) ? todos.length : 0;
@@ -77,6 +82,13 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
     default:
       return JSON.stringify(args);
   }
+}
+
+/** Spread into a ToolCall: `{ plan }` for a plan call, nothing otherwise, so
+ * no other card grows an explicit `plan: undefined`. */
+function withPlan(tool: string, args: Record<string, unknown>): { plan?: string } {
+  const plan = planOf(tool, args);
+  return plan === undefined ? {} : { plan };
 }
 
 export function diffLinesFor(diff: FileDiff[] | undefined): ToolCall['diff'] {
@@ -144,11 +156,13 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       for (const b of blocks) {
         if (b.kind !== 'tool_call') continue;
         const callId = b.call_id;
+        const args = (b.args ?? {}) as Record<string, unknown>;
         tools.push({
           tool: b.tool,
-          summary: toolSummary(b.tool, (b.args ?? {}) as Record<string, unknown>),
+          summary: toolSummary(b.tool, args),
           result: '',
           callId,
+          ...withPlan(b.tool, args),
         });
         callToMsgId.set(callId, row.id);
       }
@@ -214,6 +228,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
+            ...withPlan(tc.tool, tc.args),
           }))
         : undefined,
     usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
@@ -341,7 +356,13 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
               ...m,
               tools: [
                 ...(m.tools ?? []),
-                { tool: event.tool, summary: toolSummary(event.tool, event.args), result: '', callId: event.call_id },
+                {
+                  tool: event.tool,
+                  summary: toolSummary(event.tool, event.args),
+                  result: '',
+                  callId: event.call_id,
+                  ...withPlan(event.tool, event.args),
+                },
               ],
             }
           : m,

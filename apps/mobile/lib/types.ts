@@ -88,6 +88,9 @@ export interface ToolCall {
    * never "it succeeded". The card only tints on a positive `false`. Same rule
    * as the omitted-attachments notice. */
   ok?: boolean
+  /** A `propose_plan` call's plan, in Markdown — set on that tool only, from
+   * its arguments, by all three paths that build a ToolCall (#199). */
+  plan?: string
 }
 
 export interface DiffLine {
