@@ -55,7 +55,7 @@ jobs:
       # stable tag too — see the feed note in scripts/builder-variants.cjs.
       variants: ${{ steps.parse.outputs.variants }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # The tag's own commit is what `advance-branches` fast-forwards to,
@@ -111,7 +111,7 @@ jobs:
       TAG: ${{ needs.meta.outputs.tag }}
       PRERELEASE: ${{ needs.meta.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Created here rather than left to electron-builder, which would
@@ -179,18 +179,18 @@ jobs:
       # more foreign binaries for codesign to walk.
       TSNET_PROXY_HOST_ONLY: "1"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.meta.outputs.tag }}
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.4.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: infra/tsnet-proxy/go.mod
           cache-dependency-path: infra/tsnet-proxy/go.sum
@@ -272,7 +272,7 @@ jobs:
       SHA: ${{ needs.meta.outputs.sha }}
       PRERELEASE: ${{ needs.meta.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       # Not forced, deliberately: a tag cut from an older base would fail here
@@ -309,7 +309,7 @@ jobs:
       TAG: ${{ needs.meta.outputs.tag }}
       VARIANTS: ${{ join(fromJSON(needs.meta.outputs.variants), ' ') }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # The moment this runs, every installed desktop app can see the release.
@@ -431,14 +431,14 @@ jobs:
       EAS_ENVIRONMENT: ${{ matrix.variant == 'beta' && 'preview' || 'production' }}
       APP_VARIANT: ${{ matrix.variant }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.meta.outputs.tag }}
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.4.1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: pnpm
@@ -446,7 +446,7 @@ jobs:
       # to every later step, and `pnpm install` runs third-party postinstall
       # scripts that have no business seeing it.
       - run: pnpm install --frozen-lockfile
-      - uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+      - uses: expo/expo-github-action@eab7a230208c952974db8c3245cfd78402c7b385 # v9
         with:
           # Pinned to a major, not `latest`: the publish step reads eas-cli's
           # --json output field by field, so a CLI whose output changed would
