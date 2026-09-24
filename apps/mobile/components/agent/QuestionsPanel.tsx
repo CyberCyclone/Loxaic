@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { CheckSquare, Circle, CircleDot, MessageCircleQuestion, Square } from 'lucide-react-native';
 import { Button, ButtonText } from '@/components/ui/button';
 import { HStack } from '@/components/ui/hstack';
@@ -29,6 +29,13 @@ interface Draft extends Answer {
 
 const empty = (): Draft => ({ selected: [], other: '', otherOn: false });
 
+/** Where someone is in one set of questions, and what they have chosen. */
+interface Progress {
+  callId: string;
+  step: number;
+  drafts: Draft[];
+}
+
 /** What the panel hands back: "Other" counts only while it is chosen. */
 function toAnswer(d: Draft): Answer {
   return { selected: d.selected, other: d.otherOn ? d.other : '' };
@@ -44,15 +51,22 @@ function toAnswer(d: Draft): Answer {
  */
 export function QuestionsPanel({ questions, status, blockedReason, onSubmit, onClose }: QuestionsPanelProps) {
   const list = questions?.questions ?? [];
-  const [step, setStep] = useState(0);
-  const [drafts, setDrafts] = useState<Draft[]>([]);
-
-  // A different set of questions starts from the first, with nothing chosen.
-  const callId = questions?.callId;
-  useEffect(() => {
-    setStep(0);
-    setDrafts([]);
-  }, [callId]);
+  // Keyed to the call it belongs to, not reset by an effect: closing the panel
+  // to look something up in the thread and reopening it must not throw away
+  // the answers so far, and a different set of questions must start empty on
+  // its very first frame rather than one render after.
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const callId = questions?.callId ?? null;
+  const mine = progress?.callId === callId ? progress : null;
+  const step = mine?.step ?? 0;
+  const drafts = mine?.drafts ?? [];
+  const change = (fn: (p: Progress) => Progress) => {
+    if (callId === null) return;
+    setProgress((prev) => fn(prev?.callId === callId ? prev : { callId, step: 0, drafts: [] }));
+  };
+  const setStep = (fn: (s: number) => number) => {
+    change((p) => ({ ...p, step: fn(p.step) }));
+  };
 
   const canAnswer = status === 'pending' && blockedReason === null;
   const q = list[Math.min(step, list.length - 1)] as Question | undefined;
@@ -61,10 +75,10 @@ export function QuestionsPanel({ questions, status, blockedReason, onSubmit, onC
   const last = step >= list.length - 1;
 
   const update = (next: Draft) => {
-    setDrafts((prev) => {
-      const copy = [...prev];
-      copy[step] = next;
-      return copy;
+    change((p) => {
+      const copy = [...p.drafts];
+      copy[p.step] = next;
+      return { ...p, drafts: copy };
     });
   };
 

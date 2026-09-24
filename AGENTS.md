@@ -1169,14 +1169,28 @@ replies.
   persists `PLAN_REQUIRED_NUDGE` as a user row (`authorUserId: null`, like the check-in nudge —
   a persisted row so the next turn replays it byte for byte), and asks again with
   `tool_choice: "required"`. A second prose answer ends the turn and is shown as it is. Never on
-  an answer-now turn, which asked for words. `required` is sent on that one request only, so
-  every ordinary request is unchanged; checked against LM Studio (it called `propose_plan` when
+  an answer-now turn, which asked for words. `required` is sent on that one request only — the
+  flag is cleared as the request goes out, because a nudged request may call a read tool
+  instead of handing over, and a flag left set forced a tool on every request after it, so the
+  model could never answer in words and worked on, holding the slot, until the step check-in
+  (found in review; `planning-handover.test.ts` has the detour case). Every ordinary request is
+  unchanged; checked against LM Studio (it called `propose_plan` when
   asked for words), and llama.cpp, vLLM and OpenAI document it. The client renders the row as a
   notice (`chat.message.planNudge`), not a bubble nobody typed.
 - **Answers are one message, sent in planning** (`formatAnswers`: `QUESTIONS_ANSWERED_PREFIX`,
   then each question with its chosen labels and any "Other" text). A question set is `answered`
   once any user row follows it. A rejected plan is answered with questions about what to do
-  instead, never with another plan.
+  instead, never with another plan — and `PLAN_REJECTED_MESSAGE` itself asks for them. It used to
+  say "wait for my next message", which contradicts the prompt: a model that obeys it answers in
+  prose, which costs every rejection the nudge and a second request. The mock hid that by
+  special-casing the rejection text; it now reads the rejection's own words ("Ask me…") like any
+  other prompt, so the wording is what the test checks.
+- **A panel's draft is keyed to its call id, never reset by an effect.** The panels stay mounted
+  with a null item while closed, so an effect on the call id fired on every close and threw away
+  half-answered questions or a half-typed suggestion. State that carries the call id it belongs
+  to survives closing and reopening the same item, and reads as empty on the first frame of a
+  different one. Statuses come from one pass over the thread (`reviewStatuses`) — they are
+  recomputed on every streamed token.
 - **The turn ends rather than blocking, deliberately.** A run parked on the plan would hold the
   conversation's run lock (no sending while reading), lose the plan with the in-memory registry
   on a restart (its `tool_call` would have no result, and `loadHistory` strips it), need a
@@ -1206,7 +1220,8 @@ replies.
   would have to learn them again.
 - **The mock plans in planning whatever is asked** (`planningFinish` in `inference/provider.ts`):
   a trigger's tool runs first and the turn then ends in `propose_plan` instead of "[Mock] Done";
-  "ask me"/"questions" asks `MOCK_QUESTIONS`; answers and the nudge go straight to a plan;
+  "ask me"/"questions" asks `MOCK_QUESTIONS` (which is also how a rejection gets its questions);
+  answers and the nudge go straight to a plan;
   "answer in prose" answers in prose until `tool_choice` is `required`, which is how the nudge is
   tested end to end.
 - **The model picker is a sibling of the panel, never stacked on it**: choosing swaps the sheet

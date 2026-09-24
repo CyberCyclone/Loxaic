@@ -118,6 +118,14 @@ describe('planning ends in a plan or questions', () => {
 
     await tap('agent.questions.option.0.0');
     if (await isDisabled('agent.questions.next')) throw new Error('Next stayed disabled after choosing an option');
+
+    // Closing to look something up and coming back keeps what was chosen.
+    await tap('agent.questions.close');
+    await waitForGone('agent.questions.panel');
+    await waitForTextIn('agent.plan.bar.label', 'Questions waiting for your answers');
+    await tap('agent.plan.bar');
+    await waitForTextIn('agent.questions.question', Q1);
+    if (await isDisabled('agent.questions.next')) throw new Error('closing the panel threw away the answer');
     await tap('agent.questions.next');
 
     // The second is multi-select: an option and "Other" together.

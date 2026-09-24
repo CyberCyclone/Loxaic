@@ -89,14 +89,9 @@ export function latestPlan(msgs: readonly Message[]): ProposedPlan | null {
 }
 
 export function planStatus(msgs: readonly Message[], callId: string): PlanStatus | null {
-  const all = plansIn(msgs)
-  const at = all.findIndex((p) => p.callId === callId)
-  if (at < 0) return null
-  const reply = msgs.slice(all[at].index + 1).find((m) => m.role === 'user')
-  if (reply?.text === PLAN_ACCEPTED_MESSAGE) return 'accepted'
-  if (reply?.text === PLAN_REJECTED_MESSAGE) return 'rejected'
-  if (at < all.length - 1) return 'superseded'
-  return reply ? 'changes' : 'pending'
+  const items = reviewItemsIn(msgs)
+  if (!items.some((i) => i.kind === 'plan' && i.callId === callId)) return null
+  return (reviewStatuses(msgs, items).get(callId) as PlanStatus | undefined) ?? null
 }
 
 /**
@@ -195,7 +190,45 @@ export function reviewItemsIn(msgs: readonly Message[]): ReviewItem[] {
 export function questionsStatus(msgs: readonly Message[], callId: string): QuestionsStatus | null {
   const item = reviewItemsIn(msgs).find((i) => i.callId === callId && i.kind === 'questions')
   if (!item) return null
-  return msgs.slice(item.index + 1).some((m) => m.role === 'user') ? 'answered' : 'pending'
+  return (reviewStatuses(msgs, [item]).get(callId) as QuestionsStatus | undefined) ?? null
+}
+
+/**
+ * Every plan's and question set's status, keyed by call id, in one pass over
+ * the thread. This runs on every streamed token (useReview), so it must not
+ * rescan the thread per item: the reply each item is judged by is the first
+ * user message after it, found for every position at once by one walk from the
+ * end. `items` defaults to every item in `msgs`; "superseded" is judged
+ * against the plans among them.
+ */
+export function reviewStatuses(
+  msgs: readonly Message[],
+  items: readonly ReviewItem[] = reviewItemsIn(msgs),
+): Map<string, PlanStatus | QuestionsStatus> {
+  // nextUser[i]: the first user message after position i, if any.
+  const nextUser: (Message | undefined)[] = new Array<Message | undefined>(msgs.length)
+  let seen: Message | undefined
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    nextUser[i] = seen
+    if (msgs[i].role === 'user') seen = msgs[i]
+  }
+  const lastPlan = items.filter((i) => i.kind === 'plan').at(-1)?.callId
+  const out = new Map<string, PlanStatus | QuestionsStatus>()
+  for (const item of items) {
+    const reply = nextUser[item.index]
+    if (item.kind === 'questions') {
+      out.set(item.callId, reply ? 'answered' : 'pending')
+    } else if (reply?.text === PLAN_ACCEPTED_MESSAGE) {
+      out.set(item.callId, 'accepted')
+    } else if (reply?.text === PLAN_REJECTED_MESSAGE) {
+      out.set(item.callId, 'rejected')
+    } else if (item.callId !== lastPlan) {
+      out.set(item.callId, 'superseded')
+    } else {
+      out.set(item.callId, reply ? 'changes' : 'pending')
+    }
+  }
+  return out
 }
 
 /** One question's answer as the panel collects it: the options chosen (by

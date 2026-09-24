@@ -722,6 +722,13 @@ export async function runToolLoop(ctx: {
       const emitProgress = promptProgressEmitter(stats, (e) => {
         producer.emit(e);
       });
+      // The nudge's "required" is for this one request. Cleared as it goes
+      // out: a nudged request that calls a read tool instead of handing over
+      // would otherwise force a tool on every request after it, so the model
+      // could never answer in words again and would work on, holding the
+      // slot, until it planned or reached the step check-in.
+      const forceTool = requireTool;
+      requireTool = false;
       try {
         // markBackendErrors is what separates the backend's words from ours:
         // only what the stream itself throws is stored as the reason, since
@@ -735,7 +742,7 @@ export async function runToolLoop(ctx: {
             // full prompt re-evaluation on exactly the wrong request.
             ...(answerNow
               ? { toolChoice: "none" as const }
-              : requireTool
+              : forceTool
                 ? { toolChoice: "required" as const }
                 : {}),
             reportProgress,

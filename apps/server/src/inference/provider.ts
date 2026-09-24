@@ -1,5 +1,5 @@
 import type { PromptProgress } from "@loxaic/types";
-import { PLAN_REJECTED_MESSAGE, PLAN_REQUIRED_NUDGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
+import { PLAN_REQUIRED_NUDGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
 import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
@@ -408,10 +408,6 @@ async function* mockStream(
         ? planningFinish()
         : (() => {
             if (planning && MOCK_PROSE_MATCH.test(prompt) && options.toolChoice !== "required") return [];
-            // A rejected plan is answered with questions — what would the
-            // user like instead — never with another plan; the text mentions
-            // "plan", so it is decided before the triggers see it.
-            if (planning && prompt === PLAN_REJECTED_MESSAGE) return [{ name: "ask_questions", args: MOCK_QUESTIONS }];
             // The nudge's own words ("your plan") would match the todo trigger;
             // it is asking for the plan, so that is what it gets.
             if (planning && prompt === PLAN_REQUIRED_NUDGE) return planningFinish();

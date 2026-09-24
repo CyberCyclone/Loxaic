@@ -226,12 +226,13 @@ export default function AgentScreen() {
   const deletingRun = runs.find((r) => r.id === deletingId) ?? null;
 
   // ── Plans (#199) ─────────────────────────────────────────
-  // Why the plan's buttons are not offered right now, or null when they are.
-  const planBlockedReason =
+  // Why a panel's buttons are not offered right now, or null when they are —
+  // worded for what the panel is holding, a plan or questions.
+  const blockedReason = (what: 'decide on this plan' | 'answer these questions'): string | null =>
     activeRun && !canEdit(activeRun)
-      ? 'This run is shared with you for viewing — only the people who can send in it can decide on the plan.'
+      ? `This run is shared with you for viewing — only the people who can send in it can ${what}.`
       : connection !== 'online'
-        ? "You're offline — you can decide on this plan once your server is reachable."
+        ? `You're offline — you can ${what} once your server is reachable.`
         : busy
           ? 'The agent is still working in this conversation.'
           : null;
@@ -524,7 +525,7 @@ export default function AgentScreen() {
         plan={openPlan?.plan ?? null}
         hidden={pickingPlanModel !== null}
         status={openPlan ? (planReview.openStatus as PlanStatus | null) : null}
-        blockedReason={planBlockedReason}
+        blockedReason={blockedReason('decide on this plan')}
         defaultMode={planMode}
         executionModelName={executionModel ? getName(executionModel) : 'Select model'}
         onPickModel={() => {
@@ -543,7 +544,7 @@ export default function AgentScreen() {
       <QuestionsPanel
         questions={openQuestions?.questions ?? null}
         status={openQuestions ? (planReview.openStatus as QuestionsStatus | null) : null}
-        blockedReason={planBlockedReason}
+        blockedReason={blockedReason('answer these questions')}
         // Answers are one message, sent in planning: the agent is still
         // refining the plan, and the reply it owes is a plan or more questions.
         onSubmit={(answers) => {

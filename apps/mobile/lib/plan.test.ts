@@ -14,6 +14,7 @@ import {
   questionsOf,
   questionsStatus,
   reviewItemsIn,
+  reviewStatuses,
 } from './plan';
 import { reconstructMessages } from './streamMessages';
 import type { Message } from './types';
@@ -159,6 +160,32 @@ describe('questions', () => {
       'Answers to your questions:\n\n1. Which part first?\n→ The API\n2. Which checks?\n→ Unit; QA; and a smoke test',
     );
     expect(formatAnswers(parsed, [{ selected: [], other: 'Neither — the CLI' }, undefined])).toContain('→ Neither — the CLI\n2. Which checks?\n→ (no answer)');
+  });
+
+  it('judges every item of a mixed thread in one pass, each by the reply after it', () => {
+    const msgs = [
+      user('Plan the login fix'),
+      planMsg('p1', '1. First try'),
+      user('Add a test step'),
+      planMsg('p2', '1. Second try'),
+      user(PLAN_REJECTED_MESSAGE),
+      questionsMsg('q1'),
+      user('Answers to your questions: …'),
+      planMsg('p3', '1. Third try'),
+      user(PLAN_ACCEPTED_MESSAGE),
+      planMsg('p4', '1. Fourth try'),
+    ];
+    expect(Object.fromEntries(reviewStatuses(msgs))).toEqual({
+      p1: 'superseded',
+      p2: 'rejected',
+      q1: 'answered',
+      p3: 'accepted',
+      p4: 'pending',
+    });
+    // The per-item readers agree with it.
+    expect(planStatus(msgs, 'p2')).toBe('rejected');
+    expect(planStatus(msgs, 'q1')).toBeNull();
+    expect(questionsStatus(msgs, 'q1')).toBe('answered');
   });
 
   it('counts an answer as given once an option is chosen or Other has text', () => {

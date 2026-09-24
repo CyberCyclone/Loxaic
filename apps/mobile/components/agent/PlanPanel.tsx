@@ -70,17 +70,24 @@ export function PlanPanel({
   onReject,
   onClose,
 }: PlanPanelProps) {
-  const [suggesting, setSuggesting] = useState(false);
-  const [draft, setDraft] = useState('');
+  // The suggestion being written, keyed to the plan it is about: it survives
+  // closing the panel and reopening it on the same plan, and a different plan
+  // never sees it — a half-typed suggestion about the last plan must not be
+  // sent against this one.
+  const [suggestion, setSuggestion] = useState<{ callId: string; text: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [acceptMenu, setAcceptMenu] = useState(false);
 
-  // A different plan is a different question: a half-typed suggestion about
-  // the last one must not be sent against this one.
-  const callId = plan?.callId;
+  const callId = plan?.callId ?? null;
+  const mine = suggestion?.callId === callId ? suggestion : null;
+  const suggesting = mine !== null;
+  const draft = mine?.text ?? '';
+  const setDraft = (text: string) => {
+    if (callId !== null) setSuggestion({ callId, text });
+  };
+
+  // Transient, so reset whenever the panel closes or shows another plan.
   useEffect(() => {
-    setSuggesting(false);
-    setDraft('');
     setCopied(false);
     setAcceptMenu(false);
   }, [callId]);
@@ -92,8 +99,7 @@ export function PlanPanel({
     const text = draft.trim();
     if (!text) return;
     onSuggest(text);
-    setDraft('');
-    setSuggesting(false);
+    setSuggestion(null);
   };
 
   return (
@@ -139,7 +145,7 @@ export function PlanPanel({
               />
             </Textarea>
             <HStack space="sm" className="justify-end">
-              <Button testID="agent.plan.suggestion.back" variant="outline" size="sm" onPress={() => { setSuggesting(false); }}>
+              <Button testID="agent.plan.suggestion.back" variant="outline" size="sm" onPress={() => { setSuggestion(null); }}>
                 <ButtonText>Back</ButtonText>
               </Button>
               <Button testID="agent.plan.suggestion.send" size="sm" isDisabled={draft.trim() === ''} onPress={sendSuggestion}>
@@ -194,7 +200,7 @@ export function PlanPanel({
               <Button testID="agent.plan.reject" variant="outline" size="sm" onPress={onReject}>
                 <ButtonText className="text-destructive">Reject</ButtonText>
               </Button>
-              <Button testID="agent.plan.suggest" variant="outline" size="sm" onPress={() => { setSuggesting(true); }}>
+              <Button testID="agent.plan.suggest" variant="outline" size="sm" onPress={() => { setDraft(''); }}>
                 <ButtonText>Offer suggestion</ButtonText>
               </Button>
               {/* A split button: the main half accepts in the Default mode —

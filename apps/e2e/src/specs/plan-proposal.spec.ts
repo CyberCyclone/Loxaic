@@ -44,7 +44,7 @@ const PLAN_PROMPT = 'Look around, then propose a plan.';
 const SUGGESTION = 'Run the tests first, then propose a plan again.';
 /** Mirrors PLAN_ACCEPTED_MESSAGE / PLAN_REJECTED_MESSAGE in @loxaic/types. */
 const ACCEPTED = 'I accept this plan. Go ahead and implement it.';
-const REJECTED = "I'm rejecting this plan — don't implement it.";
+const REJECTED = "I'm rejecting this plan — don't implement it. Ask me what I'd like instead.";
 /** The mock's second model, for running the work on something other than
  * what planned it. */
 const EXECUTION_MODEL = 'qwen2.5-14b-instruct';

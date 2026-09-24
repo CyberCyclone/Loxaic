@@ -77,11 +77,13 @@ export const CHECKIN_ANSWER_NUDGE =
  * Fixed text, never interpolated, for that reading back: the client matches on
  * these exact strings. Rejecting costs one short model reply, deliberately —
  * without one, the next message would put two user rows in a row, which some
- * chat templates refuse.
+ * chat templates refuse. The rejection asks for that reply to be questions,
+ * agreeing with the planning prompt: it used to say "wait for my next
+ * message", which a model obeys with prose, and so every rejection also
+ * earned the prose nudge and a second request before the questions came.
  */
 export const PLAN_ACCEPTED_MESSAGE = "I accept this plan. Go ahead and implement it.";
-export const PLAN_REJECTED_MESSAGE =
-  "I'm rejecting this plan — don't implement it. Wait for my next message before doing anything else.";
+export const PLAN_REJECTED_MESSAGE = "I'm rejecting this plan — don't implement it. Ask me what I'd like instead.";
 
 /**
  * Persisted as a user row when a planning turn answers in prose (#199): the
