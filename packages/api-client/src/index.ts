@@ -804,16 +804,21 @@ export async function adminPatchShare(
 }
 
 /**
- * A conversation's messages, read-only, for the admin screen.
+ * A conversation's messages, read-only, for the admin screen — newest page
+ * first, the same paging as `getMessages`.
  *
  * The only way to read a conversation this deployment retained after its
  * owner deleted it. Live conversations are readable here too — an admin
  * already resolves to a viewer on those — so the screen does not have to
  * branch on which kind it is showing.
  */
-export async function adminGetMessages(conversationId: string): Promise<AdminMessage[]> {
-  const res = await authedFetch(`/v1/admin/conversations/${conversationId}/messages`);
-  return ((await res.json()) as { messages: AdminMessage[] }).messages;
+export async function adminGetMessages(
+  conversationId: string,
+  opts: { before?: string } = {},
+): Promise<{ messages: AdminMessage[]; hasMore?: boolean; before?: string | null }> {
+  const query = opts.before ? `?before=${encodeURIComponent(opts.before)}` : "";
+  const res = await authedFetch(`/v1/admin/conversations/${conversationId}/messages${query}`);
+  return (await res.json()) as { messages: AdminMessage[]; hasMore?: boolean; before?: string | null };
 }
 
 /** Give a retained conversation back to its owner. Its shares come back with
@@ -1020,15 +1025,34 @@ export interface ApiMessage {
   usage: ApiMessageUsage | null;
 }
 
+/**
+ * One page of a thread's history, oldest first. The first call returns the
+ * newest page; pass the page's `before` back to get the one older than it.
+ * A page always holds whole turns, so a tool call and its result never
+ * straddle two pages (#213).
+ *
+ * `hasMore`/`before` are absent from a server that predates paging, which
+ * returned a single page and nothing older — read absence as "nothing to load",
+ * never as a reason to ask again.
+ */
+export interface MessagePage {
+  messages: ApiMessage[];
+  forks: unknown;
+  hasMore?: boolean;
+  before?: string | null;
+}
+
 export async function getMessages(
   conversationId: string,
-): Promise<{ messages: ApiMessage[]; forks: unknown }> {
+  opts: { before?: string } = {},
+): Promise<MessagePage> {
   const token = await getAuthToken();
-  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+  const query = opts.before ? `?before=${encodeURIComponent(opts.before)}` : "";
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages${query}`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
   if (!res.ok) throw new ApiError(`Messages failed: ${String(res.status)}`, res.status);
-  return res.json() as Promise<{ messages: ApiMessage[]; forks: unknown }>;
+  return res.json() as Promise<MessagePage>;
 }
 
 // ── Routines ──────────────────────────────────────────────

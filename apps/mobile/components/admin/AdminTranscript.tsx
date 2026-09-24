@@ -2,11 +2,17 @@ import { VStack } from '@/components/ui/vstack';
 import { HStack } from '@/components/ui/hstack';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
+import { Button, ButtonText } from '@/components/ui/button';
 import type { AdminMessage } from '@loxaic/api-client';
 
 interface AdminTranscriptProps {
   messages: AdminMessage[];
   loading: boolean;
+  /** Whether older messages exist than the ones shown — the transcript opens
+   * on the newest page (#213). */
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?: () => void;
 }
 
 /** One message's readable text, plus the names of anything attached.
@@ -45,7 +51,7 @@ const AUTHOR_LABEL: Record<string, string> = {
  * it; rendering it like the chat surface would invite acting in it, which this
  * screen cannot do.
  */
-export function AdminTranscript({ messages, loading }: AdminTranscriptProps) {
+export function AdminTranscript({ messages, loading, hasOlder, loadingOlder, onLoadOlder }: AdminTranscriptProps) {
   if (loading) {
     return (
       <Text size="sm" className="text-muted-foreground">
@@ -62,6 +68,18 @@ export function AdminTranscript({ messages, loading }: AdminTranscriptProps) {
   }
   return (
     <VStack testID="admin.transcript" space="sm">
+      {hasOlder && onLoadOlder && (
+        <Button
+          testID="admin.transcript.loadOlder"
+          variant="outline"
+          size="sm"
+          isDisabled={loadingOlder}
+          onPress={onLoadOlder}
+          className="self-start"
+        >
+          <ButtonText>{loadingOlder ? 'Loading…' : 'Load older messages'}</ButtonText>
+        </Button>
+      )}
       {messages.map((m) => (
         <Box key={m.id} className="rounded-md border border-border bg-card px-2.5 py-2">
           <HStack space="xs" className="items-center">

@@ -243,3 +243,50 @@ describe('usage arrives per request (#193)', () => {
     expect(m.usage?.in).toBe(1200);
   });
 });
+
+describe('a snapshot folded into a thread loaded a page at a time (#213)', () => {
+  const snap = (...ms: { id: string; lamport?: number; text: string }[]) =>
+    ({
+      status: 'complete',
+      messages: ms.map((m) => ({
+        message_id: m.id,
+        author_type: 'assistant',
+        parent_id: null,
+        ...(m.lamport === undefined ? {} : { lamport: m.lamport }),
+        text: m.text,
+        thinking: '',
+        tool_calls: [],
+        status: 'complete',
+      })),
+    }) as unknown as StreamSnapshot;
+  const loaded: Message[] = [
+    { id: 'u2', role: 'user', text: 'long turn', lamport: 200 },
+    { id: 'a2', role: 'assistant', text: 'done', lamport: 300 },
+  ];
+
+  it('leaves out a run older than the loaded page when there is more history to scroll to', () => {
+    const msgs = applySnapshotToMsgs(loaded, snap({ id: 'a1', lamport: 100, text: 'old echo' }), { olderUnloaded: true });
+    expect(msgs.map((m) => m.id)).toEqual(['u2', 'a2']);
+  });
+
+  it('places it by lamport when the whole thread is loaded', () => {
+    const msgs = applySnapshotToMsgs(loaded, snap({ id: 'a1', lamport: 100, text: 'old echo' }));
+    expect(msgs.map((m) => m.id)).toEqual(['a1', 'u2', 'a2']);
+  });
+
+  it('still appends a newer run this device missed while it was away', () => {
+    const msgs = applySnapshotToMsgs(loaded, snap({ id: 'a3', lamport: 400, text: 'newer' }), { olderUnloaded: true });
+    expect(msgs.map((m) => m.id)).toEqual(['u2', 'a2', 'a3']);
+  });
+
+  it('appends a message with no lamport, as an older server sends', () => {
+    const msgs = applySnapshotToMsgs(loaded, snap({ id: 'x', text: 'no position' }), { olderUnloaded: true });
+    expect(msgs.map((m) => m.id)).toEqual(['u2', 'a2', 'x']);
+  });
+
+  it('keeps an optimistic bubble last', () => {
+    const withBubble: Message[] = [...loaded, { id: 'lm1', role: 'user', text: 'sending' }];
+    const msgs = applySnapshotToMsgs(withBubble, snap({ id: 'a1', lamport: 100, text: 'old' }));
+    expect(msgs.map((m) => m.id)).toEqual(['a1', 'u2', 'a2', 'lm1']);
+  });
+});

@@ -27,6 +27,7 @@ import { startMockGithub, VALID_TOKEN } from './mock-github.ts';
 import { startMockProvider } from './mock-provider.ts';
 import { startMockHf, type MockHf } from './mock-hf.ts';
 import { startGitServer, type GitServer } from './git-server.ts';
+import { longHistoryScenario } from './long-history.ts';
 
 const E2E_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REPO_ROOT = path.resolve(E2E_DIR, '../..');
@@ -207,6 +208,16 @@ const FIXTURES_DIR = path.join(E2E_DIR, 'fixtures');
  * it), and every mock-lane spec that drives a multi-step scenario needs it
  * wired, not just the ones that happen to be running today. */
 const SCENARIOS_FIXTURE = path.join(FIXTURES_DIR, 'scenarios.json');
+/** What the server is actually given: the fixture plus the scenarios that are
+ * generated rather than written out (see long-history.ts). */
+const SCENARIOS_FILE = path.join(RUN_DIR, 'scenarios.json');
+
+function writeScenarios(): string {
+  const fixture = JSON.parse(readFileSync(SCENARIOS_FIXTURE, 'utf8')) as unknown[];
+  mkdirSync(RUN_DIR, { recursive: true });
+  writeFileSync(SCENARIOS_FILE, JSON.stringify([...fixture, longHistoryScenario()]), 'utf8');
+  return SCENARIOS_FILE;
+}
 
 interface Health {
   status: string;
@@ -426,7 +437,7 @@ async function ensureServer(): Promise<void> {
       // the rows this harness's boot backfill creates in the shared database
       // keep pointing at GitHub once the harness has gone.
       GITHUB_MCP_URL: mockGithubMcpUrlValue,
-      MOCK_SCENARIOS_FILE: SCENARIOS_FIXTURE,
+      MOCK_SCENARIOS_FILE: writeScenarios(),
       // Lets a networked sandbox reach this machine's git server by name on
       // Linux and Podman; Docker Desktop resolves it without help. Network
       // itself stays off by default — a spec that clones turns it on through

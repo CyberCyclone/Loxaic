@@ -26,6 +26,8 @@ import {
 import { useEndpoint } from './useEndpoint';
 import { setConnectionState } from '@/lib/connection';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
+import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
+import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
@@ -80,6 +82,13 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   // silently holding the old one until the app restarts.
   const endpoint = useEndpoint();
   const [runs, setRuns] = useState<Conversation[]>([]);
+  // Scroll-back through a run's history, a page at a time (#213).
+  const applyOlder = useCallback((convId: string, older: Message[]) => {
+    setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: prependOlder(r.msgs, older) } : r)));
+  }, []);
+  const olderMessages = useOlderMessages(applyOlder);
+  const recordPaging = olderMessages.record;
+  const hasOlderHistory = olderMessages.hasOlder;
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [mode, setModeState] = useState<PermissionMode>('manual');
   const [runState, setRunState] = useState<RunState>('done');
@@ -190,15 +199,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     if (!id || !isServerConvId(id) || loadedConvIdsRef.current.has(id)) return;
     loadedConvIdsRef.current.add(id);
     getMessages(id)
-      .then(({ messages: rows }) => {
-        const msgs = reconstructMessages(rows);
+      .then((page) => {
+        const msgs = reconstructMessages(page.messages);
         if (msgs.length === 0) return;
-        // Only fill a run that is still empty: one already streaming (or
-        // already populated by this same fetch) must not be clobbered.
-        setRuns((prev) => prev.map((r) => (r.id === id && r.msgs.length === 0 ? { ...r, msgs } : r)));
+        // Always applied — in front of a run already streaming, never instead
+        // of it — so the cursor is always true (see withNewestPage).
+        recordPaging(id, page);
+        setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
       })
       .catch(() => undefined);
-  }, []);
+  }, [recordPaging]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
@@ -373,7 +383,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         const convId = event.conversation_id;
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
-        updateRunMsgs(convId, (msgs) => applySnapshotToMsgs(msgs, event.snapshot));
+        updateRunMsgs(convId, (msgs) =>
+          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }),
+        );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         if (event.status !== 'active') {
           const tracked = streamingByConvRef.current[convId];
@@ -556,7 +568,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       appStateSub.remove();
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {
@@ -759,6 +771,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     || effectiveRunState === 'awaiting_approval' || effectiveRunState === 'awaiting_checkin'
     || effectiveRunState === 'stopping';
 
+  // Absent for a thread whose history was never fetched — the record type
+  // does not say so, hence the cast.
+  const activePaging = activeId ? (olderMessages.paging[activeId] as HistoryPaging | undefined) : undefined;
   return {
     runs,
     activeId,
@@ -791,6 +806,14 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     handleDelete,
     handleRename,
     setRunModel,
+    /** Scroll-back for the open run; see useOlderMessages. */
+    history: activeId
+      ? {
+          hasOlder: Boolean(activePaging?.before),
+          loadingOlder: activePaging?.loading ?? false,
+          loadOlder: () => { olderMessages.loadOlder(activeId); },
+        }
+      : null,
   };
 }
 

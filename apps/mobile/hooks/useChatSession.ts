@@ -28,7 +28,9 @@ import { useEndpoint } from './useEndpoint';
 import { isOffline, setConnectionState } from '@/lib/connection';
 import { lastUserId, readCachedConversations, removeCachedConversation, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
 import { useSession } from '@/lib/session';
-import type { Conversation } from '@/lib/types';
+import type { Conversation, Message } from '@/lib/types';
+import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
+import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
@@ -205,6 +207,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
    * back out of — see handleDelete. */
   const conversationsRef = useRef(conversations);
   conversationsRef.current = conversations;
+  // Scroll-back through a thread's history, a page at a time (#213).
+  const applyOlder = useCallback((convId: string, older: Message[]) => {
+    setConversations((prev) => prev.map((c) => (c.id === convId ? { ...c, msgs: prependOlder(c.msgs, older) } : c)));
+  }, []);
+  const olderMessages = useOlderMessages(applyOlder);
+  const recordPaging = olderMessages.record;
+  const hasOlderHistory = olderMessages.hasOlder;
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   // Keyed by conversation, unlike the agent surface's flat pendingApproval
   // (GitHub issue #1) — a background chat send that hits an approval must
@@ -312,24 +321,23 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     }
     loadedConvIdsRef.current.add(id);
     getMessages(id)
-      .then(({ messages: rows }) => {
+      .then((page) => {
         setConnectionState('online');
-        const msgs = reconstructMessages(rows);
+        const msgs = reconstructMessages(page.messages);
         if (msgs.length === 0) return;
-        // Only fill a thread that is still empty: one already streaming (or
-        // already populated by this same fetch) must not be clobbered.
-        // The empty-check predates the cache, when a thread always started
-        // empty and this fetch was the only thing that filled it. A thread
-        // populated *from the cache* must still be overwritten by the server's
+        // A thread populated *from the cache* is overwritten by the server's
         // history — otherwise messages added from another device never appear
-        // and the stale copy is written straight back to the cache. Only a
-        // thread populated by a live run is protected.
+        // and the stale copy is written straight back to the cache. A thread
+        // a live run already started filling keeps those messages, with the
+        // history in front of them.
         const fromCache = fromCacheRef.current.has(id);
         fromCacheRef.current.delete(id);
+        // The page is always applied — merged in front of a live run that got
+        // there first, never skipped — so its cursor always describes the
+        // thread and can be recorded unconditionally (withNewestPage).
+        recordPaging(id, page);
         setConversations((prev) => {
-          const next = prev.map((c) =>
-            c.id === id && (c.msgs.length === 0 || fromCache) ? { ...c, msgs } : c,
-          );
+          const next = prev.map((c) => (c.id === id ? { ...c, msgs: withNewestPage(c.msgs, msgs, fromCache) } : c));
           // Cache the thread as it now stands, so it can be read back offline.
           const scope = scopeRef.current.cache ? cacheScopeRef.current : null;
           const conv = next.find((c) => c.id === id);
@@ -349,7 +357,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         // sending on a healthy host, with nothing to recover it.
         if (isUnreachableError(err)) setConnectionState('offline');
       });
-  }, []);
+  }, [recordPaging]);
 
   /** Renames the pending optimistic user bubble (if any) to its real
    * server-assigned id, in place — call this before any id-based upsert of
@@ -573,7 +581,11 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         setConversations((prev) =>
-          prev.map((c) => (c.id === convId ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot) } : c)),
+          prev.map((c) =>
+            c.id === convId
+              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }) }
+              : c,
+          ),
         );
         // Same "is this sync for the run we're actually tracking" guard as
         // clearStream below — an older, already-finished run's catch-up sync
@@ -806,7 +818,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
       appStateSub.remove();
       wsRef.current?.close();
     };
-  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg]);
+  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {
@@ -1063,6 +1075,9 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
   // typing indicator for whichever conversation the user has switched to.
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
 
+  // Absent for a thread whose history was never fetched — the record type
+  // does not say so, hence the cast.
+  const activePaging = activeId ? (olderMessages.paging[activeId] as HistoryPaging | undefined) : undefined;
   return {
     conversations,
     listLoaded,
@@ -1092,5 +1107,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     handleDelete,
     handleRename,
     setConversationModel,
+    /** Scroll-back for the open thread; see useOlderMessages. */
+    history: activeId
+      ? {
+          hasOlder: Boolean(activePaging?.before),
+          loadingOlder: activePaging?.loading ?? false,
+          loadOlder: () => { olderMessages.loadOlder(activeId); },
+        }
+      : null,
   };
 }

@@ -616,6 +616,7 @@ export async function runToolLoop(ctx: {
       producer.emit({ kind: "iteration", n: iteration, max: budgetEnd });
 
       const assistantMsgId = uuid();
+      const assistantLamport = nextLamport();
       await db.insert(messages).values({
         id: assistantMsgId,
         conversationId: convId,
@@ -623,7 +624,7 @@ export async function runToolLoop(ctx: {
         authorType: "assistant",
         origin: "server",
         model,
-        lamport: nextLamport(),
+        lamport: assistantLamport,
         content: [] as ContentBlock[],
         status: "streaming",
         createdAt: new Date(),
@@ -633,6 +634,7 @@ export async function runToolLoop(ctx: {
         message_id: assistantMsgId,
         author_type: "assistant",
         parent_id: parentId,
+        lamport: assistantLamport,
         model,
       });
 
@@ -1159,6 +1161,7 @@ export async function runToolLoop(ctx: {
       // row would need a new branch in `loadHistory` *and* in the client, and
       // several chat templates reject a system message that is not first.
       const nudgeId = uuid();
+      const nudgeLamport = nextLamport();
       await db.insert(messages).values({
         id: nudgeId,
         conversationId: convId,
@@ -1169,7 +1172,7 @@ export async function runToolLoop(ctx: {
         // keeps forever.
         authorUserId: outcome.byUserId,
         origin: "server",
-        lamport: nextLamport(),
+        lamport: nudgeLamport,
         content: [{ kind: "text", text: CHECKIN_ANSWER_NUDGE }] as ContentBlock[],
         status: "complete",
         createdAt: new Date(),
@@ -1179,6 +1182,7 @@ export async function runToolLoop(ctx: {
         message_id: nudgeId,
         author_type: "user",
         parent_id: toolMsgId,
+        lamport: nudgeLamport,
         text: CHECKIN_ANSWER_NUDGE,
         // The same fact the row records, on the wire: without it a client could
         // only match the text, and printed "You asked for an answer" when

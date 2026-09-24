@@ -349,8 +349,9 @@ end to end under `MOCK_INFERENCE` — clone (or start from scratch), run the rea
 bug, rerun them, commit, push, open a PR — using the **mock scenario engine**
 (`apps/server/src/inference/mock-scenarios.ts`) rather than the single-tool-call
 `MOCK_TOOL_TRIGGERS` every other mock-driven spec uses. `MOCK_SCENARIOS_FILE`
-(`fixtures/scenarios.json`, passed by `standup.ts` unconditionally — it's inert under
-`E2E_REAL_MODEL=1`) is a JSON array of `{match, steps: [{tool, args}], finalText}` scenarios: the
+(`fixtures/scenarios.json` plus the generated scenarios in `scripts/long-history.ts`, which
+`standup.ts` combines into `artifacts/.run/scenarios.json` and passes unconditionally — it's inert
+under `E2E_REAL_MODEL=1`) is a JSON array of `{match, steps: [{tool, args}], finalText}` scenarios: the
 prompt is matched against `match` (a case-insensitive regex source), and one step fires per tool
 message already in the current turn — bypassing `MOCK_TOOL_TRIGGERS`'s one-call-per-turn rule,
 which is the entire reason a scenario exists, since a scenario is defined by needing more than

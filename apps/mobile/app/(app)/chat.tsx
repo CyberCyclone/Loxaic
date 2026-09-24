@@ -64,6 +64,7 @@ export default function ChatScreen() {
     handleDelete,
     handleRename,
     setConversationModel,
+    history,
   } = useChatSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -201,6 +202,7 @@ export default function ChatScreen() {
             promptStats={promptStats}
             queuePosition={queuePosition}
             model={selectedModel ? getName(selectedModel) : undefined}
+            history={history}
           />
         ) : (
           <PromptSuggestions

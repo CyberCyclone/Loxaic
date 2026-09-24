@@ -108,6 +108,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       const msg: Message = {
         id: row.id,
         role: 'user',
+        lamport: row.lamport,
         text: extractField(blocks, 'text'),
         attachments: extractAttachments(blocks),
       };
@@ -123,6 +124,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       const msg: Message = {
         id: row.id,
         role: 'summary',
+        lamport: row.lamport,
         model: row.model ?? undefined,
         text: extractField(blocks, 'text'),
         compaction: extractCompaction(blocks),
@@ -153,6 +155,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       const msg: Message = {
         id: row.id,
         role: 'assistant',
+        lamport: row.lamport,
         model: row.model ?? undefined,
         text: extractField(blocks, 'text'),
         thinking: thinking || undefined,
@@ -198,6 +201,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
   return {
     id: sm.message_id,
     role,
+    ...(sm.lamport === undefined ? {} : { lamport: sm.lamport }),
     model: sm.model,
     text: sm.text,
     thinking: sm.thinking || undefined,
@@ -223,13 +227,47 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
   };
 }
 
-export function applySnapshotToMsgs(msgs: Message[], snapshot: StreamSnapshot): Message[] {
+/**
+ * Folds a run's snapshot into a thread.
+ *
+ * A message the thread already has is replaced in place. One it lacks used to
+ * be appended — right while the whole thread was always loaded, since then a
+ * missing message could only be a new one. A thread now loads a page at a
+ * time (#213), and a reconnect snapshots the conversation's last few runs, so
+ * a snapshot can describe a run *older* than anything loaded: appended, it
+ * landed below the newest reply. So a missing message with a `lamport` is
+ * placed by it, and when `olderUnloaded` says there is history before the
+ * loaded page, one older than that page is left out — scrolling back loads it
+ * from history, in order. A message without a `lamport` (an older server) is
+ * appended, as before.
+ */
+export function applySnapshotToMsgs(
+  msgs: Message[],
+  snapshot: StreamSnapshot,
+  opts: { olderUnloaded?: boolean } = {},
+): Message[] {
   const result = [...msgs];
+  const loadedFloor = Math.min(...result.flatMap((m) => (m.lamport === undefined ? [] : [m.lamport])));
   for (const sm of snapshot.messages) {
     const converted = snapshotMessageToMessage(sm);
     const idx = result.findIndex((m) => m.id === sm.message_id);
-    if (idx >= 0) result[idx] = converted;
-    else result.push(converted);
+    if (idx >= 0) {
+      result[idx] = converted;
+      continue;
+    }
+    const lamport = converted.lamport;
+    if (lamport === undefined) {
+      result.push(converted);
+      continue;
+    }
+    if (opts.olderUnloaded && Number.isFinite(loadedFloor) && lamport < loadedFloor) continue;
+    // Before the first message that is known to come after it. Messages
+    // without a lamport (an optimistic bubble) are passed over: they are
+    // this client's newest, and a snapshot message never belongs after them
+    // unless nothing else does.
+    const at = result.findIndex((m) => m.lamport !== undefined && m.lamport > lamport);
+    if (at < 0) result.push(converted);
+    else result.splice(at, 0, converted);
   }
   return result;
 }
@@ -243,6 +281,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
         {
           id: event.message_id,
           role: roleOf(event.author_type) ?? 'assistant',
+          ...(event.lamport === undefined ? {} : { lamport: event.lamport }),
           model: event.model,
           text: event.text ?? '',
           attachments: event.attachments,

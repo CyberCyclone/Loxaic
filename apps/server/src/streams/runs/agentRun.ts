@@ -135,6 +135,7 @@ export async function startAgentRun(input: {
     message_id: userMsgId,
     author_type: "user",
     parent_id: input.parentId ?? null,
+    lamport: userLamport,
     text: content,
     ...(atts.length ? { attachments: atts } : {}),
   });

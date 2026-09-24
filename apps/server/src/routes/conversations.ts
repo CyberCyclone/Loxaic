@@ -1,11 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { eq, ne, and, isNull, desc, inArray, or } from "@loxaic/db";
 import { db } from "@loxaic/db";
-import { conversationShares, conversations, messages, usageRecords } from "@loxaic/db/schema";
+import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
 import type { ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
+import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
+
+/** Rows per page of a thread's history — a floor, since a page grows back to
+ * the start of the turn it cuts into. */
+const MESSAGE_PAGE_SIZE = 200;
 import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
 import { getRunByConversation } from "../streams/registry.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
@@ -188,27 +193,39 @@ export function conversationRoutes(app: FastifyInstance) {
   });
 
   // Get messages for conversation
-  app.get<{ Params: { id: string } }>("/v1/conversations/:id/messages", async (request, reply) => {
+  // The newest page, or the page older than `?before=` — see
+  // conversations/history-page.ts for where pages are cut and why (#213).
+  app.get<{ Params: { id: string }; Querystring: { before?: string } }>("/v1/conversations/:id/messages", async (request, reply) => {
     const userId = await authenticate(request, reply);
     // Viewer is enough: reading the thread is the whole point of a share.
     if (!(await hasRole(userId, request.params.id, "viewer"))) {
       reply.code(404);
       return { error: "Not found" };
     }
-    const rows = await db
-      .select()
-      .from(messages)
-      .where(and(eq(messages.conversationId, request.params.id), isNull(messages.deletedAt)))
-      .orderBy(messages.createdAt)
-      .limit(200);
+    let page: MessagePage;
+    try {
+      page = await loadMessagePage(request.params.id, { limit: MESSAGE_PAGE_SIZE, before: request.query.before });
+    } catch (err) {
+      if (!(err instanceof BadCursorError)) throw err;
+      reply.code(400);
+      return { error: "Unknown cursor" };
+    }
+    const { rows } = page;
 
     // No relation is declared between messages and usageRecords (messageId
-    // carries no FK constraint), so join them by hand: one query for the
-    // whole thread's usage rows, keyed by messageId for an O(1) attach below.
-    const usageRows = await db
-      .select()
-      .from(usageRecords)
-      .where(eq(usageRecords.conversationId, request.params.id));
+    // carries no FK constraint), so join them by hand: one query for this
+    // page's usage rows, keyed by messageId for an O(1) attach below.
+    const usageRows = rows.length
+      ? await db
+          .select()
+          .from(usageRecords)
+          .where(
+            and(
+              eq(usageRecords.conversationId, request.params.id),
+              inArray(usageRecords.messageId, rows.map((m) => m.id)),
+            ),
+          )
+      : [];
     const usageByMessageId = new Map(usageRows.filter((u) => u.messageId).map((u) => [u.messageId, u]));
 
     const rowsWithUsage = rows.map((m) => {
@@ -235,6 +252,6 @@ export function conversationRoutes(app: FastifyInstance) {
 
     const msgs = rows.map((m) => ({ id: m.id, parent_id: m.parentId, deleted_at: m.deletedAt?.toISOString() ?? null }));
     const forks = detectForks(msgs);
-    return { messages: rowsWithUsage, forks };
+    return { messages: rowsWithUsage, forks, hasMore: page.hasMore, before: page.before };
   });
 }

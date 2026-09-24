@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, ScrollView } from 'react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -65,6 +65,14 @@ export default function AdminScreen() {
   const [error, setError] = useState<string | null>(null);
   const [messages, setMessages] = useState<AdminMessage[]>([]);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
+  // The transcript opens on its newest page (#213); this is where the next
+  // older page starts, or null when there is none.
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const selectedIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedIdRef.current = selected?.id ?? null;
+  }, [selected]);
   const [purging, setPurging] = useState<AdminConversation | null>(null);
   const { settings: retention, update: updateRetention } = useConversationRetention(token);
 
@@ -76,22 +84,52 @@ export default function AdminScreen() {
   }, [isAdmin]);
 
   const openDetail = useCallback(async (row: AdminConversation) => {
+    // Set here, not only by the effect below: the check after the await must
+    // see this row even if the response wins the race with the render.
+    selectedIdRef.current = row.id;
     setSelected(row);
     setQuery('');
     setResults([]);
     setMessages([]);
+    setOlderCursor(null);
     setLoadingTranscript(true);
     // Shares and transcript together: a deleted conversation still has its
     // shares (nothing cascaded — the row survived), and who could reach it is
     // part of what an audit is asking.
     const [nextShares, nextMessages] = await Promise.all([
       adminGetShares(row.id).catch(() => []),
-      adminGetMessages(row.id).catch(() => []),
+      adminGetMessages(row.id).catch(() => ({ messages: [], before: null })),
     ]);
+    // Another row may have been opened while these were in flight. Its own
+    // request fills the pane; this one must change nothing — not the shares,
+    // not the transcript, and above all not the cursor, which "Load older"
+    // would send against the other conversation and get a 400 for. Not even
+    // the spinner: the newer request is still loading.
+    if (selectedIdRef.current !== row.id) return;
     setShares(nextShares);
-    setMessages(nextMessages);
+    setMessages(nextMessages.messages);
+    setOlderCursor(nextMessages.before ?? null);
     setLoadingTranscript(false);
   }, []);
+
+  const loadOlderTranscript = useCallback(async () => {
+    if (!selected || !olderCursor) return;
+    const id = selected.id;
+    setLoadingOlder(true);
+    try {
+      const page = await adminGetMessages(id, { before: olderCursor });
+      // A different conversation may have been opened while this was in
+      // flight; its transcript is not the one to prepend to.
+      if (selectedIdRef.current !== id) return;
+      const older = new Set(page.messages.map((m) => m.id));
+      setMessages((prev) => [...page.messages, ...prev.filter((m) => !older.has(m.id))]);
+      setOlderCursor(page.before ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [selected, olderCursor]);
 
   /** Re-reads the list and keeps the detail pane pointed at the same row, or
    * closes it when that row is gone (erased). */
@@ -348,7 +386,13 @@ export default function AdminScreen() {
               <Text size="xs" className="text-muted-foreground">
                 Transcript
               </Text>
-              <AdminTranscript messages={messages} loading={loadingTranscript} />
+              <AdminTranscript
+                messages={messages}
+                loading={loadingTranscript}
+                hasOlder={olderCursor !== null}
+                loadingOlder={loadingOlder}
+                onLoadOlder={() => { void loadOlderTranscript(); }}
+              />
             </VStack>
           )}
         </ScrollView>

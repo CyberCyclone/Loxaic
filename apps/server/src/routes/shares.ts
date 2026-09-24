@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import { and, db, desc, eq, ilike, isNotNull, isNull, ne, or } from "@loxaic/db";
-import { conversationShares, conversations, messages, user } from "@loxaic/db/schema";
+import { and, db, desc, eq, ilike, isNotNull, ne, or } from "@loxaic/db";
+import { conversationShares, conversations, user } from "@loxaic/db/schema";
 import { authenticate, requireAdmin } from "../auth/middleware";
 import { purgeConversation, restoreConversation } from "../conversations/delete.ts";
+import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
 import { conversationPurgeAt } from "../settings.ts";
 import { resolveAccess } from "../streams/authz";
 
@@ -236,7 +237,7 @@ export function adminConversationRoutes(app: FastifyInstance) {
    * uploads stay unreachable; the filename in the transcript is what an admin
    * needs to know something was attached.
    */
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { before?: string } }>(
     "/v1/admin/conversations/:id/messages",
     async (request, reply) => {
       await requireAdmin(request, reply);
@@ -248,21 +249,27 @@ export function adminConversationRoutes(app: FastifyInstance) {
         reply.code(404);
         return { error: "Not found" };
       }
-      const rows = await db
-        .select({
-          id: messages.id,
-          authorType: messages.authorType,
-          authorUserId: messages.authorUserId,
-          model: messages.model,
-          content: messages.content,
-          status: messages.status,
-          createdAt: messages.createdAt,
-        })
-        .from(messages)
-        .where(and(eq(messages.conversationId, request.params.id), isNull(messages.deletedAt)))
-        .orderBy(messages.createdAt)
-        .limit(500);
-      return { messages: rows };
+      // Newest first, a page at a time, the same as the owner's own view
+      // (#213) — this used to return the *oldest* 500, which is the wrong end
+      // of exactly the long conversation an audit is most likely to be about.
+      let page: MessagePage;
+      try {
+        page = await loadMessagePage(request.params.id, { limit: 500, before: request.query.before });
+      } catch (err) {
+        if (!(err instanceof BadCursorError)) throw err;
+        reply.code(400);
+        return { error: "Unknown cursor" };
+      }
+      const rows = page.rows.map((m) => ({
+        id: m.id,
+        authorType: m.authorType,
+        authorUserId: m.authorUserId,
+        model: m.model,
+        content: m.content,
+        status: m.status,
+        createdAt: m.createdAt,
+      }));
+      return { messages: rows, hasMore: page.hasMore, before: page.before };
     },
   );
 

@@ -406,6 +406,15 @@ export type StreamEventKind =
       message_id: string;
       author_type: "user" | "assistant" | "tool" | "summary";
       parent_id: string | null;
+      /**
+       * The row's position in the engine's replay order — the same `lamport`
+       * the history route sorts by. A thread now loads a page at a time
+       * (#213), so a snapshot can describe a run older than everything a
+       * client has loaded; this is what lets the client place it, or leave it
+       * for scroll-back, instead of appending it after the newest message.
+       * Absent from an older server.
+       */
+      lamport?: number;
       model?: string;
       /** User messages arrive already-complete and carry their full text here. */
       text?: string;
@@ -503,6 +512,8 @@ export interface StreamSnapshotMessage {
   message_id: string;
   author_type: "user" | "assistant" | "tool" | "summary";
   parent_id: string | null;
+  /** Folded from `message.start` — see its doc. Absent from an older server. */
+  lamport?: number;
   model?: string;
   text: string;
   thinking: string;

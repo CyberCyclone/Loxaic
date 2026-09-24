@@ -1,7 +1,10 @@
 import type { PromptStats } from '@loxaic/api-client';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { FlatList, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
+import { FlatList, Platform, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Box } from '@/components/ui/box';
+import { Pressable } from '@/components/ui/pressable';
+import { Spinner } from '@/components/ui/spinner';
+import { Text } from '@/components/ui/text';
 import { Message } from './Message';
 import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
@@ -22,6 +25,16 @@ interface MessageListProps {
   model?: string;
   /** What the in-flight request is evaluating — see TypingIndicator. */
   promptStats?: PromptStats | null;
+  /** Scroll-back through history older than what is loaded (#213). Absent
+   * where a thread has no server history to page through. */
+  history?: MessageHistory | null;
+}
+
+/** What the session hooks expose for the open thread's scroll-back. */
+export interface MessageHistory {
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => void;
 }
 
 /**
@@ -39,7 +52,7 @@ interface MessageListProps {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
 
@@ -48,9 +61,10 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // where the user actually is — scrolling away to read earlier messages must
   // not get yanked back on the next token.
   const isNearBottomRef = useRef(true);
-  // Whether the *user* is the one moving the list. `onScroll` fires for
-  // programmatic scrolls too, so without this the auto-follow reads its own
-  // scroll back and can latch stickiness off mid-stream.
+  // Whether the *user* is the one moving the list, on native. `onScroll`
+  // fires for programmatic scrolls too, so without this the auto-follow reads
+  // its own scroll back and can latch stickiness off mid-stream. The web does
+  // not use it — see handleScroll.
   const userDraggingRef = useRef(false);
 
   const scrollToNewest = useCallback(() => {
@@ -59,12 +73,15 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
 
   // Switching threads, or sending, re-arms the follow. Someone who just hit
   // send wants to watch the reply even if they'd scrolled up to re-read
-  // history first.
-  const msgCount = conversation?.msgs.length ?? 0;
+  // history first. Keyed on the *newest* message rather than the count: an
+  // older page arriving at the top changes the count too, and re-arming then
+  // would throw someone reading back through history straight to the bottom
+  // the moment the page they scrolled up for landed (#213).
+  const newestId = conversation?.msgs.at(-1)?.id;
   useEffect(() => {
     isNearBottomRef.current = true;
     scrollToNewest();
-  }, [conversation?.id, msgCount, scrollToNewest]);
+  }, [conversation?.id, newestId, scrollToNewest]);
 
   const updateStickiness = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     // Inverted: offset 0 *is* the newest message, so distance from the live
@@ -74,7 +91,16 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   };
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    if (!userDraggingRef.current) return;
+    // Native reports every drag, so only a drag's scrolls count there. The
+    // web reports drags for touch only — a wheel, a trackpad, the scrollbar
+    // and the keyboard all arrive as bare scroll events — and gating on them
+    // left a desktop reader stuck to the newest message: every streamed token,
+    // and every older page landing at the top (#213), threw them back down.
+    // A window after each wheel event fixed the wheel and nothing else. So on
+    // the web every scroll event is taken at its word: the list's own scrolls
+    // only ever go to the newest message, offset 0, which reads back as
+    // exactly that.
+    if (Platform.OS !== 'web' && !userDraggingRef.current) return;
     updateStickiness(e);
   };
 
@@ -176,6 +202,31 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
           </Box>
         ) : null
       }
+      // Inverted, so the footer is the visual top — above the oldest loaded
+      // message, which is where older history arrives. Reaching it loads the
+      // next page by itself; the button is for when there was nothing to
+      // scroll (a short page) and for anyone who prefers to ask.
+      ListFooterComponent={
+        history?.hasOlder ? (
+          <Box className="mx-auto w-full max-w-[820px] items-center py-3">
+            {history.loadingOlder ? (
+              <Spinner testID="chat.history.loadingOlder" size="small" />
+            ) : (
+              <Pressable
+                testID="chat.history.loadOlder"
+                onPress={history.loadOlder}
+                className="rounded-full bg-muted px-3 py-1.5 web:hover:bg-muted/80"
+              >
+                <Text size="xs" className="text-muted-foreground">
+                  Load earlier messages
+                </Text>
+              </Pressable>
+            )}
+          </Box>
+        ) : null
+      }
+      onEndReached={history?.hasOlder && !history.loadingOlder ? history.loadOlder : undefined}
+      onEndReachedThreshold={0.5}
       contentContainerStyle={{ paddingVertical: CONTENT_PADDING }}
       onScroll={handleScroll}
       onScrollBeginDrag={() => {
