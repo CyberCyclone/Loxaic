@@ -13,7 +13,7 @@
  * Downloaded models are rows in the shared database, so `after` deletes this
  * run's rows through the API, and the mock's repo names carry a per-run suffix.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { browser } from '@wdio/globals';
 import { adminCreds, apiToken, provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
@@ -27,8 +27,8 @@ import {
   waitForTextIn,
   waitForVisible,
 } from '../helpers/selectors.ts';
-import { openSettings, openSidebar, signIn, signOut, signUp } from '../helpers/app.ts';
-import { BASE_URL, LLAMA_DIR, mockHf } from '../../scripts/standup.ts';
+import { openSettings, openSidebar, sendAndAwaitReply, signIn, signOut, signUp, startNewThread } from '../helpers/app.ts';
+import { BASE_URL, FAKE_HARDWARE_FILE, FAKE_ROUTER_LOG, LLAMA_DIR, mockHf } from '../../scripts/standup.ts';
 
 interface ApiModel {
   id: string;
@@ -38,12 +38,39 @@ interface ApiModel {
   sizeBytes: number;
 }
 
+/**
+ * One admin token for the whole spec. Signing in per call ran into
+ * better-auth's sign-in rate limit after a failing run's own sign-ins, and the
+ * cleanup's refused sign-in left an *enabled* model row in the shared database.
+ */
+let adminToken: string | null = null;
+
 async function adminApi(pathname: string, init: RequestInit = {}): Promise<Response> {
-  const token = await apiToken(adminCreds());
+  adminToken ??= await apiToken(adminCreds());
   return fetch(`${BASE_URL}${pathname}`, {
     ...init,
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
   });
+}
+
+/**
+ * Remove every model a run of this spec downloaded — this run's, and any an
+ * earlier run failed to clean up (the mock's repos are all under `e2e-org/`
+ * and `pixel-lab/`). Throws rather than logging: a row left behind is an
+ * enabled model in the shared database whose files are gone.
+ */
+async function removeSpecModels(): Promise<void> {
+  const res = await adminApi('/v1/admin/local-models');
+  if (!res.ok) throw new Error(`[e2e] listing local models for cleanup failed (${String(res.status)})`);
+  const { models } = (await res.json()) as { models: ApiModel[] };
+  for (const m of models) {
+    if (!m.id.startsWith('e2e-org/') && !m.id.startsWith('pixel-lab/')) continue;
+    const r =
+      m.status === 'ready' || m.status === 'failed'
+        ? await adminApi(`/v1/admin/local-models/model?id=${encodeURIComponent(m.id)}`, { method: 'DELETE' })
+        : await adminApi('/v1/admin/local-models/cancel', { method: 'POST', body: JSON.stringify({ id: m.id }) });
+    if (!r.ok) throw new Error(`[e2e] could not remove ${m.id} (${String(r.status)}): ${await r.text()}`);
+  }
 }
 
 async function apiModels(): Promise<ApiModel[]> {
@@ -122,18 +149,14 @@ describe('local models', () => {
 
   before(async () => {
     await provisionAdmin();
+    await removeSpecModels();
   });
 
   after(async () => {
-    for (const m of await apiModels().catch(() => [] as ApiModel[])) {
-      if (!m.id.startsWith(tiny)) continue;
-      if (m.status === 'ready' || m.status === 'failed') {
-        await adminApi(`/v1/admin/local-models/model?id=${encodeURIComponent(m.id)}`, { method: 'DELETE' });
-      } else {
-        await adminApi('/v1/admin/local-models/cancel', { method: 'POST', body: JSON.stringify({ id: m.id }) });
-      }
-    }
-    // Leave the runtime on its default backend for whatever runs next.
+    await removeSpecModels();
+    // Leave the runtime on its default backend, on fake hardware with a GPU,
+    // for whatever runs next.
+    writeFileSync(FAKE_HARDWARE_FILE, 'gpu', 'utf8');
     await adminApi('/v1/admin/local-models/settings', { method: 'PATCH', body: JSON.stringify({ backend: 'auto' }) });
   });
 
@@ -267,6 +290,30 @@ describe('local models', () => {
     await waitForTextIn('localModels.runtime.headline', 'Running on E2E Fake GPU', 30_000);
   });
 
+  it('with no GPU at all, offers the CPU only behind its own warning — and never picks it on its own', async () => {
+    writeFileSync(FAKE_HARDWARE_FILE, 'none', 'utf8');
+    // Restart re-detects the hardware; automatic finds nothing and stops there.
+    await tap('localModels.runtime.restart');
+    await waitForTextIn('localModels.runtime.headline', 'No supported GPU found', 30_000);
+    await waitForTextIn('localModels.runtime.reason', 'No GPU was found');
+    await waitForVisible('localModels.runtime.useCpu');
+    await shot('local-models-no-gpu');
+
+    await tap('localModels.runtime.useCpu');
+    await waitForVisible('localModels.cpuConfirm.dialog');
+    await waitForTextIn('localModels.cpuConfirm.dialog', 'Run models on the CPU?');
+    await waitForTextIn('localModels.cpuConfirm.dialog', 'small models');
+    await shot('local-models-no-gpu-cpu-warning');
+    await tap('localModels.cpuConfirm.confirm');
+    await waitForTextIn('localModels.runtime.headline', 'Running on the CPU', 30_000);
+    await waitForTextIn('localModels.runtime.cpuWarning', 'Only small models reply at a usable speed');
+
+    // Back to a GPU machine, on the automatic backend.
+    writeFileSync(FAKE_HARDWARE_FILE, 'gpu', 'utf8');
+    await tap('localModels.runtime.backend.auto');
+    await waitForTextIn('localModels.runtime.headline', 'Running on E2E Fake GPU', 30_000);
+  });
+
   it('an ordinary user cannot open Local Models, but sees the enabled model in their picker', async () => {
     await signOut();
     await signUp(user);
@@ -283,6 +330,30 @@ describe('local models', () => {
     await waitForVisible(`models.row.${downloadId}`);
     await shot('local-models-in-user-picker');
     await browser.keys('Escape');
+  });
+
+  it('an ordinary user chats with the local model, served by the router with the settings the admin chose', async () => {
+    await startNewThread();
+    await tap('composer.model');
+    await waitForVisible(`models.row.${downloadId}`);
+    await tap(`models.row.${downloadId}`);
+    await waitForGone('models.dialog', 10_000);
+    // The fake router's own reply, not the mock backend's: the request went
+    // through the router, with the key it was started with.
+    await sendAndAwaitReply('Hello there', `Hello from ${downloadId}`);
+    await shot('local-models-chat-reply');
+
+    // And the router loaded the model with the settings saved earlier, on the GPU.
+    expect(existsSync(FAKE_ROUTER_LOG)).toBe(true);
+    const loads = readFileSync(FAKE_ROUTER_LOG, 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
+    const load = loads.filter((l) => l.model === downloadId).at(-1);
+    expect(load?.section['ctx-size']).toBe('8192');
+    expect(load?.section['n-gpu-layers']).toBe('20');
+    expect(load?.section['flash-attn']).toBe('on');
+    expect(load?.section.device).toBe('FAKE0');
   });
 
   it('an admin deletes the model, and it leaves the picker', async () => {

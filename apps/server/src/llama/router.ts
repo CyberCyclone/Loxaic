@@ -436,6 +436,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   // Tests only: the fake router records the preset it loaded here.
   if (process.env.LOXAIC_FAKE_ROUTER_LOG) env.LOXAIC_FAKE_ROUTER_LOG = process.env.LOXAIC_FAKE_ROUTER_LOG;
   if (process.env.LOXAIC_FAKE_DEVICES) env.LOXAIC_FAKE_DEVICES = process.env.LOXAIC_FAKE_DEVICES;
+  if (process.env.LOXAIC_FAKE_HARDWARE) env.LOXAIC_FAKE_HARDWARE = process.env.LOXAIC_FAKE_HARDWARE;
   return env;
 }
 
@@ -668,6 +669,12 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   if (settings.backend === "cpu" && !settings.cpuAcknowledged) flavour = null;
   st.flavour = flavour;
   if (flavour === null) {
+    // Nothing runs, so nothing was listed: drop the previous run's devices,
+    // or the admin screen goes on offering a GPU that is no longer there and
+    // the CPU warning names it as the one being left unused.
+    st.devices = [];
+    st.activeDevices = [];
+    st.runtime = null;
     st.state = "needs-gpu";
     st.reason = st.hardware.reason ?? "No supported GPU was found.";
     return;
@@ -752,6 +759,15 @@ export async function bootLocalRuntime(log: (m: string) => void): Promise<void> 
     if (st.state === "running") log(`llama.cpp ${RUNTIME_MANIFEST.tag} (${String(st.flavour)}) is running`);
     else if (st.reason) log(`llama.cpp is not running: ${st.reason}`);
   }
+}
+
+/**
+ * Re-read what can change behind this server's back — in attach mode, the
+ * sidecar's health and its device list. Called when an admin opens the screen,
+ * so it shows the state now rather than as of the last 15-second tick.
+ */
+export async function refreshRuntimeState(): Promise<void> {
+  if (getLlamaMode() === "attach") await refreshAttachHealth();
 }
 
 async function refreshAttachHealth(): Promise<void> {

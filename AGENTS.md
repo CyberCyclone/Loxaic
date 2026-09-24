@@ -825,9 +825,28 @@ replies.
   A search result has no file list, so its label is for a ~4-bit quant (0.6 bytes a parameter).
 - **Test seams, all inert without `LOXAIC_LLAMA_SERVER_BIN`:** that variable runs
   `apps/server/test-fixtures/fake-llama-server.mjs` (the router API, recording what each load was
-  given to `LOXAIC_FAKE_ROUTER_LOG`); `LOXAIC_FAKE_HARDWARE=gpu|none` replaces detection;
-  `LOXAIC_FAKE_DEVICES` is what the fake lists. `HF_ENDPOINT` and `LLAMA_RELEASES_URL` are read at
-  call time. The e2e lane wires all of them (`scripts/mock-hf.ts`), so no GPU is needed.
+  given to `LOXAIC_FAKE_ROUTER_LOG`); `LOXAIC_FAKE_HARDWARE` replaces detection — `gpu`, `none`,
+  or a **file** holding one of them, read at every detection, which is how one e2e server shows
+  both machines (the spec rewrites it and presses Restart; the fake's `--list-devices` reads the
+  same file); `LOXAIC_FAKE_DEVICES` is what the fake lists. `HF_ENDPOINT`, `LLAMA_RELEASES_URL`
+  and `LLAMA_DOWNLOAD_STALL_MS` are read at call time. The e2e lane wires all of them
+  (`scripts/mock-hf.ts`), so no GPU is needed.
+- **Under `MOCK_INFERENCE`, an enabled local model with a router running goes to the router**
+  (`servedByLocalRouter` in `inference/provider.ts`); everything else is still the mock. Without
+  that exception nothing in the e2e lane would ever send a request through the router, and the
+  chat path — the key, the stream, the settings a model was loaded with — would be covered by no
+  test at all. With no router running (every unit suite) the mock answers, as it always did.
+- **`llama-router.sh` is exercised for real** by `attach-router.test.ts`, starting from a volume
+  that already has a preset but no key — the case its key wait exists for, and the only ordering
+  in which the test can tell. (The server writes the key before the preset, so a test starting
+  from an empty directory passed with the wait deleted.)
+- **Detecting no GPU clears the previous device list.** Restart re-detects, and without the clear
+  a machine that lost its GPU kept offering it under "GPUs to use" and named it in the CPU
+  warning. The no-GPU e2e case found it.
+- **The e2e spec signs in once** (`adminApi` caches the token). Signing in per call hit
+  better-auth's sign-in rate limit after a failing run's own sign-ins; the cleanup's refused
+  sign-in was swallowed and left an *enabled* model row, files gone, in the shared database. The
+  cleanup now also runs first and throws rather than logging.
 - **The client polls** (`hooks/useLocalModels.ts`): every second while anything installs or
   downloads, every fifteen otherwise. The settings sheet is given a snapshot of the row, not the
   polled one — a poll hands back a new object each second and would reset the draft. The

@@ -150,6 +150,13 @@ export function mockHf(): Pick<MockHf, 'url' | 'repos' | 'quants'> {
 /** Where the server under test keeps its llama.cpp runtime and models, so a
  * spec can read the preset file it wrote. */
 export const LLAMA_DIR = path.join(RUN_DIR, 'llama');
+/** What the fake hardware is: `gpu` or `none`, read afresh at every detection.
+ * A spec rewrites it and presses Restart to show a machine without a GPU from
+ * a server that was started with one. */
+export const FAKE_HARDWARE_FILE = path.join(RUN_DIR, 'fake-hardware');
+/** One JSON line per model the fake router loads, with the preset section it
+ * loaded it with — how a spec proves an admin's settings reached the model. */
+export const FAKE_ROUTER_LOG = path.join(RUN_DIR, 'fake-router-loads.jsonl');
 
 /** The stand-in for GitHub's hosted MCP server, handed across processes the
  * same way as the mock GitHub API (see `mockGithubUrl`). */
@@ -366,6 +373,8 @@ async function ensureServer(): Promise<void> {
   stopMockHf = hf.stop;
   writeFileSync(MOCK_HF_FILE, JSON.stringify({ url: hf.url, repos: hf.repos, quants: hf.quants }), 'utf8');
   rmSync(LLAMA_DIR, { recursive: true, force: true });
+  writeFileSync(FAKE_HARDWARE_FILE, 'gpu', 'utf8');
+  rmSync(FAKE_ROUTER_LOG, { force: true });
 
   const mockProvider = await startMockProvider();
   stopMockProvider = mockProvider.stop;
@@ -436,7 +445,8 @@ async function ensureServer(): Promise<void> {
       LLAMA_MODE: 'managed',
       LLAMA_DIR,
       LOXAIC_LLAMA_SERVER_BIN: path.join(REPO_ROOT, 'apps/server/test-fixtures/fake-llama-server.mjs'),
-      LOXAIC_FAKE_HARDWARE: 'gpu',
+      LOXAIC_FAKE_HARDWARE: FAKE_HARDWARE_FILE,
+      LOXAIC_FAKE_ROUTER_LOG: FAKE_ROUTER_LOG,
       LOXAIC_FAKE_DEVICES: 'FAKE0: E2E Fake GPU (24576 MiB, 24000 MiB free)',
       HF_ENDPOINT: hf.url,
     },

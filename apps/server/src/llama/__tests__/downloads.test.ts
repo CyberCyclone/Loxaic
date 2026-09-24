@@ -39,21 +39,51 @@ const goodSha = createHash("sha256").update(good).digest("hex");
 const slow = denseModel(4 * 1024 * 1024);
 const slowSha = createHash("sha256").update(slow).digest("hex");
 
-const files: Partial<Record<string, { body: Buffer; sha: string; slow?: boolean }>> = {
-  "Mini-Q4_K_M.gguf": { body: good, sha: goodSha },
-  // Served with the right size but recorded under the wrong checksum.
-  "Mini-Q5_K_M.gguf": { body: good, sha: "b".repeat(64) },
-  "Mini-Q8_0.gguf": { body: slow, sha: slowSha, slow: true },
+interface FileSpec {
+  body: Buffer;
+  sha: string;
+  /** Served 64 KB every 20 ms, so it can be paused part-way. */
+  slow?: boolean;
+  /** Sends one chunk and then nothing, holding the connection open. */
+  stall?: boolean;
+  /** The size the tree reports, when it differs from what is served. */
+  declared?: number;
+}
+
+const sha256 = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+const small = denseModel(256 * 1024);
+const projector = denseModel(2 * 1024 * 1024);
+const visionRepo = `tester/Vision-${uuid().slice(0, 6)}-GGUF`;
+
+const repos: Partial<Record<string, Partial<Record<string, FileSpec>>>> = {
+  [repo]: {
+    "Mini-Q4_K_M.gguf": { body: good, sha: goodSha },
+    // Served with the right size but recorded under the wrong checksum.
+    "Mini-Q5_K_M.gguf": { body: good, sha: "b".repeat(64) },
+    "Mini-Q8_0.gguf": { body: slow, sha: slowSha, slow: true },
+    // Declared smaller than it is: the response over-serves.
+    "Mini-Q2_K.gguf": { body: good, sha: goodSha, declared: 1024 * 1024 },
+    // Sends a little, then goes quiet without closing.
+    "Mini-Q3_K_M.gguf": { body: good, sha: goodSha, stall: true },
+  },
+  // Two quants that share one vision projector.
+  [visionRepo]: {
+    "Vision-Q4_K_M.gguf": { body: small, sha: sha256(small) },
+    "Vision-Q8_0.gguf": { body: small, sha: sha256(small) },
+    "mmproj-F16.gguf": { body: projector, sha: sha256(projector), slow: true },
+  },
 };
 
 let server: Server;
 const rangeRequests: string[] = [];
 const searches: string[] = [];
+/** GETs of each file's bytes, by `repo/path`. */
+const fetches = new Map<string, number>();
 
 beforeAll(async () => {
   server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
-    if (url.pathname === "/api/models" && !url.pathname.includes(repo)) {
+    if (url.pathname === "/api/models") {
       searches.push(url.search);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -64,33 +94,44 @@ beforeAll(async () => {
       );
       return;
     }
-    if (url.pathname === `/api/models/${repo}`) {
+    const info = /^\/api\/models\/([^/]+\/[^/]+)$/.exec(url.pathname);
+    if (info && repos[info[1]]) {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ id: repo, sha: REV }));
+      res.end(JSON.stringify({ id: info[1], sha: REV }));
       return;
     }
-    if (url.pathname === `/api/models/${repo}/tree/${REV}`) {
+    const tree = /^\/api\/models\/([^/]+\/[^/]+)\/tree\//.exec(url.pathname);
+    if (tree && repos[tree[1]]) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify(
-          Object.entries(files).map(([p, f]) => ({ type: "file", path: p, size: f?.body.length, lfs: { oid: f?.sha, size: f?.body.length } })),
+          Object.entries(repos[tree[1]] ?? {}).map(([p, f]) => {
+            const size = f?.declared ?? f?.body.length;
+            return { type: "file", path: p, size, lfs: { oid: f?.sha, size } };
+          }),
         ),
       );
       return;
     }
-    const prefix = `/${repo}/resolve/${REV}/`;
-    if (url.pathname.startsWith(prefix)) {
-      const f = files[decodeURIComponent(url.pathname.slice(prefix.length))];
+    const resolve = /^\/([^/]+\/[^/]+)\/resolve\/[0-9a-f]+\/(.+)$/.exec(url.pathname);
+    if (resolve) {
+      const key = `${resolve[1]}/${decodeURIComponent(resolve[2])}`;
+      const f = repos[resolve[1]]?.[decodeURIComponent(resolve[2])];
       if (!f) {
         res.writeHead(404);
         res.end();
         return;
       }
+      fetches.set(key, (fetches.get(key) ?? 0) + 1);
       const range = /bytes=(\d+)-/.exec(req.headers.range ?? "");
       const start = range ? Number(range[1]) : 0;
       if (range) rangeRequests.push(req.headers.range ?? "");
-      res.writeHead(range ? 206 : 200, { "content-length": String(f.body.length - start) });
+      res.writeHead(range ? 206 : 200);
       const body = f.body.subarray(start);
+      if (f.stall) {
+        res.write(body.subarray(0, 64 * 1024));
+        return;
+      }
       if (!f.slow) {
         res.end(body);
         return;
@@ -129,6 +170,7 @@ afterAll(async () => {
   await db.delete(localModels).where(eq(localModels.hostId, host));
   await db.delete(user).where(eq(user.id, userId));
   vi.unstubAllEnvs();
+  server.closeAllConnections();
   await new Promise<void>((r) => server.close(() => { r(); }));
   rmSync(dir, { recursive: true, force: true });
 });
@@ -206,6 +248,39 @@ describe("downloads", () => {
     await expect(cancelDownload(`${repo}:Q4_K_M`)).rejects.toBeInstanceOf(DownloadError);
   });
 
+  it("aborts a transfer that sends more than its declared size, before it lands on disk", async () => {
+    const row = await queueDownload({ repo, quant: "Q2_K" }, userId);
+    const failed = await until(row.id, (s) => s === "failed");
+    expect(failed?.error).toMatch(/larger than HuggingFace said/);
+    const part = `${modelFilePath(repo, REV, "Mini-Q2_K.gguf")}.part`;
+    expect(existsSync(part)).toBe(false);
+    expect(existsSync(modelFilePath(repo, REV, "Mini-Q2_K.gguf"))).toBe(false);
+  });
+
+  it("gives up on a transfer that goes quiet, and says so", async () => {
+    vi.stubEnv("LLAMA_DOWNLOAD_STALL_MS", "500");
+    try {
+      const row = await queueDownload({ repo, quant: "Q3_K_M" }, userId);
+      const failed = await until(row.id, (s) => s === "failed");
+      expect(failed?.error).toMatch(/sent nothing for 0.5 s/);
+      // The part it did receive is kept, so Resume continues from it.
+      expect(existsSync(`${modelFilePath(repo, REV, "Mini-Q3_K_M.gguf")}.part`)).toBe(true);
+    } finally {
+      vi.stubEnv("LLAMA_DOWNLOAD_STALL_MS", "");
+    }
+  });
+
+  it("two quants sharing a vision projector download it once, and both finish", async () => {
+    const a = await queueDownload({ repo: visionRepo, quant: "Q4_K_M", mmproj: "mmproj-F16.gguf" }, userId);
+    const b = await queueDownload({ repo: visionRepo, quant: "Q8_0", mmproj: "mmproj-F16.gguf" }, userId);
+    await until(a.id, (s) => s === "ready", 30_000);
+    await until(b.id, (s) => s === "ready", 30_000);
+    // The second row waited for the first's projector instead of opening the
+    // same `.part` and interleaving into it.
+    expect(fetches.get(`${visionRepo}/mmproj-F16.gguf`)).toBe(1);
+    expect(statSync(modelFilePath(visionRepo, REV, "mmproj-F16.gguf")).size).toBe(projector.length);
+  });
+
   it("never offers a file HuggingFace publishes no checksum for", () => {
     // Every GGUF on the Hub is an LFS object with an oid; one without is not
     // something this server will mmap and run on length alone.
@@ -217,7 +292,7 @@ describe("downloads", () => {
   });
 
   it("refuses a quant the repo does not have and a repo name that is not one", async () => {
-    await expect(queueDownload({ repo, quant: "Q2_K" }, userId)).rejects.toThrow(/not a quant/);
+    await expect(queueDownload({ repo, quant: "IQ1_S" }, userId)).rejects.toThrow(/not a quant/);
     await expect(queueDownload({ repo: "../../etc", quant: "Q4_K_M" }, userId)).rejects.toThrow(/not a HuggingFace repository/);
   });
 });

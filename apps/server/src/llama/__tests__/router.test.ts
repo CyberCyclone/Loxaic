@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import Fastify from "fastify";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,12 +15,25 @@ import {
   ensureRuntime,
   routerEndpoint,
   runtimeView,
+  stopLocalRuntime,
   syncPreset,
 } from "../router.ts";
 import { presetPath } from "../paths.ts";
 import { __resetModelCachesForTest, listBackendModels, modelRunInfo } from "../../inference/models.ts";
 import { ModelRefError, resolveModelRef } from "../../inference/providers.ts";
 import { streamCompletion } from "../../inference/provider.ts";
+import { acquireRunSlot } from "../../inference/scheduler.ts";
+import { routerModelStatuses } from "../router.ts";
+
+// The admin routes, mounted for real with only authentication stubbed — the
+// deferral and the busy refusal are answers the *route* gives.
+vi.mock("../../auth/middleware", () => ({
+  authenticate: () => Promise.resolve("admin-router-test"),
+  requireAdmin: () => Promise.resolve("admin-router-test"),
+}));
+const { adminLocalModelRoutes } = await import("../../routes/admin-local-models.ts");
+const app = Fastify();
+adminLocalModelRoutes(app);
 
 /**
  * The managed runtime end to end, against a fake `llama-server` that speaks
@@ -74,7 +88,16 @@ async function waitFor(pred: () => boolean, ms = 10_000): Promise<void> {
   }
 }
 
+async function waitForAsync(pred: () => Promise<boolean>, ms = 10_000): Promise<void> {
+  const until = Date.now() + ms;
+  while (!(await pred())) {
+    if (Date.now() > until) throw new Error("timed out");
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 beforeAll(async () => {
+  await app.ready();
   vi.stubEnv("LOXAIC_INSTANCE_ID", host);
   vi.stubEnv("LLAMA_DIR", dir);
   vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", FAKE);
@@ -86,6 +109,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await app.close();
   await __resetRouterForTest();
   await db.delete(localModels).where(eq(localModels.hostId, host));
   vi.unstubAllEnvs();
@@ -160,13 +184,61 @@ describe("managed runtime", () => {
   });
 });
 
+describe("changing a model that is answering someone", () => {
+  /**
+   * A reload unloads a model whose preset section changed — mid-generation,
+   * if a run is using it. So while a built-in run holds a slot and the model
+   * is loaded, the new settings wait; the admin is told they apply on the
+   * next load; deleting it is refused; and the reload happens by itself once
+   * the run lets go.
+   */
+  it("defers the reload, refuses the delete, and applies the settings once the run is done", async () => {
+    // The previous case restarted the router; load the model on the new one.
+    await collect(servable);
+    expect((await routerModelStatuses()).get(servable)?.value).toBe("loaded");
+    const holder = new AbortController();
+    const slot = await acquireRunSlot({ signal: holder.signal, onQueued: () => undefined });
+    if (!slot) throw new Error("expected a run slot");
+    try {
+      const patch = await app.inject({
+        method: "PATCH",
+        url: "/v1/admin/local-models/model",
+        payload: { id: servable, loadSettings: { ctxSize: 3072 } },
+      });
+      expect(patch.statusCode).toBe(200);
+      expect(patch.json<{ appliesOnNextLoad: boolean }>().appliesOnNextLoad).toBe(true);
+      // Still loaded with the old settings: the run was not cut off.
+      expect((await routerModelStatuses()).get(servable)?.value).toBe("loaded");
+
+      const del = await app.inject({ method: "DELETE", url: `/v1/admin/local-models/model?id=${encodeURIComponent(servable)}` });
+      expect(del.statusCode).toBe(409);
+      expect(del.json<{ error: string }>().error).toMatch(/answering someone/);
+    } finally {
+      slot.release();
+    }
+    // The deferred reload fires once the built-in provider is idle.
+    await waitForAsync(async () => (await routerModelStatuses()).get(servable)?.value === "unloaded", 10_000);
+    await collect(servable);
+    const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
+    expect(loads.filter((l) => l.model === servable).at(-1)?.section["ctx-size"]).toBe("3072");
+  });
+});
+
 describe("never silently on the CPU", () => {
   it("no GPU: needs-gpu, no router, and a request says why", async () => {
+    // From a runtime that *was* running on a GPU, as after a Restart that
+    // re-detects: the old device list must not survive into the no-GPU state.
     await __resetRouterForTest();
-    __setHardwareForTest({ ...HW_GPU, flavour: null, reason: "No GPU was found on this machine." });
+    __setHardwareForTest(HW_GPU);
+    await ensureRuntime();
+    expect(runtimeView().devices).toHaveLength(1);
+    await stopLocalRuntime();
+    __setHardwareForTest({ ...HW_GPU, flavour: null, gpus: [], reason: "No GPU was found on this machine." });
     await ensureRuntime();
     const view = runtimeView();
     expect(view.state).toBe("needs-gpu");
+    expect(view.devices).toEqual([]);
+    expect(view.gpuAvailable).toBe(false);
     expect(view.reason).toBe("No GPU was found on this machine.");
     expect(routerEndpoint()).toBeNull();
     await expect(collect(servable)).rejects.toThrow(/isn't running/);

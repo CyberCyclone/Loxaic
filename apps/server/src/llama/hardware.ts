@@ -197,10 +197,27 @@ export async function detectHardware(): Promise<HardwareGuess> {
  * with `LOXAIC_LLAMA_SERVER_BIN` (the fake runtime), so it can never switch off
  * real detection on a real install. The e2e harness runs on machines with no
  * GPU at all and needs to drive both the GPU path and the no-GPU warning.
+ *
+ * The value may instead be a path to a file holding `gpu` or `none`, read at
+ * each detection. That is how one e2e server — started once per run — shows
+ * both a machine with a GPU and one without: the spec rewrites the file and
+ * presses Restart, which re-detects. The fake router reads the same file to
+ * decide what `--list-devices` prints.
  */
+export function fakeHardwareMode(): "gpu" | "none" | null {
+  const value = process.env.LOXAIC_FAKE_HARDWARE;
+  if (!value || !process.env.LOXAIC_LLAMA_SERVER_BIN) return null;
+  if (value === "gpu" || value === "none") return value;
+  try {
+    return readFileSync(value, "utf8").trim() === "none" ? "none" : "gpu";
+  } catch {
+    return "gpu";
+  }
+}
+
 function fakeHardware(base: Pick<HardwareGuess, "platform" | "arch" | "ramBytes">): HardwareGuess | null {
-  const mode = process.env.LOXAIC_FAKE_HARDWARE;
-  if (!mode || !process.env.LOXAIC_LLAMA_SERVER_BIN) return null;
+  const mode = fakeHardwareMode();
+  if (mode === null) return null;
   if (mode === "none") return { ...base, gpus: [], flavour: null, reason: "No GPU was found on this machine." };
   return {
     ...base,

@@ -18,8 +18,22 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const args = process.argv.slice(2);
+
+/** `LOXAIC_FAKE_HARDWARE` is `gpu`, `none`, or a file holding one of them —
+ * the same seam the server's detection reads (apps/server/src/llama/hardware.ts). */
+function fakeHardware() {
+  const value = process.env.LOXAIC_FAKE_HARDWARE;
+  if (!value || value === "gpu" || value === "none") return value ?? "gpu";
+  try {
+    return readFileSync(value, "utf8").trim() === "none" ? "none" : "gpu";
+  } catch {
+    return "gpu";
+  }
+}
+
 if (args.includes("--list-devices")) {
-  const devices = process.env.LOXAIC_FAKE_DEVICES ?? "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)";
+  const devices =
+    fakeHardware() === "none" ? "" : (process.env.LOXAIC_FAKE_DEVICES ?? "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)");
   console.log("Available devices:");
   for (const d of devices.split(";").filter(Boolean)) console.log(`  ${d}`);
   process.exit(0);

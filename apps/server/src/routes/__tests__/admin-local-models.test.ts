@@ -98,10 +98,17 @@ describe("admin local models", () => {
   it("lists this host's models with a fit label and the setting specs", async () => {
     const res = await app.inject({ method: "GET", url: "/v1/admin/local-models" });
     expect(res.statusCode).toBe(200);
-    const body = res.json<{ models: { id: string; fit: { label: string } }[]; settingSpecs: { key: string }[]; runtime: { state: string } }>();
+    const body = res.json<{
+      models: { id: string; fit: { label: string } }[];
+      settingSpecs: { key: string }[];
+      runtime: { state: string; reason: string | null };
+    }>();
     expect(body.models.map((m) => m.id)).toEqual(expect.arrayContaining([ready, pending]));
     expect(body.settingSpecs.map((s) => s.key)).toContain("gpuLayers");
-    expect(body.runtime.state).toBe("starting");
+    // Opening the screen asks the attached router afresh, and there is none
+    // at this address: the admin is told so, not shown a stale "starting".
+    expect(body.runtime.state).toBe("error");
+    expect(body.runtime.reason).toMatch(/not answering/);
   });
 
   it("enabling is what makes a model usable at send time", async () => {

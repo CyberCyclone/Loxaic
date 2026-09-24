@@ -30,6 +30,7 @@ import {
   ensureHardwareDetected,
   ensureRuntime,
   modelBusy,
+  refreshRuntimeState,
   routerModelStatuses,
   runtimeView,
   syncPreset,
@@ -77,6 +78,7 @@ function modelView(row: LocalModelRow, loaded: Map<string, { value: string; fail
 
 async function fullView() {
   await ensureHardwareDetected();
+  await refreshRuntimeState();
   const rows = await listLocalModelRows();
   const statuses = await routerModelStatuses();
   return {

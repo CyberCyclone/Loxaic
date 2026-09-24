@@ -41,8 +41,13 @@ const CONCURRENCY = 2;
 const FLUSH_MS = 3000;
 /** A transfer that sends nothing for this long is treated as dead. Idle time,
  * not a wall-clock deadline: a multi-gigabyte download is legitimately long,
- * but one that has gone quiet holds a queue slot for nothing. */
-const STALL_MS = 60_000;
+ * but one that has gone quiet holds a queue slot for nothing.
+ * `LLAMA_DOWNLOAD_STALL_MS` exists so a test can observe it without waiting a
+ * minute; read at call time. */
+function stallMs(): number {
+  const n = Number(process.env.LLAMA_DOWNLOAD_STALL_MS);
+  return Number.isInteger(n) && n > 0 ? n : 60_000;
+}
 /** Left free on the disk after a download, so a full disk is refused up front
  * rather than discovered mid-file. */
 const DISK_MARGIN_BYTES = 2 * 1024 ** 3;
@@ -359,6 +364,7 @@ async function downloadFile(
   }
   // The user's cancel, plus a stall timer re-armed by every chunk: a transfer
   // that goes quiet is aborted rather than holding a queue slot for ever.
+  const STALL_MS = stallMs();
   const stall = new AbortController();
   let stallTimer = setTimeout(() => { stall.abort(new Error("stalled")); }, STALL_MS);
   const touch = () => {
