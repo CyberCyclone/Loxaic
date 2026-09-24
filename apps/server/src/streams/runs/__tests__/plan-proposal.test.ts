@@ -11,7 +11,7 @@ import { getStreamBroker, initStreamBroker } from "../../index.ts";
 import { getRunByConversation } from "../../registry.ts";
 import { planningSystemPrompt, startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
-import { PLAN_ALREADY_SUBMITTED } from "../engine.ts";
+import { HANDOVER_ALREADY_SUBMITTED } from "../engine.ts";
 import { buildToolset } from "../../../mcp/registry.ts";
 import { PLAN_SUBMITTED } from "../../../agent/executor.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
@@ -189,7 +189,7 @@ describe("propose_plan", () => {
     const results = blocksOf(rows).filter((b): b is ToolResultBlock => b.kind === "tool_result");
     expect(results.map((r) => [r.ok, r.output])).toEqual([
       [true, PLAN_SUBMITTED],
-      [false, PLAN_ALREADY_SUBMITTED],
+      [false, HANDOVER_ALREADY_SUBMITTED],
     ]);
   }, 30_000);
 

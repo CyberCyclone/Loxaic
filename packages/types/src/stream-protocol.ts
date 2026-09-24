@@ -83,6 +83,25 @@ export const PLAN_ACCEPTED_MESSAGE = "I accept this plan. Go ahead and implement
 export const PLAN_REJECTED_MESSAGE =
   "I'm rejecting this plan — don't implement it. Wait for my next message before doing anything else.";
 
+/**
+ * Persisted as a user row when a planning turn answers in prose (#199): the
+ * server asks, once, for a plan or questions, and sends that one request with
+ * `tool_choice: "required"`. Fixed text, never interpolated, for the reason
+ * CHECKIN_ANSWER_NUDGE is — the next turn has to replay it byte for byte —
+ * and so the client can render it as a notice rather than as something the
+ * user typed. Its row's author is null: nobody typed it.
+ */
+export const PLAN_REQUIRED_NUDGE =
+  "Finish by calling propose_plan with your plan, or ask_questions if you need answers from me first.";
+
+/**
+ * The first line of the message the questions panel sends (#199). The rest is
+ * one numbered line per question with its answer; the client builds it
+ * (formatAnswers in apps/mobile/lib/plan.ts) and reads it back to render a
+ * question set as answered.
+ */
+export const QUESTIONS_ANSWERED_PREFIX = "Answers to your questions:";
+
 /** An uploaded file attached to a user message. `ref` is the id returned by
  * `POST /v1/files`; `mime` and `name` are advisory for rendering (the server's
  * DB row is the authority for both). */

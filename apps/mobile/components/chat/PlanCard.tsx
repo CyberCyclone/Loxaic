@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import { ClipboardList } from 'lucide-react-native';
+import { ClipboardList, MessageCircleQuestion } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Icon } from '@/components/ui/icon';
@@ -7,7 +7,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
-import { PLAN_TOOL, planTitle, type PlanStatus } from '@/lib/plan';
+import { PLAN_TOOL, QUESTIONS_TOOL, planTitle, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import type { ToolCall } from '@/lib/types';
 import { ToolCallCard } from './ToolCallCard';
 
@@ -19,7 +19,7 @@ import { ToolCallCard } from './ToolCallCard';
  */
 export interface PlanReview {
   open: (callId: string) => void;
-  statusOf: (callId: string) => PlanStatus | null;
+  statusOf: (callId: string) => PlanStatus | QuestionsStatus | null;
 }
 
 export const PlanReviewContext = createContext<PlanReview | null>(null);
@@ -47,6 +47,9 @@ export function ToolOrPlanCard({ tool }: { tool: ToolCall }) {
   if (review && tool.tool === PLAN_TOOL && tool.plan && tool.callId && tool.ok === true) {
     return <PlanCard callId={tool.callId} plan={tool.plan} review={review} />;
   }
+  if (review && tool.tool === QUESTIONS_TOOL && tool.questions && tool.callId && tool.ok === true) {
+    return <QuestionsCard callId={tool.callId} count={tool.questions.length} first={tool.questions[0]?.question ?? ''} review={review} />;
+  }
   return <ToolCallCard tool={tool} />;
 }
 
@@ -56,7 +59,7 @@ export function ToolOrPlanCard({ tool }: { tool: ToolCall }) {
  * wall of text in the thread that #199 was about.
  */
 function PlanCard({ callId, plan, review }: { callId: string; plan: string; review: PlanReview }) {
-  const status = review.statusOf(callId);
+  const status = review.statusOf(callId) as PlanStatus | null;
   return (
     <Box testID={`chat.plan.${callId}`} className="my-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5">
       <HStack space="sm" className="min-w-0 items-center">
@@ -76,6 +79,36 @@ function PlanCard({ callId, plan, review }: { callId: string; plan: string; revi
         >
           <Text size="xs" className="font-medium text-primary-foreground">
             {status === 'pending' ? 'Review plan' : 'View plan'}
+          </Text>
+        </Pressable>
+      </HStack>
+    </Box>
+  );
+}
+
+/** Questions the agent asked, in the transcript — like the plan card, the
+ * questions themselves are read in the panel. */
+function QuestionsCard({ callId, count, first, review }: { callId: string; count: number; first: string; review: PlanReview }) {
+  const pending = review.statusOf(callId) === 'pending';
+  return (
+    <Box testID={`chat.questions.${callId}`} className="my-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5">
+      <HStack space="sm" className="min-w-0 items-center">
+        <Icon as={MessageCircleQuestion} size="sm" className="text-primary" />
+        <VStack className="min-w-0 flex-1">
+          <Text size="sm" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+            {first}
+          </Text>
+          <Text testID={`chat.questions.status.${callId}`} size="2xs" className={pending ? 'text-warning' : 'text-success'}>
+            {`${String(count)} question${count === 1 ? '' : 's'} · ${pending ? 'Awaiting your answers' : 'Answered'}`}
+          </Text>
+        </VStack>
+        <Pressable
+          testID={`chat.questions.open.${callId}`}
+          onPress={() => { review.open(callId); }}
+          className="shrink-0 rounded-md bg-primary px-3 py-1.5 web:hover:bg-primary/90"
+        >
+          <Text size="xs" className="font-medium text-primary-foreground">
+            {pending ? 'Answer' : 'View'}
           </Text>
         </Pressable>
       </HStack>

@@ -1,4 +1,4 @@
-import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE } from '@loxaic/types'
+import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX } from '@loxaic/types'
 import type { AgentMode, Message } from './types'
 
 /**
@@ -18,7 +18,7 @@ import type { AgentMode, Message } from './types'
  * here — which the e2e spec would see at once. */
 export const PLAN_TOOL = 'propose_plan'
 
-export { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE }
+export { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX }
 
 export interface ProposedPlan {
   callId: string
@@ -106,4 +106,123 @@ export function planStatus(msgs: readonly Message[], callId: string): PlanStatus
  */
 export function acceptMode(defaultMode: AgentMode): Exclude<AgentMode, 'planning'> {
   return defaultMode === 'planning' ? 'manual' : defaultMode
+}
+
+// ── Questions ─────────────────────────────────────────────
+//
+// Planning mode's other way to end a turn (#199): questions whose answers
+// would change the plan. Same rules as a plan — a successful call only, read
+// from the transcript, answered by the user's next message.
+
+/** Mirrors `QUESTIONS_TOOL_NAME` in `@loxaic/agent` — see PLAN_TOOL. */
+export const QUESTIONS_TOOL = 'ask_questions'
+
+export interface QuestionOption {
+  label: string
+  description?: string
+}
+
+export interface Question {
+  question: string
+  header?: string
+  options: QuestionOption[]
+  multiSelect: boolean
+}
+
+export interface ProposedQuestions {
+  callId: string
+  questions: Question[]
+  /** The first question, for the card and the bar. */
+  title: string
+}
+
+/** Answered once the user says anything after them; pending until then. */
+export type QuestionsStatus = 'pending' | 'answered'
+
+/**
+ * The questions an `ask_questions` call carries, or undefined for any other
+ * call. The server has already refused a malformed one (it never reaches
+ * `ok: true`); this only has to read what passed, and drops anything it could
+ * not render rather than trusting the shape blindly.
+ */
+export function questionsOf(tool: string, args: Record<string, unknown>): Question[] | undefined {
+  if (tool !== QUESTIONS_TOOL || !Array.isArray(args.questions)) return undefined
+  const out: Question[] = []
+  for (const raw of args.questions as unknown[]) {
+    if (typeof raw !== 'object' || raw === null) continue
+    const q = raw as Record<string, unknown>
+    if (typeof q.question !== 'string' || !Array.isArray(q.options)) continue
+    const options = (q.options as unknown[]).flatMap((o): QuestionOption[] => {
+      const { label, description } = (o ?? {}) as Record<string, unknown>
+      if (typeof label !== 'string' || label.trim() === '') return []
+      return [{ label, ...(typeof description === 'string' && description ? { description } : {}) }]
+    })
+    if (options.length === 0) continue
+    out.push({
+      question: q.question,
+      ...(typeof q.header === 'string' && q.header ? { header: q.header } : {}),
+      options,
+      multiSelect: q.multiSelect === true,
+    })
+  }
+  return out.length ? out : undefined
+}
+
+/** A plan or a set of questions, in the thread — what the panel, the bar and
+ * the menu follow. */
+export type ReviewItem =
+  | { kind: 'plan'; callId: string; index: number; plan: ProposedPlan }
+  | { kind: 'questions'; callId: string; index: number; questions: ProposedQuestions }
+
+/** Every plan and question set, oldest first, with the same `ok === true`
+ * gating as `plansIn`. */
+export function reviewItemsIn(msgs: readonly Message[]): ReviewItem[] {
+  const out: ReviewItem[] = []
+  msgs.forEach((m, index) => {
+    for (const t of m.tools ?? []) {
+      if (!t.callId || t.ok !== true) continue
+      if (t.tool === PLAN_TOOL && t.plan) {
+        out.push({ kind: 'plan', callId: t.callId, index, plan: { callId: t.callId, text: t.plan, title: planTitle(t.plan) } })
+      } else if (t.tool === QUESTIONS_TOOL && t.questions) {
+        const title = t.questions[0]?.question ?? 'Questions'
+        out.push({ kind: 'questions', callId: t.callId, index, questions: { callId: t.callId, questions: t.questions, title } })
+      }
+    }
+  })
+  return out
+}
+
+export function questionsStatus(msgs: readonly Message[], callId: string): QuestionsStatus | null {
+  const item = reviewItemsIn(msgs).find((i) => i.callId === callId && i.kind === 'questions')
+  if (!item) return null
+  return msgs.slice(item.index + 1).some((m) => m.role === 'user') ? 'answered' : 'pending'
+}
+
+/** One question's answer as the panel collects it: the options chosen (by
+ * index) and anything written in "Other". */
+export interface Answer {
+  selected: number[]
+  other: string
+}
+
+export function isAnswered(answer: Answer | undefined): boolean {
+  return !!answer && (answer.selected.length > 0 || answer.other.trim() !== '')
+}
+
+/**
+ * The message the questions panel sends: a fixed first line, then each
+ * question with its answer, in order. Plain text a person can read in the
+ * transcript and a model can read back without a schema — the chosen labels as
+ * written, "Other" answers verbatim.
+ */
+export function formatAnswers(questions: readonly Question[], answers: readonly (Answer | undefined)[]): string {
+  const lines = questions.map((q, i) => {
+    const a = answers[i]
+    const parts = [
+      ...(a?.selected ?? []).flatMap((n) => (q.options[n] ? [q.options[n].label] : [])),
+      ...(a?.other.trim() ? [a.other.trim()] : []),
+    ]
+    return `${String(i + 1)}. ${q.question}\n→ ${parts.length ? parts.join('; ') : '(no answer)'}`
+  })
+  return [QUESTIONS_ANSWERED_PREFIX, '', ...lines].join('\n')
 }

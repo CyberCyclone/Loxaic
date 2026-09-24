@@ -219,7 +219,9 @@ describe("MCP end-to-end through the agent loop", () => {
 
   it("does not offer non-readOnly MCP tools in planning mode", async () => {
     const turn = await runTurn("please use mcp echo", "planning", null);
-    expect(turn.toolCalls).toEqual([]);
+    // Planning mode always ends in a plan or questions now (#199), so the
+    // turn is not tool-free — but the MCP tool must not be among its calls.
+    expect(turn.toolCalls.map((c) => c.tool)).not.toContain("mockmcp__echo");
   }, 30_000);
 
   it("skips approval for allowlisted tools", async () => {

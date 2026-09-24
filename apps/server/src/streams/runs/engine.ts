@@ -3,6 +3,7 @@ import { and, count, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
+  PLAN_REQUIRED_NUDGE,
   DEFAULT_CHECKIN_AUTO_CONTINUES,
   DEFAULT_LOOP_SENSITIVITY,
   DEFAULT_PROVIDER_ID,
@@ -40,7 +41,7 @@ import { addChars, apportion, estimateTallyTokens, summaryMessage, tallyChatMess
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
-import { PLAN_TOOL_NAME } from "@loxaic/agent";
+import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
 import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import {
   attachActiveSandbox,
@@ -596,6 +597,11 @@ export async function runToolLoop(ctx: {
     // Set once the user asks for a final answer: the next request goes out
     // with `tool_choice: "none"` and the loop ends after it either way.
     let answerNow = false;
+    // Planning mode ends every turn in a plan or questions (#199). A model that
+    // answers in prose anyway is asked once, and that one follow-up request is
+    // sent with `tool_choice: "required"`; prose a second time ends the turn.
+    let planNudged = false;
+    let requireTool = false;
     // The longest a single model request has taken in this run, send to done.
     // The adaptive wait floor is built on it — see effectiveTimeoutMs.
     let slowestTurnMs = 0;
@@ -727,7 +733,11 @@ export async function runToolLoop(ctx: {
             // Tools stay in the request even when they may not be called —
             // see StreamOptions.toolChoice for why dropping them would cost a
             // full prompt re-evaluation on exactly the wrong request.
-            ...(answerNow ? { toolChoice: "none" as const } : {}),
+            ...(answerNow
+              ? { toolChoice: "none" as const }
+              : requireTool
+                ? { toolChoice: "required" as const }
+                : {}),
             reportProgress,
           }),
         )) {
@@ -900,6 +910,49 @@ export async function runToolLoop(ctx: {
       };
 
       if (toolCalls.length === 0) {
+        // A planning turn that answered in prose is asked, once, to finish
+        // with a plan or questions (#199). Never after "answer now" — that is
+        // the user asking for exactly this prose.
+        if (mode === "planning" && !answerNow && !planNudged) {
+          planNudged = true;
+          requireTool = true;
+          producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
+          // The prose goes into the live prompt exactly as the replay will
+          // put it back — including skipping an empty one, which loadHistory
+          // does — or the next turn's prefix breaks at this message.
+          if (text.trim()) chatMessages.push(assistantMessageForPrompt(text, []));
+          // Persisted rather than injected, for the reason the check-in nudge
+          // is (CHECKIN_ANSWER_NUDGE below): the next turn has to replay the
+          // same bytes. Null author — nobody typed it.
+          const nudgeId = uuid();
+          const nudgeLamport = nextLamport();
+          await db.insert(messages).values({
+            id: nudgeId,
+            conversationId: convId,
+            parentId: assistantMsgId,
+            authorType: "user",
+            authorUserId: null,
+            origin: "server",
+            lamport: nudgeLamport,
+            content: [{ kind: "text", text: PLAN_REQUIRED_NUDGE }] as ContentBlock[],
+            status: "complete",
+            createdAt: new Date(),
+          });
+          producer.emit({
+            kind: "message.start",
+            message_id: nudgeId,
+            author_type: "user",
+            parent_id: assistantMsgId,
+            lamport: nudgeLamport,
+            text: PLAN_REQUIRED_NUDGE,
+            author_user_id: null,
+          });
+          producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
+          chatMessages.push({ role: "user", content: PLAN_REQUIRED_NUDGE });
+          parentId = nudgeId;
+          budgetEnd = Math.max(budgetEnd, iteration + 1);
+          continue;
+        }
         autoCompact = await endTurnComplete(assistantMsgId);
         break;
       }
@@ -953,26 +1006,26 @@ export async function runToolLoop(ctx: {
 
       // ── Run each requested tool ───────────────────────────
       const resultBlocks: ContentBlock[] = [];
-      // Set once a plan has been handed over in this message — see the end of
-      // the turn below.
-      let planHandedOver = false;
+      // Set once a plan or questions have been handed over in this message —
+      // see the end of the turn below.
+      let handedOver = false;
       for (const call of toolCalls) {
-        // Nothing runs after a plan in the same message. The turn ends on the
-        // plan, so the user is looking at it; a write queued behind it would
+        // Nothing runs after a plan or questions in the same message. The turn
+        // ends on them, so the user is looking at them; a write queued behind it would
         // otherwise put an approval in front of them for work nobody has
         // agreed to. Recorded rather than dropped — every tool_call needs its
         // tool_result partner, or the next replay carries an orphan.
-        if (planHandedOver) {
+        if (handedOver) {
           producer.emit({
             kind: "tool.result",
             message_id: assistantMsgId,
             call_id: call.id,
             tool: call.function.name,
-            output: PLAN_ALREADY_SUBMITTED,
+            output: HANDOVER_ALREADY_SUBMITTED,
             ok: false,
           });
-          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: PLAN_ALREADY_SUBMITTED, ok: false });
-          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, PLAN_ALREADY_SUBMITTED));
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: HANDOVER_ALREADY_SUBMITTED, ok: false });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, HANDOVER_ALREADY_SUBMITTED));
           continue;
         }
         // Checked per call, not just per iteration. A model routinely emits
@@ -1054,7 +1107,7 @@ export async function runToolLoop(ctx: {
           ...(outcome.diff ? { diff: outcome.diff } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
-        if (call.function.name === PLAN_TOOL_NAME && outcome.ok) planHandedOver = true;
+        if (HANDOVER_TOOL_NAMES.has(call.function.name) && outcome.ok) handedOver = true;
       }
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
 
@@ -1086,7 +1139,7 @@ export async function runToolLoop(ctx: {
         return;
       }
 
-      // ── A handed-over plan ends the turn ───────────────────
+      // ── A handed-over plan or questions end the turn ───────
       //
       // No further model request: what happens next is the user's decision on
       // the plan, and it arrives as their next message (#199). Letting the loop
@@ -1094,7 +1147,7 @@ export async function runToolLoop(ctx: {
       // accepted. Before the check-in, so a plan is never followed by a
       // question about whether to keep going; after the abort check, so a stop
       // pressed during the plan's own call still ends the turn cancelled.
-      if (planHandedOver) {
+      if (handedOver) {
         autoCompact = await endTurnComplete(toolMsgId, true);
         break;
       }
@@ -1476,9 +1529,10 @@ function approvalRefusalText(outcome: Exclude<ApprovalOutcome, "approved">): str
  */
 const ANSWER_NOW_NOT_RUN = "Not run — the user asked for a final answer without tools.";
 
-/** A call made after a plan in the same message. Fixed text — it is replayed
- * in every later prompt. */
-export const PLAN_ALREADY_SUBMITTED = "Not run — a plan was submitted earlier in the same message, which ends the turn.";
+/** A call made after a plan or questions in the same message. Fixed text — it
+ * is replayed in every later prompt. */
+export const HANDOVER_ALREADY_SUBMITTED =
+  "Not run — a plan or questions were submitted earlier in the same message, which ends the turn.";
 
 /** How a step check-in ended. `continue`/`answer` are a person's answer;
  * `timeout` and `gone` are decided by `unattendedDecision`, and `aborted` is a

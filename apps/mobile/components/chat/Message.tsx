@@ -19,6 +19,7 @@ import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
 import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
+import { PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import type { Message as MessageType } from '@/lib/types';
 import { displayModelRef } from '@loxaic/types';
 
@@ -92,6 +93,18 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
       <Box testID="chat.message.checkinNudge" className="px-4 py-2">
         <Text size="xs" className="text-center italic text-muted-foreground">
           {answerNowNotice(msg.authorUserId, user?.id)}
+        </Text>
+      </Box>
+    );
+  }
+
+  // The server's one reminder, in planning mode, that a turn ends in a plan or
+  // questions (#199). Nobody typed it, so it is not a bubble.
+  if (msg.role === 'user' && msg.text === PLAN_REQUIRED_NUDGE) {
+    return (
+      <Box testID="chat.message.planNudge" className="px-4 py-2">
+        <Text size="xs" className="text-center italic text-muted-foreground">
+          Asked the agent to finish with a plan or questions
         </Text>
       </Box>
     );

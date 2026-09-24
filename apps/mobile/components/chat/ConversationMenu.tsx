@@ -1,4 +1,4 @@
-import { ClipboardList, EllipsisVertical, Trash2 } from 'lucide-react-native';
+import { ClipboardList, EllipsisVertical, MessageCircleQuestion, Trash2 } from 'lucide-react-native';
 import { Menu, MenuItem, MenuItemLabel } from '@/components/ui/menu';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
@@ -8,8 +8,9 @@ interface ConversationMenuProps {
   area: 'chat' | 'agent';
   /** Absent for anyone but the owner — deleting is owner-only. */
   onDelete?: () => void;
-  /** Absent when the conversation has no plan to show (#199). */
-  onViewPlan?: () => void;
+  /** The newest plan or question set, and how to open it — absent when the
+   * conversation has neither (#199). */
+  review?: { kind: 'plan' | 'questions'; open: () => void };
 }
 
 /**
@@ -17,21 +18,24 @@ interface ConversationMenuProps {
  *
  * Each item is gated by whether its handler was passed, and the menu renders
  * only when at least one was: an empty menu would be worse than no menu.
- * "View plan" is for anyone who can see the conversation; Delete is for its
+ * "View plan" / "View questions" is for anyone who can see the conversation; Delete is for its
  * owner only (the server refuses anyone else, silently).
  *
  * Deleting opens a confirmation rather than deleting: the caller owns that
  * dialog, so the sheet's Delete and this one say the same thing about what
  * this deployment does with a deleted conversation.
  */
-export function ConversationMenu({ area, onDelete, onViewPlan }: ConversationMenuProps) {
-  if (!onDelete && !onViewPlan) return null;
+export function ConversationMenu({ area, onDelete, review }: ConversationMenuProps) {
+  if (!onDelete && !review) return null;
   const items = [];
-  if (onViewPlan) {
+  if (review) {
+    // Follows the newest item: after questions are answered and a plan
+    // proposed, the plan is what there is to look at.
+    const label = review.kind === 'questions' ? 'View questions' : 'View plan';
     items.push(
-      <MenuItem key="plan" textValue="View plan" testID={`${area}.header.viewPlan`} onPress={onViewPlan} className="gap-2">
-        <Icon as={ClipboardList} size="sm" className="text-foreground" />
-        <MenuItemLabel>View plan</MenuItemLabel>
+      <MenuItem key="plan" textValue={label} testID={`${area}.header.viewPlan`} onPress={review.open} className="gap-2">
+        <Icon as={review.kind === 'questions' ? MessageCircleQuestion : ClipboardList} size="sm" className="text-foreground" />
+        <MenuItemLabel>{label}</MenuItemLabel>
       </MenuItem>,
     );
   }

@@ -38,19 +38,18 @@ import { ConversationMenu } from '@/components/chat/ConversationMenu';
 import { PlanReviewContext, type PlanReview } from '@/components/chat/PlanCard';
 import { PlanPanel } from '@/components/agent/PlanPanel';
 import { PlanReviewBar } from '@/components/agent/PlanReviewBar';
-import { usePlanReview } from '@/hooks/usePlanReview';
-import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode } from '@/lib/plan';
+import { QuestionsPanel } from '@/components/agent/QuestionsPanel';
+import { useReview } from '@/hooks/useReview';
+import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode, formatAnswers, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
-/** Stable, so a screen with no run open does not hand usePlanReview a new
+/** Stable, so a screen with no run open does not hand useReview a new
  * array — and so a new list of plans — on every render. */
 const NO_MESSAGES: never[] = [];
-
-const MODE_LABEL = { manual: 'Manual', auto: 'Auto' } as const;
 
 /** Long enough for the plan sheet's exit animation (200ms) to finish. */
 const SHEET_EXIT_MS = 300;
@@ -236,22 +235,24 @@ export default function AgentScreen() {
         : busy
           ? 'The agent is still working in this conversation.'
           : null;
-  const planReview = usePlanReview({
+  const planReview = useReview({
     convId: activeId,
     msgs: activeRun?.msgs ?? NO_MESSAGES,
     busy,
     canDecide: Boolean(activeRun && canEdit(activeRun)) && connection === 'online',
   });
   const planContext = useMemo<PlanReview>(
-    () => ({ open: planReview.openPlan, statusOf: planReview.statusOf }),
-    [planReview.openPlan, planReview.statusOf],
+    () => ({ open: planReview.openItem, statusOf: planReview.statusOf }),
+    [planReview.openItem, planReview.statusOf],
   );
   const planMode = acceptMode(settings.defaultMode);
   // The model Accept runs the work on — the conversation's own until someone
   // picks another in the panel. Keyed to the plan, so a choice made for one
   // plan never carries silently onto the next.
   const [planModelChoice, setPlanModelChoice] = useState<{ callId: string; model: string } | null>(null);
-  const openPlanId = planReview.open?.callId ?? null;
+  const openPlan = planReview.open?.kind === 'plan' ? planReview.open : null;
+  const openQuestions = planReview.open?.kind === 'questions' ? planReview.open : null;
+  const openPlanId = openPlan?.callId ?? null;
   const executionModel =
     (openPlanId !== null && planModelChoice?.callId === openPlanId ? planModelChoice.model : undefined) ?? selectedModel;
   // Choosing a model swaps the panel for the model list and back: the two are
@@ -314,9 +315,12 @@ export default function AgentScreen() {
                 <ConversationMenu
                   area="agent"
                   onDelete={isOwner(activeRun) ? () => { setDeletingId(activeRun.id); } : undefined}
-                  onViewPlan={
+                  review={
                     planReview.latest
-                      ? () => { if (planReview.latest) planReview.openPlan(planReview.latest.callId); }
+                      ? {
+                          kind: planReview.latest.kind,
+                          open: () => { if (planReview.latest) planReview.openItem(planReview.latest.callId); },
+                        }
                       : undefined
                   }
                 />
@@ -413,10 +417,10 @@ export default function AgentScreen() {
               />
               {planReview.showBar && planReview.latest && (
                 <PlanReviewBar
-                  plan={planReview.latest}
-                  status={planReview.latestStatus === 'changes' ? 'changes' : 'pending'}
+                  item={planReview.latest}
+                  status={planReview.latestStatus}
                   busy={busy}
-                  onOpen={() => { if (planReview.latest) planReview.openPlan(planReview.latest.callId); }}
+                  onOpen={() => { if (planReview.latest) planReview.openItem(planReview.latest.callId); }}
                 />
               )}
               <HStack className="items-center justify-between pr-3">
@@ -517,11 +521,11 @@ export default function AgentScreen() {
         }}
       />
       <PlanPanel
-        plan={planReview.open}
+        plan={openPlan?.plan ?? null}
         hidden={pickingPlanModel !== null}
-        status={planReview.openStatus}
+        status={openPlan ? (planReview.openStatus as PlanStatus | null) : null}
         blockedReason={planBlockedReason}
-        acceptModeLabel={MODE_LABEL[planMode]}
+        defaultMode={planMode}
         executionModelName={executionModel ? getName(executionModel) : 'Select model'}
         onPickModel={() => {
           if (!openPlanId) return;
@@ -531,9 +535,20 @@ export default function AgentScreen() {
           // the sheet on screen behind the model list.
           setTimeout(() => { setModelModalOpen(true); }, SHEET_EXIT_MS);
         }}
-        onAccept={() => { decidePlan(PLAN_ACCEPTED_MESSAGE, planMode, executionModel); }}
+        onAccept={(m) => { decidePlan(PLAN_ACCEPTED_MESSAGE, m, executionModel); }}
         onSuggest={(text) => { decidePlan(text, 'planning', selectedModel); }}
         onReject={() => { decidePlan(PLAN_REJECTED_MESSAGE, 'planning', selectedModel); }}
+        onClose={planReview.close}
+      />
+      <QuestionsPanel
+        questions={openQuestions?.questions ?? null}
+        status={openQuestions ? (planReview.openStatus as QuestionsStatus | null) : null}
+        blockedReason={planBlockedReason}
+        // Answers are one message, sent in planning: the agent is still
+        // refining the plan, and the reply it owes is a plan or more questions.
+        onSubmit={(answers) => {
+          if (openQuestions) decidePlan(formatAnswers(openQuestions.questions.questions, answers), 'planning', selectedModel);
+        }}
         onClose={planReview.close}
       />
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />

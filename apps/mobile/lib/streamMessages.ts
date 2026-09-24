@@ -8,7 +8,7 @@ import { CHECKIN_ANSWER_NUDGE, type CompactionStats, type ContentBlock, type Fil
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
-import { PLAN_TOOL, planOf, planTitle } from '@/lib/plan';
+import { PLAN_TOOL, QUESTIONS_TOOL, planOf, planTitle, questionsOf, type Question } from '@/lib/plan';
 
 /** Every conversation id the server hands out is a Postgres row id, and so a
  * real UUID. The client's own optimistic placeholders
@@ -74,6 +74,10 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
       const plan = planOf(tool, args);
       return plan ? planTitle(plan) : 'Plan';
     }
+    case QUESTIONS_TOOL: {
+      const n = questionsOf(tool, args)?.length ?? 0;
+      return `${String(n)} question${n === 1 ? '' : 's'}`;
+    }
     case 'todo_write': {
       const todos = args.todos;
       const n = Array.isArray(todos) ? todos.length : 0;
@@ -86,9 +90,11 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
 
 /** Spread into a ToolCall: `{ plan }` for a plan call, nothing otherwise, so
  * no other card grows an explicit `plan: undefined`. */
-function withPlan(tool: string, args: Record<string, unknown>): { plan?: string } {
+function withPlan(tool: string, args: Record<string, unknown>): { plan?: string; questions?: Question[] } {
   const plan = planOf(tool, args);
-  return plan === undefined ? {} : { plan };
+  if (plan !== undefined) return { plan };
+  const questions = questionsOf(tool, args);
+  return questions === undefined ? {} : { questions };
 }
 
 export function diffLinesFor(diff: FileDiff[] | undefined): ToolCall['diff'] {

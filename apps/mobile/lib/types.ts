@@ -91,6 +91,9 @@ export interface ToolCall {
   /** A `propose_plan` call's plan, in Markdown — set on that tool only, from
    * its arguments, by all three paths that build a ToolCall (#199). */
   plan?: string
+  /** An `ask_questions` call's questions — same three construction sites as
+   * `plan`. See lib/plan.ts. */
+  questions?: import('./plan').Question[]
 }
 
 export interface DiffLine {

@@ -8,9 +8,11 @@
  *
  * - **Offer suggestion** stays in planning, and the revised plan opens the
  *   panel again when it arrives;
- * - **Reject** says so, and stays in planning;
- * - **Accept** leaves planning for the Default mode, on whichever model was
- *   chosen for the work.
+ * - **Reject** says so, and stays in planning — the agent answers it with
+ *   questions about what to do instead, never with another plan;
+ * - **Accept** leaves planning for the Default mode (named on the button), or
+ *   for whichever mode its dropdown picks, on whichever model was chosen for
+ *   the work.
  *
  * Until a plan is accepted or rejected, closing the panel leaves a bar above
  * the toolbar; the newest plan is always in the ⋮ menu; and all of it is read
@@ -171,7 +173,7 @@ describe('reviewing a proposed plan', () => {
     await shot('plan-cards-after-suggestion');
   });
 
-  it('rejects from the menu, stays in planning, and drops the bar', async function () {
+  it('rejects from the menu, stays in planning, and is asked what to do instead', async function () {
     this.timeout(3 * 60_000);
     await tap('agent.header.menu');
     await tap('agent.header.viewPlan');
@@ -182,21 +184,27 @@ describe('reviewing a proposed plan', () => {
     const convId = await newestConversationId(creds);
     await waitForRunDone(creds, convId);
     await waitForVisible('agent.planning.banner');
-    await waitForGone('agent.plan.bar');
     const texts = await getMessageTexts(creds, convId);
     if (!texts.some((t) => t.startsWith(REJECTED))) {
       throw new Error(`the rejection was not sent: ${JSON.stringify(texts)}`);
     }
-    // A decided plan is for reading only.
+    // Not another plan: questions, which open by themselves like one.
+    await waitForVisible('agent.questions.panel', 30_000);
+    await tap('agent.questions.close');
+    await waitForGone('agent.questions.panel');
+    await waitForTextIn('agent.plan.bar.label', 'Questions waiting for your answers');
+    await waitForListText('Proposed plan · Rejected');
+    await shot('plan-rejected-then-questions');
+    // The menu follows the newest item, which is now the questions.
     await tap('agent.header.menu');
+    await waitForTextIn('agent.header.viewPlan', 'View questions');
     await tap('agent.header.viewPlan');
-    await waitForTextIn('agent.plan.status', 'rejected');
-    await shot('plan-panel-rejected');
-    await tap('agent.plan.close');
-    await waitForGone('agent.plan.panel');
+    await waitForVisible('agent.questions.panel');
+    await tap('agent.questions.close');
+    await waitForGone('agent.questions.panel');
   });
 
-  it('accepts on a chosen model, leaves planning, and reopens a pending plan after a reload', async function () {
+  it('accepts in Auto from the dropdown, on a chosen model, and reopens a pending plan after a reload', async function () {
     this.timeout(4 * 60_000);
     await sendMessage(PLAN_PROMPT);
     await waitForVisible('agent.plan.panel', 90_000);
@@ -225,10 +233,20 @@ describe('reviewing a proposed plan', () => {
     await waitForTextIn('agent.plan.model', EXECUTION_MODEL);
     await shot('plan-panel-model-chosen');
 
-    await tap('agent.plan.accept');
+    // The dropdown beside Accept: either mode, whatever the Default is, and
+    // choosing one accepts at once.
+    await tap('agent.plan.accept.more');
+    await waitForVisible('agent.plan.accept.menu');
+    await shot('plan-accept-menu');
+    await tap('agent.plan.accept.auto');
     await waitForGone('agent.plan.panel');
-    // Accepting is what leaves planning mode — the banner goes with it.
+    // Accepting is what leaves planning mode — the banner goes with it — and
+    // this time for Auto, not the Default (Manual).
     await waitForGone('agent.planning.banner', 20_000);
+    await browser.waitUntil(async () => (await byTestId('agent.mode.auto').getAttribute('aria-selected')) === 'true', {
+      timeout: 10_000,
+      timeoutMsg: 'accepting from the dropdown did not switch to Auto',
+    });
     await waitForRunDone(creds, convId);
     const texts = await getMessageTexts(creds, convId);
     if (!texts.includes(ACCEPTED)) throw new Error(`the acceptance was not sent: ${JSON.stringify(texts)}`);
