@@ -2,6 +2,9 @@ import type { PromptStats } from '@loxaic/api-client';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlatList, type ListRenderItemInfo, type NativeSyntheticEvent, type NativeScrollEvent } from 'react-native';
 import { Box } from '@/components/ui/box';
+import { Pressable } from '@/components/ui/pressable';
+import { Spinner } from '@/components/ui/spinner';
+import { Text } from '@/components/ui/text';
 import { Message } from './Message';
 import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
@@ -9,6 +12,8 @@ import type { Conversation, Message as MessageType } from '@/lib/types';
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
 const STICKY_THRESHOLD = 120;
+/** How long after a wheel event the list's scroll events count as the user's. */
+const WHEEL_WINDOW_MS = 300;
 
 interface MessageListProps {
   conversation: Conversation | null;
@@ -22,6 +27,16 @@ interface MessageListProps {
   model?: string;
   /** What the in-flight request is evaluating — see TypingIndicator. */
   promptStats?: PromptStats | null;
+  /** Scroll-back through history older than what is loaded (#213). Absent
+   * where a thread has no server history to page through. */
+  history?: MessageHistory | null;
+}
+
+/** What the session hooks expose for the open thread's scroll-back. */
+export interface MessageHistory {
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  loadOlder: () => void;
 }
 
 /**
@@ -39,7 +54,7 @@ interface MessageListProps {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
 
@@ -52,6 +67,14 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // programmatic scrolls too, so without this the auto-follow reads its own
   // scroll back and can latch stickiness off mid-stream.
   const userDraggingRef = useRef(false);
+  // The web's half of the same fact. react-native-web reports drags only for
+  // touch: a mouse wheel or trackpad fires no onScrollBeginDrag, so on a
+  // desktop the list believed the reader was always at the newest message,
+  // and every change in content size — a streamed token, or an older page
+  // arriving at the top (#213) — threw them back to the bottom. A wheel event
+  // counts as the user moving the list for a moment after it; the scrolls it
+  // causes land well inside that window.
+  const wheelUntilRef = useRef(0);
 
   const scrollToNewest = useCallback(() => {
     listRef.current?.scrollToOffset({ offset: 0, animated: false });
@@ -59,12 +82,15 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
 
   // Switching threads, or sending, re-arms the follow. Someone who just hit
   // send wants to watch the reply even if they'd scrolled up to re-read
-  // history first.
-  const msgCount = conversation?.msgs.length ?? 0;
+  // history first. Keyed on the *newest* message rather than the count: an
+  // older page arriving at the top changes the count too, and re-arming then
+  // would throw someone reading back through history straight to the bottom
+  // the moment the page they scrolled up for landed (#213).
+  const newestId = conversation?.msgs.at(-1)?.id;
   useEffect(() => {
     isNearBottomRef.current = true;
     scrollToNewest();
-  }, [conversation?.id, msgCount, scrollToNewest]);
+  }, [conversation?.id, newestId, scrollToNewest]);
 
   const updateStickiness = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     // Inverted: offset 0 *is* the newest message, so distance from the live
@@ -74,7 +100,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   };
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    if (!userDraggingRef.current) return;
+    if (!userDraggingRef.current && Date.now() > wheelUntilRef.current) return;
     updateStickiness(e);
   };
 
@@ -176,12 +202,40 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
           </Box>
         ) : null
       }
+      // Inverted, so the footer is the visual top — above the oldest loaded
+      // message, which is where older history arrives. Reaching it loads the
+      // next page by itself; the button is for when there was nothing to
+      // scroll (a short page) and for anyone who prefers to ask.
+      ListFooterComponent={
+        history?.hasOlder ? (
+          <Box className="mx-auto w-full max-w-[820px] items-center py-3">
+            {history.loadingOlder ? (
+              <Spinner testID="chat.history.loadingOlder" size="small" />
+            ) : (
+              <Pressable
+                testID="chat.history.loadOlder"
+                onPress={history.loadOlder}
+                className="rounded-full bg-muted px-3 py-1.5 web:hover:bg-muted/80"
+              >
+                <Text size="xs" className="text-muted-foreground">
+                  Load earlier messages
+                </Text>
+              </Pressable>
+            )}
+          </Box>
+        ) : null
+      }
+      onEndReached={history?.hasOlder && !history.loadingOlder ? history.loadOlder : undefined}
+      onEndReachedThreshold={0.5}
       contentContainerStyle={{ paddingVertical: CONTENT_PADDING }}
       onScroll={handleScroll}
       onScrollBeginDrag={() => {
         userDraggingRef.current = true;
       }}
       onScrollEndDrag={handleScrollEndDrag}
+      // @ts-expect-error -- web only: react-native-web forwards it to the
+      // scroll node, and FlatList's native types do not declare it.
+      onWheel={() => { wheelUntilRef.current = Date.now() + WHEEL_WINDOW_MS; }}
       onMomentumScrollEnd={handleMomentumScrollEnd}
       onContentSizeChange={handleContentSizeChange}
       scrollEventThrottle={100}

@@ -80,6 +80,7 @@ export default function AgentScreen() {
     handleDelete,
     handleRename,
     setRunModel,
+    history,
   } = useAgentSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -333,6 +334,7 @@ export default function AgentScreen() {
                 responseStartedAt={responseStartedAt}
                 pendingApproval={pendingApproval}
                 pendingCheckin={pendingCheckin}
+                history={history}
                 onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
                 onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
                 onCheckinContinue={() => { handleSteps('continue'); }}

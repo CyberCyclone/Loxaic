@@ -2,7 +2,7 @@ import type { PromptStats } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
-import { MessageList } from '@/components/chat/MessageList';
+import { MessageList, type MessageHistory } from '@/components/chat/MessageList';
 import { RunHeader } from './RunHeader';
 import { PlanningBanner } from './PlanningBanner';
 import { PermissionBar } from './PermissionBar';
@@ -21,6 +21,8 @@ interface AgentStreamProps {
   responseStartedAt?: number | null;
   pendingApproval: PendingApproval | null;
   pendingCheckin: PendingCheckin | null;
+  /** Scroll-back through older history — see MessageList. */
+  history?: MessageHistory | null;
   onAllow: () => void;
   onDeny: () => void;
   onCheckinContinue: () => void;
@@ -39,6 +41,7 @@ export function AgentStream({
   responseStartedAt,
   pendingApproval,
   pendingCheckin,
+  history,
   onAllow,
   onDeny,
   onCheckinContinue,
@@ -71,6 +74,7 @@ export function AgentStream({
           loadingModel={loadingModel}
           promptStats={promptStats}
           queuePosition={queuePosition}
+          history={history}
         />
       </Box>
       {mode === 'planning' && <PlanningBanner />}

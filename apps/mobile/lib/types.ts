@@ -98,6 +98,11 @@ export interface DiffLine {
 export interface Message {
   id?: string
   role: 'user' | 'assistant' | 'summary'
+  /** The row's place in the engine's replay order, from history, a snapshot
+   * or `message.start` alike. Absent on an optimistic bubble and from an older
+   * server. Used to place a snapshot's messages in a thread loaded a page at a
+   * time (#213) — see applySnapshotToMsgs. */
+  lamport?: number
   model?: string
   text: string
   thinking?: string

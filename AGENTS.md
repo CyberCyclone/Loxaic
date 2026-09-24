@@ -409,6 +409,40 @@ replies.
   announces new runs per conversation, which is how a second device learns of a run it did not
   start.
 
+### Thread history is paged (#213)
+
+- **`GET /v1/conversations/:id/messages` returns the newest page, and `?before=` the page older
+  than it** (`conversations/history-page.ts`, shared with the admin transcript). Both routes used
+  to take the *oldest* rows (`ORDER BY created_at LIMIT n`), so a thread past 200 rows reloaded
+  without the replies anyone came back for. Pages are cut in the engine's replay order,
+  `(lamport, created_at, id)` — `created_at` alone put two same-millisecond rows in either order.
+- **A page starts on a user message**, so it holds whole turns: the limit is a floor, and the page
+  grows back to the turn's start. That is what keeps a `tool_call` and its `tool` rows on one page
+  (the client joins them by call id and cannot join across pages), and why the newest page always
+  holds the whole last turn. A turn past `PAGE_CEILING` (1,000 rows) is cut at the ceiling, moved
+  forward past any `tool` rows at its old edge so a call still never loses its results.
+- **The cursor is a row id, resolved in SQL.** `created_at` has microsecond precision in Postgres
+  and millisecond precision in a JS `Date`; a timestamp round-tripped through the client compares
+  wrong. A cursor from another conversation, or not a uuid, is a 400.
+- **A snapshot can describe a run older than anything loaded**, and appending it put that run
+  *below* the newest reply — seen on iOS, where a reconnect snapshots the conversation's last three
+  runs. `message.start` (and so every snapshot message) now carries the row's `lamport`;
+  `applySnapshotToMsgs` places a missing message by it, and leaves out one older than the loaded
+  page when there is history left to scroll to (it arrives in order from the older page). No
+  `lamport` — an older server — appends, as before. A finished run cannot be skipped on absence
+  alone: it may equally be a *newer* run this device missed while disconnected.
+- **react-native-web reports drags for touch only.** A wheel or trackpad fires no
+  `onScrollBeginDrag`, so `MessageList` believed a desktop reader was always at the newest message
+  and snapped back on every content-size change — a streamed token, or an older page arriving at
+  the top, which made scroll-back impossible with a mouse. A wheel event now marks the next
+  `WHEEL_WINDOW_MS` of scroll events as the user's. `thread-history.spec.ts` scrolls with **real
+  wheel input**: the first version used `scrollIntoView`, which sends no wheel events, and passed
+  while a real reader could not get past the first page.
+- **Follow-newest re-arms on the newest message's id, not the count** — prepending a page changes
+  the count too.
+- The offline cache (`lib/message-cache.ts`) keeps only the newest 100 messages per thread, so
+  older pages are never written to it.
+
 ### Tool loop (Chat and Agent both)
 
 - **Chat and Agent share one tool loop** — `apps/server/src/streams/runs/engine.ts`'s

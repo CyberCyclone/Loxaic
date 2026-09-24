@@ -188,13 +188,14 @@ export async function startCompactRun(input: {
       skipped,
       ...(input.auto ? { auto: true } : {}),
     };
+    const skipLamport = Date.now();
     await db.insert(messages).values({
       id: summaryMsgId,
       conversationId: convId,
       parentId,
       authorType: "summary",
       origin: "server",
-      lamport: Date.now(),
+      lamport: skipLamport,
       // No text block, deliberately: a textless summary row is what marks a
       // skip card, and the history loader relies on that to never treat one
       // as a compaction cutoff.
@@ -206,7 +207,13 @@ export async function startCompactRun(input: {
     const streamId = uuid();
     const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface });
     announceNewRun(convId, streamId);
-    producer.emit({ kind: "message.start", message_id: summaryMsgId, author_type: "summary", parent_id: parentId });
+    producer.emit({
+      kind: "message.start",
+      message_id: summaryMsgId,
+      author_type: "summary",
+      parent_id: parentId,
+      lamport: skipLamport,
+    });
     producer.emit({ kind: "compaction", message_id: summaryMsgId, ...stats });
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete" });
     await producer.end("complete");
@@ -214,6 +221,7 @@ export async function startCompactRun(input: {
   }
 
   // ── Real compaction ───────────────────────────────────────
+  const summaryLamport = Date.now();
   await db.insert(messages).values({
     id: summaryMsgId,
     conversationId: convId,
@@ -221,7 +229,7 @@ export async function startCompactRun(input: {
     authorType: "summary",
     origin: "server",
     model,
-    lamport: Date.now(),
+    lamport: summaryLamport,
     content: [{ kind: "text", text: "" }],
     status: "streaming",
     createdAt: new Date(),
@@ -234,6 +242,7 @@ export async function startCompactRun(input: {
     message_id: summaryMsgId,
     author_type: "summary",
     parent_id: parentId,
+    lamport: summaryLamport,
     model,
   });
 

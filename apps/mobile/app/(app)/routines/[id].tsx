@@ -145,6 +145,7 @@ export default function RoutineChatScreen() {
     handleSteps,
     handleAllowAlways,
     handleDelete,
+    history,
   } = useChatSession(token, undefined, scope);
 
   // The routine's model, and only it: the server serves every send in one of
@@ -322,6 +323,7 @@ export default function RoutineChatScreen() {
               promptStats={promptStats}
               queuePosition={queuePosition}
               model={model ? modelName : undefined}
+              history={history}
             />
           ) : !listLoaded ? (
             <Box className="flex-1 items-center justify-center">

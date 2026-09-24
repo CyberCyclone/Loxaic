@@ -157,6 +157,7 @@ export class StreamBroker {
           const m = ensure(event.message_id);
           m.author_type = event.author_type;
           m.parent_id = event.parent_id;
+          if (event.lamport !== undefined) m.lamport = event.lamport;
           if (event.model) m.model = event.model;
           if (event.text) m.text = event.text;
           if (event.attachments?.length) m.attachments = event.attachments;
