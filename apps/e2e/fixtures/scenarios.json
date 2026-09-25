@@ -153,5 +153,25 @@
       }
     ],
     "finalText": "[Mock] Stopped repeating.\n"
+  },
+  {
+    "match": "write two files, asking each time",
+    "steps": [
+      {
+        "tool": "fs_write",
+        "args": {
+          "path": "first.txt",
+          "content": "one\n"
+        }
+      },
+      {
+        "tool": "fs_write",
+        "args": {
+          "path": "second.txt",
+          "content": "two\n"
+        }
+      }
+    ],
+    "finalText": "[Mock] Wrote both files.\n"
   }
 ]

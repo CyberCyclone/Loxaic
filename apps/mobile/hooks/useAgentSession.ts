@@ -685,15 +685,22 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     sendCommand(wsRef.current, name, id, model, args || undefined);
   }, []);
 
+  // Closes only once the answer is on the wire — see useChatSession (#231).
   const handleApprove = useCallback((callId: string) => {
-    if (wsRef.current) approveTool(wsRef.current, callId);
+    if (!wsRef.current || !approveTool(wsRef.current, callId)) {
+      showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+      return;
+    }
     setPendingApproval(null);
-  }, []);
+  }, [showToast]);
 
   const handleDeny = useCallback((callId: string) => {
-    if (wsRef.current) denyTool(wsRef.current, callId);
+    if (!wsRef.current || !denyTool(wsRef.current, callId)) {
+      showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+      return;
+    }
     setPendingApproval(null);
-  }, []);
+  }, [showToast]);
 
   /** Answers a step check-in. Stop is not one of these — the banner's Stop
    * goes to `handleStop`, which works on any run whether parked or not. */

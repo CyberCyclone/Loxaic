@@ -171,7 +171,16 @@ export function createDelivery(
 
     for (const meta of metas) {
       const cursor = cursors[meta.streamId] ?? 0;
-      if (meta.lastSeq <= cursor) continue;
+      if (meta.lastSeq <= cursor) {
+        // Nothing to catch up on, but a live run still needs a tap on *this*
+        // socket, which may be a new one. A run parked on an approval emits
+        // nothing while it waits, so a client reconnecting then is always
+        // exactly caught up, and skipping it here left the new socket deaf to
+        // the rest of the run (#231). With the cursor at the end this sends no
+        // snapshot, and it is a no-op on a socket that already has the tap.
+        if (meta.status === "active") await subscribeToStream(meta.streamId, conversationId, cursor);
+        continue;
+      }
 
       if (meta.status !== "active") {
         // Finished run: worth one snapshot (that's the "it finished while I

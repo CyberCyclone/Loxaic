@@ -921,20 +921,31 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     });
   }, []);
 
+  // The dialog closes only once the answer is on the wire. Every return from
+  // the background replaces the socket, and someone coming back *because* a
+  // run is waiting on them taps in exactly that gap: the answer used to be
+  // dropped and the dialog closed anyway, so it looked approved while the run
+  // sat waiting for the timeout (#231).
   const handleApprove = useCallback(
     (callId: string) => {
-      if (wsRef.current) approveTool(wsRef.current, callId);
+      if (!wsRef.current || !approveTool(wsRef.current, callId)) {
+        showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+        return;
+      }
       if (activeIdRef.current) clearApproval(activeIdRef.current);
     },
-    [clearApproval],
+    [clearApproval, showToast],
   );
 
   const handleDeny = useCallback(
     (callId: string) => {
-      if (wsRef.current) denyTool(wsRef.current, callId);
+      if (!wsRef.current || !denyTool(wsRef.current, callId)) {
+        showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+        return;
+      }
       if (activeIdRef.current) clearApproval(activeIdRef.current);
     },
-    [clearApproval],
+    [clearApproval, showToast],
   );
 
   /** Answers a step check-in — see useAgentSession.handleSteps. Chat and agent
