@@ -2796,6 +2796,10 @@ replies.
   builds the URL it hands the phone from its own listening port and knows nothing about a
   port mapping, so the conventional `42001:8081` would advertise `exp://host:8081` — a port
   nothing serves.
+- **`ENVS_SSH=local` runs the slots on the workstation itself**: `on_host` hands each command to
+  bash instead of ssh and `push_target` is the bare repo on this disk, so everything else is the
+  same code. Not `ssh localhost`, which needs Remote Login — a security setting — switched on.
+  Since 2026-09-25 the owner's slots run this way on a laptop and the box runs the beta only.
 - **`scripts/envs.local` is gitignored (`*.local`) and holds the box's address.** The
   repository is public; where someone's home server lives does not belong in it. The
   script refuses to run rather than defaulting to anyone's machine.

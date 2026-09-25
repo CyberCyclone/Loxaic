@@ -30,7 +30,8 @@
 # because this repository is public and the box's address is nobody
 # else's business:
 #
-#   ENVS_SSH=you@192.168.1.50                 # where the environments run
+#   ENVS_SSH=you@192.168.1.50                 # where the environments run,
+#                                             # or `local` for this machine
 #   ENVS_HOSTNAME=yourbox.tailXXXX.ts.net     # what a phone dials to reach it
 #   ENVS_ROOT=loxaic-envs                     # where they live, under $HOME
 #   DEV_INFERENCE_URL=http://192.168.1.50:1234  # LM Studio for the dev slot
@@ -66,7 +67,29 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 [ -n "$SSH_TARGET" ] || die "set ENVS_SSH in scripts/envs.local (see the header of this script)"
 [ -n "$PUBLIC_HOST" ] || die "set ENVS_HOSTNAME in scripts/envs.local (see the header of this script)"
 
-on_host() { ssh -o BatchMode=yes "$SSH_TARGET" "$@"; }
+# `ENVS_SSH=local` runs the slots on this machine: every command that would go
+# over ssh is handed to bash here instead, and the push goes to a bare repo on
+# this disk. Nothing else changes — the same compose file, ports and state
+# files — so a slot behaves the same wherever it runs. Not "ssh localhost":
+# that needs Remote Login switched on, which is a security setting nobody
+# should have to change to run a preview.
+LOCAL=false
+[ "$SSH_TARGET" = "local" ] && LOCAL=true
+
+on_host() {
+  if [ "$LOCAL" = true ]; then
+    # ssh's -t (a terminal for `logs -f`) has no local meaning.
+    [ "${1:-}" = "-t" ] && shift
+    bash -c "$*"
+  else
+    ssh -o BatchMode=yes "$SSH_TARGET" "$@"
+  fi
+}
+
+# Where `git push` sends a slot's commit: the bare repo on the host.
+push_target() {
+  if [ "$LOCAL" = true ]; then printf '%s' "$HOME/$BARE"; else printf '%s' "$SSH_TARGET:$BARE"; fi
+}
 
 # Fixed per slot rather than derived from the pull request number, which is
 # the whole point: the Expo Go link is typed into a phone by hand, so it has
@@ -149,7 +172,7 @@ deploy_slot() {
   fi
 
   echo "→ pushing ${sha:0:8} to $SSH_TARGET"
-  git push --quiet --force "$SSH_TARGET:$BARE" "$sha:refs/envs/$slot"
+  git push --quiet --force "$(push_target)" "$sha:refs/envs/$slot"
 
   if [ "$wipe" = "wipe" ]; then
     echo "→ the slot held something else: dropping its database first"

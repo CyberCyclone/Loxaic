@@ -1,7 +1,7 @@
 # Environments on the box
 
 Two environments run on a machine you own, driven by `scripts/envs.sh` from
-your workstation:
+your workstation — or on the workstation itself, with `ENVS_SSH=local` (below):
 
 | Slot | What it runs | Web / API | Expo Go | Database |
 |---|---|---|---|---|
@@ -18,6 +18,22 @@ your workstation:
 ./scripts/envs.sh sync               # preview sync + dev up (what the timer runs)
 ./scripts/envs.sh dev logs server    # follow a slot's logs
 ```
+
+## Running them on your workstation (`ENVS_SSH=local`)
+
+Set `ENVS_SSH=local` in `scripts/envs.local` and every command the script would
+send over ssh runs in bash on this machine instead; the commit is pushed to a
+bare repo under `~/$ENVS_ROOT` rather than the box's. Everything else — the
+compose file, the fixed ports, the state files, what `sync` tears down — is the
+same code, so a slot behaves identically wherever it runs. Point
+`ENVS_HOSTNAME` at this machine's own tailnet name for a phone to reach it.
+
+It is not `ENVS_SSH=you@localhost`: that needs Remote Login switched on, a
+security setting nobody should have to change to run a preview. What it does
+need is disk: each slot builds a server and a Metro image of about 5 GB between
+them, plus build cache, and a laptop runs out long before a server does. The
+slots stop when the machine sleeps and come back with Docker, since every
+service is `restart: unless-stopped`.
 
 ## Why it pulls instead of being pushed to
 
