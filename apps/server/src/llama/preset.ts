@@ -7,9 +7,8 @@ import { modelFilePath, presetPath } from "./paths.ts";
 
 /**
  * The router's preset file: one section per servable model, named with the
- * model's id, which is also the reference users send. Measured against a real
- * router (b11149): a section name like `unsloth/Qwen3-8B-GGUF:Q4_K_M` is
- * accepted as the model id, and a live `GET /models?reload=1` re-reads this
+ * model's router name (`routerModelName`, below). Measured against a real
+ * router (b11149): a live `GET /models?reload=1` re-reads this
  * file — new sections appear, removed ones go, and a *changed* section that is
  * loaded is unloaded so its next request picks the new settings up. Unchanged
  * loaded models are kept.
@@ -32,18 +31,48 @@ function safeValue(v: string): string {
   return v;
 }
 
-/** Section names are model ids: `owner/repo:QUANT`. Validated when the row is
- * created; re-checked because a `]` or newline here would corrupt every
- * section after it. */
+/** Model ids are `owner/repo:QUANT`. Validated when the row is created;
+ * re-checked here because a `]` or newline in a section name would corrupt
+ * every section after it. */
 export function isSafeSectionName(id: string): boolean {
   return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/.test(id);
+}
+
+/**
+ * The name the router knows a model by: its id with the ":" as "@".
+ *
+ * Not the id itself, because b11149 reads a section name with a ":" as a
+ * HuggingFace `repo:quant` reference and rewrites the quant — uppercased, a
+ * leading "UD-" dropped — then serves the model under the *rewritten* name.
+ * `[unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q5_K_XL]` was listed as
+ * `…:Q5_K_XL`, so every request for the id it was downloaded as was
+ * "not found", and its status lookups missed it too. A name without a ":" is
+ * served exactly as written. "@" cannot occur in an id (isSafeSectionName), so
+ * the mapping is one-to-one and two quants can never collide — which the
+ * router's own rewrite does allow (`q4_k_m` and `Q4_K_M` became one model).
+ *
+ * The id stays the reference everywhere else — messages, prefs, usage, the
+ * listing — so nothing stored changes. Every call that names a model to the
+ * router goes through this, and `modelIdFromRouterName` reads its answers back.
+ */
+export function routerModelName(id: string): string {
+  return id.replace(":", "@");
+}
+
+/** The model id for a name the router reports; names it did not get from
+ * `routerModelName` are returned as they are. */
+export function modelIdFromRouterName(name: string): string {
+  return name.includes(":") ? name : name.replace("@", ":");
 }
 
 export function modelSection(row: LocalModelRow, globals: PresetGlobals): string[] {
   const files = rowFiles(row);
   if (files.length === 0 || !isSafeSectionName(row.id)) return [];
   const mmproj = rowMmproj(row);
-  const lines = [`[${row.id}]`, `model = ${safeValue(modelFilePath(row.repo, row.revision, files[0].path))}`];
+  const lines = [
+    `[${routerModelName(row.id)}]`,
+    `model = ${safeValue(modelFilePath(row.repo, row.revision, files[0].path))}`,
+  ];
   const settings = (row.loadSettings ?? {}) as LoadSettings;
   const cpuOnly = globals.devices === "none";
   lines.push(

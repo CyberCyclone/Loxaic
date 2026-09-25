@@ -43,10 +43,11 @@ export function invalidateLocalModelCache(): void {
   cache = null;
 }
 
-/** Every row this host holds, in any state, oldest first. */
+/** Every row this host holds, in any state, oldest first. The id breaks ties
+ * (rows inserted together share `now()`), since "default" takes the first. */
 export async function listLocalModelRows(): Promise<LocalModelRow[]> {
   if (cache && Date.now() - cache.at < TTL_MS) return cache.rows;
-  const rows = await db.select().from(localModels).where(hostScope()).orderBy(sql`${localModels.createdAt} asc`);
+  const rows = await db.select().from(localModels).where(hostScope()).orderBy(sql`${localModels.createdAt} asc`, sql`${localModels.id} asc`);
   cache = { at: Date.now(), rows };
   return rows;
 }

@@ -5,9 +5,9 @@ import { afterAll, describe, expect, it } from "vitest";
 import { bestFit, estimateFit } from "../fit.ts";
 import { readGgufFacts } from "../gguf.ts";
 import { cudaFlavourForDriver, defaultDevices, parseDeviceList, resolveFlavour } from "../hardware.ts";
-import { groupQuants, isRepoId, quantOf } from "../hf.ts";
+import { groupQuants, isProjectorFile, isRepoId, quantOf } from "../hf.ts";
 import { LoadSettingsError, normalizeLoadSettings, perRequestWindow, presetLines } from "../load-settings.ts";
-import { isSafeSectionName, renderPreset } from "../preset.ts";
+import { isSafeSectionName, modelIdFromRouterName, renderPreset, routerModelName } from "../preset.ts";
 import { explainRouterExit } from "../router.ts";
 import { buildGguf, denseModel } from "./gguf-fixture.ts";
 
@@ -77,11 +77,22 @@ describe("preset file", () => {
       ...over,
     }) as never;
 
-  it("one section per model, named by the id users send", () => {
+  it("one section per model, named with no ':' for the router to rewrite", () => {
     const text = renderPreset([row({ loadSettings: { ctxSize: 4096 } })], { devices: ["Vulkan1"] });
     expect(text).toContain("[*]\njinja = true\ndevice = Vulkan1");
     // The file path carries the revision the model was downloaded at.
-    expect(text).toMatch(/\[unsloth\/Qwen3-0\.6B-GGUF:Q4_K_M\]\nmodel = .*50968a4468ef.*Qwen3-0\.6B-Q4_K_M\.gguf\nctx-size = 4096/);
+    expect(text).toMatch(/\[unsloth\/Qwen3-0\.6B-GGUF@Q4_K_M\]\nmodel = .*50968a4468ef.*Qwen3-0\.6B-Q4_K_M\.gguf\nctx-size = 4096/);
+  });
+
+  it("maps an id to its router name and back, one to one", () => {
+    // b11149 rewrites a section name's quant after a ':' (uppercased, "UD-"
+    // dropped), so the name it is given has none.
+    for (const id of ["unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q5_K_XL", "a/b:q4_k_m", "a/b:Q4_K_M"]) {
+      expect(routerModelName(id)).not.toContain(":");
+      expect(modelIdFromRouterName(routerModelName(id))).toBe(id);
+    }
+    // Two quants the router's own rewrite would merge stay two names.
+    expect(routerModelName("a/b:q4_k_m")).not.toBe(routerModelName("a/b:Q4_K_M"));
   });
 
   it("CPU only forces zero GPU layers, whatever the model's settings say", () => {
@@ -189,6 +200,29 @@ describe("HuggingFace file grouping", () => {
     ]);
     expect(quants[0].files[0].sha256).toBe(sha);
     expect(mmproj.map((m) => m.path)).toEqual(["mmproj-F16.gguf"]);
+  });
+
+  it("never offers a vision projector as a quant, wherever its name says mmproj", () => {
+    // prism-ml/Ternary-Bonsai-2-27B-gguf's own file list: the two projectors
+    // were offered as quants "BF16" and "Q8_0", and one was downloaded as the
+    // model, which llama.cpp cannot load.
+    const sha = "a".repeat(64);
+    const entry = (path: string, size: number) => ({ type: "file", path, size, lfs: { oid: sha, size } });
+    const { quants, mmproj } = groupQuants([
+      entry("Ternary-Bonsai-2-27B-F16.gguf", 900),
+      entry("Ternary-Bonsai-2-27B-mmproj-BF16.gguf", 93),
+      entry("Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", 63),
+    ]);
+    expect(quants.map((q) => q.quant)).toEqual(["F16"]);
+    expect(mmproj.map((m) => m.path)).toEqual([
+      "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "Ternary-Bonsai-2-27B-mmproj-BF16.gguf",
+    ]);
+    for (const p of ["mmproj-F16.gguf", "mmproj-model-f16.gguf", "gemma-3-mmproj-BF16.gguf", "model.mmproj-Q8_0.gguf", "sub/Qwen2.5-VL-mmproj.gguf"]) {
+      expect(isProjectorFile(p)).toBe(true);
+    }
+    // A word, not a substring: a model that merely contains the letters is a model.
+    expect(isProjectorFile("Mmprojector-7B-Q4_K_M.gguf")).toBe(false);
   });
 
   it("only accepts owner/name repo ids", () => {

@@ -19,6 +19,7 @@ import {
   syncPreset,
 } from "../router.ts";
 import { presetPath } from "../paths.ts";
+import { routerModelName } from "../preset.ts";
 import { __resetModelCachesForTest, listBackendModels, modelRunInfo } from "../../inference/models.ts";
 import { ModelRefError, resolveModelRef } from "../../inference/providers.ts";
 import { streamCompletion } from "../../inference/provider.ts";
@@ -52,11 +53,17 @@ const dir = mkdtempSync(path.join(os.tmpdir(), "loxaic-router-"));
 const host = `test-router-${uuid()}`;
 const servable = `test/servable-${uuid().slice(0, 8)}:Q4_K_M`;
 const disabled = `test/disabled-${uuid().slice(0, 8)}:Q4_K_M`;
+/** Quants the real router renames when they are a section name (see
+ * fake-llama-server.mjs's routerId): Unsloth's "UD-" and a lowercase one. */
+const unsloth = `test/unsloth-${uuid().slice(0, 8)}:UD-Q5_K_XL`;
+const lowercase = `test/lower-${uuid().slice(0, 8)}:q4_k_m`;
 const loadLog = path.join(dir, "loads.jsonl");
 
 const HW_GPU = { platform: "linux" as const, arch: "x64", gpus: [], flavour: "vulkan" as const, reason: null, ramBytes: 16 * 1024 ** 3 };
 
-function row(id: string, enabled: boolean) {
+/** Rows inserted together share `now()`, and the listing orders on it, so each
+ * gets its own time: `servable` must be the oldest, the one "default" picks. */
+function row(id: string, enabled: boolean, createdAt: Date) {
   return {
     id,
     hostId: host,
@@ -69,6 +76,7 @@ function row(id: string, enabled: boolean) {
     enabled,
     displayName: id,
     publisher: "test",
+    createdAt,
   };
 }
 
@@ -104,7 +112,12 @@ beforeAll(async () => {
   vi.stubEnv("LOXAIC_FAKE_ROUTER_LOG", loadLog);
   vi.stubEnv("MOCK_INFERENCE", "false");
   vi.stubEnv("LLAMA_MODE", "managed");
-  await db.insert(localModels).values([row(servable, true), row(disabled, false)]);
+  await db.insert(localModels).values([
+    row(servable, true, new Date(1_000)),
+    row(disabled, false, new Date(2_000)),
+    row(unsloth, true, new Date(3_000)),
+    row(lowercase, true, new Date(4_000)),
+  ]);
   invalidateLocalModelCache();
 });
 
@@ -135,18 +148,34 @@ describe("managed runtime", () => {
     expect(ids).not.toContain(disabled);
     // The preset carries only the servable model, and the default device set.
     const preset = readFileSync(presetPath(), "utf8");
-    expect(preset).toContain(`[${servable}]`);
+    // Under its router name — see routerModelName.
+    expect(preset).toContain(`[${routerModelName(servable)}]`);
     expect(preset).not.toContain(disabled);
     expect(preset).toContain("device = FAKE0");
   });
 
   it("streams through the router, with the random key it was started with", async () => {
-    expect(await collect(servable)).toBe(`Hello from ${servable}`);
+    // The fake echoes the name it was asked for: the router name, not the id.
+    expect(await collect(servable)).toBe(`Hello from ${routerModelName(servable)}`);
     const info = await modelRunInfo(servable);
     // The first request loaded it; the listing now reports its allocated window.
     __resetModelCachesForTest();
     expect((await modelRunInfo(servable))?.loaded).toBe(true);
     expect(info?.nativeRuntime).toBe(true);
+  });
+
+  it("serves a model whose quant the router would rename, under the id it was downloaded as", async () => {
+    // Beta, a downloaded "unsloth/…:UD-Q5_K_XL": the router listed it as
+    // "…:Q5_K_XL", every chat answered "model … not found", and the listing
+    // never saw it load. The id stays the user's reference everywhere; only
+    // the name the router is given changes.
+    for (const id of [unsloth, lowercase]) {
+      expect(await collect(id)).toMatch(/^Hello from /);
+      __resetModelCachesForTest();
+      expect((await modelRunInfo(id))?.loaded).toBe(true);
+      const listed = (await listBackendModels()).find((m) => m.id === id);
+      expect(listed?.loaded).toBe(true);
+    }
   });
 
   it("refuses a model that is downloaded but not enabled — at send time, not just in the picker", async () => {
@@ -166,7 +195,7 @@ describe("managed runtime", () => {
     expect(deferred).toBe(false);
     await collect(servable);
     const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
-    const last = loads.filter((l) => l.model === servable).at(-1);
+    const last = loads.filter((l) => l.model === routerModelName(servable)).at(-1);
     expect(last?.section["ctx-size"]).toBe("2048");
     expect(last?.section.parallel).toBe("2");
     // And the window reported to clients is per slot.
@@ -220,7 +249,7 @@ describe("changing a model that is answering someone", () => {
     await waitForAsync(async () => (await routerModelStatuses()).get(servable)?.value === "unloaded", 10_000);
     await collect(servable);
     const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
-    expect(loads.filter((l) => l.model === servable).at(-1)?.section["ctx-size"]).toBe("3072");
+    expect(loads.filter((l) => l.model === routerModelName(servable)).at(-1)?.section["ctx-size"]).toBe("3072");
   });
 });
 

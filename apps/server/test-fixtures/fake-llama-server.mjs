@@ -52,6 +52,21 @@ const port = Number(arg("--port") ?? 0);
 const presetFile = arg("--models-preset");
 const apiKey = process.env.LLAMA_API_KEY ?? "";
 
+/**
+ * The id the real router serves a section under. b11149 reads a section name
+ * with a ":" as a HuggingFace `repo:quant` reference and rewrites the part after
+ * the last ":" — uppercased, a leading "UD-" dropped — so `[a/b:UD-Q5_K_XL]` is
+ * served as `a/b:Q5_K_XL` and a request for the name as written is "not found".
+ * Measured by listing a preset of such names against the real binary; a name
+ * with no ":" is served exactly as written. Imitated here because a fake that
+ * kept every name was how a downloaded Unsloth model shipped unusable.
+ */
+function routerId(name) {
+  const i = name.lastIndexOf(":");
+  if (i < 0) return name;
+  return name.slice(0, i + 1) + name.slice(i + 1).toUpperCase().replace(/^UD-/, "");
+}
+
 /** Parse the INI into { globals, sections: Map<id, Record<string,string>> }. */
 function readPreset() {
   const sections = new Map();
@@ -64,7 +79,7 @@ function readPreset() {
     const header = /^\[(.+)\]$/.exec(line);
     if (header) {
       current = header[1] === "*" ? globals : {};
-      if (header[1] !== "*") sections.set(header[1], current);
+      if (header[1] !== "*") sections.set(routerId(header[1]), current);
       continue;
     }
     const kv = /^([^=]+?)\s*=\s*(.*)$/.exec(line);

@@ -16,7 +16,14 @@ import {
   type RuntimeDevice,
 } from "./hardware.ts";
 import { presetPath } from "./paths.ts";
-import { renderPreset, sectionsById, writePreset, type PresetGlobals } from "./preset.ts";
+import {
+  modelIdFromRouterName,
+  renderPreset,
+  routerModelName,
+  sectionsById,
+  writePreset,
+  type PresetGlobals,
+} from "./preset.ts";
 import {
   anyRuntimeInstalled,
   binOverride,
@@ -246,7 +253,8 @@ export interface RouterModelStatus {
   failed: boolean;
 }
 
-/** The router's view of every preset model, or an empty map when it cannot be
+/** The router's view of every preset model, keyed by model id (not by the name
+ * the router uses — see routerModelName), or an empty map when it cannot be
  * asked. Never throws — a listing must not fail because the router is down. */
 export async function routerModelStatuses(): Promise<Map<string, RouterModelStatus>> {
   const out = new Map<string, RouterModelStatus>();
@@ -256,7 +264,8 @@ export async function routerModelStatuses(): Promise<Map<string, RouterModelStat
     const body = (await res.json()) as { data?: { id?: string; status?: { value?: string; failed?: boolean } }[] };
     for (const m of body.data ?? []) {
       if (typeof m.id !== "string") continue;
-      out.set(m.id, { id: m.id, value: m.status?.value ?? "unloaded", failed: m.status?.failed === true });
+      const id = modelIdFromRouterName(m.id);
+      out.set(id, { id, value: m.status?.value ?? "unloaded", failed: m.status?.failed === true });
     }
   } catch {
     // Router down or unreachable — callers show every model as not loaded.
@@ -270,7 +279,7 @@ export async function routerModelProps(
   id: string,
 ): Promise<{ nCtx: number | null; totalSlots: number | null } | null> {
   try {
-    const res = await routerFetch(`/props?model=${encodeURIComponent(id)}&autoload=false`, {}, 2000);
+    const res = await routerFetch(`/props?model=${encodeURIComponent(routerModelName(id))}&autoload=false`, {}, 2000);
     if (!res.ok) return null;
     const body = (await res.json()) as { total_slots?: number; default_generation_settings?: { n_ctx?: number } };
     const nCtx = body.default_generation_settings?.n_ctx;
@@ -285,7 +294,7 @@ export async function routerModelProps(
 
 export async function unloadModel(id: string): Promise<void> {
   try {
-    await routerFetch("/models/unload", { method: "POST", body: JSON.stringify({ model: id }) });
+    await routerFetch("/models/unload", { method: "POST", body: JSON.stringify({ model: routerModelName(id) }) });
   } catch {
     // Not loaded, or no router — either way it is not holding memory.
   }

@@ -149,7 +149,8 @@ describe("the Compose sidecar (attach mode)", () => {
     for await (const ev of streamCompletion(model, [{ role: "user", content: "hi" }])) {
       if (ev.type === "delta") text += ev.content;
     }
-    expect(text).toBe(`Hello from ${model}`);
+    // The fake echoes the name the router was asked for (routerModelName).
+    expect(text).toBe(`Hello from ${model.replace(":", "@")}`);
   });
 
   it("a sidecar that sees no GPU is reported as running on the CPU", async () => {

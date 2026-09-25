@@ -144,6 +144,10 @@ describe('local models', () => {
   const hf = mockHf();
   const tiny = hf.repos.tiny;
   const downloadId = `${tiny}:${hf.quants.download}`;
+  /** What the router knows it by — the id with "@" for ":" (routerModelName in
+   * apps/server/src/llama/preset.ts). The router rewrites a "UD-" quant after
+   * a ":", so the preset, the router's load log and its replies all use this. */
+  const routerName = downloadId.replace(':', '@');
   const cancelId = `${tiny}:${hf.quants.cancel}`;
   const user = uniqueCreds();
 
@@ -265,7 +269,7 @@ describe('local models', () => {
     await browser.waitUntil(
       () => {
         const preset = readFileSync(path.join(LLAMA_DIR, 'models.ini'), 'utf8');
-        return preset.includes(`[${downloadId}]`) && preset.includes('ctx-size = 8192');
+        return preset.includes(`[${routerName}]`) && preset.includes('ctx-size = 8192');
       },
       { timeout: 10_000, timeoutMsg: 'the preset never carried the saved settings' },
     );
@@ -339,8 +343,10 @@ describe('local models', () => {
     await tap(`models.row.${downloadId}`);
     await waitForGone('models.dialog', 10_000);
     // The fake router's own reply, not the mock backend's: the request went
-    // through the router, with the key it was started with.
-    await sendAndAwaitReply('Hello there', `Hello from ${downloadId}`);
+    // through the router, with the key it was started with — and under the
+    // router name (the id with "@" for ":"), since the router rewrites a
+    // "UD-" quant after a ":" and would answer "not found".
+    await sendAndAwaitReply('Hello there', `Hello from ${routerName}`);
     await shot('local-models-chat-reply');
 
     // And the router loaded the model with the settings saved earlier, on the GPU.
@@ -349,7 +355,7 @@ describe('local models', () => {
       .trim()
       .split('\n')
       .map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
-    const load = loads.filter((l) => l.model === downloadId).at(-1);
+    const load = loads.filter((l) => l.model === routerName).at(-1);
     expect(load?.section['ctx-size']).toBe('8192');
     expect(load?.section['n-gpu-layers']).toBe('20');
     expect(load?.section['flash-attn']).toBe('on');
