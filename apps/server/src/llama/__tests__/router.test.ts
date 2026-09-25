@@ -61,7 +61,9 @@ const loadLog = path.join(dir, "loads.jsonl");
 
 const HW_GPU = { platform: "linux" as const, arch: "x64", gpus: [], flavour: "vulkan" as const, reason: null, ramBytes: 16 * 1024 ** 3 };
 
-function row(id: string, enabled: boolean) {
+/** Rows inserted together share `now()`, and the listing orders on it, so each
+ * gets its own time: `servable` must be the oldest, the one "default" picks. */
+function row(id: string, enabled: boolean, createdAt: Date) {
   return {
     id,
     hostId: host,
@@ -74,6 +76,7 @@ function row(id: string, enabled: boolean) {
     enabled,
     displayName: id,
     publisher: "test",
+    createdAt,
   };
 }
 
@@ -109,7 +112,12 @@ beforeAll(async () => {
   vi.stubEnv("LOXAIC_FAKE_ROUTER_LOG", loadLog);
   vi.stubEnv("MOCK_INFERENCE", "false");
   vi.stubEnv("LLAMA_MODE", "managed");
-  await db.insert(localModels).values([row(servable, true), row(disabled, false), row(unsloth, true), row(lowercase, true)]);
+  await db.insert(localModels).values([
+    row(servable, true, new Date(1_000)),
+    row(disabled, false, new Date(2_000)),
+    row(unsloth, true, new Date(3_000)),
+    row(lowercase, true, new Date(4_000)),
+  ]);
   invalidateLocalModelCache();
 });
 
