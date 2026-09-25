@@ -5,7 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { bestFit, estimateFit } from "../fit.ts";
 import { readGgufFacts } from "../gguf.ts";
 import { cudaFlavourForDriver, defaultDevices, parseDeviceList, resolveFlavour } from "../hardware.ts";
-import { groupQuants, isRepoId, quantOf } from "../hf.ts";
+import { groupQuants, isProjectorFile, isRepoId, quantOf } from "../hf.ts";
 import { LoadSettingsError, normalizeLoadSettings, perRequestWindow, presetLines } from "../load-settings.ts";
 import { isSafeSectionName, modelIdFromRouterName, renderPreset, routerModelName } from "../preset.ts";
 import { explainRouterExit } from "../router.ts";
@@ -200,6 +200,29 @@ describe("HuggingFace file grouping", () => {
     ]);
     expect(quants[0].files[0].sha256).toBe(sha);
     expect(mmproj.map((m) => m.path)).toEqual(["mmproj-F16.gguf"]);
+  });
+
+  it("never offers a vision projector as a quant, wherever its name says mmproj", () => {
+    // prism-ml/Ternary-Bonsai-2-27B-gguf's own file list: the two projectors
+    // were offered as quants "BF16" and "Q8_0", and one was downloaded as the
+    // model, which llama.cpp cannot load.
+    const sha = "a".repeat(64);
+    const entry = (path: string, size: number) => ({ type: "file", path, size, lfs: { oid: sha, size } });
+    const { quants, mmproj } = groupQuants([
+      entry("Ternary-Bonsai-2-27B-F16.gguf", 900),
+      entry("Ternary-Bonsai-2-27B-mmproj-BF16.gguf", 93),
+      entry("Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf", 63),
+    ]);
+    expect(quants.map((q) => q.quant)).toEqual(["F16"]);
+    expect(mmproj.map((m) => m.path)).toEqual([
+      "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+      "Ternary-Bonsai-2-27B-mmproj-BF16.gguf",
+    ]);
+    for (const p of ["mmproj-F16.gguf", "mmproj-model-f16.gguf", "gemma-3-mmproj-BF16.gguf", "model.mmproj-Q8_0.gguf", "sub/Qwen2.5-VL-mmproj.gguf"]) {
+      expect(isProjectorFile(p)).toBe(true);
+    }
+    // A word, not a substring: a model that merely contains the letters is a model.
+    expect(isProjectorFile("Mmprojector-7B-Q4_K_M.gguf")).toBe(false);
   });
 
   it("only accepts owner/name repo ids", () => {

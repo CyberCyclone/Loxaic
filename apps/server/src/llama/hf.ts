@@ -279,6 +279,17 @@ export function quantOf(filePath: string): string {
 
 /** Group a repo's GGUF files into downloadable quants. A split model is one
  * quant made of every part; one missing a part is not offered. */
+/**
+ * A vision projector, not a model: "mmproj" as a word anywhere in the file's
+ * name. Only a *leading* "mmproj" was recognised at first, which missed the
+ * common `Model-mmproj-BF16.gguf` spelling: prism-ml's Ternary-Bonsai repo
+ * offered its two projectors as quants named "BF16" and "Q8_0", one was
+ * downloaded as the model, and the router could only answer "failed to load".
+ */
+export function isProjectorFile(filePath: string): boolean {
+  return /(?:^|[-_.])mmproj(?:[-_.]|$)/i.test(basename(filePath));
+}
+
 export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; mmproj: QuantFile[] } {
   // A GGUF with no LFS object id has no checksum to verify against, and a
   // download this server will mmap and run must never be accepted on length
@@ -292,10 +303,10 @@ export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; m
     size: e.lfs?.size ?? e.size ?? 0,
     sha256: e.lfs?.oid ?? null,
   });
-  const mmproj = ggufs.filter((e) => /^mmproj/i.test(basename(e.path))).map(toFile).sort((a, b) => a.size - b.size);
+  const mmproj = ggufs.filter((e) => isProjectorFile(e.path)).map(toFile).sort((a, b) => a.size - b.size);
   const groups = new Map<string, QuantFile[]>();
   for (const e of ggufs) {
-    if (/^mmproj/i.test(basename(e.path))) continue;
+    if (isProjectorFile(e.path)) continue;
     const q = quantOf(e.path);
     groups.set(q, [...(groups.get(q) ?? []), toFile(e)]);
   }
