@@ -113,6 +113,10 @@ services:
       # first and falls back to the remote one, and here they are the same.
       EXPO_PUBLIC_API_URL: "${SLOT_BASE_URL}"
       EXPO_PUBLIC_LAN_API_URL: "${SLOT_BASE_URL}"
+      # What Expo Go lists this slot as ("Loxaic - Preview", "Loxaic - Dev").
+      # Read by app.config.js, so a commit from before that existed shows
+      # plain "Loxaic" — harmless.
+      APP_DISPLAY_NAME: "${SLOT_APP_NAME:-}"
     ports:
       - "${SLOT_METRO_PORT}:${SLOT_METRO_PORT}"
     depends_on:

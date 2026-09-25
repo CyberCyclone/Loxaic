@@ -77,11 +77,24 @@ function variantFor(raw) {
   return { key, ...variant };
 }
 
+/**
+ * A label for this copy of the app, and nothing more: `scripts/envs.sh` sets it
+ * on each slot's Metro so Expo Go lists "Loxaic - Preview" and "Loxaic - Dev"
+ * apart, where both would otherwise read "Loxaic". It changes the name only —
+ * the identifier, scheme and channel still come from the variant, because a
+ * label that moved those would make one install look like another app to the
+ * OS and to expo-updates. Blank means "no label", like unset.
+ */
+function displayNameFor(raw, variant) {
+  const label = typeof raw === "string" ? raw.trim() : "";
+  return label || variant.name;
+}
+
 module.exports = ({ config }) => {
   const variant = variantFor(process.env.APP_VARIANT);
   return {
     ...config,
-    name: variant.name,
+    name: displayNameFor(process.env.APP_DISPLAY_NAME, variant),
     // `slug` deliberately does not vary: it identifies the EAS project that
     // all three variants publish updates through, and changing it per variant
     // would mean three projects and three sets of credentials.

@@ -96,8 +96,8 @@ push_target() {
 # to be the same one every time.
 slot_ports() {
   case "$1" in
-    preview) SERVER_PORT=42000; METRO_PORT=42001 ;;
-    dev)     SERVER_PORT=43000; METRO_PORT=43001 ;;
+    preview) SERVER_PORT=42000; METRO_PORT=42001; APP_NAME="Loxaic - Preview" ;;
+    dev)     SERVER_PORT=43000; METRO_PORT=43001; APP_NAME="Loxaic - Dev" ;;
     *) die "unknown slot: $1 (expected preview or dev)" ;;
   esac
 }
@@ -236,6 +236,7 @@ deploy_slot() {
     cat > \"\$root/$slot.env\" <<EOF
 SLOT_SERVER_PORT=$SERVER_PORT
 SLOT_METRO_PORT=$METRO_PORT
+SLOT_APP_NAME=$APP_NAME
 SLOT_HOSTNAME=$PUBLIC_HOST
 SLOT_BASE_URL=http://$PUBLIC_HOST:$SERVER_PORT
 SLOT_METRO_URL=http://$PUBLIC_HOST:$METRO_PORT
