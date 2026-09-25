@@ -881,6 +881,11 @@ replies.
   context, which HuggingFace's API does not report; the tokenizer arrays are skipped, not read,
   and both an array's element count and every skip are bounded (by `MAX_ARRAY` and the file's
   size) — the parser runs on the event loop, on a file that came from a stranger's repo.
+- **A vision projector is "mmproj" as a word anywhere in the file name** (`isProjectorFile` in
+  `llama/hf.ts`), never only a leading one: `Ternary-Bonsai-2-27B-mmproj-BF16.gguf` was offered
+  as a quant named "BF16", downloaded as the model, and could only fail to load. Some repos also
+  ship quant types standard llama.cpp cannot load at all — prism-ml's `PQ2_0`/`PTQ1_0` need
+  PrismML's fork — which the listing does not flag.
 - **Fit labels are computed server-side and only there** (`llama/fit.ts`), so search results,
   quants, installed rows and the settings sheet agree. `unknown` is never shown as "will fit".
   A search result has no file list, so its label is for a ~4-bit quant (0.6 bytes a parameter).
