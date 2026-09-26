@@ -106,4 +106,40 @@ describe("resubscribing to a live run the client is caught up on", () => {
     await producer.end("complete");
     delivery.close();
   });
+
+  it("tells a caught-up socket that the run it was following has finished, once", async () => {
+    // The run finishes while the client has every event: `producer.end`
+    // writes no record, so its cursor still equals lastSeq, and the live
+    // `stream.end` went out on the socket a resume then replaced.
+    const { producer, streamId, lastSeq } = await parkedRun();
+    await producer.end("complete");
+
+    const sent: Sent[] = [];
+    const delivery = createDelivery(userId, (m) => sent.push(m), () => 0);
+    await delivery.handleSubscribe(convId, { [streamId]: lastSeq });
+    const syncs = () =>
+      sent.filter((m): m is Extract<Sent, { type: "stream.sync" }> => m.type === "stream.sync" && m.stream_id === streamId);
+    expect(syncs().map((m) => m.status)).toEqual(["complete"]);
+
+    // Once per socket: a later subscribe on it has nothing new to say.
+    await delivery.handleSubscribe(convId, { [streamId]: lastSeq });
+    expect(syncs()).toHaveLength(1);
+    delivery.close();
+  });
+
+  it("attaches a caught-up socket without re-reading the run from the start", async () => {
+    const { producer, streamId, lastSeq } = await parkedRun();
+    const broker = getStreamBroker();
+    const readFrom = vi.spyOn(broker, "readFrom");
+    try {
+      const delivery = createDelivery(userId, () => undefined, () => 0);
+      await delivery.handleSubscribe(convId, { [streamId]: lastSeq });
+      const reads = readFrom.mock.calls.filter(([id]) => id === streamId).map(([, after]) => after);
+      expect(reads).toEqual([lastSeq]);
+      delivery.close();
+    } finally {
+      readFrom.mockRestore();
+      await producer.end("complete");
+    }
+  });
 });

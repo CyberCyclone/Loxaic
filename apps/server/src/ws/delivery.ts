@@ -26,7 +26,24 @@ export function createDelivery(
    * live events the client actually needs. */
   const syncedFinished = new Set<string>();
 
-  async function subscribeToStream(streamId: string, conversationId: string, cursor: number): Promise<void> {
+  /**
+   * How a subscribe catches the client up before the live tap takes over:
+   * - `catchUp`: a snapshot of the whole run when the client is behind.
+   * - `tapOnly`: the client already has every event (#231). Read only what
+   *   came after its cursor, normally nothing, and fold nothing: a run parked
+   *   on an approval after a long turn holds thousands of records, and this
+   *   runs on every app switch.
+   * - `forceSync`: a snapshot even when the cursor is not behind — for a run
+   *   that finished while the client was caught up (see handleSubscribe).
+   */
+  type CatchUp = "catchUp" | "tapOnly" | "forceSync";
+
+  async function subscribeToStream(
+    streamId: string,
+    conversationId: string,
+    cursor: number,
+    mode: CatchUp = "catchUp",
+  ): Promise<void> {
     if (subs.has(streamId)) return;
     // Reserve the slot synchronously, before any `await` below — otherwise
     // two callers racing to subscribe to the same stream (e.g. this
@@ -65,11 +82,40 @@ export function createDelivery(
       forward(record);
     });
 
-    const records = await broker.readFrom(streamId, 0);
-    const folded = broker.foldSnapshot(records);
-    currentSeq = records.length ? records[records.length - 1].seq : 0;
+    let records = await broker.readFrom(streamId, mode === "tapOnly" ? cursor : 0);
     const meta = await broker.getMeta(streamId);
     const status: StreamStatus = meta?.status ?? "active";
+
+    if (mode === "tapOnly" && status === "active") {
+      // Nothing to fold: whatever landed after the cursor goes out as events,
+      // which follow the cursor contiguously, so the client takes them as-is.
+      currentSeq = cursor;
+      syncSent = true;
+      for (const record of [...records, ...pending]) {
+        if (record.seq <= currentSeq) continue;
+        forward(record);
+      }
+      const unsubEndLive = broker.onEnd(streamId, (info) => {
+        send({
+          type: "stream.end",
+          stream_id: streamId,
+          conversation_id: conversationId,
+          seq: currentSeq,
+          status: info.status,
+          usage: info.usage,
+          error: info.error,
+        });
+        unsubscribeStream(streamId);
+      });
+      subs.set(streamId, { unsubRecord, unsubEnd: unsubEndLive });
+      return;
+    }
+    // A tap-only subscribe whose run ended in the meantime has to say so, and
+    // only a snapshot carries the status: fall through to one.
+    const forceSync = mode === "forceSync" || mode === "tapOnly";
+    if (mode === "tapOnly") records = await broker.readFrom(streamId, 0);
+    const folded = broker.foldSnapshot(records);
+    currentSeq = records.length ? records[records.length - 1].seq : 0;
     // A finished run holds no questions. Both `pending_approval` and
     // `pending_checkin` describe a run parked on a person, and neither can be
     // answered once the stream has ended — so advertising one to a client
@@ -90,7 +136,7 @@ export function createDelivery(
         ? folded
         : (({ pending_approval: _a, pending_checkin: _c, ...rest }) => rest)(folded);
 
-    if (currentSeq > cursor) {
+    if (currentSeq > cursor || forceSync) {
       send({
         type: "stream.sync",
         stream_id: streamId,
@@ -176,9 +222,23 @@ export function createDelivery(
         // socket, which may be a new one. A run parked on an approval emits
         // nothing while it waits, so a client reconnecting then is always
         // exactly caught up, and skipping it here left the new socket deaf to
-        // the rest of the run (#231). With the cursor at the end this sends no
-        // snapshot, and it is a no-op on a socket that already has the tap.
-        if (meta.status === "active") await subscribeToStream(meta.streamId, conversationId, cursor);
+        // the rest of the run (#231). A no-op on a socket that already has it.
+        if (meta.status === "active") {
+          await subscribeToStream(meta.streamId, conversationId, cursor, "tapOnly");
+          continue;
+        }
+        // The same hole for a run that finished while the client was caught
+        // up. `producer.end` writes no record, so the cursor still equals
+        // lastSeq, and the `stream.end` that told the client was sent live —
+        // lost with the socket a resume replaces. Without this the client
+        // shows a finished run as streaming, Stop enabled, until a reload.
+        // Only for the run the client says it is following (its cursor names
+        // it), and once per socket: a snapshot carries the status, and both
+        // hooks clear a run only when the snapshot is for the run they track.
+        if (meta.streamId in cursors && !syncedFinished.has(meta.streamId)) {
+          syncedFinished.add(meta.streamId);
+          await subscribeToStream(meta.streamId, conversationId, cursor, "forceSync");
+        }
         continue;
       }
 
