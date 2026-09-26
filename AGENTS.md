@@ -79,12 +79,38 @@ pnpm --filter @loxaic/e2e test:web        # see apps/e2e/README.md for setup + e
 E2E_SELF_CONTAINED=1 pnpm --filter @loxaic/e2e test:electron  # against the packaged app's own embedded stack
 ```
 
-## End-to-end tests
+## Testing: every PR, unit and end to end
 
-**Every feature PR adds or updates e2e coverage for the behaviour it changes**, and carries
-screenshots showing that behaviour working. Writing those tests is the implementer's job
-(human or AI) — the harness already exists, so this is normally a spec file and a few
-`testID`s, not new infrastructure.
+**Every pull request carries unit tests and end-to-end tests for what it changes, wherever
+either is possible.** Nothing may depend on a person remembering to try it by hand: a check
+done once, manually, protects nothing after the PR merges, and the next change undoes it
+silently. Writing the tests is the implementer's job (human or AI) — the harness already
+exists, so this is normally a spec file, a helper and a few `testID`s, not new infrastructure.
+
+- **Unit tests pin the rules**: every decision a module makes, including the edge cases,
+  in the package's own vitest suite. Pull the logic into something pure (a reducer, a
+  function of its inputs) when that is what makes it testable — `connectionMonitorCore.ts`
+  and `apps/desktop/src/power.js` are the pattern.
+- **End-to-end tests cover every scenario a user can get into, on every platform where it
+  exists** — not only the happy path, and not only the platform that was convenient. Work out
+  the situations first (the server down, slow, or coming back; the phone locked, switched away
+  from, or opened from cold; the laptop asleep; a dialog open when it happens), then write a
+  case for each, both ways: the one where nothing should be said, and the one where something
+  should. A platform-only situation gets a platform-only spec: `src/specs/native/` for iOS and
+  Android (locking, backgrounding, cold starts), `src/specs/electron/` for the desktop (sleep,
+  the main process), `src/specs/browser/` for web.
+- **Reach the real thing.** Drive the OS event the user would cause (`mobile: lock`, the
+  real `powerMonitor` through the Electron service's bridge) and take the server away for real
+  (`helpers/server.ts` freezes the run's server process). A stub that imitates the trigger
+  tests the stub.
+- **Prove a new test can fail**: run it once against the code before the fix, or with the fix
+  reverted, and see it go red. A test that passes either way is not coverage.
+- **"Where possible" is a high bar.** If a scenario genuinely cannot be automated (real
+  hardware, a paid account), the PR says which one, why, and how it was checked instead — never
+  silently. "It was slow to set up" and "the lane is flaky" are reasons to fix the harness,
+  not to skip the test.
+- **Every feature PR also carries screenshots** showing the behaviour working, captured by
+  the specs (below).
 
 - **Tests** live in `apps/e2e/src/specs/`. Select by `testID` using the helpers in
   `src/helpers/` — never by CSS class, text position, or list index (the message list is
@@ -95,7 +121,8 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Failures are captured automatically.
 - **Screenshots are never committed.** `apps/e2e/artifacts/` is gitignored; embed the PNGs in
   the PR description instead, straight from that directory.
-- If a change genuinely isn't user-visible, say so in the PR rather than skipping the section.
+- If a change genuinely isn't user-visible, say so in the PR rather than skipping the section —
+  it still needs its unit tests.
 
 ## Pull requests
 
@@ -490,12 +517,25 @@ replies.
   back its optimistic bubble (or `pending-*` run) when it did not, the mode selector moves only if
   the server heard it, and a plan decision is **sent first and acted on after** — it used to close
   the panel and switch the model before sending, so a decision that never left looked made.
+- **A launch waits at most 5 s to learn who is signed in** (`LAUNCH_SESSION_TIMEOUT_MS` in
+  `lib/session.tsx`). A hung server accepts the connection and answers nothing, and the splash
+  used to wait out the platform's own network timeout — a minute on iOS. Past the deadline the
+  launch carries on as for an unreachable server: token kept, user unknown, and the user is
+  fetched whenever the monitor says `online` and it is still unknown. Not on "recovered after
+  failing": a server that was merely slow at launch never fails a probe, and the user would have
+  stayed unknown (isAdmin false) until a restart. Found by the native cold-start e2e case.
 - **e2e**: `server-unreachable.spec.ts` cuts the server from inside the page (stubbed `fetch` for
   `/v1|/api|/health`, sockets pointed at a dead port) and checks the banner on chat, agent and a
   settings screen with their controls disabled, then recovery; `approval-reconnect.spec.ts` holds a
   new socket's `open` back to make a reconnect slow, and watches the DOM with a `MutationObserver`
   for a flash — on localhost a reconnect takes a few milliseconds, so a polling check passed with a
-  zero grace period.
+  zero grace period. `native/connection-lifecycle.spec.ts` (iOS and Android) locks the device,
+  switches away, cold-starts, and sits on a screen, each with the server up and frozen
+  (`helpers/server.ts`, `SIGSTOP` on the run's server); `electron/sleep-wake.spec.ts` emits the
+  real `powerMonitor` events in the main process. **Minimising an Electron window cannot be
+  tested on macOS**: Chromium's occlusion tracker is the only route from it to the page's
+  visibility, it races every other window on the screen, and the lane turns it off
+  (`--disable-backgrounding-occluded-windows`) because it also made unrelated specs time out.
 
 ### Thread history is paged (#213)
 
