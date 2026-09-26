@@ -408,6 +408,23 @@ replies.
   buffer, events are dropped and the client's gap detection resubscribes. `watchers.ts`
   announces new runs per conversation, which is how a second device learns of a run it did not
   start.
+- **A caught-up cursor skips the snapshot of an active run, never its tap** (#231). The cursor
+  says what this *client* has, not what this *socket* has, and a reconnect is a new socket.
+  Skipping the whole run left a phone that came back from the background deaf to a run parked
+  on an approval: a parked run emits nothing, so the cursor is always exactly caught up then,
+  and the approval reached the server while its result, the next message and the next
+  approval never reached the screen. That tap is attached **without re-reading the run**
+  (`tapOnly`: read after the cursor, no fold), since it happens on every app switch and a long
+  parked run's log is thousands of records. **A run that finished while the client was caught
+  up is the other half** (found in review): `producer.end` writes no record, so the cursor still
+  equals `lastSeq`, and the live `stream.end` died with the replaced socket — the client showed
+  a finished run as streaming, Stop enabled, until a reload. The run a client's cursor names
+  gets one snapshot per socket even when caught up (`forceSync`); a snapshot, not a
+  `stream.end`, because the chat hook's `stream.end` clears the conversation whatever run it
+  names, while both hooks check a snapshot's stream id. `delivery-reconnect.test.ts` and
+  `approval-reconnect.spec.ts` hold it. The same moment is when a tap on Allow lands on a
+  socket still closing, so **Approve and Deny close their dialog only once `trySend` says the
+  answer went out** — as Stop and the check-in already did (#113).
 
 ### Thread history is paged (#213)
 
