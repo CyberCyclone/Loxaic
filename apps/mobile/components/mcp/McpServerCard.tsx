@@ -30,7 +30,7 @@ interface McpServerCardProps {
   linked?: boolean;
 }
 
-export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEdit, onDelete, linked }: McpServerCardProps) {
+export function McpServerCard({ server, testing = false, onToggle, onTest, onTools, onEdit, onDelete, linked }: McpServerCardProps) {
   // Toggle, test and delete are requests; Edit and Tools open sheets that say
   // for themselves why they cannot save.
   const reachable = useServerReachable();

@@ -202,11 +202,12 @@ export function reduce(
       break;
 
     case 'socket': {
+      // An index into a Record reads as always present; this one may not be.
+      const current = state.sockets[event.key] as MonitorState['sockets'][string] | undefined;
+      const { released } = state;
       const carried =
-        !state.sockets[event.key] && state.released?.key === event.key && now - state.released.at <= REPLACED_WITHIN_MS
-          ? state.released
-          : null;
-      const previous = state.sockets[event.key] ?? carried;
+        !current && released?.key === event.key && now - released.at <= REPLACED_WITHIN_MS ? released : null;
+      const previous = current ?? carried;
       const before = previous?.status;
       // Still the same attempt to connect: keep when it began, or a socket
       // replaced while stuck would never be noticed as stuck.
@@ -228,9 +229,9 @@ export function reduce(
     }
 
     case 'untrack': {
-      const gone = state.sockets[event.key];
+      const { [event.key]: gone, ...rest } = state.sockets as Partial<MonitorState['sockets']>;
       if (gone) state.released = { key: event.key, ...gone, at: now };
-      delete state.sockets[event.key];
+      state.sockets = rest as MonitorState['sockets'];
       break;
     }
 

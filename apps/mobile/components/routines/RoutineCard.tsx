@@ -46,7 +46,7 @@ interface RoutineCardProps {
 
 export function RoutineCard({
   routine,
-  running,
+  running = false,
   modelLabel,
   modelUnavailable,
   onToggle,

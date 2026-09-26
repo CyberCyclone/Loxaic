@@ -52,7 +52,7 @@ const AUTHOR_LABEL: Record<string, string> = {
  * it; rendering it like the chat surface would invite acting in it, which this
  * screen cannot do.
  */
-export function AdminTranscript({ messages, loading, hasOlder, loadingOlder, onLoadOlder }: AdminTranscriptProps) {
+export function AdminTranscript({ messages, loading, hasOlder, loadingOlder = false, onLoadOlder }: AdminTranscriptProps) {
   const reachable = useServerReachable();
   if (loading) {
     return (

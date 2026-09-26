@@ -27,7 +27,7 @@ interface ProviderCardProps {
   onDelete: () => void;
 }
 
-export function ProviderCard({ provider, testing, onToggle, onTest, onEdit, onDelete }: ProviderCardProps) {
+export function ProviderCard({ provider, testing = false, onToggle, onTest, onEdit, onDelete }: ProviderCardProps) {
   // Toggle, test and delete are requests; Edit opens a sheet that says for
   // itself why it cannot save.
   const reachable = useServerReachable();

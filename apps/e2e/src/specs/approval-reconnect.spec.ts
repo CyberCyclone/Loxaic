@@ -56,9 +56,8 @@ async function leaveAndReturn(opts: ReturnOptions = {}): Promise<{ bannerSeen: b
         const Native = window.WebSocket;
         class Held extends Native {
           set onopen(handler: ((this: WebSocket, ev: Event) => unknown) | null) {
-            const self = this;
             super.onopen = handler
-              ? (ev: Event) => { setTimeout(() => handler.call(self, ev), holdOpenMs); }
+              ? (ev: Event) => { setTimeout(() => handler.call(this, ev), holdOpenMs); }
               : null;
           }
           get onopen() {
@@ -106,7 +105,7 @@ async function waitForDialogText(text: string, timeout = 30_000): Promise<void> 
   await browser.waitUntil(
     () =>
       browser.execute(
-        (selector: string, t: string) => document.querySelector(selector)?.textContent?.includes(t) ?? false,
+        (selector: string, t: string) => document.querySelector(selector)?.textContent.includes(t) ?? false,
         testIdSelector('chat.approval.dialog'),
         text,
       ),

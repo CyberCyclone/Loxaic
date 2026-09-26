@@ -31,7 +31,7 @@ async function cutServer(): Promise<void> {
       __realFetch?: typeof fetch;
       __RealWebSocket?: typeof WebSocket;
     };
-    w.__realFetch ??= window.fetch;
+    w.__realFetch ??= window.fetch.bind(window);
     w.__RealWebSocket ??= window.WebSocket;
     const realFetch = w.__realFetch;
     const RealWebSocket = w.__RealWebSocket;
