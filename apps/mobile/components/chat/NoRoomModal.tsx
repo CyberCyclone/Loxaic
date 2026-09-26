@@ -6,7 +6,7 @@ import { Text } from '@/components/ui/text';
 import { Heading } from '@/components/ui/heading';
 import { Button, ButtonText } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
-import type { NoRoomNotice } from '@/lib/noRoom';
+import { unsentNote, type NoRoomNotice } from '@/lib/noRoom';
 
 /** Long enough for this modal's exit animation to finish. iOS will not
  * present the model list while this is still being dismissed (the plan sheet
@@ -51,9 +51,9 @@ export function NoRoomModal({ notice, isAdmin, onClose, onChooseModel, onManage 
             <Text testID="chat.noRoom.message" size="sm" className="text-foreground">
               {notice?.message ?? ''}
             </Text>
-            {notice?.text !== null && notice?.text !== undefined && (
-              <Text size="xs" className="text-muted-foreground">
-                Your message was not sent. It is back in the message box.
+            {notice && unsentNote(notice) !== null && (
+              <Text testID="chat.noRoom.unsent" size="xs" className="text-muted-foreground">
+                {unsentNote(notice)}
               </Text>
             )}
             {isAdmin && (

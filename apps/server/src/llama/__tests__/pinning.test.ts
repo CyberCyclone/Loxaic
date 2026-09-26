@@ -17,6 +17,7 @@ import {
   remeasureDevices,
   routerModelStatuses,
   runtimeView,
+  unloadModel,
 } from "../router.ts";
 import { routerModelName } from "../preset.ts";
 import { __resetModelCachesForTest, listBackendModels } from "../../inference/models.ts";
@@ -168,6 +169,20 @@ describe("making room", () => {
     const fake = runtimeView().devices.find((d) => d.name === "FAKE0");
     // B holds 23,500 of the 24,000 MiB that were free at start.
     expect(fake?.freeBytes).toBe(500 * MiB);
+  });
+
+  it("measures again once a measurement is old, without being forced", async () => {
+    // The screen's polling path: no `force`, only an age. The first version
+    // never cleared its in-flight marker, so every such call after the first
+    // returned the first measurement and the figures froze.
+    await remeasureDevices({ maxAgeMs: 0 });
+    expect(runtimeView().devices.find((d) => d.name === "FAKE0")?.freeBytes).toBe(500 * MiB);
+    await unloadModel(b);
+    await waitForStatus(b, "unloaded");
+    await remeasureDevices({ maxAgeMs: 0 });
+    expect(runtimeView().devices.find((d) => d.name === "FAKE0")?.freeBytes).toBe(24_000 * MiB);
+    // Put B back for the cases below.
+    expect(await collect(b)).toBe(`Hello from ${routerModelName(b)}`);
   });
 });
 

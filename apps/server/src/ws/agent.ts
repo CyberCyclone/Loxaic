@@ -6,6 +6,7 @@ import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { NotFoundError, atLeast, resolveAccess } from "../streams/authz.ts";
 import { findRunsByApprovalCallId, isStepsDecision, getRun } from "../streams/registry.ts";
+import { clientRefOf } from "./client-ref.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -193,9 +194,12 @@ export function agentWsHandler(app: FastifyInstance) {
           safeSend({ type: "error", error: "not found" });
         } else {
           // A code the client handles itself (a modal, for a host model with
-          // no room behind pinned ones) rides beside the sentence.
+          // no room behind pinned ones) rides beside the sentence, with the
+          // send's own ref: the refusal of one send can land after a later
+          // one, and the client must take back the bubble of the right send.
           const code = (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
-          safeSend({ type: "error", error: (err as Error).message, ...(code ? { code } : {}) });
+          const ref = code ? clientRefOf(msg) : undefined;
+          safeSend({ type: "error", error: (err as Error).message, ...(code ? { code } : {}), ...(ref ? { client_ref: ref } : {}) });
         }
       }
     };

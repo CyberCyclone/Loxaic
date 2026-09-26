@@ -20,6 +20,7 @@ import path from 'node:path';
 import { browser } from '@wdio/globals';
 import { adminCreds, apiToken, provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
+import { attachDocument, TEXT_FIXTURE } from '../helpers/attachments.ts';
 import {
   isVisible,
   tap,
@@ -505,8 +506,21 @@ describe('local models', () => {
     await sendMessage('Still no room?');
     await waitForVisible('chat.noRoom');
     await waitForTextIn('chat.noRoom.message', 'ask an admin to unpin it');
+    await waitForTextIn('chat.noRoom.unsent', 'It is back in the message box');
     expect(await isVisible('chat.noRoom.manage')).toBe(false);
     await shot('local-models-no-room-user');
+    await tap('chat.noRoom.close');
+    await waitForGone('chat.noRoom', 10_000);
+
+    // An attachment-only send has no text to put back, and its file cannot be
+    // put back at all: the modal says so rather than promising the message is
+    // in the box.
+    await typeInto('composer.input', '');
+    await attachDocument(TEXT_FIXTURE);
+    await tap('composer.send');
+    await waitForVisible('chat.noRoom');
+    await waitForTextIn('chat.noRoom.unsent', 'Add its attachments again');
+    await shot('local-models-no-room-attachment-only');
     await tap('chat.noRoom.close');
     await waitForGone('chat.noRoom', 10_000);
   });

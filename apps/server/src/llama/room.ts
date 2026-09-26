@@ -129,8 +129,13 @@ export function trackRequest(id: string): () => void {
     else inFlight.set(id, n);
     lastUsed.set(id, Date.now());
     // A pinned model that could not be loaded may have been waiting for this
-    // one to go idle.
-    if (pinErrors.size > 0) void loadPinnedModels();
+    // one to go idle. Caught: this runs at the end of every request, and a
+    // rejection nothing handles terminates the process.
+    if (pinErrors.size > 0) {
+      void loadPinnedModels().catch((e: unknown) => {
+        console.error(`[llama] could not load pinned models: ${e instanceof Error ? e.message : String(e)}`);
+      });
+    }
   };
 }
 
@@ -309,9 +314,15 @@ async function loadPinnedOnce(): Promise<void> {
   const pinnedIds = new Set(rows.filter((r) => r.pinned).map((r) => r.id));
   for (const id of [...pinErrors.keys()]) if (!pinnedIds.has(id)) pinErrors.delete(id);
   for (const row of rows) {
-    if (!row.pinned || (await isLoaded(row.id))) continue;
+    if (!row.pinned) continue;
     await withRoomLock(async () => {
       try {
+        // Inside the try, so one failed read records why for this model and
+        // the pass goes on to the next pinned one rather than abandoning it.
+        if (await isLoaded(row.id)) {
+          pinErrors.delete(row.id);
+          return;
+        }
         await ensureRoomLocked(row);
         if (await isLoaded(row.id)) return;
         console.log(`[llama] loading pinned model ${row.id}`);

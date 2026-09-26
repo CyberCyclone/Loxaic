@@ -1965,6 +1965,8 @@ export function sendChatMessage(
   conversationId?: string,
   parentId?: string,
   attachments?: string[],
+  /** Echoed on an `error` refusing this send — see `client_ref`. */
+  clientRef?: string,
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -1973,6 +1975,7 @@ export function sendChatMessage(
     conversation_id: conversationId,
     parent_id: parentId,
     attachments,
+    ...(clientRef ? { client_ref: clientRef } : {}),
   });
 }
 
@@ -1984,6 +1987,8 @@ export function sendAgentMessage(
   parentId?: string,
   model?: string,
   attachments?: string[],
+  /** Echoed on an `error` refusing this send — see `client_ref`. */
+  clientRef?: string,
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -1993,6 +1998,7 @@ export function sendAgentMessage(
     parent_id: parentId,
     model: model ?? "default",
     attachments,
+    ...(clientRef ? { client_ref: clientRef } : {}),
   });
 }
 

@@ -1123,6 +1123,23 @@ replies.
   one included), and when a pin is set; one that cannot be loaded says why (`pinError`). Only an
   enabled model can be pinned, and disabling one unpins it. Unpinning unloads nothing — the model
   simply becomes one that can be unloaded.
+- **A single-flight marker must be compared against the promise actually stored.**
+  `remeasureDevices` stored `next.finally(…)` and cleared on `measuring === next`, which never
+  matched — so after the first listing every unforced call got the first answer back and the
+  screen's free-memory figures froze. Forced calls still worked, which is why eviction stayed
+  correct and only the display went stale. Found in review; `pinning.test.ts` measures again
+  after an unload without `force`.
+- **A no-room refusal names the send it refuses** (`client_ref` on `chat.send`/`agent.send`,
+  echoed on the `error`; `lib/noRoom.ts`'s `PendingSends`). A single "last send" slot took back
+  the *later* send's bubble when an earlier refusal landed after it — likelier now that the
+  refusal waits on a device listing. A mid-run refusal (`stream.end.error_code`) opens the modal
+  only for the thread on screen, since "choose a model" acts on that thread, and the modal
+  promises only what comes back: text, never attachments.
+- **The no-room modal is not shown again on reconnect, deliberately.** `error_code` rides only
+  the live `stream.end`; a reconnecting client sees the failed reply instead, whose stored text
+  *is* the refusal (a `NoRoomError` thrown inside `streamCompletion` is marked as the backend's,
+  so it is kept verbatim): it names the pinned models and who can unpin them. Replaying a modal
+  from a snapshot would raise it again on every reconnect within the stream log's TTL.
 - **`ensureRoom` honours the run's abort signal.** It can wait minutes behind a pinned model
   loading (everything that loads or unloads is serialised), and Stop must not. The transport
   test's fake backend had to learn to answer `/models`: every built-in request now asks it first.

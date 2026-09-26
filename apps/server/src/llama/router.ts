@@ -543,16 +543,18 @@ let measuring: Promise<void> | null = null;
  */
 export function remeasureDevices(opts: { maxAgeMs?: number; force?: boolean } = {}): Promise<void> {
   const maxAgeMs = opts.maxAgeMs ?? 10_000;
-  if (opts.force) {
-    const after = (measuring ?? Promise.resolve()).then(doRemeasure, doRemeasure);
-    measuring = after.finally(() => { if (measuring === after) measuring = null; });
-    return after;
-  }
-  if (measuring) return measuring;
-  if (Date.now() - measuredAt < maxAgeMs) return Promise.resolve();
-  const next = doRemeasure();
-  measuring = next.finally(() => { if (measuring === next) measuring = null; });
-  return next;
+  const started = opts.force
+    ? (measuring ?? Promise.resolve()).then(doRemeasure, doRemeasure)
+    : measuring ?? (Date.now() - measuredAt < maxAgeMs ? null : doRemeasure());
+  if (!started) return Promise.resolve();
+  if (started === measuring) return started;
+  // Compare against the promise actually stored. Comparing against `started`
+  // — which is not what `measuring` holds — never matched, so `measuring` was
+  // never cleared and every later call returned the first measurement's
+  // settled promise: the figures froze at the first listing. Found in review.
+  const tracked: Promise<void> = started.finally(() => { if (measuring === tracked) measuring = null; });
+  measuring = tracked;
+  return started;
 }
 
 async function doRemeasure(): Promise<void> {
