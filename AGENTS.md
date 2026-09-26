@@ -425,15 +425,66 @@ replies.
   `approval-reconnect.spec.ts` hold it. The same moment is when a tap on Allow lands on a
   socket still closing, so **Approve and Deny close their dialog only once `trySend` says the
   answer went out** — as Stop and the check-in already did (#113).
-- **A return from the background is `resuming` until the new socket opens** (`lib/connection.ts`'s
-  `beginResume`). Input waits at once — Send, Stop, and every approval and check-in button read
-  `useConnection()` themselves — but nothing is *said* for `RESUME_GRACE_MS` (300 ms), after which
-  it is ordinary `reconnecting`. The replacement is deliberate on every resume, and a banner on
-  each app switch against a healthy server was the reason the old code showed nothing at all;
-  `showsDisconnected()` is what decides whether to say it. `approval-reconnect.spec.ts` holds the
-  new socket's `open` back in the page to make a reconnect slow, and watches the DOM with a
-  `MutationObserver` for a flash: on localhost a reconnect takes a few milliseconds, so even a zero
-  grace period never rendered the banner and a polling check passed with it.
+### Reaching the server (the connection monitor)
+
+- **One answer to "can the server be reached", for the whole app**, decided by
+  `apps/mobile/lib/connectionMonitor.ts` (controller) over `connectionMonitorCore.ts` (a pure,
+  unit-tested reducer) and published through `lib/connection.ts`. It used to be written by
+  whichever screen was open: expo-router's `Slot` mounts only the focused screen, so the state went
+  stale on every screen without a socket (all of settings) and read "online" on the agent screen
+  while its socket was still connecting. The banner lived on three screens. Nothing asked the
+  server itself, so a hung one — accepting connections, answering nothing, which is also what
+  `kill -STOP` produces — was never noticed at all.
+- **Three kinds of evidence, one authority.** Every REST request goes through api-client's
+  `serverFetch`, which reports `answered` / `suspect` / `stalled` to an observer; each screen's
+  socket reports `connecting` / `open` / `closed` (`trackSocket`); and a `GET /health` probe is the
+  only thing that can call the server down. **A failed request never sets the state by itself**:
+  our own server answers 502 when GitHub or HuggingFace is down and 503 from `/v1/cluster` during
+  boot, and a rejected upload can be a file that failed to encode. `isUnreachableError` now means
+  exactly "no answer" (`ServerUnreachableError`); it used to count a 404 wrapped in `McpApiError`
+  as down.
+- **Probes**: one in flight, 4 s timeout, backoff 1, 2, 4, 8 s then every 10 s, three failures in a
+  row → `offline`, a heartbeat every 25 s while online and foregrounded. A failed probe beats a
+  socket that says "open" (Chrome's offline mode and a stopped server both leave one open), and the
+  monitor then has the hooks replace it. A socket closed with 4001 is a session problem, not the
+  server's: `checkSession` re-asks, and a dead session signs out.
+- **Grace periods depend on the cause**: 300 ms after a resume, 1.5 s for a socket a screen has just
+  opened (a first connect over a tailnet relay routinely exceeds 300 ms, and a banner on every
+  navigation would teach people to ignore it). Input waits for the whole window (`resuming`), but
+  nothing is *said* (`showsDisconnected`). A resume with no socket tracked stays `online` and only
+  probes, so a settings screen does not grey out on every app switch. An `epoch` bumped on each
+  resume makes a probe armed before it irrelevant: iOS freezes JS in the background, so its
+  timeout fires the instant the app returns and would read as a failure.
+- **The socket hooks no longer listen to AppState** — the monitor owns the one listener and asks for
+  replacement through `onReconnectRequest`, as it does on Retry, on a failed probe against an
+  "open" socket, and when the server comes back (so the wait is not the hook's own backoff). The
+  terminal socket is not tracked: its 4503 means the *machine* is offline, not the server.
+- **One banner** (`ConnectionBanner`, `shell.offlineBanner`, Retry once offline) rendered by
+  `AppShell` above the sidebar and every screen. Every Modal and Actionsheet renders through
+  gluestack's portal, above the shell, so the banner sits under their backdrop — anything with
+  server-backed buttons inside one carries a `DisconnectedNote`. The sidebar's status line reads
+  the settled state (it does not flicker through a grace period) and the line under the user's
+  name is the host the app is really talking to (`hostOf`, `useServerEndpoint`), never "local
+  server" for a build's default address.
+- **The gating rule**: every control that needs the server reads `useServerReachable()` and is
+  disabled when it is false, on every screen; a handler that could race the change also checks
+  `isOffline()`/`requireServer`; a failed request says `describeRequestError`, never the raw
+  "Failed to fetch". **What stays enabled is what works without the server or is the way back to
+  it**: the server address and its Test, Disconnect (both confirmations are `local` on
+  `WarningConfirmModal`), theme, updates, tailnet settings, sign out, navigation, and reading what is
+  loaded. A loader that could not ask keeps "could not ask" distinct from "none" — the GitHub setup
+  form, "This routine is gone" and "No workspace yet" were all shown offline for things that
+  existed — and asks again when the server is back.
+- **Agent sends honour `trySend`**: `handleSend` returns whether the message went out and rolls
+  back its optimistic bubble (or `pending-*` run) when it did not, the mode selector moves only if
+  the server heard it, and a plan decision is **sent first and acted on after** — it used to close
+  the panel and switch the model before sending, so a decision that never left looked made.
+- **e2e**: `server-unreachable.spec.ts` cuts the server from inside the page (stubbed `fetch` for
+  `/v1|/api|/health`, sockets pointed at a dead port) and checks the banner on chat, agent and a
+  settings screen with their controls disabled, then recovery; `approval-reconnect.spec.ts` holds a
+  new socket's `open` back to make a reconnect slow, and watches the DOM with a `MutationObserver`
+  for a flash — on localhost a reconnect takes a few milliseconds, so a polling check passed with a
+  zero grace period.
 
 ### Thread history is paged (#213)
 

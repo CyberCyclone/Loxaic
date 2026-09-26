@@ -42,6 +42,9 @@ export const PROBE_TIMEOUT_MS = 4_000;
 /** While online and in the foreground: the one thing that notices a server
  * that went quiet without closing anything. */
 export const HEARTBEAT_MS = 25_000;
+/** A socket tracked again this soon after being let go of is the same one
+ * being replaced, not a new screen's. */
+export const REPLACED_WITHIN_MS = 50;
 /** Failed probes in a row before "reconnecting" becomes "can't reach". */
 export const OFFLINE_AFTER_FAILURES = 3;
 
@@ -64,6 +67,10 @@ export interface MonitorState {
    * would read as a failure. */
   epoch: number;
   probeInFlight: boolean;
+  /** The socket a screen let go of last, so one replaced in the same moment
+   * (an effect re-running: cleanup, then the body) carries on where it was
+   * instead of starting a fresh grace period mid-reconnect. */
+  released: { key: string; status: SocketStatus; since: number; at: number } | null;
 }
 
 export type MonitorEvent =
@@ -101,6 +108,7 @@ export function initialMonitorState(): MonitorState {
     silentUntil: 0,
     epoch: 0,
     probeInFlight: false,
+    released: null,
   };
 }
 
@@ -156,10 +164,12 @@ export function reduce(
       if (event.epoch !== state.epoch) break;
       state.probeInFlight = false;
       if (event.ok) {
-        const wasFailing = state.server === 'failing';
         serverAnswered();
-        // Skip the hooks' own backoff: the server is back now.
-        if (wasFailing || Object.values(state.sockets).some((s) => s.status !== 'open')) {
+        // A socket closed and waiting out its hook's backoff can try now. Never
+        // one still connecting: replacing it restarts the connect, and on a
+        // relay slower than STUCK_CONNECTING_MS the stuck-socket probe then
+        // succeeded, replaced it again, and it could never finish.
+        if (Object.values(state.sockets).some((s) => s.status === 'closed')) {
           effects.push({ type: 'reconnectSockets' });
         }
         if (state.foreground) effects.push({ type: 'probeIn', ms: HEARTBEAT_MS, epoch: state.epoch });
@@ -192,8 +202,16 @@ export function reduce(
       break;
 
     case 'socket': {
-      const before = state.sockets[event.key]?.status;
-      state.sockets[event.key] = { status: event.status, since: now };
+      const carried =
+        !state.sockets[event.key] && state.released?.key === event.key && now - state.released.at <= REPLACED_WITHIN_MS
+          ? state.released
+          : null;
+      const previous = state.sockets[event.key] ?? carried;
+      const before = previous?.status;
+      // Still the same attempt to connect: keep when it began, or a socket
+      // replaced while stuck would never be noticed as stuck.
+      const since = event.status === 'connecting' && before === 'connecting' && previous ? previous.since : now;
+      state.sockets[event.key] = { status: event.status, since };
       if (event.status === 'open') {
         serverAnswered();
       } else if (event.status === 'connecting') {
@@ -209,9 +227,12 @@ export function reduce(
       break;
     }
 
-    case 'untrack':
+    case 'untrack': {
+      const gone = state.sockets[event.key];
+      if (gone) state.released = { key: event.key, ...gone, at: now };
       delete state.sockets[event.key];
       break;
+    }
 
     case 'resume':
       state.epoch += 1;

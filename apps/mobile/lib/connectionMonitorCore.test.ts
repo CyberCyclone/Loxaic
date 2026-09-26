@@ -102,6 +102,24 @@ describe('the connection monitor', () => {
     expect(probes(run([[{ type: 'tick' }, STUCK_CONNECTING_MS]], s).effects)).toHaveLength(1);
   });
 
+  it('does not start a fresh grace for a socket replaced mid-reconnect', () => {
+    // Already reconnecting, then the hook's effect re-runs: cleanup lets the
+    // socket go and the body tracks a new one in the same moment. That used
+    // to buy another silent 1.5 s, and the banner vanished while nothing had
+    // connected.
+    const s = run([[{ type: 'socket', key: 'chat', status: 'connecting' }, 0]], online()).state;
+    expect(derive(s, CONNECT_GRACE_MS + 100)).toBe('reconnecting');
+    const replaced = run(
+      [
+        [{ type: 'untrack', key: 'chat' }, CONNECT_GRACE_MS + 100],
+        [{ type: 'socket', key: 'chat', status: 'connecting' }, CONNECT_GRACE_MS + 101],
+      ],
+      s,
+    ).state;
+    expect(derive(replaced, CONNECT_GRACE_MS + 101)).toBe('reconnecting');
+    expect(replaced.sockets.chat.since).toBe(0);
+  });
+
   it('checks the session, not the server, when a socket is refused for it', () => {
     const r = run([[{ type: 'socket', key: 'chat', status: 'closed', code: 4001 }, 0]], online());
     expect(r.effects).toContainEqual({ type: 'checkSession' });
@@ -178,6 +196,15 @@ describe('the connection monitor', () => {
       expect(r.state.failedProbes).toBe(0);
       expect(r.effects).toContainEqual({ type: 'reconnectSockets' });
       expect(r.effects).toContainEqual({ type: 'recovered' });
+    });
+
+    it('never interrupts a socket that is still connecting when a probe succeeds', () => {
+      // A slow relay: connecting past the stuck threshold, the probe answers.
+      const s = run([[{ type: 'socket', key: 'chat', status: 'connecting' }, 0]], online()).state;
+      const stuck = run([[{ type: 'tick' }, STUCK_CONNECTING_MS]], s);
+      expect(probes(stuck.effects)).toHaveLength(1);
+      const r = run([[{ type: 'probeResult', ok: true, epoch: stuck.state.epoch }, STUCK_CONNECTING_MS + 10]], stuck.state);
+      expect(r.effects).not.toContainEqual({ type: 'reconnectSockets' });
     });
 
     it('keeps a heartbeat only while in the foreground', () => {
