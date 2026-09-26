@@ -27,6 +27,9 @@ const IOS_DEVICE = process.env.E2E_IOS_DEVICE ?? 'iPhone 17';
 
 export const config: WebdriverIO.Config = {
   ...sharedConfig,
+  // The shared specs, plus the ones about being a phone: locking, switching
+  // away, a cold start.
+  specs: ['./src/specs/*.spec.ts', './src/specs/native/*.spec.ts'],
   port: 4723,
   services: [['appium', { args: { address: '127.0.0.1', port: 4723 } }]],
   capabilities: [

@@ -3,6 +3,7 @@ import { HStack } from '@/components/ui/hstack';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
+import { useServerReachable } from '@/lib/connection';
 import type { AdminMessage } from '@loxaic/api-client';
 
 interface AdminTranscriptProps {
@@ -51,7 +52,8 @@ const AUTHOR_LABEL: Record<string, string> = {
  * it; rendering it like the chat surface would invite acting in it, which this
  * screen cannot do.
  */
-export function AdminTranscript({ messages, loading, hasOlder, loadingOlder, onLoadOlder }: AdminTranscriptProps) {
+export function AdminTranscript({ messages, loading, hasOlder, loadingOlder = false, onLoadOlder }: AdminTranscriptProps) {
+  const reachable = useServerReachable();
   if (loading) {
     return (
       <Text size="sm" className="text-muted-foreground">
@@ -73,7 +75,7 @@ export function AdminTranscript({ messages, loading, hasOlder, loadingOlder, onL
           testID="admin.transcript.loadOlder"
           variant="outline"
           size="sm"
-          isDisabled={loadingOlder}
+          isDisabled={loadingOlder || !reachable}
           onPress={onLoadOlder}
           className="self-start"
         >

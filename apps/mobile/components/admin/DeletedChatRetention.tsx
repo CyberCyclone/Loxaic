@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch';
 import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText } from '@/components/ui/button';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
+import { useServerReachable } from '@/lib/connection';
 import type { ConversationRetentionSettings } from '@loxaic/api-client';
 
 interface DeletedChatRetentionProps {
@@ -30,6 +31,7 @@ interface DeletedChatRetentionProps {
 export function DeletedChatRetention({ settings, onChange }: DeletedChatRetentionProps) {
   const [days, setDays] = useState(String(settings.keepDeletedDays));
   const [confirmOff, setConfirmOff] = useState(false);
+  const reachable = useServerReachable();
 
   // Follow the server when it answers with something else — a rejected value,
   // or another admin's change picked up by a refresh.
@@ -56,7 +58,7 @@ export function DeletedChatRetention({ settings, onChange }: DeletedChatRetentio
         <Switch
           testID="admin.retention.toggle"
           value={settings.keepDeleted}
-          isDisabled={pinned.keepDeleted}
+          isDisabled={pinned.keepDeleted || !reachable}
           onValueChange={(next) => {
             if (!next) {
               setConfirmOff(true);
@@ -87,6 +89,7 @@ export function DeletedChatRetention({ settings, onChange }: DeletedChatRetentio
           {daysDirty && (
             <Button
               testID="admin.retention.save"
+              isDisabled={!reachable}
               size="sm"
               variant="outline"
               onPress={() => { onChange({ keepDeletedDays: parsed }); }}

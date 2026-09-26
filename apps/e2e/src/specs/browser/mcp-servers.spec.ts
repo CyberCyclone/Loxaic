@@ -24,6 +24,7 @@ import { provisionUser, uniqueCreds, type Credentials } from '../../helpers/auth
 import { shot } from '../../helpers/screenshot.ts';
 import { isVisible, tap, testIdSelector, typeInto, waitForGone, waitForVisible } from '../../helpers/selectors.ts';
 import { listMcpServers, openMcpServers, signIn } from '../../helpers/app.ts';
+import { setWindowSize } from '../../helpers/window.ts';
 
 /**
  * Whether `id` can actually be brought on screen inside the modal, and not
@@ -104,7 +105,7 @@ describe('MCP servers', () => {
     // this the same file could report "not scrollable" on a tall window for a
     // modal that is working correctly. Width stays wide so the shell keeps its
     // desktop layout, matching what the screenshots show.
-    await browser.setWindowSize(1440, 720);
+    await setWindowSize(1440, 720);
     creds = uniqueCreds();
     await provisionUser(creds);
     await signIn(creds);

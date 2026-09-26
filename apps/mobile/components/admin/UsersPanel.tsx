@@ -10,6 +10,7 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useToastHelper } from '@/hooks/useToastHelper';
+import { describeRequestError, useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 /**
@@ -28,6 +29,7 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 export function UsersPanel({ currentUserId }: { currentUserId: string | null }) {
   const { showToast } = useToastHelper();
+  const reachable = useServerReachable();
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [total, setTotal] = useState(0);
@@ -51,7 +53,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
       setError(null);
     } catch (err) {
       if (seq !== requestSeq.current) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     } finally {
       if (seq === requestSeq.current) setLoaded(true);
     }
@@ -78,7 +80,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
       setResult({ email: target.email, temporaryPassword });
       await load(query);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     }
   };
 
@@ -185,6 +187,7 @@ export function UsersPanel({ currentUserId }: { currentUserId: string | null }) 
             ) : (
               <Button
                 testID={`admin.user.${item.id}.resetPassword`}
+                isDisabled={!reachable}
                 size="sm"
                 variant="outline"
                 className="shrink-0"

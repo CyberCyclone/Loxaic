@@ -3,6 +3,8 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
 import { DeadlineCountdown } from '@/components/chat/DeadlineCountdown';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
+import { useServerReachable } from '@/lib/connection';
 import type { WaitDeadline } from '@/lib/pendingWaits';
 
 function summarizeArgs(tool: string, args: Record<string, unknown>): string {
@@ -31,6 +33,8 @@ interface PermissionBarProps {
 
 export function PermissionBar({ tool, args, deadline, onAllow, onDeny }: PermissionBarProps) {
   const mcp = splitMcpTool(tool);
+  // See ToolApprovalDialog: an answer needs an open socket (#231).
+  const disconnected = !useServerReachable();
   return (
     <VStack
       testID="agent.permission.bar"
@@ -52,11 +56,12 @@ export function PermissionBar({ tool, args, deadline, onAllow, onDeny }: Permiss
         </Text>
       )}
       <DeadlineCountdown kind="approval" deadline={deadline} testID="agent.permission.deadline" />
+      <DisconnectedNote testID="agent.permission.reconnecting" />
       <HStack space="sm" className="justify-end">
-        <Button testID="agent.permission.deny" variant="outline" size="sm" onPress={onDeny}>
+        <Button testID="agent.permission.deny" variant="outline" size="sm" onPress={onDeny} isDisabled={disconnected}>
           <ButtonText>Deny</ButtonText>
         </Button>
-        <Button testID="agent.permission.allow" size="sm" onPress={onAllow}>
+        <Button testID="agent.permission.allow" size="sm" onPress={onAllow} isDisabled={disconnected}>
           <ButtonText>Allow once</ButtonText>
         </Button>
       </HStack>

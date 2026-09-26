@@ -12,6 +12,7 @@ import {
   type McpTestResult,
 } from '@loxaic/api-client';
 import { useToastHelper } from './useToastHelper';
+import { describeRequestError } from '@/lib/connection';
 
 export function useMcpServers(token: string | null) {
   const [servers, setServers] = useState<McpServer[]>([]);
@@ -56,10 +57,16 @@ export function useMcpServers(token: string | null) {
     return s;
   }, []);
 
+  // Both are called as `void toggle(…)` from the screen: a throw here was an
+  // unhandled rejection, and the switch just snapped back with no word said.
   const toggle = useCallback(
     async (id: string, enabled: boolean) => {
-      await update(id, { enabled });
-      showToast(enabled ? 'Server enabled' : 'Server disabled');
+      try {
+        await update(id, { enabled });
+        showToast(enabled ? 'Server enabled' : 'Server disabled');
+      } catch (err) {
+        showToast(describeRequestError(err, 'Could not change the server'), 4000);
+      }
     },
     [update, showToast],
   );
@@ -67,7 +74,12 @@ export function useMcpServers(token: string | null) {
   const remove = useCallback(
     async (id: string) => {
       const removed = servers.find((s) => s.id === id);
-      await deleteMcpServer(id);
+      try {
+        await deleteMcpServer(id);
+      } catch (err) {
+        showToast(describeRequestError(err, 'Could not remove the server'), 4000);
+        return;
+      }
       setServers((prev) => prev.filter((x) => x.id !== id));
       if (removed?.builtinKey) {
         setCatalog((prev) => prev.map((c) => (c.key === removed.builtinKey ? { ...c, configured: false } : c)));

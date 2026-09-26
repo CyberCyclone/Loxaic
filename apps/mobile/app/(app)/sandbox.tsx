@@ -19,12 +19,15 @@ import { useSandboxSettings } from '@/hooks/useSandboxSettings';
 import { useInferenceSettings } from '@/hooks/useInferenceSettings';
 import { useSession } from '@/lib/session';
 import { describeRetention } from '@/lib/retention';
+import { useServerReachable } from '@/lib/connection';
 import type { SandboxEngine, SandboxMode, SandboxRetention } from '@loxaic/api-client';
 
 type PendingWarning = { kind: 'host' } | { kind: 'network' } | null;
 
 export default function SandboxScreen() {
   const shell = useShell();
+  // Every setting here is saved on the server.
+  const reachable = useServerReachable();
   const { token, isAdmin } = useSession();
   const { config, loading: configLoading, refresh: refreshConfig } = useServerConfig();
   const { settings, loading: settingsLoading, update } = useSandboxSettings(isAdmin ? token : null);
@@ -127,7 +130,7 @@ export default function SandboxScreen() {
 
         <ModePicker
           mode={settings.mode}
-          disabled={settings.envOverrides.mode}
+          disabled={settings.envOverrides.mode || !reachable}
           onSelect={handleModeSelect}
         />
         {settings.envOverrides.mode && (
@@ -146,7 +149,7 @@ export default function SandboxScreen() {
               engine={customSocketDraft !== null ? 'custom' : settings.engine}
               customSocket={customSocketDraft ?? settings.customSocket ?? ''}
               engines={settings.engines}
-              disabled={settings.envOverrides.socket}
+              disabled={settings.envOverrides.socket || !reachable}
               onSelect={handleEngineSelect}
               onCustomSocketChange={setCustomSocketDraft}
               onCustomSocketSubmit={handleCustomSocketSubmit}
@@ -162,7 +165,7 @@ export default function SandboxScreen() {
         <NetworkToggle
           mode={settings.mode}
           allowNetwork={settings.allowNetwork}
-          disabled={settings.envOverrides.allowNetwork}
+          disabled={settings.envOverrides.allowNetwork || !reachable}
           onChange={handleNetworkChange}
         />
         {settings.envOverrides.allowNetwork && (
@@ -179,12 +182,14 @@ export default function SandboxScreen() {
           }}
           envOverrides={settings.envOverrides}
           onChange={handleRetentionChange}
+          unavailable={!reachable}
         />
 
         {inference && (
           <RunQueueSettings
             settings={inference}
             onChange={(value) => { void updateInference(value); }}
+            unavailable={!reachable}
           />
         )}
       </VStack>

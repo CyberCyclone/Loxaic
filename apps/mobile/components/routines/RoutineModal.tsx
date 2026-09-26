@@ -20,6 +20,8 @@ import { Icon, CloseIcon } from '@/components/ui/icon';
 import { ChevronRight } from 'lucide-react-native';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { CRON_PRESETS, humanizeCron, validateCron } from '@/lib/fixtures/routines';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import type { Routine } from '@loxaic/api-client';
 
 interface RoutineModalProps {
@@ -58,6 +60,7 @@ export function RoutineModal({
   const [cron, setCron] = useState('0 9 * * 1-5');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const reachable = useServerReachable();
 
   useEffect(() => {
     if (open) {
@@ -212,6 +215,7 @@ export function RoutineModal({
             </VStack>
           </VStack>
         </ModalBody>
+        <DisconnectedNote testID="routineModal.disconnected" what="save" className="px-4 pt-2" />
         <ModalFooter className="justify-end border-t border-border">
           <HStack space="sm">
             <Button variant="outline" size="sm" onPress={onClose}>
@@ -225,7 +229,7 @@ export function RoutineModal({
               // No model, no save: there is nothing for the server to fall
               // back to, and a routine saved without one would simply fail
               // every run.
-              isDisabled={!name.trim() || !model || saving}
+              isDisabled={!name.trim() || !model || saving || !reachable}
             >
               {saving && <ButtonSpinner />}
               <ButtonText className="text-primary-foreground">Save routine</ButtonText>

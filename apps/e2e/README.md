@@ -89,6 +89,12 @@ the versions this repo pins rather than whatever is installed globally:
 pnpm --filter @loxaic/e2e setup:appium
 ```
 
+Both lanes run the shared specs plus `src/specs/native/`, which is where the things only a
+phone does are tested: locking and unlocking (`mobile: lock`/`mobile: unlock`), switching away
+and back (`mobile: backgroundApp`/`activateApp`) and cold starts (`mobile: terminateApp`). There
+is no page to patch on native, so those specs take the server away with `helpers/server.ts`,
+which freezes this run's server process (`SIGSTOP`) and thaws it after each case.
+
 ### Android
 
 ```bash
@@ -433,7 +439,7 @@ whether the Inspector's Git panel says so.
 order. Failures are captured automatically as `NN-FAILED-<test title>.png`.
 
 **`artifacts/` is gitignored and screenshots are never committed.** They are evidence for the
-PR description — drag the PNGs into the PR body. See AGENTS.md → "End-to-end tests".
+PR description — drag the PNGs into the PR body. See AGENTS.md → "Testing: every PR, unit and end to end".
 
 ## "tab crashed": a pruned browser cache, not your change
 
@@ -517,6 +523,27 @@ await waitForVisible('chat.messageList');
 
 Prefer the app-level helpers in `src/helpers/app.ts` (`signIn`, `sendAndAwaitReply`, …) so specs
 read as behaviour rather than as clicks.
+
+A spec has to pass **run alone, in any order, on every lane** — each of these rules came from
+one that did not:
+
+- **Create what you use.** A spec that calls the admin API runs `provisionAdmin()` in its own
+  `before`; `delete-conversation.spec.ts` once passed only because an earlier spec in the run
+  had created the admin, and failed run by itself.
+- **Size the window with `helpers/window.ts`**, never `browser.setWindowSize`. Electron's
+  chromedriver has no `Browser.getWindowForTarget`, so six "reachable on a short window" specs
+  had never got past their first resize on that lane, and the app's 900×600 minimum would have
+  clamped the heights they try anyway.
+- **`tap()` waits for the element to stop moving** (web and Electron). Sheets and dialogs slide
+  in, and "displayed" is true on their first frame, so a click on a control inside one could
+  land on the composer underneath — or not — depending on the machine.
+- **Wait for the result, not for a gap you cannot see.** A plan panel that closes and reopens on
+  a revision does so faster than a poll on a quick machine; wait for the revision's text,
+  looked up afresh (`waitForFreshText`).
+- **The Electron lane turns off occlusion** (`--disable-backgrounding-occluded-windows`), so
+  windows from a simulator or an emulator on the same screen cannot hide the app. The price: no
+  spec may depend on the window being minimised — on macOS that only reaches the page through
+  occlusion.
 
 ## Layout
 

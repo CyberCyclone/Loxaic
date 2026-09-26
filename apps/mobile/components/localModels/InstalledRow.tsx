@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui/icon';
 import { Switch } from '@/components/ui/switch';
 import { FitBadge } from './FitBadge';
 import { etaSeconds, formatBytes, formatEta, progressPercent } from '@/lib/localModels';
+import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 interface InstalledRowProps {
@@ -53,6 +54,7 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
   }, [model.bytesDone, model.status, model.sizeBytes]);
 
   const loaded = model.runtimeStatus === 'loaded';
+  const reachable = useServerReachable();
 
   return (
     <Box testID={`localModels.row.${model.id}`} className="rounded-md border border-border bg-card p-3">
@@ -69,6 +71,7 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
           <Switch
             testID={`localModels.toggle.${model.id}`}
             value={model.enabled}
+            disabled={!reachable}
             onValueChange={onToggle}
             accessibilityLabel="Enable for everyone"
           />
@@ -124,9 +127,11 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
         </Text>
       )}
 
+      {/* Every action here is a request; Settings opens a sheet that says for
+          itself why it cannot save. */}
       <HStack space="md" className="mt-3 items-center justify-end border-t border-border pt-2">
         {model.status === 'downloading' || model.status === 'queued' ? (
-          <Pressable testID={`localModels.pause.${model.id}`} onPress={onPause} className="flex-row items-center gap-1 p-1">
+          <Pressable testID={`localModels.pause.${model.id}`} disabled={!reachable} onPress={onPause} className="flex-row items-center gap-1 p-1">
             <Icon as={Pause} size="xs" className="text-muted-foreground" />
             <Text size="xs" className="text-muted-foreground">
               Pause
@@ -134,7 +139,7 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
           </Pressable>
         ) : null}
         {model.status === 'paused' || model.status === 'failed' ? (
-          <Pressable testID={`localModels.resume.${model.id}`} onPress={onResume} className="flex-row items-center gap-1 p-1">
+          <Pressable testID={`localModels.resume.${model.id}`} disabled={!reachable} onPress={onResume} className="flex-row items-center gap-1 p-1">
             <Icon as={Play} size="xs" className="text-muted-foreground" />
             <Text size="xs" className="text-muted-foreground">
               {model.status === 'failed' ? 'Retry' : 'Resume'}
@@ -142,7 +147,7 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
           </Pressable>
         ) : null}
         {inProgress ? (
-          <Pressable testID={`localModels.cancel.${model.id}`} onPress={onCancel} className="flex-row items-center gap-1 p-1">
+          <Pressable testID={`localModels.cancel.${model.id}`} disabled={!reachable} onPress={onCancel} className="flex-row items-center gap-1 p-1">
             <Icon as={X} size="xs" className="text-destructive" />
             <Text size="xs" className="text-destructive">
               Cancel
@@ -156,7 +161,7 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
                 Settings
               </Text>
             </Pressable>
-            <Pressable testID={`localModels.delete.${model.id}`} onPress={onDelete} className="p-1">
+            <Pressable testID={`localModels.delete.${model.id}`} disabled={!reachable} onPress={onDelete} className="p-1">
               <Icon as={Trash2} size="xs" className="text-destructive" />
             </Pressable>
           </>

@@ -5,6 +5,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Box } from '@/components/ui/box';
 import { Text } from '@/components/ui/text';
 import { Switch } from '@/components/ui/switch';
+import { useServerReachable } from '@/lib/connection';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
 /**
@@ -19,6 +20,8 @@ import { useToastHelper } from '@/hooks/useToastHelper';
  * on screen, dimmed, so the choice reads as a comparison rather than a dare.
  */
 export function AutoCompactToggle() {
+  // Saved on the server.
+  const reachable = useServerReachable();
   const { showToast } = useToastHelper();
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
@@ -74,7 +77,7 @@ export function AutoCompactToggle() {
           testID="settings.autoCompact.toggle"
           value={enabled}
           onValueChange={change}
-          isDisabled={busy}
+          isDisabled={busy || !reachable}
         />
         <Text size="sm" className="flex-1 text-foreground">
           Summarise older messages when a conversation fills the model&apos;s context

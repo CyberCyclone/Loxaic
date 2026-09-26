@@ -5,6 +5,8 @@ import { Text } from '@/components/ui/text';
 import { Button, ButtonText } from '@/components/ui/button';
 import type { WaitDeadline } from '@/lib/pendingWaits';
 import { DeadlineCountdown } from './DeadlineCountdown';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
+import { useServerReachable } from '@/lib/connection';
 
 /**
  * Shown when a run has paused to ask whether to keep going.
@@ -64,6 +66,8 @@ export function StepCheckInBanner({
   onStop,
 }: StepCheckInBannerProps) {
   const repeating = pattern?.length ? describePattern(pattern) : null;
+  // See ToolApprovalDialog: an answer needs an open socket (#231).
+  const disconnected = !useServerReachable();
   return (
     <VStack
       testID="checkin.banner"
@@ -102,14 +106,15 @@ export function StepCheckInBanner({
         autoContinues={autoContinues}
         testID="checkin.deadline"
       />
+      <DisconnectedNote testID="checkin.reconnecting" />
       <HStack space="sm" className="justify-end">
-        <Button testID="checkin.stop" variant="link" size="sm" onPress={onStop}>
+        <Button testID="checkin.stop" variant="link" size="sm" onPress={onStop} isDisabled={disconnected}>
           <ButtonText>Stop</ButtonText>
         </Button>
-        <Button testID="checkin.answer" variant="outline" size="sm" onPress={onAnswer}>
+        <Button testID="checkin.answer" variant="outline" size="sm" onPress={onAnswer} isDisabled={disconnected}>
           <ButtonText>Answer now</ButtonText>
         </Button>
-        <Button testID="checkin.continue" size="sm" onPress={onContinue}>
+        <Button testID="checkin.continue" size="sm" onPress={onContinue} isDisabled={disconnected}>
           <ButtonText>Keep going</ButtonText>
         </Button>
       </HStack>

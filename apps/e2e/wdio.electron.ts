@@ -139,6 +139,15 @@ export const config: WebdriverIO.Config = {
         // pin the embedded stack to this run's free port.
         appArgs: [
           `--loxaic-data-dir=${appDataDir}`,
+          // Other windows on the machine running the suite (a simulator, an
+          // emulator, the editor) must not decide the outcome. Covered by one,
+          // macOS reports this window occluded and Chromium hides and throttles
+          // the page: a wake then had nothing to return from, and the driver
+          // timed out talking to a renderer that had stopped answering. On macOS
+          // that tracker is also the only way minimising reaches the page, so no
+          // spec here may depend on a window being minimised (see sleep-wake).
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
           ...(SELF_CONTAINED ? [`--loxaic-port=${process.env.E2E_PORT ?? ''}`] : []),
         ],
       },

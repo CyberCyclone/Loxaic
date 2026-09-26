@@ -10,6 +10,8 @@ import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { X } from 'lucide-react-native';
+import { describeRequestError, useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import {
   deleteShare,
   getShares,
@@ -43,6 +45,7 @@ export function ShareModal({
   const [results, setResults] = useState<DirectoryUser[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const reachable = useServerReachable();
 
   useEffect(() => {
     if (!open || !conversationId) return;
@@ -52,7 +55,7 @@ export function ShareModal({
     // Revoke buttons that would act on the wrong conversation.
     setShares([]);
     getShares(conversationId).then(setShares, (err: unknown) => {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     });
   }, [open, conversationId]);
 
@@ -75,7 +78,7 @@ export function ShareModal({
       setQuery('');
       setResults([]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     } finally {
       setBusy(false);
     }
@@ -87,7 +90,7 @@ export function ShareModal({
     try {
       setShares(await deleteShare(conversationId, userId));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     } finally {
       setBusy(false);
     }
@@ -108,6 +111,7 @@ export function ShareModal({
             {error && (
               <Text testID="share.error" size="sm" className="text-destructive">{error}</Text>
             )}
+            <DisconnectedNote testID="share.disconnected" what="change who it is shared with" />
 
             <VStack space="xs">
               <Text size="sm" className="text-muted-foreground">Add someone by name or email</Text>
@@ -132,7 +136,7 @@ export function ShareModal({
                   testID={`share.add.viewer.${u.id}`}
                   size="sm"
                   variant="outline"
-                  isDisabled={busy}
+                  isDisabled={busy || !reachable}
                   onPress={() => { void grant(u.id, 'viewer'); }}
                 >
                   <ButtonText>Can view</ButtonText>
@@ -140,7 +144,7 @@ export function ShareModal({
                 <Button
                   testID={`share.add.editor.${u.id}`}
                   size="sm"
-                  isDisabled={busy}
+                  isDisabled={busy || !reachable}
                   onPress={() => { void grant(u.id, 'editor'); }}
                 >
                   <ButtonText>Can edit</ButtonText>
@@ -167,13 +171,14 @@ export function ShareModal({
                     testID={`share.role.${s.userId}`}
                     size="sm"
                     variant="outline"
-                    isDisabled={busy}
+                    isDisabled={busy || !reachable}
                     onPress={() => { void grant(s.userId, s.role === 'editor' ? 'viewer' : 'editor'); }}
                   >
                     <ButtonText>{s.role === 'editor' ? 'Make viewer' : 'Make editor'}</ButtonText>
                   </Button>
                   <Pressable
                     testID={`share.revoke.${s.userId}`}
+                    disabled={busy || !reachable}
                     onPress={() => { void revoke(s.userId); }}
                   >
                     <Icon as={X} size="sm" className="text-muted-foreground" />

@@ -20,6 +20,8 @@ import { Spinner } from '@/components/ui/spinner';
 import { Markdown } from '@/components/markdown/Markdown';
 import { FitBadge } from './FitBadge';
 import { formatBytes, formatCount, formatParams } from '@/lib/localModels';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 interface RepoDetailsModalProps {
@@ -42,6 +44,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
   const [withVision, setWithVision] = useState(true);
   const [confirm, setConfirm] = useState<HfQuant | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
+  const reachable = useServerReachable();
   // Opening repo A, closing it and opening B must never show A's quants under
   // B's name — downloading from that list would fetch the wrong model.
   const request = useRef(0);
@@ -224,6 +227,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                       </Pressable>
                       <Pressable
                         testID="localModels.wontFit.confirm"
+                        disabled={!reachable}
                         onPress={() => {
                           const q = confirm;
                           setConfirm(null);
@@ -238,6 +242,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                     </HStack>
                   </VStack>
                 )}
+                <DisconnectedNote testID="localModels.details.disconnected" what="download" />
                 {details.files.quants.map((q) => (
                   <HStack
                     key={q.quant}
@@ -262,7 +267,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                       ) : (
                         <Pressable
                           testID={`localModels.download.${q.quant}`}
-                          disabled={starting !== null}
+                          disabled={starting !== null || !reachable}
                           onPress={() => {
                             if (q.fit.label === 'wont-fit') setConfirm(q);
                             else void start(q);

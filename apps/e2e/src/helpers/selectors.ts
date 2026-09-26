@@ -45,7 +45,39 @@ export async function isVisible(id: string): Promise<boolean> {
 export async function tap(id: string): Promise<void> {
   const el = byTestId(id);
   await el.waitForDisplayed();
+  await waitUntilStill(id);
   await el.click();
+}
+
+/**
+ * Waits for an element to stop moving. Sheets and dialogs slide and fade in,
+ * and "displayed" is true from their first frame, so a click aimed at a control
+ * inside one could land on whatever was under that point mid-animation — the
+ * composer beneath a plan panel's close button, a settings row beneath a modal
+ * — and do something else entirely, depending on the machine's speed. Web and
+ * Electron only: native taps go through the platform's own hit testing, which
+ * already waits for the view hierarchy to settle.
+ */
+async function waitUntilStill(id: string): Promise<void> {
+  const p = platform();
+  if (p !== 'web' && p !== 'electron') return;
+  let last = '';
+  await browser
+    .waitUntil(
+      async () => {
+        const rect = await browser.execute((selector: string) => {
+          const r = document.querySelector(selector)?.getBoundingClientRect();
+          return r ? [r.x, r.y, r.width, r.height].join(',') : '';
+        }, testIdSelector(id));
+        const still = rect !== '' && rect === last;
+        last = rect;
+        return still;
+      },
+      { timeout: 3_000, interval: 60 },
+    )
+    // A control that never settles (a spinner beside it, a live counter) is
+    // clicked anyway, as before; this only removes the race, never a tap.
+    .catch(() => undefined);
 }
 
 /**
@@ -245,4 +277,22 @@ export async function waitForTextIn(
     timeout,
     timeoutMsg: `expected an element containing "${text}" within ${String(timeout)}ms`,
   });
+}
+
+/**
+ * Wait for text in an element, looking the element up afresh each time.
+ *
+ * `waitForTextIn` holds one element reference. When the node under a testID is
+ * replaced — a download's in-progress line becoming the finished row's pill, a
+ * plan panel reopening on a revision — a reference taken before never sees the
+ * new text.
+ */
+export async function waitForFreshText(id: string, text: string, timeout = 30_000): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      const el = $(testIdSelector(id));
+      return (await el.isExisting()) && (await el.getText()).includes(text);
+    },
+    { timeout, interval: 300, timeoutMsg: `expected "${text}" in [${id}] within ${String(timeout)}ms` },
+  );
 }

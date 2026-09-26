@@ -279,6 +279,8 @@ export interface McpOverrideControls {
   servers: { id: string; name: string }[];
   disabledIds: string[];
   onToggle: (serverId: string, disabled: boolean) => void;
+  /** Saved on the server; off while it cannot be reached. */
+  readOnly?: boolean;
 }
 
 interface InspectorBodyProps {
@@ -361,6 +363,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
                 <Switch
                   size="sm"
                   value={!disabled}
+                  disabled={mcp.readOnly}
                   onValueChange={(on) => { mcp.onToggle(server.id, !on); }}
                 />
               </HStack>

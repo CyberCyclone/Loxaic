@@ -2,9 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MessagesSquare, Play } from 'lucide-react-native';
-import { findCommand, getRoutineConversations, getRoutines, runRoutineNow, type Routine } from '@loxaic/api-client';
-import { OfflineBanner } from '@/components/shell/OfflineBanner';
-import { useConnection } from '@/lib/connection';
+import { findCommand, getRoutineConversations, getRoutines, isUnreachableError, runRoutineNow, type Routine } from '@loxaic/api-client';
+import { describeRequestError, disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -60,6 +59,15 @@ export default function RoutineChatScreen() {
 
   const [routine, setRoutine] = useState<Routine | null>(null);
   const [routineLoaded, setRoutineLoaded] = useState(false);
+  /** The routine could not be asked about — not the same as it being gone,
+   * which is what this screen used to say whenever the server was
+   * unreachable. Asked again once the server answers. */
+  const [routineUnknown, setRoutineUnknown] = useState(false);
+  const [routineAttempt, setRoutineAttempt] = useState(0);
+  const reachable = connection === 'online';
+  useEffect(() => {
+    if (reachable && routineUnknown) setRoutineAttempt((n) => n + 1);
+  }, [reachable, routineUnknown]);
   const [threadListOpen, setThreadListOpen] = useState(params.history === '1');
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
@@ -80,13 +88,16 @@ export default function RoutineChatScreen() {
       .then((rows) => {
         if (cancelled) return;
         setRoutine(rows.find((r) => r.id === routineId) ?? null);
+        setRoutineUnknown(false);
       })
-      .catch(() => undefined)
+      .catch((err: unknown) => {
+        if (!cancelled) setRoutineUnknown(isUnreachableError(err));
+      })
       .finally(() => {
         if (!cancelled) setRoutineLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [token, routineId]);
+  }, [token, routineId, routineAttempt]);
 
   /**
    * This session is over one routine's chats.
@@ -186,7 +197,7 @@ export default function RoutineChatScreen() {
       setActiveId(run.conversationId);
       setThreadListOpen(false);
     } catch (err) {
-      showToast(`Could not run: ${err instanceof Error ? err.message : String(err)}`, 4000);
+      showToast(`Could not run: ${describeRequestError(err, 'something went wrong')}`, 4000);
     } finally {
       setStarting(false);
     }
@@ -236,7 +247,7 @@ export default function RoutineChatScreen() {
         icon: Play,
         testID: 'threadList.runNow',
         label: 'Run now',
-        disabled: starting,
+        disabled: starting || !reachable,
         onPress: () => { void startRun(); },
       }}
       // No fork and no rename: a forked run belongs to no routine, and these
@@ -248,7 +259,7 @@ export default function RoutineChatScreen() {
 
   const deletingConv = conversations.find((c) => c.id === deletingId) ?? null;
 
-  if (routineLoaded && !routine) {
+  if (routineLoaded && !routine && !routineUnknown) {
     return (
       <VStack className="h-full flex-1">
         <MainHeader
@@ -309,7 +320,6 @@ export default function RoutineChatScreen() {
             ) : undefined
           }
         />
-        <OfflineBanner />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -347,7 +357,7 @@ export default function RoutineChatScreen() {
                 testID="routineChat.empty.runNow"
                 size="sm"
                 className="bg-primary"
-                isDisabled={starting}
+                isDisabled={starting || !reachable}
                 onPress={() => { void startRun(); }}
               >
                 <ButtonIcon as={Play} className="text-primary-foreground" />
@@ -380,9 +390,9 @@ export default function RoutineChatScreen() {
               surface="chat"
               onRunCommand={handleRunCommand}
               readOnlyReason={
-                connection === 'online'
+                !showsDisconnected(connection)
                   ? null
-                  : "You're offline. This is your saved copy of the conversation — sending will work again once your server is reachable."
+                  : disconnectedCopy(connection).readOnly('conversation')
               }
             />
           )}

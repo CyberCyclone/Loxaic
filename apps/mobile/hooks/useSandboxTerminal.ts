@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createSandboxTerminalSocket,
   getSandboxes,
+  isUnreachableError,
   sendTerminalInput,
   sendTerminalResize,
   type TerminalServerEvent,
@@ -120,7 +121,16 @@ export function useSandboxTerminal(
       try {
         const rows = await getSandboxes(conversationId);
         sandboxId = rows.find((r) => r.status !== 'destroyed')?.id ?? null;
-      } catch {
+      } catch (err: unknown) {
+        // A lookup that got no answer is not "no workspace yet", which is what
+        // it used to say — telling someone to send a message to create a
+        // workspace that already exists, on a server that cannot be reached.
+        if (isUnreachableError(err)) {
+          if (isCancelled()) return;
+          setError("Can't reach your server — the terminal can open once it's back.");
+          setStatus('error');
+          return;
+        }
         sandboxId = null;
       }
       if (isCancelled()) return;

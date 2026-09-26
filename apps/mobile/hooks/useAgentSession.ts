@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
 import {
   createAgentSocket,
   sendAgentMessage,
@@ -24,7 +23,8 @@ import {
   type PromptStats,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
-import { setConnectionState } from '@/lib/connection';
+import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } from '@/lib/connection';
+import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
 import { useOlderMessages } from './useOlderMessages';
@@ -76,12 +76,17 @@ interface StreamState {
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
 
+/** This hook's socket, as the connection monitor knows it. */
+const SOCKET_KEY = 'agent';
+
 export function useAgentSession(token: string | null, onStreamEnd?: () => void) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
   // silently holding the old one until the app restarts.
   const endpoint = useEndpoint();
   const [runs, setRuns] = useState<Conversation[]>([]);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   // Scroll-back through a run's history, a page at a time (#213).
   const applyOlder = useCallback((convId: string, older: Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: prependOlder(r.msgs, older) } : r)));
@@ -524,27 +529,25 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       }
     };
 
+    // Reports itself to the connection monitor — see useChatSession.
     const connect = () => {
+      reconnectTimer = null;
       const ws = createAgentSocket(token, onEvent);
+      trackSocket(SOCKET_KEY, 'connecting');
       ws.onopen = () => {
         attempt = 0;
-        setConnectionState('online');
+        trackSocket(SOCKET_KEY, 'open');
         resubscribeKnown();
       };
-      ws.onclose = () => {
+      ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;
-        // Deliberate foreground-resume close (below) is not a drop — see the
-        // identical handling in useChatSession.
+        // Replaced on purpose — see the identical handling in useChatSession.
         if (intentionalClose) {
           intentionalClose = false;
           reconnectTimer = setTimeout(connect, 0);
           return;
         }
-        // The first drop is "reconnecting"; once retries have been failing
-        // for a while it is honestly just offline. Distinguishing them keeps
-        // the banner from flapping on a momentary blip while still telling
-        // the truth when the host is actually gone.
-        setConnectionState(attempt >= 2 ? 'offline' : 'reconnecting');
+        trackSocket(SOCKET_KEY, 'closed', ev.code);
         attempt += 1;
         const delay = Math.min(1000 * attempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
@@ -553,27 +556,38 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     };
     connect();
 
-    let appState: AppStateStatus = AppState.currentState;
-    const appStateSub = AppState.addEventListener('change', (next) => {
-      if (/inactive|background/.test(appState) && next === 'active') {
-        intentionalClose = true;
-        wsRef.current?.close();
+    // Replaced on a resume, a Retry, a dead-socket probe, or the server
+    // coming back — see useChatSession.
+    const reconnectSub = onReconnectRequest(() => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        connect();
+        return;
       }
-      appState = next;
+      intentionalClose = true;
+      wsRef.current?.close();
     });
 
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      appStateSub.remove();
+      reconnectSub();
+      untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
   }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
 
-  const handleModeChange = useCallback((next: PermissionMode) => {
+  /** The selector moves only if the server heard it: a chip that switched
+   * on screen while the frame went nowhere left the run in the old mode with
+   * the selector saying otherwise. */
+  const handleModeChange = useCallback((next: PermissionMode): boolean => {
+    if (isOffline() || !wsRef.current || !setAgentMode(wsRef.current, next)) {
+      showToast(disconnectedCopy(connectionState()).notSent, 4000);
+      return false;
+    }
     setModeState(next);
-    if (wsRef.current) setAgentMode(wsRef.current, next);
-  }, []);
+    return true;
+  }, [showToast]);
 
   /**
    * `modeOverride` sends in a mode other than the selector's, and moves the
@@ -581,11 +595,23 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
    * planning; a suggestion or a rejection stays in it), and the selector must
    * then say what the run is actually doing (#199).
    */
+  /**
+   * Returns whether the message went out (or, for a workspace that has to be
+   * created first, whether it was started — that path rolls back and says so
+   * by itself). A plan decision acts on this: it closes its panel and switches
+   * the model only once the decision is really on its way (#199).
+   */
   const handleSend = useCallback(
-    (text: string, model: string, attachments?: AttachmentRef[], modeOverride?: PermissionMode) => {
-      if (!wsRef.current) return;
+    (text: string, model: string, attachments?: AttachmentRef[], modeOverride?: PermissionMode): boolean => {
+      // Every branch below used to ignore sendAgentMessage's result, leaving an
+      // optimistic bubble (or a `pending-*` run) on screen for a message that
+      // never left. Refuse up front, and undo if the send still fails.
+      if (isOffline() || !wsRef.current) {
+        showToast(disconnectedCopy(connectionState()).notSent, 4000);
+        return false;
+      }
       const sendMode = modeOverride ?? mode;
-      if (modeOverride && modeOverride !== mode) handleModeChange(modeOverride);
+      if (modeOverride && modeOverride !== mode && !handleModeChange(modeOverride)) return false;
 
       const convId = activeIdRef.current;
       const localMsgId = `lm${String(Date.now())}`;
@@ -613,7 +639,15 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         if (chosen.kind === 'scratch') {
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
-          sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs);
+          if (!sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs)) {
+            setRuns((prev) => prev.filter((r) => r.id !== localId));
+            setActiveId(null);
+            pendingLocalIdRef.current = null;
+            pendingModelRef.current = null;
+            pendingUserMsgIdRef.current = null;
+            showToast(NOT_SENT_RECONNECTING, 4000);
+            return false;
+          }
         } else {
           // Anything else is created first, so the server can validate the
           // choice (does the repo exist under your token?) and refuse it
@@ -646,8 +680,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
               : r,
           ),
         );
-        sendAgentMessage(wsRef.current, text, sendMode, convId, undefined, model, refs);
+        if (!sendAgentMessage(wsRef.current, text, sendMode, convId, undefined, model, refs)) {
+          setRuns((prev) =>
+            prev.map((r) => (r.id === convId ? { ...r, msgs: r.msgs.filter((m) => m.id !== localMsgId) } : r)),
+          );
+          pendingUserMsgIdRef.current = null;
+          showToast(NOT_SENT_RECONNECTING, 4000);
+          return false;
+        }
       }
+      return true;
     },
     [mode, handleModeChange, setActiveId, showToast],
   );
@@ -671,7 +713,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     // reading that, the header showed "Stopping…" with the button disabled
     // until the run ended on its own — the shape of #113 again.
     if (!stopStream(wsRef.current, stream.streamId)) {
-      showToast('Not connected to this run — reload the page and try again', 4000);
+      showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setStoppingConvId(id);
@@ -682,21 +724,21 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   const handleCommand = useCallback((name: string, args: string, model: string) => {
     const id = activeIdRef.current;
     if (!wsRef.current || !id) return;
-    sendCommand(wsRef.current, name, id, model, args || undefined);
-  }, []);
+    if (!sendCommand(wsRef.current, name, id, model, args || undefined)) showToast(NOT_SENT_RECONNECTING, 4000);
+  }, [showToast]);
 
   // Closes only once the answer is on the wire — see useChatSession (#231).
   const handleApprove = useCallback((callId: string) => {
-    if (!wsRef.current || !approveTool(wsRef.current, callId)) {
-      showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+    if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId)) {
+      showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setPendingApproval(null);
   }, [showToast]);
 
   const handleDeny = useCallback((callId: string) => {
-    if (!wsRef.current || !denyTool(wsRef.current, callId)) {
-      showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+    if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId)) {
+      showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setPendingApproval(null);
@@ -710,8 +752,12 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     // Same reasoning as handleStop: a parked run is waiting on exactly this
     // frame, so a press that goes nowhere has to say so rather than leave the
     // question sitting there looking answerable.
-    if (!wsRef.current || !id || !stream || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
+    if (!wsRef.current || !id || !stream) {
       showToast('Not connected to this run — reload the page and try again', 4000);
+      return;
+    }
+    if (isOffline() || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
+      showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setPendingCheckin(null);
@@ -763,10 +809,17 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, title: name } : r)));
   }, []);
 
+  /** Shown at once, and put back if the server did not take it — see
+   * useChatSession's setConversationModel. */
   const setRunModel = useCallback((id: string, modelId: string) => {
-    updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
+    const previous = runsRef.current.find((r) => r.id === id)?.model;
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, model: modelId } : r)));
-  }, []);
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {
+      if (previous === undefined) return;
+      setRuns((prev) => prev.map((r) => (r.id === id && r.model === modelId ? { ...r, model: previous } : r)));
+      showToast('Couldn’t save that model choice — this run keeps its model', 4000);
+    });
+  }, [showToast]);
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);

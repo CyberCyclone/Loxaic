@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeFetchError } from "./fetch-error.js";
+import { forwardPowerEvents } from "./power.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,7 +31,7 @@ if (process.argv.includes("--headless")) {
 }
 
 async function runGui() {
-  const { app, BrowserWindow, dialog, ipcMain, shell } = await import("electron");
+  const { app, BrowserWindow, dialog, ipcMain, powerMonitor, shell } = await import("electron");
   const { existsSync, rmSync } = await import("node:fs");
   const { default: serve } = await import("electron-serve");
   const { startStack } = await import("./supervisor/index.js");
@@ -957,6 +958,8 @@ async function runGui() {
 
   app.whenReady().then(async () => {
     registerIpc();
+    // powerMonitor may only be used once the app is ready.
+    forwardPowerEvents(powerMonitor, (state) => { mainWindow?.webContents.send("loxaic:power", state); });
     try {
       ({ apiBaseUrl, stack, mode: instanceMode } = await resolveApi());
     } catch (err) {

@@ -19,7 +19,7 @@
  * would otherwise start being kept.
  */
 import { browser } from '@wdio/globals';
-import { provisionUser, apiToken, adminCreds, uniqueCreds } from '../helpers/auth.ts';
+import { provisionUser, provisionAdmin, apiToken, adminCreds, uniqueCreds } from '../helpers/auth.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, tap, platform, waitForVisible, waitForGone } from '../helpers/selectors.ts';
@@ -31,6 +31,7 @@ import {
   mockEcho,
   waitForComposerReady,
 } from '../helpers/app.ts';
+import { getWindowSize, setWindowSize } from '../helpers/window.ts';
 
 /** A first message long enough that its derived title cannot fit a phone
  * header — which is exactly how #185 was reported. */
@@ -76,6 +77,13 @@ describe('deleting a conversation', () => {
   let convId: string;
   let secondId: string;
 
+  before(async () => {
+    // Its admin calls sign in as the run's admin, which only exists once some
+    // spec has created it — this one ran green only when an earlier spec in
+    // the same run happened to, and failed run alone or first.
+    await provisionAdmin();
+  });
+
   after(async () => {
     // Deployment-wide: left on, every other spec's deletes would be kept and
     // the sandbox/agent specs would start finding conversations they deleted.
@@ -83,7 +91,7 @@ describe('deleting a conversation', () => {
     // Belt and braces on the window: a failure inside the phone-width test
     // would otherwise leave this session narrow for everything after it.
     if (platform() === 'web' || platform() === 'electron') {
-      await browser.setWindowSize(DESKTOP.width, DESKTOP.height).catch(() => undefined);
+      await setWindowSize(DESKTOP.width, DESKTOP.height).catch(() => undefined);
     }
   });
 
@@ -106,7 +114,7 @@ describe('deleting a conversation', () => {
     // the window is narrowed to one for the measurement and restored after.
     // Native is already this size, and has no resizable window.
     if (platform() === 'web' || platform() === 'electron') {
-      await browser.setWindowSize(PHONE.width, PHONE.height);
+      await setWindowSize(PHONE.width, PHONE.height);
       // The header re-lays out on the resize; wait for the narrow layout's own
       // control to appear rather than racing it.
       await waitForVisible('chat.threadList.toggle');
@@ -122,7 +130,7 @@ describe('deleting a conversation', () => {
 
     const titleRect = { ...(await title.getLocation()), ...(await title.getSize()) };
     const menuRect = { ...(await menu.getLocation()), ...(await menu.getSize()) };
-    const { width: viewportWidth } = await browser.getWindowSize();
+    const { width: viewportWidth } = await getWindowSize();
 
     // The bug: the title sized to its content and sat on top of the controls.
     // A pixel of slack for sub-pixel layout rounding.
@@ -135,7 +143,7 @@ describe('deleting a conversation', () => {
     await shot('delete-header-long-title');
 
     if (platform() === 'web' || platform() === 'electron') {
-      await browser.setWindowSize(DESKTOP.width, DESKTOP.height);
+      await setWindowSize(DESKTOP.width, DESKTOP.height);
     }
   });
 

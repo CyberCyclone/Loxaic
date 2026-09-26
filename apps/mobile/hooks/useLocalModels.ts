@@ -14,6 +14,7 @@ import {
   type LocalModelsView,
 } from '@loxaic/api-client';
 import { pollIntervalMs } from '@/lib/localModels';
+import { describeRequestError } from '@/lib/connection';
 import { useToastHelper } from './useToastHelper';
 
 /**
@@ -73,7 +74,7 @@ export function useLocalModels(token: string | null) {
         if (done) showToast(done);
         return result;
       } catch (err) {
-        showToast(err instanceof Error ? err.message : 'Something went wrong', 6000);
+        showToast(describeRequestError(err, 'Something went wrong'), 6000);
         return null;
       } finally {
         void refresh();
@@ -111,11 +112,20 @@ export function useLocalModels(token: string | null) {
       // Optimistic for the switch, which should not lag a poll behind the tap.
       // Bumping `seq` is what makes that true: a poll already in flight would
       // otherwise land with the server's pre-tap answer and flip it back.
-      if (patch.enabled !== undefined) {
+      const enabled = patch.enabled;
+      if (enabled !== undefined) {
         seq.current++;
-        setView((v) => (v ? { ...v, models: v.models.map((m) => (m.id === id ? { ...m, enabled: patch.enabled ?? m.enabled } : m)) } : v));
+        setView((v) => (v ? { ...v, models: v.models.map((m) => (m.id === id ? { ...m, enabled } : m)) } : v));
       }
-      return act(() => updateLocalModel(id, patch));
+      const result = await act(() => updateLocalModel(id, patch));
+      // Put the switch back when the server did not take it. The refresh act()
+      // runs afterwards fails too while the server is unreachable, so it used
+      // to stay in the position the server refused.
+      if (result === null && enabled !== undefined) {
+        seq.current++;
+        setView((v) => (v ? { ...v, models: v.models.map((m) => (m.id === id ? { ...m, enabled: !enabled } : m)) } : v));
+      }
+      return result;
     },
     [act],
   );

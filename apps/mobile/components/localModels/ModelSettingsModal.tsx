@@ -25,6 +25,8 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { FitBadge } from './FitBadge';
 import { GROUP_ORDER, GROUP_TITLES, formatBytes, parseNumericInput, setDraft, specMax } from '@/lib/localModels';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 interface ModelSettingsModalProps {
@@ -52,6 +54,7 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
   const [name, setName] = useState('');
   const [fit, setFit] = useState<FitEstimate | null>(null);
   const [saving, setSaving] = useState(false);
+  const reachable = useServerReachable();
   const [notice, setNotice] = useState<string | null>(null);
   const estimateSeq = useRef(0);
 
@@ -183,6 +186,7 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
           </VStack>
         </ModalBody>
         <ModalFooter className="flex-col items-stretch gap-2">
+          <DisconnectedNote testID="localModels.settingsSheet.disconnected" what="save" />
           {notice && (
             <Text testID="localModels.settingsSheet.notice" size="xs" className="text-muted-foreground">
               {notice}
@@ -205,7 +209,7 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
               testID="localModels.settingsSheet.save"
               size="sm"
               className="bg-primary"
-              isDisabled={saving || hasErrors}
+              isDisabled={saving || hasErrors || !reachable}
               onPress={() => { void save(); }}
             >
               <ButtonText className="text-primary-foreground">{saving ? 'Saving…' : 'Save'}</ButtonText>

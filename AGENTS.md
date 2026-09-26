@@ -79,12 +79,38 @@ pnpm --filter @loxaic/e2e test:web        # see apps/e2e/README.md for setup + e
 E2E_SELF_CONTAINED=1 pnpm --filter @loxaic/e2e test:electron  # against the packaged app's own embedded stack
 ```
 
-## End-to-end tests
+## Testing: every PR, unit and end to end
 
-**Every feature PR adds or updates e2e coverage for the behaviour it changes**, and carries
-screenshots showing that behaviour working. Writing those tests is the implementer's job
-(human or AI) — the harness already exists, so this is normally a spec file and a few
-`testID`s, not new infrastructure.
+**Every pull request carries unit tests and end-to-end tests for what it changes, wherever
+either is possible.** Nothing may depend on a person remembering to try it by hand: a check
+done once, manually, protects nothing after the PR merges, and the next change undoes it
+silently. Writing the tests is the implementer's job (human or AI) — the harness already
+exists, so this is normally a spec file, a helper and a few `testID`s, not new infrastructure.
+
+- **Unit tests pin the rules**: every decision a module makes, including the edge cases,
+  in the package's own vitest suite. Pull the logic into something pure (a reducer, a
+  function of its inputs) when that is what makes it testable — `connectionMonitorCore.ts`
+  and `apps/desktop/src/power.js` are the pattern.
+- **End-to-end tests cover every scenario a user can get into, on every platform where it
+  exists** — not only the happy path, and not only the platform that was convenient. Work out
+  the situations first (the server down, slow, or coming back; the phone locked, switched away
+  from, or opened from cold; the laptop asleep; a dialog open when it happens), then write a
+  case for each, both ways: the one where nothing should be said, and the one where something
+  should. A platform-only situation gets a platform-only spec: `src/specs/native/` for iOS and
+  Android (locking, backgrounding, cold starts), `src/specs/electron/` for the desktop (sleep,
+  the main process), `src/specs/browser/` for web.
+- **Reach the real thing.** Drive the OS event the user would cause (`mobile: lock`, the
+  real `powerMonitor` through the Electron service's bridge) and take the server away for real
+  (`helpers/server.ts` freezes the run's server process). A stub that imitates the trigger
+  tests the stub.
+- **Prove a new test can fail**: run it once against the code before the fix, or with the fix
+  reverted, and see it go red. A test that passes either way is not coverage.
+- **"Where possible" is a high bar.** If a scenario genuinely cannot be automated (real
+  hardware, a paid account), the PR says which one, why, and how it was checked instead — never
+  silently. "It was slow to set up" and "the lane is flaky" are reasons to fix the harness,
+  not to skip the test.
+- **Every feature PR also carries screenshots** showing the behaviour working, captured by
+  the specs (below).
 
 - **Tests** live in `apps/e2e/src/specs/`. Select by `testID` using the helpers in
   `src/helpers/` — never by CSS class, text position, or list index (the message list is
@@ -95,7 +121,8 @@ screenshots showing that behaviour working. Writing those tests is the implement
   Failures are captured automatically.
 - **Screenshots are never committed.** `apps/e2e/artifacts/` is gitignored; embed the PNGs in
   the PR description instead, straight from that directory.
-- If a change genuinely isn't user-visible, say so in the PR rather than skipping the section.
+- If a change genuinely isn't user-visible, say so in the PR rather than skipping the section —
+  it still needs its unit tests.
 
 ## Pull requests
 
@@ -249,7 +276,11 @@ replies.
   live session working. `resolveSession()` in `apps/server/src/auth/middleware.ts` re-checks
   it on every authenticated request (403, expired bans treated as lifted). Route handlers get
   this for free by going through `authenticate`/`requireAdmin`; anything that calls
-  `auth.api.getSession` directly does not.
+  `auth.api.getSession` directly does not — **which is why `GET /api/auth/session`, served
+  outside the middleware so a user who must change their password can still learn who they
+  are, checks `isBanned` itself** and answers 401 `account_suspended`. It is the route a client
+  asks when its socket is refused (4001) and at every launch; skipping the ban there told a
+  banned client all was well, and it reconnected forever under a banner blaming the server.
 - **`must_change_password` is enforced in the same two places, for the same reason** — see
   "Passwords" below.
 - **Postgres/postgres.js returns `SUM()`/`AVG()` over `integer` columns as strings**
@@ -425,6 +456,90 @@ replies.
   `approval-reconnect.spec.ts` hold it. The same moment is when a tap on Allow lands on a
   socket still closing, so **Approve and Deny close their dialog only once `trySend` says the
   answer went out** — as Stop and the check-in already did (#113).
+### Reaching the server (the connection monitor)
+
+- **One answer to "can the server be reached", for the whole app**, decided by
+  `apps/mobile/lib/connectionMonitor.ts` (controller) over `connectionMonitorCore.ts` (a pure,
+  unit-tested reducer) and published through `lib/connection.ts`. It used to be written by
+  whichever screen was open: expo-router's `Slot` mounts only the focused screen, so the state went
+  stale on every screen without a socket (all of settings) and read "online" on the agent screen
+  while its socket was still connecting. The banner lived on three screens. Nothing asked the
+  server itself, so a hung one — accepting connections, answering nothing, which is also what
+  `kill -STOP` produces — was never noticed at all.
+- **Three kinds of evidence, one authority.** Every REST request goes through api-client's
+  `serverFetch`, which reports `answered` / `suspect` / `stalled` to an observer; each screen's
+  socket reports `connecting` / `open` / `closed` (`trackSocket`); and a `GET /health` probe is the
+  only thing that can call the server down. **A failed request never sets the state by itself**:
+  our own server answers 502 when GitHub or HuggingFace is down and 503 from `/v1/cluster` during
+  boot, and a rejected upload can be a file that failed to encode. `isUnreachableError` now means
+  exactly "no answer" (`ServerUnreachableError`); it used to count a 404 wrapped in `McpApiError`
+  as down.
+- **Probes**: one in flight, 4 s timeout, backoff 1, 2, 4, 8 s then every 10 s, three failures in a
+  row → `offline`, a heartbeat every 25 s while online and foregrounded. A failed probe beats a
+  socket that says "open" (Chrome's offline mode and a stopped server both leave one open), and the
+  monitor then has the hooks replace it. A socket closed with 4001 is a session problem, not the
+  server's: `checkSession` re-asks, and a dead session signs out.
+- **Grace periods depend on the cause**: 300 ms after a resume, 1.5 s for a socket a screen has just
+  opened (a first connect over a tailnet relay routinely exceeds 300 ms, and a banner on every
+  navigation would teach people to ignore it). Input waits for the whole window (`resuming`), but
+  nothing is *said* (`showsDisconnected`). A resume with no socket tracked stays `online` and only
+  probes, so a settings screen does not grey out on every app switch. An `epoch` bumped on each
+  resume makes a probe armed before it irrelevant: iOS freezes JS in the background, so its
+  timeout fires the instant the app returns and would read as a failure.
+- **Only a return from `background` is a resume** (`appStateEvent`). `inactive` suspends nothing —
+  Control Center, a call banner — and locking an iPhone reports `inactive → active → inactive →
+  background` within a second and a half; counting that instant of `active` replaced every socket as
+  the app went to sleep. Seen on the simulator with a log on the listener, not reasoned out.
+- **On the desktop, the Mac sleeping, waking, locking and unlocking are the same two moments**,
+  forwarded from Electron's `powerMonitor` (`apps/desktop/src/power.js`, pushed as `loxaic:power`).
+  The page's visibility does not reliably change when a Mac sleeps with the window open, and nothing
+  pings a socket from either end, so a laptop woke holding sockets that still said "open" to a server
+  that had restarted or dropped them while it slept — the first send into one was lost, the #231
+  failure on another platform. A wake counts only while the window is showing; a hidden window's
+  own return does the resume, and `appStateEvent` makes the second of the two a no-op.
+- **The socket hooks no longer listen to AppState** — the monitor owns the one listener and asks for
+  replacement through `onReconnectRequest`, as it does on Retry, on a failed probe against an
+  "open" socket, and when the server comes back (so the wait is not the hook's own backoff). The
+  terminal socket is not tracked: its 4503 means the *machine* is offline, not the server.
+- **One banner** (`ConnectionBanner`, `shell.offlineBanner`, Retry once offline) rendered by
+  `AppShell` above the sidebar and every screen. Every Modal and Actionsheet renders through
+  gluestack's portal, above the shell, so the banner sits under their backdrop — anything with
+  server-backed buttons inside one carries a `DisconnectedNote`. The sidebar's status line reads
+  the settled state (it does not flicker through a grace period) and the line under the user's
+  name is the host the app is really talking to (`hostOf`, `useServerEndpoint`), never "local
+  server" for a build's default address.
+- **The gating rule**: every control that needs the server reads `useServerReachable()` and is
+  disabled when it is false, on every screen; a handler that could race the change also checks
+  `isOffline()`/`requireServer`; a failed request says `describeRequestError`, never the raw
+  "Failed to fetch". **What stays enabled is what works without the server or is the way back to
+  it**: the server address and its Test, Disconnect (both confirmations are `local` on
+  `WarningConfirmModal`), theme, updates, tailnet settings, sign out, navigation, and reading what is
+  loaded. A loader that could not ask keeps "could not ask" distinct from "none" — the GitHub setup
+  form, "This routine is gone" and "No workspace yet" were all shown offline for things that
+  existed — and asks again when the server is back.
+- **Agent sends honour `trySend`**: `handleSend` returns whether the message went out and rolls
+  back its optimistic bubble (or `pending-*` run) when it did not, the mode selector moves only if
+  the server heard it, and a plan decision is **sent first and acted on after** — it used to close
+  the panel and switch the model before sending, so a decision that never left looked made.
+- **A launch waits at most 5 s to learn who is signed in** (`LAUNCH_SESSION_TIMEOUT_MS` in
+  `lib/session.tsx`). A hung server accepts the connection and answers nothing, and the splash
+  used to wait out the platform's own network timeout — a minute on iOS. Past the deadline the
+  launch carries on as for an unreachable server: token kept, user unknown, and the user is
+  fetched whenever the monitor says `online` and it is still unknown. Not on "recovered after
+  failing": a server that was merely slow at launch never fails a probe, and the user would have
+  stayed unknown (isAdmin false) until a restart. Found by the native cold-start e2e case.
+- **e2e**: `server-unreachable.spec.ts` cuts the server from inside the page (stubbed `fetch` for
+  `/v1|/api|/health`, sockets pointed at a dead port) and checks the banner on chat, agent and a
+  settings screen with their controls disabled, then recovery; `approval-reconnect.spec.ts` holds a
+  new socket's `open` back to make a reconnect slow, and watches the DOM with a `MutationObserver`
+  for a flash — on localhost a reconnect takes a few milliseconds, so a polling check passed with a
+  zero grace period. `native/connection-lifecycle.spec.ts` (iOS and Android) locks the device,
+  switches away, cold-starts, and sits on a screen, each with the server up and frozen
+  (`helpers/server.ts`, `SIGSTOP` on the run's server); `electron/sleep-wake.spec.ts` emits the
+  real `powerMonitor` events in the main process. **Minimising an Electron window cannot be
+  tested on macOS**: Chromium's occlusion tracker is the only route from it to the page's
+  visibility, it races every other window on the screen, and the lane turns it off
+  (`--disable-backgrounding-occluded-windows`) because it also made unrelated specs time out.
 
 ### Thread history is paged (#213)
 
@@ -2527,7 +2642,7 @@ replies.
   and the supervisor injects it into the URL at spawn time.
 - **The IPC contract is the app's only one** (`loxaic:getState/setMode/probeEngine/
   probeHost/testDb/detach`, the executor's `loxaic:executor.setSession/getState/removeRoot`
-  and `loxaic:pickDirectory`, plus pushed `loxaic:stackState` and `loxaic:executorState`).
+  and `loxaic:pickDirectory`, plus pushed `loxaic:stackState`, `loxaic:executorState` and `loxaic:power`).
   Every channel is a fixed name and none takes a path or command from the renderer —
   `pickDirectory` opens the native dialog and `removeRoot` only accepts a path already on
   the list. The `stackState` listener is

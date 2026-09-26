@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useToast as useGluestackToast, Toast, ToastDescription } from '@/components/ui/toast';
 
 /**
@@ -8,10 +8,17 @@ import { useToast as useGluestackToast, Toast, ToastDescription } from '@/compon
  */
 export function useToastHelper() {
   const toast = useGluestackToast();
+  // Read through a ref so showToast keeps one identity. gluestack's toast
+  // object changes whenever a toast shows or hides, and showToast sits in the
+  // dependency list of the chat and agent socket effects — so every toast
+  // closed and reopened the live socket, seconds after it appeared. Found
+  // through the connection monitor's log: a reconnect restarting itself.
+  const toastRef = useRef(toast);
+  toastRef.current = toast;
 
   const showToast = useCallback(
     (message: string, duration = 2500) => {
-      toast.show({
+      toastRef.current.show({
         placement: 'bottom',
         duration,
         // A toast is the only place several refusals are ever shown — a
@@ -27,7 +34,7 @@ export function useToastHelper() {
         ),
       });
     },
-    [toast],
+    [],
   );
 
   return { showToast };

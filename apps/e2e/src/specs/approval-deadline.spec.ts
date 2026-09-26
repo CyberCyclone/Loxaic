@@ -15,6 +15,7 @@ import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { platform, tap, testIdSelector, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import { TOOL_PROMPT, goToSurface, sendMessage, signUp, startNewAgentRun } from '../helpers/app.ts';
+import { getWindowSize, setWindowSize } from '../helpers/window.ts';
 
 const WONT_RUN = "this call won't run";
 
@@ -51,13 +52,13 @@ describe('a tool approval shows its deadline', () => {
     await waitForTextIn('chat.approval.deadline', WONT_RUN);
     await shot('approval-deadline-chat');
 
-    const before = await browser.getWindowSize();
+    const before = await getWindowSize();
     try {
       // Stepped down rather than fixed: how tall the dialog is depends on the
       // call being approved, and a window it still fits in proves nothing.
       let verdict = { found: false, overflowing: false, scrollable: false, inView: false };
       for (const height of [420, 340, 280]) {
-        await browser.setWindowSize(before.width, height);
+        await setWindowSize(before.width, height);
         verdict = await browser.execute((selector: string) => {
           const el = document.querySelector<HTMLElement>(selector);
           if (!el) return { found: false, overflowing: false, scrollable: false, inView: false };
@@ -86,7 +87,7 @@ describe('a tool approval shows its deadline', () => {
       if (!verdict.inView) throw new Error('the countdown could not be brought into view');
       await shot('approval-deadline-chat-scrolled');
     } finally {
-      await browser.setWindowSize(before.width, before.height);
+      await setWindowSize(before.width, before.height);
     }
 
     await tap('chat.approval.reject');

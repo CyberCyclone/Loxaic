@@ -17,6 +17,7 @@
   },
   "devDependencies": {
     "@loxaic/config-ts": "workspace:*",
+    "@loxaic/db": "workspace:*",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.2.0",
     "@wdio/appium-service": "^9.31.0",

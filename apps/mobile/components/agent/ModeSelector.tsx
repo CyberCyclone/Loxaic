@@ -2,6 +2,7 @@ import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
 import type { AgentMode } from '@/lib/types';
+import { useServerReachable } from '@/lib/connection';
 
 const MODES: { value: AgentMode; label: string }[] = [
   { value: 'planning', label: 'Planning' },
@@ -15,6 +16,9 @@ interface ModeSelectorProps {
 }
 
 export function ModeSelector({ mode, onChange }: ModeSelectorProps) {
+  // The mode is the server's to hold: a chip that switched while the socket
+  // was down left the run in the old mode with the selector saying otherwise.
+  const reachable = useServerReachable();
   return (
     // Never gives way: the workspace pill beside it shrinks instead, because
     // these are the controls that have to stay clickable.
@@ -27,7 +31,8 @@ export function ModeSelector({ mode, onChange }: ModeSelectorProps) {
           // and to the e2e, which checks the mode an accepted plan chose.
           aria-selected={mode === m.value}
           onPress={() => { onChange(m.value); }}
-          className={`rounded-full px-2.5 py-1 ${mode === m.value ? 'bg-primary/15' : 'bg-muted'}`}
+          disabled={!reachable}
+          className={`rounded-full px-2.5 py-1 ${mode === m.value ? 'bg-primary/15' : 'bg-muted'} ${reachable ? '' : 'opacity-50'}`}
         >
           <Text size="2xs" className={mode === m.value ? 'text-primary' : 'text-muted-foreground'}>
             {m.label}

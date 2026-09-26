@@ -11,6 +11,7 @@ import { WaitTimeout } from '@/components/settings/WaitTimeout';
 import { AdaptiveTimeoutToggle } from '@/components/settings/AdaptiveTimeoutToggle';
 import { UnattendedCheckins } from '@/components/settings/UnattendedCheckins';
 import { LoopSensitivity } from '@/components/settings/LoopSensitivity';
+import { useServerReachable } from '@/lib/connection';
 import { usePrefs } from '@/hooks/usePrefs';
 
 /**
@@ -25,6 +26,9 @@ import { usePrefs } from '@/hooks/usePrefs';
 export default function CheckinsScreen() {
   const shell = useShell();
   const { prefs, loading, busy, save } = usePrefs();
+  // Every row saves on the server.
+  const reachable = useServerReachable();
+  const locked = busy || !reachable;
 
   const body = () => {
     if (loading) {
@@ -55,7 +59,7 @@ export default function CheckinsScreen() {
           <AgentStepLimit
             value={prefs.maxIterations}
             onChoose={(v) => { save({ maxIterations: v }); }}
-            disabled={busy}
+            disabled={locked}
           />
         )}
 
@@ -66,7 +70,7 @@ export default function CheckinsScreen() {
             value={prefs.checkinTimeoutMs}
             serverDefaultMs={prefs.serverDefaults?.checkinTimeoutMs}
             onChoose={(v) => { save({ checkinTimeoutMs: v }); }}
-            disabled={busy}
+            disabled={locked}
             testIDPrefix="settings.checkinTimeout"
           />
         )}
@@ -76,7 +80,7 @@ export default function CheckinsScreen() {
             value={prefs.checkinAutoContinues}
             stepsPerWindow={prefs.maxIterations}
             onChoose={(v) => { save({ checkinAutoContinues: v }); }}
-            disabled={busy}
+            disabled={locked}
           />
         )}
 
@@ -87,7 +91,7 @@ export default function CheckinsScreen() {
             value={prefs.approvalTimeoutMs}
             serverDefaultMs={prefs.serverDefaults?.approvalTimeoutMs}
             onChoose={(v) => { save({ approvalTimeoutMs: v }); }}
-            disabled={busy}
+            disabled={locked}
             testIDPrefix="settings.approvalTimeout"
           />
         )}
@@ -96,7 +100,7 @@ export default function CheckinsScreen() {
           <AdaptiveTimeoutToggle
             value={prefs.adaptiveTimeout}
             onChange={(v) => { save({ adaptiveTimeout: v }); }}
-            disabled={busy}
+            disabled={locked}
           />
         )}
 
@@ -104,7 +108,7 @@ export default function CheckinsScreen() {
           <LoopSensitivity
             value={prefs.loopSensitivity}
             onChoose={(v) => { save({ loopSensitivity: v }); }}
-            disabled={busy}
+            disabled={locked}
           />
         )}
       </VStack>

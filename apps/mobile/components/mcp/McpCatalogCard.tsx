@@ -10,6 +10,7 @@ import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { McpApiError, type McpCatalogEntry, type McpServerInput } from '@loxaic/api-client';
+import { useServerReachable } from '@/lib/connection';
 
 interface McpCatalogCardProps {
   entry: McpCatalogEntry;
@@ -22,6 +23,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const reachable = useServerReachable();
 
   const complete = entry.secretKeys.every((k) => (values[k.env] ?? '').trim().length > 0);
 
@@ -95,7 +97,7 @@ export function McpCatalogCard({ entry, onEnable }: McpCatalogCardProps) {
             size="sm"
             className="mt-1 self-start bg-primary"
             onPress={() => { void handleEnable(); }}
-            isDisabled={!complete || saving}
+            isDisabled={!complete || saving || !reachable}
           >
             {saving && <ButtonSpinner />}
             <ButtonText className="text-primary-foreground">Enable {entry.name}</ButtonText>

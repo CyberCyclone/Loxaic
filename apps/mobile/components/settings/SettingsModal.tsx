@@ -585,6 +585,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       message={endpointWarning(currentEndpoint() ?? settings.endpoint, draft.endpoint)}
       confirmLabel="Change it"
       testIDPrefix="settings.endpoint.confirm"
+      local
       onConfirm={() => { setConfirmEndpoint(false); commit(true); }}
       onCancel={() => { setConfirmEndpoint(false); }}
     />
@@ -595,6 +596,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       confirmLabel="Disconnect"
       testIDPrefix="settings.detach"
       onConfirm={() => { void detach(); }}
+      local
       onCancel={() => { setConfirmDetach(false); }}
     />
     </>

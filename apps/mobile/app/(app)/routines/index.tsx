@@ -23,6 +23,7 @@ import { useToastHelper } from '@/hooks/useToastHelper';
 import { deleteRoutineMessage } from '@/lib/deleteMessage';
 import { pickSelectedModel } from '@/lib/selectModel';
 import { useSession } from '@/lib/session';
+import { describeRequestError } from '@/lib/connection';
 import { getRoutineChatCount, type Routine } from '@loxaic/api-client';
 
 export default function RoutinesScreen() {
@@ -127,7 +128,7 @@ export default function RoutinesScreen() {
     try {
       await runNow(id);
     } catch (err) {
-      showToast(`Could not run: ${err instanceof Error ? err.message : String(err)}`, 4000);
+      showToast(`Could not run: ${describeRequestError(err, 'something went wrong')}`, 4000);
     } finally {
       setRunningId(null);
     }

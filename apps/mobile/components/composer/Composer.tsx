@@ -18,6 +18,7 @@ import { AttachButton } from './AttachButton';
 import { AttachmentRejectedModal } from './AttachmentRejectedModal';
 import type { ContextView } from '@/hooks/useContextUsage';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
+import { useServerReachable } from '@/lib/connection';
 import { ContextRing } from './ContextRing';
 
 interface ComposerProps {
@@ -63,6 +64,10 @@ export function Composer({
   commandSeed,
 }: ComposerProps) {
   const [text, setText] = useState('');
+  // Send and Stop wait for an open socket. While a resume is inside its grace
+  // period nothing else says so (readOnlyReason is for a real outage), so the
+  // text stays in the box and the button is simply not pressable yet (#231).
+  const connected = useServerReachable();
   const [inputHeight, setInputHeight] = useState(20);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
   const [selectedCmdIndex, setSelectedCmdIndex] = useState(0);
@@ -116,7 +121,7 @@ export function Composer({
 
   const send = () => {
     const trimmed = text.trim();
-    if ((!trimmed && readyAttachments.length === 0) || streaming || attachmentsUploading) return;
+    if ((!trimmed && readyAttachments.length === 0) || streaming || attachmentsUploading || !connected) return;
     const parsed = parseCommand(trimmed);
     const cmd = parsed ? findCommand(parsed.name) : undefined;
     if (parsed && cmd?.surfaces.includes(surface)) {
@@ -225,6 +230,7 @@ export function Composer({
             onPickFromLibrary={() => { void pickFromLibrary(); }}
             onPickDocument={() => { void pickDocument(); }}
             onFilesSelected={addWebFiles}
+            disabled={!connected}
           />
           <AttachmentRejectedModal rejection={attachmentRejection} onClose={dismissRejection} />
 
@@ -235,7 +241,9 @@ export function Composer({
           <Pressable
             testID="composer.model"
             onPress={onOpenModelModal}
-            className="shrink flex-row items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1.5"
+            // Choosing a model is saved on the server, and the list comes from it.
+            disabled={!connected}
+            className={`shrink flex-row items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1.5 ${connected ? '' : 'opacity-50'}`}
             style={{ maxWidth: '65%' }}
           >
             <Icon as={CircleDot} size="2xs" className="text-foreground" />
@@ -310,7 +318,7 @@ export function Composer({
               size="sm"
               className={`rounded-full px-3 ${stopping ? 'bg-destructive/50' : 'bg-destructive'}`}
               onPress={onStop}
-              isDisabled={stopping}
+              isDisabled={stopping || !connected}
             >
               <ButtonIcon as={Square} className="text-white" />
             </Button>
@@ -320,7 +328,7 @@ export function Composer({
               size="sm"
               className="rounded-full bg-primary px-3"
               onPress={send}
-              isDisabled={(!text.trim() && readyAttachments.length === 0) || attachmentsUploading}
+              isDisabled={(!text.trim() && readyAttachments.length === 0) || attachmentsUploading || !connected}
             >
               <ButtonIcon as={ArrowUp} className="text-primary-foreground" />
             </Button>

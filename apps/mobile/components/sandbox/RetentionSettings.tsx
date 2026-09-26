@@ -30,6 +30,8 @@ interface RetentionSettingsProps {
   retention: SandboxRetention;
   envOverrides: { idleStop: boolean; reapEnabled: boolean; reapAfter: boolean };
   onChange: (patch: Partial<SandboxRetention>) => void;
+  /** The server cannot be reached to save a change right now. */
+  unavailable?: boolean;
 }
 
 /**
@@ -41,7 +43,7 @@ interface RetentionSettingsProps {
  * after N hours" control would collapse them back into the behaviour this
  * replaced, where going to lunch cost you a checkout.
  */
-export function RetentionSettings({ retention, envOverrides, onChange }: RetentionSettingsProps) {
+export function RetentionSettings({ retention, envOverrides, onChange, unavailable = false }: RetentionSettingsProps) {
   return (
     <VStack space="sm">
       <Text size="xs" className="text-muted-foreground">
@@ -57,11 +59,11 @@ export function RetentionSettings({ retention, envOverrides, onChange }: Retenti
             <Pressable
               key={choice.ms}
               testID={`sandbox.idleStop.${choice.label}`}
-              disabled={envOverrides.idleStop}
+              disabled={envOverrides.idleStop || unavailable}
               onPress={() => { onChange({ idleStopMs: choice.ms }); }}
               className={`rounded-full px-3 py-1.5 ${
                 retention.idleStopMs === choice.ms ? 'bg-primary/15' : 'bg-muted'
-              } ${envOverrides.idleStop ? 'opacity-40' : ''}`}
+              } ${envOverrides.idleStop || unavailable ? 'opacity-40' : ''}`}
             >
               <Text size="sm" className={retention.idleStopMs === choice.ms ? 'text-primary' : 'text-muted-foreground'}>
                 {choice.label}
@@ -86,7 +88,7 @@ export function RetentionSettings({ retention, envOverrides, onChange }: Retenti
             testID="sandbox.reap.enabled"
             value={retention.reapEnabled}
             onValueChange={(value) => { onChange({ reapEnabled: value }); }}
-            isDisabled={envOverrides.reapEnabled}
+            isDisabled={envOverrides.reapEnabled || unavailable}
           />
           <Text size="sm" className="flex-1 text-foreground">
             Delete workspaces nobody has used in a long time
@@ -99,11 +101,11 @@ export function RetentionSettings({ retention, envOverrides, onChange }: Retenti
                 <Pressable
                   key={choice.ms}
                   testID={`sandbox.reap.${choice.label}`}
-                  disabled={envOverrides.reapAfter}
+                  disabled={envOverrides.reapAfter || unavailable}
                   onPress={() => { onChange({ reapAfterMs: choice.ms }); }}
                   className={`rounded-full px-3 py-1.5 ${
                     retention.reapAfterMs === choice.ms ? 'bg-primary/15' : 'bg-muted'
-                  } ${envOverrides.reapAfter ? 'opacity-40' : ''}`}
+                  } ${envOverrides.reapAfter || unavailable ? 'opacity-40' : ''}`}
                 >
                   <Text
                     size="sm"

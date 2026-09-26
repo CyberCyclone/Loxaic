@@ -13,6 +13,8 @@ import { Text } from '@/components/ui/text';
 import { Heading } from '@/components/ui/heading';
 import { Button, ButtonText } from '@/components/ui/button';
 import { Icon } from '@/components/ui/icon';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 
 interface WarningConfirmModalProps {
   open: boolean;
@@ -22,6 +24,11 @@ interface WarningConfirmModalProps {
   testIDPrefix: string;
   onConfirm: () => void;
   onCancel: () => void;
+  /** The confirmed action happens on this device only — changing the server
+   * address, disconnecting from it — and so must stay possible while the
+   * server cannot be reached; those are the way back. Everything else here
+   * (delete, restore, reset a password) is a request, and waits for it. */
+  local?: boolean;
 }
 
 /** A destructive-leaning confirm dialog for settings whose consequence isn't
@@ -37,7 +44,10 @@ export function WarningConfirmModal({
   testIDPrefix,
   onConfirm,
   onCancel,
+  local = false,
 }: WarningConfirmModalProps) {
+  const reachable = useServerReachable();
+  const blocked = !local && !reachable;
   return (
     <Modal isOpen={open} onClose={onCancel} size="sm">
       <ModalBackdrop />
@@ -53,6 +63,7 @@ export function WarningConfirmModal({
             <Text size="sm" className="text-foreground">
               {message}
             </Text>
+            {!local && <DisconnectedNote testID={`${testIDPrefix}.disconnected`} what="do this" />}
           </VStack>
         </ModalBody>
         <ModalFooter className="justify-end">
@@ -60,7 +71,13 @@ export function WarningConfirmModal({
             <Button testID={`${testIDPrefix}.cancel`} variant="outline" size="sm" onPress={onCancel}>
               <ButtonText>Cancel</ButtonText>
             </Button>
-            <Button testID={`${testIDPrefix}.confirm`} size="sm" className="bg-destructive" onPress={onConfirm}>
+            <Button
+              testID={`${testIDPrefix}.confirm`}
+              size="sm"
+              className="bg-destructive"
+              isDisabled={blocked}
+              onPress={onConfirm}
+            >
               <ButtonText className="text-destructive-foreground">{confirmLabel}</ButtonText>
             </Button>
           </HStack>

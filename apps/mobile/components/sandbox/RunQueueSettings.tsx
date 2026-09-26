@@ -26,10 +26,13 @@ const CHOICES: { value: number | null; label: string }[] = [
 interface RunQueueSettingsProps {
   settings: InferenceSettings;
   onChange: (maxConcurrentRuns: number | null) => void;
+  /** The server cannot be reached to save a change right now. */
+  unavailable?: boolean;
 }
 
-export function RunQueueSettings({ settings, onChange }: RunQueueSettingsProps) {
-  const disabled = settings.envOverrides.maxConcurrentRuns;
+export function RunQueueSettings({ settings, onChange, unavailable = false }: RunQueueSettingsProps) {
+  const pinned = settings.envOverrides.maxConcurrentRuns;
+  const disabled = pinned || unavailable;
   return (
     <VStack space="xs">
       <Text size="xs" className="text-muted-foreground">
@@ -63,7 +66,7 @@ export function RunQueueSettings({ settings, onChange }: RunQueueSettingsProps) 
         actually hold makes every conversation slower, because each one evicts the last one&apos;s
         cached prompt.
       </Text>
-      {disabled && (
+      {pinned && (
         <Text size="xs" className="text-muted-foreground">
           Set by the INFERENCE_MAX_CONCURRENT_RUNS environment variable.
         </Text>
