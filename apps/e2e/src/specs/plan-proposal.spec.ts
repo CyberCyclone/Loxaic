@@ -24,7 +24,7 @@
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, tap, typeInto, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   assistantModels,
   chooseScratchWorkspace,
@@ -36,6 +36,7 @@ import {
   signUp,
   waitForRunDone,
 } from '../helpers/app.ts';
+import { getWindowSize, setWindowSize } from '../helpers/window.ts';
 
 /** The mock answers "propose a plan" with a `propose_plan` call — offered in
  * planning mode only — whose plan quotes the prompt it answered, so a
@@ -136,13 +137,13 @@ describe('reviewing a proposed plan', () => {
     await waitForTextIn('agent.plan.accept', 'Accept · Manual');
     await shot('plan-panel-proposed');
 
-    const { width, height } = await browser.getWindowSize();
-    await browser.setWindowSize(width, 560);
+    const { width, height } = await getWindowSize();
+    await setWindowSize(width, 560);
     try {
       await expectFooterReachable();
       await shot('plan-panel-short-window');
     } finally {
-      await browser.setWindowSize(width, height);
+      await setWindowSize(width, height);
     }
 
     await tap('agent.plan.close');
@@ -159,11 +160,12 @@ describe('reviewing a proposed plan', () => {
     await typeInto('agent.plan.suggestion.input', SUGGESTION);
     await shot('plan-panel-suggestion');
     await tap('agent.plan.suggestion.send');
-    await waitForGone('agent.plan.panel');
 
-    // The revision is a new plan, pending, which opens by itself.
-    await waitForVisible('agent.plan.panel', 90_000);
-    await waitForTextIn('agent.plan.body', SUGGESTION);
+    // The revision is a new plan, pending, which opens by itself. The panel
+    // closes on send and reopens on the revision — against the mock, on the
+    // Electron lane, before a poll can see the gap in between — so what is
+    // waited for is the revision itself, looked up afresh.
+    await waitForFreshText('agent.plan.body', SUGGESTION, 90_000);
     await tap('agent.plan.close');
     await waitForGone('agent.plan.panel');
     await waitForListText('Replaced by a newer plan');

@@ -26,6 +26,7 @@ import {
   waitForGone,
   waitForTextIn,
   waitForVisible,
+  waitForFreshText,
 } from '../helpers/selectors.ts';
 import { openSettings, openSidebar, sendAndAwaitReply, signIn, signOut, signUp, startNewThread } from '../helpers/app.ts';
 import { BASE_URL, FAKE_HARDWARE_FILE, FAKE_ROUTER_LOG, LLAMA_DIR, mockHf } from '../../scripts/standup.ts';
@@ -114,24 +115,6 @@ async function reachable(id: string): Promise<boolean> {
     const box = el.getBoundingClientRect();
     return box.bottom <= window.innerHeight;
   }, testIdSelector(id));
-}
-
-/**
- * Wait for text in an element, looking the element up afresh each time.
- *
- * `waitForTextIn` holds one element reference, and a download finishing
- * replaces the row's in-progress status line with the finished row's pill —
- * a different node under the same testID — so a reference taken before that
- * never becomes displayed.
- */
-async function waitForFreshText(id: string, text: string, timeout = 30_000): Promise<void> {
-  await browser.waitUntil(
-    async () => {
-      const el = $(testIdSelector(id));
-      return (await el.isExisting()) && (await el.getText()).includes(text);
-    },
-    { timeout, interval: 300, timeoutMsg: `expected "${text}" in [${id}] within ${String(timeout)}ms` },
-  );
 }
 
 async function openLocalModels(): Promise<void> {

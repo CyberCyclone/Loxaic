@@ -14,6 +14,7 @@ import { shot } from '../helpers/screenshot.ts';
 import { platform, tap, testIdSelector, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import { openSettings, patchPrefs, signUp } from '../helpers/app.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
+import { getWindowSize, setWindowSize } from '../helpers/window.ts';
 
 async function prefs(creds: { email: string; password: string }): Promise<Record<string, unknown>> {
   const token = await apiToken(creds);
@@ -114,8 +115,8 @@ describe('the check-ins and approvals settings screen', () => {
   it('can scroll to its lowest row on a short window', async function () {
     const p = platform();
     if (p !== 'web' && p !== 'electron') this.skip();
-    const before = await browser.getWindowSize();
-    await browser.setWindowSize(before.width, 500);
+    const before = await getWindowSize();
+    await setWindowSize(before.width, 500);
     try {
       const verdict = await reachability('settings.loopSensitivity.off');
       if (!verdict.found) throw new Error('loop sensitivity row not rendered');
@@ -136,7 +137,7 @@ describe('the check-ins and approvals settings screen', () => {
       if (!inView) throw new Error('the lowest row could not be brought into view');
       await shot('checkin-settings-scrolled');
     } finally {
-      await browser.setWindowSize(before.width, before.height);
+      await setWindowSize(before.width, before.height);
     }
   });
 });

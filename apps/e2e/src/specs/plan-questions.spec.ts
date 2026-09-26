@@ -28,6 +28,7 @@ import {
   signUp,
   waitForRunDone,
 } from '../helpers/app.ts';
+import { getWindowSize, setWindowSize } from '../helpers/window.ts';
 
 /** No trigger words at all: planning plans it anyway. */
 const ANY_PROMPT = "What's the weather like today?";
@@ -111,12 +112,12 @@ describe('planning ends in a plan or questions', () => {
     await shot('questions-panel-first');
 
     // A short window still shows the buttons at the foot.
-    const { width, height } = await browser.getWindowSize();
-    await browser.setWindowSize(width, 560);
+    const { width, height } = await getWindowSize();
+    await setWindowSize(width, 560);
     try {
       await expectInView(['agent.questions.back', 'agent.questions.next']);
     } finally {
-      await browser.setWindowSize(width, height);
+      await setWindowSize(width, height);
     }
 
     await tap('agent.questions.option.0.0');
