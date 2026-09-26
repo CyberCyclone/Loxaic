@@ -98,6 +98,24 @@ export type MonitorEffect =
   | { type: 'checkSession' }
   | { type: 'recovered' };
 
+/**
+ * What an AppState change means to the monitor. Only a return from
+ * `background` is a resume. `inactive` suspends nothing — Control Center, a
+ * call banner — and iOS passes through it on the way into and out of the
+ * background anyway; locking the phone even flips `inactive → active →
+ * inactive → background` within a second and a half, and treating that
+ * instant of `active` as a return replaced every socket as the app went to
+ * sleep. Measured on the simulator.
+ */
+export function appStateEvent(
+  backgrounded: boolean,
+  next: string,
+): { event: 'background' | 'resume' | null; backgrounded: boolean } {
+  if (next === 'background') return { event: backgrounded ? null : 'background', backgrounded: true };
+  if (next === 'active') return { event: backgrounded ? 'resume' : null, backgrounded: false };
+  return { event: null, backgrounded };
+}
+
 export function initialMonitorState(): MonitorState {
   return {
     running: false,

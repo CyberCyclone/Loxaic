@@ -1,8 +1,9 @@
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState } from 'react-native';
 import { getHealth, setReachabilityObserver } from '@loxaic/api-client';
 import { publishConnectionState } from './connection';
 import {
   PROBE_TIMEOUT_MS,
+  appStateEvent,
   derive,
   initialMonitorState,
   reduce,
@@ -91,16 +92,17 @@ function clearTimers(): void {
 export function startMonitor(): () => void {
   if (teardown) return stopMonitor;
   setReachabilityObserver((event) => { dispatch({ type: event.kind }); });
-  let appState: AppStateStatus = AppState.currentState;
+  let backgrounded = AppState.currentState === 'background';
   const appStateSub = AppState.addEventListener('change', (next) => {
-    if (/inactive|background/.test(next)) {
+    const change = appStateEvent(backgrounded, next);
+    backgrounded = change.backgrounded;
+    if (change.event === 'background') {
       dispatch({ type: 'background' });
       if (probeTimer) clearTimeout(probeTimer);
       probeTimer = null;
-    } else if (next === 'active' && /inactive|background/.test(appState)) {
+    } else if (change.event === 'resume') {
       dispatch({ type: 'resume' });
     }
-    appState = next;
   });
   const endpointUnsub = onEndpointChange(() => { dispatch({ type: 'reset' }); });
   teardown = () => {

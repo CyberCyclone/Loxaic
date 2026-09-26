@@ -5,6 +5,7 @@ import {
   OFFLINE_AFTER_FAILURES,
   RESUME_GRACE_MS,
   STUCK_CONNECTING_MS,
+  appStateEvent,
   backoffMs,
   derive,
   initialMonitorState,
@@ -228,6 +229,33 @@ describe('the connection monitor', () => {
       expect(r.state.failedProbes).toBe(0);
       expect(derive(r.state, 50)).toBe('resuming');
       expect(probes(r.effects)).toHaveLength(1);
+    });
+  });
+
+  describe('what AppState changes mean', () => {
+    const replay = (sequence: string[], backgrounded = false) =>
+      sequence.map((next) => {
+        const change = appStateEvent(backgrounded, next);
+        backgrounded = change.backgrounded;
+        return change.event;
+      }).filter(Boolean);
+
+    it('locking the phone, as iOS reports it, is one trip to the background', () => {
+      // The sequence the simulator logged for a press of the lock button.
+      expect(replay(['inactive', 'active', 'inactive', 'background'])).toEqual(['background']);
+    });
+
+    it('unlocking is a resume', () => {
+      expect(replay(['inactive', 'active'], true)).toEqual(['resume']);
+      expect(replay(['active'], true)).toEqual(['resume']);
+    });
+
+    it('Control Center or a call banner is not a trip anywhere', () => {
+      expect(replay(['inactive', 'active'])).toEqual([]);
+    });
+
+    it('a hidden browser tab or window, which has no inactive, still counts', () => {
+      expect(replay(['background', 'active'])).toEqual(['background', 'resume']);
     });
   });
 });
