@@ -276,7 +276,11 @@ replies.
   live session working. `resolveSession()` in `apps/server/src/auth/middleware.ts` re-checks
   it on every authenticated request (403, expired bans treated as lifted). Route handlers get
   this for free by going through `authenticate`/`requireAdmin`; anything that calls
-  `auth.api.getSession` directly does not.
+  `auth.api.getSession` directly does not — **which is why `GET /api/auth/session`, served
+  outside the middleware so a user who must change their password can still learn who they
+  are, checks `isBanned` itself** and answers 401 `account_suspended`. It is the route a client
+  asks when its socket is refused (4001) and at every launch; skipping the ban there told a
+  banned client all was well, and it reconnected forever under a banner blaming the server.
 - **`must_change_password` is enforced in the same two places, for the same reason** — see
   "Passwords" below.
 - **Postgres/postgres.js returns `SUM()`/`AVG()` over `integer` columns as strings**

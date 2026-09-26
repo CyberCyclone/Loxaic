@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { auth } from "../auth";
+import { isBanned } from "../auth/ban.ts";
 import { authenticateForPasswordChange } from "../auth/middleware.ts";
 import { clearMustChangePassword } from "../auth/password-reset.ts";
 
@@ -51,7 +52,13 @@ export function authRoutes(app: FastifyInstance) {
     return forwardAuthResponse(res, reply);
   });
 
-  // Session
+  // Session. Outside the middleware on purpose — a user who must change their
+  // password has to be able to learn who they are — but a ban is still a ban.
+  // better-auth only checks one at sign-in, so a session that was live when the
+  // ban landed kept answering here: a client whose socket was refused (4001)
+  // asked, was told the user was fine, and reconnected forever under a banner
+  // blaming the server. 401, like a dead session, is what makes a client sign
+  // out; signing in again then gets better-auth's own "banned" answer.
   app.get("/api/auth/session", async (request, reply) => {
     const result = await auth.api.getSession({
       headers: new Headers(request.headers as HeadersInit),
@@ -59,6 +66,10 @@ export function authRoutes(app: FastifyInstance) {
     if (!result) {
       reply.code(401);
       return { error: "No session" };
+    }
+    if (isBanned(result.user)) {
+      reply.code(401);
+      return { error: "Account suspended", code: "account_suspended" };
     }
     return result;
   });

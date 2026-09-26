@@ -54,6 +54,9 @@ importers:
       '@loxaic/config-ts':
         specifier: workspace:*
         version: link:../../packages/config-ts
+      '@loxaic/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@types/mocha':
         specifier: ^10.0.10
         version: 10.0.10
