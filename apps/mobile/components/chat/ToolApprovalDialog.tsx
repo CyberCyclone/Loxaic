@@ -7,7 +7,9 @@ import { Heading } from '@/components/ui/heading';
 import { Button, ButtonText } from '@/components/ui/button';
 import { splitMcpTool } from '@/components/chat/ToolCallCard';
 import type { WaitDeadline } from '@/lib/pendingWaits';
+import { useServerReachable } from '@/lib/connection';
 import { DeadlineCountdown } from './DeadlineCountdown';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 
 interface ToolApprovalDialogProps {
   tool: string;
@@ -35,6 +37,8 @@ export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, 
   // still fall back, which nullish-coalescing would let through as blank.
   const reasonText = reason?.trim();
   const reasonLabel = reasonText && reasonText.length > 0 ? reasonText : 'No reason given.';
+  // An answer needs an open socket; until then it could only be dropped (#231).
+  const disconnected = !useServerReachable();
 
   return (
     <Modal isOpen onClose={() => undefined} size="md">
@@ -76,16 +80,17 @@ export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, 
               </ScrollView>
             </VStack>
             <DeadlineCountdown kind="approval" deadline={deadline} testID="chat.approval.deadline" />
+            <DisconnectedNote testID="chat.approval.reconnecting" />
           </VStack>
         </ModalBody>
         <ModalFooter className="flex-wrap justify-end gap-2 border-t border-border">
-          <Button testID="chat.approval.reject" variant="outline" size="sm" onPress={onReject}>
+          <Button testID="chat.approval.reject" variant="outline" size="sm" onPress={onReject} isDisabled={disconnected}>
             <ButtonText>Reject</ButtonText>
           </Button>
-          <Button testID="chat.approval.allowAlways" variant="outline" size="sm" onPress={onAllowAlways}>
+          <Button testID="chat.approval.allowAlways" variant="outline" size="sm" onPress={onAllowAlways} isDisabled={disconnected}>
             <ButtonText>Allow always</ButtonText>
           </Button>
-          <Button testID="chat.approval.allowOnce" size="sm" onPress={onAllowOnce}>
+          <Button testID="chat.approval.allowOnce" size="sm" onPress={onAllowOnce} isDisabled={disconnected}>
             <ButtonText>Allow once</ButtonText>
           </Button>
         </ModalFooter>

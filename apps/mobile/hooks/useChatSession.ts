@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, type AppStateStatus } from 'react-native';
 import {
   createChatSocket,
   sendChatMessage,
@@ -25,7 +24,8 @@ import {
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
 import { useEndpoint } from './useEndpoint';
-import { isOffline, setConnectionState } from '@/lib/connection';
+import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
+import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
 import { lastUserId, readCachedConversations, removeCachedConversation, writeCachedConversation, writeCachedList } from '@/lib/message-cache';
 import { useSession } from '@/lib/session';
 import type { Conversation, Message } from '@/lib/types';
@@ -75,6 +75,10 @@ interface StreamState {
 
 /** Minimum spacing between resync requests for the same stream. */
 const RESYNC_COOLDOWN_MS = 500;
+
+/** This hook's socket, as the connection monitor knows it. The routine chat
+ * screen uses this hook too; only one of the two is ever mounted. */
+const SOCKET_KEY = 'chat';
 
 /**
  * Which set of conversations this session is over.
@@ -322,7 +326,6 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     loadedConvIdsRef.current.add(id);
     getMessages(id)
       .then((page) => {
-        setConnectionState('online');
         const msgs = reconstructMessages(page.messages);
         if (msgs.length === 0) return;
         // A thread populated *from the cache* is overwritten by the server's
@@ -346,16 +349,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         });
         subscribeIfWanted();
       })
-      .catch((err: unknown) => {
+      .catch(() => {
         loadedConvIdsRef.current.delete(id);
         // Still subscribe: a failed history read says nothing about whether a
         // run is going right now, and the live stream is the more urgent half.
+        // Whether the host is gone is the connection monitor's to decide: the
+        // request already reported what it learned (lib/connectionMonitor.ts).
         subscribeIfWanted();
-        // Only a request that never got an answer means the host is gone. A
-        // 404 for a deleted row or a 500 for one bad query is a *reachable*
-        // server saying no; treating those as offline locked the user out of
-        // sending on a healthy host, with nothing to recover it.
-        if (isUnreachableError(err)) setConnectionState('offline');
       });
   }, [recordPaging]);
 
@@ -384,7 +384,6 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     const active = scopeRef.current;
     try {
       const apiConversations = await active.list();
-      setConnectionState('online');
       // Built outside the updater so the *merged* list — cached messages
       // kept — is what reaches the cache. Passing `apiConversations` (every
       // entry `msgs: []`) wrote an empty message list over every cached
@@ -417,8 +416,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         setActiveId(opening);
       }
       setListLoaded(true);
-    } catch (err: unknown) {
-      if (isUnreachableError(err)) setConnectionState('offline');
+    } catch {
       // Still "loaded": the screen has to be able to tell "no chats yet" from
       // "still asking", and a failure is neither — it says so through the
       // offline banner instead of leaving a permanent spinner.
@@ -759,29 +757,28 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
       }
     };
 
+    // The socket reports itself to the connection monitor, which decides for
+    // the whole app whether the server is reachable (lib/connectionMonitor.ts).
     const connect = () => {
+      reconnectTimer = null;
       const ws = createChatSocket(token, onEvent);
+      trackSocket(SOCKET_KEY, 'connecting');
       ws.onopen = () => {
         attempt = 0;
-        setConnectionState('online');
+        trackSocket(SOCKET_KEY, 'open');
         resubscribeKnown();
       };
-      ws.onclose = () => {
+      ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;
-        // The foreground-resume handler below closes the socket *on purpose*
-        // to replace a possibly-zombie connection. That is not a drop, and
-        // reading it as one flashed the offline banner and refused sends for
-        // a second on every single app switch on a healthy server.
+        // Replaced on purpose (a resume, a Retry, a failed probe against a
+        // socket that still claimed to be open). Not a drop: the replacement
+        // reports itself as connecting.
         if (intentionalClose) {
           intentionalClose = false;
           reconnectTimer = setTimeout(connect, 0);
           return;
         }
-        // The first drop is "reconnecting"; once retries have been failing
-        // for a while it is honestly just offline. Distinguishing them keeps
-        // the banner from flapping on a momentary blip while still telling
-        // the truth when the host is actually gone.
-        setConnectionState(attempt >= 2 ? 'offline' : 'reconnecting');
+        trackSocket(SOCKET_KEY, 'closed', ev.code);
         // The stream state itself is preserved (see StreamState comment) —
         // only the connection needs re-establishing.
         attempt += 1;
@@ -803,19 +800,26 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     // Force-closing on every foreground resume guarantees a fresh
     // connection; resubscribing with real cursors on the new connection is
     // exact regardless of how the old one died.
-    let appState: AppStateStatus = AppState.currentState;
-    const appStateSub = AppState.addEventListener('change', (next) => {
-      if (/inactive|background/.test(appState) && next === 'active') {
-        intentionalClose = true;
-        wsRef.current?.close();
+    //
+    // The resume is noticed by the connection monitor, which asks for the
+    // replacement — as it also does on Retry, when a failed probe says a socket
+    // that claims to be open is dead, and when the server comes back (so the
+    // wait is not this hook's own backoff).
+    const reconnectSub = onReconnectRequest(() => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        connect();
+        return;
       }
-      appState = next;
+      intentionalClose = true;
+      wsRef.current?.close();
     });
 
     return () => {
       cancelled = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      appStateSub.remove();
+      reconnectSub();
+      untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
   }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
@@ -868,7 +872,6 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
           pendingLocalIdRef.current = null;
           pendingModelRef.current = null;
           pendingUserMsgIdRef.current = null;
-          setConnectionState('reconnecting');
           showToast('Not connected — your message was not sent');
         }
       } else {
@@ -885,7 +888,6 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
             prev.map((c) => (c.id === id ? { ...c, msgs: c.msgs.filter((m) => m.id !== localMsgId) } : c)),
           );
           pendingUserMsgIdRef.current = null;
-          setConnectionState('reconnecting');
           showToast('Not connected — your message was not sent');
         }
       }
@@ -908,7 +910,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     // reading that, the header showed "Stopping…" with the button disabled
     // until the run ended on its own — the shape of #113 again.
     if (!stopStream(wsRef.current, stream.streamId)) {
-      showToast('Not connected to this run — reload the page and try again', 4000);
+      showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setStoppingConvId(id);
@@ -928,8 +930,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
   // sat waiting for the timeout (#231).
   const handleApprove = useCallback(
     (callId: string) => {
-      if (!wsRef.current || !approveTool(wsRef.current, callId)) {
-        showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+      if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId)) {
+        showToast(NOT_SENT_RECONNECTING, 4000);
         return;
       }
       if (activeIdRef.current) clearApproval(activeIdRef.current);
@@ -939,8 +941,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
 
   const handleDeny = useCallback(
     (callId: string) => {
-      if (!wsRef.current || !denyTool(wsRef.current, callId)) {
-        showToast('Reconnecting — your answer was not sent. Try again in a moment.', 4000);
+      if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId)) {
+        showToast(NOT_SENT_RECONNECTING, 4000);
         return;
       }
       if (activeIdRef.current) clearApproval(activeIdRef.current);
@@ -954,8 +956,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     (decision: StepsDecision) => {
       const id = activeIdRef.current;
       const stream = id ? streamingByConvRef.current[id] : undefined;
-      if (!wsRef.current || !id || !stream || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
+      if (!wsRef.current || !id || !stream) {
         showToast('Not connected to this run — reload the page and try again', 4000);
+        return;
+      }
+      if (isOffline() || !sendStepsDecision(wsRef.current, stream.streamId, decision)) {
+        showToast(NOT_SENT_RECONNECTING, 4000);
         return;
       }
       setPendingCheckinByConv((prev) => {
@@ -1000,8 +1006,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
   const handleCommand = useCallback((name: string, args: string, model: string) => {
     const id = activeIdRef.current;
     if (!wsRef.current || !id) return;
-    sendCommand(wsRef.current, name, id, model, args || undefined);
-  }, []);
+    if (!sendCommand(wsRef.current, name, id, model, args || undefined)) showToast(NOT_SENT_RECONNECTING, 4000);
+  }, [showToast]);
 
   const handleNewChat = useCallback(() => { setActiveId(null); }, [setActiveId]);
 

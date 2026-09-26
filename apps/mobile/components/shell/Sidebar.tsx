@@ -11,6 +11,9 @@ import type { SurfaceId } from '@/lib/types';
 import { useSettings } from '@/hooks/useSettings';
 import { useInstanceState } from '@/hooks/useInstanceState';
 import { useSession } from '@/lib/session';
+import { disconnectedCopy, useSettledConnection } from '@/lib/connection';
+import { hostOf } from '@/lib/serverHost';
+import { useServerEndpoint } from '@/hooks/useServerEndpoint';
 
 interface SidebarProps {
   activeSurface: SurfaceId;
@@ -75,11 +78,18 @@ function NavItem({
 export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }: SidebarProps) {
   const [settings] = useSettings();
   const instance = useInstanceState();
-  // Where this app is actually talking to. Off the desktop there is no
-  // instance state, so the manual endpoint override (or nothing) is all
-  // there is to say.
+  // Where this app is actually talking to, by host name. On the desktop the
+  // instance's advertised address says more than the loopback URL the
+  // renderer uses; everywhere else it is the endpoint the sockets and
+  // requests really resolved to. This used to read only a *typed* endpoint,
+  // so a phone on its build's default server said "local server".
   const instanceUrl = instance?.mode === 'client' ? instance.client?.hostUrl : instance?.effectiveAdvertiseUrl;
-  const serverLabel = instanceUrl ?? (settings.endpoint.trim() ? settings.endpoint : 'local server');
+  const endpoint = useServerEndpoint();
+  const serverHost = hostOf(instanceUrl) ?? hostOf(endpoint) ?? 'local server';
+  // Settled, so an app switch's silent reconnect does not flicker it.
+  const connection = useSettledConnection();
+  const statusDot =
+    connection === 'online' ? 'bg-success' : connection === 'reconnecting' ? 'bg-warning' : 'bg-destructive';
   const { signOut, isAdmin } = useSession();
   const router = useRouter();
   const initials =
@@ -143,9 +153,9 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
 
       <VStack space="sm" className="border-t border-border px-4 py-3">
         <HStack space="xs" className="items-center">
-          <Box className="h-2 w-2 rounded-full bg-success" />
-          <Text size="xs" className="text-muted-foreground">
-            Server connected · llama.cpp
+          <Box className={`h-2 w-2 rounded-full ${statusDot}`} />
+          <Text testID="sidebar.serverStatus" size="xs" className="text-muted-foreground">
+            {disconnectedCopy(connection).status}
           </Text>
         </HStack>
         <HStack space="sm" className="items-center justify-between">
@@ -159,8 +169,8 @@ export function Sidebar({ activeSurface, onNavigate, onOpenSettings, onNewChat }
               <Text size="sm" className="font-medium text-foreground">
                 {settings.name || 'Signed in'}
               </Text>
-              <Text size="xs" className="text-muted-foreground">
-                {serverLabel}
+              <Text testID="sidebar.serverHost" size="xs" className="text-muted-foreground">
+                {serverHost}
               </Text>
             </VStack>
           </HStack>

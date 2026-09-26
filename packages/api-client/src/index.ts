@@ -23,9 +23,78 @@ export class ApiError extends Error {
   }
 }
 
-/** True when the failure was the network, not the server's answer. */
+/**
+ * A request that got no answer at all: the network failed, or the host did
+ * not accept the connection. Keeps the underlying message ("Failed to fetch",
+ * "Network request failed") so a caller matching on it still matches.
+ */
+export class ServerUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Could not reach the server");
+    this.name = "ServerUnreachableError";
+  }
+}
+
+/** True when the failure was the network, not the server's answer. Every
+ * request goes through `serverFetch`, which is the one place that can tell
+ * the two apart; a 404 wrapped in McpApiError or GithubApiError is a server
+ * that answered, and used to be counted as unreachable. */
 export function isUnreachableError(err: unknown): boolean {
-  return !(err instanceof ApiError);
+  return err instanceof ServerUnreachableError;
+}
+
+/**
+ * What a request said about whether the server is there, for the app's
+ * connection monitor. Evidence, never a verdict: a 502 from our own server can
+ * mean GitHub is down, a rejection can be a file that failed to encode, so the
+ * monitor confirms with a health probe before it calls the server down.
+ * - `answered`: a response came back (any status but 502-504).
+ * - `suspect`: no response, or 502/503/504 (what a reverse proxy such as
+ *   Tailscale Serve answers when the server behind it is gone).
+ * - `stalled`: still no response after STALL_MS. The request carries on.
+ */
+export interface ReachabilityEvent {
+  kind: "answered" | "suspect" | "stalled";
+  status?: number;
+}
+
+let reachabilityObserver: ((event: ReachabilityEvent) => void) | null = null;
+
+export function setReachabilityObserver(observer: ((event: ReachabilityEvent) => void) | null): void {
+  reachabilityObserver = observer;
+}
+
+function report(event: ReachabilityEvent): void {
+  try {
+    reachabilityObserver?.(event);
+  } catch {
+    // An observer's failure is never the request's.
+  }
+}
+
+/** Not a timeout: git push, an upload or a model download can legitimately
+ * take longer. Only a hint that something may be wrong. */
+const STALL_MS = 10_000;
+
+function isAbort(err: unknown, signal: AbortSignal | null | undefined): boolean {
+  return Boolean(signal?.aborted) || (err instanceof Error && err.name === "AbortError");
+}
+
+/** Every request to the server goes through here, so every one of them tells
+ * the connection monitor what it learned. */
+async function serverFetch(url: string, init?: RequestInit): Promise<Response> {
+  const stall = setTimeout(() => { report({ kind: "stalled" }); }, STALL_MS);
+  try {
+    const res = await fetch(url, init);
+    report({ kind: res.status >= 502 && res.status <= 504 ? "suspect" : "answered", status: res.status });
+    return res;
+  } catch (err) {
+    if (isAbort(err, init?.signal)) throw err;
+    report({ kind: "suspect" });
+    throw new ServerUnreachableError(err);
+  } finally {
+    clearTimeout(stall);
+  }
 }
 
 export function setApiBaseUrl(url: string) {
@@ -54,8 +123,10 @@ export interface HealthResponse {
   };
 }
 
-export async function getHealth(): Promise<HealthResponse> {
-  const res = await fetch(`${BASE_URL}/health`);
+/** The connection monitor's probe. Deliberately plain `fetch`: a probe is how
+ * the monitor checks the evidence, so it must not count as evidence itself. */
+export async function getHealth(opts: { signal?: AbortSignal } = {}): Promise<HealthResponse> {
+  const res = await fetch(`${BASE_URL}/health`, { signal: opts.signal });
   if (!res.ok) throw new Error(`GET /health ${String(res.status)}`);
   return res.json() as Promise<HealthResponse>;
 }
@@ -111,7 +182,7 @@ export interface ClusterInfo {
 }
 
 export async function getCluster(): Promise<ClusterInfo | null> {
-  const res = await fetch(`${BASE_URL}/v1/cluster`);
+  const res = await serverFetch(`${BASE_URL}/v1/cluster`);
   // 503 while identity is still being minted at boot — not an error, just
   // "not yet". A dev server with no LOXAIC_INSTANCE_ID has an empty host list.
   if (!res.ok) return null;
@@ -123,7 +194,7 @@ export async function getConfig(): Promise<ConfigResponse> {
   // a signed-in caller, and the route stays reachable without it.
   const headers = new Headers();
   if (AUTH_TOKEN) headers.set("Authorization", `Bearer ${AUTH_TOKEN}`);
-  const res = await fetch(`${BASE_URL}/v1/config`, { headers });
+  const res = await serverFetch(`${BASE_URL}/v1/config`, { headers });
   if (!res.ok) throw new Error(`GET /v1/config ${String(res.status)}`);
   const body = (await res.json()) as Partial<ConfigResponse> & Pick<ConfigResponse, "sandbox">;
   // Absent — an older server, or an unauthenticated call — is the same
@@ -193,7 +264,7 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await getAuthToken();
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
-  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; envOverride?: boolean };
     throw new AdminSettingsError(
@@ -595,7 +666,7 @@ export interface Session {
 }
 
 export async function signUp(email: string, password: string, name?: string): Promise<Session> {
-  const res = await fetch(`${BASE_URL}/api/auth/sign-up`, {
+  const res = await serverFetch(`${BASE_URL}/api/auth/sign-up`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -606,7 +677,7 @@ export async function signUp(email: string, password: string, name?: string): Pr
 }
 
 export async function signIn(email: string, password: string): Promise<Session> {
-  const res = await fetch(`${BASE_URL}/api/auth/sign-in`, {
+  const res = await serverFetch(`${BASE_URL}/api/auth/sign-in`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -649,7 +720,7 @@ export interface SessionInfo {
 export async function getSession(): Promise<SessionInfo | null> {
   const headers = new Headers();
   if (AUTH_TOKEN) headers.set("Authorization", `Bearer ${AUTH_TOKEN}`);
-  const res = await fetch(`${BASE_URL}/api/auth/session`, {
+  const res = await serverFetch(`${BASE_URL}/api/auth/session`, {
     credentials: "include",
     headers,
   });
@@ -662,7 +733,7 @@ export async function getAuthToken(): Promise<string | null> {
   if (AUTH_TOKEN) return AUTH_TOKEN;
   // Web fallback: recover the token from the session cookie round-trip.
   try {
-    const res = await fetch(`${BASE_URL}/api/auth/token`, {
+    const res = await serverFetch(`${BASE_URL}/api/auth/token`, {
       credentials: "include",
     });
     if (!res.ok) return null;
@@ -949,7 +1020,7 @@ export async function getConversation(id: string): Promise<Conversation> {
 
 export async function getConversations(): Promise<Conversation[]> {
   const token = await getAuthToken();
-  const res = await fetch(`${BASE_URL}/v1/conversations`, {
+  const res = await serverFetch(`${BASE_URL}/v1/conversations`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
   if (!res.ok) throw new ApiError(`Conversations failed: ${String(res.status)}`, res.status);
@@ -1048,7 +1119,7 @@ export async function getMessages(
 ): Promise<MessagePage> {
   const token = await getAuthToken();
   const query = opts.before ? `?before=${encodeURIComponent(opts.before)}` : "";
-  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages${query}`, {
+  const res = await serverFetch(`${BASE_URL}/v1/conversations/${conversationId}/messages${query}`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
   if (!res.ok) throw new ApiError(`Messages failed: ${String(res.status)}`, res.status);
@@ -1101,7 +1172,7 @@ async function authedFetch(path: string, init?: RequestInit): Promise<Response> 
   const token = await getAuthToken();
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
-  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const { message, code } = await describeFailure(res, init?.method ?? "GET", path);
     throw new ApiError(message, res.status, code);
@@ -1178,7 +1249,7 @@ export async function uploadAttachment(
   } else {
     form.append("file", file as unknown as Blob);
   }
-  const res = await fetch(`${BASE_URL}/v1/files`, {
+  const res = await serverFetch(`${BASE_URL}/v1/files`, {
     method: "POST",
     headers: { Authorization: `Bearer ${String(token)}` },
     body: form,
@@ -1205,7 +1276,7 @@ export async function getAttachmentText(
   ref: string,
 ): Promise<{ ref: string; name: string; mime: string; text: string }> {
   const token = await getAuthToken();
-  const res = await fetch(`${BASE_URL}/v1/files/${ref}/text`, {
+  const res = await serverFetch(`${BASE_URL}/v1/files/${ref}/text`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
   const body = (await res.json().catch(() => ({}))) as { error?: string } & Record<string, unknown>;
@@ -1372,7 +1443,7 @@ async function mcpFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await getAuthToken();
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
-  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; ssrf?: boolean };
     throw new McpApiError(
@@ -1460,7 +1531,7 @@ async function githubFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await getAuthToken();
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
-  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new GithubApiError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);
@@ -1542,7 +1613,7 @@ async function gitFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = await getAuthToken();
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${String(token)}`);
-  const res = await fetch(`${BASE_URL}${path}`, { ...init, headers });
+  const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new GitActionError(body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`, res.status);

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { Keyboard } from 'react-native';
 import { usePathname, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,6 +7,8 @@ import { HStack } from '@/components/ui/hstack';
 import { Pressable } from '@/components/ui/pressable';
 import { Sidebar } from './Sidebar';
 import { UpdateReadyBanner } from './UpdateReadyBanner';
+import { ConnectionBanner } from './ConnectionBanner';
+import { startMonitor } from '@/lib/connectionMonitor';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import type { SurfaceId } from '@/lib/types';
 
@@ -34,6 +36,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // One connection monitor for the signed-in app, whichever screen is open —
+  // screens come and go with the Slot, and their sockets with them.
+  useEffect(() => startMonitor(), []);
 
   const overlaySidebar = breakpoint !== 'wide';
   // The first segment, not the whole path: a routine's chat lives at
@@ -90,6 +96,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           paddingRight: insets.right,
         }}
       >
+        {/* Above everything, the sidebar included: whether the server can be
+            reached is a fact about the whole app. */}
+        <ConnectionBanner />
         <HStack className="h-full flex-1 bg-background">
           {!overlaySidebar && sidebar}
           <Box className="h-full flex-1">

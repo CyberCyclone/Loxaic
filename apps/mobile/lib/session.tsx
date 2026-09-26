@@ -4,6 +4,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import {
@@ -15,7 +16,7 @@ import {
 } from '@loxaic/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
 import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
-import { setConnectionState } from './connection';
+import { onRecovered, setSessionCheck } from './connectionMonitor';
 import { clearCacheForEndpoint, rememberUserId } from './message-cache';
 import { hydrateStorage } from './storage';
 
@@ -95,7 +96,6 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       try {
         const info = await apiGetSession();
         if (info) {
-          setConnectionState('online');
           sessionUser = info.user;
           // Remembered so the cache can still be scoped when the server is
           // unreachable — see message-cache's rememberUserId.
@@ -109,11 +109,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           stored = null;
         }
       } catch {
-        // Server unreachable — no conclusion can be drawn about the token,
-        // but this *is* the earliest reliable signal that the host is down,
-        // and it is what puts the app into its offline state before a single
-        // screen renders.
-        setConnectionState('offline');
+        // Server unreachable — no conclusion can be drawn about the token, so
+        // it is kept and the user is left unknown until the server answers
+        // (see the recovery effect below). Whether the host is down is the
+        // connection monitor's to say; this request already told it.
       }
     }
 
@@ -218,6 +217,42 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setToken(null);
     setUser(null);
   }, []);
+
+  // Two things only the connection monitor can notice (lib/connectionMonitor.ts):
+  // - A socket refused for its session (close 4001) with the server otherwise
+  //   fine. Without this the socket reopened and was refused forever, under a
+  //   banner claiming the server was unreachable. A dead session signs out.
+  // - The server answering again after a launch that could not reach it. The
+  //   bootstrap kept the token but learned nothing about the user, so
+  //   isAdmin and mustChangePassword read false until a restart.
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+  const userRef = useRef(user);
+  userRef.current = user;
+  useEffect(() => {
+    const refresh = async (signOutIfDead: boolean) => {
+      if (!tokenRef.current) return;
+      try {
+        const info = await apiGetSession();
+        if (info) {
+          setUser(info.user);
+          rememberSessionUser(info.user.id);
+        } else if (signOutIfDead) {
+          await signOut();
+        }
+      } catch {
+        // Still unreachable: the monitor keeps trying, and so will this.
+      }
+    };
+    setSessionCheck(() => { void refresh(true); });
+    const unsub = onRecovered(() => {
+      if (!userRef.current) void refresh(false);
+    });
+    return () => {
+      setSessionCheck(null);
+      unsub();
+    };
+  }, [signOut]);
 
   const value = useMemo(
     () => ({

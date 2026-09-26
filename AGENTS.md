@@ -425,6 +425,15 @@ replies.
   `approval-reconnect.spec.ts` hold it. The same moment is when a tap on Allow lands on a
   socket still closing, so **Approve and Deny close their dialog only once `trySend` says the
   answer went out** — as Stop and the check-in already did (#113).
+- **A return from the background is `resuming` until the new socket opens** (`lib/connection.ts`'s
+  `beginResume`). Input waits at once — Send, Stop, and every approval and check-in button read
+  `useConnection()` themselves — but nothing is *said* for `RESUME_GRACE_MS` (300 ms), after which
+  it is ordinary `reconnecting`. The replacement is deliberate on every resume, and a banner on
+  each app switch against a healthy server was the reason the old code showed nothing at all;
+  `showsDisconnected()` is what decides whether to say it. `approval-reconnect.spec.ts` holds the
+  new socket's `open` back in the page to make a reconnect slow, and watches the DOM with a
+  `MutationObserver` for a flash: on localhost a reconnect takes a few milliseconds, so even a zero
+  grace period never rendered the banner and a polling check passed with it.
 
 ### Thread history is paged (#213)
 

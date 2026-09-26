@@ -3,8 +3,7 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
-import { OfflineBanner } from '@/components/shell/OfflineBanner';
-import { useConnection } from '@/lib/connection';
+import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -231,11 +230,14 @@ export default function AgentScreen() {
   const blockedReason = (what: 'decide on this plan' | 'answer these questions'): string | null =>
     activeRun && !canEdit(activeRun)
       ? `This run is shared with you for viewing — only the people who can send in it can ${what}.`
-      : connection !== 'online'
-        ? `You're offline — you can ${what} once your server is reachable.`
-        : busy
-          ? 'The agent is still working in this conversation.'
-          : null;
+      : showsDisconnected(connection)
+        ? disconnectedCopy(connection).note(what)
+        : connection !== 'online'
+          // A grace period: the decision waits for the socket, briefly.
+          ? 'Connecting to your server…'
+          : busy
+            ? 'The agent is still working in this conversation.'
+            : null;
   const planReview = useReview({
     convId: activeId,
     msgs: activeRun?.msgs ?? NO_MESSAGES,
@@ -402,7 +404,6 @@ export default function AgentScreen() {
             </Text>
           </Pressable>
         )}
-        <OfflineBanner />
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -470,9 +471,9 @@ export default function AgentScreen() {
                 readOnlyReason={
                   activeRun && !canEdit(activeRun)
                     ? 'This run is shared with you for viewing. You can follow it as it happens, but not send.'
-                    : connection === 'online'
+                    : !showsDisconnected(connection)
                       ? null
-                      : "You're offline. This is your saved copy of the run — sending will work again once your server is reachable."
+                      : disconnectedCopy(connection).readOnly('run')
                 }
               />
             </VStack>
