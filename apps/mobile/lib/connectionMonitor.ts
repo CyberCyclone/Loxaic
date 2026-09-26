@@ -11,7 +11,7 @@ import {
   type MonitorEvent,
   type SocketStatus,
 } from './connectionMonitorCore';
-import { onEndpointChange } from './endpoint';
+import { electronBridge, onEndpointChange } from './endpoint';
 
 /**
  * The connection monitor's controller: timers, AppState, the health probe, and
@@ -93,7 +93,7 @@ export function startMonitor(): () => void {
   if (teardown) return stopMonitor;
   setReachabilityObserver((event) => { dispatch({ type: event.kind }); });
   let backgrounded = AppState.currentState === 'background';
-  const appStateSub = AppState.addEventListener('change', (next) => {
+  const lifecycle = (next: string) => {
     const change = appStateEvent(backgrounded, next);
     backgrounded = change.backgrounded;
     if (change.event === 'background') {
@@ -103,10 +103,19 @@ export function startMonitor(): () => void {
     } else if (change.event === 'resume') {
       dispatch({ type: 'resume' });
     }
+  };
+  const appStateSub = AppState.addEventListener('change', lifecycle);
+  // The desktop's version of the same two moments: a Mac sleeping with the
+  // window open changes nothing the page can see. A wake only counts while the
+  // window is showing — otherwise its own return does the resume.
+  const powerUnsub = electronBridge()?.power?.onChange((power) => {
+    if (power === 'sleep') lifecycle('background');
+    else if (AppState.currentState === 'active') lifecycle('active');
   });
   const endpointUnsub = onEndpointChange(() => { dispatch({ type: 'reset' }); });
   teardown = () => {
     appStateSub.remove();
+    powerUnsub?.();
     endpointUnsub();
     setReachabilityObserver(null);
   };

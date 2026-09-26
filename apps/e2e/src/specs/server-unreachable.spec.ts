@@ -15,6 +15,7 @@
  * socket, which then gets the dead one.
  */
 import { browser } from '@wdio/globals';
+import { BASE_URL } from '../../scripts/standup.ts';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { platform, tap, testIdSelector, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
@@ -99,9 +100,9 @@ describe('the server becoming unreachable', () => {
     const p = platform();
     if (p !== 'web' && p !== 'electron') this.skip();
 
-    // The sidebar names the host the app really talks to, and its real state.
-    const host = await browser.execute(() => location.hostname);
-    await waitForTextIn('sidebar.serverHost', host);
+    // The sidebar names the host the app really talks to — the API's, which
+    // on Electron is not the page's (that is app://) — and its real state.
+    await waitForTextIn('sidebar.serverHost', new URL(BASE_URL).hostname);
     await waitForTextIn('sidebar.serverStatus', 'Server connected');
 
     // A plan waiting on a decision.

@@ -95,6 +95,19 @@ contextBridge.exposeInMainWorld("loxaic", {
    * picked there. `removeRoot` only accepts a path that is already a root,
    * so it can only ever narrow the list.
    */
+  /**
+   * The machine going to sleep or being locked ("sleep"), and waking or being
+   * unlocked ("wake") — a desktop's version of an app leaving the foreground
+   * and coming back, which the connection monitor treats the same way.
+   */
+  power: {
+    onChange: (callback) => {
+      const listener = (_event, state) => { callback(state); };
+      ipcRenderer.on("loxaic:power", listener);
+      return () => { ipcRenderer.off("loxaic:power", listener); };
+    },
+  },
+
   executor: {
     /** Hand the executor the signed-in session (null on sign-out). The token
      * goes main-process → executor stdin and is never persisted. */

@@ -158,6 +158,11 @@ export interface DesktopUpdateState {
 export interface LoxaicBridge {
   platform: 'electron';
   apiBaseUrl: string | null;
+  /** The machine sleeping or locking, and waking or unlocking. Optional: a
+   * renderer served by Metro can meet an older desktop build. */
+  power?: {
+    onChange: (cb: (state: 'sleep' | 'wake') => void) => () => void;
+  };
   executor: {
     setSession: (token: string | null) => Promise<ExecutorState>;
     getState: () => Promise<ExecutorState>;

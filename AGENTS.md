@@ -455,6 +455,17 @@ replies.
   probes, so a settings screen does not grey out on every app switch. An `epoch` bumped on each
   resume makes a probe armed before it irrelevant: iOS freezes JS in the background, so its
   timeout fires the instant the app returns and would read as a failure.
+- **Only a return from `background` is a resume** (`appStateEvent`). `inactive` suspends nothing —
+  Control Center, a call banner — and locking an iPhone reports `inactive → active → inactive →
+  background` within a second and a half; counting that instant of `active` replaced every socket as
+  the app went to sleep. Seen on the simulator with a log on the listener, not reasoned out.
+- **On the desktop, the Mac sleeping, waking, locking and unlocking are the same two moments**,
+  forwarded from Electron's `powerMonitor` (`apps/desktop/src/power.js`, pushed as `loxaic:power`).
+  The page's visibility does not reliably change when a Mac sleeps with the window open, and nothing
+  pings a socket from either end, so a laptop woke holding sockets that still said "open" to a server
+  that had restarted or dropped them while it slept — the first send into one was lost, the #231
+  failure on another platform. A wake counts only while the window is showing; a hidden window's
+  own return does the resume, and `appStateEvent` makes the second of the two a no-op.
 - **The socket hooks no longer listen to AppState** — the monitor owns the one listener and asks for
   replacement through `onReconnectRequest`, as it does on Retry, on a failed probe against an
   "open" socket, and when the server comes back (so the wait is not the hook's own backoff). The
@@ -2587,7 +2598,7 @@ replies.
   and the supervisor injects it into the URL at spawn time.
 - **The IPC contract is the app's only one** (`loxaic:getState/setMode/probeEngine/
   probeHost/testDb/detach`, the executor's `loxaic:executor.setSession/getState/removeRoot`
-  and `loxaic:pickDirectory`, plus pushed `loxaic:stackState` and `loxaic:executorState`).
+  and `loxaic:pickDirectory`, plus pushed `loxaic:stackState`, `loxaic:executorState` and `loxaic:power`).
   Every channel is a fixed name and none takes a path or command from the renderer —
   `pickDirectory` opens the native dialog and `removeRoot` only accepts a path already on
   the list. The `stackState` listener is
