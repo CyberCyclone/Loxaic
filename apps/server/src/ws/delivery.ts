@@ -104,6 +104,7 @@ export function createDelivery(
           status: info.status,
           usage: info.usage,
           error: info.error,
+          ...(info.errorCode ? { error_code: info.errorCode } : {}),
         });
         unsubscribeStream(streamId);
       });
@@ -165,6 +166,7 @@ export function createDelivery(
         status: info.status,
         usage: info.usage,
         error: info.error,
+        ...(info.errorCode ? { error_code: info.errorCode } : {}),
       });
       unsubscribeStream(streamId);
     });

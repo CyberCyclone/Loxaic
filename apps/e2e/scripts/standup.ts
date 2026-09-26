@@ -155,9 +155,13 @@ export const LLAMA_DIR = path.join(RUN_DIR, 'llama');
  * A spec rewrites it and presses Restart to show a machine without a GPU from
  * a server that was started with one. */
 export const FAKE_HARDWARE_FILE = path.join(RUN_DIR, 'fake-hardware');
-/** One JSON line per model the fake router loads, with the preset section it
- * loaded it with — how a spec proves an admin's settings reached the model. */
+/** One JSON line per model the fake router loads (with the preset section it
+ * loaded it with — how a spec proves an admin's settings reached the model) or
+ * unloads (how a spec proves a model was unloaded to make room). */
 export const FAKE_ROUTER_LOG = path.join(RUN_DIR, 'fake-router-loads.jsonl');
+/** What the fake router's loaded models hold of its GPU, for its device
+ * listing (a separate process) to report as used. */
+const FAKE_VRAM_STATE = path.join(RUN_DIR, 'fake-vram.json');
 
 /** The stand-in for GitHub's hosted MCP server, handed across processes the
  * same way as the mock GitHub API (see `mockGithubUrl`). */
@@ -386,6 +390,7 @@ async function ensureServer(): Promise<void> {
   rmSync(LLAMA_DIR, { recursive: true, force: true });
   writeFileSync(FAKE_HARDWARE_FILE, 'gpu', 'utf8');
   rmSync(FAKE_ROUTER_LOG, { force: true });
+  rmSync(FAKE_VRAM_STATE, { force: true });
 
   const mockProvider = await startMockProvider();
   stopMockProvider = mockProvider.stop;
@@ -459,6 +464,11 @@ async function ensureServer(): Promise<void> {
       LOXAIC_FAKE_HARDWARE: FAKE_HARDWARE_FILE,
       LOXAIC_FAKE_ROUTER_LOG: FAKE_ROUTER_LOG,
       LOXAIC_FAKE_DEVICES: 'FAKE0: E2E Fake GPU (24576 MiB, 24000 MiB free)',
+      // Each loaded model holds almost the whole fake GPU, so two never fit
+      // together: loading a second has to unload the first, or be refused
+      // when the first is pinned (apps/server/src/llama/room.ts).
+      LOXAIC_FAKE_MODEL_MIB: '23500',
+      LOXAIC_FAKE_VRAM_STATE: FAKE_VRAM_STATE,
       HF_ENDPOINT: hf.url,
     },
   });

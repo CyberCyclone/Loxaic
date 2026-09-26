@@ -204,7 +204,10 @@ export function chatWsHandler(app: FastifyInstance) {
         if (err instanceof NotFoundError) {
           safeSend({ type: "error", error: "not found" });
         } else {
-          safeSend({ type: "error", error: (err as Error).message });
+          // A code the client handles itself (a modal, for a host model with
+          // no room behind pinned ones) rides beside the sentence.
+          const code = (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
+          safeSend({ type: "error", error: (err as Error).message, ...(code ? { code } : {}) });
         }
       }
     };

@@ -169,8 +169,15 @@ export async function startMockHf(): Promise<MockHf> {
     if (resolve) {
       const [, repo, , file] = resolve;
       if (file === 'README.md') {
-        res.writeHead(repo === repos.tiny ? 200 : 404, { 'content-type': 'text/markdown' });
-        res.end(repo === repos.tiny ? CARD : '');
+        // A second, as real HuggingFace takes: the details sheet opens on a
+        // spinner and its content arrives after the sheet's own entering
+        // animation has finished — the order in which the web modal used to
+        // stay pinned at the spinner's size (components/ui/modal). Answered at
+        // once, the content won the race and the bug could not be seen.
+        setTimeout(() => {
+          res.writeHead(repo === repos.tiny ? 200 : 404, { 'content-type': 'text/markdown' });
+          res.end(repo === repos.tiny ? CARD : '');
+        }, 1000);
         return;
       }
       const f = (tree[repo] ?? []).find((x) => x.path === decodeURIComponent(file));

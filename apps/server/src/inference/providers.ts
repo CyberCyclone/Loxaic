@@ -3,6 +3,7 @@ import { inferenceProviders } from "@loxaic/db/schema";
 import { DEFAULT_PROVIDER_ID, isProviderSlug, parseModelRef } from "@loxaic/types";
 import { decryptApiKey, encryptApiKey, ProviderKeyUnreadableError } from "./provider-secrets.ts";
 import { listServableModels } from "../llama/catalog.ts";
+import { checkRoom, NoRoomError } from "../llama/room.ts";
 import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { getLlamaMode } from "../llama/settings.ts";
 
@@ -69,7 +70,10 @@ export class ModelRefError extends Error {
     /** A bare reference that is not a downloaded, enabled local model. */
     | "local_model_unavailable"
     /** The client named no model, and there is no local model to default to. */
-    | "no_local_model";
+    | "no_local_model"
+    /** A host model that pinned models leave no GPU memory for (llama/room.ts).
+     * The client shows it as a modal rather than a toast. */
+    | "local_model_no_room";
 
   constructor(message: string, code: ModelRefError["code"]) {
     super(message);
@@ -270,8 +274,29 @@ export async function resolveModelRef(ref: string): Promise<ResolvedModelRef> {
  * in particular is only a spending limit if it is enforced here — hiding a
  * model in the picker is presentation.
  */
-export async function assertModelUsable(ref: string): Promise<void> {
+/** Whether `ref` names a model this server can serve at all — the check for
+ * saving a choice (a routine's model), where what happens to be loaded right
+ * now is beside the point. */
+export async function assertModelResolvable(ref: string): Promise<void> {
   await resolveModelRef(ref);
+}
+
+/** `assertModelResolvable`, plus whether it can be served *now*: the check for
+ * starting a run. */
+export async function assertModelUsable(ref: string): Promise<void> {
+  const resolved = await resolveModelRef(ref);
+  // Before any row is written, like the checks above: a host model that
+  // pinned models leave no room for is refused here, as a modal, rather than
+  // as a failed turn in the transcript. Only refuses; nothing is unloaded
+  // until the run's own request (room.ts).
+  if (resolved.provider.isDefault) {
+    try {
+      await checkRoom(resolved.upstreamModel);
+    } catch (err) {
+      if (err instanceof NoRoomError) throw new ModelRefError(err.message, "local_model_no_room");
+      throw err;
+    }
+  }
 }
 
 /**
@@ -297,7 +322,7 @@ async function resolveLocalRef(upstreamModel: string): Promise<ResolvedModelRef>
     const first = servable.at(0);
     if (!first) {
       throw new ModelRefError(
-        "There is no model to answer with yet. Pick a provider's model, or ask an admin to add one under Settings > Local models.",
+        "There is no model to answer with yet. Pick a provider's model, or ask an admin to add one under Settings > Host models.",
         "no_local_model",
       );
     }

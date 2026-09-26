@@ -30,6 +30,7 @@ import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyP
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { isNoRoom, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { useToastHelper } from './useToastHelper';
 
@@ -139,6 +140,11 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   // it must be renamed in place once the real `message.start` arrives, or
   // the id-based dedup below never matches it and duplicates the bubble.
   const pendingUserMsgIdRef = useRef<string | null>(null);
+  // See useChatSession: the last send, so a no-room refusal (nothing written
+  // server-side) can take its bubble back and return the text.
+  const lastSendRef = useRef<{ text: string; localMsgId: string; localConvId: string | null } | null>(null);
+  const [noRoom, setNoRoom] = useState<NoRoomNotice | null>(null);
+  const rollBackSendRef = useRef<(msgId: string, localConvId: string | null) => void>(() => undefined);
   /** Last time we asked the server to resync a given stream. */
   const lastResyncAtRef = useRef<Record<string, number>>({});
   /**
@@ -516,7 +522,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         // The run-level reason, which no message carries. Most failures also
         // mark their message, and the bubble says it better — so this speaks
         // only when nothing else will (#157).
-        if (event.status === 'error' && event.error && lastMessageErrorRef.current.get(event.stream_id) !== event.error) {
+        if (event.status === 'error' && event.error && isNoRoom(event)) {
+          setNoRoom({ message: event.error, text: null });
+        } else if (event.status === 'error' && event.error && lastMessageErrorRef.current.get(event.stream_id) !== event.error) {
           showToast(event.error, 6000);
         }
         lastMessageErrorRef.current.delete(event.stream_id);
@@ -525,7 +533,14 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       } else if (event.type === 'agent.mode_changed') {
         setModeState(event.mode);
       } else if (event.type === 'error') {
-        showToast(`Agent error: ${event.error}`, 6000);
+        if (isNoRoom(event)) {
+          const sent = lastSendRef.current;
+          const unsent = sent !== null && pendingUserMsgIdRef.current === sent.localMsgId;
+          if (unsent) rollBackSendRef.current(sent.localMsgId, sent.localConvId);
+          setNoRoom({ message: event.error, text: unsent ? sent.text : null });
+        } else {
+          showToast(`Agent error: ${event.error}`, 6000);
+        }
       }
     };
 
@@ -616,6 +631,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       const convId = activeIdRef.current;
       const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
+      lastSendRef.current = { text, localMsgId, localConvId: null };
       // The optimistic bubble keeps the full refs so it can render a thumbnail
       // immediately; the wire only needs the ids.
       const refs = attachments?.map((a) => a.ref);
@@ -623,6 +639,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
+        lastSendRef.current = { text, localMsgId, localConvId: localId };
         const chosen = pendingWorkspaceRef.current;
         const newRun: Conversation = {
           id: localId,
@@ -693,6 +710,25 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     },
     [mode, handleModeChange, setActiveId, showToast],
   );
+
+  /** Take back a send the server refused before writing anything. */
+  const rollBackSend = useCallback(
+    (msgId: string, localConvId: string | null) => {
+      pendingUserMsgIdRef.current = null;
+      if (localConvId && pendingLocalIdRef.current === localConvId) {
+        setRuns((prev) => prev.filter((r) => r.id !== localConvId));
+        setActiveId(null);
+        pendingLocalIdRef.current = null;
+        pendingModelRef.current = null;
+        return;
+      }
+      setRuns((prev) => prev.map((r) => ({ ...r, msgs: r.msgs.filter((m) => m.id !== msgId) })));
+    },
+    [setActiveId],
+  );
+  rollBackSendRef.current = rollBackSend;
+
+  const dismissNoRoom = useCallback(() => { setNoRoom(null); }, []);
 
   const handleStop = useCallback(() => {
     const id = activeIdRef.current;
@@ -874,6 +910,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     handleDelete,
     handleRename,
     setRunModel,
+    /** A send refused for lack of room behind pinned host models. */
+    noRoom,
+    dismissNoRoom,
     /** Scroll-back for the open run; see useOlderMessages. */
     history: activeId
       ? {

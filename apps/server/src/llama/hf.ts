@@ -399,7 +399,7 @@ export function downloadErrorMessage(status: number, repo: string): string {
   if (status === 401 || status === 403) {
     return getHfToken()
       ? `HuggingFace refused the download. "${repo}" is gated: accept its terms on huggingface.co with the account the configured token belongs to, then retry.`
-      : `"${repo}" is gated. Add a HuggingFace token under Local models > Settings, accept the model's terms on huggingface.co, then retry.`;
+      : `"${repo}" is gated. Add a HuggingFace token under Host models > Runtime settings, accept the model's terms on huggingface.co, then retry.`;
   }
   if (status === 404) return `HuggingFace no longer has this file in "${repo}". Delete the download and pick the model again.`;
   return `HuggingFace answered HTTP ${String(status)} for "${repo}".`;

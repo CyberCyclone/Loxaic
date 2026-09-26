@@ -24,7 +24,7 @@ import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText } from '@/components/ui/button';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { FitBadge } from './FitBadge';
-import { GROUP_ORDER, GROUP_TITLES, formatBytes, parseNumericInput, setDraft, specMax } from '@/lib/localModels';
+import { GROUP_ORDER, GROUP_TITLES, describeFit, parseNumericInput, setDraft, specMax } from '@/lib/localModels';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -145,9 +145,7 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
             <HStack testID="localModels.settingsSheet.estimate" space="sm" className="items-center rounded-md bg-muted/50 p-2">
               {fit && <FitBadge label={fit.label} testID="localModels.settingsSheet.fit" />}
               <Text size="xs" className="min-w-0 flex-1 text-muted-foreground">
-                {fit
-                  ? `Needs about ${formatBytes(fit.requiredBytes)}${fit.availableBytes ? ` of ${formatBytes(fit.availableBytes)} ${fit.target === 'cpu' ? 'RAM' : 'GPU memory'}` : ''}`
-                  : 'Estimating…'}
+                {fit ? describeFit(fit) : 'Estimating…'}
               </Text>
             </HStack>
 

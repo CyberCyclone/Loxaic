@@ -66,7 +66,7 @@ describe('external model providers', () => {
     // see what is already there before deciding whether to add anything.
     // The built-in provider is the local runtime, described with a link to its
     // own screen rather than an environment variable to go and edit.
-    await waitForTextIn('providers.builtin', 'Local models, run by llama.cpp');
+    await waitForTextIn('providers.builtin', 'Host models, run by llama.cpp');
     await shot('providers-empty');
 
     await tap('providers.addFirst');

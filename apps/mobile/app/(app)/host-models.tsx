@@ -25,7 +25,7 @@ import { useSession } from '@/lib/session';
 type Tab = 'installed' | 'discover';
 
 /**
- * Local models: the llama.cpp runtime this server runs, the models an admin
+ * Host models: the llama.cpp runtime this server runs, the models an admin
  * downloaded from HuggingFace, and which of them every user may pick.
  *
  * Admin-only on the server; a non-admin who reaches the route is told what the
@@ -50,7 +50,7 @@ export default function LocalModelsScreen() {
         <VStack space="md" className="flex-1 items-center justify-center p-6">
           <Icon as={ShieldAlert} className="text-muted-foreground" />
           <Text testID="localModels.denied" size="sm" className="text-center text-muted-foreground">
-            Local models are downloaded and set up by an administrator. The ones they enable appear in your model
+            Host models are downloaded and set up by an administrator. The ones they enable appear in your model
             picker under Built-in.
           </Text>
         </VStack>
@@ -147,6 +147,7 @@ export default function LocalModelsScreen() {
           <InstalledRow
             model={item}
             onToggle={(enabled) => { void lm.update(item.id, { enabled }); }}
+            onPin={(pinned) => { void lm.update(item.id, { pinned }); }}
             onPause={() => { void lm.pause(item.id); }}
             onResume={() => { void lm.resume(item.id); }}
             onCancel={() => { setCancelling(item); }}
@@ -160,7 +161,7 @@ export default function LocalModelsScreen() {
 
   return (
     <VStack className="h-full flex-1">
-      <MainHeader title="Local Models" onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined} />
+      <MainHeader title="Host Models" onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined} />
       {body()}
 
       <RepoDetailsModal

@@ -512,6 +512,10 @@ export const localModels = pgTable(
     bytesDone: bigint("bytes_done", { mode: "number" }).notNull().default(0),
     error: text("error"),
     enabled: boolean("enabled").notNull().default(false),
+    /** Kept loaded: loaded when pinned and after every runtime restart, and
+     * never unloaded to make room for another model. Only an enabled model can
+     * be pinned; disabling one unpins it. */
+    pinned: boolean("pinned").notNull().default(false),
     /** Admin-set load settings (see apps/server/src/llama/load-settings.ts),
      * validated before they are stored and again before they reach the preset
      * file — an unknown key there stops the router from starting at all. */

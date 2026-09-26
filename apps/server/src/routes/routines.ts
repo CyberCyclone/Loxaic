@@ -5,7 +5,7 @@ import { db } from "@loxaic/db";
 import { routines, routineRuns, conversations } from "@loxaic/db/schema";
 import { authenticate } from "../auth/middleware";
 import { deleteConversation } from "../conversations/delete.ts";
-import { ModelRefError, assertModelUsable } from "../inference/providers.ts";
+import { ModelRefError, assertModelResolvable } from "../inference/providers.ts";
 import { getRunByConversation } from "../streams/registry.ts";
 import { scheduleRoutine, unscheduleRoutine, executeRoutine } from "../routines/scheduler";
 
@@ -29,7 +29,7 @@ async function rejectionFor(input: { cron?: string; model?: string | null }): Pr
   }
   if (input.model !== undefined && input.model !== null) {
     try {
-      await assertModelUsable(input.model);
+      await assertModelResolvable(input.model);
     } catch (err) {
       if (err instanceof ModelRefError) return err.message;
       throw err;

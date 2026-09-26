@@ -18,6 +18,7 @@ import { MessageList } from '@/components/chat/MessageList';
 import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
+import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { Composer } from '@/components/composer/Composer';
 import { useChatSession, toConversation, type ChatScope } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
@@ -48,7 +49,7 @@ import type { Conversation } from '@/lib/types';
 export default function RoutineChatScreen() {
   const connection = useConnection();
   const router = useRouter();
-  const { token } = useSession();
+  const { token, isAdmin } = useSession();
   const breakpoint = useBreakpoint();
   const { showToast } = useToastHelper();
   const { config } = useServerConfig();
@@ -157,7 +158,11 @@ export default function RoutineChatScreen() {
     handleAllowAlways,
     handleDelete,
     history,
+    noRoom,
+    dismissNoRoom,
   } = useChatSession(token, undefined, scope);
+  // Puts an unsent message back in the message box (a no-room refusal).
+  const [composerSeed, setComposerSeed] = useState<{ token: number; text: string } | null>(null);
 
   // The routine's model, and only it: the server serves every send in one of
   // these conversations on the routine's model whatever the client names, so
@@ -284,6 +289,16 @@ export default function RoutineChatScreen() {
     <HStack className="h-full flex-1">
       {breakpoint === 'wide' && threadList}
 
+      {/* No "choose a model": a routine's chats run on the routine's model. */}
+      <NoRoomModal
+        notice={noRoom}
+        isAdmin={isAdmin}
+        onClose={() => {
+          if (noRoom?.text) setComposerSeed({ token: Date.now(), text: noRoom.text });
+          dismissNoRoom();
+        }}
+        onManage={() => { router.push('/host-models'); }}
+      />
       <DeleteConversationModal
         title={deletingConv?.title ?? null}
         area="chat"
@@ -389,6 +404,7 @@ export default function RoutineChatScreen() {
               }}
               surface="chat"
               onRunCommand={handleRunCommand}
+              commandSeed={composerSeed}
               readOnlyReason={
                 !showsDisconnected(connection)
                   ? null

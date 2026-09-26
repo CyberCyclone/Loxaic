@@ -1,11 +1,13 @@
 /**
- * Local models: the llama.cpp runtime this server runs, HuggingFace search and
+ * Host models: the llama.cpp runtime this server runs, HuggingFace search and
  * downloads, per-model settings, and enabling a model for everyone.
  *
  * Nothing here needs a GPU or a real llama.cpp. The server under test runs a
  * fake router (apps/server/test-fixtures/fake-llama-server.mjs) on fake
  * hardware with one 24 GB GPU, and HuggingFace is `scripts/mock-hf.ts`, whose
- * quants are sized so all three fit labels appear. What is real is everything
+ * quants are sized so all three fit labels appear. Each model the fake router
+ * loads holds almost all of its GPU, so a second model never fits beside the
+ * first: that is what the pinning cases stand on. What is real is everything
  * between: the admin routes, the download queue (Range, checksums, pause), the
  * preset file the router is given, and the server-side gate that makes an
  * enabled model usable.
@@ -28,13 +30,26 @@ import {
   waitForVisible,
   waitForFreshText,
 } from '../helpers/selectors.ts';
-import { openSettings, openSidebar, sendAndAwaitReply, signIn, signOut, signUp, startNewThread } from '../helpers/app.ts';
+import {
+  goToSurface,
+  openSettings,
+  openSidebar,
+  sendAndAwaitReply,
+  sendMessage,
+  signIn,
+  signOut,
+  signUp,
+  startNewThread,
+} from '../helpers/app.ts';
 import { BASE_URL, FAKE_HARDWARE_FILE, FAKE_ROUTER_LOG, LLAMA_DIR, mockHf } from '../../scripts/standup.ts';
 
 interface ApiModel {
   id: string;
+  displayName: string;
   status: string;
   enabled: boolean;
+  pinned?: boolean;
+  runtimeStatus: string | null;
   bytesDone: number;
   sizeBytes: number;
 }
@@ -50,7 +65,10 @@ async function adminApi(pathname: string, init: RequestInit = {}): Promise<Respo
   adminToken ??= await apiToken(adminCreds());
   return fetch(`${BASE_URL}${pathname}`, {
     ...init,
-    headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+    // A content type with no body is refused (FST_ERR_CTP_EMPTY_JSON_BODY):
+    // the cleanup's DELETE failed that way the first time a ready model was
+    // still there for it to remove.
+    headers: { authorization: `Bearer ${adminToken}`, ...(init.body ? { 'content-type': 'application/json' } : {}) },
   });
 }
 
@@ -117,6 +135,51 @@ async function reachable(id: string): Promise<boolean> {
   }, testIdSelector(id));
 }
 
+async function waitForRuntimeStatus(id: string, runtimeStatus: string, timeout = 30_000): Promise<void> {
+  let found: ApiModel | undefined;
+  await browser.waitUntil(
+    async () => {
+      found = (await apiModels()).find((m) => m.id === id);
+      return found?.runtimeStatus === runtimeStatus;
+    },
+    { timeout, interval: 300, timeoutMsg: `expected ${id} to be ${runtimeStatus}; it is ${String(found?.runtimeStatus)}` },
+  );
+}
+
+/** The fake router's load and unload events, oldest first. */
+function routerEvents(): { event: string; model: string }[] {
+  if (!existsSync(FAKE_ROUTER_LOG)) return [];
+  return readFileSync(FAKE_ROUTER_LOG, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as { event: string; model: string });
+}
+
+/** The message box's current text — where an unsent message is put back. */
+async function composerText(): Promise<string> {
+  return browser.execute((selector: string) => {
+    const el = document.querySelector<HTMLTextAreaElement | HTMLInputElement>(selector);
+    return el?.value ?? '';
+  }, testIdSelector('composer.input'));
+}
+
+/** Whether the open thread shows `text` as a message. */
+async function threadShows(text: string): Promise<boolean> {
+  return browser.execute(
+    (selector: string, needle: string) => (document.querySelector(selector)?.textContent ?? '').includes(needle),
+    testIdSelector('chat.messageList'),
+    text,
+  );
+}
+
+async function pickModel(id: string): Promise<void> {
+  await tap('composer.model');
+  await waitForVisible(`models.row.${id}`);
+  await tap(`models.row.${id}`);
+  await waitForGone('models.dialog', 10_000);
+}
+
 async function openLocalModels(): Promise<void> {
   await openSettings();
   await tap('settings.nav.localModels');
@@ -132,6 +195,10 @@ describe('local models', () => {
    * a ":", so the preset, the router's load log and its replies all use this. */
   const routerName = downloadId.replace(':', '@');
   const cancelId = `${tiny}:${hf.quants.cancel}`;
+  /** A second model, downloaded after the first is loaded: the one there is
+   * no room for beside it. The same quant the cancel case uses. */
+  const secondId = cancelId;
+  const secondRouterName = secondId.replace(':', '@');
   const user = uniqueCreds();
 
   before(async () => {
@@ -147,11 +214,23 @@ describe('local models', () => {
     await adminApi('/v1/admin/local-models/settings', { method: 'PATCH', body: JSON.stringify({ backend: 'auto' }) });
   });
 
-  it('an admin opens Local Models and sees the runtime running on the GPU', async () => {
+  it('an admin opens Host Models and sees the runtime running on the GPU', async () => {
     await signIn(adminCreds());
     await openLocalModels();
     await waitForTextIn('localModels.runtime.headline', 'Running on E2E Fake GPU');
     await shot('local-models-runtime');
+
+    // Each GPU is a switch, and says what is free as well as its size — the
+    // size alone read as "60 GB" on a box where another program held one card.
+    await tap('localModels.runtime.advanced');
+    await waitForTextIn('localModels.runtime.device.FAKE0.memory', '23.4 GB free of 24.0 GB');
+    const isSwitch = await browser.execute((selector: string) => {
+      const el = document.querySelector(selector);
+      return Boolean(el && (el.getAttribute('role') === 'switch' || el.querySelector('[role="switch"], input[type="checkbox"]')));
+    }, testIdSelector('localModels.runtime.device.FAKE0'));
+    expect(isSwitch).toBe(true);
+    await shot('local-models-gpu-switches');
+    await tap('localModels.runtime.advanced');
   });
 
   it('searches HuggingFace by name and by publisher, with a fit label and stats on each result', async () => {
@@ -187,6 +266,18 @@ describe('local models', () => {
     await waitForTextIn(`localModels.quant.fit.${hf.quants.download}`, 'Will fit');
     await waitForTextIn(`localModels.quant.fit.${hf.quants.mightFit}`, 'Might fit');
     await waitForTextIn(`localModels.quant.fit.${hf.quants.wontFit}`, "Won't fit");
+    // Every quant can be brought into view, not merely rendered below a fold.
+    expect(await reachable(`localModels.quant.${hf.quants.wontFit}`)).toBe(true);
+    // And the list has room to be read. Reachable alone passed while the
+    // sheet stayed pinned at the size of its loading spinner (an 84px strip
+    // to scroll the whole list in): the content arrives a second after the
+    // sheet opens, as it does from real HuggingFace.
+    const listHeight = await browser.execute((selector: string) => {
+      const sheet = document.querySelector(selector);
+      const body = sheet ? [...sheet.children].find((c) => getComputedStyle(c).overflowY === 'auto') : undefined;
+      return body?.clientHeight ?? 0;
+    }, testIdSelector('localModels.details'));
+    expect(listHeight).toBeGreaterThan(300);
     await shot('local-models-details-fit-labels');
 
     // Won't fit asks first, inline; cancelling downloads nothing.
@@ -301,7 +392,7 @@ describe('local models', () => {
     await waitForTextIn('localModels.runtime.headline', 'Running on E2E Fake GPU', 30_000);
   });
 
-  it('an ordinary user cannot open Local Models, but sees the enabled model in their picker', async () => {
+  it('an ordinary user cannot open Host Models, but sees the enabled model in their picker', async () => {
     await signOut();
     await signUp(user);
     await openSidebar();
@@ -337,17 +428,153 @@ describe('local models', () => {
     const loads = readFileSync(FAKE_ROUTER_LOG, 'utf8')
       .trim()
       .split('\n')
-      .map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
-    const load = loads.filter((l) => l.model === routerName).at(-1);
+      .map((l) => JSON.parse(l) as { event: string; model: string; section: Record<string, string> });
+    const load = loads.filter((l) => l.event === 'load' && l.model === routerName).at(-1);
     expect(load?.section['ctx-size']).toBe('8192');
     expect(load?.section['n-gpu-layers']).toBe('20');
     expect(load?.section['flash-attn']).toBe('on');
     expect(load?.section.device).toBe('FAKE0');
   });
 
-  it('an admin deletes the model, and it leaves the picker', async () => {
+  it('the picker marks the loaded model, so a faster answer is easy to choose', async () => {
+    await tap('composer.model');
+    await waitForVisible(`models.row.${downloadId}.loaded`);
+    await shot('local-models-picker-loaded');
+    await browser.keys('Escape');
+    await waitForGone('models.dialog', 10_000);
+  });
+
+  it('an admin pins the model, and a second model is refused for lack of room beside it', async () => {
     await signOut();
     await signIn(adminCreds());
+
+    // A second model, enabled for everyone.
+    const queued = await adminApi('/v1/admin/local-models/downloads', {
+      method: 'POST',
+      body: JSON.stringify({ repo: tiny, quant: hf.quants.cancel }),
+    });
+    expect(queued.status).toBe(201);
+    await waitForStatus(secondId, 'ready', 90_000);
+    const enabled = await adminApi('/v1/admin/local-models/model', {
+      method: 'PATCH',
+      body: JSON.stringify({ id: secondId, enabled: true }),
+    });
+    expect(enabled.ok).toBe(true);
+
+    await openLocalModels();
+    await waitForVisible(`localModels.pin.${downloadId}`);
+    await tap(`localModels.pin.${downloadId}`);
+    await waitForVisible(`localModels.pinned.${downloadId}`);
+    await browser.waitUntil(async () => (await apiModels()).find((m) => m.id === downloadId)?.pinned === true, {
+      timeout: 10_000,
+      timeoutMsg: 'the pin never reached the server',
+    });
+    await shot('local-models-pinned');
+
+    const firstName = (await apiModels()).find((m) => m.id === downloadId)?.displayName ?? '';
+    await browser.keys('Escape');
+    await goToSurface('chat');
+    await startNewThread();
+    // In the picker: the pinned model is loaded, the second is not.
+    await tap('composer.model');
+    await waitForVisible(`models.row.${downloadId}.loaded`);
+    expect(await isVisible(`models.row.${secondId}.loaded`)).toBe(false);
+    await tap(`models.row.${secondId}`);
+    await waitForGone('models.dialog', 10_000);
+
+    await sendMessage('Is there room for me?');
+    await waitForVisible('chat.noRoom');
+    await waitForTextIn('chat.noRoom.message', `while "${firstName}" is pinned`);
+    // An admin gets the way to fix it.
+    await waitForVisible('chat.noRoom.manage');
+    await shot('local-models-no-room-admin');
+    await tap('chat.noRoom.close');
+    await waitForGone('chat.noRoom', 10_000);
+    // Nothing was sent: the message is back in the box, not in the thread.
+    expect(await composerText()).toBe('Is there room for me?');
+    expect(await threadShows('Is there room for me?')).toBe(false);
+    // And the pinned model was never unloaded for it.
+    expect((await apiModels()).find((m) => m.id === downloadId)?.runtimeStatus).toBe('loaded');
+  });
+
+  it('an ordinary user is told the same, and to ask an admin', async () => {
+    await signOut();
+    await signIn(user);
+    await startNewThread();
+    await pickModel(secondId);
+    await sendMessage('Still no room?');
+    await waitForVisible('chat.noRoom');
+    await waitForTextIn('chat.noRoom.message', 'ask an admin to unpin it');
+    expect(await isVisible('chat.noRoom.manage')).toBe(false);
+    await shot('local-models-no-room-user');
+    await tap('chat.noRoom.close');
+    await waitForGone('chat.noRoom', 10_000);
+  });
+
+  it('once unpinned, the first model is unloaded to make room for the second', async () => {
+    await signOut();
+    await signIn(adminCreds());
+    await openLocalModels();
+    await tap(`localModels.pin.${downloadId}`);
+    await waitForGone(`localModels.pinned.${downloadId}`, 10_000);
+    await browser.keys('Escape');
+
+    await goToSurface('chat');
+    await startNewThread();
+    await pickModel(secondId);
+    await sendAndAwaitReply('Room now?', `Hello from ${secondRouterName}`);
+    await shot('local-models-evicted-for-second');
+
+    // Unloaded by the server to make room, before the second loaded — not a
+    // load that failed for want of memory.
+    const events = routerEvents();
+    const lastIndex = (event: string, model: string) =>
+      events.map((e, i) => (e.event === event && e.model === model ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+    const unloaded = lastIndex('unload', routerName);
+    const loaded = lastIndex('load', secondRouterName);
+    expect(unloaded).toBeGreaterThanOrEqual(0);
+    expect(unloaded).toBeLessThan(loaded);
+    expect(events.some((e) => e.event === 'load-failed')).toBe(false);
+
+    // The picker's badge moved with it.
+    await tap('composer.model');
+    await waitForVisible(`models.row.${secondId}.loaded`);
+    expect(await isVisible(`models.row.${downloadId}.loaded`)).toBe(false);
+    await browser.keys('Escape');
+    await waitForGone('models.dialog', 10_000);
+  });
+
+  it('pinning loads a model straight away, and it is loaded again after a restart', async () => {
+    await openLocalModels();
+    await tap(`localModels.pin.${downloadId}`);
+    await waitForVisible(`localModels.pinned.${downloadId}`);
+    await waitForRuntimeStatus(downloadId, 'loaded');
+    await waitForRuntimeStatus(secondId, 'unloaded');
+    await waitForFreshText(`localModels.status.${downloadId}`, 'loaded');
+    await shot('local-models-pinned-loaded');
+
+    // Its quant in the HuggingFace sheet counts its own memory as its own:
+    // it was labelled "Won't fit" there while loaded, against a GPU it was
+    // itself filling, though its installed row said "Will fit".
+    await tap('localModels.tab.discover');
+    await typeInto('localModels.search', 'tiny');
+    await tap(`localModels.result.${tiny}`);
+    await waitForTextIn(`localModels.quant.fit.${hf.quants.download}`, 'Will fit');
+    await waitForTextIn(`localModels.quant.fit.${hf.quants.cancel}`, "Won't fit");
+    await tap('localModels.details.close');
+    await waitForGone('localModels.details', 10_000);
+    await tap('localModels.tab.installed');
+
+    await tap('localModels.runtime.restart');
+    await waitForTextIn('localModels.runtime.headline', 'Running on E2E Fake GPU', 30_000);
+    await waitForRuntimeStatus(downloadId, 'loaded');
+
+    // Leave it unpinned for the delete below.
+    await tap(`localModels.pin.${downloadId}`);
+    await waitForGone(`localModels.pinned.${downloadId}`, 10_000);
+  });
+
+  it('an admin deletes the model, and it leaves the picker', async () => {
     await openLocalModels();
     await tap(`localModels.delete.${downloadId}`);
     await waitForVisible('localModels.deleteConfirm.dialog');

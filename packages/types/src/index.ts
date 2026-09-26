@@ -108,6 +108,12 @@ export interface ModelInfo {
   host_name: string | null;
   price: number;
   loaded: boolean;
+  /** A host model the router is loading right now. Absent on other models and
+   * from an older server. */
+  loading?: boolean;
+  /** A host model an admin pinned: kept loaded, never unloaded to make room.
+   * Absent on other models and from an older server. */
+  pinned?: boolean;
   /** Which configured backend serves this model. `"default"` is the
    * local llama.cpp runtime; anything else is an admin-added provider row.
    * The picker groups on this. */

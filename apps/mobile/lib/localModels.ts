@@ -1,4 +1,5 @@
 import type {
+  FitEstimate,
   FitLabel,
   LoadSettingSpec,
   LoadSettingValue,
@@ -9,7 +10,7 @@ import type {
 } from '@loxaic/api-client';
 
 /**
- * Pure helpers for the Local models screen, kept out of the components so the
+ * Pure helpers for the Host models screen, kept out of the components so the
  * wording and the decisions — which warning, how often to poll, what a typed
  * value means — are unit-tested rather than only eyeballed.
  */
@@ -52,10 +53,35 @@ export const FIT_CLASS: Record<FitLabel, string> = {
 };
 
 /** What the runtime card leads with. */
+/** Below this, a share of memory is not worth a clause. */
+const MENTION_BYTES = 512 * 1024 ** 2;
+
+/**
+ * What a fit estimate was measured against, in a sentence or two. The GPU rows
+ * show each card's size, so without the breakdown "34 GB available" on two
+ * 30 GB cards reads as a miscount rather than as another program holding most
+ * of one card.
+ */
+export function describeFit(fit: FitEstimate): string {
+  const needs = `Needs about ${formatBytes(fit.requiredBytes)}`;
+  if (!fit.availableBytes) return needs;
+  if (fit.target === 'cpu') return `${needs} of ${formatBytes(fit.availableBytes)} RAM.`;
+  const b = fit.breakdown;
+  if (!b) return `${needs} of ${formatBytes(fit.availableBytes)} GPU memory.`;
+  const gpus = b.deviceCount === 1 ? 'the GPU' : `${String(b.deviceCount)} GPUs`;
+  const parts = [`${needs} of ${formatBytes(fit.availableBytes)} available on ${gpus} (${formatBytes(b.totalBytes)} in all).`];
+  if (b.reclaimableBytes >= MENTION_BYTES) {
+    parts.push(`That counts ${formatBytes(b.reclaimableBytes)} other models are using, which they give up when this one loads.`);
+  }
+  if (b.pinnedBytes >= MENTION_BYTES) parts.push(`Pinned models keep ${formatBytes(b.pinnedBytes)}.`);
+  if (b.otherBytes >= MENTION_BYTES) parts.push(`Other programs are using ${formatBytes(b.otherBytes)}.`);
+  return parts.join(' ');
+}
+
 export function runtimeHeadline(rt: LocalRuntimeView): string {
   switch (rt.state) {
     case 'off':
-      return 'Local models are off';
+      return 'Host models are off';
     case 'not-installed':
       return 'Setting up llama.cpp…';
     case 'needs-gpu':

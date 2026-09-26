@@ -190,6 +190,16 @@ replies.
   and `actionsheet/animated.tsx`, which is also what `select/select-actionsheet.tsx` uses).
   If a second React ever reappears, `ls node_modules/.pnpm | grep '^react@'` finds it — fix
   the dependency, don't re-add the shim.
+- **On the web, an overlay's `entering` must be one of reanimated's built-in animations —
+  never `.withInitialValues(...)`.** That makes a custom animation, and for those reanimated's
+  web layer ends by calling `setElementPosition`, which writes the element's measured
+  `position: absolute; top; left; width; height` inline and leaves it there. A modal whose
+  content arrives after it opens therefore stays the size of its loading spinner: the
+  HuggingFace details sheet showed an 84px strip to scroll its whole quant list in, on the
+  beta, and no class could override an inline `height`. It hid in the e2e lane only because
+  the mock answered before the 200 ms animation finished (the mock's model card now waits a
+  second). `ModalContent` and `Menu` use `FadeIn` on the web and keep the zoom on native,
+  which has no such step; the popover already avoided it for a different crash.
 - **`babel-preset-expo` must stay a declared devDependency** even though `expo` depends on
   it: under pnpm it is only hoisted to `node_modules/.pnpm/node_modules`, which Babel can't
   resolve from `apps/mobile`. It injects `react-native-worklets/plugin` itself, so that plugin
@@ -924,6 +934,12 @@ replies.
 
 ### Local models (the managed llama.cpp router)
 
+- **The screen is called *Host models*; the code keeps `local`.** "Local" was wrong for anyone
+  on the web app or Electron talking to another machine — the models run on the host. Only what
+  a person reads changed (titles, the settings row, server messages, the `/host-models` route);
+  `local_models`, `apps/server/src/llama/`, `/v1/admin/local-models`, the `localModels.*`
+  testIDs and `local_model_unavailable` keep their names, since renaming them buys nothing and
+  breaks stored references.
 - **The built-in provider is a llama.cpp router this server runs** (`apps/server/src/llama/`):
   one `llama-server` started without `-m`, which spawns a child per loaded model and picks it by
   the request's `model` field. `LLAMA_MODE` is `managed` (default: install and supervise it),
@@ -990,6 +1006,14 @@ replies.
   V620 beside a 2 GB GT 1030 — then the beta box turned out to have *two* V620s with LM Studio
   holding 26 GB of one, and both are 30 GB cards. Splitting a model onto the busy one fails to
   load. Fit labels use the same free figure. The admin can choose devices explicitly.
+- **Fit labels measure free memory *now*, and say what it is made of** (`llama/memory.ts`).
+  The figure was the free memory listed at router start, which moves the moment anything
+  loads — and it read to the admin as "the fit only counts one GPU": the rows showed each V620's
+  30 GB total while the fit silently subtracted LM Studio's 26 GB from one of them. Free memory
+  is re-listed (`remeasureDevices`, cached 10 s, re-measured whenever the set of our loaded
+  models changes), our *unpinned* loaded models count as available (they would be unloaded for
+  it), and `FitEstimate.breakdown` carries free / reclaimable / pinned / other programs, which
+  the settings sheet and the won't-fit warning spell out and each GPU row shows as "X free of Y".
 - **`local_models` is keyed by `(host_id, id)`** and every query is scoped to this instance's
   `LOXAIC_INSTANCE_ID` (`""` when unset): files are on one machine's disk. That scoping is also
   what isolates test suites from each other. **Two servers with no instance id on one database
@@ -1056,12 +1080,61 @@ replies.
 - **`syncPreset` is serialised and the preset's temp file is named per call.** It is reachable
   from an admin's write and from the runtime starting at once, and a temp name per *process* let
   two writes splice — fatal to the router at its next boot.
+- **A restart asked for during a restart is queued, never folded into it** (`ensureRuntime`). The
+  single-flight used to hand back the running attempt, which had read the settings *before* the
+  second change: switching to the CPU and straight back to Automatic left the CPU running with
+  Automatic selected. The headline says "CPU" as soon as an attempt sets `st.flavour`, well
+  before it finishes, so a person following the screen lands in exactly that window. Found only
+  by the Electron lane, whose timing differs.
 - **Restart re-detects the hardware** (`st.hardware` is cleared on `restart: true`), because the
   no-loader error tells the admin to install it "and restart the runtime", which with a cached
   detection rendered the identical error back.
 - **A download finishing replaces the row's status node** (in-progress line → finished pill,
   same testID). `waitForTextIn` holds one element reference and never sees the new one; the spec
   re-queries (`waitForFreshText`).
+
+### Pinning, and who unloads a model
+
+- **Loxaic unloads models, not llama.cpp.** The router is started with `--models-max 0`
+  (`infra/docker/llama-router.sh` too), so it never unloads anything itself: it evicts by count,
+  least recently used, with no notion of a model that must stay. `llama/room.ts` decides instead:
+  before a request for a model that is not loaded, `ensureRoom` unloads our **unpinned** models,
+  least recently used first, until the new one comfortably fits (`will-fit`). `modelsMax` is now
+  an optional count cap Loxaic enforces, default 0 (none).
+- **One unload at a time, then measure again.** Each decision is made on free memory re-listed
+  after the previous unload (`waitForModelStatus` first — the router answers `/models/unload`
+  before its child has exited and given the memory back), never on the sum of our estimates:
+  they are good enough to label a download and too rough to decide how many of someone's
+  models to throw away. A model with a request in flight (`trackRequest`) or still loading is
+  never unloaded.
+- **Refused only when pinned models are in the way.** When unloading everything unpinned still
+  leaves `wont-fit`, and a pinned model is loaded, the request is refused with `NoRoomError` →
+  `ModelRefError("local_model_no_room")`. A model too big for an empty GPU is *not* refused —
+  that was the admin's download decision, and llama.cpp's `--fit` may still load it with layers
+  on the CPU — and neither is `might-fit`.
+- **The refusal happens at send time, before any row** (`assertModelUsable` → `checkRoom`,
+  which plans without unloading: the run may queue behind another model's run, whose model must
+  not go meanwhile). It reaches the client as the socket `error`'s `code`, and mid-run as
+  `stream.end.error_code`; both hooks show `NoRoomModal`, take the unsent bubble back and put the
+  text back in the message box. Saving a routine uses `assertModelResolvable`, which skips the
+  room check — what happens to be loaded is no reason to refuse a saved choice.
+- **A pinned model is always loaded** (`local_models.pinned`): `loadPinnedModels` runs when the
+  router becomes healthy, after every preset reload (a reload unloads a changed section, a pinned
+  one included), and when a pin is set; one that cannot be loaded says why (`pinError`). Only an
+  enabled model can be pinned, and disabling one unpins it. Unpinning unloads nothing — the model
+  simply becomes one that can be unloaded.
+- **`ensureRoom` honours the run's abort signal.** It can wait minutes behind a pinned model
+  loading (everything that loads or unloads is serialised), and Stop must not. The transport
+  test's fake backend had to learn to answer `/models`: every built-in request now asks it first.
+- **The picker shows load state** (`ModelInfo.loading`/`pinned`, a `Loaded` badge, loaded host
+  models first in their group), because a loaded model answers now and any other waits for a
+  load that may unload someone else's.
+- **Attach mode's free memory is as old as the sidecar's start** — it cannot be re-listed from
+  this process, so its eviction decisions rest on the router's own status and that figure.
+- **The fake router models memory** when `LOXAIC_FAKE_MODEL_MIB` is set: each loaded model holds
+  that much of the first device, a load past it fails (`status.failed`), and `--list-devices`
+  (a separate process) reads what is held from `LOXAIC_FAKE_VRAM_STATE`. Its log records unloads
+  too, which is how a test tells "unloaded to make room" from "failed to load".
 
 ### The picker's "recently used"
 

@@ -36,9 +36,11 @@ export interface LocalModelsSettings {
    * for the default: every GPU with at least 4 GB. The default is what keeps a
    * 2 GB display card out of a split across a real inference card. */
   devices: string[] | null;
-  /** How many models the router keeps loaded at once. 1 by default: loading a
-   * second model on a single GPU usually means evicting the first anyway, and
-   * doing it deliberately is cheaper than running out of VRAM. */
+  /** At most this many models loaded at once, 0 (the default) for no count
+   * limit. Loxaic enforces it, not llama.cpp: the router is started with
+   * `--models-max 0` so that it never unloads anything on its own, because it
+   * unloads by count with no notion of a pinned model. What normally decides
+   * how many models stay loaded is memory (llama/room.ts). */
   modelsMax: number;
 }
 
@@ -52,7 +54,7 @@ export interface LocalModelsSettingsView extends LocalModelsSettings {
 
 const KEY = "localModels";
 
-const DEFAULTS: LocalModelsSettings = { backend: "auto", cpuAcknowledged: false, devices: null, modelsMax: 1 };
+const DEFAULTS: LocalModelsSettings = { backend: "auto", cpuAcknowledged: false, devices: null, modelsMax: 0 };
 
 interface Persisted extends Partial<LocalModelsSettings> {
   encryptedHfToken?: string | null;
@@ -166,7 +168,7 @@ export async function loadLocalModelsSettings(): Promise<void> {
     persisted = coerce(row?.value);
   } catch (err) {
     // Nothing here is a security posture to fail closed on: the defaults are
-    // "auto-detect a GPU, one model at a time", which is what a fresh install
+    // "auto-detect a GPU, as many models as fit", which is what a fresh install
     // gets anyway. CPU cannot be reached by this path — it needs the row.
     persisted = {};
     console.error(
@@ -227,8 +229,8 @@ export async function updateLocalModelsSettings(input: unknown): Promise<LocalMo
     if (current.envOverrides.modelsMax) {
       throw new LocalModelsSettingsError("modelsMax is pinned by the LLAMA_MODELS_MAX environment variable", "envOverride");
     }
-    if (typeof body.modelsMax !== "number" || !Number.isInteger(body.modelsMax) || body.modelsMax < 1 || body.modelsMax > 16) {
-      throw new LocalModelsSettingsError("modelsMax must be a whole number from 1 to 16", "invalid");
+    if (typeof body.modelsMax !== "number" || !Number.isInteger(body.modelsMax) || body.modelsMax < 0 || body.modelsMax > 16) {
+      throw new LocalModelsSettingsError("modelsMax must be a whole number from 0 (no limit) to 16", "invalid");
     }
     next.modelsMax = body.modelsMax;
     touched = true;

@@ -791,7 +791,10 @@ export async function runToolLoop(ctx: {
           .where(eq(messages.id, assistantMsgId))
           .catch(() => undefined);
         producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
-        await producer.end(status, { error: eventError }).catch(() => undefined);
+        // No room behind pinned models (llama/room.ts) is shown as a modal,
+        // which needs to know it is that rather than read the sentence.
+        const errorCode = !isAbort && (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
+        await producer.end(status, { error: eventError, errorCode }).catch(() => undefined);
         return;
       }
 

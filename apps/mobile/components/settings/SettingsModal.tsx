@@ -439,7 +439,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 testID="settings.nav.localModels"
                 onPress={() => {
                   onClose();
-                  router.push('/local-models');
+                  router.push('/host-models');
                 }}
                 className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
               >
@@ -447,7 +447,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   <Icon as={HardDrive} size="sm" className="shrink-0 text-muted-foreground" />
                   <VStack className="min-w-0 shrink">
                     <Text size="sm" className="text-foreground">
-                      Local Models
+                      Host Models
                     </Text>
                     <Text
                       size="2xs"

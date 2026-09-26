@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
+import { useRouter } from 'expo-router';
 import { MessagesSquare } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
@@ -27,6 +28,7 @@ import { canEdit, isOwner } from '@/lib/types';
 import { ShareModal } from '@/components/chat/ShareModal';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
+import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
@@ -36,7 +38,8 @@ import { useToastHelper } from '@/hooks/useToastHelper';
 export default function ChatScreen() {
   const connection = useConnection();
   const shell = useShell();
-  const { token } = useSession();
+  const { token, isAdmin } = useSession();
+  const router = useRouter();
   const breakpoint = useBreakpoint();
   const {
     conversations,
@@ -64,6 +67,8 @@ export default function ChatScreen() {
     handleRename,
     setConversationModel,
     history,
+    noRoom,
+    dismissNoRoom,
   } = useChatSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -74,6 +79,8 @@ export default function ChatScreen() {
   const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
+  // Puts an unsent message back in the message box (a no-room refusal).
+  const [composerSeed, setComposerSeed] = useState<{ token: number; text: string } | null>(null);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [sharingId, setSharingId] = useState<string | null>(null);
   // Both entry points — the header's ⋮ and the thread list's Delete — set
@@ -150,6 +157,17 @@ export default function ChatScreen() {
         onClose={() => { setSharingId(null); }}
         conversationId={sharingId}
         title={conversations.find((c) => c.id === sharingId)?.title ?? ''}
+      />
+
+      <NoRoomModal
+        notice={noRoom}
+        isAdmin={isAdmin}
+        onClose={() => {
+          if (noRoom?.text) setComposerSeed({ token: Date.now(), text: noRoom.text });
+          dismissNoRoom();
+        }}
+        onChooseModel={() => { setModelModalOpen(true); }}
+        onManage={() => { router.push('/host-models'); }}
       />
 
       <DeleteConversationModal
@@ -237,6 +255,7 @@ export default function ChatScreen() {
           onOpenModelModal={() => { setModelModalOpen(true); }}
           surface="chat"
           onRunCommand={handleRunCommand}
+          commandSeed={composerSeed}
           readOnlyReason={
             activeConv && !canEdit(activeConv)
               ? 'This conversation is shared with you for viewing. You can read it as it happens, but not send.'

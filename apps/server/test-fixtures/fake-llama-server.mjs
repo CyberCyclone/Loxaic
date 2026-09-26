@@ -12,9 +12,18 @@
 //   POST /v1/chat/completions a short streamed reply, autoloading the model
 //
 // Everything but /health requires `Authorization: Bearer $LLAMA_API_KEY`.
-// With LOXAIC_FAKE_ROUTER_LOG set, every load appends the section it loaded
-// with as a JSON line, which is how a test proves settings reached the model.
-import { appendFileSync, readFileSync } from "node:fs";
+// With LOXAIC_FAKE_ROUTER_LOG set, every load and unload appends a JSON line
+// (a load with the section it loaded with), which is how a test proves
+// settings reached the model and which models were unloaded to make room.
+//
+// Memory, when LOXAIC_FAKE_MODEL_MIB is set: every loaded model holds that many
+// MiB of the first device, a load that would not fit fails (`status.failed`,
+// as the real router reports it), and `--list-devices` reports the first
+// device's free memory less what is loaded. The listing is a separate process
+// from the router, so the router writes what it holds to
+// LOXAIC_FAKE_VRAM_STATE for the listing to read. `--models-max N` (N > 0)
+// unloads the least recently used model past N, as the real router does.
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const args = process.argv.slice(2);
@@ -31,11 +40,35 @@ function fakeHardware() {
   }
 }
 
+const MODEL_MIB = Number(process.env.LOXAIC_FAKE_MODEL_MIB ?? 0);
+const VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
+const DEVICES =
+  fakeHardware() === "none" ? "" : (process.env.LOXAIC_FAKE_DEVICES ?? "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)");
+
+/** The first device's free MiB before anything is loaded. */
+function baseFreeMib() {
+  const m = /(\d+)\s*MiB free/.exec(DEVICES.split(";")[0] ?? "");
+  return m ? Number(m[1]) : 0;
+}
+
+function heldMib() {
+  if (!VRAM_STATE) return 0;
+  try {
+    return Number(JSON.parse(readFileSync(VRAM_STATE, "utf8")).heldMib) || 0;
+  } catch {
+    return 0;
+  }
+}
+
 if (args.includes("--list-devices")) {
-  const devices =
-    fakeHardware() === "none" ? "" : (process.env.LOXAIC_FAKE_DEVICES ?? "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)");
+  const held = heldMib();
   console.log("Available devices:");
-  for (const d of devices.split(";").filter(Boolean)) console.log(`  ${d}`);
+  DEVICES.split(";")
+    .filter(Boolean)
+    .forEach((d, i) => {
+      const line = i === 0 && held > 0 ? d.replace(/(\d+)\s*MiB free/, (_, n) => `${String(Math.max(0, Number(n) - held))} MiB free`) : d;
+      console.log(`  ${line}`);
+    });
   process.exit(0);
 }
 if (args.includes("--version")) {
@@ -91,20 +124,55 @@ function readPreset() {
 let preset = readPreset();
 /** id -> "unloaded" | "loaded" */
 const status = new Map();
+/** Ids whose last load failed. */
+const failed = new Set();
+/** id -> last use, for --models-max. */
+const lastUse = new Map();
 let loadedArgs = new Map();
+const modelsMax = Number(arg("--models-max") ?? 0);
 
 function merged(id) {
   return { ...preset.globals, ...(preset.sections.get(id) ?? {}) };
 }
 
+function logEvent(entry) {
+  if (process.env.LOXAIC_FAKE_ROUTER_LOG) appendFileSync(process.env.LOXAIC_FAKE_ROUTER_LOG, JSON.stringify(entry) + "\n");
+}
+
+function loadedIds() {
+  return [...status].filter(([, v]) => v === "loaded").map(([id]) => id);
+}
+
+function writeVram() {
+  if (VRAM_STATE) writeFileSync(VRAM_STATE, JSON.stringify({ heldMib: loadedIds().length * MODEL_MIB }));
+}
+
+function unload(id) {
+  if (status.get(id) !== "loaded") return;
+  status.set(id, "unloaded");
+  loadedArgs.delete(id);
+  logEvent({ event: "unload", model: id });
+  writeVram();
+}
+
 function load(id) {
   if (!preset.sections.has(id)) return false;
+  lastUse.set(id, Date.now());
   if (status.get(id) === "loaded") return true;
+  if (modelsMax > 0) {
+    const others = loadedIds().sort((a, b) => (lastUse.get(a) ?? 0) - (lastUse.get(b) ?? 0));
+    while (others.length >= modelsMax) unload(others.shift());
+  }
+  if (MODEL_MIB > 0 && (loadedIds().length + 1) * MODEL_MIB > baseFreeMib()) {
+    failed.add(id);
+    logEvent({ event: "load-failed", model: id });
+    return "oom";
+  }
+  failed.delete(id);
   status.set(id, "loaded");
   loadedArgs.set(id, JSON.stringify(merged(id)));
-  if (process.env.LOXAIC_FAKE_ROUTER_LOG) {
-    appendFileSync(process.env.LOXAIC_FAKE_ROUTER_LOG, JSON.stringify({ event: "load", model: id, section: merged(id) }) + "\n");
-  }
+  logEvent({ event: "load", model: id, section: merged(id) });
+  writeVram();
   return true;
 }
 
@@ -113,13 +181,16 @@ function reload() {
   for (const [id] of status) {
     const now = next.sections.get(id);
     const was = loadedArgs.get(id);
-    if (!now) status.delete(id);
-    else if (was && JSON.stringify({ ...next.globals, ...now }) !== was) {
+    if (!now) {
+      status.delete(id);
+      loadedArgs.delete(id);
+    } else if (was && JSON.stringify({ ...next.globals, ...now }) !== was) {
       status.set(id, "unloaded");
       loadedArgs.delete(id);
     }
   }
   preset = next;
+  writeVram();
 }
 
 function json(res, code, body) {
@@ -150,17 +221,21 @@ const server = createServer(async (req, res) => {
   if (url.pathname === "/models" && req.method === "GET") {
     if (url.searchParams.get("reload") === "1") reload();
     return json(res, 200, {
-      data: [...preset.sections.keys()].map((id) => ({ id, status: { value: status.get(id) ?? "unloaded" } })),
+      data: [...preset.sections.keys()].map((id) => ({
+        id,
+        status: { value: status.get(id) ?? "unloaded", ...(failed.has(id) ? { failed: true } : {}) },
+      })),
     });
   }
   if (url.pathname === "/models/load" && req.method === "POST") {
     const body = await readBody(req);
-    return load(body.model) ? json(res, 200, { success: true }) : json(res, 400, { error: { message: "model not found" } });
+    const ok = load(body.model);
+    if (ok === "oom") return json(res, 500, { error: { message: "failed to load model: out of device memory" } });
+    return ok ? json(res, 200, { success: true }) : json(res, 400, { error: { message: "model not found" } });
   }
   if (url.pathname === "/models/unload" && req.method === "POST") {
     const body = await readBody(req);
-    status.set(body.model, "unloaded");
-    loadedArgs.delete(body.model);
+    unload(body.model);
     return json(res, 200, { success: true });
   }
   if (url.pathname === "/props") {
@@ -175,7 +250,9 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
     const body = await readBody(req);
-    if (!load(body.model)) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
+    const ok = load(body.model);
+    if (ok === "oom") return json(res, 500, { error: { code: 500, message: "failed to load model: out of device memory" } });
+    if (!ok) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const words = ["Hello", " from", ` ${body.model}`];
     for (const w of words) {
@@ -191,6 +268,7 @@ const server = createServer(async (req, res) => {
   json(res, 404, { error: { message: "not found" } });
 });
 
+writeVram();
 server.listen(port, "127.0.0.1", () => {
   console.error(`0.00.000.001 I srv  llama_server: listening on http://127.0.0.1:${port}`);
 });

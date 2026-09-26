@@ -19,7 +19,7 @@ import { Icon, CloseIcon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import { Markdown } from '@/components/markdown/Markdown';
 import { FitBadge } from './FitBadge';
-import { formatBytes, formatCount, formatParams } from '@/lib/localModels';
+import { describeFit, formatBytes, formatCount, formatParams } from '@/lib/localModels';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -86,8 +86,13 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
       <ModalBackdrop />
       {/* Both halves: a long model card and a long quant list are exactly what
           pushes content past the fold, and the vendored ModalBody hardcodes
-          scrollEnabled={false} before its prop spread. */}
-      <ModalContent testID="localModels.details" className="max-h-[85%]">
+          scrollEnabled={false} before its prop spread.
+          Sized to the window rather than capped at 85% of it with the stock
+          padding and margins: on a short window (a desktop app beside other
+          panes) that left a strip a couple of quant rows tall between the
+          header and the modal's own padding, which is all anyone could see of
+          the list they opened this to choose from. */}
+      <ModalContent testID="localModels.details" className="max-h-[94%] w-[96%] max-w-[960px] p-4 web:p-5">
         <ModalHeader>
           <VStack className="min-w-0 flex-1 shrink pr-2">
             <Heading size="sm" numberOfLines={1} style={TRUNCATE_TEXT}>
@@ -101,7 +106,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody scrollEnabled>
+        <ModalBody scrollEnabled className="mb-0 mt-3">
           {!details && !error && (
             <Box className="items-center py-8">
               <Spinner />
@@ -214,9 +219,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                       {confirm.quant} probably won&apos;t fit
                     </Text>
                     <Text size="xs" className="text-foreground">
-                      It needs about {formatBytes(confirm.fit.requiredBytes)}, and{' '}
-                      {formatBytes(confirm.fit.availableBytes)} is available. It may fail to load, or run mostly on the
-                      CPU and be very slow. Pick a smaller quant unless you mean to give it a shorter context or fewer
+                      {describeFit(confirm.fit)} It may fail to load, or run mostly on the CPU and be very slow. Pick a smaller quant unless you mean to give it a shorter context or fewer
                       GPU layers in its settings.
                     </Text>
                     <HStack space="sm" className="justify-end">

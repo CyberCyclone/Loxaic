@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
-import type { StreamEventKind, StreamSnapshot, StreamSnapshotMessage, TurnUsage } from "@loxaic/types";
+import type { StreamEventKind, StreamSnapshot, StreamSnapshotMessage, StreamErrorCode, TurnUsage } from "@loxaic/types";
 import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
 export type StreamProducerMeta = Omit<StreamMeta, "lastSeq" | "status" | "updatedAt" | "createdAt">;
 
-export interface StreamEndInfo { usage?: TurnUsage; error?: string }
+export interface StreamEndInfo { usage?: TurnUsage; error?: string; errorCode?: StreamErrorCode }
 
 export interface StreamProducer {
   emit(event: StreamEventKind): void;
@@ -80,7 +80,7 @@ export class StreamBroker {
         // A distinct event name from the record channel (which uses the bare
         // streamId) — delivery taps this separately to know when to send the
         // client a `stream.end` (as opposed to another `stream.event`).
-        this.emitter.emit(`${streamId}:end`, { status, usage: info?.usage, error: info?.error });
+        this.emitter.emit(`${streamId}:end`, { status, usage: info?.usage, error: info?.error, errorCode: info?.errorCode });
       },
     };
   }
@@ -95,7 +95,7 @@ export class StreamBroker {
   /** Fires once, when the run finalizes (any terminal status). */
   onEnd(
     streamId: string,
-    cb: (info: { status: "complete" | "error" | "cancelled"; usage?: TurnUsage; error?: string }) => void,
+    cb: (info: { status: "complete" | "error" | "cancelled"; usage?: TurnUsage; error?: string; errorCode?: StreamErrorCode }) => void,
   ): () => void {
     const event = `${streamId}:end`;
     this.emitter.on(event, cb);
