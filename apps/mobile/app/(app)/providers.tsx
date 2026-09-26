@@ -20,6 +20,7 @@ import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useProviders } from '@/hooks/useProviders';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { describeRequestError } from '@/lib/connection';
 import { useSession } from '@/lib/session';
 
 export default function ProvidersScreen() {
@@ -98,10 +99,28 @@ export default function ProvidersScreen() {
       const result = await test(provider.id);
       if (result.ok) showToast(`Reachable — ${String(result.models ?? 0)} models`);
       else showToast(`Could not reach it: ${result.error ?? 'unknown error'}`, 5000);
-    } catch {
-      showToast('Could not reach this provider');
+    } catch (err) {
+      // Our own server not answering is not "this provider is unreachable".
+      showToast(describeRequestError(err, 'Could not reach this provider'), 4000);
     } finally {
       setTestingId(null);
+    }
+  };
+
+  // Both used to be `void update(…)` / `void remove(…)`: a failure was an
+  // unhandled rejection, and the switch snapped back with nothing said.
+  const setEnabled = async (id: string, enabled: boolean) => {
+    try {
+      await update(id, { enabled });
+    } catch (err) {
+      showToast(describeRequestError(err, 'Could not change the provider'), 4000);
+    }
+  };
+  const removeProvider = async (id: string) => {
+    try {
+      await remove(id);
+    } catch (err) {
+      showToast(describeRequestError(err, 'Could not remove the provider'), 4000);
     }
   };
 
@@ -184,7 +203,7 @@ export default function ProvidersScreen() {
           <ProviderCard
             provider={item}
             testing={testingId === item.id}
-            onToggle={(enabled) => { void update(item.id, { enabled }); }}
+            onToggle={(enabled) => { void setEnabled(item.id, enabled); }}
             onTest={() => { void handleTest(item); }}
             onEdit={() => { openEdit(item); }}
             onDelete={() => { setDeleting(item); }}
@@ -236,7 +255,7 @@ export default function ProvidersScreen() {
         onConfirm={() => {
           const target = deleting;
           setDeleting(null);
-          if (target) void remove(target.id);
+          if (target) void removeProvider(target.id);
         }}
       />
       <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />

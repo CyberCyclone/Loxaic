@@ -12,6 +12,7 @@ import { Input, InputField } from '@/components/ui/input';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { cpuWarning, formatBytes, runtimeHeadline } from '@/lib/localModels';
+import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 const BACKENDS: { value: LlamaBackend; label: string }[] = [
@@ -54,6 +55,8 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
   const progress = runtime.installProgress;
   const pct = progress && progress.totalBytes > 0 ? Math.floor((progress.doneBytes / progress.totalBytes) * 100) : null;
   const pinnedBackend = settings.envOverrides.backend;
+  // Every control below saves on the server.
+  const reachable = useServerReachable();
   const activeDevices = runtime.activeDevices === 'none' ? [] : runtime.activeDevices;
 
   const chooseBackend = (backend: LlamaBackend) => {
@@ -90,7 +93,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
           <Pressable
             testID="localModels.runtime.restart"
             onPress={onRestart}
-            disabled={busy}
+            disabled={busy || !reachable}
             className="shrink-0 flex-row items-center gap-1 p-1"
           >
             <Icon as={RotateCcw} size="xs" className="text-muted-foreground" />
@@ -121,6 +124,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
       {runtime.state === 'needs-gpu' && runtime.mode === 'managed' && !pinnedBackend && (
         <Pressable
           testID="localModels.runtime.useCpu"
+          disabled={!reachable}
           onPress={() => { setConfirmCpu(true); }}
           className="mt-2 self-start rounded-full bg-muted px-3 py-1.5"
         >
@@ -148,7 +152,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
               chips={BACKENDS.map((b) => ({ value: b.value, label: b.label, key: b.value }))}
               value={settings.backend}
               onChoose={chooseBackend}
-              disabled={pinnedBackend}
+              disabled={pinnedBackend || !reachable}
               testIDPrefix="localModels.runtime.backend"
             />
             <Text size="2xs" className="text-muted-foreground">
@@ -167,6 +171,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
                   <Pressable
                     key={d.name}
                     testID={`localModels.runtime.device.${d.name}`}
+                    disabled={!reachable}
                     onPress={() => { toggleDevice(d.name); }}
                     className={`flex-row items-center justify-between rounded-md border px-3 py-2 ${on ? 'border-primary bg-primary/10' : 'border-border'}`}
                   >
@@ -204,7 +209,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
               </Input>
               <Pressable
                 testID="localModels.runtime.hfToken.save"
-                disabled={!token.trim()}
+                disabled={!token.trim() || !reachable}
                 onPress={() => {
                   void onSettings({ hfToken: token.trim() }).then((ok) => { if (ok) setToken(''); });
                 }}
@@ -215,7 +220,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
                 </Text>
               </Pressable>
               {settings.hasHfToken && !settings.envOverrides.hfToken && (
-                <Pressable testID="localModels.runtime.hfToken.remove" onPress={() => { void onSettings({ hfToken: null }); }} className="p-2">
+                <Pressable testID="localModels.runtime.hfToken.remove" disabled={!reachable} onPress={() => { void onSettings({ hfToken: null }); }} className="p-2">
                   <Text size="sm" className="text-destructive">
                     Remove
                   </Text>

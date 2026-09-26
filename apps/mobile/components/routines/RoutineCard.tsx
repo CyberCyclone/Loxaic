@@ -8,6 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import { humanizeCron } from '@/lib/fixtures/routines';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { useServerReachable } from '@/lib/connection';
 import type { Routine } from '@loxaic/api-client';
 
 function formatTimestamp(iso: string | null): string {
@@ -55,6 +56,9 @@ export function RoutineCard({
   onDelete,
   onViewHistory,
 }: RoutineCardProps) {
+  // Toggle, Run now and Delete are requests; Edit opens a form that says for
+  // itself why it cannot save.
+  const reachable = useServerReachable();
   return (
     <Box className="rounded-md border border-border bg-card p-3">
       <HStack className="items-start justify-between">
@@ -68,7 +72,12 @@ export function RoutineCard({
             {routine.prompt}
           </Text>
         </Pressable>
-        <Switch testID={`routines.toggle.${routine.id}`} value={routine.enabled} onValueChange={onToggle} />
+        <Switch
+          testID={`routines.toggle.${routine.id}`}
+          value={routine.enabled}
+          disabled={!reachable}
+          onValueChange={onToggle}
+        />
       </HStack>
 
       <HStack space="xs" className="mt-2 flex-wrap items-center">
@@ -96,7 +105,7 @@ export function RoutineCard({
       </HStack>
 
       <HStack space="md" className="mt-3 items-center justify-end border-t border-border pt-2">
-        <Pressable testID={`routines.runNow.${routine.id}`} onPress={onRunNow} disabled={running} className="flex-row items-center gap-1 p-1">
+        <Pressable testID={`routines.runNow.${routine.id}`} onPress={onRunNow} disabled={running || !reachable} className={`flex-row items-center gap-1 p-1 ${reachable ? '' : 'opacity-50'}`}>
           {running ? (
             <Spinner size="small" />
           ) : (
@@ -115,7 +124,7 @@ export function RoutineCard({
         <Pressable testID={`routines.edit.${routine.id}`} onPress={onEdit} className="p-1">
           <Icon as={Pencil} size="xs" className="text-muted-foreground" />
         </Pressable>
-        <Pressable testID={`routines.delete.${routine.id}`} onPress={onDelete} className="p-1">
+        <Pressable testID={`routines.delete.${routine.id}`} onPress={onDelete} disabled={!reachable} className={`p-1 ${reachable ? '' : 'opacity-50'}`}>
           <Icon as={Trash2} size="xs" className="text-destructive" />
         </Pressable>
       </HStack>

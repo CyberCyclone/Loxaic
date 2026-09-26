@@ -15,6 +15,9 @@ import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import type { McpDiscoveredTool, McpServer, McpServerInput, McpTestResult, McpToolPolicy } from '@loxaic/api-client';
+import { describeRequestError, useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
+import { useToastHelper } from '@/hooks/useToastHelper';
 
 const APPROVALS: { value: McpToolPolicy['approval']; label: string }[] = [
   { value: 'ask', label: 'Ask first' },
@@ -34,6 +37,8 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
   const [tools, setTools] = useState<McpDiscoveredTool[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const reachable = useServerReachable();
+  const { showToast } = useToastHelper();
 
   useEffect(() => {
     if (!server) return;
@@ -45,7 +50,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
         if (result.ok) setTools(result.tools);
         else setError(result.error);
       })
-      .catch(() => { setError('Could not reach the server'); })
+      .catch((err: unknown) => { setError(describeRequestError(err, "Could not list this server's tools")); })
       .finally(() => { setLoading(false); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [server?.id]);
@@ -57,11 +62,14 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
       setTools((prev) => prev.map((t) => (t.name === tool.name ? { ...t, policy: { ...next, changed: false } } : t)));
       try {
         await update(server.id, { toolPolicies: { [tool.name]: patch } });
-      } catch {
+      } catch (err) {
+        // Put back, and say so: a switch that silently flipped back read as
+        // the tap not having registered.
         setTools((prev) => prev.map((t) => (t.name === tool.name ? tool : t)));
+        showToast(describeRequestError(err, 'Could not change that tool'), 4000);
       }
     },
-    [server, update],
+    [server, update, showToast],
   );
 
   return (
@@ -74,6 +82,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
         <ActionsheetScrollView>
           <VStack space="sm" className="w-full p-3">
             <Text className="font-semibold text-foreground">{server?.name} — Tools</Text>
+            <DisconnectedNote testID="mcp.toolsSheet.disconnected" what="change these" />
             {loading ? (
               <Spinner />
             ) : error ? (
@@ -107,6 +116,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                       testID={`mcp.toolEnable.${tool.name}`}
                       size="sm"
                       value={tool.policy.enabled}
+                      disabled={!reachable}
                       onValueChange={(enabled) => patchPolicy(tool, { enabled })}
                     />
                   </HStack>
@@ -137,7 +147,8 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                         key={a.value}
                         testID={`mcp.toolApproval.${tool.name}.${a.value}`}
                         onPress={() => { void patchPolicy(tool, { approval: a.value }); }}
-                        className={`rounded-full px-3 py-1 ${tool.policy.approval === a.value ? 'bg-primary/15' : 'bg-muted'}`}
+                        disabled={!reachable}
+                        className={`rounded-full px-3 py-1 ${tool.policy.approval === a.value ? 'bg-primary/15' : 'bg-muted'} ${reachable ? '' : 'opacity-50'}`}
                       >
                         <Text
                           size="xs"
@@ -150,7 +161,8 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                     <Pressable
                       testID={`mcp.toolReadOnly.${tool.name}`}
                       onPress={() => { void patchPolicy(tool, { readOnly: !tool.policy.readOnly }); }}
-                      className={`rounded-full px-3 py-1 ${tool.policy.readOnly ? 'bg-primary/15' : 'bg-muted'}`}
+                      disabled={!reachable}
+                      className={`rounded-full px-3 py-1 ${tool.policy.readOnly ? 'bg-primary/15' : 'bg-muted'} ${reachable ? '' : 'opacity-50'}`}
                     >
                       <Text size="xs" className={tool.policy.readOnly ? 'text-primary' : 'text-muted-foreground'}>
                         Read-only

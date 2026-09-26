@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { isUnreachableError } from '@loxaic/api-client';
 
 /**
  * Whether the app can currently reach its server, as decided by
@@ -119,6 +120,16 @@ export function requireServer(showToast: (message: string, durationMs?: number) 
   if (!isOffline()) return true;
   showToast(disconnectedCopy(state).notSent, 4000);
   return false;
+}
+
+/**
+ * The sentence for a request that failed, for the many places that used to
+ * print the error's own message — which, for a server that did not answer,
+ * is "Failed to fetch" or "Network request failed".
+ */
+export function describeRequestError(err: unknown, fallback: string): string {
+  if (isUnreachableError(err)) return "Can't reach your server — nothing was changed.";
+  return err instanceof Error && err.message ? err.message : fallback;
 }
 
 /** Test seam: module state outlives a single test otherwise. */

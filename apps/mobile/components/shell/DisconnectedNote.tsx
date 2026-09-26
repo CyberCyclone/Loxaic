@@ -13,11 +13,19 @@ import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connec
  * `what` finishes "you can … once it's back": "answer", "save", "decide on
  * this plan".
  */
-export function DisconnectedNote({ testID, what = 'answer' }: { testID: string; what?: string }) {
+export function DisconnectedNote({
+  testID,
+  what = 'answer',
+  className = '',
+}: {
+  testID: string;
+  what?: string;
+  className?: string;
+}) {
   const connection = useConnection();
   if (!showsDisconnected(connection)) return null;
   return (
-    <Text testID={testID} size="xs" className="text-destructive">
+    <Text testID={testID} size="xs" className={`text-destructive ${className}`}>
       {disconnectedCopy(connection).note(what)}
     </Text>
   );

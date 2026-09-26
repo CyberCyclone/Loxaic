@@ -85,6 +85,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
   // silently holding the old one until the app restarts.
   const endpoint = useEndpoint();
   const [runs, setRuns] = useState<Conversation[]>([]);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   // Scroll-back through a run's history, a page at a time (#213).
   const applyOlder = useCallback((convId: string, older: Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: prependOlder(r.msgs, older) } : r)));
@@ -807,10 +809,17 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, title: name } : r)));
   }, []);
 
+  /** Shown at once, and put back if the server did not take it — see
+   * useChatSession's setConversationModel. */
   const setRunModel = useCallback((id: string, modelId: string) => {
-    updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
+    const previous = runsRef.current.find((r) => r.id === id)?.model;
     setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, model: modelId } : r)));
-  }, []);
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {
+      if (previous === undefined) return;
+      setRuns((prev) => prev.map((r) => (r.id === id && r.model === modelId ? { ...r, model: previous } : r)));
+      showToast('Couldn’t save that model choice — this run keeps its model', 4000);
+    });
+  }, [showToast]);
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);

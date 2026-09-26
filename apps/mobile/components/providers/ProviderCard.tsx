@@ -7,6 +7,7 @@ import { Icon } from '@/components/ui/icon';
 import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { useServerReachable } from '@/lib/connection';
 import type { InferenceProvider } from '@loxaic/api-client';
 
 function statusLine(provider: InferenceProvider): { text: string; error: boolean } {
@@ -27,6 +28,9 @@ interface ProviderCardProps {
 }
 
 export function ProviderCard({ provider, testing, onToggle, onTest, onEdit, onDelete }: ProviderCardProps) {
+  // Toggle, test and delete are requests; Edit opens a sheet that says for
+  // itself why it cannot save.
+  const reachable = useServerReachable();
   const status = statusLine(provider);
   const allowed = provider.modelAllowlist?.length ?? 0;
 
@@ -59,6 +63,7 @@ export function ProviderCard({ provider, testing, onToggle, onTest, onEdit, onDe
         <Switch
           testID={`providers.toggle.${provider.id}`}
           value={provider.enabled}
+          disabled={!reachable}
           onValueChange={onToggle}
         />
       </HStack>
@@ -100,7 +105,7 @@ export function ProviderCard({ provider, testing, onToggle, onTest, onEdit, onDe
         <Pressable
           testID={`providers.test.${provider.id}`}
           onPress={onTest}
-          disabled={testing}
+          disabled={testing || !reachable}
           className="flex-row items-center gap-1 p-1"
         >
           {testing ? <Spinner size="small" /> : <Icon as={Plug} size="xs" className="text-muted-foreground" />}
@@ -111,7 +116,7 @@ export function ProviderCard({ provider, testing, onToggle, onTest, onEdit, onDe
         <Pressable testID={`providers.edit.${provider.id}`} onPress={onEdit} className="p-1">
           <Icon as={Pencil} size="xs" className="text-muted-foreground" />
         </Pressable>
-        <Pressable testID={`providers.delete.${provider.id}`} onPress={onDelete} className="p-1">
+        <Pressable testID={`providers.delete.${provider.id}`} onPress={onDelete} disabled={!reachable} className={`p-1 ${reachable ? '' : 'opacity-50'}`}>
           <Icon as={Trash2} size="xs" className="text-destructive" />
         </Pressable>
       </HStack>

@@ -1081,10 +1081,17 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     [],
   );
 
+  /** Shown at once, and put back if the server did not take it: a silent
+   * catch here left the picker naming a model the conversation was not using. */
   const setConversationModel = useCallback((id: string, modelId: string) => {
-    updateConversation(id, { model_pref: { model: modelId } }).catch(() => undefined);
+    const previous = conversationsRef.current.find((c) => c.id === id)?.model;
     setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, model: modelId } : c)));
-  }, []);
+    updateConversation(id, { model_pref: { model: modelId } }).catch(() => {
+      if (previous === undefined) return;
+      setConversations((prev) => prev.map((c) => (c.id === id && c.model === modelId ? { ...c, model: previous } : c)));
+      showToast('Couldn’t save that model choice — this conversation keeps its model', 4000);
+    });
+  }, [showToast]);
 
   const activeConv = conversations.find((c) => c.id === activeId) ?? null;
   // Scoped to the active conversation on purpose — a background thread that's

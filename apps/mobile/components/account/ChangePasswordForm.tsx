@@ -8,6 +8,7 @@ import { Input, InputField } from '@/components/ui/input';
 import { Icon } from '@/components/ui/icon';
 import { Button, ButtonSpinner, ButtonText } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
+import { useServerReachable } from '@/lib/connection';
 import { useSession } from '@/lib/session';
 
 /** better-auth's own floor; checked here too so the common mistake is caught
@@ -41,6 +42,9 @@ export function ChangePasswordForm({
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  // Outside the signed-in shell (the forced change after a reset) the
+  // connection monitor is not running and this is always true.
+  const reachable = useServerReachable();
   const submit = async () => {
     if (busy || !current || !next || !confirm) return;
     setDone(false);
@@ -141,7 +145,7 @@ export function ChangePasswordForm({
       <Button
         testID="account.password.submit"
         onPress={() => { void submit(); }}
-        isDisabled={busy || !current || !next || !confirm}
+        isDisabled={busy || !current || !next || !confirm || !reachable}
         className="self-start"
       >
         {busy && <ButtonSpinner />}

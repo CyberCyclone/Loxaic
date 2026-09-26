@@ -18,6 +18,8 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import type { InferenceProvider, ProviderInput, ProviderPreset } from '@loxaic/api-client';
 
 /**
@@ -110,6 +112,7 @@ export function ProviderModal({
   const [manualModel, setManualModel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const reachable = useServerReachable();
 
   useEffect(() => {
     if (!open) return;
@@ -519,6 +522,7 @@ export function ProviderModal({
             )}
           </VStack>
         </ModalBody>
+        <DisconnectedNote testID="providers.modal.disconnected" what="save" className="px-4 pt-2" />
         <ModalFooter className="justify-end border-t border-border">
           <HStack space="sm">
             <Button testID="providers.modal.cancel" variant="outline" size="sm" onPress={onClose}>
@@ -529,7 +533,7 @@ export function ProviderModal({
               size="sm"
               className="bg-primary"
               onPress={() => { void handleSave(); }}
-              isDisabled={!name.trim() || !baseUrl.trim() || saving}
+              isDisabled={!name.trim() || !baseUrl.trim() || saving || !reachable}
             >
               {saving && <ButtonSpinner />}
               <ButtonText className="text-primary-foreground">

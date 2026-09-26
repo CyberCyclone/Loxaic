@@ -22,6 +22,9 @@ export interface AttachButtonProps {
   onPickDocument: () => void;
   /** Web only (see AttachButton.web.tsx): files chosen from the file input. */
   onFilesSelected: (files: File[]) => void;
+  /** An attachment is uploaded as soon as it is picked, so there is nothing
+   * to attach to while the server is unreachable. */
+  disabled?: boolean;
 }
 
 /**
@@ -30,7 +33,7 @@ export interface AttachButtonProps {
  * `<input type="file">` directly — expo-image-picker's web shim creates a
  * transient hidden input at click time with nothing stable to select.
  */
-export function AttachButton({ onTakePhoto, onPickFromLibrary, onPickDocument }: AttachButtonProps) {
+export function AttachButton({ onTakePhoto, onPickFromLibrary, onPickDocument, disabled = false }: AttachButtonProps) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -38,7 +41,8 @@ export function AttachButton({ onTakePhoto, onPickFromLibrary, onPickDocument }:
       <Pressable
         testID="composer.attach"
         onPress={() => { setOpen(true); }}
-        className="shrink-0 rounded-md border border-border bg-muted p-1.5"
+        disabled={disabled}
+        className={`shrink-0 rounded-md border border-border bg-muted p-1.5 ${disabled ? 'opacity-50' : ''}`}
       >
         <Icon as={Plus} size="2xs" className="text-foreground" />
       </Pressable>

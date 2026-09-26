@@ -7,6 +7,7 @@ import { Icon } from '@/components/ui/icon';
 import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import type { McpServer } from '@loxaic/api-client';
+import { useServerReachable } from '@/lib/connection';
 
 function statusLine(server: McpServer): { text: string; error: boolean } {
   if (server.lastError) return { text: server.lastError, error: true };
@@ -30,6 +31,9 @@ interface McpServerCardProps {
 }
 
 export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEdit, onDelete, linked }: McpServerCardProps) {
+  // Toggle, test and delete are requests; Edit and Tools open sheets that say
+  // for themselves why they cannot save.
+  const reachable = useServerReachable();
   const status = statusLine(server);
   const toolCount = Object.keys(server.knownTools).length;
 
@@ -55,7 +59,12 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
                 : server.url}
           </Text>
         </Pressable>
-        <Switch testID={`mcp.serverToggle.${server.id}`} value={server.enabled} onValueChange={onToggle} />
+        <Switch
+          testID={`mcp.serverToggle.${server.id}`}
+          value={server.enabled}
+          disabled={!reachable}
+          onValueChange={onToggle}
+        />
       </HStack>
 
       <HStack space="xs" className="mt-2 items-center">
@@ -83,7 +92,7 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
         <Pressable
           testID={`mcp.serverTest.${server.id}`}
           onPress={onTest}
-          disabled={testing}
+          disabled={testing || !reachable}
           className="flex-row items-center gap-1 p-1"
         >
           {testing ? <Spinner size="small" /> : <Icon as={Plug} size="xs" className="text-muted-foreground" />}
@@ -101,7 +110,12 @@ export function McpServerCard({ server, testing, onToggle, onTest, onTools, onEd
           <Icon as={Pencil} size="xs" className="text-muted-foreground" />
         </Pressable>
         {!linked && (
-          <Pressable testID={`mcp.serverDelete.${server.id}`} onPress={onDelete} className="p-1">
+          <Pressable
+            testID={`mcp.serverDelete.${server.id}`}
+            onPress={onDelete}
+            disabled={!reachable}
+            className={`p-1 ${reachable ? '' : 'opacity-50'}`}
+          >
             <Icon as={Trash2} size="xs" className="text-destructive" />
           </Pressable>
         )}

@@ -16,6 +16,7 @@ import { useShell } from '@/components/shell/AppShell';
 import { SettingsModal } from '@/components/settings/SettingsModal';
 import { useGithubConnection } from '@/hooks/useGithubConnection';
 import { useSession } from '@/lib/session';
+import { useServerReachable } from '@/lib/connection';
 
 /**
  * Connect a personal access token so agent chats can clone, commit, push and
@@ -38,7 +39,8 @@ export default function GithubScreen() {
   const shell = useShell();
   const router = useRouter();
   const { token: sessionToken } = useSession();
-  const { connection, loading, error, connect, disconnect } = useGithubConnection(sessionToken);
+  const { connection, loading, unknown, error, connect, disconnect } = useGithubConnection(sessionToken);
+  const reachable = useServerReachable();
   const [draft, setDraft] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -72,6 +74,10 @@ export default function GithubScreen() {
             <Box className="items-center justify-center p-6">
               <Spinner />
             </Box>
+          ) : unknown ? (
+            <Text testID="github.unknown" size="sm" className="text-muted-foreground">
+              Can&apos;t check your GitHub connection while your server is unreachable. It will load once the server is back.
+            </Text>
           ) : connection ? (
             <VStack testID="github.status" space="md" className="rounded-md border border-border bg-card p-4">
               <HStack space="sm" className="items-center justify-between">
@@ -152,10 +158,17 @@ export default function GithubScreen() {
                 variant="outline"
                 className="border-destructive"
                 onPress={() => { void handleDisconnect(); }}
-                isDisabled={busy}
+                isDisabled={busy || !reachable}
               >
                 {busy ? <ButtonSpinner /> : <ButtonText className="text-destructive">Disconnect</ButtonText>}
               </Button>
+              {/* Shown here too: it used to be rendered only with the setup form,
+                  so a failed disconnect said nothing at all. */}
+              {error && (
+                <Text testID="github.error" size="sm" className="text-destructive">
+                  {error}
+                </Text>
+              )}
             </VStack>
           ) : (
             <VStack space="md">
@@ -265,7 +278,7 @@ export default function GithubScreen() {
                   {error}
                 </Text>
               )}
-              <Button testID="github.connect" onPress={() => { void handleConnect(); }} isDisabled={busy || !draft.trim()}>
+              <Button testID="github.connect" onPress={() => { void handleConnect(); }} isDisabled={busy || !draft.trim() || !reachable}>
                 {busy ? <ButtonSpinner /> : <ButtonText>Connect</ButtonText>}
               </Button>
             </VStack>

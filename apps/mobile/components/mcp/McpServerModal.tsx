@@ -18,6 +18,8 @@ import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon, CloseIcon } from '@/components/ui/icon';
 import { McpApiError, type McpServer, type McpServerInput } from '@loxaic/api-client';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const TRANSPORTS = ['stdio', 'http'] as const;
@@ -73,6 +75,7 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
   const [error, setError] = useState<string | null>(null);
   const [ssrfPrompt, setSsrfPrompt] = useState(false);
   const [saving, setSaving] = useState(false);
+  const reachable = useServerReachable();
 
   // Built-in servers keep their launch config; only name/env/secrets are editable.
   const builtin = !!editing?.builtinKey;
@@ -412,6 +415,7 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
             )}
           </VStack>
         </ModalBody>
+        <DisconnectedNote testID="mcp.serverModal.disconnected" what="save" className="px-4 pt-2" />
         <ModalFooter className="justify-end border-t border-border">
           <HStack space="sm">
             <Button testID="mcp.serverModal.cancel" variant="outline" size="sm" onPress={onClose}>
@@ -422,7 +426,7 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
               size="sm"
               className="bg-primary"
               onPress={() => { void handleSave(); }}
-              isDisabled={!name.trim() || saving}
+              isDisabled={!name.trim() || saving || !reachable}
             >
               {saving && <ButtonSpinner />}
               <ButtonText className="text-primary-foreground">Save server</ButtonText>

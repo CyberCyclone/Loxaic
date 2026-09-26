@@ -26,6 +26,7 @@ import {
   getGithubBranches,
   getGithubConnection,
   getGithubRepos,
+  isUnreachableError,
   type ConfigResponse,
   type ExecutorView,
   type GithubRepo,
@@ -135,12 +136,14 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
     setBranchName('');
     setWhere(value.kind === 'local' ? 'local' : 'remote');
     setSource(value.kind === 'github' ? 'github' : 'scratch');
-    void getCluster().then((c) => {
-      setHostName(c?.hosts.find((h) => h.self)?.name ?? null);
-    });
-    void getGithubConnection()
+    getCluster()
+      .then((c) => { setHostName(c?.hosts.find((h) => h.self)?.name ?? null); })
+      .catch(() => { setHostName(null); });
+    // Unknown, not "not connected", when the question could not be asked: the
+    // server being unreachable used to read as "GitHub is not connected".
+    getGithubConnection()
       .then((c) => { setConnected(c !== null); })
-      .catch(() => { setConnected(false); });
+      .catch((err: unknown) => { setConnected(isUnreachableError(err) ? null : false); });
     void loadExecutors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, token]);

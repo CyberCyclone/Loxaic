@@ -12,6 +12,10 @@ interface WorkspacePillProps {
   workspace: Workspace | WorkspaceChoice | null | undefined;
   /** Whether a choice can still be made — only before the first run. */
   editable: boolean;
+  /** Editable, but not right now: the choices come from the server (repos,
+   * machines, whether GitHub is connected), and asked while it cannot be
+   * reached they all read as "none". */
+  unavailable?: boolean;
   onPress: () => void;
 }
 
@@ -25,7 +29,7 @@ function folderName(dir: string): string {
 /** One line saying what the next (or current) run works in. Tappable only
  * while there is no run yet: a workspace cannot change once a conversation
  * has one, so afterwards this is a label, not a control. */
-export function WorkspacePill({ workspace, editable, onPress }: WorkspacePillProps) {
+export function WorkspacePill({ workspace, editable, unavailable = false, onPress }: WorkspacePillProps) {
   const ws = workspace ?? { kind: 'scratch' as const };
   const label =
     ws.kind === 'github'
@@ -44,8 +48,8 @@ export function WorkspacePill({ workspace, editable, onPress }: WorkspacePillPro
     <Pressable
       testID="agent.workspace.button"
       onPress={onPress}
-      disabled={!editable}
-      className={`min-w-0 shrink flex-row items-center justify-end gap-1 rounded-full px-2.5 py-1 ${editable ? 'bg-muted web:hover:bg-muted/70' : 'bg-transparent'}`}
+      disabled={!editable || unavailable}
+      className={`min-w-0 shrink flex-row items-center justify-end gap-1 rounded-full px-2.5 py-1 ${editable ? 'bg-muted web:hover:bg-muted/70' : 'bg-transparent'} ${unavailable ? 'opacity-50' : ''}`}
     >
       <HStack space="xs" className="min-w-0 shrink items-center">
         <Icon as={icon} size="xs" className="text-muted-foreground" />

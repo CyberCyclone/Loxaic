@@ -11,7 +11,7 @@ import type { AttachButtonProps } from './AttachButton';
  * select. Kept mounted for the composer's lifetime and reset after every
  * selection so the same file can be re-picked twice in a row.
  */
-export function AttachButton({ onFilesSelected }: AttachButtonProps) {
+export function AttachButton({ onFilesSelected, disabled = false }: AttachButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   return (
@@ -19,7 +19,8 @@ export function AttachButton({ onFilesSelected }: AttachButtonProps) {
       <Pressable
         testID="composer.attach"
         onPress={() => { inputRef.current?.click(); }}
-        className="shrink-0 rounded-md border border-border bg-muted p-1.5"
+        disabled={disabled}
+        className={`shrink-0 rounded-md border border-border bg-muted p-1.5 ${disabled ? 'opacity-50' : ''}`}
       >
         <Icon as={Plus} size="2xs" className="text-foreground" />
       </Pressable>
@@ -30,6 +31,7 @@ export function AttachButton({ onFilesSelected }: AttachButtonProps) {
         multiple
         data-testid="composer.attach.input"
         style={{ display: 'none' }}
+        disabled={disabled}
         onChange={(e) => {
           const files = e.target.files ? Array.from(e.target.files) : [];
           // Reset so selecting the same file again still fires onChange.

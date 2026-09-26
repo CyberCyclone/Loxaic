@@ -20,6 +20,7 @@ import { UsersPanel } from '@/components/admin/UsersPanel';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useConversationRetention } from '@/hooks/useConversationRetention';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { describeRequestError, useServerReachable } from '@/lib/connection';
 import {
   adminGetMessages,
   adminGetShares,
@@ -53,6 +54,7 @@ import {
 export default function AdminScreen() {
   const { isAdmin, token, user } = useSession();
   const shell = useShell();
+  const reachable = useServerReachable();
   // Two lists, one screen: conversations (what an admin oversees) and users
   // (where a forgotten password is reset). A switch rather than both stacked,
   // since each is a full-height list and they would fight for the height.
@@ -79,7 +81,7 @@ export default function AdminScreen() {
   useEffect(() => {
     if (!isAdmin) return;
     adminListConversations().then(setRows, (err: unknown) => {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     });
   }, [isAdmin]);
 
@@ -125,7 +127,7 @@ export default function AdminScreen() {
       setMessages((prev) => [...page.messages, ...prev.filter((m) => !older.has(m.id))]);
       setOlderCursor(page.before ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     } finally {
       setLoadingOlder(false);
     }
@@ -136,7 +138,7 @@ export default function AdminScreen() {
   const refreshRows = useCallback(
     async (keepId: string | null) => {
       const next = await adminListConversations().catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(describeRequestError(err, 'Something went wrong'));
         return null;
       });
       if (!next) return;
@@ -154,7 +156,7 @@ export default function AdminScreen() {
         else if (what === 'purge') await adminPurgeConversation(row.id);
         else await adminSetConversationHold(row.id, what === 'hold');
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(describeRequestError(err, 'Something went wrong'));
         return;
       }
       await refreshRows(what === 'purge' ? null : row.id);
@@ -170,7 +172,7 @@ export default function AdminScreen() {
       setResults([]);
       setRows(await adminListConversations());
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(describeRequestError(err, 'Something went wrong'));
     }
   };
 
@@ -296,6 +298,7 @@ export default function AdminScreen() {
                   <HStack space="sm">
                     <Button
                       testID="admin.deleted.restore"
+                      isDisabled={!reachable}
                       size="sm"
                       variant="outline"
                       onPress={() => { void act(selected, 'restore'); }}
@@ -304,6 +307,7 @@ export default function AdminScreen() {
                     </Button>
                     <Button
                       testID="admin.deleted.hold"
+                      isDisabled={!reachable}
                       size="sm"
                       variant="outline"
                       onPress={() => { void act(selected, selected.deletedHold ? 'release' : 'hold'); }}
@@ -312,6 +316,7 @@ export default function AdminScreen() {
                     </Button>
                     <Button
                       testID="admin.deleted.purge"
+                      isDisabled={!reachable}
                       size="sm"
                       className="bg-destructive"
                       onPress={() => { setPurging(selected); }}
@@ -341,6 +346,7 @@ export default function AdminScreen() {
                       <Text size="sm" className="flex-1 text-foreground">{u.name}</Text>
                       <Button
                         testID={`admin.share.add.${u.id}`}
+                        isDisabled={!reachable}
                         size="sm"
                         variant="outline"
                         onPress={() => { void patch({ user_id: u.id, role: 'viewer' }); }}
@@ -370,6 +376,7 @@ export default function AdminScreen() {
                     {!selected.deletedAt && (
                       <Button
                         testID={`admin.share.revoke.${s.userId}`}
+                        isDisabled={!reachable}
                         size="sm"
                         variant="outline"
                         onPress={() => { void patch({ user_id: s.userId, revoke: true }); }}

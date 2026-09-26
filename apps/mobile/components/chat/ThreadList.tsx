@@ -20,6 +20,8 @@ import {
   ActionsheetIcon,
 } from '@/components/ui/actionsheet';
 import { isOwner, type Conversation } from '@/lib/types';
+import { useServerReachable } from '@/lib/connection';
+import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 
 /** The button in the header's corner. Defaults to "new chat"; a routine has no
  * such thing, so it offers "Run now" in the same place instead. */
@@ -77,6 +79,8 @@ export function ThreadList({
 }: ThreadListProps) {
   const [search, setSearch] = useState('');
   const [actionsFor, setActionsFor] = useState<Conversation | null>(null);
+  // Share and Delete are requests; Fork and Rename only change this device.
+  const reachable = useServerReachable();
   const [renaming, setRenaming] = useState<Conversation | null>(null);
   const [renameText, setRenameText] = useState('');
 
@@ -188,6 +192,7 @@ export function ThreadList({
               {onShare && isOwner(actionsFor) && (
                 <ActionsheetItem
                   testID="threadList.share"
+                  isDisabled={!reachable}
                   onPress={() => {
                     onShare(actionsFor.id);
                     setActionsFor(null);
@@ -224,6 +229,7 @@ export function ThreadList({
               {isOwner(actionsFor) && (
                 <ActionsheetItem
                   testID="threadList.delete"
+                  isDisabled={!reachable}
                   onPress={() => {
                     // Confirmed by the caller, not here: the sheet and the
                     // header menu open the same dialog, so there is one place
@@ -236,6 +242,7 @@ export function ThreadList({
                   <ActionsheetItemText className="text-destructive">Delete</ActionsheetItemText>
                 </ActionsheetItem>
               )}
+              <DisconnectedNote testID="threadList.disconnected" what="share or delete it" className="px-3 pb-2" />
             </>
           )}
         </ActionsheetContent>

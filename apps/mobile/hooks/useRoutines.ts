@@ -9,6 +9,7 @@ import {
   type Routine,
   type RoutineRun,
 } from '@loxaic/api-client';
+import { describeRequestError } from '@/lib/connection';
 import { useToastHelper } from './useToastHelper';
 
 export function useRoutines(token: string | null) {
@@ -55,10 +56,16 @@ export function useRoutines(token: string | null) {
     [],
   );
 
+  // Called as `void toggle(…)`: a throw was an unhandled rejection, and the
+  // switch snapped back with nothing said.
   const toggle = useCallback(
     async (id: string, enabled: boolean) => {
-      await update(id, { enabled });
-      showToast(enabled ? 'Routine enabled' : 'Routine disabled');
+      try {
+        await update(id, { enabled });
+        showToast(enabled ? 'Routine enabled' : 'Routine disabled');
+      } catch (err) {
+        showToast(describeRequestError(err, 'Could not change the routine'), 4000);
+      }
     },
     [update, showToast],
   );
@@ -73,7 +80,7 @@ export function useRoutines(token: string | null) {
       try {
         await deleteRoutine(id);
       } catch (err) {
-        showToast(`Could not delete: ${err instanceof Error ? err.message : String(err)}`, 4000);
+        showToast(`Could not delete: ${describeRequestError(err, 'something went wrong')}`, 4000);
         await refresh();
         return;
       }
@@ -83,10 +90,12 @@ export function useRoutines(token: string | null) {
     [showToast, refresh],
   );
 
+  // Says it is running once it is: the toast used to come before the request,
+  // so a run the server never started was announced, then contradicted.
   const runNow = useCallback(
     async (id: string) => {
-      showToast('Routine triggered — running now');
       const run = await runRoutineNow(id);
+      showToast('Routine triggered — running now');
       await refresh();
       return run;
     },

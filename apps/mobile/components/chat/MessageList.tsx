@@ -8,6 +8,7 @@ import { Text } from '@/components/ui/text';
 import { Message } from './Message';
 import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
+import { useServerReachable } from '@/lib/connection';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -55,6 +56,7 @@ export interface MessageHistory {
 export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
+  const reachable = useServerReachable();
 
   // Sticky-to-newest: true until the user deliberately scrolls back through
   // history. A streamed response only keeps following while that's still
@@ -215,7 +217,8 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
               <Pressable
                 testID="chat.history.loadOlder"
                 onPress={history.loadOlder}
-                className="rounded-full bg-muted px-3 py-1.5 web:hover:bg-muted/80"
+                disabled={!reachable}
+                className={`rounded-full bg-muted px-3 py-1.5 web:hover:bg-muted/80 ${reachable ? '' : 'opacity-50'}`}
               >
                 <Text size="xs" className="text-muted-foreground">
                   Load earlier messages
@@ -225,7 +228,9 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
           </Box>
         ) : null
       }
-      onEndReached={history?.hasOlder && !history.loadingOlder ? history.loadOlder : undefined}
+      // An older page is a request: scrolling to the top while the server is
+      // unreachable would only fail, quietly, over and over.
+      onEndReached={history?.hasOlder && !history.loadingOlder && reachable ? history.loadOlder : undefined}
       onEndReachedThreshold={0.5}
       contentContainerStyle={{ paddingVertical: CONTENT_PADDING }}
       onScroll={handleScroll}
