@@ -717,12 +717,13 @@ export interface SessionInfo {
   user: Session["user"];
 }
 
-export async function getSession(): Promise<SessionInfo | null> {
+export async function getSession(opts: { signal?: AbortSignal } = {}): Promise<SessionInfo | null> {
   const headers = new Headers();
   if (AUTH_TOKEN) headers.set("Authorization", `Bearer ${AUTH_TOKEN}`);
   const res = await serverFetch(`${BASE_URL}/api/auth/session`, {
     credentials: "include",
     headers,
+    ...(opts.signal ? { signal: opts.signal } : {}),
   });
   if (res.status === 401) return null;
   if (!res.ok) throw new Error(`Session fetch failed: ${String(res.status)}`);

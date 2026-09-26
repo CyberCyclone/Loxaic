@@ -16,11 +16,19 @@ import {
 } from '@loxaic/api-client';
 import { clearToken, loadToken, saveToken } from './auth';
 import { currentEndpoint, electronBridge, resolveEndpoint, subscribeToDesktopEndpoint } from './endpoint';
-import { onRecovered, setSessionCheck } from './connectionMonitor';
+import { setSessionCheck } from './connectionMonitor';
+import { useConnection } from './connection';
 import { clearCacheForEndpoint, rememberUserId } from './message-cache';
 import { hydrateStorage } from './storage';
 
 type SessionUser = Session['user'];
+
+/** How long the launch waits to learn who is signed in. A hung server — one
+ * that accepts the connection and answers nothing, as a host that is asleep
+ * or wedged does — otherwise held the splash screen for the platform's own
+ * network timeout: a minute on iOS, longer in Chromium. Past it the launch
+ * carries on exactly as for an unreachable server. */
+const LAUNCH_SESSION_TIMEOUT_MS = 5_000;
 
 interface SessionState {
   /** Bootstrap (storage hydration + stored-token load) finished. */
@@ -93,8 +101,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       // be conflated: signing someone out because their self-hosted server
       // was briefly down would be worse than carrying on with a token that
       // is very probably still good.
+      const launch = new AbortController();
+      const deadline = setTimeout(() => { launch.abort(); }, LAUNCH_SESSION_TIMEOUT_MS);
       try {
-        const info = await apiGetSession();
+        const info = await apiGetSession({ signal: launch.signal });
         if (info) {
           sessionUser = info.user;
           // Remembered so the cache can still be scoped when the server is
@@ -109,10 +119,12 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           stored = null;
         }
       } catch {
-        // Server unreachable — no conclusion can be drawn about the token, so
-        // it is kept and the user is left unknown until the server answers
-        // (see the recovery effect below). Whether the host is down is the
-        // connection monitor's to say; this request already told it.
+        // Server unreachable, or too slow to wait for — no conclusion can be
+        // drawn about the token, so it is kept and the user is left unknown
+        // until the server answers (see below). Whether the host is down is
+        // the connection monitor's to say.
+      } finally {
+        clearTimeout(deadline);
       }
     }
 
@@ -222,37 +234,35 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   // - A socket refused for its session (close 4001) with the server otherwise
   //   fine. Without this the socket reopened and was refused forever, under a
   //   banner claiming the server was unreachable. A dead session signs out.
-  // - The server answering again after a launch that could not reach it. The
-  //   bootstrap kept the token but learned nothing about the user, so
-  //   isAdmin and mustChangePassword read false until a restart.
+  // - The server reachable while the user is still unknown: a launch that
+  //   could not reach it, or gave up waiting. The bootstrap kept the token but
+  //   learned nothing about the user, so isAdmin and mustChangePassword read
+  //   false until a restart. Keyed on "reachable", not "came back after
+  //   failing": a server that was only slow at launch never fails a probe.
   const tokenRef = useRef(token);
   tokenRef.current = token;
-  const userRef = useRef(user);
-  userRef.current = user;
-  useEffect(() => {
-    const refresh = async (signOutIfDead: boolean) => {
-      if (!tokenRef.current) return;
-      try {
-        const info = await apiGetSession();
-        if (info) {
-          setUser(info.user);
-          rememberSessionUser(info.user.id);
-        } else if (signOutIfDead) {
-          await signOut();
-        }
-      } catch {
-        // Still unreachable: the monitor keeps trying, and so will this.
+  const refresh = useCallback(async (signOutIfDead: boolean) => {
+    if (!tokenRef.current) return;
+    try {
+      const info = await apiGetSession();
+      if (info) {
+        setUser(info.user);
+        rememberSessionUser(info.user.id);
+      } else if (signOutIfDead) {
+        await signOut();
       }
-    };
-    setSessionCheck(() => { void refresh(true); });
-    const unsub = onRecovered(() => {
-      if (!userRef.current) void refresh(false);
-    });
-    return () => {
-      setSessionCheck(null);
-      unsub();
-    };
+    } catch {
+      // Still unreachable: the monitor keeps trying, and so will this.
+    }
   }, [signOut]);
+  useEffect(() => {
+    setSessionCheck(() => { void refresh(true); });
+    return () => { setSessionCheck(null); };
+  }, [refresh]);
+  const connection = useConnection();
+  useEffect(() => {
+    if (connection === 'online' && token && !user) void refresh(false);
+  }, [connection, token, user, refresh]);
 
   const value = useMemo(
     () => ({

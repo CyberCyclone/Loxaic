@@ -95,8 +95,7 @@ export type MonitorEffect =
   | { type: 'probeIn'; ms: number; epoch: number }
   | { type: 'tickIn'; ms: number }
   | { type: 'reconnectSockets' }
-  | { type: 'checkSession' }
-  | { type: 'recovered' };
+  | { type: 'checkSession' };
 
 /**
  * What an AppState change means to the monitor. Only a return from
@@ -148,10 +147,8 @@ export function reduce(
     effects.push({ type: 'probe', epoch: state.epoch });
   };
   const serverAnswered = () => {
-    const wasDown = state.server !== 'ok';
     state.server = 'ok';
     state.failedProbes = 0;
-    if (wasDown && prev.server === 'failing') effects.push({ type: 'recovered' });
   };
   const hold = (ms: number) => {
     state.silentUntil = Math.max(state.silentUntil, now + ms);

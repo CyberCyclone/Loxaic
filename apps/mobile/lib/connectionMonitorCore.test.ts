@@ -196,7 +196,6 @@ describe('the connection monitor', () => {
       const r = run([[{ type: 'probeResult', ok: true, epoch: s.epoch }, 2]], s);
       expect(r.state.failedProbes).toBe(0);
       expect(r.effects).toContainEqual({ type: 'reconnectSockets' });
-      expect(r.effects).toContainEqual({ type: 'recovered' });
     });
 
     it('never interrupts a socket that is still connecting when a probe succeeds', () => {

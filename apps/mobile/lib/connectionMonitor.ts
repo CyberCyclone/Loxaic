@@ -26,7 +26,6 @@ let state = initialMonitorState();
 let probeTimer: ReturnType<typeof setTimeout> | null = null;
 const tickTimers = new Set<ReturnType<typeof setTimeout>>();
 const reconnectListeners = new Set<() => void>();
-const recoveredListeners = new Set<() => void>();
 let sessionCheck: (() => void) | null = null;
 let teardown: (() => void) | null = null;
 
@@ -74,9 +73,6 @@ function run(effect: MonitorEffect): void {
       break;
     case 'checkSession':
       sessionCheck?.();
-      break;
-    case 'recovered':
-      for (const listener of recoveredListeners) listener();
       break;
   }
 }
@@ -148,12 +144,6 @@ export function onReconnectRequest(listener: () => void): () => void {
   return () => { reconnectListeners.delete(listener); };
 }
 
-/** The server answered again after failing. */
-export function onRecovered(listener: () => void): () => void {
-  recoveredListeners.add(listener);
-  return () => { recoveredListeners.delete(listener); };
-}
-
 /** What to do when a socket is refused for its session (close code 4001). */
 export function setSessionCheck(check: (() => void) | null): void {
   sessionCheck = check;
@@ -169,7 +159,6 @@ export function __resetMonitorForTest(): void {
   teardown = null;
   clearTimers();
   reconnectListeners.clear();
-  recoveredListeners.clear();
   sessionCheck = null;
   state = initialMonitorState();
 }
