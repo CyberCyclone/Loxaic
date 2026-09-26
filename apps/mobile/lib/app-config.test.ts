@@ -27,6 +27,7 @@ function build(variant?: string) {
 
 afterEach(() => {
   delete process.env.APP_VARIANT;
+  delete process.env.APP_DISPLAY_NAME;
 });
 
 describe('app variants', () => {
@@ -52,6 +53,25 @@ describe('app variants', () => {
     const config = build(undefined);
     expect(config.name).toBe('Loxaic');
     expect((config.ios as { bundleIdentifier: string }).bundleIdentifier).toBe('com.loxaic.app');
+  });
+
+  it('takes a display name for a slot without becoming a different app', () => {
+    // envs.sh's slots label themselves so Expo Go lists them apart.
+    process.env.APP_DISPLAY_NAME = 'Loxaic - Preview';
+    const labelled = build(undefined);
+    const plain = (() => {
+      delete process.env.APP_DISPLAY_NAME;
+      return build(undefined);
+    })();
+    expect(labelled.name).toBe('Loxaic - Preview');
+    // Everything that makes it *this* app is untouched.
+    expect(labelled.ios).toEqual(plain.ios);
+    expect(labelled.android).toEqual(plain.android);
+    expect(labelled.scheme).toBe(plain.scheme);
+    expect(labelled.updates).toEqual(plain.updates);
+    // Blank is no label, not an app with an empty name.
+    process.env.APP_DISPLAY_NAME = '   ';
+    expect(build('dev').name).toBe('Loxaic Dev');
   });
 
   it('refuses a variant it does not know rather than guessing', () => {

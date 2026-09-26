@@ -4,8 +4,10 @@
 # public, and where someone's home server lives is nobody else's business.
 
 # Where the environments run. Must accept your SSH key without a password —
-# the timer runs unattended.
+# the timer runs unattended. `local` runs them on this machine instead, with no
+# ssh at all (Docker and git are all it needs).
 ENVS_SSH=you@192.168.1.50
+#ENVS_SSH=local
 
 # What a phone dials to reach them. The tailnet name rather than the LAN
 # address, because this is what gets baked into the app bundle and advertised
@@ -13,6 +15,8 @@ ENVS_SSH=you@192.168.1.50
 # the house wifi. The LAN address keeps working either way — the ports are
 # published on every interface.
 ENVS_HOSTNAME=yourbox.tailXXXX.ts.net
+# With ENVS_SSH=local, this machine's own tailnet name:
+#ENVS_HOSTNAME=yourlaptop.tailXXXX.ts.net
 
 # Where they live on that host, under $HOME. Optional.
 #ENVS_ROOT=loxaic-envs
