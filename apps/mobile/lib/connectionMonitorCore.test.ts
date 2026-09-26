@@ -144,6 +144,25 @@ describe('the connection monitor', () => {
       expect(derive(reopened, at + 100)).toBe('online');
     });
 
+    it('notices a replacement that hangs after the resume probe answered', () => {
+      // A server that answers the probe and then goes quiet (asleep, wedged)
+      // while the new socket sits in CONNECTING: the stuck-socket check has to
+      // run, or nothing looks again until the heartbeat, 25 s later.
+      const withSocket = run([[{ type: 'socket', key: 'chat', status: 'open' }, 0]], online()).state;
+      const at = 60_000;
+      const resumed = run([[{ type: 'resume' }, at]], withSocket);
+      expect(resumed.effects).toContainEqual({ type: 'tickIn', ms: STUCK_CONNECTING_MS });
+      const answered = run(
+        [
+          [{ type: 'probeResult', ok: true, epoch: resumed.state.epoch }, at + 50],
+          [{ type: 'socket', key: 'chat', status: 'connecting' }, at + 60],
+        ],
+        resumed.state,
+      ).state;
+      const tick = run([[{ type: 'tick' }, at + STUCK_CONNECTING_MS]], answered);
+      expect(probes(tick.effects)).toHaveLength(1);
+    });
+
     it('with no socket: stays online and only probes, so a settings screen does not grey out', () => {
       const r = run([[{ type: 'resume' }, 1_000]], online());
       expect(derive(r.state, 1_000)).toBe('online');

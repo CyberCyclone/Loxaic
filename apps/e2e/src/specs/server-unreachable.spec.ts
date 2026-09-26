@@ -65,6 +65,64 @@ async function restoreServer(): Promise<void> {
   });
 }
 
+/**
+ * Coming back to the app, the server answers the return's own health check and
+ * then nothing more: every later request hangs until it is given up on, and a
+ * new socket sits in CONNECTING. A server going to sleep, or wedging, just
+ * after the phone woke up.
+ */
+async function goQuietAfterReturning(): Promise<void> {
+  await browser.execute(() => {
+    const w = window as unknown as { __realFetch?: typeof fetch; __RealWebSocket?: typeof WebSocket };
+    w.__realFetch ??= window.fetch.bind(window);
+    w.__RealWebSocket ??= window.WebSocket;
+    const realFetch = w.__realFetch;
+    const RealWebSocket = w.__RealWebSocket;
+    let answered = false;
+    window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const path = new URL(url, location.href).pathname;
+      if (!/^\/(v1|api|health)(\/|$)/.test(path) || !answered) {
+        if (path === '/health') answered = true;
+        return realFetch(input, init);
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => { reject(new DOMException('aborted', 'AbortError')); });
+      });
+    };
+    /** Never opens, never fails: only a close() ends it, as for a real one. */
+    class HungSocket {
+      readonly CONNECTING = 0;
+      readonly OPEN = 1;
+      readonly CLOSING = 2;
+      readonly CLOSED = 3;
+      readyState = 0;
+      onopen: ((ev: Event) => void) | null = null;
+      onclose: ((ev: { code: number }) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      send(): void {
+        throw new Error('not open');
+      }
+      close(): void {
+        if (this.readyState === 3) return;
+        this.readyState = 3;
+        setTimeout(() => { this.onclose?.({ code: 1006 }); }, 0);
+      }
+      addEventListener(): void { /* the app uses the on* handlers */ }
+      removeEventListener(): void { /* as above */ }
+    }
+    window.WebSocket = function (url: string | URL, protocols?: string | string[]) {
+      return String(url).includes('/ws/') ? new HungSocket() : new RealWebSocket(url, protocols);
+    } as unknown as typeof WebSocket;
+    let state: DocumentVisibilityState = 'hidden';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+    document.dispatchEvent(new Event('visibilitychange'));
+    state = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
 async function isDisabled(id: string): Promise<boolean> {
   return browser.execute(
     (selector: string) => document.querySelector(selector)?.getAttribute('aria-disabled') === 'true',
@@ -164,5 +222,21 @@ describe('the server becoming unreachable', () => {
     await goToSurface('chat');
     await sendAndAwaitReply('Hello again', mockEcho('Hello again'));
     await shot('unreachable-recovered');
+  });
+
+  it('notices a server that goes quiet just after the app comes back', async function () {
+    this.timeout(2 * 60_000);
+    const p = platform();
+    if (p !== 'web' && p !== 'electron') this.skip();
+    await goToSurface('chat');
+    await goQuietAfterReturning();
+    // The new socket never connects, so the app checks again after 3 s, and
+    // three failed checks later says it cannot reach the server — about 18 s.
+    // Leaving it to the 25 s heartbeat took about 40.
+    await waitForTextIn(BANNER, "Can't reach your server", 25_000);
+    await shot('unreachable-quiet-after-return');
+    await restoreServer();
+    await tap('shell.offlineRetry');
+    await waitForGone(BANNER, 15_000);
   });
 });

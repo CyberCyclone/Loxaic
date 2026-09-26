@@ -260,6 +260,10 @@ export function reduce(
         for (const key of Object.keys(state.sockets)) state.sockets[key] = { status: 'connecting', since: now };
         hold(RESUME_GRACE_MS);
         effects.push({ type: 'reconnectSockets' });
+        // The replacements report "connecting" into sockets already marked so,
+        // which schedules no check of their own: without this, one hanging
+        // after the resume probe answered waited for the heartbeat.
+        effects.push({ type: 'tickIn', ms: STUCK_CONNECTING_MS });
       }
       // With no socket this only probes, and the state stays as it was: a
       // settings screen must not grey out on every app switch.
