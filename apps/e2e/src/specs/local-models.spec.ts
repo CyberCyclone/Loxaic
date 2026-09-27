@@ -23,6 +23,7 @@ import { shot } from '../helpers/screenshot.ts';
 import { attachDocument, TEXT_FIXTURE } from '../helpers/attachments.ts';
 import {
   byTestId,
+  expectTextAbsent,
   isVisible,
   platform,
   tap,
@@ -268,9 +269,35 @@ describe('local models', () => {
     // The card's HTML is drawn, not shown as tags: its words and its links
     // are there, and none of its markup is.
     await waitForTextIn('localModels.details.card', 'See our collection for every version of Tiny.');
-    const card = await byTestId('localModels.details.card').getText();
-    expect(card).not.toMatch(/<\/?(div|p|strong|a|img)\b/);
     if (platform() === 'web' || platform() === 'electron') {
+      const card = await byTestId('localModels.details.card').getText();
+      expect(card).not.toMatch(/<\/?(div|p|strong|a|img)\b/);
+      // The words take their block's size and colour. On the web the text
+      // inside a markdown block used to fall back to react-native-web's own
+      // defaults (black, 14px): the heading came out the size of body text.
+      const styles = await browser.execute((selector: string) => {
+        const root = document.querySelector(selector);
+        const measure = (words: string) => {
+          const leaf = root
+            ? [...root.querySelectorAll('*')].find((e) =>
+                [...e.childNodes].some((n) => n.nodeType === 3 && (n.textContent ?? '').trim().startsWith(words)),
+              )
+            : undefined;
+          const block = leaf?.closest('span.font-sans');
+          if (!leaf || !block) return null;
+          const l = getComputedStyle(leaf);
+          const b = getComputedStyle(block);
+          return { size: l.fontSize, color: l.color, blockSize: b.fontSize, blockColor: b.color };
+        };
+        return { heading: measure('Tiny Test Model'), body: measure('model for the end-to-end suite') };
+      }, testIdSelector('localModels.details.card'));
+      expect(styles.heading).not.toBeNull();
+      expect(styles.body).not.toBeNull();
+      for (const s of [styles.heading, styles.body]) {
+        expect(s?.size).toBe(s?.blockSize);
+        expect(s?.color).toBe(s?.blockColor);
+      }
+      expect(Number.parseFloat(styles.heading?.size ?? '0')).toBeGreaterThan(Number.parseFloat(styles.body?.size ?? '0'));
       const links = await browser.execute((selector: string) => {
         const el = document.querySelector(selector);
         return el ? [...el.querySelectorAll('[role="link"]')].map((l) => l.textContent ?? '') : [];
@@ -281,6 +308,11 @@ describe('local models', () => {
         document.querySelector(selector)?.scrollIntoView({ block: 'start' });
       }, testIdSelector('localModels.details.card'));
       await shot('local-models-details-card');
+    } else {
+      // Native has no concatenated text to search (see waitForTextIn), so
+      // look for a leaf still showing a tag.
+      await expectTextAbsent('<strong>');
+      await expectTextAbsent('<div');
     }
     await waitForTextIn('localModels.details.stats', '12.3k');
     await waitForTextIn(`localModels.quant.fit.${hf.quants.download}`, 'Will fit');

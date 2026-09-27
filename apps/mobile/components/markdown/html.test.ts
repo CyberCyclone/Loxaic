@@ -135,6 +135,42 @@ describe('htmlToMarkdown', () => {
     expect(htmlToMarkdown(src)).toBe(src);
   });
 
+  it('keeps a markdown table whole when a cell has a line break or a pipe in code', () => {
+    const src = '| Model | Score |\n| --- | --- |\n| Qwen3 | 92.1<br>(pass@1) |\n| Tiny | <code>a|b</code> |\n';
+    const md = htmlToMarkdown(src);
+    expect(md).toBe('| Model | Score |\n| --- | --- |\n| Qwen3 | 92.1 (pass@1) |\n| Tiny | `a\\|b` |\n');
+    const table = lexMarkdown(md).find((t) => t.type === 'table') as { rows: unknown[][] } | undefined;
+    expect(table?.rows).toHaveLength(2);
+    expect(table?.rows.every((r) => r.length === 2)).toBe(true);
+  });
+
+  it('keeps a pipe in an HTML table cell’s code inside its cell', () => {
+    const md = htmlToMarkdown('<table><tr><th>Flag</th></tr><tr><td><code>a|b</code></td></tr></table>\n');
+    expect(md.trim()).toBe(['| Flag |', '| --- |', '| `a\\|b` |'].join('\n'));
+  });
+
+  it('keeps a heading on one line when it has a line break in it', () => {
+    expect(htmlToMarkdown('# Qwen3<br>Coder\n')).toBe('# Qwen3 Coder\n');
+  });
+
+  it('keeps everything after a self-closing tag it drops', () => {
+    const md = htmlToMarkdown('<p><svg width="16" height="16"/> Fast and <b>small</b>.</p>\n');
+    expect(md.trim()).toBe('Fast and **small**.');
+  });
+
+  it('reads an escaped backtick as a backtick, and still converts the tags after it', () => {
+    // The later code span is what the escaped backtick used to pair with.
+    const md = htmlToMarkdown('Quote with \\` then see <a href="https://x.org/d">docs</a> and `code`.\n');
+    expect(md).toBe('Quote with \\` then see [docs](<https://x.org/d>) and `code`.\n');
+  });
+
+  it('never turns HTML text into a setext heading or a rule', () => {
+    const md = htmlToMarkdown('<p>Results<br>=======<br>---</p>\n');
+    expect(md.trim()).toBe('Results\n\\=======\n\\---');
+    expect(types(md)).not.toContain('heading');
+    expect(types(md)).not.toContain('hr');
+  });
+
   it('turns details and summary into a bold line and its content', () => {
     const md = htmlToMarkdown('<details>\n<summary>Show benchmarks</summary>\n\nFast.\n\n</details>\n');
     expect(md).toContain('**Show benchmarks**');

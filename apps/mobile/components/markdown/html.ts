@@ -35,6 +35,13 @@ export function htmlToMarkdown(src: string): string {
         case 'hr':
         case 'def':
           return token.raw;
+        // A markdown table row and a heading are each one line: a `<br>`
+        // turned into a newline there ends the table or the heading. A
+        // table's cells also cannot hold an unescaped pipe.
+        case 'table':
+          return inlineHtmlToMarkdown(token.raw, { oneLine: true, inTable: true });
+        case 'heading':
+          return inlineHtmlToMarkdown(token.raw, { oneLine: true });
         default:
           return inlineHtmlToMarkdown(token.raw);
       }
@@ -85,6 +92,26 @@ const ATTR = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 type Mode = 'html' | 'mixed';
 
+const BACKTICKS = /`+/y;
+const closers = new Map<number, RegExp>();
+
+/** The run of exactly `n` backticks that closes a code span opened by one. */
+function closingRun(n: number): RegExp {
+  let re = closers.get(n);
+  if (!re) {
+    re = new RegExp(`(?<!\`)\`{${String(n)}}(?!\`)`, 'g');
+    closers.set(n, re);
+  }
+  return re;
+}
+
+/** Whether the character at `i` follows an odd run of backslashes. */
+function escaped(src: string, i: number): boolean {
+  let n = 0;
+  while (src[i - 1 - n] === '\\') n += 1;
+  return n % 2 === 1;
+}
+
 /** A tolerant tree builder: stray closing tags are ignored, unclosed ones end
  * at the end of the input. In `mixed` mode a code span is kept verbatim, so
  * a tag inside backticks stays code. */
@@ -116,8 +143,16 @@ function parse(src: string, mode: Mode): Node[] {
     i = next;
 
     if (src[i] === '`') {
-      const run = /^`+/.exec(src.slice(i))?.[0] ?? '`';
-      const close = new RegExp(`(?<!\`)${run}(?!\`)`, 'g');
+      BACKTICKS.lastIndex = i;
+      const run = BACKTICKS.exec(src)?.[0] ?? '`';
+      // An escaped backtick is a literal one, not the start of code: taken as
+      // code, it left every tag after it unconverted.
+      if (escaped(src, i)) {
+        text('`');
+        i += 1;
+        continue;
+      }
+      const close = closingRun(run.length);
       close.lastIndex = i + run.length;
       const end = close.exec(src);
       const stop = end ? end.index + run.length : i + run.length;
@@ -150,6 +185,9 @@ function parse(src: string, mode: Mode): Node[] {
       continue;
     }
     if (DROPPED.has(name)) {
+      // `<svg .../>` has no closing tag to look for; searching for one
+      // dropped everything after it.
+      if (m[0].endsWith('/>')) continue;
       const close = new RegExp(`</${name}\\s*>`, 'ig');
       close.lastIndex = i;
       const end = close.exec(src);
@@ -270,7 +308,10 @@ function textContent(nodes: Node[]): string {
 interface InlineOpts {
   mode: Mode;
   inLink?: boolean;
-  inCell?: boolean;
+  /** Where a line break would end the construct: a table row, a heading. */
+  oneLine?: boolean;
+  /** In a table cell, where a pipe would start the next cell. */
+  inTable?: boolean;
 }
 
 function inline(nodes: Node[], opts: InlineOpts): string {
@@ -284,7 +325,7 @@ function inlineNode(node: Node, opts: InlineOpts): string {
   const { tag, attrs, children } = node;
   switch (tag) {
     case 'br':
-      return opts.inCell ? ' ' : '\n';
+      return opts.oneLine ? ' ' : '\n';
     case 'wbr':
     case 'source':
       return '';
@@ -320,16 +361,21 @@ function inlineNode(node: Node, opts: InlineOpts): string {
     case 'tt':
     case 'kbd':
     case 'samp':
-      return codeSpan(decodeEntities(textContent(children)).replace(/\s+/g, ' '));
+      {
+      const code = codeSpan(decodeEntities(textContent(children)).replace(/\s+/g, ' '));
+      // GFM splits a row on every unescaped pipe, code spans included, and
+      // reads `\|` there as the pipe itself.
+      return opts.inTable ? code.replace(/\|/g, '\\|') : code;
+    }
     case 'q':
       return `“${inline(children, opts)}”`;
     case 'hr':
-      return opts.mode === 'mixed' && !opts.inCell ? '\n' : ' ';
+      return opts.mode === 'mixed' && !opts.oneLine ? '\n' : ' ';
     default:
       if (BLOCK.has(tag)) {
         // A block where only inline content can go: a heading or a table
         // cell (html), or a paragraph or list item (mixed).
-        const sep = opts.mode === 'mixed' && !opts.inCell ? '\n' : ' ';
+        const sep = opts.mode === 'mixed' && !opts.oneLine ? '\n' : ' ';
         return `${sep}${inline(children, opts)}${sep}`;
       }
       return inline(children, opts);
@@ -346,7 +392,9 @@ function paragraph(nodes: Node[]): string {
       line
         .trim()
         .replace(/^(#{1,6}|[+-])(?=\s|$)/, '\\$1')
-        .replace(/^(\d+)([.)])(?=\s|$)/, '$1\\$2'),
+        .replace(/^(\d+)([.)])(?=\s|$)/, '$1\\$2')
+        // A line of only `=` or `-` would make the line above it a heading.
+        .replace(/^([=-])(?=[=-]*$)/, '\\$1'),
     )
     .filter(Boolean)
     .join('\n')
@@ -449,7 +497,7 @@ function table(el: Element): string[] {
     .map((r) =>
       r.children
         .filter((c): c is Element => c.kind === 'el' && (c.tag === 'td' || c.tag === 'th'))
-        .map((c) => inline(c.children, { mode: 'html', inCell: true }).replace(/\s+/g, ' ').trim()),
+        .map((c) => inline(c.children, { mode: 'html', oneLine: true, inTable: true }).replace(/\s+/g, ' ').trim()),
     )
     .filter((r) => r.length > 0);
   const cols = Math.max(0, ...cells.map((r) => r.length));
@@ -463,7 +511,7 @@ function htmlBlockToMarkdown(src: string): string {
   return blocks(parse(src, 'html')).join('\n\n');
 }
 
-function inlineHtmlToMarkdown(src: string): string {
+function inlineHtmlToMarkdown(src: string, opts: Omit<InlineOpts, 'mode'> = {}): string {
   if (!/<[A-Za-z/]/.test(src)) return src;
-  return inline(parse(src, 'mixed'), { mode: 'mixed' });
+  return inline(parse(src, 'mixed'), { ...opts, mode: 'mixed' });
 }

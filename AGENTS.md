@@ -1109,7 +1109,8 @@ replies.
   blocks are converted as HTML (whitespace collapsed, text escaped so it stays text); HTML
   inside a paragraph is converted tag by tag with the markdown around it untouched; code is
   never touched; a tag it does not know stays literal (`<your-token>` in prose is usually a
-  placeholder). Images are not fetched — a badge becomes its link, labelled by alt text or
+  placeholder). A markdown table row and a heading are one line each, so a `<br>` there becomes
+  a space, and a pipe in a table cell's code is escaped — either one otherwise ends the table. Images are not fetched — a badge becomes its link, labelled by alt text or
   where it goes — and only http(s)/mailto links survive, here and in `openLink` for every
   markdown link. The mock card opens with HTML for the same reason the mock README is slow:
   a mock tidier than the real thing hid the bug.
