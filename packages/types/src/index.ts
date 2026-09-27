@@ -50,6 +50,43 @@ export type Workspace =
       isolation: WorkspaceIsolation;
     };
 
+/**
+ * The project's own instructions file (AGENTS.md, else CLAUDE.md) at the root
+ * of an agent conversation's workspace, as read once — before the first
+ * request — and then frozen. Stored on `conversations.instructions`; null
+ * there means nobody has looked yet.
+ *
+ * `decision` is how the file is presented to the model, fixed per model so the
+ * system prompt stays byte-identical between turns (AGENTS.md, "Project
+ * instructions"): `full` is the whole text, `outline` its opening and headings
+ * with line ranges for the model to page through with fs_read.
+ */
+export type InstructionsMode = "full" | "outline";
+export interface InstructionsDecision {
+  model: string;
+  /** The window the decision was made against; null when it was unknown. */
+  windowTokens: number | null;
+  mode: InstructionsMode;
+}
+export type ProjectInstructions =
+  | {
+      status: "found";
+      /** Relative to the workspace root, e.g. `AGENTS.md`. */
+      path: string;
+      text: string;
+      /** Bytes read — equal to the file's size unless `sourceTruncated`. */
+      sourceBytes: number;
+      sourceTruncated: boolean;
+      fetchedAt: string;
+      decision?: InstructionsDecision;
+    }
+  | { status: "none"; fetchedAt: string };
+
+/** What a client is told about a conversation's instructions — never the text. */
+export type ProjectInstructionsSummary =
+  | { status: "found"; path: string; mode: InstructionsMode | null; tokens: number; sourceBytes: number; sourceTruncated: boolean }
+  | { status: "none" };
+
 export type MessageStatus = "streaming" | "complete" | "error" | "cancelled";
 
 export type AuthorType = "user" | "assistant" | "system" | "tool" | "summary";

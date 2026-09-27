@@ -23,7 +23,8 @@ import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import type { ChangedFile, Workspace, WorkspaceChoice } from '@/lib/types';
 import { describeRetention, formatDeadline } from '@/lib/retention';
-import type { GitStatus, SandboxRetention, SandboxRow } from '@loxaic/api-client';
+import { describeProjectInstructions } from '@/lib/projectInstructions';
+import type { GitStatus, ProjectInstructionsSummary, SandboxRetention, SandboxRow } from '@loxaic/api-client';
 import type { Todo } from '@loxaic/api-client';
 
 /** What the Inspector's Git section needs — computed by the caller
@@ -64,6 +65,30 @@ export interface WorkspaceView {
   /** What the workspace is — the run's fixed one, or the pending choice for
    * a run not yet started. Null/undefined is scratch. */
   workspace?: Workspace | WorkspaceChoice | null;
+  /** The project's AGENTS.md as the agent is shown it (useProjectInstructions). */
+  instructions?: ProjectInstructionsSummary | null;
+}
+
+/**
+ * Whether the agent was given the project's own AGENTS.md, and how. Worth a
+ * line because the answer depends on the model: the same file goes in whole
+ * for a model with a large window and as an outline for a small one, and
+ * that changes how the agent works.
+ */
+function InstructionsSection({ workspace }: { workspace: WorkspaceView }) {
+  const kind = workspace.workspace?.kind ?? 'scratch';
+  const line = describeProjectInstructions(workspace.instructions, kind);
+  if (!line) return null;
+  return (
+    <VStack space="xs">
+      <Text size="sm" className="font-semibold text-foreground">
+        Project instructions
+      </Text>
+      <Text testID="agent.inspector.instructions" size="xs" className="text-muted-foreground">
+        {line}
+      </Text>
+    </VStack>
+  );
 }
 
 /**
@@ -292,6 +317,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
   return (
     <VStack space="lg">
       {workspace && <WorkspaceSection workspace={workspace} />}
+      {workspace && <InstructionsSection workspace={workspace} />}
       {git && <GitSection git={git} />}
 
       <VStack space="xs">

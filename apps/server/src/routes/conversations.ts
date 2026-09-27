@@ -12,6 +12,20 @@ import { BadCursorError, loadMessagePage, type MessagePage } from "../conversati
  * the start of the turn it cuts into. */
 const MESSAGE_PAGE_SIZE = 200;
 import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
+import { summarizeInstructions } from "../agent/instructions.ts";
+
+/**
+ * A conversation row as a client may see it. The stored instructions
+ * snapshot is the project's whole AGENTS.md — up to a megabyte, fifty times
+ * over in a listing — so it leaves as a summary: which file, how big, and how
+ * the model is shown it.
+ */
+function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T, "instructions"> & {
+  instructions: ReturnType<typeof summarizeInstructions>;
+} {
+  const { instructions, ...rest } = row;
+  return { ...rest, instructions: summarizeInstructions(instructions) };
+}
 import { getRunByConversation } from "../streams/registry.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
 
@@ -53,7 +67,7 @@ export function conversationRoutes(app: FastifyInstance) {
       .limit(50);
 
     return rows.map((row) => ({
-      ...row,
+      ...publicConversation(row),
       role: row.ownerId === userId ? "owner" : (sharedRoles.get(row.id) ?? "viewer"),
     }));
   });
@@ -76,7 +90,7 @@ export function conversationRoutes(app: FastifyInstance) {
     // Whether a run is going right now, from the registry — exact, and the
     // signal a test (or a client) polls for "has the agent finished" rather
     // than guessing from message statuses. Process-local, like the registry.
-    return { ...row, role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
+    return { ...publicConversation(row), role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
   });
 
   /**
@@ -133,7 +147,7 @@ export function conversationRoutes(app: FastifyInstance) {
         mcpOverrides: normalizeMcpOverrides(mcp_overrides),
       })
       .returning();
-    return row;
+    return publicConversation(row);
   });
 
   // Update conversation (per-conversation model preference / MCP overrides)
@@ -170,7 +184,7 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    return row;
+    return publicConversation(row);
   });
 
   /**

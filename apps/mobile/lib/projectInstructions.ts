@@ -1,0 +1,40 @@
+import type { ProjectInstructionsSummary } from '@loxaic/api-client';
+
+/**
+ * The Inspector's sentence about the project's own AGENTS.md — whether the
+ * agent was given it, and in what form. Pure so every state is unit-tested:
+ * "not looked yet" and "we were not told" must never read as "there is none".
+ *
+ * Returns null where there is nothing true to say: a scratch workspace has no
+ * project, and an unknown summary (not fetched, an older server) claims
+ * nothing.
+ */
+export function describeProjectInstructions(
+  summary: ProjectInstructionsSummary | null | undefined,
+  workspaceKind: 'scratch' | 'github' | 'local',
+): string | null {
+  if (workspaceKind === 'scratch' || summary === undefined) return null;
+  if (summary === null) return 'Looked for AGENTS.md or CLAUDE.md when the first message is sent.';
+  if (summary.status === 'none') return 'No AGENTS.md or CLAUDE.md at the root of this project.';
+  const size = `~${formatTokens(summary.tokens)} tokens`;
+  const partial = summary.sourceTruncated ? ` Only its first ${formatKb(summary.sourceBytes)} was read.` : '';
+  switch (summary.mode) {
+    case 'full':
+      return `${summary.path} (${size}) is included in full.${partial}`;
+    case 'outline':
+      return (
+        `${summary.path} (${size}) is more than this model's context window can spare, so the agent gets its ` +
+        `opening and section headings, and reads sections as it needs them.${partial}`
+      );
+    default:
+      return `${summary.path} (${size}) found.${partial}`;
+  }
+}
+
+function formatTokens(n: number): string {
+  return n >= 10_000 ? `${String(Math.round(n / 1000))}k` : n.toLocaleString('en-US');
+}
+
+function formatKb(bytes: number): string {
+  return bytes >= 1024 * 1024 ? `${String(Math.round(bytes / (1024 * 1024)))} MB` : `${String(Math.round(bytes / 1024))} KB`;
+}

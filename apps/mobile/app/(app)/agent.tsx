@@ -31,6 +31,7 @@ import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
+import { useProjectInstructions } from '@/hooks/useProjectInstructions';
 import { useGitPanel } from '@/hooks/useGitPanel';
 import { canEdit, isOwner } from '@/lib/types';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
@@ -149,6 +150,8 @@ export default function AgentScreen() {
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
   const { sandbox } = useWorkspaceStatus(activeId, runState);
+  // Looked for on the conversation's first run, so asked again as runs end.
+  const instructions = useProjectInstructions(activeRun ? activeId : null, runState);
   // The banner is about *this* workspace's network, which is fixed at its
   // creation (the row records it), not the server-wide setting, which only
   // says what the next one gets. Keyed on the setting alone, it vanished the
@@ -162,7 +165,7 @@ export default function AgentScreen() {
   // once it does, they show the run's own, which is fixed.
   const currentWorkspace = activeRun ? (activeRun.workspace ?? null) : pendingWorkspace;
   const workspace = config
-    ? { retention: config.sandbox.retention, sandbox, workspace: currentWorkspace }
+    ? { retention: config.sandbox.retention, sandbox, workspace: currentWorkspace, instructions }
     : null;
   // Only a real (server-assigned) github workspace has anything to fetch —
   // an optimistic `pending-*`/`lm*` id has never been seen by the server, and

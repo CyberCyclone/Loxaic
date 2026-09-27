@@ -37,15 +37,18 @@ interface RequestOptions {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  /** Aborts the request early — on top of, never instead of, TIMEOUT_MS. */
+  signal?: AbortSignal;
 }
 
 async function rawRequest(token: string, path: string, init?: RequestOptions): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, TIMEOUT_MS);
+  const { signal: callerSignal, ...rest } = init ?? {};
   try {
     const res = await fetch(apiUrl(path), {
-      ...init,
-      signal: controller.signal,
+      ...rest,
+      signal: callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal,
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
@@ -207,6 +210,72 @@ export async function getBranch(
     token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${ref}`,
   );
+}
+
+/**
+ * A file's text at `ref`, read to at most `maxBytes`, or null when the file
+ * does not exist there. The raw media type returns the bytes themselves (and
+ * works past the JSON form's 1 MB limit); the body is a stranger's file of any
+ * size, so it is read to the cap rather than with `res.text()`.
+ */
+export async function getFileText(
+  token: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<{ text: string; bytes: number; truncated: boolean } | null> {
+  const encPath = path.split("/").map(encodeURIComponent).join("/");
+  let res: Response;
+  try {
+    res = await rawRequest(
+      token,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encPath}?ref=${encodeURIComponent(ref)}`,
+      { headers: { Accept: "application/vnd.github.raw" }, ...(signal ? { signal } : {}) },
+    );
+  } catch (err) {
+    if (err instanceof GithubApiError && err.status === 404) return null;
+    throw err;
+  }
+  const body = await readCapped(res, maxBytes);
+  return { text: new TextDecoder().decode(body.bytes), bytes: body.bytes.length, truncated: body.truncated };
+}
+
+/** Reads a response body up to `max` bytes, cancelling the rest. A cut can
+ * land inside a multi-byte character; the decoder then emits one U+FFFD at the
+ * end, which is harmless for text that is only ever read by a model. */
+async function readCapped(res: Response, max: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!res.body) return { bytes: new Uint8Array(), truncated: false };
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (total + value.length > max) {
+        chunks.push(value.subarray(0, max - total));
+        total = max;
+        truncated = true;
+        break;
+      }
+      chunks.push(value);
+      total += value.length;
+    }
+  } finally {
+    if (truncated) await reader.cancel().catch(() => undefined);
+    else reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return { bytes: out, truncated };
 }
 
 export interface GithubPull {

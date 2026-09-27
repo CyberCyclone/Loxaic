@@ -27,7 +27,9 @@
  * its URL crosses a process boundary), so both behaviours have to be reachable
  * by choosing a token.
  */
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import path from 'node:path';
 import type { IncomingMessage } from 'node:http';
 
 export const VALID_TOKEN = 'e2e-github-token';
@@ -77,6 +79,9 @@ function repos(cloneUrlFor: (name: string) => string) {
     // pre-seeded sandbox, so the real-model suite exercises the same clone
     // path the mock lane's GitHub-workspace specs do. See real-model-build.spec.ts.
     { id: 3, full_name: 'e2e/seeded-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('seeded-app') },
+    // A repo with its own AGENTS.md, and another in pkg/sub
+    // (apps/e2e/fixtures/instructions-app). See agent-instructions.spec.ts.
+    { id: 4, full_name: 'e2e/instructions-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('instructions-app') },
   ];
 }
 
@@ -84,6 +89,7 @@ const BRANCHES = new Map<string, string[]>([
   ['e2e/bugfix-app', ['main', 'feature/one']],
   ['e2e/other-repo', ['trunk']],
   ['e2e/seeded-app', ['main']],
+  ['e2e/instructions-app', ['main']],
 ]);
 
 function json(res: import('node:http').ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
@@ -95,6 +101,10 @@ let server: Server | null = null;
 
 export async function startMockGithub(opts?: {
   cloneUrlFor?: (name: string) => string;
+  /** The fixture directory a repo's files are served from, by repo name —
+   * the same directories the git server makes repos of, so what the contents
+   * API returns is what a clone would check out. */
+  fixtureDirFor?: (name: string) => string | undefined;
 }): Promise<{ url: string; stop: () => Promise<void> }> {
   pulls = [];
   const REPOS = repos(opts?.cloneUrlFor ?? ((name) => `https://example.test/e2e/${name}.git`));
@@ -172,6 +182,22 @@ export async function startMockGithub(opts?: {
     // anything is cloned — without this route every GitHub-workspace spec
     // would be refused for a base branch the fixture does have. The trailing
     // capture is greedy on purpose: branch names contain slashes.
+    // GET /repos/:owner/:repo/contents/:path with the raw media type — how
+    // the server reads a workspace's AGENTS.md before anything is cloned.
+    const contentsMatch = /^\/repos\/([^/]+)\/([^/]+)\/contents\/(.+)$/.exec(url.pathname);
+    if (contentsMatch) {
+      if (metadataOnly) { json(res, 403, forbidden); return; }
+      const dir = opts?.fixtureDirFor?.(contentsMatch[2]);
+      const rel = decodeURIComponent(contentsMatch[3]);
+      const file = dir ? path.resolve(dir, rel) : null;
+      if (!dir || !file?.startsWith(`${path.resolve(dir)}${path.sep}`) || !existsSync(file) || !statSync(file).isFile()) {
+        json(res, 404, { message: 'Not Found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/vnd.github.raw' });
+      res.end(readFileSync(file));
+      return;
+    }
     const branchMatch = /^\/repos\/([^/]+)\/([^/]+)\/branches\/(.+)$/.exec(url.pathname);
     if (branchMatch) {
       if (metadataOnly) { json(res, 403, forbidden); return; }

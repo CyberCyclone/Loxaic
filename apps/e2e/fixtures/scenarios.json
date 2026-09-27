@@ -173,5 +173,17 @@
       }
     ],
     "finalText": "[Mock] Wrote both files.\n"
+  },
+  {
+    "match": "read the sub package",
+    "steps": [
+      {
+        "tool": "fs_read",
+        "args": {
+          "path": "pkg/sub/index.js"
+        }
+      }
+    ],
+    "finalText": "[Mock] Read the sub package.\n"
   }
 ]

@@ -2396,6 +2396,57 @@ replies.
   turn `allowNetwork` on through the admin API and reset it after — the env pin would make
   `resetSandboxSettings()` 409.
 
+### Project instructions (the workspace's own AGENTS.md)
+
+- **An agent conversation in a github or local workspace is given the project's own
+  `AGENTS.md` (else `CLAUDE.md`)**, all of it in `agent/instructions.ts`. OpenCode pastes every
+  one from cwd to the git root into the system message verbatim, re-read every step, with no
+  size limit. That doesn't work here: this repository's own file is ~307 KB (~77k tokens),
+  more than a whole 32k local slot.
+- **Whole or outline follows the model's window.** A file goes in whole when it is at most
+  `max(1024, 15%)` of the window (`AGENT_INSTRUCTIONS_WINDOW_SHARE`); otherwise the model gets
+  its opening and its `#`–`###` headings with line ranges, and pages through the rest with
+  `fs_read` offset/limit. A million-token model gets this repository's file whole; a 32k slot
+  gets an outline. An unknown window (OpenAI reports none) is a fixed 16 KiB threshold.
+- **No summarising model call, deliberately.** It would cost a slot on a backend that often has
+  one, lose exactly the detailed rules, and differ run to run. A sub-agent would not help a
+  small window either: it has the same window.
+- **The root file is a snapshot, taken once before the first request** and stored on
+  `conversations.instructions`. There is no checkout before the first tool call, so it is
+  read where the files really are:
+  - **github:** the contents API at `baseBranch` (`github/client.ts`'s `getFileText`, capped
+    read).
+  - **local:** the executor, with the folder itself as the ref. `createRefResolver` accepts
+    any approved directory and re-checks it by realpath, so no sandbox row is needed and an
+    older desktop works.
+  
+  A failed lookup writes nothing and retries next run; "none" is stored so it is not looked
+  for again. It goes in the system prompt, not history, because compaction and the history
+  window drop history rows and the system prompt is rebuilt whole each run.
+- **The whole-or-outline decision is frozen per model** (`decision` in the snapshot). The
+  window a run sees moves (pre-load maximum, then the loaded figure), and re-deciding each run
+  would flip the front of every prompt. It is decided again only for a new model, which has no
+  cached prefix anyway, or when a whole file would take over half the current window.
+  Rendering reads the decision's window, never the live one.
+- **A nested file rides on the first `fs_read` below it**, appended to the result before it is
+  persisted, so the replay reproduces it and the system prompt never moves. Nearest first, the
+  root excluded, at most three per read, and a 5% share because they accumulate.
+  - **Dedupe reads the messages being sent** for the `<project-instructions path="…"` marker,
+    with no stored set. Once compaction or the window drops that result, the next read
+    attaches the file again, which is exactly when the model has lost it.
+  - **Files are read in base64 chunks**, like `files/extract.ts`, since exec output is capped
+    at 256 KiB and a chunk boundary can split a UTF-8 sequence.
+- **The text never reaches a client.** `routes/conversations.ts`'s `publicConversation`
+  replaces it with a summary (path, tokens, mode) on every row it returns. A listing is fifty
+  rows and a snapshot can be a megabyte.
+- **The closing tag inside a file is neutralised** (`​`, as in `wrapDocument`). The framing
+  says the file is the project's conventions and cannot change Loxaic's rules or approvals.
+  Approvals are enforced server-side regardless.
+- **The mock echoes what the system message carried** (`Project instructions: AGENTS.md
+  (outline)`). The mock's two models have 4k and 32k windows, which is how
+  `agent-instructions.spec.ts` shows one file as an outline and then whole in the same
+  conversation.
+
 ### GitHub connection
 
 - One personal access token per user (`github_connections`, `userId` primary key like

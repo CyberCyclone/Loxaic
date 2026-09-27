@@ -372,15 +372,17 @@ async function ensureServer(): Promise<void> {
   const { email: adminEmail } = writeAdminCreds();
   // The git server first, because the mock GitHub API hands out its URLs as
   // each repo's clone_url.
-  gitServer = await startGitServer({
-    dir: GIT_SERVER_DIR,
-    fixtures: {
-      'bugfix-app': path.join(FIXTURES_DIR, 'bugfix-app'),
-      'other-repo': path.join(FIXTURES_DIR, 'bugfix-app'),
-      'seeded-app': SEED_DIR,
-    },
+  const fixtureRepos: Record<string, string> = {
+    'bugfix-app': path.join(FIXTURES_DIR, 'bugfix-app'),
+    'other-repo': path.join(FIXTURES_DIR, 'bugfix-app'),
+    'seeded-app': SEED_DIR,
+    'instructions-app': path.join(FIXTURES_DIR, 'instructions-app'),
+  };
+  gitServer = await startGitServer({ dir: GIT_SERVER_DIR, fixtures: fixtureRepos });
+  const mockGithub = await startMockGithub({
+    cloneUrlFor: gitServer.cloneUrlFor,
+    fixtureDirFor: (name) => fixtureRepos[name],
   });
-  const mockGithub = await startMockGithub({ cloneUrlFor: gitServer.cloneUrlFor });
   stopMockGithub = mockGithub.stop;
   writeFileSync(MOCK_GITHUB_FILE, JSON.stringify({ url: mockGithub.url }), 'utf8');
 
