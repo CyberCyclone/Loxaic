@@ -21,7 +21,6 @@ import { WorkspaceChooser } from '@/components/agent/WorkspaceChooser';
 import { WorkspacePill } from '@/components/agent/WorkspacePill';
 import { TerminalPanel } from '@/components/agent/TerminalPanel';
 import { Composer } from '@/components/composer/Composer';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
@@ -600,7 +599,6 @@ export default function AgentScreen() {
         }}
         onClose={planReview.close}
       />
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal
         open={modelModalOpen}
         onClose={() => {

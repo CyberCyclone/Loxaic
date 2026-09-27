@@ -17,7 +17,6 @@ import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
 import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
 import { Composer } from '@/components/composer/Composer';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
@@ -286,7 +285,6 @@ export default function ChatScreen() {
         />
       )}
 
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
       <ModelModal
         open={modelModalOpen}
         onClose={() => { setModelModalOpen(false); }}

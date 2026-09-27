@@ -217,7 +217,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       <ModalContent className="max-h-[85%]">
         <ModalHeader>
           <Heading size="sm">Settings</Heading>
-          <ModalCloseButton>
+          <ModalCloseButton testID="settings.close">
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>

@@ -13,7 +13,6 @@ import { McpServerCard } from '@/components/mcp/McpServerCard';
 import { McpCatalogCard } from '@/components/mcp/McpCatalogCard';
 import { McpServerModal } from '@/components/mcp/McpServerModal';
 import { McpToolsSheet } from '@/components/mcp/McpToolsSheet';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { useMcpServers } from '@/hooks/useMcpServers';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useSession } from '@/lib/session';
@@ -143,7 +142,6 @@ export default function McpScreen() {
         linked={editing ? isLinked(editing) : false}
       />
       <McpToolsSheet server={toolsFor} onClose={() => { setToolsFor(null); }} test={test} update={update} />
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }

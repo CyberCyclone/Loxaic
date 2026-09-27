@@ -228,6 +228,11 @@ replies.
   `EXPO_PUBLIC_USE_RN_FETCH=1` to paper over this — it is inlined at bundle time, so it would
   have to be set in every build shell forever, and it silently changes fetch semantics for the
   whole app.
+- **`SettingsModal` renders once, in `AppShell`, never per screen.** Every screen used to render
+  its own copy off the shell's `settingsOpen` flag; Routines, Stats and Admin never did, so the
+  sidebar's Settings did nothing there, and the flag stayed set and opened the modal unasked on the
+  next screen that had one. A screen now only calls `useShell().openSettings()`.
+  `settings-every-screen.spec.ts` opens it from each surface.
 - **`SettingsModal`'s `ModalContent` is height-bounded (`max-h-[85%]`) and its `ModalBody` has
   `scrollEnabled` on**, because the vendored `ModalBody` (`components/ui/modal/index.tsx`)
   hardcodes `scrollEnabled={false}` and the modal has no max-height by default — content past

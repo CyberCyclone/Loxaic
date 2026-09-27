@@ -6,7 +6,6 @@ import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { SandboxStatusCard } from '@/components/sandbox/SandboxStatusCard';
 import { ModePicker } from '@/components/sandbox/ModePicker';
 import { EnginePicker } from '@/components/sandbox/EnginePicker';
@@ -223,7 +222,6 @@ export default function SandboxScreen() {
         onCancel={() => { setPendingWarning(null); }}
       />
 
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }
