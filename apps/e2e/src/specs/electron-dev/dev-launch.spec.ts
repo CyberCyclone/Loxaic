@@ -18,6 +18,12 @@ import { BASE_URL } from '../../../scripts/standup.ts';
 
 const metro = metroStandIn(BASE_URL, Number(process.env.E2E_DEV_METRO_PORT));
 
+/** The app's windows, as the main process counts them — not chromedriver,
+ * which may go on listing a closed window's handle for a moment. */
+async function windowCount(): Promise<number> {
+  return browser.electron.execute((electron) => electron.BrowserWindow.getAllWindows().length);
+}
+
 async function apiBaseUrl(): Promise<string | null> {
   return browser.execute(
     () => (window as unknown as { loxaic?: { apiBaseUrl?: string | null } }).loxaic?.apiBaseUrl ?? null,
@@ -62,6 +68,48 @@ describe('the desktop app under pnpm dev', () => {
     await waitForVisible('devLaunch.waiting', 60_000);
     expect(await byTestId('devLaunch.url').getText()).toBe(process.env.LOXAIC_DEV_RENDERER_URL);
     await shot('dev-launch-waiting-for-metro');
+  });
+
+  it('closes the dev-server waiting window as soon as the real one exists, not once Metro answers', async () => {
+    // Metro is still down, so the real window is parked on its own waiting
+    // page. The one saying "waiting for the dev server" is out of date by now.
+    await browser.waitUntil(async () => (await windowCount()) === 1, {
+      timeout: 10_000,
+      timeoutMsg: 'the dev-server waiting window is still open beside the real one',
+    });
+  });
+
+  it('reopens from the dock after the Metro-waiting window is closed, and survives a power event', async () => {
+    // Closing the window while it waits for Metro, then clicking the dock
+    // icon: the app must know the window has gone. Before, it held on to the
+    // destroyed window, so nothing reopened and the next power event threw in
+    // the main process.
+    await browser.electron.execute((electron) => {
+      electron.BrowserWindow.getAllWindows()[0]?.close();
+    });
+    await browser.waitUntil(async () => (await windowCount()) === 0, {
+      timeout: 10_000,
+      timeoutMsg: 'the window did not close',
+    });
+    // A string either way: the service hands a `null` back as `undefined`.
+    const outcome = await browser.electron.execute((electron) => {
+      try {
+        electron.powerMonitor.emit('resume');
+        return 'delivered';
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    });
+    expect(outcome).toBe('delivered');
+    await browser.electron.execute((electron) => {
+      electron.app.emit('activate');
+    });
+    await browser.waitUntil(async () => (await windowCount()) === 1, {
+      timeout: 10_000,
+      timeoutMsg: 'clicking the dock icon did not reopen the window',
+    });
+    await focusRealWindow();
+    await waitForVisible('devLaunch.waiting', 30_000);
   });
 
   it('opens the app by itself once Metro answers', async () => {

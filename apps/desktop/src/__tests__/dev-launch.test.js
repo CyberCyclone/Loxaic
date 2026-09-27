@@ -6,6 +6,7 @@ import {
   devUrls,
   isMetroStatus,
   loadDevRenderer,
+  POLL_INTERVAL_MS,
   serverWaitingPageUrl,
   waitingPageUrl,
   waitUntil,
@@ -199,6 +200,24 @@ describe("loadDevRenderer", () => {
       await flush();
     }
     expect(win.loads.filter((u) => u === RENDERER)).toHaveLength(3);
+  });
+
+  it("waits an interval between retries when Metro answers but every load fails", async () => {
+    const win = fakeWindow();
+    const sleeps = [];
+    await loadDevRenderer(win, {
+      rendererUrl: RENDERER,
+      probe: async () => true,
+      sleep: async (ms) => { sleeps.push(ms); },
+    });
+    for (let i = 0; i < 3; i++) {
+      win.fail(RENDERER);
+      await flush();
+      await flush();
+    }
+    // Every retry of the real load came after a sleep of its own.
+    expect(win.loads.filter((u) => u === RENDERER)).toHaveLength(4);
+    expect(sleeps).toEqual([POLL_INTERVAL_MS, POLL_INTERVAL_MS, POLL_INTERVAL_MS]);
   });
 
   it("ignores a navigation that was merely superseded, and a subframe's failure", async () => {

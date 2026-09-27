@@ -66,6 +66,14 @@ no retry, so a Metro that was not up yet (or had died with a reboot) left a blan
 good. A dev window now shows "Waiting for Metro" until Metro answers and comes back to it on any
 failed load. `electron .` on its own (no `LOXAIC_DEV_STACK`) keeps the single probe, since
 nothing is coming. `pnpm dev --filter=@loxaic/server` is still the way to run just the server.
+**In development `createWindow()` does not return until Metro answers**, which can be minutes, so
+anything about the window itself happens *before* that await: its `closed` handler (a window
+closed while waiting otherwise left `mainWindow` a destroyed object, so the dock never reopened
+the app and the next power or update event threw "Object has been destroyed" in the main
+process), and closing the dev-server waiting window, which otherwise stayed on screen beside the
+real one for the whole Metro wait. A retried load waits an interval even when Metro says it is up,
+or a load Chromium keeps refusing would loop with nothing sleeping. All found in review;
+`electron-dev/dev-launch.spec.ts` drives each one through the real main process.
 
 Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
 

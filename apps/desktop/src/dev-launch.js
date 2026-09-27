@@ -94,6 +94,10 @@ function page(testId, title, paragraphs) {
  * it needs nothing to be running. It names the address it is waiting on and
  * the command that starts it, and says it will carry on by itself — the thing
  * a blank window never said.
+ *
+ * It loads into the real window, which carries `preload.cjs` and so the
+ * `window.loxaic` bridge — unlike the dev-server page, whose window has none.
+ * Keep it static and escaped: nothing here may reflect what a server said.
  */
 export function waitingPageUrl(rendererUrl) {
   return page("devLaunch.waiting", "Waiting for Metro", [
@@ -132,7 +136,7 @@ export async function loadDevRenderer(win, { rendererUrl, probe, sleep, log = ()
   // sit on whatever the failure left behind.
   let waiting = false;
 
-  const waitThenLoad = async () => {
+  const waitThenLoad = async (retry = false) => {
     waiting = true;
     try {
       if (!(await probe())) {
@@ -141,6 +145,13 @@ export async function loadDevRenderer(win, { rendererUrl, probe, sleep, log = ()
         const up = await waitUntil(probe, { sleep, shouldStop: () => win.isDestroyed() });
         if (!up) return;
         log(`Metro is up at ${rendererUrl}`);
+      } else if (retry) {
+        // Metro says it is up and the load failed anyway — a response Chromium
+        // refuses, a proxy in front of it. Nothing in that loop would ever
+        // sleep, so a retry waits one interval: at worst a load a second,
+        // never a busy loop against Metro and the main process.
+        await sleep(POLL_INTERVAL_MS);
+        if (win.isDestroyed()) return;
       }
     } finally {
       waiting = false;
@@ -155,7 +166,7 @@ export async function loadDevRenderer(win, { rendererUrl, probe, sleep, log = ()
     // The waiting page is a data: URL and cannot be what failed.
     if (typeof validatedUrl === "string" && validatedUrl.startsWith("data:")) return;
     if (waiting || win.isDestroyed()) return;
-    void waitThenLoad();
+    void waitThenLoad(true);
   };
   win.webContents.on("did-fail-load", onFail);
 

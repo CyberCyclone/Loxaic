@@ -81,8 +81,13 @@ async function runGui() {
 
   const PROBE_TIMEOUT_MS = 1500;
   const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
-  /** Development only: the window shown while pnpm dev's server starts. */
+  /** Development only: the window shown while pnpm dev's server starts. Set
+   * from its creation until the real window is constructed, and only then —
+   * which is exactly when closing every window means "stop waiting", not quit. */
   let devSplash = null;
+  /** Whether the launch has settled which server the window talks to. Until
+   * then there is no window to reopen from the dock: it is still coming. */
+  let apiResolved = false;
 
   /**
    * How long a launch waits for a tailnet before opening the window anyway.
@@ -442,8 +447,8 @@ async function runGui() {
         console.log(`[loxaic] waiting for the dev server at ${devServerUrl} (started by pnpm dev)`);
         // The real window needs the server's address when it is created, so
         // it cannot open yet — this one says what is being waited for. It is
-        // closed only once the real window exists (see whenReady below), or
-        // closing it would leave no window and quit the app off macOS.
+        // closed the moment the real window is constructed (createWindow), not
+        // once that window has loaded, which can be minutes more of Metro.
         devSplash = new BrowserWindow({
           width: 560,
           height: 320,
@@ -452,7 +457,9 @@ async function runGui() {
           titleBarStyle: "hiddenInset",
           webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
         });
-        void devSplash.loadURL(serverWaitingPageUrl(devServerUrl, DEV_SERVER_WAIT_MS / 1000));
+        // Caught: closing the splash while it loads rejects this, and an
+        // unhandled rejection is an uncaught exception in the main process.
+        void devSplash.loadURL(serverWaitingPageUrl(devServerUrl, DEV_SERVER_WAIT_MS / 1000)).catch(() => undefined);
         const splash = devSplash;
         up = await waitUntil(() => probeHealth(devServerUrl), {
           timeoutMs: DEV_SERVER_WAIT_MS,
@@ -1000,6 +1007,18 @@ async function runGui() {
         additionalArguments: [`--loxaic-api-base-url=${encodeURIComponent(apiBaseUrl ?? "")}`],
       },
     });
+    // Both at once, before anything below is awaited: in development the load
+    // waits for Metro, for as long as Metro takes. A window closed during that
+    // wait has to clear `mainWindow` (or the dock never reopens the app, and
+    // the next power or update event reads a destroyed window's webContents),
+    // and the dev-server waiting window must not sit beside this one all the
+    // while, still saying it waits for a server that has answered.
+    const win = mainWindow;
+    win.on("closed", () => { if (mainWindow === win) mainWindow = null; });
+    if (devSplash) {
+      if (!devSplash.isDestroyed()) devSplash.destroy();
+      devSplash = null;
+    }
 
     if (isDev) {
       // Metro may not be up yet (pnpm dev starts it alongside this app) and
@@ -1015,8 +1034,6 @@ async function runGui() {
     } else {
       await loadWebBuild(mainWindow);
     }
-
-    mainWindow.on("closed", () => { mainWindow = null; });
   }
 
   app.whenReady().then(async () => {
@@ -1037,9 +1054,8 @@ async function runGui() {
       instanceMode = null;
     }
     console.log(`[loxaic] API base URL: ${apiBaseUrl ?? "(none — onboarding)"}`);
+    apiResolved = true;
     await createWindow();
-    if (devSplash && !devSplash.isDestroyed()) devSplash.destroy();
-    devSplash = null;
     // The renderer subscribes after it loads, so the first state is pushed
     // rather than assumed: a window that opened before the stack resolved
     // would otherwise sit on stale props.
@@ -1048,11 +1064,16 @@ async function runGui() {
   });
   app.on("window-all-closed", () => {
     // Someone closing the dev-server waiting window is not quitting: the real
-    // window is about to open.
+    // window is about to open. `devSplash` is cleared when it does, so this
+    // never holds once there is a real window to close.
     if (devSplash) return;
     if (process.platform !== "darwin") app.quit();
   });
-  app.on("activate", () => { if (!mainWindow) createWindow(); });
+  app.on("activate", () => {
+    // Before the server is settled the window is on its way, not missing: one
+    // opened now would have no server address, and a second would follow it.
+    if (!mainWindow && apiResolved) void createWindow();
+  });
 
   // Quit must wait for the embedded stack: the server needs to drain against a
   // live database, and Postgres needs a clean shutdown — a fire-and-forget
