@@ -25,7 +25,7 @@ type Row =
 export default function McpScreen() {
   const shell = useShell();
   const { token } = useSession();
-  const { servers, catalog, loading, create, update, toggle, remove, test } = useMcpServers(token);
+  const { servers, catalog, loading, create, update, toggle, setDefaults, remove, test } = useMcpServers(token);
   const { showToast } = useToastHelper();
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<McpServer | null>(null);
@@ -124,6 +124,7 @@ export default function McpScreen() {
                 linked={isLinked(item.server)}
                 testing={testingId === item.server.id}
                 onToggle={(enabled) => { void toggle(item.server.id, enabled); }}
+                onDefaults={(patch) => { void setDefaults(item.server.id, patch); }}
                 onTest={() => { void handleTest(item.server); }}
                 onTools={() => { setToolsFor(item.server); }}
                 onEdit={() => { openEdit(item.server); }}

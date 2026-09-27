@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { ContextToolSource } from '@loxaic/types';
 import type { ContextCategory, Message } from '@/lib/types';
 import type { ModelWindow } from './useModels';
 
@@ -53,6 +54,9 @@ export interface ContextView {
   windowSource: ModelWindow['source'];
   maxWindow: number | null;
   lastTurn: LastTurn | null;
+  /** The last request's tool schemas by source. Null when the server did not
+   * say — an older server or an older message — which is not "no tools". */
+  toolSources: ContextToolSource[] | null;
 }
 
 const LABELS: Record<ContextCategory | 'free' | 'used', string> = {
@@ -126,6 +130,7 @@ export function useContextUsage(msgs: Message[] | undefined, window: ModelWindow
       historyLimit: breakdown?.history_limit ?? 0,
       windowSource: window?.source ?? null,
       maxWindow: window?.max ?? null,
+      toolSources: breakdown?.tool_sources ?? null,
       lastTurn: usage
         ? {
             in: usage.in,

@@ -24,6 +24,7 @@ import {
   type PromptStats,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
+import type { McpOverrides } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
@@ -167,7 +168,14 @@ export function toConversation(c: ApiConversation): Conversation {
   };
 }
 
-export function useChatSession(token: string | null, onStreamEnd?: () => void, scope: ChatScope = CHAT_SCOPE) {
+/** `pendingMcp`: as on `useAgentSession` — MCP choices for a conversation
+ * that does not exist yet, carried by the send that creates it. */
+export function useChatSession(
+  token: string | null,
+  onStreamEnd?: () => void,
+  scope: ChatScope = CHAT_SCOPE,
+  pendingMcp?: { readonly current: McpOverrides | undefined },
+) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
   // silently holding the old one until the app restarts.
@@ -916,7 +924,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId)) {
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current)) {
           // Undo, don't just toast. The bubble was already painted, and the
           // cache-on-settle effect would have persisted a message that was
           // never sent into the user's "saved copy" — replayed on every
@@ -946,7 +954,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         }
       }
     },
-    [setActiveId, showToast],
+    [setActiveId, showToast, pendingMcp],
   );
 
   /** Take back a send the server refused before writing anything: the bubble,

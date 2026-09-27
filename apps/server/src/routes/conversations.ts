@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { eq, ne, and, isNull, desc, inArray, or } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
-import type { ContextBreakdown } from "@loxaic/types";
+import { normalizeMcpOverrides, type ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
@@ -91,10 +91,13 @@ export function conversationRoutes(app: FastifyInstance) {
    */
   app.post("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { title, kind, workspace } = (request.body ?? {}) as {
+    const { title, kind, workspace, mcp_overrides } = (request.body ?? {}) as {
       title?: string;
       kind?: unknown;
       workspace?: unknown;
+      /** MCP choices made before the conversation existed — the agent's
+       * create-then-send path, when a workspace was chosen. */
+      mcp_overrides?: unknown;
     };
     // Only the two kinds a client may open. Routines create their own rows
     // server-side and are not something a client creates by name.
@@ -127,6 +130,7 @@ export function conversationRoutes(app: FastifyInstance) {
         // Scratch is stored as null, the same value every pre-workspace row
         // has, so the two are indistinguishable everywhere they are read.
         workspace: parsed && parsed.kind !== "scratch" ? parsed : null,
+        mcpOverrides: normalizeMcpOverrides(mcp_overrides),
       })
       .returning();
     return row;
@@ -137,15 +141,13 @@ export function conversationRoutes(app: FastifyInstance) {
     const userId = await authenticate(request, reply);
     const { model_pref, mcp_overrides } = request.body as {
       model_pref?: { model?: string };
-      mcp_overrides?: { disabledServerIds?: string[] };
+      mcp_overrides?: unknown;
     };
+    // Anything that is not an object clears both lists, as a malformed body
+    // always has; a server named in both lists is kept only as disabled.
     const mcpOverrides =
       mcp_overrides !== undefined
-        ? {
-            disabledServerIds: Array.isArray(mcp_overrides.disabledServerIds)
-              ? mcp_overrides.disabledServerIds.map(String)
-              : [],
-          }
+        ? (normalizeMcpOverrides(mcp_overrides) ?? { disabledServerIds: [], enabledServerIds: [] })
         : undefined;
     // Drizzle's `.returning()` type doesn't reflect that a non-matching
     // WHERE yields zero rows — cast to what actually comes back at runtime.

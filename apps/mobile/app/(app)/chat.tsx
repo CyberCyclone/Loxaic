@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
+import type { McpOverrides } from '@loxaic/types';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -33,6 +34,7 @@ import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
+import { useMcpSwitches } from '@/hooks/useMcpSwitches';
 
 export default function ChatScreen() {
   const connection = useConnection();
@@ -40,6 +42,7 @@ export default function ChatScreen() {
   const { token, isAdmin } = useSession();
   const router = useRouter();
   const breakpoint = useBreakpoint();
+  const pendingMcpRef = useRef<McpOverrides | undefined>(undefined);
   const {
     conversations,
     activeId,
@@ -69,7 +72,10 @@ export default function ChatScreen() {
     noRoom,
     dismissNoRoom,
     returnedText,
-  } = useChatSession(token, () => { void refreshModels(); });
+  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef);
+  // Read by the session at send time; see useChatSession's `pendingMcp`.
+  const mcp = useMcpSwitches(token, activeId, 'chat');
+  pendingMcpRef.current = mcp.pendingOverrides;
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
@@ -258,6 +264,7 @@ export default function ChatScreen() {
           surface="chat"
           onRunCommand={handleRunCommand}
           commandSeed={composerSeed}
+          mcp={mcp}
           readOnlyReason={
             activeConv && !canEdit(activeConv)
               ? 'This conversation is shared with you for viewing. You can read it as it happens, but not send.'

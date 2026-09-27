@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { addChars, apportion, tallyChatMessages, type ContextTally } from "../context.ts";
+import type { ToolSource } from "@loxaic/agent";
+import {
+  addChars,
+  apportion,
+  splitToolTokens,
+  tallyChatMessages,
+  tallyToolSources,
+  type ContextTally,
+  type ToolSourceTally,
+} from "../context.ts";
 import type { ChatMessage, OpenAiTool } from "../provider.ts";
 
 const META = { historyMessages: 4, historyLimit: 50, historyTruncated: false };
@@ -172,5 +181,98 @@ describe("tallyChatMessages", () => {
 
     expect(toolsPart.tokens).toBeGreaterThan(1000);
     expect(toolsPart.tokens).toBeLessThan(1500);
+  });
+});
+
+describe("tool sources", () => {
+  const tool = (name: string, description: string): OpenAiTool => ({
+    type: "function",
+    function: { name, description, parameters: { type: "object", properties: {} } },
+  });
+  const mcp = (serverId: string, serverName: string): ToolSource => ({
+    kind: "mcp",
+    serverId,
+    serverSlug: serverName.toLowerCase(),
+    serverName,
+    remoteName: "x",
+    readOnly: false,
+  });
+
+  it("groups schemas by source, builtins first, and counts every character", () => {
+    const tools = [
+      tool("gh__issue_write", "x".repeat(900)),
+      tool("bash", "run a command"),
+      tool("brave__search", "y".repeat(400)),
+      tool("gh__list_issues", "z".repeat(300)),
+      tool("fs_read", "read a file"),
+    ];
+    const sources: Record<string, ToolSource> = {
+      gh__issue_write: mcp("gh-id", "GitHub"),
+      gh__list_issues: mcp("gh-id", "GitHub"),
+      brave__search: mcp("brave-id", "Brave"),
+      bash: { kind: "builtin" },
+      fs_read: { kind: "builtin" },
+    };
+    const tally = tallyToolSources(tools, (n) => sources[n]);
+    expect(tally.map((s) => [s.key, s.tools])).toEqual([
+      ["builtin", 2],
+      ["gh-id", 2],
+      ["brave-id", 1],
+    ]);
+    expect(tally.find((s) => s.key === "gh-id")?.name).toBe("GitHub");
+    const total = tally.reduce((sum, s) => sum + s.chars, 0);
+    expect(total).toBe(tools.reduce((sum, t) => sum + JSON.stringify(t).length, 0));
+  });
+
+  it("counts a tool it cannot place as builtin rather than dropping it", () => {
+    const tally = tallyToolSources([tool("mystery", "?")], () => undefined);
+    expect(tally).toEqual([expect.objectContaining({ key: "builtin", tools: 1 })]);
+  });
+
+  it("splits the tools part in proportion, summing exactly — fuzzed", () => {
+    let seed = 42;
+    const rand = () => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) / 2 ** 31;
+    for (let i = 0; i < 500; i++) {
+      const n = 1 + Math.floor(rand() * 6);
+      const sources: ToolSourceTally[] = Array.from({ length: n }, (_, k) => ({
+        key: `s${String(k)}`,
+        kind: k === 0 ? "builtin" : "mcp",
+        name: `S${String(k)}`,
+        tools: 1,
+        chars: Math.floor(rand() * 50_000),
+      }));
+      const tokens = Math.floor(rand() * 40_000);
+      const split = splitToolTokens(tokens, sources);
+      if (sources.every((s) => s.chars === 0)) {
+        expect(split).toEqual([]);
+        continue;
+      }
+      expect(split.length).toBe(n);
+      expect(sumParts(split)).toBe(tokens);
+      for (const s of split) expect(s.tokens).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("puts tool_sources on the breakdown, summing to the tools part", () => {
+    const toolSources: ToolSourceTally[] = [
+      { key: "builtin", kind: "builtin", name: "Built-in tools", tools: 8, chars: 3_000 },
+      { key: "gh", kind: "mcp", name: "GitHub", tools: 45, chars: 50_000 },
+      { key: "brave", kind: "mcp", name: "Brave", tools: 8, chars: 33_000 },
+    ];
+    const tally: ContextTally = { system: 1_000, tools: 86_000, current: 300 };
+    const result = apportion(tally, 30_000, 100, { ...META, toolSources });
+    const toolsPart = result.parts.find((p) => p.category === "tools");
+    expect(toolsPart).toBeDefined();
+    expect(sumParts(result.tool_sources ?? [])).toBe(toolsPart?.tokens);
+    expect(result.tool_sources?.map((s) => s.key)).toEqual(["builtin", "gh", "brave"]);
+    // Proportional: GitHub's schemas are the largest share.
+    const gh = result.tool_sources?.find((s) => s.key === "gh")?.tokens ?? 0;
+    const brave = result.tool_sources?.find((s) => s.key === "brave")?.tokens ?? 0;
+    expect(gh).toBeGreaterThan(brave);
+  });
+
+  it("leaves tool_sources off when no tools were offered", () => {
+    const result = apportion({ system: 500, current: 80 }, 200, 10, { ...META, toolSources: [] });
+    expect(result.tool_sources).toBeUndefined();
   });
 });

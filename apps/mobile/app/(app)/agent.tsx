@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
+import type { McpOverrides } from '@loxaic/types';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -27,7 +28,7 @@ import { useModels } from '@/hooks/useModels';
 import { useRecentModels } from '@/hooks/useRecentModels';
 import { pickSelectedModel } from '@/lib/selectModel';
 import { useContextUsage } from '@/hooks/useContextUsage';
-import { useMcpOverrides } from '@/hooks/useMcpOverrides';
+import { useMcpSwitches } from '@/hooks/useMcpSwitches';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useGitPanel } from '@/hooks/useGitPanel';
@@ -60,6 +61,7 @@ export default function AgentScreen() {
   const router = useRouter();
   const { config } = useServerConfig();
   const breakpoint = useBreakpoint();
+  const pendingMcpRef = useRef<McpOverrides | undefined>(undefined);
   const {
     runs,
     activeId,
@@ -96,7 +98,7 @@ export default function AgentScreen() {
     noRoom,
     dismissNoRoom,
     returnedText,
-  } = useAgentSession(token, () => { void refreshModels(); });
+  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef);
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
@@ -138,7 +140,10 @@ export default function AgentScreen() {
   });
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
-  const mcpOverrides = useMcpOverrides(token, activeId);
+  // One instance for the composer's `+` menu, the context popup and the
+  // Inspector. Read by the session at send time; see its `pendingMcp`.
+  const mcp = useMcpSwitches(token, activeId, 'agent');
+  pendingMcpRef.current = mcp.pendingOverrides;
   // Refetched whenever a run ends: a turn that used a tool is exactly what
   // creates a workspace, or brings a paused one back, and nothing else in the
   // stream says so.
@@ -183,15 +188,6 @@ export default function AgentScreen() {
   // only offered once there is a run to have one — and it holds a socket (and,
   // on a local workspace, a shell) only while it is open.
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const mcpControls =
-    mcpOverrides.servers.length > 0
-      ? {
-          servers: mcpOverrides.servers,
-          disabledIds: mcpOverrides.disabledIds,
-          onToggle: mcpOverrides.toggle,
-          readOnly: connection !== 'online',
-        }
-      : null;
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
@@ -482,6 +478,7 @@ export default function AgentScreen() {
                 context={context}
                 onOpenModelModal={() => { setModelModalOpen(true); }}
                 surface="agent"
+                mcp={mcp}
                 onRunCommand={handleRunCommand}
                 commandSeed={commandSeed}
                 readOnlyReason={
@@ -502,7 +499,7 @@ export default function AgentScreen() {
                 todos={todos}
                 changedFiles={changedFiles}
                 context={context}
-                mcp={mcpControls}
+                mcp={mcp}
                 workspace={workspace}
                 git={gitControls}
                 onCompact={handleCompactFromInspector}
@@ -528,7 +525,7 @@ export default function AgentScreen() {
           todos={todos}
           changedFiles={changedFiles}
           context={context}
-          mcp={mcpControls}
+          mcp={mcp}
           workspace={workspace}
           git={gitControls}
           onCompact={handleCompactFromInspector}

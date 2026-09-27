@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
-import { mcpServers, user, userPrefs } from "@loxaic/db/schema";
+import { conversations, mcpServers, user, userPrefs } from "@loxaic/db/schema";
 import { toOpenAiTools } from "@loxaic/agent";
 import { buildToolset } from "../registry.ts";
 import { encryptSecrets } from "../secrets.ts";
@@ -49,6 +49,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
+  await db.delete(conversations).where(eq(conversations.ownerId, userId));
   await db.delete(mcpServers).where(eq(mcpServers.ownerId, userId));
   await db.delete(user).where(eq(user.id, userId));
 });
@@ -137,7 +138,7 @@ describe("buildToolset with the fixture server", () => {
     expect(result.output.split("</mcp-tool-result").length).toBe(2);
   }, 20_000);
 
-  it("excludes disabled servers and per-conversation disabled servers", async () => {
+  it("excludes a globally disabled server", async () => {
     await db.update(mcpServers).set({ enabled: false }).where(eq(mcpServers.id, serverId));
     const ts = await buildToolset(userId, { mode: "manual" });
     expect(ts.openAiTools.map((t) => t.function.name)).not.toContain("mockmcp__echo");
@@ -210,4 +211,76 @@ describe("compileValidator", () => {
     expect(validate({ n: 3 })).toBe(true);
     expect(validate({ n: 0 })).toBe(false);
   });
+});
+
+describe("buildToolset: per-kind defaults and per-conversation choices", () => {
+  const offered = async (conversationId?: string, surface?: "chat" | "agent") =>
+    (await buildToolset(userId, { mode: "manual", conversationId, surface })).openAiTools
+      .map((t) => t.function.name)
+      .includes("mockmcp__echo");
+
+  async function conversation(kind: "chat" | "agent" | "routine", mcpOverrides: unknown = null) {
+    const [row] = await db
+      .insert(conversations)
+      .values({ ownerId: userId, title: "mcp state", kind, mcpOverrides })
+      .returning();
+    return row.id;
+  }
+
+  async function defaults(values: { onInChat?: boolean; onInAgent?: boolean; onInRoutines?: boolean }) {
+    await db.update(mcpServers).set(values).where(eq(mcpServers.id, serverId));
+  }
+
+  afterAll(async () => {
+    await defaults({ onInChat: true, onInAgent: true, onInRoutines: true });
+  });
+
+  it("follows the default for the conversation's own kind", async () => {
+    await defaults({ onInChat: false, onInAgent: true, onInRoutines: false });
+    expect(await offered(await conversation("chat"))).toBe(false);
+    expect(await offered(await conversation("agent"))).toBe(true);
+    expect(await offered(await conversation("routine"))).toBe(false);
+    await defaults({ onInChat: true, onInAgent: false, onInRoutines: true });
+    expect(await offered(await conversation("chat"))).toBe(true);
+    expect(await offered(await conversation("agent"))).toBe(false);
+    expect(await offered(await conversation("routine"))).toBe(true);
+  }, 30_000);
+
+  it("uses the run's surface only when there is no conversation to read", async () => {
+    await defaults({ onInChat: false, onInAgent: true });
+    expect(await offered(undefined, "chat")).toBe(false);
+    expect(await offered(undefined, "agent")).toBe(true);
+    // A conversation's kind outranks the surface the run claims.
+    expect(await offered(await conversation("chat"), "agent")).toBe(false);
+    await defaults({ onInChat: true, onInAgent: true });
+  }, 30_000);
+
+  it("lets a conversation switch a server off that is on by default", async () => {
+    await defaults({ onInChat: true });
+    expect(await offered(await conversation("chat", { disabledServerIds: [serverId] }))).toBe(false);
+  }, 20_000);
+
+  it("lets a conversation switch a server on that is off by default", async () => {
+    await defaults({ onInChat: false });
+    expect(await offered(await conversation("chat", { enabledServerIds: [serverId] }))).toBe(true);
+    await defaults({ onInChat: true });
+  }, 20_000);
+
+  it("keeps a server named in both lists off", async () => {
+    const id = await conversation("chat", { disabledServerIds: [serverId], enabledServerIds: [serverId] });
+    expect(await offered(id)).toBe(false);
+  }, 20_000);
+
+  it("still reads a row written before enabledServerIds existed", async () => {
+    expect(await offered(await conversation("agent", { disabledServerIds: [serverId] }))).toBe(false);
+  }, 20_000);
+
+  it("never offers a globally disabled server, whatever the conversation chose", async () => {
+    await db.update(mcpServers).set({ enabled: false }).where(eq(mcpServers.id, serverId));
+    try {
+      expect(await offered(await conversation("chat", { enabledServerIds: [serverId] }))).toBe(false);
+    } finally {
+      await db.update(mcpServers).set({ enabled: true }).where(eq(mcpServers.id, serverId));
+    }
+  }, 20_000);
 });

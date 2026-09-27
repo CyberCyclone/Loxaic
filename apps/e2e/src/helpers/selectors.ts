@@ -202,6 +202,51 @@ export async function waitForGone(id: string, timeout = 60_000): Promise<void> {
 }
 
 /**
+ * Waits until nothing carrying `id` is displayed, querying afresh on every
+ * poll. `waitForGone` keeps asking the element it found first, and under
+ * UiAutomator2 a view found inside a sheet or modal goes on reporting
+ * `displayed` after it has been removed: a page source taken at the timeout
+ * had no such element at all. Use this for anything inside an overlay that
+ * has just been dismissed.
+ */
+export async function waitForAbsent(id: string, timeout = 10_000): Promise<void> {
+  // `isVisible` builds a new `$` on each call, which is the whole point.
+  await browser.waitUntil(async () => !(await isVisible(id)), {
+    timeout,
+    timeoutMsg: `${id} was still displayed after ${String(timeout)}ms`,
+  });
+}
+
+/**
+ * Whether the Switch carrying `id` is on. Each platform reports it its own
+ * way: gluestack's web Switch stamps `data-checked` on the element with the
+ * testID, UiAutomator2 exposes a `checked` attribute, and XCUITest a `value`
+ * of "1" or "0".
+ */
+export async function isSwitchOn(id: string): Promise<boolean> {
+  const el = byTestId(id);
+  await el.waitForDisplayed();
+  switch (platform()) {
+    case 'web':
+    case 'electron':
+      return (await el.getAttribute('data-checked')) === 'true';
+    case 'android':
+      return (await el.getAttribute('checked')) === 'true';
+    case 'ios':
+      return (await el.getAttribute('value')) === '1';
+  }
+}
+
+/** Waits until the Switch carrying `id` reads `on` — a toggle saves before it
+ * settles, and a read taken mid-flip would see the old value. */
+export async function waitForSwitch(id: string, on: boolean, timeout = 10_000): Promise<void> {
+  await browser.waitUntil(async () => (await isSwitchOn(id)) === on, {
+    timeout,
+    timeoutMsg: `${id} did not turn ${on ? 'on' : 'off'} within ${String(timeout)}ms`,
+  });
+}
+
+/**
  * A selector matching any element whose visible text contains `text`.
  *
  * Native only — the web/Electron path doesn't need it (see waitForTextIn).

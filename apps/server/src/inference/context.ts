@@ -1,4 +1,5 @@
-import type { ContextBreakdown, ContextCategory, ContextPart } from "@loxaic/types";
+import type { ToolSource } from "@loxaic/agent";
+import type { ContextBreakdown, ContextCategory, ContextPart, ContextToolSource } from "@loxaic/types";
 import type { ChatMessage, OpenAiTool } from "./provider.ts";
 import { textOfContent } from "./provider.ts";
 
@@ -110,11 +111,70 @@ export function tallyChatMessages(messages: ChatMessage[], tools?: OpenAiTool[])
   return tally;
 }
 
+/** Characters of tool schema per source, before they become tokens. */
+export interface ToolSourceTally {
+  key: string;
+  kind: "builtin" | "mcp";
+  name: string;
+  tools: number;
+  chars: number;
+}
+
+export const BUILTIN_TOOLS_LABEL = "Built-in tools";
+
+/**
+ * Group the request's tool schemas by where they came from, so the `tools`
+ * part can say which MCP server is costing what. Builtins come first, then
+ * servers in the order the toolset offered them. A name the lookup cannot
+ * place is counted as builtin rather than dropped, so the sources always
+ * cover every character the `tools` tally counted.
+ */
+export function tallyToolSources(
+  tools: OpenAiTool[],
+  sourceOf: (name: string) => ToolSource | undefined,
+): ToolSourceTally[] {
+  const bySource = new Map<string, ToolSourceTally>();
+  for (const tool of tools) {
+    const source = sourceOf(tool.function.name);
+    const key = source?.kind === "mcp" ? source.serverId : "builtin";
+    let entry = bySource.get(key);
+    if (!entry) {
+      entry =
+        source?.kind === "mcp"
+          ? { key, kind: "mcp", name: source.serverName, tools: 0, chars: 0 }
+          : { key, kind: "builtin", name: BUILTIN_TOOLS_LABEL, tools: 0, chars: 0 };
+      bySource.set(key, entry);
+    }
+    entry.tools += 1;
+    entry.chars += JSON.stringify(tool).length;
+  }
+  const out = [...bySource.values()];
+  return [...out.filter((s) => s.kind === "builtin"), ...out.filter((s) => s.kind === "mcp")];
+}
+
+/**
+ * Split one part's tokens across sources in proportion to their characters,
+ * by largest remainder, so the shares sum to exactly `tokens`. Every source
+ * keeps its row, even one that rounds to zero.
+ */
+export function splitToolTokens(tokens: number, sources: ToolSourceTally[]): ContextToolSource[] {
+  const totalChars = sources.reduce((sum, s) => sum + s.chars, 0);
+  if (sources.length === 0 || totalChars <= 0) return [];
+  const exact = sources.map((s) => (s.chars / totalChars) * tokens);
+  const shares = exact.map(Math.floor);
+  let left = tokens - shares.reduce((a, b) => a + b, 0);
+  const order = exact.map((x, i) => ({ i, frac: x - Math.floor(x) })).sort((a, b) => b.frac - a.frac);
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) shares[order[k].i] += 1;
+  return sources.map((s, i) => ({ key: s.key, kind: s.kind, name: s.name, tools: s.tools, tokens: shares[i] }));
+}
+
 export interface ApportionMeta {
   historyMessages: number;
   historyLimit: number;
   historyTruncated: boolean;
   windowTokens?: number | null;
+  /** Where the tool schemas came from; splits the `tools` part when given. */
+  toolSources?: ToolSourceTally[];
 }
 
 /**
@@ -170,5 +230,8 @@ export function apportion(
 
   if (completionTokens > 0) parts.push({ category: "response", tokens: completionTokens });
 
-  return { ...base, parts };
+  const toolsPart = parts.find((p) => p.category === "tools");
+  const toolSources = toolsPart && meta.toolSources ? splitToolTokens(toolsPart.tokens, meta.toolSources) : [];
+
+  return { ...base, parts, ...(toolSources.length > 0 ? { tool_sources: toolSources } : {}) };
 }

@@ -33,6 +33,9 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+/** Whether a server is on, by default, in each kind of conversation. */
+const SURFACE_DEFAULT_KEYS = ["onInChat", "onInAgent", "onInRoutines"] as const;
+
 /** Merge a secrets patch over the stored blob: string sets, null deletes. */
 function mergeSecrets(existingBlob: string | null, patch: Record<string, unknown>): string | null {
   let merged: Record<string, string> = existingBlob ? decryptSecrets(existingBlob) : {};
@@ -240,8 +243,21 @@ export function mcpRoutes(app: FastifyInstance) {
       }
     }
 
+    // The per-kind defaults are refused rather than ignored when malformed: a
+    // client that believed it turned GitHub off for every chat must be told
+    // it did not.
+    for (const key of SURFACE_DEFAULT_KEYS) {
+      if (body[key] !== undefined && typeof body[key] !== "boolean") {
+        reply.code(400);
+        return { error: `${key} must be true or false` };
+      }
+    }
+
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+    for (const key of SURFACE_DEFAULT_KEYS) {
+      if (typeof body[key] === "boolean") patch[key] = body[key];
+    }
     if (typeof body.command === "string" && existing.builtinKey === null) patch.command = body.command.trim();
     if (Array.isArray(body.args) && existing.builtinKey === null) patch.args = body.args.map(String);
     if (asOptionalRecord(body.env)) patch.env = asOptionalRecord(body.env);

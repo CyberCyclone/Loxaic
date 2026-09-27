@@ -8,6 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Spinner } from '@/components/ui/spinner';
 import type { McpServer } from '@loxaic/api-client';
 import { useServerReachable } from '@/lib/connection';
+import { serverDefaults } from '@/lib/mcpSwitches';
 
 function statusLine(server: McpServer): { text: string; error: boolean } {
   if (server.lastError) return { text: server.lastError, error: true };
@@ -21,6 +22,8 @@ interface McpServerCardProps {
   server: McpServer;
   testing?: boolean;
   onToggle: (enabled: boolean) => void;
+  /** Change the default for one or more kinds of conversation. */
+  onDefaults?: (patch: { onInChat?: boolean; onInAgent?: boolean; onInRoutines?: boolean }) => void;
   onTest: () => void;
   onTools: () => void;
   onEdit: () => void;
@@ -30,7 +33,17 @@ interface McpServerCardProps {
   linked?: boolean;
 }
 
-export function McpServerCard({ server, testing = false, onToggle, onTest, onTools, onEdit, onDelete, linked }: McpServerCardProps) {
+export function McpServerCard({
+  server,
+  testing = false,
+  onToggle,
+  onDefaults,
+  onTest,
+  onTools,
+  onEdit,
+  onDelete,
+  linked,
+}: McpServerCardProps) {
   // Toggle, test and delete are requests; Edit and Tools open sheets that say
   // for themselves why they cannot save.
   const reachable = useServerReachable();
@@ -88,6 +101,12 @@ export function McpServerCard({ server, testing = false, onToggle, onTest, onToo
         </HStack>
       </HStack>
 
+      {/* A server that predates the per-kind defaults does not report them;
+          the row is hidden rather than offering switches it would ignore. */}
+      {onDefaults && server.onInChat !== undefined ? (
+        <DefaultsRow server={server} disabled={!reachable || !server.enabled} onChange={onDefaults} />
+      ) : null}
+
       <HStack space="md" className="mt-3 items-center justify-end border-t border-border pt-2">
         <Pressable
           testID={`mcp.serverTest.${server.id}`}
@@ -120,6 +139,57 @@ export function McpServerCard({ server, testing = false, onToggle, onTest, onToo
           </Pressable>
         )}
       </HStack>
+    </Box>
+  );
+}
+
+const KINDS = [
+  { key: 'onInChat', id: 'chat', label: 'Chat' },
+  { key: 'onInAgent', id: 'agent', label: 'Agent' },
+  { key: 'onInRoutines', id: 'routines', label: 'Routines' },
+] as const;
+
+/**
+ * Whether a conversation that has made no choice of its own is offered this
+ * server, per kind — so GitHub's forty-odd tool schemas need not ride every
+ * ordinary chat. A chat's own switch (the composer's `+` menu) still wins.
+ */
+function DefaultsRow({
+  server,
+  disabled,
+  onChange,
+}: {
+  server: McpServer;
+  disabled: boolean;
+  onChange: (patch: { onInChat?: boolean; onInAgent?: boolean; onInRoutines?: boolean }) => void;
+}) {
+  const defaults = serverDefaults(server);
+  return (
+    <Box testID={`mcp.serverDefaults.${server.id}`} className="mt-3 border-t border-border pt-2">
+      <Text size="2xs" className="uppercase text-muted-foreground">
+        On by default in
+      </Text>
+      <HStack className="mt-1 flex-wrap items-center gap-x-4 gap-y-1">
+        {KINDS.map((kind) => (
+          <HStack key={kind.key} space="xs" className="items-center">
+            <Text size="xs" className="text-foreground">
+              {kind.label}
+            </Text>
+            <Switch
+              testID={`mcp.serverDefault.${server.id}.${kind.id}`}
+              size="sm"
+              value={defaults[kind.key]}
+              disabled={disabled}
+              onValueChange={(on) => { onChange({ [kind.key]: on }); }}
+            />
+          </HStack>
+        ))}
+      </HStack>
+      <Text size="2xs" className="mt-1 text-muted-foreground">
+        {server.enabled
+          ? 'For new and existing conversations that have not chosen for themselves.'
+          : 'Switch the server on to choose where it is used.'}
+      </Text>
     </Box>
   );
 }

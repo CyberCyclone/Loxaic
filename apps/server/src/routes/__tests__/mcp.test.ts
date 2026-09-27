@@ -136,3 +136,50 @@ describe("a linked GitHub server", () => {
     expect((row?.toolPolicies as Record<string, { approval: string }>).create_pull_request.approval).toBe("allow");
   });
 });
+
+describe("per-kind defaults", () => {
+  async function stdioServer(): Promise<string> {
+    const [row] = await db
+      .insert(mcpServers)
+      .values({ ownerId: userId, name: "Plain", slug: `plain-${uuid().slice(0, 8)}`, transport: "stdio", command: "true" })
+      .returning();
+    return row.id;
+  }
+
+  it("starts on everywhere", async () => {
+    const id = await stdioServer();
+    const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    expect(row).toMatchObject({ onInChat: true, onInAgent: true, onInRoutines: true });
+  });
+
+  it("sets each kind independently", async () => {
+    const id = await stdioServer();
+    const res = await app.inject({ method: "PATCH", url: `/v1/mcp/servers/${id}`, payload: { onInChat: false } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ onInChat: false, onInAgent: true, onInRoutines: true });
+    await app.inject({ method: "PATCH", url: `/v1/mcp/servers/${id}`, payload: { onInRoutines: false, onInChat: true } });
+    const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    expect(row).toMatchObject({ onInChat: true, onInAgent: true, onInRoutines: false });
+  });
+
+  it("refuses a value that is not a boolean, and changes nothing", async () => {
+    const id = await stdioServer();
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/mcp/servers/${id}`,
+      payload: { onInAgent: "false", name: "Renamed" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toContain("onInAgent");
+    const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    expect(row).toMatchObject({ onInAgent: true, name: "Plain" });
+  });
+
+  it("can be changed on the GitHub server, which follows the connection", async () => {
+    await connectGithub();
+    const id = await createGithubServer();
+    const res = await app.inject({ method: "PATCH", url: `/v1/mcp/servers/${id}`, payload: { onInChat: false } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ onInChat: false });
+  });
+});

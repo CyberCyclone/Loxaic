@@ -165,10 +165,13 @@ replies.
 - **`expo-image-picker` is native-only.** Its web implementation creates a transient hidden
   `<input type="file">` at click time and clicks it programmatically — no stable element to
   attach a `testID` to, and nothing for e2e to drive. The composer's attach control is split
-  per-platform instead (`components/composer/AttachButton.tsx` / `.web.tsx`, same convention as
-  `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actionsheet over
-  `expo-image-picker`, web renders a real, persistent `<input type="file">`
-  (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly.
+  per-platform instead (`components/composer/ComposerPlusMenu.tsx` / `.web.tsx`, same convention
+  as `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actions over
+  `expo-image-picker` in the `+` sheet, web renders a real, persistent `<input type="file">`
+  (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly. That
+  input lives **outside** the `+` popup and is mounted for the composer's lifetime: the helper
+  writes into it without opening anything, and Attach file clicks it inside the press itself so
+  the browser still counts the user's gesture.
 - **Expo SDK 57 / New Architecture only.** `newArchEnabled` is no longer a valid `app.json`
   key (SDK 55 removed the legacy architecture), `expo prebuild` now wipes `ios/`/`android/`
   before regenerating (pass `--no-clean` to keep them), and `runtimeVersion.policy:
@@ -2242,6 +2245,62 @@ replies.
 - Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
+
+### MCP switches per chat and per kind of conversation
+
+- **Whether a server is offered to a conversation is one pure function, `mcpServerActive`
+  (`packages/types/src/mcp-state.ts`)**, which both the registry and every switch on screen
+  apply, so a switch can never show a state the next run is not given. The order: the server
+  must be globally `enabled` (unchanged, and filtered before the function); then the
+  conversation's own choice, `mcpOverrides.disabledServerIds` first (a server in both lists is
+  off) and then `enabledServerIds`; then the server's default for the conversation's `kind`
+  (`mcp_servers.on_in_chat` / `on_in_agent` / `on_in_routines`, all default true). Rows that
+  predate `enabledServerIds` carry only the disabled list and resolve exactly as before.
+- **Defaults resolve live; they are never copied into a conversation.** Switching GitHub off for
+  Chat applies at once to every chat that has not chosen for itself, which is what someone
+  turning it off to reclaim a window means. A switch flipped *in* a chat is always stored as an
+  explicit choice, even one that matches the default, so a later default change does not undo it.
+  Changing either costs the next request a full prompt re-evaluation (the tools array is part of
+  the prefix); that is the trade the user is making.
+- **A new conversation's choices ride the send that creates it** (`mcp_overrides` on
+  `chat.send`/`agent.send`, and on `POST /v1/conversations` for the agent's create-then-send
+  path). A new chat has no id to PATCH, and PATCHing after `turn.started` would leave the very
+  first request — the one someone switched GitHub off to shrink — carrying the schemas anyway.
+  The run starters write it **only when they create the row**; an existing conversation changes
+  through PATCH. `useMcpSwitches` holds the choices for a local id (`c<ts>`, `pending-*`) and,
+  when the real id arrives, PATCHes them if the row disagrees — which is also the fallback for an
+  older server that ignores the send field. The session hooks read them through a ref the screen
+  fills (`pendingMcp`), because the switches hook needs the session's `activeId` and so is
+  created after it.
+- **One `useMcpSwitches` instance per screen** feeds the `+` menu, the context popup's tool list
+  and (on Agent) the Inspector, so the three cannot disagree. PATCH is owner-only, so a shared
+  editor sees the switches locked with the reason; their own sends are offered *their own*
+  servers (the toolset is built for the sender), following their own defaults.
+- **The web `+` is not gluestack's `Menu`**, which renders only flat items and has no submenus.
+  `ComposerPlusMenu.web.tsx` measures the `+` and the MCP row and places both panels with the
+  pure `lib/submenuPlacement.ts`: beside the menu on the right, else the left, else (phone width)
+  in the menu's place with a back row. The submenu opens on hover with a 150 ms close delay so
+  the pointer can cross the gap; react-native-web's `Modal` closes the whole thing on Escape.
+  The panels are plain `div`s because they are measured and hovered.
+- **`ContextBreakdown.tool_sources` splits the `tools` part by where each schema came from**
+  (`tallyToolSources` + `splitToolTokens` in `inference/context.ts`, largest remainder, so it
+  sums exactly to the part). Emit-only — it changes no request bytes — and it rides the
+  existing `usage_records.context_breakdown` jsonb, so it survives a reload. Absent on an older
+  breakdown, which the popup says ("per-server figures from your next message") rather than
+  showing nothing. `lib/toolSourceRows.ts` merges the last request's figures with the switches'
+  state *now*, and each row says which way they disagree ("Off · frees ~N tokens from your next
+  message"), since the figure describes the last request and the switch the next one.
+- **An e2e assertion about a switch is made against the stored breakdown**
+  (`lastToolSourceKeys`), never only against the switch: a switch that moved and a request that
+  still carried the schemas is exactly the failure this exists to prevent.
+- **Wait for a dismissed sheet's contents with `waitForAbsent`, not `waitForGone`.**
+  `waitForGone` polls the element it found first, and under UiAutomator2 an element found inside
+  an Actionsheet's window goes on reporting `displayed` after that window has closed — a page
+  source captured at the timeout had no such element at all. It failed one run in two on Android,
+  always right after a switch inside the sheet was tapped. `waitForAbsent` re-queries each poll.
+  XCUITest, separately, exposes neither a sheet's backdrop nor a plain container view's testID,
+  so the native helpers close overlays with a positional tap near the top of the screen and anchor
+  on pressables (`composer.mcp.manage`) and switches.
 
 ### Agent workspaces
 

@@ -3,6 +3,7 @@ import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
 import { resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
 import { and, db, eq } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
+import { mcpServerActive, normalizeMcpOverrides, type McpConversationKind, type McpOverrides } from "@loxaic/types";
 import { catalogDefaultPolicy, GITHUB_BUILTIN_KEY } from "./catalog.ts";
 import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, redactionsFor, type McpServerRow } from "./client-manager.ts";
@@ -57,6 +58,9 @@ export async function buildToolset(
   opts: {
     mode: PermissionMode;
     conversationId?: string;
+    /** Which kind of conversation's MCP defaults apply when there is no
+     * conversation row to read one from. A conversation's own `kind` wins. */
+    surface?: McpConversationKind;
     /** The user's builtin allowlist, when the caller has already loaded the
      * prefs row. Optional so this stays usable on its own; the tool loop
      * passes it because it reads the same row one line earlier for the
@@ -119,7 +123,7 @@ function toolsetRequiresApproval(tool: ResolvedTool, mode: PermissionMode): bool
 
 async function resolveMcpTools(
   userId: string,
-  opts: { mode: PermissionMode; conversationId?: string },
+  opts: { mode: PermissionMode; conversationId?: string; surface?: McpConversationKind },
 ): Promise<{ tool: ResolvedTool; entry: McpToolEntry }[]> {
   let rows: McpServerRow[];
   try {
@@ -133,8 +137,10 @@ async function resolveMcpTools(
   }
   if (rows.length === 0) return [];
 
-  const disabled = await disabledServerIds(opts.conversationId);
-  const activeRows = rows.filter((r) => !disabled.has(r.id));
+  // The conversation's own choices, then the server's default for its kind —
+  // the one rule the client's switches render (`mcpServerActive`).
+  const { kind, overrides } = await conversationMcpState(opts.conversationId, opts.surface ?? "chat");
+  const activeRows = rows.filter((r) => mcpServerActive(r, kind, overrides));
   if (activeRows.length === 0) return [];
 
   const out: { tool: ResolvedTool; entry: McpToolEntry }[] = [];
@@ -229,19 +235,19 @@ async function builtinAllowlist(userId: string): Promise<Set<string>> {
   }
 }
 
-async function disabledServerIds(conversationId: string | undefined): Promise<Set<string>> {
-  if (!conversationId) return new Set();
+async function conversationMcpState(
+  conversationId: string | undefined,
+  fallbackKind: McpConversationKind,
+): Promise<{ kind: McpConversationKind; overrides: McpOverrides | null }> {
+  if (!conversationId) return { kind: fallbackKind, overrides: null };
   try {
     const conv = await db.query.conversations.findFirst({
       where: eq(conversations.id, conversationId),
-      columns: { mcpOverrides: true },
+      columns: { kind: true, mcpOverrides: true },
     });
-    const overrides = conv?.mcpOverrides as { disabledServerIds?: unknown } | null;
-    return new Set(
-      Array.isArray(overrides?.disabledServerIds) ? overrides.disabledServerIds.map(String) : [],
-    );
+    return { kind: conv?.kind ?? fallbackKind, overrides: normalizeMcpOverrides(conv?.mcpOverrides) };
   } catch {
-    return new Set();
+    return { kind: fallbackKind, overrides: null };
   }
 }
 

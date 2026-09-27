@@ -23,6 +23,7 @@ import {
   type StepsDecision,
   type PromptStats,
 } from '@loxaic/api-client';
+import type { McpOverrides } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
@@ -81,7 +82,17 @@ const RESYNC_COOLDOWN_MS = 500;
 /** This hook's socket, as the connection monitor knows it. */
 const SOCKET_KEY = 'agent';
 
-export function useAgentSession(token: string | null, onStreamEnd?: () => void) {
+/**
+ * `pendingMcp` is read at send time: the MCP choices made for a conversation
+ * that does not exist yet (`useMcpSwitches`' `pendingOverrides`), which the
+ * send that creates it carries. A ref rather than a value because the
+ * switches hook needs this hook's `activeId`, so it is created after it.
+ */
+export function useAgentSession(
+  token: string | null,
+  onStreamEnd?: () => void,
+  pendingMcp?: { readonly current: McpOverrides | undefined },
+) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
   // silently holding the old one until the app restarts.
@@ -697,7 +708,9 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         if (chosen.kind === 'scratch') {
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
-          if (!sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId)) {
+          if (
+            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current)
+          ) {
             setRuns((prev) => prev.filter((r) => r.id !== localId));
             setActiveId(null);
             pendingLocalIdRef.current = null;
@@ -717,7 +730,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
           // in that window left the send on a closed socket — silently, since
           // trySend's false was discarded — with the optimistic run pending
           // forever. A lost socket is now the error the rollback below shows.
-          createConversation({ kind: 'agent', workspace: chosen })
+          createConversation({ kind: 'agent', workspace: chosen, mcp_overrides: pendingMcp?.current })
             .then((created) => {
               const ws = wsRef.current;
               const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId);
@@ -750,7 +763,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       }
       return true;
     },
-    [mode, handleModeChange, setActiveId, showToast],
+    [mode, handleModeChange, setActiveId, showToast, pendingMcp],
   );
 
   /** Take back a send the server refused before writing anything. */
