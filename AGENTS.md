@@ -2964,6 +2964,21 @@ replies.
   The tool results from before the question are real work and stay; no nudge is written,
   because stopping is not asking for an answer. What this does *not* do is clear the question
   from the record log — see "A finished stream's snapshot carries no pending question" above.
+- **`fetch`'s `signal` is not enough on its own for a long model request.** undici ties the
+  caller's signal to a request through a controller owned by its internal `Request` object, and a
+  `FinalizationRegistry` removes that link once the object is garbage-collected — which it may be
+  as soon as the response has begun (the hazard undici's own comment cites as nodejs/undici#1926).
+  A local model that spent ten minutes loading and then looped in its thinking was exactly that
+  request: Stop set the run's signal, the signal had no listener left, and the backend generated
+  on into a run everyone believed stopped. Found by attaching the inspector to the live dev
+  server — one aborted `AbortSignal` in the heap, zero listeners, undici's `Fetch` still
+  `ongoing` — since a short test never lives long enough for the collector to take it.
+  `inferenceFetch` therefore wraps the shared dispatcher per request (`AbortableRequest`), keeps
+  undici's own `abort` from `onConnect`, and calls it from a listener it holds itself. That
+  listener is added *after* fetch's, so while fetch's link is intact a Stop is still a plain
+  `AbortError`; it only acts when the link is gone, and is removed once the request settles.
+  `transport.test.ts` removes undici's listener by hand (it is a function named `abort`) to stand
+  in for the collector, which cannot be made to run on cue.
 - **An unanswered approval is not a denial.** `waitForApproval` returns an `ApprovalOutcome`
   (`approved | denied | timeout | aborted | gone`) rather than a boolean, because the caller used
   to render every `false` as "User denied this tool call." — a claim about a person that three of
