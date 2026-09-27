@@ -300,7 +300,7 @@ describe('local models', () => {
       expect(Number.parseFloat(styles.heading?.size ?? '0')).toBeGreaterThan(Number.parseFloat(styles.body?.size ?? '0'));
       const links = await browser.execute((selector: string) => {
         const el = document.querySelector(selector);
-        return el ? [...el.querySelectorAll('[role="link"]')].map((l) => l.textContent ?? '') : [];
+        return el ? [...el.querySelectorAll('[role="link"]')].map((l) => l.textContent) : [];
       }, testIdSelector('localModels.details.card'));
       // A badge is a link labelled by where it goes; its image is not fetched.
       expect(links).toEqual(expect.arrayContaining(['our collection', 'discord.gg/e2e-org']));
