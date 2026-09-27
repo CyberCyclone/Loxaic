@@ -64,6 +64,13 @@ beforeAll(async () => {
       req.on("close", () => onHangClosed?.());
       return;
     }
+    if (req.url?.startsWith("/redirect/")) {
+      // A reverse proxy, or an http:// base URL that sends you to https://:
+      // fetch follows it by dispatching a second request.
+      res.writeHead(307, { Location: req.url.slice("/redirect".length) });
+      res.end();
+      return;
+    }
     if (req.url?.startsWith("/forever/")) {
       // A model that never stops — the one this Stop is for: a thinking loop
       // on a local model, generating until the hour-long ceiling.
@@ -328,6 +335,46 @@ describe("Stop once undici has lost its own link to the run's signal", () => {
       }
     })();
     expect(outcome).toBe("stopped");
+  });
+
+  it("still ends a streaming reply that arrived through a redirect", async () => {
+    const closed = new Promise<void>((resolve) => {
+      onHangClosed = resolve;
+    });
+    const abort = new AbortController();
+    const response = await inferenceFetch(`${base}/redirect/forever/v1/chat/completions`, {
+      method: "POST",
+      signal: abort.signal,
+    });
+    expect(response.url).toContain("/forever/");
+    if (!response.body) throw new Error("the stand-in answered with no body");
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    await reader.read();
+    expect(severFetchLink(abort.signal)).toBe(1);
+
+    abort.abort();
+    const outcome = await Promise.race([
+      (async () => {
+        try {
+          for (;;) if ((await reader.read()).done) return "ended";
+        } catch {
+          return "stopped";
+        }
+      })(),
+      new Promise((resolve) => {
+        setTimeout(() => { resolve("still streaming"); }, 3_000);
+      }),
+    ]);
+    expect(outcome).toBe("stopped");
+    await closed;
+  });
+
+  it("leaves no listener once a redirected request has finished", async () => {
+    const abort = new AbortController();
+    const response = await inferenceFetch(`${base}/redirect/fast/v1/chat/completions`, { method: "POST", signal: abort.signal });
+    await response.text();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(getEventListeners(abort.signal, "abort").filter((l) => l.name !== "abort")).toHaveLength(0);
   });
 
   it("still reports an ordinary Stop as an AbortError while fetch's link is intact", async () => {

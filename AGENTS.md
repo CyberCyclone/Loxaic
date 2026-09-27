@@ -2978,7 +2978,15 @@ replies.
   listener is added *after* fetch's, so while fetch's link is intact a Stop is still a plain
   `AbortError`; it only acts when the link is gone, and is removed once the request settles.
   `transport.test.ts` removes undici's listener by hand (it is a function named `abort`) to stand
-  in for the collector, which cannot be made to run on cue.
+  in for the collector, which cannot be made to run on cue. **State is per dispatch, and
+  "settled" means the final hop has ended**: fetch follows a redirect by dispatching again through
+  the same dispatcher, and settling on the first hop's completion removed the listener before the
+  redirected request — the one that streams — had even connected (found in review; the one
+  production caller passes `redirect: "error"`, but a proxy or an http→https hop is enough).
+  **On this path a mid-stream Stop surfaces as `TypeError: terminated`** (cause `AbortError`), not
+  an `AbortError`: undici's `onError` goes through `controller.terminate()`. Both consumers test
+  `name === "AbortError" || abort.signal.aborted` (`engine.ts`, `compactRun.ts`), so a Stop is
+  still a cancel; anything new that keys on the error's name alone would read one as a failure.
 - **An unanswered approval is not a denial.** `waitForApproval` returns an `ApprovalOutcome`
   (`approved | denied | timeout | aborted | gone`) rather than a boolean, because the caller used
   to render every `false` as "User denied this tool call." — a claim about a person that three of
