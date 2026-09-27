@@ -775,7 +775,7 @@ export interface Conversation {
   kind: string;
   activeLeafId: string | null;
   modelPref: import("@loxaic/types").ModelPref | null;
-  mcpOverrides: { disabledServerIds?: string[] } | null;
+  mcpOverrides: import("@loxaic/types").McpOverrides | null;
   /** Where an agent conversation's files live. Null is scratch. Fixed at
    * creation — see `createConversation`. */
   workspace?: import("@loxaic/types").Workspace | null;
@@ -1025,6 +1025,8 @@ export async function createConversation(input: {
   title?: string;
   kind?: "chat" | "agent";
   workspace?: WorkspaceRequest;
+  /** MCP choices made before the conversation existed. */
+  mcp_overrides?: import("@loxaic/types").McpOverrides;
 }): Promise<Conversation> {
   const res = await authedFetch("/v1/conversations", {
     method: "POST",
@@ -1063,7 +1065,7 @@ export async function updateConversation(
   id: string,
   patch: {
     model_pref?: import("@loxaic/types").ModelPref;
-    mcp_overrides?: { disabledServerIds?: string[] };
+    mcp_overrides?: import("@loxaic/types").McpOverrides;
   },
 ): Promise<Conversation> {
   return (
@@ -1394,6 +1396,11 @@ export interface McpServer {
   env: unknown;
   builtinKey: string | null;
   enabled: boolean;
+  /** Default on in each kind of conversation. Absent from a server that
+   * predates them, where every server is on everywhere — read as true. */
+  onInChat?: boolean;
+  onInAgent?: boolean;
+  onInRoutines?: boolean;
   allowPrivateNetwork: boolean;
   toolPolicies: Record<string, McpToolPolicy>;
   knownTools: Record<string, string>;
@@ -1434,6 +1441,9 @@ export interface McpCatalogEntry {
 
 export interface McpServerInput {
   name?: string;
+  onInChat?: boolean;
+  onInAgent?: boolean;
+  onInRoutines?: boolean;
   slug?: string;
   transport?: "stdio" | "http";
   command?: string;
@@ -1967,6 +1977,9 @@ export function sendChatMessage(
   attachments?: string[],
   /** Echoed on an `error` refusing this send — see `client_ref`. */
   clientRef?: string,
+  /** MCP choices made before the conversation existed; the server applies
+   * them only when this send creates it. */
+  mcpOverrides?: import("@loxaic/types").McpOverrides,
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -1976,6 +1989,7 @@ export function sendChatMessage(
     parent_id: parentId,
     attachments,
     ...(clientRef ? { client_ref: clientRef } : {}),
+    ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
   });
 }
 
@@ -1989,6 +2003,8 @@ export function sendAgentMessage(
   attachments?: string[],
   /** Echoed on an `error` refusing this send — see `client_ref`. */
   clientRef?: string,
+  /** As on `sendChatMessage`. */
+  mcpOverrides?: import("@loxaic/types").McpOverrides,
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -1999,6 +2015,7 @@ export function sendAgentMessage(
     model: model ?? "default",
     attachments,
     ...(clientRef ? { client_ref: clientRef } : {}),
+    ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
   });
 }
 

@@ -3,7 +3,7 @@
  *
  * This is the one place in the suite that reaches outside the app's own
  * testIDs. On web and Electron it drives the composer's real
- * `<input type="file">` directly, which is why AttachButton.web.tsx renders a
+ * `<input type="file">` directly, which is why ComposerPlusMenu.web.tsx renders a
  * persistent input rather than using expo-image-picker's transient shim.
  *
  * On iOS and Android the picker is **system UI we don't own** — PHPicker and

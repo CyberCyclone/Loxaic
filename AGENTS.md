@@ -52,16 +52,28 @@ pnpm lint        # turbo lint — eslint (apps/server)
 pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
 ```
 
-**`pnpm dev` is not server-only.** `turbo dev` is unfiltered and runs every package declaring a
-`dev` script — which is two of them: `apps/server` (`tsx watch`, port 4000) and `apps/desktop`
-(`electron .`, bringing up its own embedded stack on 4100). Mobile is absent because it has no
-`dev` script at all, not because turbo excludes it, so `pnpm --filter @loxaic/mobile start` (or
-`web`) remains a separate command. The desktop app loads its renderer from Metro on 8081 and
-**fails with `ERR_CONNECTION_REFUSED` without ever retrying** when Metro is not already up,
-leaving a blank window that waiting does not fix — so start Metro first, or use
-`pnpm dev --filter=@loxaic/server` when the API server is all you want. Running the unfiltered
-form beside an existing `pnpm --filter @loxaic/desktop dev` gives you two desktop instances
-contending for 4100, which is easy to do by accident and confusing to diagnose.
+**`pnpm dev` starts everything the desktop app needs to be tested**: the API server
+(`tsx watch`, :4000), Metro (:8081, `apps/mobile/scripts/dev-metro.mjs`) and the desktop app
+(`electron .`). A Metro already running on :8081 — your own `pnpm --filter @loxaic/mobile web`
+or `start` — is reused rather than fought for the port; something else on :8081 is reported and
+left alone. The root script sets `LOXAIC_DEV_STACK=1` (declared in `turbo.json`'s
+`passThroughEnv`, or turbo's strict env mode drops it), which tells the desktop the dev server is
+on its way, so `apps/desktop/src/dev-launch.js` **waits** for it (up to 45 s, with a small window
+saying so) instead of racing it. It used to probe :4000 once; under turbo the still-booting
+server always lost, and the app silently started its own embedded stack on :4100 — a different
+database, with a different password for the same email. It then loaded Metro exactly once, with
+no retry, so a Metro that was not up yet (or had died with a reboot) left a blank window for
+good. A dev window now shows "Waiting for Metro" until Metro answers and comes back to it on any
+failed load. `electron .` on its own (no `LOXAIC_DEV_STACK`) keeps the single probe, since
+nothing is coming. `pnpm dev --filter=@loxaic/server` is still the way to run just the server.
+**In development `createWindow()` does not return until Metro answers**, which can be minutes, so
+anything about the window itself happens *before* that await: its `closed` handler (a window
+closed while waiting otherwise left `mainWindow` a destroyed object, so the dock never reopened
+the app and the next power or update event threw "Object has been destroyed" in the main
+process), and closing the dev-server waiting window, which otherwise stayed on screen beside the
+real one for the whole Metro wait. A retried load waits an interval even when Metro says it is up,
+or a load Chromium keeps refusing would loop with nothing sleeping. All found in review;
+`electron-dev/dev-launch.spec.ts` drives each one through the real main process.
 
 Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
 
@@ -165,10 +177,13 @@ replies.
 - **`expo-image-picker` is native-only.** Its web implementation creates a transient hidden
   `<input type="file">` at click time and clicks it programmatically — no stable element to
   attach a `testID` to, and nothing for e2e to drive. The composer's attach control is split
-  per-platform instead (`components/composer/AttachButton.tsx` / `.web.tsx`, same convention as
-  `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actionsheet over
-  `expo-image-picker`, web renders a real, persistent `<input type="file">`
-  (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly.
+  per-platform instead (`components/composer/ComposerPlusMenu.tsx` / `.web.tsx`, same convention
+  as `ImageViewer.tsx` / `.web.tsx`): native keeps the camera/library actions over
+  `expo-image-picker` in the `+` sheet, web renders a real, persistent `<input type="file">`
+  (`composer.attach.input`) that `apps/e2e/src/helpers/attachments.ts` drives directly. That
+  input lives **outside** the `+` popup and is mounted for the composer's lifetime: the helper
+  writes into it without opening anything, and Attach file clicks it inside the press itself so
+  the browser still counts the user's gesture.
 - **Expo SDK 57 / New Architecture only.** `newArchEnabled` is no longer a valid `app.json`
   key (SDK 55 removed the legacy architecture), `expo prebuild` now wipes `ios/`/`android/`
   before regenerating (pass `--no-clean` to keep them), and `runtimeVersion.policy:
@@ -2243,6 +2258,79 @@ replies.
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
 
+### MCP switches per chat and per kind of conversation
+
+- **Whether a server is offered to a conversation is one pure function, `mcpServerActive`
+  (`packages/types/src/mcp-state.ts`)**, which both the registry and every switch on screen
+  apply, so a switch can never show a state the next run is not given. The order: the server
+  must be globally `enabled` (unchanged, and filtered before the function); then the
+  conversation's own choice, `mcpOverrides.disabledServerIds` first (a server in both lists is
+  off) and then `enabledServerIds`; then the server's default for the conversation's `kind`
+  (`mcp_servers.on_in_chat` / `on_in_agent` / `on_in_routines`, all default true). Rows that
+  predate `enabledServerIds` carry only the disabled list and resolve exactly as before.
+- **Defaults resolve live; they are never copied into a conversation.** Switching GitHub off for
+  Chat applies at once to every chat that has not chosen for itself, which is what someone
+  turning it off to reclaim a window means. A switch flipped *in* a chat is always stored as an
+  explicit choice, even one that matches the default, so a later default change does not undo it.
+  Changing either costs the next request a full prompt re-evaluation (the tools array is part of
+  the prefix); that is the trade the user is making.
+- **A new conversation's choices ride the send that creates it** (`mcp_overrides` on
+  `chat.send`/`agent.send`, and on `POST /v1/conversations` for the agent's create-then-send
+  path). A new chat has no id to PATCH, and PATCHing after `turn.started` would leave the very
+  first request — the one someone switched GitHub off to shrink — carrying the schemas anyway.
+  The run starters write it **only when they create the row**; an existing conversation changes
+  through PATCH. `useMcpSwitches` holds the choices for a local id (`c<ts>`, `pending-*`) and,
+  when the real id arrives, PATCHes them if the row disagrees — which is also the fallback for an
+  older server that ignores the send field. The session hooks read them through a ref the screen
+  fills (`pendingMcp`), because the switches hook needs the session's `activeId` and so is
+  created after it. **"The real id arrived" is the session's `promotion` (`{localId, realId}`,
+  set in `turn.started`), never an inference from the ids** (`carriesChoices`): leaving an
+  unsent new chat for an existing thread also goes from pending to a server id, and the first
+  version PATCHed the abandoned chat's choices over that thread's own. Found in review.
+- **A failed read of the conversation's choices offers no MCP servers.** The fallback kind is
+  the run's surface, which is only ever `chat` or `agent`, so falling back to it resolved a
+  routine run against `on_in_chat` — offering a server switched off for the unattended kind. It
+  fails the same way a failed read of the server list already did: builtins only.
+- **A PATCH that changes only per-kind defaults does not restamp `updatedAt` or drop the
+  server's connections.** Those keys decide whether a connected server is offered, read from the
+  row at toolset time; restamping respawned stdio children and bypassed the connect-failure
+  cache, three times over from the three switches. `POST` honours (and validates) the same keys.
+- **One `useMcpSwitches` instance per screen** feeds the `+` menu, the context popup's tool list
+  and (on Agent) the Inspector, so the three cannot disagree. PATCH is owner-only, so a shared
+  editor sees the switches locked with the reason; their own sends are offered *their own*
+  servers (the toolset is built for the sender), following their own defaults.
+- **The web `+` is not gluestack's `Menu`**, which renders only flat items and has no submenus.
+  `ComposerPlusMenu.web.tsx` measures the `+` and the MCP row and places both panels with the
+  pure `lib/submenuPlacement.ts`: beside the menu on the right, else the left, else (phone width)
+  in the menu's place with a back row. The submenu opens on hover with a 150 ms close delay so
+  the pointer can cross the gap; react-native-web's `Modal` closes the whole thing on Escape.
+  The panels are plain `div`s because they are measured and hovered.
+- **`ContextBreakdown.tool_sources` splits the `tools` part by where each schema came from**
+  (`tallyToolSources` + `splitToolTokens` in `inference/context.ts`, largest remainder, so it
+  sums exactly to the part). Emit-only — it changes no request bytes — and it rides the
+  existing `usage_records.context_breakdown` jsonb, so it survives a reload. **An MCP entry
+  carries the server's id and no name**: the breakdown reaches every subscriber, shared viewers
+  and the admin transcript included, on every request, so a name there disclosed every server
+  merely *offered* to the sender — where before a viewer learned a slug only when a tool was
+  called. The client names a row from its own server list (`toolSourceName`); a server not in
+  it (the sender's, on a shared thread, or one removed) is "MCP server not in your list".
+  Breakdowns stored before this still carry names and are not rewritten. Absent on an older
+  breakdown, which the popup says ("per-server figures from your next message") rather than
+  showing nothing. `lib/toolSourceRows.ts` merges the last request's figures with the switches'
+  state *now*, and each row says which way they disagree ("Off · frees ~N tokens from your next
+  message"), since the figure describes the last request and the switch the next one.
+- **An e2e assertion about a switch is made against the stored breakdown**
+  (`lastToolSourceKeys`), never only against the switch: a switch that moved and a request that
+  still carried the schemas is exactly the failure this exists to prevent.
+- **Wait for a dismissed sheet's contents with `waitForAbsent`, not `waitForGone`.**
+  `waitForGone` polls the element it found first, and under UiAutomator2 an element found inside
+  an Actionsheet's window goes on reporting `displayed` after that window has closed — a page
+  source captured at the timeout had no such element at all. It failed one run in two on Android,
+  always right after a switch inside the sheet was tapped. `waitForAbsent` re-queries each poll.
+  XCUITest, separately, exposes neither a sheet's backdrop nor a plain container view's testID,
+  so the native helpers close overlays with a positional tap near the top of the screen and anchor
+  on pressables (`composer.mcp.manage`) and switches.
+
 ### Agent workspaces
 
 - **`conversations.workspace` (jsonb, `Workspace` in `packages/types`) says where an agent
@@ -2733,6 +2821,16 @@ replies.
   failure the Inspector hit. Centred while it fits, scrolls once it does not.
 
 ### Electron
+- **The dev launch has its own e2e lane, `test:electron-dev`** (`wdio.electron-dev.ts`,
+  `specs/electron-dev/`): the checkout's unpackaged app against stand-ins for the dev server and
+  Metro (`scripts/dev-stand-ins.ts`). Every other Electron spec drives the packaged build, which
+  never takes the dev path — which is how a blank dev window survived with nothing failing.
+  Two things only this lane meets: **chromedriver needs `--app=<dir>`, never a bare path** — it
+  adds `--test-type=webdriver`, Chromium moves bare arguments after every switch, and Electron's
+  default app ignores a path that follows that flag and shows its Usage page; and **a checkout
+  under `~/Documents` (or Desktop/Downloads) is unreadable to an Electron chromedriver starts**, so
+  the lane launches from an APFS clone of the checkout in a temp dir. Both present only as
+  "DevToolsActivePort file doesn't exist", and the same launch from a terminal works.
 
 - **Every package ships `THIRD_PARTY_NOTICES.txt`, `LICENSE`, `NOTICE`, Electron's licence and
   Chromium's, in the app's resources.** `scripts/third-party-notices.mjs` builds the first

@@ -1,5 +1,6 @@
 import type { FileDiff } from "./index";
 import type { TimeoutBasis } from "./waits";
+import type { McpOverrides } from "./mcp-state";
 
 /** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
@@ -346,6 +347,25 @@ export type ContextCategory =
 
 export interface ContextPart { category: ContextCategory; tokens: number }
 
+/** One source's share of the `tools` part: the builtins together, or one MCP
+ * server. `tokens` across every entry sum to exactly that part's tokens. */
+export interface ContextToolSource {
+  /** `"builtin"`, or the MCP server's id. */
+  key: string;
+  kind: "builtin" | "mcp";
+  /**
+   * "Built-in tools" for builtins, and **absent for an MCP server**. A server's
+   * name is free text its owner typed, and this breakdown reaches everyone on
+   * the conversation — shared viewers and the admin transcript included — on
+   * every request, whether or not any of the server's tools was called. The
+   * client names a server from its own server list, keyed on `key`.
+   */
+  name?: string;
+  /** How many tool schemas this source put in the request. */
+  tools: number;
+  tokens: number;
+}
+
 export interface ContextBreakdown {
   /** `parts` sum to exactly this. Includes the response: it's in the window
    * now and will be in the next prompt, so the bar and the ring agree. */
@@ -360,6 +380,10 @@ export interface ContextBreakdown {
    * top of the client's model-list refresh: it closes the races refresh can't
    * (refresh in flight, model changed mid-conversation, MOCK_INFERENCE). */
   window_tokens?: number | null;
+  /** The `tools` part split by where each schema came from. Absent from a
+   * breakdown written before it existed, and whenever no tools were offered —
+   * "we were not told", never "nothing was offered". */
+  tool_sources?: ContextToolSource[];
 }
 
 export interface TurnUsage {
@@ -731,6 +755,11 @@ export type ClientMessage =
       /** The client's own name for this send, echoed on an `error` that
        * refuses it. Opaque to the server. */
       client_ref?: string;
+      /** MCP choices made before the conversation existed. Written only when
+       * this send creates the conversation, so its first request already
+       * leaves out what was switched off; ignored for an existing one, which
+       * changes through `PATCH /v1/conversations/:id`. */
+      mcp_overrides?: McpOverrides;
     }
   | {
       type: "agent.send";
@@ -743,6 +772,8 @@ export type ClientMessage =
       attachments?: string[];
       /** As on `chat.send`. */
       client_ref?: string;
+      /** As on `chat.send`. */
+      mcp_overrides?: McpOverrides;
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

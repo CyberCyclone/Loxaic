@@ -194,6 +194,7 @@ export function displayModelRef(ref: string): string {
 export * from "./stream-protocol";
 export * from "./waits";
 export * from "./commands";
+export * from "./mcp-state";
 
 export interface UsageRecord {
   id: string;

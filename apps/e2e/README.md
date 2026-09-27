@@ -47,6 +47,18 @@ the renderer only learns where the API is through the main process's `window.lox
 bridge. The dev shell loads Metro over http instead and never exercises that path.
 `src/specs/electron/endpoint.spec.ts` covers the bridge specifically.
 
+### The dev launch (`test:electron-dev`)
+
+```bash
+pnpm --filter @loxaic/e2e test:electron-dev
+```
+
+The desktop app as `pnpm dev` starts it — unpackaged, loading Metro — against stand-ins for the
+dev server (late by ten seconds) and Metro (started and stopped by the spec), on ports of the
+run's own. No build needed. On macOS a checkout under `~/Documents`, `~/Desktop` or `~/Downloads`
+is cloned to a temp dir first (APFS copy-on-write, so no extra space), because an Electron that
+chromedriver starts is refused those folders.
+
 Chromedriver is matched to the Electron version automatically, read from the version
 `apps/desktop` actually has installed — so the two can't drift apart.
 

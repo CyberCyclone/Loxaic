@@ -24,6 +24,7 @@ import {
   type PromptStats,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
+import type { McpOverrides } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
@@ -37,6 +38,7 @@ import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import type { Promotion } from '@/lib/mcpSwitches';
 
 export type { PendingApproval };
 
@@ -167,7 +169,14 @@ export function toConversation(c: ApiConversation): Conversation {
   };
 }
 
-export function useChatSession(token: string | null, onStreamEnd?: () => void, scope: ChatScope = CHAT_SCOPE) {
+/** `pendingMcp`: as on `useAgentSession` — MCP choices for a conversation
+ * that does not exist yet, carried by the send that creates it. */
+export function useChatSession(
+  token: string | null,
+  onStreamEnd?: () => void,
+  scope: ChatScope = CHAT_SCOPE,
+  pendingMcp?: { readonly current: McpOverrides | undefined },
+) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
   // silently holding the old one until the app restarts.
@@ -204,6 +213,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
    * different screens. */
   const [listLoaded, setListLoaded] = useState(false);
   const [activeId, setActiveIdState] = useState<string | null>(null);
+  // The last placeholder swapped for a server id. `useMcpSwitches` reads it to
+  // tell that apart from someone opening another thread, which moves
+  // `activeId` from pending to a server id just the same.
+  const [promotion, setPromotion] = useState<Promotion | null>(null);
   // Read through a ref by the stable callbacks below (`setActiveId` must not
   // re-create per render — `loadedConvIdsRef` dedupes against its identity).
   const scopeRef = useRef(scope);
@@ -595,7 +608,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
           );
         }
         // Follow it unless it is an older thread the person has since left.
-        if (isPending || localId === null || activeIdRef.current === localId) setActiveId(realId);
+        if (isPending || localId === null || activeIdRef.current === localId) {
+          if (localId && localId !== realId) setPromotion({ localId, realId });
+          setActiveId(realId);
+        }
         if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
@@ -916,7 +932,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId)) {
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current)) {
           // Undo, don't just toast. The bubble was already painted, and the
           // cache-on-settle effect would have persisted a message that was
           // never sent into the user's "saved copy" — replayed on every
@@ -946,7 +962,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         }
       }
     },
-    [setActiveId, showToast],
+    [setActiveId, showToast, pendingMcp],
   );
 
   /** Take back a send the server refused before writing anything: the bubble,
@@ -1185,6 +1201,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     activeId,
     activeConv,
     setActiveId,
+    promotion,
     streaming: !!activeStream,
     // Overlaid on the live stream state, not replacing it: the run is still
     // streaming until it actually ends.

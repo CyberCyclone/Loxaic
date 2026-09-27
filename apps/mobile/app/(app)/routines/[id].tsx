@@ -26,6 +26,7 @@ import { useContextUsage } from '@/hooks/useContextUsage';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useToastHelper } from '@/hooks/useToastHelper';
+import { useMcpSwitches } from '@/hooks/useMcpSwitches';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { humanizeCron } from '@/lib/fixtures/routines';
 import { runStatusIsError, runStatusLabel, runTimeLabel } from '@/lib/routineRuns';
@@ -161,6 +162,9 @@ export default function RoutineChatScreen() {
     noRoom,
     dismissNoRoom,
   } = useChatSession(token, undefined, scope);
+  // A routine's chats exist only because a run made them, so there is never
+  // a first send to carry choices on: every switch here is a PATCH.
+  const mcp = useMcpSwitches(token, activeConv?.id ?? null, 'routine');
   // Puts an unsent message back in the message box (a no-room refusal).
   const [composerSeed, setComposerSeed] = useState<{ token: number; text: string } | null>(null);
 
@@ -405,6 +409,7 @@ export default function RoutineChatScreen() {
               surface="chat"
               onRunCommand={handleRunCommand}
               commandSeed={composerSeed}
+              mcp={mcp}
               readOnlyReason={
                 !showsDisconnected(connection)
                   ? null

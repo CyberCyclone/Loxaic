@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { count, db, eq } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, Workspace } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, McpOverrides, Workspace } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
 import {
   assertAttachmentsOwned,
@@ -65,6 +65,10 @@ export async function startAgentRun(input: {
   parentId?: string;
   /** Attachment refs from POST /v1/files, in display order. */
   attachments?: string[];
+  /** MCP choices made before the conversation existed. Written only when this
+   * send creates the conversation, so its first request already follows
+   * them; an existing conversation's choices change through PATCH. */
+  mcpOverrides?: McpOverrides | null;
 }): Promise<StartAgentRunResult> {
   const { userId, content, model, mode } = input;
   const broker = getStreamBroker();
@@ -93,7 +97,12 @@ export async function startAgentRun(input: {
     // clients that predate the chooser; it is always a scratch workspace.
     const [conv] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: conversationTitle(content, atts), kind: "agent" })
+      .values({
+        ownerId: userId,
+        title: conversationTitle(content, atts),
+        kind: "agent",
+        mcpOverrides: input.mcpOverrides ?? null,
+      })
       .returning();
     convId = conv.id;
   }
