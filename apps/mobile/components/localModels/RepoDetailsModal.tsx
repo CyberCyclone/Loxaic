@@ -34,9 +34,11 @@ interface RepoDetailsModalProps {
  * One HuggingFace repository: who published it, its stats, its description
  * (the model card), and every quant with its size and fit label.
  *
- * The card is untrusted markdown from a stranger's repository. It renders
- * through the same component as a model's reply, which shows HTML as literal
- * text and images as a link rather than fetching them.
+ * The card is untrusted markdown from a stranger's repository, usually with
+ * HTML in it. It renders through the same component as a model's reply, with
+ * the HTML turned into the markdown it means (components/markdown/html.ts):
+ * nothing is handed to a browser as HTML, and images are links rather than
+ * fetched.
  */
 export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModalProps) {
   const [details, setDetails] = useState<HfRepoDetails | null>(null);
@@ -91,8 +93,10 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
           padding and margins: on a short window (a desktop app beside other
           panes) that left a strip a couple of quant rows tall between the
           header and the modal's own padding, which is all anyone could see of
-          the list they opened this to choose from. */}
-      <ModalContent testID="localModels.details" className="max-h-[94%] w-[96%] max-w-[960px] p-4 web:p-5">
+          the list they opened this to choose from. The 94% is the web's
+          only: a phone's window includes the status bar, and 94% of it put
+          the sheet's title under the clock. */}
+      <ModalContent testID="localModels.details" className="max-h-[85%] w-[96%] max-w-[960px] p-4 web:max-h-[94%] web:p-5">
         <ModalHeader>
           <VStack className="min-w-0 flex-1 shrink pr-2">
             <Heading size="sm" numberOfLines={1} style={TRUNCATE_TEXT}>
@@ -296,7 +300,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                   About this model
                 </Text>
                 {details.card ? (
-                  <Markdown text={details.card} size="sm" />
+                  <Markdown text={details.card} size="sm" html />
                 ) : (
                   <Text size="sm" className="text-muted-foreground">
                     The publisher has not written a description.

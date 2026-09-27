@@ -65,9 +65,23 @@ export interface MockHf {
   stop: () => Promise<void>;
 }
 
+// Opens with HTML the way real cards do (this head is unsloth's shape): the
+// details sheet showed every tag of it as text until the renderer learned to
+// draw it (apps/mobile/components/markdown/html.ts).
 const CARD = `---
 license: apache-2.0
 ---
+<div>
+<p style="margin-bottom: 0; margin-top: 0;">
+  <strong>See <a href="https://huggingface.co/collections/e2e-org/tiny">our collection</a> for every version of Tiny.</strong>
+</p>
+<div style="display: flex; gap: 5px; align-items: center; ">
+  <a href="https://discord.gg/e2e-org">
+    <img src="https://example.invalid/images/Discord%20button.png" width="173">
+  </a>
+</div>
+</div>
+
 # Tiny Test Model
 
 A **small** model for the end-to-end suite. It answers briefly and fits on anything.

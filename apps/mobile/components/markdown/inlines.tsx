@@ -1,15 +1,42 @@
 import type { ReactNode } from 'react';
-import { Linking, Text as RNText } from 'react-native';
+import { Linking, Platform, Text as RNText, type TextStyle } from 'react-native';
 import type { Tokens } from 'marked';
 import { decodeEntities, type Token } from './parse';
 import { md, monoStyle } from './theme';
 
 // Inline spans are raw RN Text, not the Gluestack Text: the Gluestack tva base
 // re-applies text-foreground + size md to every element, which would clobber
-// the color/size a span should inherit from its parent paragraph. Raw RNText
-// inherits on both native and web.
+// the color/size a span should inherit from its parent paragraph. A raw RNText
+// inherits from another RNText on both native and web — but on the web the
+// paragraph around it is Gluestack's raw <span>, which react-native-web cannot
+// see, so the outermost RNText took RNW's root-text defaults instead (black,
+// `14px System`): every paragraph, heading and table cell ignored the colour
+// and size its block asked for. `renderInlineRun` wraps a block's inlines in
+// one RNText that inherits them, and everything inside is an RNText with a
+// text ancestor, which RNW already makes inherit.
 
+// `inherit` is a CSS keyword RN's types do not know; only the web sees this.
+const INHERIT = {
+  color: 'inherit',
+  fontFamily: 'inherit',
+  fontSize: 'inherit',
+  fontStyle: 'inherit',
+  fontWeight: 'inherit',
+  lineHeight: 'inherit',
+  letterSpacing: 'inherit',
+  textAlign: 'inherit',
+} as unknown as TextStyle;
+
+/** A block's inline content: what goes inside a paragraph, heading or cell. */
+export function renderInlineRun(tokens: Token[] | undefined): ReactNode {
+  return <RNText style={Platform.OS === 'web' ? INHERIT : undefined}>{renderInlines(tokens)}</RNText>;
+}
+
+// Only web and mail addresses open. A link's target is whatever a model or a
+// model card's author wrote, and `javascript:` or `file:` is not somewhere a
+// tap should go.
 function openLink(href: string) {
+  if (!/^(https?:|mailto:)/i.test(href.trim())) return;
   void Linking.openURL(href).catch(() => {
     /* invalid/unsupported URL from the model — nothing sensible to do */
   });

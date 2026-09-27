@@ -200,6 +200,19 @@ replies.
   the mock answered before the 200 ms animation finished (the mock's model card now waits a
   second). `ModalContent` and `Menu` use `FadeIn` on the web and keep the zoom on native,
   which has no such step; the popover already avoided it for a different crash.
+- **On the web, a raw React Native `Text` directly inside a gluestack `Text` does not
+  inherit from it.** The gluestack web `Text` is a plain `<span>` react-native-web cannot see,
+  so the RN `Text` inside takes RNW's root-text defaults — black, `14px System` — over the
+  paragraph's colour, size and (in this app, where weight is a font family) weight. Every
+  markdown paragraph and heading was drawn that way on the web, chat replies included: the
+  headings were body-sized, the text grey-on-dark. `renderInlineRun` wraps a block's inlines
+  in one RN `Text` styled `inherit`; everything inside has a text ancestor, which RNW already
+  makes inherit.
+- **Never pass a `withUniwind` component a `className` that is present but undefined.** It
+  becomes `{ tailwind: undefined }`, and react-native-web's styleq reports every render as an
+  error (a red "styleq: tailwind typeof undefined" toast in a dev build). A `tva({})` with no
+  base classes returns undefined when given none, which is how every bare `<Spinner />` did
+  it; the spinner now leaves the prop out.
 - **`babel-preset-expo` must stay a declared devDependency** even though `expo` depends on
   it: under pnpm it is only hoisted to `node_modules/.pnpm/node_modules`, which Babel can't
   resolve from `apps/mobile`. It injects `react-native-worklets/plugin` itself, so that plugin
@@ -1089,6 +1102,17 @@ replies.
 - **Restart re-detects the hardware** (`st.hardware` is cleared on `restart: true`), because the
   no-loader error tells the admin to install it "and restart the runtime", which with a cached
   detection rendered the identical error back.
+- **A model card's HTML is converted to markdown, never rendered as HTML**
+  (`components/markdown/html.ts`, via `<Markdown html />`, which only the details sheet passes).
+  Real cards open with `<div>`/`<p>`/`<strong>` banners, badge rows and HTML tables, and the
+  renderer shows HTML literally — right for a model's reply, a wall of tags for a card. HTML
+  blocks are converted as HTML (whitespace collapsed, text escaped so it stays text); HTML
+  inside a paragraph is converted tag by tag with the markdown around it untouched; code is
+  never touched; a tag it does not know stays literal (`<your-token>` in prose is usually a
+  placeholder). Images are not fetched — a badge becomes its link, labelled by alt text or
+  where it goes — and only http(s)/mailto links survive, here and in `openLink` for every
+  markdown link. The mock card opens with HTML for the same reason the mock README is slow:
+  a mock tidier than the real thing hid the bug.
 - **A download finishing replaces the row's status node** (in-progress line → finished pill,
   same testID). `waitForTextIn` holds one element reference and never sees the new one; the spec
   re-queries (`waitForFreshText`).

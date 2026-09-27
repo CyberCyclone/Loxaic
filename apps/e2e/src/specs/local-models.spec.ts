@@ -22,7 +22,9 @@ import { adminCreds, apiToken, provisionAdmin, uniqueCreds } from '../helpers/au
 import { shot } from '../helpers/screenshot.ts';
 import { attachDocument, TEXT_FIXTURE } from '../helpers/attachments.ts';
 import {
+  byTestId,
   isVisible,
+  platform,
   tap,
   testIdSelector,
   typeInto,
@@ -263,6 +265,23 @@ describe('local models', () => {
     await waitForVisible('localModels.details');
     await waitForTextIn('localModels.details.publisher', 'e2e-org');
     await waitForTextIn('localModels.details.card', 'A small model for the end-to-end suite');
+    // The card's HTML is drawn, not shown as tags: its words and its links
+    // are there, and none of its markup is.
+    await waitForTextIn('localModels.details.card', 'See our collection for every version of Tiny.');
+    const card = await byTestId('localModels.details.card').getText();
+    expect(card).not.toMatch(/<\/?(div|p|strong|a|img)\b/);
+    if (platform() === 'web' || platform() === 'electron') {
+      const links = await browser.execute((selector: string) => {
+        const el = document.querySelector(selector);
+        return el ? [...el.querySelectorAll('[role="link"]')].map((l) => l.textContent ?? '') : [];
+      }, testIdSelector('localModels.details.card'));
+      // A badge is a link labelled by where it goes; its image is not fetched.
+      expect(links).toEqual(expect.arrayContaining(['our collection', 'discord.gg/e2e-org']));
+      await browser.execute((selector: string) => {
+        document.querySelector(selector)?.scrollIntoView({ block: 'start' });
+      }, testIdSelector('localModels.details.card'));
+      await shot('local-models-details-card');
+    }
     await waitForTextIn('localModels.details.stats', '12.3k');
     await waitForTextIn(`localModels.quant.fit.${hf.quants.download}`, 'Will fit');
     await waitForTextIn(`localModels.quant.fit.${hf.quants.mightFit}`, 'Might fit');

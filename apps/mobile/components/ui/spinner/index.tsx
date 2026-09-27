@@ -21,6 +21,12 @@ const Spinner = React.forwardRef<
   },
   ref
 ) {
+  // `spinnerStyle` has no base classes, so with no className it returns
+  // undefined — and withUniwind turns a className prop that is present but
+  // undefined into `{ tailwind: undefined }`, which react-native-web's styleq
+  // reports as an error on every bare <Spinner /> (the red "styleq: tailwind
+  // typeof undefined" toast in a dev build). Leave the prop out instead.
+  const styled = spinnerStyle({ class: className });
   return (
     <StyledActivityIndicator
       ref={ref}
@@ -28,7 +34,7 @@ const Spinner = React.forwardRef<
       aria-label={ariaLabel}
       {...props}
       color={color}
-      className={spinnerStyle({ class: className })}
+      {...(styled ? { className: styled } : {})}
     />
   );
 });
