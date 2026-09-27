@@ -55,10 +55,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const [endpointError, setEndpointError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Every opening starts clean. There is one instance for the life of the
+    // shell now, so nothing else resets what a previous opening left behind —
+    // a failed Test would otherwise stay red under a working address.
     if (open) {
       setDraft(settings);
       setDirty(false);
       setConfirmEndpoint(false);
+      setConfirmDetach(false);
+      setEndpointTest(null);
+      setEndpointError(null);
     }
   }, [open, settings]);
 
