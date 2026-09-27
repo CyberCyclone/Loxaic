@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isNoRoom, lostSendNote, noRoomNotice, PendingSends, unsentNote } from './noRoom';
+import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, unsentNote } from './noRoom';
 
 const send = (id: string, over: Partial<{ text: string; localConvId: string | null; hadAttachments: boolean }> = {}) => ({
   text: over.text ?? `text of ${id}`,
@@ -88,5 +88,56 @@ describe('a send whose answer was lost with its socket', () => {
     expect(lostSendNote(send('a', { text: 'hi', hadAttachments: true }))).toBe(
       'The connection dropped before the server confirmed your message, so it may not have been sent. Its text is back in the message box; add its attachments again.',
     );
+  });
+});
+
+describe('what a turn.started settles', () => {
+  it('gives the id to the send it names, not to whatever is waiting now', () => {
+    // A replay for thread A lands after thread B was started.
+    const sends = new PendingSends();
+    sends.remember('refA', send('refA', { localConvId: 'cA' }));
+    sends.remember('refB', send('refB', { localConvId: 'cB' }));
+    expect(settledByTurnStarted('refA', sends, 'cB')).toEqual({ localId: 'cA', isPending: false });
+    // B is still the one waiting, and is still findable.
+    expect(sends.refFor('cB')).toBe('refB');
+  });
+
+  it('settles the waiting thread when the answer is its own', () => {
+    const sends = new PendingSends();
+    sends.remember('refB', send('refB', { localConvId: 'cB' }));
+    expect(settledByTurnStarted('refB', sends, 'cB')).toEqual({ localId: 'cB', isPending: true });
+  });
+
+  it('settles no local thread for a send into an existing conversation', () => {
+    const sends = new PendingSends();
+    sends.remember('refX', send('refX', { localConvId: null }));
+    expect(settledByTurnStarted('refX', sends, 'cB')).toEqual({ localId: null, isPending: false });
+  });
+
+  it('without a ref (a compaction, an older server) settles the waiting one, as before', () => {
+    expect(settledByTurnStarted(undefined, new PendingSends(), 'cB')).toEqual({ localId: 'cB', isPending: true });
+    expect(settledByTurnStarted(undefined, new PendingSends(), null)).toEqual({ localId: null, isPending: false });
+  });
+});
+
+describe('a send that has not gone out yet', () => {
+  it('is not asked about until it has', () => {
+    const sends = new PendingSends();
+    sends.remember('refW', { ...send('refW', { localConvId: 'cW' }), dispatched: false });
+    expect(sends.refFor('cW')).toBeUndefined();
+    sends.markDispatched('refW');
+    expect(sends.refFor('cW')).toBe('refW');
+  });
+});
+
+describe('a send\'s name', () => {
+  it('differs for two sends in the same millisecond', () => {
+    let n = 0;
+    const random = () => [0.123456789, 0.987654321][n++];
+    const a = newClientRef(1790483463291, random);
+    const b = newClientRef(1790483463291, random);
+    expect(a).not.toBe(b);
+    // Still a ref the server will echo back.
+    expect(a).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
   });
 });

@@ -26,9 +26,9 @@ import { goToSurface, mockEcho, sendMessage, signUp, startNewThread } from '../h
  * The next `<type>` frame closes its socket as it goes out. With `deliver`
  * false the frame is dropped as well — the send never reaches the server.
  */
-async function dropSocketOnNext(type: 'chat.send' | 'agent.send', deliver: boolean): Promise<void> {
+async function dropSocketOnNext(type: 'chat.send' | 'agent.send', deliver: boolean, extra: Record<string, unknown> = {}): Promise<void> {
   await browser.execute(
-    (frameType: string, send: boolean) => {
+    (frameType: string, send: boolean, fields: Record<string, unknown>) => {
       const proto = WebSocket.prototype;
       // Read through the descriptor rather than `proto.send`, which lint
       // (rightly) reads as detaching a method from its object.
@@ -36,7 +36,7 @@ async function dropSocketOnNext(type: 'chat.send' | 'agent.send', deliver: boole
       proto.send = function (this: WebSocket, data: string | ArrayBufferLike | Blob | ArrayBufferView) {
         if (typeof data === 'string' && data.includes(`"type":"${frameType}"`)) {
           proto.send = original;
-          if (send) original.call(this, data);
+          if (send) original.call(this, JSON.stringify({ ...(JSON.parse(data) as object), ...fields }));
           this.close();
           return;
         }
@@ -45,6 +45,7 @@ async function dropSocketOnNext(type: 'chat.send' | 'agent.send', deliver: boole
     },
     type,
     deliver,
+    extra,
   );
 }
 
@@ -85,6 +86,27 @@ describe('a new conversation whose socket drops before the answer', () => {
     await sendMessage(prompt);
     await waitForTextIn('chat.messageList', mockEcho(prompt), 30_000);
     await shot('lost-answer-agent-recovered');
+  });
+
+  it('a refusal lost with its socket takes the message back too', async () => {
+    await goToSurface('chat');
+    await startNewThread('chat');
+    const prompt = 'refused while the socket drops';
+    // A frame the server really refuses (the retired Incognito flag), with
+    // the refusal then lost like any other answer.
+    await dropSocketOnNext('chat.send', true, { incognito: true });
+    await sendMessage(prompt);
+    await waitForTextIn('shell.toast', 'Incognito chat is no longer available', 30_000);
+    await browser.waitUntil(async () => (await composerValue()) === prompt, {
+      timeout: 10_000,
+      timeoutMsg: 'the refused message did not come back to the message box',
+    });
+    const listText = await browser.execute(
+      (selector: string) => document.querySelector(selector)?.textContent ?? '',
+      testIdSelector('chat.messageList'),
+    );
+    if (listText.includes(prompt)) throw new Error('the refused message is still in the thread');
+    await shot('lost-refusal-returned');
   });
 
   it('a send the server never got goes back to the message box and says so', async () => {

@@ -31,7 +31,7 @@ import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyP
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
-import { isNoRoom, lostSendNote, noRoomNotice, PendingSends, type NoRoomNotice } from '@/lib/noRoom';
+import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { useToastHelper } from './useToastHelper';
 
@@ -384,10 +384,12 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
     const onEvent = (event: ServerMessage) => {
       if (event.type === 'turn.started') {
         const realId = event.conversation_id;
-        const localId = pendingLocalIdRef.current;
-        const modelForPatch = pendingModelRef.current;
-        pendingLocalIdRef.current = null;
-        pendingModelRef.current = null;
+        const { localId, isPending } = settledByTurnStarted(event.client_ref, sendsRef.current, pendingLocalIdRef.current);
+        const modelForPatch = isPending ? pendingModelRef.current : null;
+        if (isPending) {
+          pendingLocalIdRef.current = null;
+          pendingModelRef.current = null;
+        }
         setRuns((prev) => {
           if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
             // The optimistic run already carries the chosen workspace; only
@@ -400,7 +402,8 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
             ...prev,
           ];
         });
-        setActiveId(realId);
+        // Follow it unless it is an older thread the person has since left.
+        if (isPending || localId === null || activeIdRef.current === localId) setActiveId(realId);
         if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
@@ -559,11 +562,15 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         if (sent.text.trim()) setReturnedText({ token: Date.now(), text: sent.text });
         showToast(lostSendNote(sent), 8000);
       } else if (event.type === 'error') {
+        // A refusal naming a send (any refusal replayed for `send.status`, and a
+        // live no-room one) takes that send back: nothing was written for it,
+        // and leaving it would leave a thread waiting for an id forever.
+        const sent = sendsRef.current.take(event.client_ref);
+        if (sent) rollBackSendRef.current(sent.localMsgId, sent.localConvId);
         if (isNoRoom(event)) {
-          const sent = sendsRef.current.take(event.client_ref);
-          if (sent) rollBackSendRef.current(sent.localMsgId, sent.localConvId);
           setNoRoom(noRoomNotice(event.error, sent));
         } else {
+          if (sent?.text.trim()) setReturnedText({ token: Date.now(), text: sent.text });
           showToast(`Agent error: ${event.error}`, 6000);
         }
       }
@@ -654,7 +661,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
       if (modeOverride && modeOverride !== mode && !handleModeChange(modeOverride)) return false;
 
       const convId = activeIdRef.current;
-      const localMsgId = `lm${String(Date.now())}`;
+      const localMsgId = newClientRef();
       pendingUserMsgIdRef.current = localMsgId;
       const hadAttachments = (attachments?.length ?? 0) > 0;
       sendsRef.current.remember(localMsgId, { text, localMsgId, localConvId: null, hadAttachments });
@@ -665,8 +672,16 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
         const localId = `pending-${Math.random().toString(36).slice(2)}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
-        sendsRef.current.remember(localMsgId, { text, localMsgId, localConvId: localId, hadAttachments });
         const chosen = pendingWorkspaceRef.current;
+        // A workspace's conversation is created over REST before the message
+        // goes out, so until then there is nothing for the server to know.
+        sendsRef.current.remember(localMsgId, {
+          text,
+          localMsgId,
+          localConvId: localId,
+          hadAttachments,
+          dispatched: chosen.kind === 'scratch',
+        });
         const newRun: Conversation = {
           id: localId,
           title: text.slice(0, 40) || (attachments?.[0]?.name ?? 'Attachment'),
@@ -707,6 +722,7 @@ export function useAgentSession(token: string | null, onStreamEnd?: () => void) 
               const ws = wsRef.current;
               const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId);
               if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
+              sendsRef.current.markDispatched(localMsgId);
             })
             .catch((err: unknown) => {
               setRuns((prev) => prev.filter((r) => r.id !== localId));

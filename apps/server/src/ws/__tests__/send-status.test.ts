@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
 import { db, eq, inArray } from "@loxaic/db";
-import { conversations, messages, usageRecords, user } from "@loxaic/db/schema";
+import { conversationShares, conversations, messages, usageRecords, user } from "@loxaic/db/schema";
 import type { ServerMessage } from "@loxaic/types";
 
 /**
@@ -68,6 +68,7 @@ afterAll(async () => {
   }
   await db.delete(usageRecords).where(inArray(usageRecords.userId, owners));
   if (mine.length > 0) {
+    await db.delete(conversationShares).where(inArray(conversationShares.conversationId, ids));
     await db.delete(messages).where(inArray(messages.conversationId, mine.map((c) => c.id)));
     await db.delete(conversations).where(inArray(conversations.ownerId, [userId, otherId]));
   }
@@ -194,6 +195,39 @@ describe("send.status", () => {
     const replayed = await second.waitFor((m): m is Extract<ServerMessage, { type: "error" }> => m.type === "error");
     expect(replayed).toEqual({ type: "error", error: "not found", client_ref: ref });
     second.ws.close();
+  });
+
+  it("re-authorizes before replaying: a revoked editor gets not found, and no stream", async () => {
+    const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "shared then revoked", kind: "chat" }).returning();
+    await db.insert(conversationShares).values({ conversationId: conv.id, userId: otherId, role: "editor", createdBy: userId });
+    const ref = `lm${String(Date.now())}v`;
+    const first = await connect("chat", "theirs");
+    first.ws.send(JSON.stringify({ type: "chat.send", content: "as an editor", model: MODEL, conversation_id: conv.id, client_ref: ref }));
+    await first.waitFor(isTurnStarted);
+    first.ws.close();
+
+    await db.delete(conversationShares).where(eq(conversationShares.conversationId, conv.id));
+    const second = await connect("chat", "theirs");
+    second.ws.send(JSON.stringify({ type: "send.status", client_ref: ref }));
+    const refused = await second.waitFor((m): m is Extract<ServerMessage, { type: "error" }> => m.type === "error");
+    expect(refused).toEqual({ type: "error", error: "not found", client_ref: ref });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(second.received.some((m) => m.type === "turn.started" || m.type === "stream.sync" || m.type === "stream.event")).toBe(false);
+    second.ws.close();
+  });
+
+  it("answers for the other surface's send type instead of hanging", async () => {
+    const ref = `lm${String(Date.now())}x`;
+    const client = await connect("chat");
+    // Not handled on the chat socket, so never started — and never remembered.
+    client.ws.send(JSON.stringify({ type: "agent.send", content: "wrong socket", model: MODEL, client_ref: ref }));
+    client.ws.send(JSON.stringify({ type: "send.status", client_ref: ref }));
+    const unknown = await client.waitFor(
+      (m): m is Extract<ServerMessage, { type: "send.unknown" }> => m.type === "send.unknown",
+      3_000,
+    );
+    expect(unknown.client_ref).toBe(ref);
+    client.ws.close();
   });
 
   it("answers a subscribe to a non-uuid id as not found, not with Postgres' words", async () => {

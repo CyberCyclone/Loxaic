@@ -18,7 +18,9 @@ import { clientRefOf } from "./client-ref.ts";
  * send's own `client_ref` names it exactly.
  *
  * Keyed by user as well as ref: the ref is the client's own token, so two
- * users may well pick the same one, and one must never read the other's.
+ * users may well pick the same one, and one must never read the other's. A
+ * ref's uniqueness across one user's *devices* is the client's to ensure —
+ * the server cannot check it — which is why clients add randomness to it.
  * In memory, like the run registry: a restart loses the answer, and the client
  * is then told the send is unknown rather than told something false.
  */
@@ -27,11 +29,19 @@ type TurnStarted = Extract<ServerMessage, { type: "turn.started" }>;
 type SendError = Extract<ServerMessage, { type: "error" }>;
 export type SendOutcome = TurnStarted | SendError;
 
+/** Longest an answer is kept, whatever the stream log's retention. Above
+ * Node's `2**31 - 1` a `setTimeout` delay silently becomes 1 ms, which would
+ * forget every answer the moment it settled — clamped, as the approval and
+ * check-in waits are. */
+const MAX_KEEP_MS = 86_400_000;
+
 /** How long an answer is kept after it is known. As long as the stream log
- * keeps the run it describes: past that there is nothing left to show. */
-function keepMs(): number {
+ * keeps the run it describes (past that there is nothing left to show), up to
+ * `MAX_KEEP_MS`. */
+export function keepMs(): number {
   const seconds = Number(process.env.STREAM_TTL_SECONDS);
-  return (Number.isFinite(seconds) && seconds > 0 ? seconds : 86_400) * 1000;
+  const ms = (Number.isFinite(seconds) && seconds > 0 ? seconds : 86_400) * 1000;
+  return Math.min(ms, MAX_KEEP_MS);
 }
 
 /** Per user, newest kept. A client only ever asks about the send it is still
@@ -96,9 +106,15 @@ export function beginSend(userId: string, ref: string): PendingSendOutcome {
   };
 }
 
-/** `beginSend` for a message off a socket: only a send naming itself counts. */
-export function beginSendFor(userId: string, msg: { type: string }): PendingSendOutcome | undefined {
-  if (msg.type !== "chat.send" && msg.type !== "agent.send") return undefined;
+/** `beginSend` for a message off a socket: only this surface's send, naming
+ * itself, counts. The other surface's send type is not handled on this socket,
+ * so remembering it would leave an answer nothing ever settles. */
+export function beginSendFor(
+  userId: string,
+  msg: { type: string },
+  surface: "chat" | "agent",
+): PendingSendOutcome | undefined {
+  if (msg.type !== `${surface}.send`) return undefined;
   const ref = clientRefOf(msg);
   return ref ? beginSend(userId, ref) : undefined;
 }

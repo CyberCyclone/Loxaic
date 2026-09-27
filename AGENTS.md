@@ -491,6 +491,13 @@ replies.
   thread is taken back and the text returned — "may not have been sent", since a restarted server
   forgets too. Resubscribes skip local ids, and `resolveAccess` treats a non-uuid id as not found.
   An older server ignores `send.status`, leaving the thread stuck as before but silent.
+  Found in review, all now held by tests: the replay **re-authorizes** before re-tapping the run
+  (a day-old grant must not outlive a revoked share); only **this surface's** send type is
+  remembered (another's falls through the handler and would never settle, so an ask hung); a
+  `turn.started` naming a send renames **that** send's thread, never whatever is pending now; any
+  refusal naming a send takes it back; a workspace send is not asked about until its frame has
+  gone out; the kept answer is clamped to 24 h (`setTimeout`'s 1 ms overflow); and the ref carries
+  randomness, since the key is per user and one user has several devices.
   `send-status.test.ts` closes a real socket straight after the send; `lost-send-answer.spec.ts`
   does it inside the page.
 

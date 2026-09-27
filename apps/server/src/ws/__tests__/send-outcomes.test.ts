@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { NotFoundError } from "../../streams/authz.ts";
-import { __resetSendOutcomesForTest, beginSend, beginSendFor, sendOutcomeFor } from "../send-outcomes.ts";
+import { __resetSendOutcomesForTest, beginSend, beginSendFor, keepMs, sendOutcomeFor } from "../send-outcomes.ts";
 
 /** The rules of the send-outcome store; `send-status.test.ts` drives it over
  * real sockets. */
@@ -62,12 +62,33 @@ describe("send outcomes", () => {
     expect(sendOutcomeFor("u1", "never")).toBeUndefined();
   });
 
-  it("only begins for a send that names itself", () => {
-    expect(beginSendFor("u1", { type: "stream.subscribe" })).toBeUndefined();
-    expect(beginSendFor("u1", { type: "chat.send" })).toBeUndefined();
-    expect(beginSendFor("u1", { type: "chat.send", client_ref: "has spaces" } as { type: string })).toBeUndefined();
-    expect(beginSendFor("u1", { type: "agent.send", client_ref: "lm1" } as { type: string })).toBeDefined();
+  it("only begins for this surface's send, naming itself", () => {
+    expect(beginSendFor("u1", { type: "stream.subscribe" }, "chat")).toBeUndefined();
+    expect(beginSendFor("u1", { type: "chat.send" }, "chat")).toBeUndefined();
+    expect(beginSendFor("u1", { type: "chat.send", client_ref: "has spaces" } as { type: string }, "chat")).toBeUndefined();
+    expect(beginSendFor("u1", { type: "agent.send", client_ref: "lm1" } as { type: string }, "agent")).toBeDefined();
     expect(sendOutcomeFor("u1", "lm1")).toBeDefined();
+  });
+
+  it("does not remember the other surface's send, which that socket never settles", () => {
+    // An agent.send on the chat socket falls through the chat handler: a
+    // remembered answer for it would never settle, and an ask would hang.
+    expect(beginSendFor("u1", { type: "agent.send", client_ref: "lm2" } as { type: string }, "chat")).toBeUndefined();
+    expect(sendOutcomeFor("u1", "lm2")).toBeUndefined();
+  });
+
+  it("keeps an answer no longer than a setTimeout can wait", () => {
+    const before = process.env.STREAM_TTL_SECONDS;
+    try {
+      // 30 days: past 2**31 - 1 ms, where a timer delay silently becomes 1 ms.
+      process.env.STREAM_TTL_SECONDS = String(30 * 86_400);
+      expect(keepMs()).toBe(86_400_000);
+      process.env.STREAM_TTL_SECONDS = "60";
+      expect(keepMs()).toBe(60_000);
+    } finally {
+      if (before === undefined) Reflect.deleteProperty(process.env, "STREAM_TTL_SECONDS");
+      else process.env.STREAM_TTL_SECONDS = before;
+    }
   });
 
   it("keeps only the newest fifty per user", () => {

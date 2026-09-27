@@ -4,7 +4,7 @@ import { findCommand, validateSendAttachments, type ClientMessage, type ServerMe
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
-import { atLeast, resolveAccess } from "../streams/authz.ts";
+import { assertConversationAccess, atLeast, resolveAccess } from "../streams/authz.ts";
 import { findRunsByApprovalCallId, isStepsDecision, getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
@@ -77,14 +77,24 @@ export function agentWsHandler(app: FastifyInstance) {
       // A send is remembered from the moment it is read, before any await, so
       // a socket replacing this one finds it pending (see send-outcomes.ts).
       // Every way out of the send below settles it.
-      const pendingSend = beginSendFor(userId, msg);
+      const pendingSend = beginSendFor(userId, msg, "agent");
       const refuseSend = (error: string) => {
         pendingSend?.failed(new Error(error));
         safeSend({ type: "error", error });
       };
 
       // See ws/chat.ts — re-validated per command, not just at connect.
-      const fresh = await resolveSessionFromToken(token);
+      let fresh: Awaited<ReturnType<typeof resolveSessionFromToken>>;
+      try {
+        fresh = await resolveSessionFromToken(token);
+      } catch (err) {
+        // Settled here too, or an ask about this send would wait forever. Not
+        // rethrown: this handler is called as `void`, and nothing handles an
+        // unhandled rejection, which takes the whole server down with it.
+        pendingSend?.failed(err);
+        safeSend({ type: "error", error: "Could not check your session — try again" });
+        return;
+      }
       if (!fresh) {
         pendingSend?.failed(new Error("Session expired"));
         socket.close(4001, "Session expired");
@@ -168,9 +178,15 @@ export function agentWsHandler(app: FastifyInstance) {
             safeSend({ type: "send.unknown", client_ref: ref });
             return;
           }
-          safeSend(outcome);
+          // Re-authorized like every other command: the grant this send ran on
+          // may be a day old, and a revoked share must not re-tap the run.
+          // Refused as not found, as every other command refuses it.
           if (outcome.type === "turn.started") {
+            await assertConversationAccess(userId, outcome.conversation_id);
+            safeSend(outcome);
             await delivery.autoSubscribe(outcome.stream_id, outcome.conversation_id);
+          } else {
+            safeSend(outcome);
           }
         } else if (msg.type === "stream.stop") {
           const run = getRun(msg.stream_id);
@@ -221,8 +237,10 @@ export function agentWsHandler(app: FastifyInstance) {
         // room behind pinned ones) rides beside the sentence, with the send's
         // own ref: the refusal of one send can land after a later one, and the
         // client must take back the bubble of the right send.
+        // And a refused `send.status` names the send it answers, so the client
+        // can take that send back.
         const error = sendErrorFor(err, undefined);
-        const ref = error.code ? clientRefOf(msg) : undefined;
+        const ref = error.code || msg.type === "send.status" ? clientRefOf(msg) : undefined;
         safeSend(ref ? { ...error, client_ref: ref } : error);
       }
     };
