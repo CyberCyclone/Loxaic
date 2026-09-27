@@ -8,6 +8,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Sidebar } from './Sidebar';
 import { UpdateReadyBanner } from './UpdateReadyBanner';
 import { ConnectionBanner } from './ConnectionBanner';
+import { SettingsModal } from '@/components/settings/SettingsModal';
 import { startMonitor } from '@/lib/connectionMonitor';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import type { SurfaceId } from '@/lib/types';
@@ -17,8 +18,6 @@ interface ShellState {
   overlaySidebar: boolean;
   openSidebar: () => void;
   openSettings: () => void;
-  settingsOpen: boolean;
-  closeSettings: () => void;
 }
 
 const ShellContext = createContext<ShellState | null>(null);
@@ -65,10 +64,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setSidebarOpen(true);
       },
       openSettings: () => { setSettingsOpen(true); },
-      settingsOpen,
-      closeSettings: () => { setSettingsOpen(false); },
     }),
-    [overlaySidebar, settingsOpen],
+    [overlaySidebar],
   );
 
   const sidebar = (
@@ -120,6 +117,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </HStack>
       </Box>
+      {/* One settings modal for the whole shell. Each screen used to render its
+          own, so the sidebar's Settings did nothing on a screen that had
+          forgotten to (Routines, Stats, Admin). */}
+      <SettingsModal open={settingsOpen} onClose={() => { setSettingsOpen(false); }} />
     </ShellContext.Provider>
   );
 }

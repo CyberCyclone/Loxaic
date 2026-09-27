@@ -11,7 +11,6 @@ import { Icon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { RuntimeCard } from '@/components/localModels/RuntimeCard';
 import { InstalledRow } from '@/components/localModels/InstalledRow';
@@ -213,7 +212,6 @@ export default function LocalModelsScreen() {
           if (target) void lm.remove(target.id);
         }}
       />
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }

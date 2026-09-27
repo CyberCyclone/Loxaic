@@ -13,7 +13,6 @@ import { Badge, BadgeText } from '@/components/ui/badge';
 import { Pressable } from '@/components/ui/pressable';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { useGithubConnection } from '@/hooks/useGithubConnection';
 import { useSession } from '@/lib/session';
 import { useServerReachable } from '@/lib/connection';
@@ -285,7 +284,6 @@ export default function GithubScreen() {
           )}
         </VStack>
       </ScrollView>
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }

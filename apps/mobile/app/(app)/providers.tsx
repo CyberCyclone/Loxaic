@@ -15,7 +15,6 @@ import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
 import { ProviderCard } from '@/components/providers/ProviderCard';
 import { ProviderModal } from '@/components/providers/ProviderModal';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useProviders } from '@/hooks/useProviders';
 import { useToastHelper } from '@/hooks/useToastHelper';
@@ -258,7 +257,6 @@ export default function ProvidersScreen() {
           if (target) void removeProvider(target.id);
         }}
       />
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }

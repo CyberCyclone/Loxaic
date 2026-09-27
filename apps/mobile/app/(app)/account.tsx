@@ -6,7 +6,6 @@ import { Heading } from '@/components/ui/heading';
 import { Badge, BadgeText } from '@/components/ui/badge';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { ChangePasswordForm } from '@/components/account/ChangePasswordForm';
 import { useSession } from '@/lib/session';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -51,7 +50,6 @@ export default function AccountScreen() {
           </VStack>
         </VStack>
       </ScrollView>
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }

@@ -5,7 +5,6 @@ import { Text } from '@/components/ui/text';
 import { Spinner } from '@/components/ui/spinner';
 import { MainHeader } from '@/components/shell/MainHeader';
 import { useShell } from '@/components/shell/AppShell';
-import { SettingsModal } from '@/components/settings/SettingsModal';
 import { AgentStepLimit } from '@/components/settings/AgentStepLimit';
 import { WaitTimeout } from '@/components/settings/WaitTimeout';
 import { AdaptiveTimeoutToggle } from '@/components/settings/AdaptiveTimeoutToggle';
@@ -121,7 +120,6 @@ export default function CheckinsScreen() {
       <ScrollView testID="checkins.scroll" className="flex-1">
         {body()}
       </ScrollView>
-      <SettingsModal open={shell.settingsOpen} onClose={shell.closeSettings} />
     </VStack>
   );
 }
