@@ -2002,6 +2002,13 @@ export function sendAgentMessage(
   });
 }
 
+/** Ask what became of a send whose answer may have been lost with the socket
+ * it went out on — the server replays `turn.started` (or the refusal) for it,
+ * or answers `send.unknown`. */
+export function askSendStatus(ws: WebSocket, clientRef: string): boolean {
+  return trySend(ws, { type: "send.status", client_ref: clientRef });
+}
+
 /** Run a built-in slash command (currently just "compact") against an
  * existing conversation. Surface is implied by which socket this rides on. */
 export function sendCommand(

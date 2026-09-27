@@ -4,9 +4,10 @@ import { findCommand, validateSendAttachments, type ClientMessage, type ServerMe
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
-import { NotFoundError, atLeast, resolveAccess } from "../streams/authz.ts";
+import { atLeast, resolveAccess } from "../streams/authz.ts";
 import { findRunsByApprovalCallId, isStepsDecision, getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
+import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -73,10 +74,19 @@ export function agentWsHandler(app: FastifyInstance) {
         safeSend({ type: "error", error: "Invalid JSON" });
         return;
       }
+      // A send is remembered from the moment it is read, before any await, so
+      // a socket replacing this one finds it pending (see send-outcomes.ts).
+      // Every way out of the send below settles it.
+      const pendingSend = beginSendFor(userId, msg);
+      const refuseSend = (error: string) => {
+        pendingSend?.failed(new Error(error));
+        safeSend({ type: "error", error });
+      };
 
       // See ws/chat.ts — re-validated per command, not just at connect.
       const fresh = await resolveSessionFromToken(token);
       if (!fresh) {
+        pendingSend?.failed(new Error("Session expired"));
         socket.close(4001, "Session expired");
         return;
       }
@@ -92,18 +102,16 @@ export function agentWsHandler(app: FastifyInstance) {
           // `false` on ordinary sends, so a presence check would reject all of
           // them.
           if ((msg as { incognito?: unknown }).incognito === true) {
-            safeSend({
-              type: "error",
-              error: "Incognito chat is no longer available — please update your app.",
-            });
+            refuseSend("Incognito chat is no longer available — please update your app.");
             return;
           }
           const sendError = validateSendAttachments(msg.content, msg.attachments);
           if (sendError) {
-            safeSend({ type: "error", error: sendError });
+            refuseSend(sendError);
             return;
           }
-          const result = await startAgentRun({
+          const ref = clientRefOf(msg);
+          const run = startAgentRun({
             userId,
             content: msg.content,
             model: msg.model ?? "default",
@@ -112,11 +120,14 @@ export function agentWsHandler(app: FastifyInstance) {
             parentId: msg.parent_id,
             attachments: msg.attachments ?? [],
           });
+          pendingSend?.started(run);
+          const result = await run;
           safeSend({
             type: "turn.started",
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
+            ...(ref ? { client_ref: ref } : {}),
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {
@@ -147,6 +158,20 @@ export function agentWsHandler(app: FastifyInstance) {
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "stream.subscribe") {
           await delivery.handleSubscribe(msg.conversation_id, msg.cursors);
+        } else if (msg.type === "send.status") {
+          // The answer to a send whose socket was replaced before it heard.
+          // Only ever this user's own sends, by the ref they chose.
+          const ref = clientRefOf(msg);
+          if (!ref) return;
+          const outcome = await sendOutcomeFor(userId, ref);
+          if (!outcome) {
+            safeSend({ type: "send.unknown", client_ref: ref });
+            return;
+          }
+          safeSend(outcome);
+          if (outcome.type === "turn.started") {
+            await delivery.autoSubscribe(outcome.stream_id, outcome.conversation_id);
+          }
         } else if (msg.type === "stream.stop") {
           const run = getRun(msg.stream_id);
           if (run && (await mayActOnRun(userId, run.conversationId))) run.abort.abort();
@@ -190,17 +215,15 @@ export function agentWsHandler(app: FastifyInstance) {
           // here rather than trusted from the type.
         }
       } catch (err) {
-        if (err instanceof NotFoundError) {
-          safeSend({ type: "error", error: "not found" });
-        } else {
-          // A code the client handles itself (a modal, for a host model with
-          // no room behind pinned ones) rides beside the sentence, with the
-          // send's own ref: the refusal of one send can land after a later
-          // one, and the client must take back the bubble of the right send.
-          const code = (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
-          const ref = code ? clientRefOf(msg) : undefined;
-          safeSend({ type: "error", error: (err as Error).message, ...(code ? { code } : {}), ...(ref ? { client_ref: ref } : {}) });
-        }
+        // A no-op when the run already settled it: only the first counts.
+        pendingSend?.failed(err);
+        // A code the client handles itself (a modal, for a host model with no
+        // room behind pinned ones) rides beside the sentence, with the send's
+        // own ref: the refusal of one send can land after a later one, and the
+        // client must take back the bubble of the right send.
+        const error = sendErrorFor(err, undefined);
+        const ref = error.code ? clientRefOf(msg) : undefined;
+        safeSend(ref ? { ...error, client_ref: ref } : error);
       }
     };
 

@@ -4,6 +4,7 @@ import {
   sendChatMessage,
   sendCommand,
   subscribeStreams,
+  askSendStatus,
   stopStream,
   approveTool,
   denyTool,
@@ -34,7 +35,7 @@ import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
-import { isNoRoom, noRoomNotice, PendingSends, type NoRoomNotice } from '@/lib/noRoom';
+import { isNoRoom, lostSendNote, noRoomNotice, PendingSends, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 
 export type { PendingApproval };
@@ -263,6 +264,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
   // returns its text, whatever else was sent meanwhile.
   const sendsRef = useRef(new PendingSends());
   const [noRoom, setNoRoom] = useState<NoRoomNotice | null>(null);
+  /** A message given back to the message box: a send the server turned out
+   * never to have heard of (`send.unknown`). The token makes the same text
+   * twice still count as a change. */
+  const [returnedText, setReturnedText] = useState<{ token: number; text: string } | null>(null);
   const rollBackSendRef = useRef<(msgId: string, localConvId: string | null) => void>(() => undefined);
   /** Last time we asked the server to resync a given stream — see the gap
    * handler below for why this needs a floor. */
@@ -554,7 +559,16 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
       if (!ws) return;
       const targets = new Set(Object.keys(streamingByConvRef.current));
       if (activeIdRef.current) targets.add(activeIdRef.current);
+      // A conversation still waiting for its real id has nothing on the server
+      // to subscribe to — sending its local id is what put
+      // `invalid input syntax for type uuid` on screen. Ask instead what
+      // became of the send that created it: its `turn.started` went to the
+      // socket this one replaces, and may never have arrived.
+      const localId = pendingLocalIdRef.current;
+      const lostRef = localId ? sendsRef.current.refFor(localId) : undefined;
+      if (lostRef) askSendStatus(ws, lostRef);
       for (const convId of targets) {
+        if (!isServerConvId(convId)) continue;
         const tracked = streamingByConvRef.current[convId];
         subscribeStreams(
           ws,
@@ -765,6 +779,17 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         // A run may have JIT-loaded the model, which changes the context
         // window out from under a model list fetched at mount.
         onStreamEndRef.current?.();
+      } else if (event.type === 'send.unknown') {
+        // The server has no record of the send that created the conversation
+        // still waiting for its id. Only while it is still waiting: a
+        // `turn.started` that arrived after all has already settled it.
+        const localId = pendingLocalIdRef.current;
+        if (!localId || sendsRef.current.refFor(localId) !== event.client_ref) return;
+        const sent = sendsRef.current.take(event.client_ref);
+        if (!sent) return;
+        rollBackSendRef.current(sent.localMsgId, sent.localConvId);
+        if (sent.text.trim()) setReturnedText({ token: Date.now(), text: sent.text });
+        showToast(lostSendNote(sent), 8000);
       } else if (event.type === 'error') {
         if (isNoRoom(event)) {
           const sent = sendsRef.current.take(event.client_ref);
@@ -1179,6 +1204,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
      * modal (components/chat/NoRoomModal). */
     noRoom,
     dismissNoRoom,
+    returnedText,
     /** Scroll-back for the open thread; see useOlderMessages. */
     history: activeId
       ? {

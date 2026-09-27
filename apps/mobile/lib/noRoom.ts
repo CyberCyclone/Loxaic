@@ -50,6 +50,17 @@ export class PendingSends {
     }
   }
 
+  /**
+   * The ref of the send that created the local conversation `localConvId` —
+   * the one to ask about when a socket is replaced while that conversation is
+   * still waiting to learn its real id (`send.status`).
+   */
+  refFor(localConvId: string): string | undefined {
+    let found: string | undefined;
+    for (const [ref, send] of this.sends) if (send.localConvId === localConvId) found = ref;
+    return found;
+  }
+
   /** The send `ref` names, forgotten as it is returned. */
   take(ref: string | undefined): PendingSend | undefined {
     if (!ref) return undefined;
@@ -77,4 +88,19 @@ export function unsentNote(notice: NoRoomNotice): string | null {
       : 'Your message was not sent. It is back in the message box.';
   }
   return notice.hadAttachments ? 'Your message was not sent. Add its attachments again.' : 'Your message was not sent.';
+}
+
+/**
+ * What to say when the server has no record of a send whose answer was lost
+ * with its socket (`send.unknown`). "May not", not "was not": a server that
+ * restarted after starting the run no longer remembers it either.
+ */
+export function lostSendNote(send: PendingSend): string {
+  const lead = 'The connection dropped before the server confirmed your message, so it may not have been sent.';
+  if (send.text.trim()) {
+    return send.hadAttachments
+      ? `${lead} Its text is back in the message box; add its attachments again.`
+      : `${lead} It is back in the message box.`;
+  }
+  return send.hadAttachments ? `${lead} Add its attachments again.` : lead;
 }

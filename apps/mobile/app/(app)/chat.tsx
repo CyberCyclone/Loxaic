@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare } from 'lucide-react-native';
@@ -69,6 +69,7 @@ export default function ChatScreen() {
     history,
     noRoom,
     dismissNoRoom,
+    returnedText,
   } = useChatSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -81,6 +82,8 @@ export default function ChatScreen() {
   const [modelModalOpen, setModelModalOpen] = useState(false);
   // Puts an unsent message back in the message box (a no-room refusal).
   const [composerSeed, setComposerSeed] = useState<{ token: number; text: string } | null>(null);
+  // A send the server never heard of comes back to the message box.
+  useEffect(() => { if (returnedText) setComposerSeed(returnedText); }, [returnedText]);
   const [threadListOpen, setThreadListOpen] = useState(false);
   const [sharingId, setSharingId] = useState<string | null>(null);
   // Both entry points — the header's ⋮ and the thread list's Delete — set

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isNoRoom, noRoomNotice, PendingSends, unsentNote } from './noRoom';
+import { isNoRoom, lostSendNote, noRoomNotice, PendingSends, unsentNote } from './noRoom';
 
 const send = (id: string, over: Partial<{ text: string; localConvId: string | null; hadAttachments: boolean }> = {}) => ({
   text: over.text ?? `text of ${id}`,
@@ -58,5 +58,35 @@ describe('the no-room notice', () => {
   it('says nothing about a message when the refusal came mid-run or for an unknown send', () => {
     expect(unsentNote({ message: 'm', text: null, hadAttachments: false })).toBeNull();
     expect(unsentNote(noRoomNotice('m', undefined))).toBeNull();
+  });
+});
+
+describe('a send whose answer was lost with its socket', () => {
+  it('finds the send that created a local conversation, and only that one', () => {
+    const sends = new PendingSends();
+    sends.remember('s1', send('s1', { localConvId: null }));
+    sends.remember('s2', send('s2', { localConvId: 'c100' }));
+    sends.remember('s3', send('s3', { localConvId: null }));
+    expect(sends.refFor('c100')).toBe('s2');
+    expect(sends.refFor('c999')).toBeUndefined();
+  });
+
+  it('no longer finds one that has been taken', () => {
+    const sends = new PendingSends();
+    sends.remember('s2', send('s2', { localConvId: 'c100' }));
+    sends.take('s2');
+    expect(sends.refFor('c100')).toBeUndefined();
+  });
+
+  it('says the message may not have been sent, and what came back', () => {
+    expect(lostSendNote(send('a', { text: 'hello' }))).toBe(
+      'The connection dropped before the server confirmed your message, so it may not have been sent. It is back in the message box.',
+    );
+    expect(lostSendNote(send('a', { text: '', hadAttachments: true }))).toBe(
+      'The connection dropped before the server confirmed your message, so it may not have been sent. Add its attachments again.',
+    );
+    expect(lostSendNote(send('a', { text: 'hi', hadAttachments: true }))).toBe(
+      'The connection dropped before the server confirmed your message, so it may not have been sent. Its text is back in the message box; add its attachments again.',
+    );
   });
 });

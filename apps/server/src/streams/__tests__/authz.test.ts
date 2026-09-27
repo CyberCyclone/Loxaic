@@ -47,6 +47,11 @@ describe("assertConversationAccess", () => {
     await expect(assertConversationAccess(userA, uuid())).rejects.toBeInstanceOf(NotFoundError);
   });
 
+  it("throws NotFoundError for an id that is not a uuid, not Postgres' own error", async () => {
+    // A client's optimistic id for a conversation it has not heard back about.
+    await expect(assertConversationAccess(userA, "c1790483463291")).rejects.toBeInstanceOf(NotFoundError);
+  });
+
   describe("shared access", () => {
     async function share(role: "viewer" | "editor") {
       await db
