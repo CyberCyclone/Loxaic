@@ -19,6 +19,8 @@ import {
 } from '@/components/ui/actionsheet';
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import type { ContextView } from '@/hooks/useContextUsage';
+import type { McpSwitches } from '@/hooks/useMcpSwitches';
+import { TRUNCATE_TEXT } from '@/lib/truncate';
 import type { ChangedFile, Workspace, WorkspaceChoice } from '@/lib/types';
 import { describeRetention, formatDeadline } from '@/lib/retention';
 import type { GitStatus, SandboxRetention, SandboxRow } from '@loxaic/api-client';
@@ -275,19 +277,11 @@ function GitSection({ git }: { git: GitPanelControls }) {
   );
 }
 
-export interface McpOverrideControls {
-  servers: { id: string; name: string }[];
-  disabledIds: string[];
-  onToggle: (serverId: string, disabled: boolean) => void;
-  /** Saved on the server; off while it cannot be reached. */
-  readOnly?: boolean;
-}
-
 interface InspectorBodyProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
   context: ContextView | null;
-  mcp?: McpOverrideControls | null;
+  mcp?: McpSwitches | null;
   workspace?: WorkspaceView | null;
   git?: GitPanelControls | null;
   onCompact?: () => void;
@@ -348,29 +342,29 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
         )}
       </VStack>
 
-      {mcp && mcp.servers.length > 0 && (
+      {mcp && mcp.rows.length > 0 && (
         <VStack space="xs">
           <Text size="sm" className="font-semibold text-foreground">
             MCP Servers
           </Text>
-          {mcp.servers.map((server) => {
-            const disabled = mcp.disabledIds.includes(server.id);
-            return (
-              <HStack key={server.id} className="items-center justify-between">
-                <Text size="sm" className="flex-1 pr-2 text-foreground" numberOfLines={1}>
-                  {server.name}
-                </Text>
-                <Switch
-                  size="sm"
-                  value={!disabled}
-                  disabled={mcp.readOnly}
-                  onValueChange={(on) => { mcp.onToggle(server.id, !on); }}
-                />
-              </HStack>
-            );
-          })}
+          {/* The same switches as the composer's `+` menu — one hook
+              instance on the screen feeds both, so they cannot disagree. */}
+          {mcp.rows.map((row) => (
+            <HStack key={row.id} className="min-w-0 items-center justify-between">
+              <Text size="sm" className="min-w-0 flex-1 pr-2 text-foreground" style={TRUNCATE_TEXT}>
+                {row.name}
+              </Text>
+              <Switch
+                testID={`agent.inspector.mcp.toggle.${row.id}`}
+                size="sm"
+                value={row.on}
+                disabled={!mcp.canToggle}
+                onValueChange={(on) => { mcp.toggle(row.id, on); }}
+              />
+            </HStack>
+          ))}
           <Text size="2xs" className="text-muted-foreground">
-            Off = this conversation only. Takes effect on the next run.
+            {mcp.lockedReason ?? 'This conversation only; new ones follow each server\'s defaults. Takes effect on the next run.'}
           </Text>
         </VStack>
       )}
@@ -380,7 +374,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
           <Text size="sm" className="font-semibold text-foreground">
             Context
           </Text>
-          <ContextBreakdown context={context} onCompact={onCompact} busy={busy} />
+          <ContextBreakdown context={context} mcp={mcp} onCompact={onCompact} busy={busy} />
         </VStack>
       )}
     </VStack>
@@ -394,7 +388,7 @@ interface InspectorProps {
   todos: Todo[];
   changedFiles: ChangedFile[];
   context: ContextView | null;
-  mcp?: McpOverrideControls | null;
+  mcp?: McpSwitches | null;
   workspace?: WorkspaceView | null;
   git?: GitPanelControls | null;
   /** Absent in the wide (persistent side-panel) layout's own contract — both

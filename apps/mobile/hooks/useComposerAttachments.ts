@@ -224,7 +224,7 @@ export function useComposerAttachments() {
     // launchImageLibraryAsync uses there) never touches the photo library
     // directly — the OS hands back only what the user picks — so it needs
     // none. Android's picker still requires it. (Web has its own path via
-    // AttachButton.web.tsx's file input and never reaches this function.)
+    // ComposerPlusMenu.web.tsx's file input and never reaches this function.)
     if (Platform.OS === 'android') {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
@@ -274,7 +274,7 @@ export function useComposerAttachments() {
   }, [items.length, upload, showToast, canReadDocuments, rejectDocument]);
 
   /** Web-only counterpart of addAssets: takes browser Files straight from
-   * AttachButton.web.tsx's file input rather than an ImagePicker asset, so
+   * ComposerPlusMenu.web.tsx's file input rather than an ImagePicker asset, so
    * there's no width/height to resize against — the server's own size and
    * mime checks still apply via `upload`. A plain counter (not a closure
    * flag mutated inside the setItems updater) is what decides whether a slot

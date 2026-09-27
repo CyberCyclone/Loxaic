@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, routineRuns, routines } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, McpOverrides } from "@loxaic/types";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
@@ -57,6 +57,10 @@ export async function startChatRun(input: {
   parentId?: string;
   /** Attachment refs from POST /v1/files, in display order. */
   attachments?: string[];
+  /** MCP choices made before the conversation existed. Written only when this
+   * send creates the conversation, so its first request already follows
+   * them; an existing conversation's choices change through PATCH. */
+  mcpOverrides?: McpOverrides | null;
   /**
    * False for a send nobody typed — a scheduled routine run. The picker's
    * "recently used" list is a record of what the user chose to run, and a
@@ -113,7 +117,7 @@ export async function startChatRun(input: {
   if (!convId) {
     const [conv] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: conversationTitle(content, atts) })
+      .values({ ownerId: userId, title: conversationTitle(content, atts), mcpOverrides: input.mcpOverrides ?? null })
       .returning();
     convId = conv.id;
   }

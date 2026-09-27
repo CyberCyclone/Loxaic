@@ -79,7 +79,9 @@ export const conversations = pgTable("conversations", {
   kind: text("kind", { enum: ["chat", "agent", "routine"] }).notNull().default("chat"),
   activeLeafId: uuid("active_leaf_id"),
   modelPref: jsonb("model_pref"),
-  /** Per-conversation MCP overrides, e.g. { disabledServerIds: string[] }. */
+  /** Per-conversation MCP choices, `McpOverrides` in packages/types:
+   * { disabledServerIds?: string[], enabledServerIds?: string[] }. A server in
+   * neither list follows its per-kind default (`mcp_servers.on_in_*`). */
   mcpOverrides: jsonb("mcp_overrides"),
   /** A `Workspace` (packages/types). Null means scratch — every row that
    * predates the column, and every conversation created without choosing. Set
@@ -393,6 +395,13 @@ export const mcpServers = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     /** User-confirmed opt-out of the SSRF guard for http servers on private addresses. */
     allowPrivateNetwork: boolean("allow_private_network").notNull().default(false),
+    /** The owner's default for each kind of conversation — whether a chat,
+     * agent or routine conversation that has made no choice of its own is
+     * offered this server's tools. Resolved live by `mcpServerActive`
+     * (packages/types), never copied into a conversation. */
+    onInChat: boolean("on_in_chat").notNull().default(true),
+    onInAgent: boolean("on_in_agent").notNull().default(true),
+    onInRoutines: boolean("on_in_routines").notNull().default(true),
     /** Per-tool policy map: { [remoteName]: { enabled, approval: 'ask'|'allow', readOnly } }. */
     toolPolicies: jsonb("tool_policies").notNull().default({}),
     /** Last-discovered tool snapshot (hashes) for change detection. */

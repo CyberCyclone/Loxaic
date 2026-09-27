@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { findCommand, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
+import { findCommand, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
@@ -129,6 +129,9 @@ export function agentWsHandler(app: FastifyInstance) {
             conversationId: msg.conversation_id,
             parentId: msg.parent_id,
             attachments: msg.attachments ?? [],
+            // A claim off the socket like any other field: normalised here,
+            // and only ever applied to a conversation this send creates.
+            mcpOverrides: normalizeMcpOverrides(msg.mcp_overrides),
           });
           pendingSend?.started(run);
           const result = await run;
