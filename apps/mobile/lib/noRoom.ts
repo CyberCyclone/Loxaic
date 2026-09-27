@@ -26,6 +26,21 @@ export interface PendingSend {
   /** The conversation the send created locally, or null for an existing one. */
   localConvId: string | null;
   hadAttachments: boolean;
+  /** False while the frame has not gone out yet — a workspace's conversation
+   * is created over REST first. Absent means it has. The server cannot know of
+   * such a send, so it must not be asked about: its "unknown" would be true,
+   * and the message would be taken back just before it is sent. */
+  dispatched?: boolean;
+}
+
+/**
+ * A name for a send, echoed by the server as `client_ref`. The server keys what
+ * became of a send by user and this name, so it must not repeat across one
+ * person's devices — a timestamp alone does, for two sends in the same
+ * millisecond, and would hand one device the other's conversation.
+ */
+export function newClientRef(now: number = Date.now(), random: () => number = Math.random): string {
+  return `lm${String(now)}${random().toString(36).slice(2, 8)}`;
 }
 
 const KEPT = 20;
@@ -50,6 +65,25 @@ export class PendingSends {
     }
   }
 
+  /**
+   * The ref of the send that created the local conversation `localConvId` —
+   * the one to ask about when a socket is replaced while that conversation is
+   * still waiting to learn its real id (`send.status`).
+   */
+  refFor(localConvId: string): string | undefined {
+    let found: string | undefined;
+    for (const [ref, send] of this.sends) {
+      if (send.localConvId === localConvId && send.dispatched !== false) found = ref;
+    }
+    return found;
+  }
+
+  /** The send `ref` has now really gone out. */
+  markDispatched(ref: string): void {
+    const send = this.sends.get(ref);
+    if (send) send.dispatched = true;
+  }
+
   /** The send `ref` names, forgotten as it is returned. */
   take(ref: string | undefined): PendingSend | undefined {
     if (!ref) return undefined;
@@ -57,6 +91,26 @@ export class PendingSends {
     this.sends.delete(ref);
     return send;
   }
+}
+
+/**
+ * Which local conversation a `turn.started` gives its real id to, and whether
+ * that is the one still being waited on (`pendingLocalId`).
+ *
+ * An answer naming its send (`client_ref`) settles that send's conversation and
+ * no other. A replayed answer can land after the person has started another
+ * thread, and taking "whatever is pending" renamed the newer thread to the
+ * older one's id. Without a ref — a compaction, or an older server — it is the
+ * pending one, as it always was.
+ */
+export function settledByTurnStarted(
+  clientRef: string | undefined,
+  sends: PendingSends,
+  pendingLocalId: string | null,
+): { localId: string | null; isPending: boolean } {
+  if (!clientRef) return { localId: pendingLocalId, isPending: pendingLocalId !== null };
+  const localId = sends.take(clientRef)?.localConvId ?? null;
+  return { localId, isPending: localId !== null && localId === pendingLocalId };
 }
 
 /** The notice for a refusal of `send`, or of a send no longer known. */
@@ -77,4 +131,19 @@ export function unsentNote(notice: NoRoomNotice): string | null {
       : 'Your message was not sent. It is back in the message box.';
   }
   return notice.hadAttachments ? 'Your message was not sent. Add its attachments again.' : 'Your message was not sent.';
+}
+
+/**
+ * What to say when the server has no record of a send whose answer was lost
+ * with its socket (`send.unknown`). "May not", not "was not": a server that
+ * restarted after starting the run no longer remembers it either.
+ */
+export function lostSendNote(send: PendingSend): string {
+  const lead = 'The connection dropped before the server confirmed your message, so it may not have been sent.';
+  if (send.text.trim()) {
+    return send.hadAttachments
+      ? `${lead} Its text is back in the message box; add its attachments again.`
+      : `${lead} It is back in the message box.`;
+  }
+  return send.hadAttachments ? `${lead} Add its attachments again.` : lead;
 }

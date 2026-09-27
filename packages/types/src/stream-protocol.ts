@@ -659,7 +659,18 @@ export interface StreamSnapshot {
 }
 
 export type ServerMessage =
-  | { type: "turn.started"; stream_id: string; conversation_id: string; user_message_id: string }
+  | {
+      type: "turn.started";
+      stream_id: string;
+      conversation_id: string;
+      user_message_id: string;
+      /** The send this started, when it named itself — always present on a
+       * replay answering `send.status`. */
+      client_ref?: string;
+    }
+  /** Answers `send.status` for a send this server never heard of, or no
+   * longer remembers: the message may not have been sent. */
+  | { type: "send.unknown"; client_ref: string }
   | {
       type: "conv.streams";
       conversation_id: string;
@@ -739,6 +750,11 @@ export type ClientMessage =
   | { type: "command.run"; command: string; conversation_id: string; model?: string; args?: string }
   /** cursors = last seq the client has already applied, per stream_id it knows about. */
   | { type: "stream.subscribe"; conversation_id: string; cursors?: Record<string, number> }
+  /** What became of a send whose answer this socket may have missed — its
+   * socket was replaced before `turn.started` (or its refusal) arrived. The
+   * server replays that answer, or says `send.unknown`. An older server
+   * ignores it. */
+  | { type: "send.status"; client_ref: string }
   | { type: "stream.stop"; stream_id: string }
   | { type: "agent.mode"; mode: PermissionMode }
   | { type: "agent.approve"; call_id: string }

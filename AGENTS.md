@@ -484,6 +484,28 @@ replies.
   `approval-reconnect.spec.ts` hold it. The same moment is when a tap on Allow lands on a
   socket still closing, so **Approve and Deny close their dialog only once `trySend` says the
   answer went out** — as Stop and the check-in already did (#113).
+- **A new conversation's id rides one frame, so it can be lost, and `send.status` gets it
+  back.** `turn.started` goes only to the socket that sent the message, and a new thread keeps
+  its optimistic id (`c<ts>` chat, `pending-<rand>` agent) until it arrives. A socket replaced in
+  between — a resume, a wake, a failed probe — dropped it: the run finished on the server, the
+  thread showed no reply forever, and the reconnect subscribed with the local id, which reached
+  the screen as `invalid input syntax for type uuid`. Now the server remembers each send's outcome
+  by `(user, client_ref)` (`ws/send-outcomes.ts`, in memory, `STREAM_TTL_SECONDS`, 50 per user),
+  and a client whose new thread is still waiting asks on reconnect: the answer is the replayed
+  `turn.started` (plus a subscription to the run) or refusal, or `send.unknown`, on which the
+  thread is taken back and the text returned — "may not have been sent", since a restarted server
+  forgets too. Resubscribes skip local ids, and `resolveAccess` treats a non-uuid id as not found.
+  An older server ignores `send.status`, leaving the thread stuck as before but silent.
+  Found in review, all now held by tests: the replay **re-authorizes** before re-tapping the run
+  (a day-old grant must not outlive a revoked share); only **this surface's** send type is
+  remembered (another's falls through the handler and would never settle, so an ask hung); a
+  `turn.started` naming a send renames **that** send's thread, never whatever is pending now; any
+  refusal naming a send takes it back; a workspace send is not asked about until its frame has
+  gone out; the kept answer is clamped to 24 h (`setTimeout`'s 1 ms overflow); and the ref carries
+  randomness, since the key is per user and one user has several devices.
+  `send-status.test.ts` closes a real socket straight after the send; `lost-send-answer.spec.ts`
+  does it inside the page.
+
 ### Reaching the server (the connection monitor)
 
 - **One answer to "can the server be reached", for the whole app**, decided by

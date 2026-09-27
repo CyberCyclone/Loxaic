@@ -4,9 +4,10 @@ import { findCommand, validateSendAttachments, type ClientMessage, type ServerMe
 import { startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
-import { NotFoundError, atLeast, resolveAccess } from "../streams/authz.ts";
+import { assertConversationAccess, atLeast, resolveAccess } from "../streams/authz.ts";
 import { findRunsByApprovalCallId, isStepsDecision, getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
+import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -76,14 +77,33 @@ export function chatWsHandler(app: FastifyInstance) {
         safeSend({ type: "error", error: "Invalid JSON" });
         return;
       }
+      // A send is remembered from the moment it is read, before any await, so
+      // a socket replacing this one finds it pending (see send-outcomes.ts).
+      // Every way out of the send below settles it.
+      const pendingSend = beginSendFor(userId, msg, "chat");
+      const refuseSend = (error: string) => {
+        pendingSend?.failed(new Error(error));
+        safeSend({ type: "error", error });
+      };
 
       // Re-validate the session on every command, not just at connect — a
       // socket can live far longer than a token's lifetime. A revoked or
       // expired session then loses the connection at the next command
       // instead of staying authenticated for as long as the socket happens
       // to stay open.
-      const fresh = await resolveSessionFromToken(token);
+      let fresh: Awaited<ReturnType<typeof resolveSessionFromToken>>;
+      try {
+        fresh = await resolveSessionFromToken(token);
+      } catch (err) {
+        // Settled here too, or an ask about this send would wait forever. Not
+        // rethrown: this handler is called as `void`, and nothing handles an
+        // unhandled rejection, which takes the whole server down with it.
+        pendingSend?.failed(err);
+        safeSend({ type: "error", error: "Could not check your session — try again" });
+        return;
+      }
       if (!fresh) {
+        pendingSend?.failed(new Error("Session expired"));
         socket.close(4001, "Session expired");
         return;
       }
@@ -99,18 +119,16 @@ export function chatWsHandler(app: FastifyInstance) {
           // `false` on ordinary sends, so a presence check would reject all of
           // them.
           if ((msg as { incognito?: unknown }).incognito === true) {
-            safeSend({
-              type: "error",
-              error: "Incognito chat is no longer available — please update your app.",
-            });
+            refuseSend("Incognito chat is no longer available — please update your app.");
             return;
           }
           const sendError = validateSendAttachments(msg.content, msg.attachments);
           if (sendError) {
-            safeSend({ type: "error", error: sendError });
+            refuseSend(sendError);
             return;
           }
-          const result = await startChatRun({
+          const ref = clientRefOf(msg);
+          const run = startChatRun({
             userId,
             content: msg.content,
             model: msg.model ?? "default",
@@ -118,11 +136,14 @@ export function chatWsHandler(app: FastifyInstance) {
             parentId: msg.parent_id,
             attachments: msg.attachments ?? [],
           });
+          pendingSend?.started(run);
+          const result = await run;
           safeSend({
             type: "turn.started",
             stream_id: result.streamId,
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
+            ...(ref ? { client_ref: ref } : {}),
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {
@@ -157,6 +178,26 @@ export function chatWsHandler(app: FastifyInstance) {
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "stream.subscribe") {
           await delivery.handleSubscribe(msg.conversation_id, msg.cursors);
+        } else if (msg.type === "send.status") {
+          // The answer to a send whose socket was replaced before it heard.
+          // Only ever this user's own sends, by the ref they chose.
+          const ref = clientRefOf(msg);
+          if (!ref) return;
+          const outcome = await sendOutcomeFor(userId, ref);
+          if (!outcome) {
+            safeSend({ type: "send.unknown", client_ref: ref });
+            return;
+          }
+          // Re-authorized like every other command: the grant this send ran on
+          // may be a day old, and a revoked share must not re-tap the run.
+          // Refused as not found, as every other command refuses it.
+          if (outcome.type === "turn.started") {
+            await assertConversationAccess(userId, outcome.conversation_id);
+            safeSend(outcome);
+            await delivery.autoSubscribe(outcome.stream_id, outcome.conversation_id);
+          } else {
+            safeSend(outcome);
+          }
         } else if (msg.type === "stream.stop") {
           // Silently no-op for an unknown/foreign/already-finished stream —
           // matches "no existence oracle": a wrong-owner stop must look
@@ -202,17 +243,17 @@ export function chatWsHandler(app: FastifyInstance) {
           // here rather than trusted from the type.
         }
       } catch (err) {
-        if (err instanceof NotFoundError) {
-          safeSend({ type: "error", error: "not found" });
-        } else {
-          // A code the client handles itself (a modal, for a host model with
-          // no room behind pinned ones) rides beside the sentence, with the
-          // send's own ref: the refusal of one send can land after a later
-          // one, and the client must take back the bubble of the right send.
-          const code = (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
-          const ref = code ? clientRefOf(msg) : undefined;
-          safeSend({ type: "error", error: (err as Error).message, ...(code ? { code } : {}), ...(ref ? { client_ref: ref } : {}) });
-        }
+        // A no-op when the run already settled it: only the first counts.
+        pendingSend?.failed(err);
+        // A code the client handles itself (a modal, for a host model with no
+        // room behind pinned ones) rides beside the sentence, with the send's
+        // own ref: the refusal of one send can land after a later one, and the
+        // client must take back the bubble of the right send.
+        // And a refused `send.status` names the send it answers, so the client
+        // can take that send back.
+        const error = sendErrorFor(err, undefined);
+        const ref = error.code || msg.type === "send.status" ? clientRefOf(msg) : undefined;
+        safeSend(ref ? { ...error, client_ref: ref } : error);
       }
     };
 

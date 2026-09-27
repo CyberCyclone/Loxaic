@@ -95,10 +95,17 @@ export async function hasRole(
   return !!grant && atLeast(grant.role, minimum);
 }
 
+const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function resolveAccess(
   userId: string,
   conversationId: string,
 ): Promise<AccessGrant | null> {
+  // An id arrives off a socket or a URL, so it is a claim. One that is not a
+  // uuid names no conversation; asking Postgres anyway turned it into
+  // `invalid input syntax for type uuid`, which every caller showed as is —
+  // a client's own optimistic id (`c1790483463291`) reached the screen that way.
+  if (!CONVERSATION_ID_RE.test(conversationId)) return null;
   const row = await db.query.conversations.findFirst({
     where: eq(conversations.id, conversationId),
     columns: { id: true, ownerId: true, deletedAt: true, kind: true },

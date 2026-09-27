@@ -95,6 +95,7 @@ export default function AgentScreen() {
     history,
     noRoom,
     dismissNoRoom,
+    returnedText,
   } = useAgentSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -115,6 +116,8 @@ export default function AgentScreen() {
   // bumping `token` so pressing it twice in a row still re-seeds. See
   // Composer's `commandSeed` prop.
   const [commandSeed, setCommandSeed] = useState<{ token: number; text: string } | null>(null);
+  // A send the server never heard of comes back to the message box.
+  useEffect(() => { if (returnedText) setCommandSeed(returnedText); }, [returnedText]);
 
   const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
   const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
