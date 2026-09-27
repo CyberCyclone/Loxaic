@@ -15,7 +15,7 @@
 // dev runs Node 24 (undici 7). Importing both from one package makes the pair
 // identical on every runtime. It is used for inference calls only; quick probes
 // (`/props`, `/v1/models`) keep the global fetch and their own short timeouts.
-import { Agent, fetch, type RequestInit, type Response } from "undici";
+import { Agent, DecoratorHandler, Dispatcher, fetch, type RequestInit, type Response } from "undici";
 
 export interface InferenceTimeouts {
   /** Prompt evaluation happens before headers are sent. */
@@ -65,15 +65,140 @@ export function inferenceDispatcher(): Agent {
   return (shared ??= createInferenceDispatcher());
 }
 
+/**
+ * One request through `inner`, with a hold on undici's own way to abort it.
+ *
+ * `fetch`'s `signal` alone does not survive a long request. undici links the
+ * caller's signal to the request through a controller owned by its internal
+ * `Request` object, and unhooks that link — with a `FinalizationRegistry` —
+ * once that object is garbage-collected, which it may be as soon as the
+ * response has begun (nodejs/undici#1926 is the same hazard). A local model
+ * that spends ten minutes loading and then streams is exactly the request
+ * that lives long enough: Stop set the run's signal, the signal had no
+ * listener left, and the backend went on generating into a run everyone
+ * believed stopped (found live: one aborted signal in the heap, zero
+ * listeners, undici's fetch still "ongoing").
+ *
+ * undici hands every dispatched request its own `abort` in `onConnect`. This
+ * keeps it, and the listener that calls it is ours, held for as long as the
+ * request is — so a Stop reaches the connection whatever became of fetch's
+ * link. Everything else is delegated to the shared dispatcher, so its
+ * timeouts and connection pool are unchanged.
+ */
+class AbortableRequest extends Dispatcher {
+  /** The dispatch in progress. `fetch` dispatches once per hop, so a followed
+   * redirect is a second one through this same object, and each has its own
+   * `abort`: holding the first one's (or settling when the first one ends)
+   * left the redirected request — the one that streams — unstoppable. */
+  #current: { abort: ((reason: Error) => void) | null; ended: boolean } | null = null;
+  #reason: Error | null = null;
+  /** Set once `fetch` has resolved: no further hop will be dispatched. */
+  #final = false;
+  #settled = false;
+  readonly #inner: Dispatcher;
+  readonly #onSettled: () => void;
+
+  constructor(inner: Dispatcher, onSettled: () => void) {
+    super();
+    this.#inner = inner;
+    this.#onSettled = onSettled;
+  }
+
+  /** Abort the request now, or as soon as undici has connected it — the
+   * current hop, or the next one if it comes between two. */
+  stop(reason: Error): void {
+    if (this.#settled) return;
+    this.#reason ??= reason;
+    if (this.#current && !this.#current.ended) this.#current.abort?.(reason);
+  }
+
+  /** `fetch` has its final response. Settles now if that hop has already
+   * ended (a short body can finish before the caller reads it). */
+  markFinal(): void {
+    this.#final = true;
+    if (this.#current?.ended) this.#settle();
+  }
+
+  #settle(): void {
+    if (this.#settled) return;
+    this.#settled = true;
+    this.#onSettled();
+  }
+
+  override dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- the handler below is a separate object; it needs this request's state.
+    const self = this;
+    const hop: { abort: ((reason: Error) => void) | null; ended: boolean } = { abort: null, ended: false };
+    this.#current = hop;
+    const ended = () => {
+      hop.ended = true;
+      // Only the final hop ending is the request ending: a redirect's own
+      // response completes before fetch dispatches the next hop.
+      if (self.#final && self.#current === hop) self.#settle();
+    };
+    class Tracked extends DecoratorHandler {
+      onConnect(abort: (err?: Error) => void): void {
+        hop.abort = abort;
+        handler.onConnect?.(abort);
+        if (self.#reason) abort(self.#reason);
+      }
+      onComplete(trailers: string[] | null): void {
+        ended();
+        handler.onComplete?.(trailers);
+      }
+      onError(err: Error): void {
+        ended();
+        handler.onError?.(err);
+      }
+    }
+    return this.#inner.dispatch(options, new Tracked(handler));
+  }
+
+  override close(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  override destroy(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new DOMException("This operation was aborted", "AbortError");
+}
+
 export async function inferenceFetch(
   url: string,
   init: Omit<RequestInit, "dispatcher">,
   dispatcher: Agent = inferenceDispatcher(),
 ): Promise<Response> {
+  const signal = init.signal ?? undefined;
+  if (!signal) {
+    try {
+      return await fetch(url, { ...init, dispatcher });
+    } catch (err) {
+      throw inferenceNetworkError(err, undefined);
+    }
+  }
+  // Added after fetch has attached its own listener (the Request is built
+  // synchronously inside the call), so while fetch's link is intact a Stop is
+  // exactly what it always was — an AbortError — and this only acts when that
+  // link has been lost. Removed once the request settles — its final hop, not
+  // a redirect's — since one run's signal outlives many requests.
+  const stopInferenceRequest = () => { request.stop(abortReason(signal)); };
+  const request = new AbortableRequest(dispatcher, () => {
+    signal.removeEventListener("abort", stopInferenceRequest);
+  });
+  const pending = fetch(url, { ...init, dispatcher: request });
+  if (signal.aborted) stopInferenceRequest();
+  else signal.addEventListener("abort", stopInferenceRequest, { once: true });
   try {
-    return await fetch(url, { ...init, dispatcher });
+    const response = await pending;
+    request.markFinal();
+    return response;
   } catch (err) {
-    throw inferenceNetworkError(err, init.signal ?? undefined);
+    signal.removeEventListener("abort", stopInferenceRequest);
+    throw inferenceNetworkError(err, signal);
   }
 }
 

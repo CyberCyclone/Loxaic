@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { v4 as uuid } from "uuid";
@@ -61,6 +62,24 @@ beforeAll(async () => {
     if (req.url?.startsWith("/hang/")) {
       // Never answers: a prompt still being evaluated.
       req.on("close", () => onHangClosed?.());
+      return;
+    }
+    if (req.url?.startsWith("/redirect/")) {
+      // A reverse proxy, or an http:// base URL that sends you to https://:
+      // fetch follows it by dispatching a second request.
+      res.writeHead(307, { Location: req.url.slice("/redirect".length) });
+      res.end();
+      return;
+    }
+    if (req.url?.startsWith("/forever/")) {
+      // A model that never stops — the one this Stop is for: a thinking loop
+      // on a local model, generating until the hour-long ceiling.
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      const tick = setInterval(() => res.write(sse({ choices: [{ delta: { content: "again " } }] })), 20);
+      res.on("close", () => {
+        clearInterval(tick);
+        onHangClosed?.();
+      });
       return;
     }
     if (req.url?.startsWith("/fast/")) {
@@ -233,5 +252,144 @@ describe("inference transport", () => {
     await expect(collect(streamCompletion("m", [{ role: "user", content: "hi" }]))).rejects.toThrow(
       /Could not reach the model server: the connection was refused/,
     );
+  });
+});
+
+/**
+ * What undici's FinalizationRegistry does to a long request once its internal
+ * Request object has been collected: it removes the listener that tied the
+ * caller's signal to the request. Garbage collection cannot be made to happen
+ * on cue, so this removes that listener directly — undici builds it as a
+ * function named `abort` (fetch/request.js's buildAbort). Found live that way:
+ * one aborted signal, no listeners, fetch still "ongoing".
+ */
+function severFetchLink(signal: AbortSignal): number {
+  const theirs = getEventListeners(signal, "abort").filter((l) => l.name === "abort");
+  for (const l of theirs) signal.removeEventListener("abort", l as EventListener);
+  return theirs.length;
+}
+
+describe("Stop once undici has lost its own link to the run's signal", () => {
+  it("still ends a streaming reply, and the backend sees the connection close", async () => {
+    const closed = new Promise<void>((resolve) => {
+      onHangClosed = resolve;
+    });
+    const abort = new AbortController();
+    const response = await inferenceFetch(`${base}/forever/v1/chat/completions`, { method: "POST", signal: abort.signal });
+    if (!response.body) throw new Error("the stand-in answered with no body");
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    await reader.read();
+    // The precondition this case exists for: fetch's own link was there, and is gone.
+    expect(severFetchLink(abort.signal)).toBe(1);
+
+    abort.abort();
+    const started = Date.now();
+    const outcome = await Promise.race([
+      (async () => {
+        try {
+          for (;;) if ((await reader.read()).done) return "ended";
+        } catch {
+          return "stopped";
+        }
+      })(),
+      new Promise((resolve) => {
+        setTimeout(() => { resolve("still streaming"); }, 3_000);
+      }),
+    ]);
+    expect(outcome).toBe("stopped");
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await closed;
+  });
+
+  it("still ends a request that is waiting for headers", async () => {
+    const closed = new Promise<void>((resolve) => {
+      onHangClosed = resolve;
+    });
+    const abort = new AbortController();
+    const pending = inferenceFetch(`${base}/hang/v1/chat/completions`, { method: "POST", signal: abort.signal });
+    expect(severFetchLink(abort.signal)).toBe(1);
+    setTimeout(() => { abort.abort(); }, SHORT_TIMEOUT_MS);
+    const started = Date.now();
+    await expect(pending).rejects.toBeDefined();
+    expect(Date.now() - started).toBeLessThan(2_000);
+    await closed;
+  });
+
+  it("ends the run's stream of a local model — the path the engine reads — once Stop is pressed", async () => {
+    vi.stubEnv("MOCK_INFERENCE", "false");
+    attach(`${base}/forever`);
+    const abort = new AbortController();
+    const started = Date.now();
+    const outcome = await (async () => {
+      try {
+        for await (const event of streamCompletion("m", [{ role: "user", content: "hi" }], { signal: abort.signal })) {
+          if (event.type === "delta" && !abort.signal.aborted) {
+            severFetchLink(abort.signal);
+            abort.abort();
+          }
+          if (Date.now() - started > 3_000) return "still streaming";
+        }
+        return "ended";
+      } catch {
+        return "stopped";
+      }
+    })();
+    expect(outcome).toBe("stopped");
+  });
+
+  it("still ends a streaming reply that arrived through a redirect", async () => {
+    const closed = new Promise<void>((resolve) => {
+      onHangClosed = resolve;
+    });
+    const abort = new AbortController();
+    const response = await inferenceFetch(`${base}/redirect/forever/v1/chat/completions`, {
+      method: "POST",
+      signal: abort.signal,
+    });
+    expect(response.url).toContain("/forever/");
+    if (!response.body) throw new Error("the stand-in answered with no body");
+    const reader = response.body.getReader() as ReadableStreamDefaultReader<Uint8Array>;
+    await reader.read();
+    expect(severFetchLink(abort.signal)).toBe(1);
+
+    abort.abort();
+    const outcome = await Promise.race([
+      (async () => {
+        try {
+          for (;;) if ((await reader.read()).done) return "ended";
+        } catch {
+          return "stopped";
+        }
+      })(),
+      new Promise((resolve) => {
+        setTimeout(() => { resolve("still streaming"); }, 3_000);
+      }),
+    ]);
+    expect(outcome).toBe("stopped");
+    await closed;
+  });
+
+  it("leaves no listener once a redirected request has finished", async () => {
+    const abort = new AbortController();
+    const response = await inferenceFetch(`${base}/redirect/fast/v1/chat/completions`, { method: "POST", signal: abort.signal });
+    await response.text();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(getEventListeners(abort.signal, "abort").filter((l) => l.name !== "abort")).toHaveLength(0);
+  });
+
+  it("still reports an ordinary Stop as an AbortError while fetch's link is intact", async () => {
+    const abort = new AbortController();
+    const pending = inferenceFetch(`${base}/hang/v1/chat/completions`, { method: "POST", signal: abort.signal });
+    setTimeout(() => { abort.abort(); }, SHORT_TIMEOUT_MS);
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("leaves no listener on the run's signal once a request has finished", async () => {
+    const abort = new AbortController();
+    const response = await inferenceFetch(`${base}/fast/v1/chat/completions`, { method: "POST", signal: abort.signal });
+    await response.text();
+    // One run's signal outlives many requests; each must let go of it.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(getEventListeners(abort.signal, "abort").filter((l) => l.name !== "abort")).toHaveLength(0);
   });
 });
