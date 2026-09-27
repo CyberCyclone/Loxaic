@@ -21,7 +21,7 @@ import { estimateFit, type FitEstimate } from "./fit.ts";
 import { readGgufFacts } from "./gguf.ts";
 import { downloadErrorMessage, hfHeaders, isRepoId, repoFiles, resolveUrl, type QuantFile } from "./hf.ts";
 import { llamaDir, modelFilePath, repoDir } from "./paths.ts";
-import { offloadMemory } from "./router.ts";
+import { availableMemory, refreshMemory } from "./memory.ts";
 
 /**
  * Downloading GGUFs from HuggingFace.
@@ -98,15 +98,29 @@ function displayNameFor(repo: string, quant: string): string {
   return `${name} · ${quant}`;
 }
 
-export function fitFor(weightBytes: number, meta: LocalModelMeta, settings: Record<string, unknown> = {}): FitEstimate {
-  const mem = offloadMemory();
-  return estimateFit({
-    weightBytes,
-    nLayers: meta.nLayers ?? null,
-    settings: settings as never,
-    memoryBytes: mem.bytes,
-    cpu: mem.cpu,
-  });
+/**
+ * The fit label for `weightBytes` against the memory as last measured
+ * (memory.ts — callers `await refreshMemory()` first when they want it now).
+ * `forId` names the model being measured when it is a downloaded one, so its
+ * own footprint counts as available when it is the model already loaded.
+ */
+export function fitFor(
+  weightBytes: number,
+  meta: LocalModelMeta,
+  settings: Record<string, unknown> = {},
+  forId?: string,
+): FitEstimate {
+  const mem = availableMemory(forId);
+  return {
+    ...estimateFit({
+      weightBytes,
+      nLayers: meta.nLayers ?? null,
+      settings: settings as never,
+      memoryBytes: mem.bytes,
+      cpu: mem.cpu,
+    }),
+    breakdown: mem.breakdown,
+  };
 }
 
 export async function freeDiskBytes(): Promise<number | null> {
@@ -142,6 +156,7 @@ export async function queueDownload(input: QueueInput, userId: string): Promise<
   }
 
   const sizeBytes = option.sizeBytes + (mmproj?.size ?? 0);
+  await refreshMemory();
   const fit = fitFor(sizeBytes, {});
   if (fit.label === "wont-fit" && input.force !== true) {
     throw new DownloadError(

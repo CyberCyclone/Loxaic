@@ -36,5 +36,5 @@ exec "$BIN" \
   --host "${LLAMA_ROUTER_HOST:-0.0.0.0}" \
   --port "${LLAMA_ROUTER_PORT:-8080}" \
   --models-preset "$PRESET" \
-  --models-max "${LLAMA_MODELS_MAX:-1}" \
+  --models-max 0 \
   "$@"

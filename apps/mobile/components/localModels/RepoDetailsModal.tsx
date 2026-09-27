@@ -19,7 +19,7 @@ import { Icon, CloseIcon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import { Markdown } from '@/components/markdown/Markdown';
 import { FitBadge } from './FitBadge';
-import { formatBytes, formatCount, formatParams } from '@/lib/localModels';
+import { describeFit, formatBytes, formatCount, formatParams } from '@/lib/localModels';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -34,9 +34,11 @@ interface RepoDetailsModalProps {
  * One HuggingFace repository: who published it, its stats, its description
  * (the model card), and every quant with its size and fit label.
  *
- * The card is untrusted markdown from a stranger's repository. It renders
- * through the same component as a model's reply, which shows HTML as literal
- * text and images as a link rather than fetching them.
+ * The card is untrusted markdown from a stranger's repository, usually with
+ * HTML in it. It renders through the same component as a model's reply, with
+ * the HTML turned into the markdown it means (components/markdown/html.ts):
+ * nothing is handed to a browser as HTML, and images are links rather than
+ * fetched.
  */
 export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModalProps) {
   const [details, setDetails] = useState<HfRepoDetails | null>(null);
@@ -86,8 +88,15 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
       <ModalBackdrop />
       {/* Both halves: a long model card and a long quant list are exactly what
           pushes content past the fold, and the vendored ModalBody hardcodes
-          scrollEnabled={false} before its prop spread. */}
-      <ModalContent testID="localModels.details" className="max-h-[85%]">
+          scrollEnabled={false} before its prop spread.
+          Sized to the window rather than capped at 85% of it with the stock
+          padding and margins: on a short window (a desktop app beside other
+          panes) that left a strip a couple of quant rows tall between the
+          header and the modal's own padding, which is all anyone could see of
+          the list they opened this to choose from. The 94% is the web's
+          only: a phone's window includes the status bar, and 94% of it put
+          the sheet's title under the clock. */}
+      <ModalContent testID="localModels.details" className="max-h-[85%] w-[96%] max-w-[960px] p-4 web:max-h-[94%] web:p-5">
         <ModalHeader>
           <VStack className="min-w-0 flex-1 shrink pr-2">
             <Heading size="sm" numberOfLines={1} style={TRUNCATE_TEXT}>
@@ -101,7 +110,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody scrollEnabled>
+        <ModalBody scrollEnabled className="mb-0 mt-3">
           {!details && !error && (
             <Box className="items-center py-8">
               <Spinner />
@@ -214,9 +223,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                       {confirm.quant} probably won&apos;t fit
                     </Text>
                     <Text size="xs" className="text-foreground">
-                      It needs about {formatBytes(confirm.fit.requiredBytes)}, and{' '}
-                      {formatBytes(confirm.fit.availableBytes)} is available. It may fail to load, or run mostly on the
-                      CPU and be very slow. Pick a smaller quant unless you mean to give it a shorter context or fewer
+                      {describeFit(confirm.fit)} It may fail to load, or run mostly on the CPU and be very slow. Pick a smaller quant unless you mean to give it a shorter context or fewer
                       GPU layers in its settings.
                     </Text>
                     <HStack space="sm" className="justify-end">
@@ -293,7 +300,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                   About this model
                 </Text>
                 {details.card ? (
-                  <Markdown text={details.card} size="sm" />
+                  <Markdown text={details.card} size="sm" html />
                 ) : (
                   <Text size="sm" className="text-muted-foreground">
                     The publisher has not written a description.

@@ -215,7 +215,7 @@ export function routerEndpoint(): RouterEndpoint | null {
  * router — instead of "connection refused" to an address nobody configured. */
 export function routerUnavailableReason(): string {
   const mode = getLlamaMode();
-  if (mode === "off") return "Local models are turned off on this server. Pick a model from a provider instead.";
+  if (mode === "off") return "Host models are turned off on this server. Pick a model from a provider instead.";
   if (mode === "attach") {
     return process.env.LLAMA_ROUTER_URL
       ? "The model server is not answering. Ask an admin to check the llama.cpp container."
@@ -224,7 +224,7 @@ export function routerUnavailableReason(): string {
   if (st.state === "installing" || st.state === "starting") {
     return "The built-in model runtime is still starting up. Try again in a moment.";
   }
-  return "The built-in model runtime isn't running. An admin can set it up under Settings > Local models.";
+  return "The built-in model runtime isn't running. An admin can set it up under Settings > Host models.";
 }
 
 async function routerFetch(pathname: string, init: RequestInit = {}, timeoutMs = 5000): Promise<Response> {
@@ -300,6 +300,48 @@ export async function unloadModel(id: string): Promise<void> {
   }
 }
 
+/**
+ * Wait until the router reports `id` as `want`, or until the deadline. The
+ * router answers `/models/load` and `/models/unload` before the child process
+ * has finished starting or exiting, and memory is only back once it has
+ * exited, so anything that measures memory next has to wait for the status.
+ * Resolves to the last status seen (undefined when the model is not listed).
+ */
+export async function waitForModelStatus(
+  id: string,
+  want: "loaded" | "unloaded",
+  timeoutMs: number,
+): Promise<RouterModelStatus | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  let last: RouterModelStatus | undefined;
+  for (;;) {
+    last = (await routerModelStatuses()).get(id);
+    const value = last?.value ?? "unloaded";
+    if (value === want) return last;
+    // A load that failed will not become loaded by waiting.
+    if (want === "loaded" && last?.failed && value !== "loading") return last;
+    if (Date.now() >= deadline) return last;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
+/** Ask the router to load a model now rather than on its first request — how
+ * a pinned model is kept loaded. Throws with the router's own words when it
+ * refuses outright; whether the load then succeeded is `waitForModelStatus`. */
+export async function loadModel(id: string): Promise<void> {
+  const res = await routerFetch("/models/load", { method: "POST", body: JSON.stringify({ model: routerModelName(id) }) }, 30_000);
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let message = text;
+    try {
+      message = (JSON.parse(text) as { error?: { message?: string } }).error?.message ?? text;
+    } catch {
+      // not JSON
+    }
+    throw new Error(message.slice(0, 300) || `llama.cpp refused to load the model (HTTP ${String(res.status)})`);
+  }
+}
+
 // ── The preset and live reloads ─────────────────────────────────────────────
 
 let lastSections = new Map<string, string>();
@@ -332,7 +374,21 @@ async function reloadNow(): Promise<void> {
     // No router yet: it reads the file when it starts.
     lastReloadError = null;
     void err;
+    return;
   }
+  // A reload unloads every loaded model whose section changed, a pinned one
+  // included, and a newly pinned model has only just been written into the
+  // preset: either way, pinned models are loaded again from here.
+  keepPinnedLoaded();
+}
+
+/** Load every pinned model that is not loaded. Imported lazily: room.ts
+ * reaches this module for everything it does. Never awaited by the caller — a
+ * load can take minutes, and nothing that triggered it should wait on it. */
+export function keepPinnedLoaded(): void {
+  void import("./room.ts")
+    .then((m) => m.loadPinnedModels())
+    .catch((e: unknown) => { console.error(`[llama] could not load pinned models: ${e instanceof Error ? e.message : String(e)}`); });
 }
 
 function scheduleDeferredReload(): void {
@@ -446,6 +502,8 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_ROUTER_LOG) env.LOXAIC_FAKE_ROUTER_LOG = process.env.LOXAIC_FAKE_ROUTER_LOG;
   if (process.env.LOXAIC_FAKE_DEVICES) env.LOXAIC_FAKE_DEVICES = process.env.LOXAIC_FAKE_DEVICES;
   if (process.env.LOXAIC_FAKE_HARDWARE) env.LOXAIC_FAKE_HARDWARE = process.env.LOXAIC_FAKE_HARDWARE;
+  if (process.env.LOXAIC_FAKE_MODEL_MIB) env.LOXAIC_FAKE_MODEL_MIB = process.env.LOXAIC_FAKE_MODEL_MIB;
+  if (process.env.LOXAIC_FAKE_VRAM_STATE) env.LOXAIC_FAKE_VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
   return env;
 }
 
@@ -457,6 +515,64 @@ function listDevices(bin: string): Promise<RuntimeDevice[]> {
       { timeout: 30_000, windowsHide: true, env: childEnv(bin, "unused") },
       (_err, stdout, stderr) => { resolve(parseDeviceList(`${stdout}\n${stderr}`)); },
     );
+  });
+}
+
+// ── Free memory, measured now ───────────────────────────────────────────────
+
+let measuredAt = 0;
+let measuring: Promise<void> | null = null;
+
+/**
+ * Re-read each device's free memory from `--list-devices`.
+ *
+ * The listing at router start is a snapshot, and free memory moves: another
+ * program (LM Studio on the same box) loads or unloads, and so do our own
+ * models. Fit labels and the decision to unload a model to make room both
+ * need the figure as it is now. Cached for `maxAgeMs` and shared between
+ * concurrent callers, so a screen polling every second spawns at most one
+ * listing at a time. `force` always starts a listing after the call — what a
+ * caller needs right after unloading a model, when an older listing still in
+ * flight would describe the memory before the unload.
+ *
+ * Only `freeBytes` changes: the device set, and which of them are active, are
+ * fixed for the router's life (changing them restarts it). A listing that
+ * comes back empty is a failed listing, not a machine that lost its GPUs, and
+ * is ignored. Attach mode re-reads the sidecar's file, which is only as fresh
+ * as the sidecar's own start.
+ */
+export function remeasureDevices(opts: { maxAgeMs?: number; force?: boolean } = {}): Promise<void> {
+  const maxAgeMs = opts.maxAgeMs ?? 10_000;
+  const started = opts.force
+    ? (measuring ?? Promise.resolve()).then(doRemeasure, doRemeasure)
+    : measuring ?? (Date.now() - measuredAt < maxAgeMs ? null : doRemeasure());
+  if (!started) return Promise.resolve();
+  if (started === measuring) return started;
+  // Compare against the promise actually stored. Comparing against `started`
+  // — which is not what `measuring` holds — never matched, so `measuring` was
+  // never cleared and every later call returned the first measurement's
+  // settled promise: the figures froze at the first listing. Found in review.
+  const tracked: Promise<void> = started.finally(() => { if (measuring === tracked) measuring = null; });
+  measuring = tracked;
+  return started;
+}
+
+async function doRemeasure(): Promise<void> {
+  const mode = getLlamaMode();
+  if (mode === "attach") {
+    await refreshAttachHealth();
+    measuredAt = Date.now();
+    return;
+  }
+  const runtime = st.runtime;
+  if (mode !== "managed" || !runtime || st.flavour === "cpu" || st.devices.length === 0) return;
+  const fresh = await listDevices(runtime.bin);
+  measuredAt = Date.now();
+  if (fresh.length === 0) return;
+  const byName = new Map(fresh.map((d) => [d.name, d]));
+  st.devices = st.devices.map((d) => {
+    const now = byName.get(d.name);
+    return now ? { ...d, freeBytes: now.freeBytes } : d;
   });
 }
 
@@ -544,12 +660,14 @@ let restartTimer: NodeJS.Timeout | null = null;
 async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   const port = await freePort();
   const apiKey = randomBytes(24).toString("hex");
-  const modelsMax = getLocalModelsSettings().modelsMax;
+  // `--models-max 0`: the router never unloads a model on its own. It evicts
+  // by count, least recently used, with no notion of a pinned model — so
+  // Loxaic decides what to unload, by memory (room.ts).
   const args = [
     "--host", "127.0.0.1",
     "--port", String(port),
     "--models-preset", presetPath(),
-    "--models-max", String(modelsMax),
+    "--models-max", "0",
   ];
   st.state = "starting";
   st.reason = null;
@@ -605,6 +723,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     if (st.child === child) {
       st.state = "running";
       st.reason = null;
+      keepPinnedLoaded();
       // Only now is it safe to delete older builds: this one demonstrably runs.
       if (!binOverride()) void pruneRuntimes(runtime).catch(() => undefined);
     }
@@ -643,6 +762,9 @@ function chosenDevices(devices: RuntimeDevice[]): string[] {
 }
 
 let ensuring: Promise<void> | null = null;
+/** A restart asked for while an attempt was already running, run once that
+ * one ends — shared by every caller who asks in the meantime. */
+let queuedRestart: Promise<void> | null = null;
 
 /**
  * Make the managed runtime run: detect the hardware, install the pinned build
@@ -654,7 +776,21 @@ let ensuring: Promise<void> | null = null;
  * an explicit, warned choice.
  */
 export function ensureRuntime(opts: { restart?: boolean } = {}): Promise<void> {
-  if (ensuring) return ensuring;
+  if (ensuring) {
+    if (!opts.restart) return ensuring;
+    // A restart answers settings written *after* the running attempt read
+    // them, so handing back that attempt would drop it: switching to the CPU
+    // and straight back to Automatic left the CPU running with Automatic
+    // selected, because the headline says "CPU" as soon as the attempt starts
+    // and the second switch landed while it was still going.
+    queuedRestart ??= ensuring
+      .catch(() => undefined)
+      .then(() => {
+        queuedRestart = null;
+        return ensureRuntime({ restart: true });
+      });
+    return queuedRestart;
+  }
   ensuring = doEnsure(opts).finally(() => { ensuring = null; });
   return ensuring;
 }
@@ -712,6 +848,7 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   st.runtime = runtime;
 
   st.devices = await listDevices(runtime.bin);
+  measuredAt = Date.now();
   if (flavour === "cpu") {
     st.activeDevices = "none";
   } else {
@@ -907,6 +1044,7 @@ export async function __resetRouterForTest(): Promise<void> {
   } satisfies State);
   lastSections = new Map();
   reloadPending = false;
+  queuedRestart = null;
   lastReloadError = null;
   attachHealthy = null;
   attachDevicesKnown = false;

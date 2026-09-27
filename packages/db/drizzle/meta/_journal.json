@@ -197,6 +197,13 @@
       "when": 1790201177151,
       "tag": "0027_local_models",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1790419115420,
+      "tag": "0028_local_model_pinned",
+      "breakpoints": true
     }
   ]
 }

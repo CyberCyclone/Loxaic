@@ -6,7 +6,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { CodeBlock } from '@/components/chat/CodeBlock';
-import { renderInlines } from './inlines';
+import { renderInlineRun } from './inlines';
 import { md, type MarkdownTone } from './theme';
 import type { Token } from './parse';
 
@@ -65,7 +65,7 @@ function renderTable(token: Tokens.Table, ctx: RenderCtx, key: number): ReactNod
         {token.header.map((cell, c) => (
           <Box key={c} className={md.tableCell}>
             <Text size={ctx.size} className={`${textColor(ctx)} ${md.tableHeadText} ${alignClass(c)}`}>
-              {renderInlines(cell.tokens)}
+              {renderInlineRun(cell.tokens)}
             </Text>
           </Box>
         ))}
@@ -75,7 +75,7 @@ function renderTable(token: Tokens.Table, ctx: RenderCtx, key: number): ReactNod
           {row.map((cell, c) => (
             <Box key={c} className={md.tableCell}>
               <Text size={ctx.size} className={`${textColor(ctx)} ${alignClass(c)}`}>
-                {renderInlines(cell.tokens)}
+                {renderInlineRun(cell.tokens)}
               </Text>
             </Box>
           ))}
@@ -94,14 +94,14 @@ export function renderBlock(token: Token, ctx: RenderCtx, key = 0): ReactNode {
       const sizeClass = md.heading[t.depth - 1] ?? md.heading[5];
       return (
         <Text key={key} className={`${textColor(ctx)} ${md.headingBase} ${sizeClass}`}>
-          {renderInlines(t.tokens)}
+          {renderInlineRun(t.tokens)}
         </Text>
       );
     }
     case 'paragraph':
       return (
         <Text key={key} size={ctx.size} className={`${textColor(ctx)} ${md.paragraphSpacing}`}>
-          {renderInlines((token as Tokens.Paragraph).tokens)}
+          {renderInlineRun((token as Tokens.Paragraph).tokens)}
         </Text>
       );
     // A block-level `text` token: tight list items and lazy paragraphs. Same
@@ -109,7 +109,7 @@ export function renderBlock(token: Token, ctx: RenderCtx, key = 0): ReactNode {
     case 'text':
       return (
         <Text key={key} size={ctx.size} className={textColor(ctx)}>
-          {renderInlines((token as Tokens.Text).tokens ?? [token])}
+          {renderInlineRun((token as Tokens.Text).tokens ?? [token])}
         </Text>
       );
     case 'code': {

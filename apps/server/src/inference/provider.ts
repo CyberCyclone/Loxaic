@@ -7,6 +7,7 @@ import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
 import { routerModelName } from "../llama/preset.ts";
 import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { listServableModels } from "../llama/catalog.ts";
+import { ensureRoom, trackRequest } from "../llama/room.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 
 // Read at call time, not module load — a supervisor sets these in the child's
@@ -207,7 +208,20 @@ export async function* streamCompletion(
   // The built-in backend is the router, which knows a model by its router name
   // rather than its id (see routerModelName). An added provider gets the id it
   // listed, untouched.
-  yield* liveStream(provider, provider.isDefault ? routerModelName(upstreamModel) : upstreamModel, messages, options);
+  if (!provider.isDefault) {
+    yield* liveStream(provider, upstreamModel, messages, options);
+    return;
+  }
+  // Make room first — unpinned models are unloaded until this one fits, or
+  // NoRoomError says pinned ones are in the way (llama/room.ts) — and hold it
+  // as in flight until the stream ends, so nothing unloads it mid-answer.
+  await ensureRoom(upstreamModel, options.signal);
+  const release = trackRequest(upstreamModel);
+  try {
+    yield* liveStream(provider, routerModelName(upstreamModel), messages, options);
+  } finally {
+    release();
+  }
 }
 
 async function servedByLocalRouter(upstreamModel: string): Promise<boolean> {

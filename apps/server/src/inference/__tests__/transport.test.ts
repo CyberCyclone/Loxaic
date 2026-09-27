@@ -50,6 +50,14 @@ function attach(url: string): void {
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     req.resume();
+    // The router's model list, asked before each request (llama/room.ts):
+    // "m" is loaded, so nothing needs making room for and the request itself
+    // is what each case below observes.
+    if (req.url?.endsWith("/models")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "m", status: { value: "loaded" } }] }));
+      return;
+    }
     if (req.url?.startsWith("/hang/")) {
       // Never answers: a prompt still being evaluated.
       req.on("close", () => onHangClosed?.());

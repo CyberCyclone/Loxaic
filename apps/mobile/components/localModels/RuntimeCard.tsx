@@ -9,6 +9,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import { Input, InputField } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { cpuWarning, formatBytes, runtimeHeadline } from '@/lib/localModels';
@@ -168,26 +169,33 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
               {runtime.devices.map((d) => {
                 const on = activeDevices.includes(d.name);
                 return (
-                  <Pressable
+                  <HStack
                     key={d.name}
-                    testID={`localModels.runtime.device.${d.name}`}
-                    disabled={!reachable}
-                    onPress={() => { toggleDevice(d.name); }}
-                    className={`flex-row items-center justify-between rounded-md border px-3 py-2 ${on ? 'border-primary bg-primary/10' : 'border-border'}`}
+                    space="sm"
+                    className="items-center rounded-md border border-border px-3 py-2"
                   >
-                    <Text size="sm" className="min-w-0 shrink text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                    <Switch
+                      testID={`localModels.runtime.device.${d.name}`}
+                      value={on}
+                      isDisabled={!reachable}
+                      onValueChange={() => { toggleDevice(d.name); }}
+                      accessibilityLabel={`Use ${d.description} (${d.name})`}
+                    />
+                    <Text size="sm" className="min-w-0 flex-1 shrink text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
                       {d.description} ({d.name})
                     </Text>
-                    <Text size="xs" className="shrink-0 text-muted-foreground">
-                      {formatBytes(d.totalBytes)}
-                      {on ? ' · in use' : ''}
+                    {/* Free first: it is what a model can actually use. The
+                        card's size alone read as "60 GB across two GPUs" on a
+                        machine where another program held most of one. */}
+                    <Text testID={`localModels.runtime.device.${d.name}.memory`} size="xs" className="shrink-0 text-muted-foreground">
+                      {formatBytes(d.freeBytes)} free of {formatBytes(d.totalBytes)}
                     </Text>
-                  </Pressable>
+                  </HStack>
                 );
               })}
               <Text size="2xs" className="text-muted-foreground">
                 By default only GPUs with 4 GB free are used, so a small display card, or one another program has
-                filled, does not get part of a model.
+                filled, does not get part of a model. Changing this restarts the runtime, which unloads every model.
               </Text>
             </VStack>
           )}

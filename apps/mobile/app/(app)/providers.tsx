@@ -160,7 +160,7 @@ export default function ProvidersScreen() {
               // anything.
               <Pressable
                 testID="providers.builtin"
-                onPress={() => { router.push('/local-models'); }}
+                onPress={() => { router.push('/host-models'); }}
                 className="rounded-md border border-border bg-muted/40 p-3 web:hover:bg-muted/60"
               >
                 <HStack className="items-center justify-between">
@@ -170,11 +170,11 @@ export default function ProvidersScreen() {
                   </Text>
                 </HStack>
                 <Text size="xs" className="mt-0.5 text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-                  Local models, run by llama.cpp on this server ·{' '}
+                  Host models, run by llama.cpp on this server ·{' '}
                   {builtin.models === 1 ? '1 model' : `${String(builtin.models)} models`} offered
                 </Text>
                 <Text size="2xs" className="mt-1 text-primary">
-                  Manage under Local Models ›
+                  Manage under Host Models ›
                 </Text>
               </Pressable>
             )}

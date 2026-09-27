@@ -34,6 +34,7 @@ import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { isNoRoom, noRoomNotice, PendingSends, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 
 export type { PendingApproval };
@@ -256,6 +257,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
   // `message.start`'s id-based dedup never matches it and appends a second,
   // duplicate bubble for every single send.
   const pendingUserMsgIdRef = useRef<string | null>(null);
+  // Sends not yet accepted, by the `client_ref` they went out with, so a
+  // refusal arriving as a socket `error` (no room for the model behind pinned
+  // ones — nothing was written server-side) takes back its own bubble and
+  // returns its text, whatever else was sent meanwhile.
+  const sendsRef = useRef(new PendingSends());
+  const [noRoom, setNoRoom] = useState<NoRoomNotice | null>(null);
+  const rollBackSendRef = useRef<(msgId: string, localConvId: string | null) => void>(() => undefined);
   /** Last time we asked the server to resync a given stream — see the gap
    * handler below for why this needs a floor. */
   const lastResyncAtRef = useRef<Record<string, number>>({});
@@ -745,7 +753,12 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         // The run-level reason, which no message row carries — the step limit
         // used to be exactly that and nothing showed it (#157). Only when the
         // failed message is not already saying the same thing in red.
-        if (event.status === 'error' && event.error && lastMessageErrorRef.current.get(event.stream_id) !== event.error) {
+        if (event.status === 'error' && event.error && isNoRoom(event) && event.conversation_id === activeIdRef.current) {
+          // Mid-run: the message is in the thread already, failed in red. Only
+          // for the thread on screen — the modal's "choose a model" acts on
+          // that one, and a background thread's failure is in its own thread.
+          setNoRoom({ message: event.error, text: null, hadAttachments: false });
+        } else if (event.status === 'error' && event.error && lastMessageErrorRef.current.get(event.stream_id) !== event.error) {
           showToast(event.error, 6000);
         }
         lastMessageErrorRef.current.delete(event.stream_id);
@@ -753,7 +766,13 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         // window out from under a model list fetched at mount.
         onStreamEndRef.current?.();
       } else if (event.type === 'error') {
-        showToast(event.error || 'Chat error', 6000);
+        if (isNoRoom(event)) {
+          const sent = sendsRef.current.take(event.client_ref);
+          if (sent) rollBackSendRef.current(sent.localMsgId, sent.localConvId);
+          setNoRoom(noRoomNotice(event.error, sent));
+        } else {
+          showToast(event.error || 'Chat error', 6000);
+        }
       }
     };
 
@@ -837,6 +856,8 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
       }
       const localMsgId = `lm${String(Date.now())}`;
       pendingUserMsgIdRef.current = localMsgId;
+      const hadAttachments = (attachments?.length ?? 0) > 0;
+      sendsRef.current.remember(localMsgId, { text, localMsgId, localConvId: null, hadAttachments });
       // The optimistic bubble keeps the full refs so it can render a thumbnail
       // immediately; the wire only needs the ids.
       const refs = attachments?.map((a) => a.ref);
@@ -851,6 +872,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         const localId = `c${String(Date.now())}`;
         pendingLocalIdRef.current = localId;
         pendingModelRef.current = model;
+        sendsRef.current.remember(localMsgId, { text, localMsgId, localConvId: localId, hadAttachments });
         const newConv: Conversation = {
           id: localId,
           title: text.slice(0, 40) || (attachments?.[0]?.name ?? 'Attachment'),
@@ -862,7 +884,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs)) {
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId)) {
           // Undo, don't just toast. The bubble was already painted, and the
           // cache-on-settle effect would have persisted a message that was
           // never sent into the user's "saved copy" — replayed on every
@@ -883,7 +905,7 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
               : c,
           ),
         );
-        if (!sendChatMessage(wsRef.current, text, model, id, undefined, refs)) {
+        if (!sendChatMessage(wsRef.current, text, model, id, undefined, refs, localMsgId)) {
           setConversations((prev) =>
             prev.map((c) => (c.id === id ? { ...c, msgs: c.msgs.filter((m) => m.id !== localMsgId) } : c)),
           );
@@ -894,6 +916,28 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     },
     [setActiveId, showToast],
   );
+
+  /** Take back a send the server refused before writing anything: the bubble,
+   * and the conversation it created locally, as the not-connected path does. */
+  const rollBackSend = useCallback(
+    (msgId: string, localConvId: string | null) => {
+      if (pendingUserMsgIdRef.current === msgId) pendingUserMsgIdRef.current = null;
+      if (localConvId && pendingLocalIdRef.current === localConvId) {
+        setConversations((prev) => prev.filter((c) => c.id !== localConvId));
+        // Only if it is still the one on screen: a refusal can land after the
+        // user has opened another thread, which must not be closed for it.
+        if (activeIdRef.current === localConvId) setActiveId(null);
+        pendingLocalIdRef.current = null;
+        pendingModelRef.current = null;
+        return;
+      }
+      setConversations((prev) => prev.map((c) => ({ ...c, msgs: c.msgs.filter((m) => m.id !== msgId) })));
+    },
+    [setActiveId],
+  );
+  rollBackSendRef.current = rollBackSend;
+
+  const dismissNoRoom = useCallback(() => { setNoRoom(null); }, []);
 
   const handleStop = useCallback(() => {
     const id = activeIdRef.current;
@@ -1131,6 +1175,10 @@ export function useChatSession(token: string | null, onStreamEnd?: () => void, s
     handleDelete,
     handleRename,
     setConversationModel,
+    /** A send refused for lack of room behind pinned host models — shown as a
+     * modal (components/chat/NoRoomModal). */
+    noRoom,
+    dismissNoRoom,
     /** Scroll-back for the open thread; see useOlderMessages. */
     history: activeId
       ? {

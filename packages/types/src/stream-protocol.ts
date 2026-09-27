@@ -685,9 +685,28 @@ export type ServerMessage =
       status: "complete" | "error" | "cancelled";
       usage?: TurnUsage;
       error?: string;
+      /** A machine-readable reason alongside `error`, when the client should
+       * handle it rather than just show it. Absent on an older server. */
+      error_code?: StreamErrorCode;
     }
   | { type: "agent.mode_changed"; mode: PermissionMode }
-  | { type: "error"; error: string; conversation_id?: string; stream_id?: string };
+  | {
+      type: "error";
+      error: string;
+      code?: StreamErrorCode;
+      /** The `client_ref` of the send this refuses, when it refuses one — so a
+       * client with several sends in flight takes back the right bubble. */
+      client_ref?: string;
+      conversation_id?: string;
+      stream_id?: string;
+    };
+
+/**
+ * Errors a client handles specially rather than as a toast.
+ * - `local_model_no_room`: a host model that pinned models leave no GPU memory
+ *   for. Shown as a modal naming them.
+ */
+export type StreamErrorCode = "local_model_no_room";
 
 export type ClientMessage =
   | {
@@ -698,6 +717,9 @@ export type ClientMessage =
       parent_id?: string;
       /** Refs from `POST /v1/files`. The server re-validates ownership. */
       attachments?: string[];
+      /** The client's own name for this send, echoed on an `error` that
+       * refuses it. Opaque to the server. */
+      client_ref?: string;
     }
   | {
       type: "agent.send";
@@ -708,6 +730,8 @@ export type ClientMessage =
       parent_id?: string;
       /** Refs from `POST /v1/files`. The server re-validates ownership. */
       attachments?: string[];
+      /** As on `chat.send`. */
+      client_ref?: string;
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

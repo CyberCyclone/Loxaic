@@ -1,4 +1,5 @@
 import type { LoadSettings } from "./load-settings.ts";
+import type { MemoryBreakdown } from "./memory.ts";
 
 /**
  * Will a model fit? The label every screen shows beside a download, computed
@@ -24,6 +25,10 @@ export interface FitEstimate {
   availableBytes: number | null;
   /** Where the estimate is measured against. */
   target: "gpu" | "cpu";
+  /** How `availableBytes` is made up on a GPU — free now, what our unpinned
+   * models would give back, what pinned models and other programs hold. Absent
+   * for the CPU and before a runtime has listed its devices. */
+  breakdown?: MemoryBreakdown | null;
 }
 
 export interface FitInput {
@@ -81,9 +86,14 @@ export function estimateFit(input: FitInput): FitEstimate {
   if (input.memoryBytes === null || input.memoryBytes <= 0) {
     return { label: "unknown", requiredBytes: required, availableBytes: null, target };
   }
-  const ratio = required / input.memoryBytes;
-  const label: FitLabel = ratio <= 0.85 ? "will-fit" : ratio <= 1.1 ? "might-fit" : "wont-fit";
-  return { label, requiredBytes: required, availableBytes: input.memoryBytes, target };
+  return { label: labelFor(required, input.memoryBytes), requiredBytes: required, availableBytes: input.memoryBytes, target };
+}
+
+/** The label for needing `required` bytes out of `memory`. */
+export function labelFor(required: number, memory: number | null): FitLabel {
+  if (memory === null || memory <= 0) return "unknown";
+  const ratio = required / memory;
+  return ratio <= 0.85 ? "will-fit" : ratio <= 1.1 ? "might-fit" : "wont-fit";
 }
 
 const RANK: Record<FitLabel, number> = { "will-fit": 3, "might-fit": 2, unknown: 1, "wont-fit": 0 };

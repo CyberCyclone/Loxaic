@@ -212,8 +212,8 @@ The limit follows the model server by default:
 
 | Backend | Resolved limit |
 |---|---|
-| Local models, one enabled | Its *Max concurrent predictions* setting (llama.cpp's `--parallel`) — it really does keep that many prompt caches |
-| Local models, several enabled | 1 — runs on two different models side by side would make llama.cpp swap models mid-reply |
+| Host models, one enabled | Its *Max concurrent predictions* setting (llama.cpp's `--parallel`) — it really does keep that many prompt caches |
+| Host models, several enabled | 1 — runs on two different models side by side would make llama.cpp swap models mid-reply |
 | An added llama.cpp host (`--parallel N`) | N |
 | LM Studio | 1 — it reports nothing about slots |
 | Anything else | 1, or the provider's own setting |
@@ -342,9 +342,9 @@ and how they coexist with a dev stack on the same machine.
 **Docker Compose**: unchanged — the `db` service (`postgres:17-alpine`), same
 as always.
 
-## Local models (llama.cpp)
+## Host models (llama.cpp)
 
-Loxaic runs **llama.cpp itself**. An admin opens **Settings → Local models**,
+Loxaic runs **llama.cpp itself**. An admin opens **Settings → Host models**,
 searches HuggingFace, downloads a model, and switches it on; from then on it is
 in everyone's model picker under *Built-in*. There is no backend URL to
 configure. External backends (OpenRouter, OpenAI, another llama.cpp or LM Studio
@@ -352,7 +352,7 @@ host) are added separately under **Settings → Model Providers**.
 
 ### The runtime installs itself
 
-The first time an admin opens Local models, Loxaic looks at the hardware, picks
+The first time an admin opens Host models, Loxaic looks at the hardware, picks
 the llama.cpp build that uses the GPU, downloads it from llama.cpp's GitHub
 releases, checks it against a SHA-256 recorded in this repository, and starts
 it. That is the same arrangement LM Studio uses for its runtimes, with one
@@ -391,6 +391,24 @@ the file size, a KV cache for the context, and the memory of the GPUs in use (or
 system RAM, on the CPU). A download labelled *Won't fit* asks first. The label
 is an estimate; llama.cpp itself shrinks the context or leaves layers on the CPU
 when a model almost fits, which is the *Might fit* band.
+
+The GPU memory counted is what is **free right now** on the GPUs in use, added
+across all of them, plus what Loxaic's own loaded models hold (they would be
+unloaded to make room) — never another program's share. Each GPU row shows
+"free of total", and a model's settings sheet says how the figure is made up,
+including what other programs are using: two 30 GB cards with LM Studio holding
+26 GB of one have about 34 GB to offer, not 60.
+
+### Which models stay loaded
+
+Several models can be loaded at once, as memory allows. When a model that is
+not loaded is asked for and there is no room, Loxaic unloads the least recently
+used models until it fits. **Pinning** a model (the *Keep loaded* switch)
+keeps it loaded: it loads straight away, again after every restart, and is
+never unloaded to make room. If pinned models leave no room for the model
+someone chose, they are told so and asked to pick a loaded model or ask an
+admin to unpin one; nothing else is unloaded. The model picker marks the models
+that are loaded, since those answer without waiting for a load.
 
 Downloads resume after a pause or a restart, and every file is checked against
 HuggingFace's own SHA-256 before it is used. Gated models (Llama, Gemma and the

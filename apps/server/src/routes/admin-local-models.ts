@@ -26,6 +26,8 @@ import {
 import { bestFit, type FitLabel } from "../llama/fit.ts";
 import { HfError, repoDetails, searchModels, type HfSort } from "../llama/hf.ts";
 import { LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
+import { refreshMemory } from "../llama/memory.ts";
+import { pinErrorFor } from "../llama/room.ts";
 import {
   ensureHardwareDetected,
   ensureRuntime,
@@ -64,10 +66,14 @@ function modelView(row: LocalModelRow, loaded: Map<string, { value: string; fail
     status: row.status,
     error: row.error,
     enabled: row.enabled,
+    /** Kept loaded, never unloaded to make room (llama/room.ts). */
+    pinned: row.pinned,
+    /** Why a pinned model is not loaded, or null. */
+    pinError: row.pinned ? pinErrorFor(row.id) : null,
     loadSettings: row.loadSettings,
     meta,
     hasVision: rowMmproj(row) !== null,
-    fit: fitFor(row.sizeBytes, meta, row.loadSettings as Record<string, unknown>),
+    fit: fitFor(row.sizeBytes, meta, row.loadSettings as Record<string, unknown>, row.id),
     /** The router's view: `loaded`, `loading`, `unloaded`, `sleeping`, or null
      * when it cannot be asked. */
     runtimeStatus: status?.value ?? null,
@@ -79,6 +85,7 @@ function modelView(row: LocalModelRow, loaded: Map<string, { value: string; fail
 async function fullView() {
   await ensureHardwareDetected();
   await refreshRuntimeState();
+  await refreshMemory();
   const rows = await listLocalModelRows();
   const statuses = await routerModelStatuses();
   return {
@@ -149,10 +156,10 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     } catch (err) {
       return fail(reply, err);
     }
-    // Backend, devices and the loaded-model limit are all process arguments or
-    // preset globals: the runtime restarts to take them. A token change needs
-    // nothing.
-    if (body.backend !== undefined || body.devices !== undefined || body.modelsMax !== undefined) {
+    // Backend and devices are process arguments or preset globals: the runtime
+    // restarts to take them. The loaded-model limit is Loxaic's own (room.ts)
+    // and a token change needs nothing.
+    if (body.backend !== undefined || body.devices !== undefined) {
       void ensureRuntime({ restart: true });
       await new Promise((r) => setTimeout(r, 100));
     }
@@ -165,6 +172,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     const sort: HfSort = q.sort === "likes" || q.sort === "trending" || q.sort === "recent" ? q.sort : "downloads";
     try {
       await ensureHardwareDetected();
+      await refreshMemory();
       const results = await searchModels({ q: q.q, author: q.author, sort, vision: q.vision === "1" || q.vision === "true" });
       const rows = await listLocalModelRows();
       return {
@@ -187,13 +195,17 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     const { repo } = request.query as { repo?: string };
     try {
       await ensureHardwareDetected();
+      await refreshMemory();
       const details = await repoDetails(repo ?? "");
       const rows = await listLocalModelRows();
       const meta = { nLayers: null };
       const mmprojSize = details.files.mmproj[0]?.size ?? 0;
       const quants = details.files.quants.map((q) => {
-        const fit = fitFor(q.sizeBytes + (details.summary.vision ? mmprojSize : 0), meta);
         const row = rows.find((m) => m.id === `${details.summary.repo}:${q.quant}`);
+        // A quant already downloaded is measured as the model it is, so one
+        // that is loaded (or pinned) counts its own memory as its own — the
+        // same answer its installed row gives.
+        const fit = fitFor(q.sizeBytes + (details.summary.vision ? mmprojSize : 0), meta, {}, row?.id);
         return { ...q, fit, downloadStatus: row?.status ?? null };
       });
       return {
@@ -252,8 +264,8 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
   });
 
   /**
-   * Change a downloaded model: enable it for everyone, rename it, or change
-   * its load settings. Settings are replaced whole (the sheet sends them all);
+   * Change a downloaded model: enable it for everyone, pin it (keep it loaded),
+   * rename it, or change its load settings. Settings are replaced whole (the sheet sends them all);
    * `null` for a key is llama.cpp's default. `appliesOnNextLoad` says the
    * model is in use right now and will pick the change up once it is idle.
    */
@@ -270,6 +282,17 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
         if (typeof body.enabled !== "boolean") throw new DownloadError("enabled must be true or false");
         if (body.enabled && row.status !== "ready") throw new DownloadError("A model can be enabled once it has finished downloading", 409);
         patch.enabled = body.enabled;
+        // A pin keeps a model loaded for everyone to use; one nobody may use
+        // would only hold the GPU. Disabling unpins.
+        if (!body.enabled) patch.pinned = false;
+      }
+      if (body.pinned !== undefined) {
+        if (typeof body.pinned !== "boolean") throw new DownloadError("pinned must be true or false");
+        const enabled = patch.enabled ?? row.enabled;
+        if (body.pinned && (row.status !== "ready" || !enabled)) {
+          throw new DownloadError("Only a model that is enabled for everyone can be pinned", 409);
+        }
+        patch.pinned = body.pinned;
       }
       if (body.displayName !== undefined) {
         const name = typeof body.displayName === "string" ? body.displayName.replace(/\p{Cc}/gu, "").trim() : "";
@@ -302,7 +325,8 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     try {
       const settings = normalizeLoadSettings(body.loadSettings ?? {}, rowMeta(row));
       const weights = row.sizeBytes - (settings.vision === false ? (rowMmproj(row)?.size ?? 0) : 0);
-      return { fit: fitFor(weights, rowMeta(row), settings) };
+      await refreshMemory();
+      return { fit: fitFor(weights, rowMeta(row), settings, row.id) };
     } catch (err) {
       return fail(reply, err);
     }

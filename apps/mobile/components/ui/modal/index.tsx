@@ -4,7 +4,7 @@ import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { tva, useStyleContext, withStyleContext } from '@gluestack-ui/utils/nativewind-utils';
 import { withUniwind } from 'uniwind';
 import React from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { Platform, Pressable, ScrollView, View } from 'react-native';
 import Animated, {
   Easing,
   FadeIn,
@@ -125,6 +125,23 @@ const ModalBackdrop = React.forwardRef<
   );
 });
 
+/**
+ * On the web, a built-in animation only. `withInitialValues` makes a custom
+ * one, and for those reanimated's web layer pins the element to the position
+ * and size it measured when the animation's time ran out (`setElementPosition`
+ * in layoutReanimation/web). Everything that opens on a spinner then stays at
+ * the spinner's size: the HuggingFace details sheet, whose quant list arrives
+ * a second later, was left an 84px strip to scroll it in, with an inline
+ * `height` no class could override. Native has no such step, and keeps the
+ * zoom.
+ */
+const CONTENT_ENTERING =
+  Platform.OS === 'web'
+    ? FadeIn.duration(200)
+    : ZoomIn.duration(200).withInitialValues({
+        transform: [{ scale: 0.9 }],
+      });
+
 const ModalContent = React.forwardRef<
   React.ComponentRef<typeof UIModal.Content>,
   IModalContentProps
@@ -134,9 +151,7 @@ const ModalContent = React.forwardRef<
   return (
     <UIModal.Content
       ref={ref}
-      entering={ZoomIn.duration(200).withInitialValues({
-        transform: [{ scale: 0.9 }],
-      })}
+      entering={CONTENT_ENTERING}
       exiting={FadeOut.duration(200)}
       {...props}
       className={modalContentStyle({

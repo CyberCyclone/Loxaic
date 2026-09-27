@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, Settings as SettingsIcon } from 'lucide-react-native';
+import { Check, Pin, Settings as SettingsIcon } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -20,6 +20,8 @@ import { Icon } from '@/components/ui/icon';
 import { CloseIcon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { loadedFirst, loadState } from '@/lib/modelOrder';
+import { DEFAULT_PROVIDER_ID } from '@loxaic/types';
 import { THINKING_LEVELS, type ModelInfo, type ThinkingLevel } from '@/lib/types';
 
 interface ModelModalProps {
@@ -67,6 +69,7 @@ const GROUP_CAP = 50;
 
 type Row =
   | { type: 'header'; label: string; testID: string }
+  | { type: 'hint'; text: string; key: string }
   | { type: 'model'; model: ModelInfo; testID: string }
   | { type: 'more'; count: number; key: string };
 
@@ -139,12 +142,21 @@ export function ModelModal({
     group.push(m);
   }
   for (const providerId of order) {
-    const group = byProvider.get(providerId) ?? [];
+    // Loaded host models first: one of those answers now, where any other
+    // waits for a load first.
+    const group = loadedFirst(byProvider.get(providerId) ?? []);
     rows.push({
       type: 'header',
       label: group[0].provider_name,
       testID: `models.group.${providerId}`,
     });
+    if (providerId === DEFAULT_PROVIDER_ID && group.length > 1) {
+      rows.push({
+        type: 'hint',
+        key: `hint-${providerId}`,
+        text: 'Loaded models answer right away. Any other loads first, which can take a minute, and may unload one that is not pinned.',
+      });
+    }
     rows.push(
       ...group.slice(0, GROUP_CAP).map((m): Row => ({ type: 'model', model: m, testID: `models.row.${m.id}` })),
     );
@@ -205,6 +217,10 @@ export function ModelModal({
                 >
                   {item.label}
                 </Text>
+              ) : item.type === 'hint' ? (
+                <Text key={item.key} size="2xs" className="px-4 pb-1 text-muted-foreground">
+                  {item.text}
+                </Text>
               ) : item.type === 'more' ? (
                 <Text key={item.key} size="2xs" className="px-4 pb-2 pt-1 text-muted-foreground">
                   {item.count} more — search to narrow
@@ -223,9 +239,13 @@ export function ModelModal({
                     item.model.id === selectedModel ? 'bg-primary/10' : ''
                   }`}
                 >
-                  <VStack className="min-w-0 shrink">
-                    <HStack space="xs" className="items-center">
-                      <Text size="sm" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                  {/* flex-1 + min-w-0 here and a shrinking name below: React Native
+                      does not shrink a view by default, so a long name pushed the
+                      load badge off the row on a phone. The badge lives at the
+                      right edge, beside the check, where it cannot be pushed. */}
+                  <VStack className="min-w-0 flex-1 pr-2">
+                    <HStack space="xs" className="min-w-0 items-center">
+                      <Text size="sm" className="min-w-0 shrink font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
                         {item.model.display_name}
                       </Text>
                       {item.model.format !== '—' && (
@@ -251,8 +271,9 @@ export function ModelModal({
                         ? item.model.price > 0
                           ? ` · $${item.model.price.toFixed(2)}/1M`
                           : ''
-                        : ' · local'}
-                      {item.model.loaded && item.model.location !== 'remote' ? ' · loaded' : ''}
+                        : item.model.provider_id === DEFAULT_PROVIDER_ID
+                          ? ' · on the host'
+                          : ' · local'}
                       {/* Which machine serves this model. Null on an instance
                           with no registered host identity (a dev server), so
                           nothing is shown rather than a made-up name. With one
@@ -261,9 +282,10 @@ export function ModelModal({
                       {item.model.host_name ? ` · ${item.model.host_name}` : ''}
                     </Text>
                   </VStack>
-                  {item.model.id === selectedModel && (
-                    <Icon as={Check} size="sm" className="shrink-0 text-primary" />
-                  )}
+                  <HStack space="sm" className="shrink-0 items-center">
+                    <LoadBadge model={item.model} testID={item.testID} />
+                    {item.model.id === selectedModel && <Icon as={Check} size="sm" className="text-primary" />}
+                  </HStack>
                 </Pressable>
               ),
             )
@@ -310,4 +332,34 @@ export function ModelModal({
       </ModalContent>
     </Modal>
   );
+}
+
+/**
+ * Whether a host model is loaded — a clear badge rather than a word at the end
+ * of the subtitle, because it is what decides whether the answer starts now or
+ * after a load. Nothing for a hosted API model (always "loaded") or an
+ * unloaded one.
+ */
+function LoadBadge({ model, testID }: { model: ModelInfo; testID: string }) {
+  const state = loadState(model);
+  if (state === 'loaded') {
+    return (
+      <HStack testID={`${testID}.loaded`} space="xs" className="shrink-0 items-center rounded-full bg-success/15 px-1.5 py-0.5">
+        {model.pinned && <Icon as={Pin} size="2xs" className="text-success" />}
+        <Text size="2xs" className="font-medium text-success">
+          Loaded
+        </Text>
+      </HStack>
+    );
+  }
+  if (state === 'loading') {
+    return (
+      <Box testID={`${testID}.loading`} className="shrink-0 rounded-full bg-muted px-1.5 py-0.5">
+        <Text size="2xs" className="text-muted-foreground">
+          Loading…
+        </Text>
+      </Box>
+    );
+  }
+  return null;
 }

@@ -194,8 +194,8 @@ describe("managed runtime", () => {
     const { deferred } = await syncPreset();
     expect(deferred).toBe(false);
     await collect(servable);
-    const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
-    const last = loads.filter((l) => l.model === routerModelName(servable)).at(-1);
+    const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { event: string; model: string; section: Record<string, string> });
+    const last = loads.filter((l) => l.event === "load" && l.model === routerModelName(servable)).at(-1);
     expect(last?.section["ctx-size"]).toBe("2048");
     expect(last?.section.parallel).toBe("2");
     // And the window reported to clients is per slot.
@@ -248,8 +248,8 @@ describe("changing a model that is answering someone", () => {
     // The deferred reload fires once the built-in provider is idle.
     await waitForAsync(async () => (await routerModelStatuses()).get(servable)?.value === "unloaded", 10_000);
     await collect(servable);
-    const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { model: string; section: Record<string, string> });
-    expect(loads.filter((l) => l.model === routerModelName(servable)).at(-1)?.section["ctx-size"]).toBe("3072");
+    const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { event: string; model: string; section: Record<string, string> });
+    expect(loads.filter((l) => l.event === "load" && l.model === routerModelName(servable)).at(-1)?.section["ctx-size"]).toBe("3072");
   });
 });
 

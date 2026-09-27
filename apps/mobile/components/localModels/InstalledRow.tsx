@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pause, Play, SlidersHorizontal, Trash2, X, Eye, CircleAlert } from 'lucide-react-native';
+import { Pause, Pin, Play, SlidersHorizontal, Trash2, X, Eye, CircleAlert } from 'lucide-react-native';
 import type { LocalModel } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -16,6 +16,7 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
 interface InstalledRowProps {
   model: LocalModel;
   onToggle: (enabled: boolean) => void;
+  onPin: (pinned: boolean) => void;
   onPause: () => void;
   onResume: () => void;
   onCancel: () => void;
@@ -33,10 +34,12 @@ const STATUS_TEXT: Record<LocalModel['status'], string> = {
 
 /**
  * One downloaded or downloading model. In progress: bytes, time left, pause
- * or resume, cancel. Finished: the "enable for everyone" switch, its settings
- * and delete — enabling is what puts it in every user's picker.
+ * or resume, cancel. Finished: the "enable for everyone" switch, the "keep
+ * loaded" (pin) switch, its settings and delete — enabling is what puts it in
+ * every user's picker; pinning keeps it loaded so it answers without a wait,
+ * and stops it being unloaded to make room for another model.
  */
-export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onDelete, onSettings }: InstalledRowProps) {
+export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCancel, onDelete, onSettings }: InstalledRowProps) {
   const inProgress = model.status !== 'ready';
   const pct = progressPercent(model);
   // Two samples of the byte count, a poll apart, are what the ETA is made of.
@@ -54,6 +57,8 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
   }, [model.bytesDone, model.status, model.sizeBytes]);
 
   const loaded = model.runtimeStatus === 'loaded';
+  const loading = model.runtimeStatus === 'loading';
+  const pinned = model.pinned === true;
   const reachable = useServerReachable();
 
   return (
@@ -90,10 +95,45 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
         )}
         {!inProgress && (
           <Text testID={`localModels.status.${model.id}`} size="2xs" className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
-            {model.enabled ? (loaded ? 'In everyone’s picker · loaded' : 'In everyone’s picker') : 'Not offered to users'}
+            {model.enabled
+              ? `In everyone’s picker${loaded ? ' · loaded' : loading ? ' · loading' : ''}`
+              : 'Not offered to users'}
           </Text>
         )}
+        {!inProgress && pinned && (
+          <HStack testID={`localModels.pinned.${model.id}`} space="xs" className="items-center rounded-full bg-primary/15 px-2 py-0.5">
+            <Icon as={Pin} size="2xs" className="text-primary" />
+            <Text size="2xs" className="text-primary">
+              Pinned
+            </Text>
+          </HStack>
+        )}
       </HStack>
+
+      {/* Only a model everyone can use may be pinned — one nobody can pick
+          would only hold the GPU — so the switch waits for the one above. The
+          server refuses it too, and disabling a model unpins it. */}
+      {!inProgress && model.pinned !== undefined && (
+        <HStack space="sm" className="mt-2 items-center">
+          <Switch
+            testID={`localModels.pin.${model.id}`}
+            value={pinned}
+            isDisabled={!reachable || !model.enabled}
+            onValueChange={onPin}
+            accessibilityLabel="Keep loaded"
+          />
+          <VStack className="min-w-0 flex-1">
+            <Text size="sm" className="text-foreground">
+              Keep loaded
+            </Text>
+            <Text size="2xs" className="text-muted-foreground">
+              {model.enabled
+                ? 'Answers without waiting for a load, and is never unloaded to make room for another model.'
+                : 'Enable it for everyone first.'}
+            </Text>
+          </VStack>
+        </HStack>
+      )}
 
       {inProgress && (
         <VStack space="xs" className="mt-2">
@@ -120,6 +160,11 @@ export function InstalledRow({ model, onToggle, onPause, onResume, onCancel, onD
             {model.error}
           </Text>
         </HStack>
+      )}
+      {model.pinError && (
+        <Text testID={`localModels.pinError.${model.id}`} size="xs" className="mt-2 text-destructive">
+          {model.pinError}
+        </Text>
       )}
       {model.loadFailed && (
         <Text size="xs" className="mt-2 text-destructive">

@@ -331,8 +331,8 @@ export interface InferenceProvider {
 
 export type ProviderPreset = "openrouter" | "openai" | "anthropic";
 
-/** The built-in provider — the local llama.cpp runtime, managed on the Local
- * models screen. Described on the providers screen so an admin can see it,
+/** The built-in provider — the llama.cpp runtime on the host, managed on the
+ * Host models screen. Described on the providers screen so an admin can see it,
  * never editable there. */
 export interface BuiltinProvider {
   id: string;
@@ -410,6 +410,22 @@ export interface FitEstimate {
   requiredBytes: number;
   availableBytes: number | null;
   target: "gpu" | "cpu";
+  /** How `availableBytes` is made up on a GPU. Absent for the CPU, before a
+   * runtime has listed its devices, and from an older server. */
+  breakdown?: MemoryBreakdown | null;
+}
+
+export interface MemoryBreakdown {
+  /** Free on the GPUs in use, measured now. */
+  freeBytes: number;
+  /** Held by loaded, unpinned host models, which would be unloaded for it. */
+  reclaimableBytes: number;
+  /** Held by pinned host models. */
+  pinnedBytes: number;
+  /** Held by other programs. */
+  otherBytes: number;
+  totalBytes: number;
+  deviceCount: number;
 }
 
 export interface RuntimeDevice {
@@ -489,6 +505,10 @@ export interface LocalModel {
   fit: FitEstimate;
   runtimeStatus: string | null;
   loadFailed: boolean;
+  /** Kept loaded, never unloaded to make room. Absent from an older server. */
+  pinned?: boolean;
+  /** Why a pinned model is not loaded, or null. */
+  pinError?: string | null;
   createdAt: string;
   /** Present on a PATCH answer: the model is answering someone and picks the
    * change up on its next load. */
@@ -615,7 +635,7 @@ export async function cancelLocalModel(id: string): Promise<void> {
 
 export async function updateLocalModel(
   id: string,
-  patch: { enabled?: boolean; displayName?: string; loadSettings?: LoadSettings },
+  patch: { enabled?: boolean; pinned?: boolean; displayName?: string; loadSettings?: LoadSettings },
 ): Promise<LocalModel> {
   return adminFetch("/v1/admin/local-models/model", { method: "PATCH", ...json({ id, ...patch }) });
 }
@@ -1945,6 +1965,8 @@ export function sendChatMessage(
   conversationId?: string,
   parentId?: string,
   attachments?: string[],
+  /** Echoed on an `error` refusing this send — see `client_ref`. */
+  clientRef?: string,
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -1953,6 +1975,7 @@ export function sendChatMessage(
     conversation_id: conversationId,
     parent_id: parentId,
     attachments,
+    ...(clientRef ? { client_ref: clientRef } : {}),
   });
 }
 
@@ -1964,6 +1987,8 @@ export function sendAgentMessage(
   parentId?: string,
   model?: string,
   attachments?: string[],
+  /** Echoed on an `error` refusing this send — see `client_ref`. */
+  clientRef?: string,
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -1973,6 +1998,7 @@ export function sendAgentMessage(
     parent_id: parentId,
     model: model ?? "default",
     attachments,
+    ...(clientRef ? { client_ref: clientRef } : {}),
   });
 }
 

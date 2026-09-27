@@ -87,7 +87,7 @@ export function modelSection(row: LocalModelRow, globals: PresetGlobals): string
 export function renderPreset(rows: LocalModelRow[], globals: PresetGlobals): string {
   const out = [
     "; Written by Loxaic — edits are overwritten. Change model settings in",
-    "; Settings > Local models instead.",
+    "; Settings > Host models instead.",
     "version = 1",
     "",
     "[*]",

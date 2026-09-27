@@ -41,6 +41,7 @@ import { QuestionsPanel } from '@/components/agent/QuestionsPanel';
 import { useReview } from '@/hooks/useReview';
 import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode, formatAnswers, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
+import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { useSession } from '@/lib/session';
 import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
@@ -93,6 +94,8 @@ export default function AgentScreen() {
     handleRename,
     setRunModel,
     history,
+    noRoom,
+    dismissNoRoom,
   } = useAgentSession(token, () => { void refreshModels(); });
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
@@ -538,6 +541,16 @@ export default function AgentScreen() {
         onChange={setPendingWorkspace}
         config={config}
         token={token}
+      />
+      <NoRoomModal
+        notice={noRoom}
+        isAdmin={isAdmin}
+        onClose={() => {
+          if (noRoom?.text) setCommandSeed({ token: Date.now(), text: noRoom.text });
+          dismissNoRoom();
+        }}
+        onChooseModel={() => { setModelModalOpen(true); }}
+        onManage={() => { router.push('/host-models'); }}
       />
       <DeleteConversationModal
         title={deletingRun?.title ?? null}

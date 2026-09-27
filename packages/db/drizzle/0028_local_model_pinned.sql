@@ -1,0 +1,1 @@
+ALTER TABLE "local_models" ADD COLUMN "pinned" boolean DEFAULT false NOT NULL;

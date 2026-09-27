@@ -65,9 +65,23 @@ export interface MockHf {
   stop: () => Promise<void>;
 }
 
+// Opens with HTML the way real cards do (this head is unsloth's shape): the
+// details sheet showed every tag of it as text until the renderer learned to
+// draw it (apps/mobile/components/markdown/html.ts).
 const CARD = `---
 license: apache-2.0
 ---
+<div>
+<p style="margin-bottom: 0; margin-top: 0;">
+  <strong>See <a href="https://huggingface.co/collections/e2e-org/tiny">our collection</a> for every version of Tiny.</strong>
+</p>
+<div style="display: flex; gap: 5px; align-items: center; ">
+  <a href="https://discord.gg/e2e-org">
+    <img src="https://example.invalid/images/Discord%20button.png" width="173">
+  </a>
+</div>
+</div>
+
 # Tiny Test Model
 
 A **small** model for the end-to-end suite. It answers briefly and fits on anything.
@@ -169,8 +183,15 @@ export async function startMockHf(): Promise<MockHf> {
     if (resolve) {
       const [, repo, , file] = resolve;
       if (file === 'README.md') {
-        res.writeHead(repo === repos.tiny ? 200 : 404, { 'content-type': 'text/markdown' });
-        res.end(repo === repos.tiny ? CARD : '');
+        // A second, as real HuggingFace takes: the details sheet opens on a
+        // spinner and its content arrives after the sheet's own entering
+        // animation has finished — the order in which the web modal used to
+        // stay pinned at the spinner's size (components/ui/modal). Answered at
+        // once, the content won the race and the bug could not be seen.
+        setTimeout(() => {
+          res.writeHead(repo === repos.tiny ? 200 : 404, { 'content-type': 'text/markdown' });
+          res.end(repo === repos.tiny ? CARD : '');
+        }, 1000);
         return;
       }
       const f = (tree[repo] ?? []).find((x) => x.path === decodeURIComponent(file));

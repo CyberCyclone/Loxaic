@@ -21,7 +21,7 @@ interface ProviderStamp {
 function toModelInfo(
   provider: ProviderStamp,
   row: LocalModelRow,
-  live: { loaded: boolean; nCtx: number | null },
+  live: { loaded: boolean; loading: boolean; nCtx: number | null },
 ): ModelInfo {
   const settings = (row.loadSettings ?? {}) as LoadSettings;
   const meta = rowMeta(row);
@@ -46,6 +46,8 @@ function toModelInfo(
     host_name: null,
     price: 0,
     loaded: live.loaded,
+    loading: live.loading,
+    pinned: row.pinned,
     provider_id: provider.id,
     provider_name: provider.name,
     upstream_id: row.id,
@@ -58,9 +60,10 @@ export async function listLocalModelInfos(provider: ProviderStamp): Promise<Mode
   const statuses = routerEndpoint() ? await routerModelStatuses() : new Map<string, RouterModelStatus>();
   return Promise.all(
     rows.map(async (row) => {
-      const loaded = statuses.get(row.id)?.value === "loaded";
+      const status = statuses.get(row.id)?.value;
+      const loaded = status === "loaded";
       const props = loaded ? await routerModelProps(row.id) : null;
-      return toModelInfo(provider, row, { loaded, nCtx: props?.nCtx ?? null });
+      return toModelInfo(provider, row, { loaded, loading: status === "loading", nCtx: props?.nCtx ?? null });
     }),
   );
 }
@@ -71,9 +74,9 @@ export async function listLocalModelInfos(provider: ProviderStamp): Promise<Mode
  *
  * One model: its slot count, as llama.cpp reports it once loaded, or its
  * `parallel` setting before. Several models: null, which the scheduler reads
- * as **1**. Runs on different models
- * served side by side would make the router load the second one while the
- * first is mid-generation — with `modelsMax` at 1 that evicts it — which is
+ * as **1**. Runs on different models served side by side would make the
+ * router load the second one while the first is mid-generation — and loading
+ * it may unload the first between that run's tool calls (room.ts) — which is
  * the invisible over-estimate the scheduler's floor exists to prevent. An admin
  * who knows better pins the concurrency in Settings.
  */

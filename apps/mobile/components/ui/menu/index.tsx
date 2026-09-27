@@ -5,8 +5,8 @@ import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 import { tva } from '@gluestack-ui/utils/nativewind-utils';
 import { withUniwind } from 'uniwind';
 import React from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
-import Animated, { FadeOut, ZoomIn } from 'react-native-reanimated';
+import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import Animated, { FadeIn, FadeOut, ZoomIn } from 'react-native-reanimated';
 
 const AnimatedView = Animated.createAnimatedComponent(ScrollView);
 
@@ -118,13 +118,21 @@ type IMenuProps = React.ComponentProps<typeof UIMenu> &
 type IMenuItemLabelProps = React.ComponentProps<typeof UIMenu.ItemLabel> &
   VariantProps<typeof menuItemLabelStyle> & { className?: string };
 
+/** A built-in animation on the web, for the reason ModalContent gives
+ * (components/ui/modal): a custom one leaves the menu pinned to the size and
+ * place it was measured at. */
+const MENU_ENTERING =
+  Platform.OS === 'web'
+    ? FadeIn.duration(150)
+    : ZoomIn.duration(150).withInitialValues({
+        transform: [{ scale: 0.9 }],
+      });
+
 const Menu = React.forwardRef<React.ComponentRef<typeof UIMenu>, IMenuProps>(
   function Menu({ className, ...props }, ref) {
     return (
       <UIMenu
-        entering={ZoomIn.duration(150).withInitialValues({
-          transform: [{ scale: 0.9 }],
-        })}
+        entering={MENU_ENTERING}
         exiting={FadeOut.duration(150)}
         ref={ref}
         className={menuStyle({
