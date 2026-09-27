@@ -71,6 +71,33 @@ export function useMcpServers(token: string | null) {
     [update, showToast],
   );
 
+  /**
+   * A server's default for each kind of conversation. Optimistic, since three
+   * switches in a row would otherwise each wait on a round trip, and undone
+   * on failure — only if nothing has moved it since.
+   */
+  const setDefaults = useCallback(
+    async (id: string, patch: Pick<McpServerInput, 'onInChat' | 'onInAgent' | 'onInRoutines'>) => {
+      let before: McpServer | undefined;
+      let optimistic: McpServer | undefined;
+      setServers((prev) =>
+        prev.map((x) => {
+          if (x.id !== id) return x;
+          before = x;
+          optimistic = { ...x, ...patch };
+          return optimistic;
+        }),
+      );
+      try {
+        await update(id, patch);
+      } catch (err) {
+        setServers((prev) => prev.map((x) => (x === optimistic && before ? before : x)));
+        showToast(describeRequestError(err, 'Could not change the server'), 4000);
+      }
+    },
+    [update, showToast],
+  );
+
   const remove = useCallback(
     async (id: string) => {
       const removed = servers.find((s) => s.id === id);
@@ -104,7 +131,7 @@ export function useMcpServers(token: string | null) {
     [],
   );
 
-  return { servers, catalog, loading, refresh, create, update, toggle, remove, test };
+  return { servers, catalog, loading, refresh, create, update, toggle, setDefaults, remove, test };
 }
 
 export type { McpServer, McpServerInput, McpCatalogEntry, McpTestResult };

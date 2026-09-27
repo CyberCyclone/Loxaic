@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, isVisible, platform, tap, typeInto, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, isVisible, platform, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
@@ -818,6 +818,156 @@ export async function listMcpServers(
     env: Record<string, string> | null;
     secretKeys: string[];
   }[];
+}
+
+// ── MCP switches ─────────────────────────────────────────────
+
+/**
+ * Adds a stdio server running the server's own hostile fixture
+ * (`apps/server/test-fixtures/mock-mcp-server.ts`, resolved from the e2e
+ * server's working directory, apps/server) and tests it once, so its tools are
+ * listed before any screen shows it. For specs whose subject is what switching
+ * a server does, not the add form (mcp-servers.spec.ts covers that).
+ */
+export async function addMockMcpServer(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  name: string,
+  slug: string,
+): Promise<string> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/mcp/servers`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      name,
+      slug,
+      transport: 'stdio',
+      command: 'node_modules/.bin/tsx',
+      args: ['test-fixtures/mock-mcp-server.ts'],
+    }),
+  });
+  if (!res.ok) throw new Error(`[e2e] adding MCP server failed (${String(res.status)}): ${await res.text()}`);
+  const { id } = (await res.json()) as { id: string };
+  const test = await fetch(`${BASE_URL}/v1/mcp/servers/${id}/test`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}` },
+  });
+  const result = (await test.json()) as { ok: boolean; error?: string };
+  if (!result.ok) throw new Error(`[e2e] the mock MCP server did not answer its test: ${String(result.error)}`);
+  return id;
+}
+
+/** Sets a server's per-kind defaults straight through the API. */
+export async function setMcpDefaults(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  serverId: string,
+  patch: { onInChat?: boolean; onInAgent?: boolean; onInRoutines?: boolean },
+): Promise<void> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/mcp/servers/${serverId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`[e2e] setting MCP defaults failed (${String(res.status)}): ${await res.text()}`);
+}
+
+/** A conversation's stored MCP choices. */
+export async function conversationMcpOverrides(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<{ disabledServerIds?: string[]; enabledServerIds?: string[] } | null> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] reading conversation failed (${String(res.status)})`);
+  return ((await res.json()) as { mcpOverrides: { disabledServerIds?: string[]; enabledServerIds?: string[] } | null })
+    .mcpOverrides;
+}
+
+/**
+ * Which tool sources the conversation's newest request carried — `"builtin"`
+ * or a server id — read from the stored context breakdown. This is the proof
+ * that a switch reached the run: it is recorded from the toolset the request
+ * was actually built with, not from anything the client said.
+ */
+export async function lastToolSourceKeys(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<string[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] reading messages failed (${String(res.status)})`);
+  const { messages } = (await res.json()) as {
+    messages: { usage?: { contextBreakdown?: { tool_sources?: { key: string }[] } | null } | null }[];
+  };
+  const withSources = messages.filter((m) => m.usage?.contextBreakdown?.tool_sources);
+  const last = withSources.at(-1)?.usage?.contextBreakdown?.tool_sources;
+  if (!last) throw new Error('[e2e] no request in this conversation recorded its tool sources');
+  return last.map((s) => s.key);
+}
+
+/** Opens the composer's `+` menu. */
+export async function openPlusMenu(): Promise<void> {
+  await tap('composer.attach');
+  await waitForVisible('composer.plus.mcp');
+}
+
+/**
+ * Opens the MCP server list from an open `+` menu: by hovering on web and
+ * Electron, where it is a submenu that opens beside the menu, and by tapping
+ * on native, where it is a page of the sheet.
+ */
+export async function openMcpFromPlusMenu(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') {
+    await byTestId('composer.plus.mcp').moveTo();
+  } else {
+    await tap('composer.plus.mcp');
+  }
+  // The Manage link, not the list's own container: XCUITest does not expose a
+  // plain view's identifier inside the sheet, while a pressable is an element.
+  await waitForVisible('composer.mcp.manage');
+}
+
+/** Closes whatever the `+` opened. */
+export async function closePlusMenu(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') {
+    await browser.keys('Escape');
+    await waitForGone('composer.plus.menu', 10_000);
+  } else {
+    await tapOverlayBackdrop();
+    await waitForAbsent('composer.mcp.manage');
+    await waitForAbsent('composer.plus.mcp');
+  }
+}
+
+/**
+ * Closes the context popup: Escape on web and Electron, a touch on its
+ * backdrop on native. Not a second tap on `composer.context`: the popup is a
+ * modal window, and UiAutomator reports the trigger beneath it as not
+ * displayed, so that tap waits out its timeout on Android.
+ */
+export async function closeContextPopover(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') await browser.keys('Escape');
+  else await tapOverlayBackdrop();
+}
+
+/**
+ * A native tap on the dimmed screen near the top, by position. An overlay's
+ * backdrop is not an element XCUITest exposes, and near the top because sheets
+ * and popovers rise from the bottom and can pass the middle.
+ */
+async function tapOverlayBackdrop(): Promise<void> {
+  const { width, height } = await browser.getWindowSize();
+  await browser
+    .action('pointer', { parameters: { pointerType: 'touch' } })
+    .move({ x: Math.round(width / 2), y: Math.round(height * 0.15) })
+    .down()
+    .up()
+    .perform();
 }
 
 // ── Desktop instance bridge (Electron, self-contained runs) ─────────────

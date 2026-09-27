@@ -121,3 +121,41 @@ describe("GET /v1/conversations/:id active_run", () => {
     }
   });
 });
+
+describe("MCP choices on a conversation", () => {
+  interface WithOverrides { id: string; mcpOverrides: unknown }
+
+  it("stores choices made before the conversation existed, normalised", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/conversations",
+      payload: { kind: "agent", mcp_overrides: { disabledServerIds: ["a", "a"], enabledServerIds: ["a", "b"] } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<WithOverrides>().mcpOverrides).toEqual({ disabledServerIds: ["a"], enabledServerIds: ["b"] });
+  });
+
+  it("stores null when none were sent", async () => {
+    const res = await app.inject({ method: "POST", url: "/v1/conversations", payload: {} });
+    expect(res.json<WithOverrides>().mcpOverrides).toBeNull();
+  });
+
+  it("PATCH keeps both lists, and a server in both only as disabled", async () => {
+    const { id } = (await app.inject({ method: "POST", url: "/v1/conversations", payload: {} })).json<Row>();
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/v1/conversations/${id}`,
+      payload: { mcp_overrides: { disabledServerIds: ["a"], enabledServerIds: ["a", "b", 3] } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<WithOverrides>().mcpOverrides).toEqual({ disabledServerIds: ["a"], enabledServerIds: ["b", "3"] });
+  });
+
+  it("PATCH with a malformed value clears both lists, as it always has", async () => {
+    const { id } = (
+      await app.inject({ method: "POST", url: "/v1/conversations", payload: { mcp_overrides: { disabledServerIds: ["a"] } } })
+    ).json<Row>();
+    const res = await app.inject({ method: "PATCH", url: `/v1/conversations/${id}`, payload: { mcp_overrides: "off" } });
+    expect(res.json<WithOverrides>().mcpOverrides).toEqual({ disabledServerIds: [], enabledServerIds: [] });
+  });
+});

@@ -14,9 +14,10 @@ import { Popover, PopoverBackdrop, PopoverContent, PopoverBody } from '@/compone
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import { CommandPalette } from './CommandPalette';
 import { AttachmentPreview } from './AttachmentPreview';
-import { AttachButton } from './AttachButton';
+import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { AttachmentRejectedModal } from './AttachmentRejectedModal';
 import type { ContextView } from '@/hooks/useContextUsage';
+import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { useServerReachable } from '@/lib/connection';
 import { ContextRing } from './ContextRing';
@@ -48,6 +49,9 @@ interface ComposerProps {
    * the effect below, so pressing Compact twice in a row still re-seeds and
    * re-focuses even though the text would otherwise be unchanged. */
   commandSeed?: { token: number; text: string } | null;
+  /** This conversation's MCP switches, shown in the `+` menu and under "Tool
+   * definitions" in the context popup. Null leaves MCP out of both. */
+  mcp?: McpSwitches | null;
 }
 
 export function Composer({
@@ -62,6 +66,7 @@ export function Composer({
   readOnlyReason = null,
   onRunCommand,
   commandSeed,
+  mcp = null,
 }: ComposerProps) {
   const [text, setText] = useState('');
   // Send and Stop wait for an open socket. While a resume is inside its grace
@@ -222,14 +227,16 @@ export function Composer({
         </Box>
 
         <HStack space="sm" className="items-center">
-          {/* Attach: camera/library actionsheet on native, a real file
-              input on web (AttachButton.web.tsx) — see its own comment for
-              why the web path isn't expo-image-picker's shim. */}
-          <AttachButton
+          {/* The `+`: attach and MCP. A sheet on native, a popup with a
+              hover submenu on web (ComposerPlusMenu.web.tsx) — see its own
+              comment for why the web attach path isn't expo-image-picker's
+              shim. */}
+          <ComposerPlusMenu
             onTakePhoto={() => { void takePhoto(); }}
             onPickFromLibrary={() => { void pickFromLibrary(); }}
             onPickDocument={() => { void pickDocument(); }}
             onFilesSelected={addWebFiles}
+            mcp={mcp}
             disabled={!connected}
           />
           <AttachmentRejectedModal rejection={attachmentRejection} onClose={dismissRejection} />
@@ -296,6 +303,7 @@ export function Composer({
                 <PopoverBody>
                   <ContextBreakdown
                     context={context}
+                    mcp={mcp}
                     busy={streaming}
                     onCompact={() => {
                       setCtxPopoverOpen(false);

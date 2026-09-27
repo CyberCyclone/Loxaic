@@ -37,7 +37,15 @@ import {
 } from "../../files/storage.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { resolveModelRef } from "../../inference/providers.ts";
-import { addChars, apportion, estimateTallyTokens, summaryMessage, tallyChatMessages, type ContextTally } from "../../inference/context.ts";
+import {
+  addChars,
+  apportion,
+  estimateTallyTokens,
+  summaryMessage,
+  tallyChatMessages,
+  tallyToolSources,
+  type ContextTally,
+} from "../../inference/context.ts";
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
@@ -468,8 +476,9 @@ export async function runToolLoop(ctx: {
   /** Surface-appropriate system prompt, or null for none. The engine appends
    * the MCP untrusted-content addendum when MCP tools are offered. */
   basePrompt: string | null;
-  /** Which surface started this run. Only needed so an automatic compaction
-   * opens its stream on the same one. */
+  /** Which surface started this run — so an automatic compaction opens its
+   * stream on the same one, and as the MCP defaults to fall back on should the
+   * conversation row be unreadable (its own `kind` wins otherwise). */
   surface: "chat" | "agent";
   abort: AbortController;
   producer: StreamProducer;
@@ -492,8 +501,12 @@ export async function runToolLoop(ctx: {
     // deliberately not folded in — it is deferred until the compaction
     // threshold is actually crossed, so most turns never pay for it.)
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
-    const toolset = await buildToolset(userId, { mode, conversationId: convId, allowlist });
+    const toolset = await buildToolset(userId, { mode, conversationId: convId, surface: ctx.surface, allowlist });
     const tools = toolset.openAiTools;
+    // Fixed for the run, like the toolset: which source each schema came from,
+    // so the context breakdown can say what each MCP server costs. Emit-only —
+    // nothing here reaches the request.
+    const toolSources = tallyToolSources(tools, (name) => toolset.get(name)?.source);
     // History is loaded before the system prompt is assembled, because whether
     // this turn carries a document decides whether the document addendum goes
     // in — the same pairing MCP has, where wrapResult's markers are only
@@ -702,6 +715,7 @@ export async function runToolLoop(ctx: {
         historyLimit: HISTORY_LIMIT,
         historyTruncated: history.truncated,
         windowTokens,
+        toolSources,
       };
 
       // Timed around the request alone. Not the iteration: that also holds

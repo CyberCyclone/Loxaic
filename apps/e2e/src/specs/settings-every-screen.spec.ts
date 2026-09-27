@@ -14,7 +14,7 @@
 import { browser } from '@wdio/globals';
 import { provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, platform, tap, typeInto, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, platform, tap, typeInto, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import { goToSurface, openSettings, openSidebar, signIn } from '../helpers/app.ts';
 
 /** Navigates to a surface and waits for something only that surface renders,
@@ -62,13 +62,9 @@ async function revealInSettings(id: string): Promise<void> {
 
 async function closeSettings(): Promise<void> {
   await tap('settings.close');
-  // Looked up afresh each poll, not `waitForGone`: that keeps the element it
-  // found first, and UiAutomator2 goes on calling a removed view displayed.
   // Gone matters — the next check must not be passed by this modal still up.
-  await browser.waitUntil(async () => !(await isVisible('settings.name')), {
-    timeout: 10_000,
-    timeoutMsg: 'the settings modal did not close',
-  });
+  // `waitForAbsent`, not `waitForGone`: see its comment.
+  await waitForAbsent('settings.name');
 }
 
 describe('Settings from every screen', () => {

@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
 import { conversations, mcpServers, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import type { ContentBlock } from "@loxaic/types";
+import type { ContentBlock, ContextBreakdown, McpOverrides } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../streams/index.ts";
 import { getRun } from "../../streams/registry.ts";
 import { startAgentRun } from "../../streams/runs/agentRun.ts";
@@ -67,13 +67,12 @@ async function runTurn(
   content: string,
   mode: PermissionMode,
   approve: boolean | null,
-  opts: { surface?: Surface; conversationId?: string } = {},
+  opts: { surface?: Surface; conversationId?: string; mcpOverrides?: McpOverrides } = {},
 ) {
   const surface = opts.surface ?? "agent";
+  const common = { userId, content, model: "mock", conversationId: opts.conversationId, mcpOverrides: opts.mcpOverrides };
   const { streamId, conversationId } =
-    surface === "agent"
-      ? await startAgentRun({ userId, content, model: "mock", mode, conversationId: opts.conversationId })
-      : await startChatRun({ userId, content, model: "mock", conversationId: opts.conversationId });
+    surface === "agent" ? await startAgentRun({ ...common, mode }) : await startChatRun(common);
   if (!convIds.includes(conversationId)) convIds.push(conversationId);
 
   let sawApproval = false;
@@ -298,3 +297,56 @@ describe("MCP end-to-end through the chat loop", () => {
   }, 30_000);
 });
 
+
+describe("MCP choices made before the conversation existed", () => {
+  /** The newest stored breakdown for a conversation — what a reload shows. */
+  async function lastBreakdown(conversationId: string): Promise<ContextBreakdown> {
+    const rows = await db.query.usageRecords.findMany({
+      where: eq(usageRecords.conversationId, conversationId),
+      orderBy: (u, { desc }) => [desc(u.createdAt)],
+    });
+    const breakdown = rows.find((r) => r.contextBreakdown)?.contextBreakdown as ContextBreakdown | undefined;
+    if (!breakdown) throw new Error("no breakdown was recorded");
+    return breakdown;
+  }
+
+  for (const surface of ["chat", "agent"] as const) {
+    it(`${surface}: a first send's overrides are stored, and its very first request leaves the server out`, async () => {
+      const turn = await runTurn("hello there", "manual", null, {
+        surface,
+        mcpOverrides: { disabledServerIds: [serverId] },
+      });
+      const conv = await db.query.conversations.findFirst({ where: eq(conversations.id, turn.conversationId) });
+      expect(conv?.mcpOverrides).toEqual({ disabledServerIds: [serverId] });
+      const keys = (await lastBreakdown(turn.conversationId)).tool_sources?.map((s) => s.key);
+      expect(keys).toContain("builtin");
+      expect(keys).not.toContain(serverId);
+    }, 30_000);
+
+    it(`${surface}: overrides on a send into an existing conversation are ignored`, async () => {
+      const first = await runTurn("hello there", "manual", null, { surface });
+      await runTurn("and again", "manual", null, {
+        surface,
+        conversationId: first.conversationId,
+        mcpOverrides: { disabledServerIds: [serverId] },
+      });
+      const conv = await db.query.conversations.findFirst({ where: eq(conversations.id, first.conversationId) });
+      expect(conv?.mcpOverrides).toBeNull();
+      expect((await lastBreakdown(first.conversationId)).tool_sources?.map((s) => s.key)).toContain(serverId);
+    }, 30_000);
+  }
+
+  it("keys the server by id, never by name, and splits the tools part exactly", async () => {
+    const turn = await runTurn("hello there", "manual", null, { surface: "chat" });
+    const breakdown = await lastBreakdown(turn.conversationId);
+    const mock = breakdown.tool_sources?.find((s) => s.key === serverId);
+    expect(mock).toMatchObject({ kind: "mcp" });
+    // Stored and fanned out to shared viewers: the owner's name for the server
+    // must not be in it.
+    expect(mock).not.toHaveProperty("name");
+    expect(JSON.stringify(breakdown)).not.toContain("Mock MCP");
+    expect(mock?.tools).toBeGreaterThan(0);
+    const toolsPart = breakdown.parts.find((p) => p.category === "tools")?.tokens;
+    expect(breakdown.tool_sources?.reduce((sum, s) => sum + s.tokens, 0)).toBe(toolsPart);
+  }, 30_000);
+});
