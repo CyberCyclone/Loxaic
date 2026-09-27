@@ -82,6 +82,9 @@ function repos(cloneUrlFor: (name: string) => string) {
     // A repo with its own AGENTS.md, and another in pkg/sub
     // (apps/e2e/fixtures/instructions-app). See agent-instructions.spec.ts.
     { id: 4, full_name: 'e2e/instructions-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('instructions-app') },
+    // Only a CLAUDE.md, which imports its rules with @path
+    // (apps/e2e/fixtures/imports-app).
+    { id: 5, full_name: 'e2e/imports-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('imports-app') },
   ];
 }
 
@@ -90,6 +93,7 @@ const BRANCHES = new Map<string, string[]>([
   ['e2e/other-repo', ['trunk']],
   ['e2e/seeded-app', ['main']],
   ['e2e/instructions-app', ['main']],
+  ['e2e/imports-app', ['main']],
 ]);
 
 function json(res: import('node:http').ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {

@@ -533,8 +533,9 @@ async function* mockStream(
     // was actually sent, so an e2e can prove the snapshot reached the prompt
     // and in which form, not merely that the server stored one.
     const system = messages[0]?.role === "system" ? textOfContent(messages[0].content) : "";
-    const instructions = /<project-instructions path="([^"]*)" mode="(full|outline)">/.exec(system);
-    const instructionsNote = instructions ? `Project instructions: ${instructions[1]} (${instructions[2]}). ` : "";
+    const instructions = /<project-instructions path="([^"]*)" mode="(full|outline)"(?: imports="(\d+)")?>/.exec(system);
+    const imported = instructions?.[3] ? `, ${instructions[3]} imported` : "";
+    const instructionsNote = instructions ? `Project instructions: ${instructions[1]} (${instructions[2]}${imported}). ` : "";
     fullText = lastTool
       ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
       : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;

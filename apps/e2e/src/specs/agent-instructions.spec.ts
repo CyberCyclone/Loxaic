@@ -150,6 +150,28 @@ describe('agent: the project\'s own AGENTS.md', () => {
     await tap('agent.inspector.toggle');
   });
 
+  it('follows a CLAUDE.md\'s @path imports inside the repository', async function () {
+    this.timeout(2 * 60_000);
+    await startNewAgentRun();
+    await startInRepo(creds, 5, 'e2e/imports-app', 'imports');
+    await sendMessage('say hello');
+    // The mock reads the count off the system message it was sent.
+    await waitForTextIn('chat.messageList', 'Project instructions: CLAUDE.md (full, 1 imported).');
+    const [conversation] = await listConversations(creds);
+    await waitForRunDone(creds, conversation.id);
+    expect(await instructionsSummary(await apiToken(creds), conversation.id)).toMatchObject({
+      status: 'found',
+      path: 'CLAUDE.md',
+      mode: 'full',
+      imports: 1,
+    });
+
+    await openInspector();
+    await waitForTextIn('agent.inspector.instructions', 'CLAUDE.md and the file it imports');
+    await shot('instructions-imports-inspector');
+    await tap('agent.inspector.toggle');
+  });
+
   it('says there is none for a repository without one, and adds nothing', async function () {
     this.timeout(2 * 60_000);
     await startNewAgentRun();

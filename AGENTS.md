@@ -2481,6 +2481,25 @@ replies.
   - `agentSystemPrompt` falls back to the base prompt if rendering throws anyway, and renders
     only a decision the database kept. A failed `saveDecision` renders the stored decision, or
     no block this run, never an unsaved one.
+- **`@path` imports are followed in `CLAUDE.md` and `GEMINI.md` only** (`agent/
+  instruction-imports.ts`), the files whose tools define the syntax. `AGENTS.md` has none, and
+  in one `@loxaic/db` is a package name. How a mention is handled:
+  - **What counts:** a mention at a line's start or after whitespace, outside code, relative to
+    the importing file's directory.
+  - **When it's followed:** only when it names a file that exists. A handle or a scoped
+    package stays literal.
+  - **Limits:** 4 levels, 20 files, and one 1 MB budget shared with the root file. Each file
+    is read once, so a cycle ends.
+- **An import never leaves the repository.** The resolver refuses absolute, `~` and climbing
+  paths lexically. The exec reader (local folder, nested files) also compares each file's
+  *real* path against `realpath .`, so a symlink in the repo can't make the server put a file
+  from elsewhere into the prompt. On GitHub the contents API serves only the repo; it answers
+  a directory, or a symlink leading out, in JSON, which `getFileText` treats as not a file.
+- **Imported files stay separate documents.** In full mode each one follows its importer in an
+  `<imported-file path imported-by>` wrapper. In an outline each is listed under its own path,
+  indented from its own top heading. Inlining them at the mention would make every line range
+  after it wrong for the file the model `fs_read`s. The whole-or-outline choice is made on the
+  file and its imports together (`combinedText`), and the opening tag carries `imports="N"`.
 - **The text never reaches a client, and the listing never reads it.** `publicConversation`
   replaces it with a summary on every row it returns. `GET /v1/conversations` selects
   `INSTRUCTIONS_SUMMARY_COLUMN` (the jsonb without `text`) rather than `SELECT *`: fifty rows of
