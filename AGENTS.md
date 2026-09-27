@@ -52,16 +52,20 @@ pnpm lint        # turbo lint — eslint (apps/server)
 pnpm typecheck   # turbo typecheck — tsc --noEmit across all packages
 ```
 
-**`pnpm dev` is not server-only.** `turbo dev` is unfiltered and runs every package declaring a
-`dev` script — which is two of them: `apps/server` (`tsx watch`, port 4000) and `apps/desktop`
-(`electron .`, bringing up its own embedded stack on 4100). Mobile is absent because it has no
-`dev` script at all, not because turbo excludes it, so `pnpm --filter @loxaic/mobile start` (or
-`web`) remains a separate command. The desktop app loads its renderer from Metro on 8081 and
-**fails with `ERR_CONNECTION_REFUSED` without ever retrying** when Metro is not already up,
-leaving a blank window that waiting does not fix — so start Metro first, or use
-`pnpm dev --filter=@loxaic/server` when the API server is all you want. Running the unfiltered
-form beside an existing `pnpm --filter @loxaic/desktop dev` gives you two desktop instances
-contending for 4100, which is easy to do by accident and confusing to diagnose.
+**`pnpm dev` starts everything the desktop app needs to be tested**: the API server
+(`tsx watch`, :4000), Metro (:8081, `apps/mobile/scripts/dev-metro.mjs`) and the desktop app
+(`electron .`). A Metro already running on :8081 — your own `pnpm --filter @loxaic/mobile web`
+or `start` — is reused rather than fought for the port; something else on :8081 is reported and
+left alone. The root script sets `LOXAIC_DEV_STACK=1` (declared in `turbo.json`'s
+`passThroughEnv`, or turbo's strict env mode drops it), which tells the desktop the dev server is
+on its way, so `apps/desktop/src/dev-launch.js` **waits** for it (up to 45 s, with a small window
+saying so) instead of racing it. It used to probe :4000 once; under turbo the still-booting
+server always lost, and the app silently started its own embedded stack on :4100 — a different
+database, with a different password for the same email. It then loaded Metro exactly once, with
+no retry, so a Metro that was not up yet (or had died with a reboot) left a blank window for
+good. A dev window now shows "Waiting for Metro" until Metro answers and comes back to it on any
+failed load. `electron .` on its own (no `LOXAIC_DEV_STACK`) keeps the single probe, since
+nothing is coming. `pnpm dev --filter=@loxaic/server` is still the way to run just the server.
 
 Tests are Vitest, colocated under `__tests__/` dirs. Run one package or one test:
 
@@ -2733,6 +2737,16 @@ replies.
   failure the Inspector hit. Centred while it fits, scrolls once it does not.
 
 ### Electron
+- **The dev launch has its own e2e lane, `test:electron-dev`** (`wdio.electron-dev.ts`,
+  `specs/electron-dev/`): the checkout's unpackaged app against stand-ins for the dev server and
+  Metro (`scripts/dev-stand-ins.ts`). Every other Electron spec drives the packaged build, which
+  never takes the dev path — which is how a blank dev window survived with nothing failing.
+  Two things only this lane meets: **chromedriver needs `--app=<dir>`, never a bare path** — it
+  adds `--test-type=webdriver`, Chromium moves bare arguments after every switch, and Electron's
+  default app ignores a path that follows that flag and shows its Usage page; and **a checkout
+  under `~/Documents` (or Desktop/Downloads) is unreadable to an Electron chromedriver starts**, so
+  the lane launches from an APFS clone of the checkout in a temp dir. Both present only as
+  "DevToolsActivePort file doesn't exist", and the same launch from a terminal works.
 
 - **Every package ships `THIRD_PARTY_NOTICES.txt`, `LICENSE`, `NOTICE`, Electron's licence and
   Chromium's, in the app's resources.** `scripts/third-party-notices.mjs` builds the first

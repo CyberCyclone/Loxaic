@@ -8,6 +8,7 @@
     "test:web": "wdio run ./wdio.web.ts",
     "test:web:real-model": "wdio run ./wdio.web.real-model.ts",
     "test:electron": "wdio run ./wdio.electron.ts",
+    "test:electron-dev": "wdio run ./wdio.electron-dev.ts",
     "test:ios": "wdio run ./wdio.ios.ts",
     "test:android": "wdio run ./wdio.android.ts",
     "setup:appium": "APPIUM_HOME=./.appium appium driver install uiautomator2 && APPIUM_HOME=./.appium appium driver install xcuitest",

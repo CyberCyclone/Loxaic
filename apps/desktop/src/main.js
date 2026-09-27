@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeFetchError } from "./fetch-error.js";
 import { forwardPowerEvents } from "./power.js";
+import { DEV_SERVER_WAIT_MS, devUrls, isMetroStatus, loadDevRenderer, serverWaitingPageUrl, waitUntil } from "./dev-launch.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -79,6 +80,9 @@ async function runGui() {
   }
 
   const PROBE_TIMEOUT_MS = 1500;
+  const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+  /** Development only: the window shown while pnpm dev's server starts. */
+  let devSplash = null;
 
   /**
    * How long a launch waits for a tailnet before opening the window anyway.
@@ -302,6 +306,20 @@ async function runGui() {
     return arg ? arg.slice(prefix.length) : undefined;
   }
 
+  /** Whether Metro is serving at `url` — its own /status line, not just an open port. */
+  async function probeMetro(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${url.replace(/\/+$/, "")}/status`, { signal: controller.signal });
+      return res.ok && isMetroStatus(await res.text());
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function probeHealth(url) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
@@ -412,8 +430,44 @@ async function runGui() {
     const winner = candidates.find((_, i) => results[i]);
     if (winner) return { apiBaseUrl: winner, stack: null, mode: "client" };
 
-    if (isDev && await probeHealth("http://localhost:4000")) {
-      return { apiBaseUrl: "http://localhost:4000", stack: null, mode: "client" };
+    if (isDev) {
+      // Under `pnpm dev` the dev server is starting at this same moment, and
+      // one probe loses that race: the app then started its own embedded
+      // stack on :4100 — a different database, with a different password for
+      // the same email. So it is waited for, bounded, and only then does the
+      // stored config get a say.
+      const { devServerUrl, expectDevServer } = devUrls();
+      let up = await probeHealth(devServerUrl);
+      if (!up && expectDevServer) {
+        console.log(`[loxaic] waiting for the dev server at ${devServerUrl} (started by pnpm dev)`);
+        // The real window needs the server's address when it is created, so
+        // it cannot open yet — this one says what is being waited for. It is
+        // closed only once the real window exists (see whenReady below), or
+        // closing it would leave no window and quit the app off macOS.
+        devSplash = new BrowserWindow({
+          width: 560,
+          height: 320,
+          resizable: false,
+          backgroundColor: "#18181b",
+          titleBarStyle: "hiddenInset",
+          webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false },
+        });
+        void devSplash.loadURL(serverWaitingPageUrl(devServerUrl, DEV_SERVER_WAIT_MS / 1000));
+        const splash = devSplash;
+        up = await waitUntil(() => probeHealth(devServerUrl), {
+          timeoutMs: DEV_SERVER_WAIT_MS,
+          sleep,
+          // Closing it is taken as "stop waiting", not as quitting.
+          shouldStop: () => splash.isDestroyed(),
+        });
+      }
+      if (up) return { apiBaseUrl: devServerUrl, stack: null, mode: "client" };
+      if (expectDevServer) {
+        console.warn(
+          `[loxaic] the dev server at ${devServerUrl} did not answer within ${String(DEV_SERVER_WAIT_MS / 1000)} s; ` +
+            "falling back to this app's own configuration",
+        );
+      }
     }
 
     // Stored instance mode. Absent = this install has never been configured,
@@ -948,7 +1002,16 @@ async function runGui() {
     });
 
     if (isDev) {
-      await mainWindow.loadURL("http://localhost:8081");
+      // Metro may not be up yet (pnpm dev starts it alongside this app) and
+      // may restart under it: the window waits on a page that says so, and
+      // comes back to it on a failed load, instead of going blank for good.
+      const { rendererUrl } = devUrls();
+      await loadDevRenderer(mainWindow, {
+        rendererUrl,
+        probe: () => probeMetro(rendererUrl),
+        sleep,
+        log: (line) => { console.log(`[loxaic] ${line}`); },
+      });
     } else {
       await loadWebBuild(mainWindow);
     }
@@ -975,13 +1038,20 @@ async function runGui() {
     }
     console.log(`[loxaic] API base URL: ${apiBaseUrl ?? "(none — onboarding)"}`);
     await createWindow();
+    if (devSplash && !devSplash.isDestroyed()) devSplash.destroy();
+    devSplash = null;
     // The renderer subscribes after it loads, so the first state is pushed
     // rather than assumed: a window that opened before the stack resolved
     // would otherwise sit on stale props.
     pushStackState();
     updates.start();
   });
-  app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit(); });
+  app.on("window-all-closed", () => {
+    // Someone closing the dev-server waiting window is not quitting: the real
+    // window is about to open.
+    if (devSplash) return;
+    if (process.platform !== "darwin") app.quit();
+  });
   app.on("activate", () => { if (!mainWindow) createWindow(); });
 
   // Quit must wait for the embedded stack: the server needs to drain against a

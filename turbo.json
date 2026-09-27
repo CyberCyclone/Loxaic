@@ -3,7 +3,8 @@
   "tasks": {
     "dev": {
       "persistent": true,
-      "cache": false
+      "cache": false,
+      "passThroughEnv": ["LOXAIC_DEV_STACK"]
     },
     "build": {
       "dependsOn": ["^build"],

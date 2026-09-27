@@ -5,6 +5,7 @@
   "license": "Apache-2.0",
   "main": "expo-router/entry",
   "scripts": {
+    "dev": "node scripts/dev-metro.mjs",
     "start": "dotenv -e ../../.env -- expo start",
     "android": "dotenv -e ../../.env -- expo start --android",
     "ios": "dotenv -e ../../.env -- expo start --ios",
