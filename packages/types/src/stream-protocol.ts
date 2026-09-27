@@ -353,8 +353,14 @@ export interface ContextToolSource {
   /** `"builtin"`, or the MCP server's id. */
   key: string;
   kind: "builtin" | "mcp";
-  /** The server's name as the user sees it; "Built-in tools" for builtins. */
-  name: string;
+  /**
+   * "Built-in tools" for builtins, and **absent for an MCP server**. A server's
+   * name is free text its owner typed, and this breakdown reaches everyone on
+   * the conversation — shared viewers and the admin transcript included — on
+   * every request, whether or not any of the server's tools was called. The
+   * client names a server from its own server list, keyed on `key`.
+   */
+  name?: string;
   /** How many tool schemas this source put in the request. */
   tools: number;
   tokens: number;

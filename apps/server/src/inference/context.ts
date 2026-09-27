@@ -115,7 +115,8 @@ export function tallyChatMessages(messages: ChatMessage[], tools?: OpenAiTool[])
 export interface ToolSourceTally {
   key: string;
   kind: "builtin" | "mcp";
-  name: string;
+  /** Builtins only — see `ContextToolSource.name`. */
+  name?: string;
   tools: number;
   chars: number;
 }
@@ -141,7 +142,9 @@ export function tallyToolSources(
     if (!entry) {
       entry =
         source?.kind === "mcp"
-          ? { key, kind: "mcp", name: source.serverName, tools: 0, chars: 0 }
+          ? // No name: this reaches every viewer of a shared thread, and the
+            // server's id is enough for its owner's client to name it.
+            { key, kind: "mcp", tools: 0, chars: 0 }
           : { key, kind: "builtin", name: BUILTIN_TOOLS_LABEL, tools: 0, chars: 0 };
       bySource.set(key, entry);
     }
@@ -165,7 +168,13 @@ export function splitToolTokens(tokens: number, sources: ToolSourceTally[]): Con
   let left = tokens - shares.reduce((a, b) => a + b, 0);
   const order = exact.map((x, i) => ({ i, frac: x - Math.floor(x) })).sort((a, b) => b.frac - a.frac);
   for (let k = 0; left > 0; k = (k + 1) % order.length, left--) shares[order[k].i] += 1;
-  return sources.map((s, i) => ({ key: s.key, kind: s.kind, name: s.name, tools: s.tools, tokens: shares[i] }));
+  return sources.map((s, i) => ({
+    key: s.key,
+    kind: s.kind,
+    ...(s.name === undefined ? {} : { name: s.name }),
+    tools: s.tools,
+    tokens: shares[i],
+  }));
 }
 
 export interface ApportionMeta {

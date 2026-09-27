@@ -29,13 +29,26 @@ export interface ToolSourceRow {
 
 const fmt = (n: number) => n.toLocaleString();
 
+/** For a server the breakdown carries but this person's list does not: one
+ * they removed or switched off everywhere, or — on a shared thread — the
+ * sender's own, whose name is theirs to keep. */
+export const UNLISTED_SERVER_NAME = 'MCP server not in your list';
+const BUILTIN_NAME = 'Built-in tools';
+
+/** What to call a source: this person's own name for the server first, then a
+ * name an older stored breakdown still carries, then neither. */
+export function toolSourceName(src: ContextToolSource, listedName?: string): string {
+  if (src.kind === 'builtin') return src.name ?? BUILTIN_NAME;
+  return listedName ?? src.name ?? UNLISTED_SERVER_NAME;
+}
+
 export function toolSourceRows(sources: ContextToolSource[], switches: McpSwitchRow[]): ToolSourceRow[] {
   const byId = new Map(switches.map((s) => [s.id, s]));
   const seen = new Set<string>();
   const rows: ToolSourceRow[] = sources.map((src) => {
     seen.add(src.key);
     if (src.kind === 'builtin') {
-      return { key: src.key, kind: 'builtin', name: src.name, tokens: src.tokens, tools: src.tools, on: null, switchable: false, note: null };
+      return { key: src.key, kind: 'builtin', name: toolSourceName(src), tokens: src.tokens, tools: src.tools, on: null, switchable: false, note: null };
     }
     const sw = byId.get(src.key);
     // A server no longer in the list was switched off everywhere or removed:
@@ -44,7 +57,7 @@ export function toolSourceRows(sources: ContextToolSource[], switches: McpSwitch
     return {
       key: src.key,
       kind: 'mcp',
-      name: sw?.name ?? src.name,
+      name: toolSourceName(src, sw?.name),
       tokens: src.tokens,
       tools: src.tools,
       on,

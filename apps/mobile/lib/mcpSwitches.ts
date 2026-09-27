@@ -82,3 +82,31 @@ export function overridesToSend(pending: McpOverrides | null | undefined): McpOv
   const any = (pending.disabledServerIds?.length ?? 0) + (pending.enabledServerIds?.length ?? 0) > 0;
   return any ? pending : undefined;
 }
+
+/** A local placeholder the session swapped for the server's id, as it
+ * announced in `turn.started`. */
+export interface Promotion {
+  localId: string;
+  realId: string;
+}
+
+/**
+ * Whether the choices held for an unsent conversation belong to the one now on
+ * screen. Only when the session promoted exactly that placeholder into exactly
+ * this id: leaving an unsent new chat for an existing thread looks the same
+ * from the ids alone (pending → a server id), and applying the abandoned
+ * choices there would overwrite that thread's own.
+ */
+export function carriesChoices(
+  previousId: string | null | undefined,
+  nextId: string | null,
+  promotion: Promotion | null | undefined,
+): boolean {
+  return (
+    !!promotion &&
+    previousId !== null &&
+    previousId !== undefined &&
+    previousId === promotion.localId &&
+    nextId === promotion.realId
+  );
+}

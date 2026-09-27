@@ -11,7 +11,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react-native';
 import type { ContextToolSource } from '@loxaic/types';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
-import { toolSourceRows, type ToolSourceRow } from '@/lib/toolSourceRows';
+import { toolSourceName, toolSourceRows, type ToolSourceRow } from '@/lib/toolSourceRows';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { promptReuse } from '@/lib/usage';
 import { ContextBar } from './ContextBar';
@@ -202,7 +202,7 @@ function ToolSourceList({ sources, mcp }: { sources: ContextToolSource[] | null;
   // are the last request's figures and nothing more.
   const rows: ToolSourceRow[] = mcp
     ? toolSourceRows(sources, mcp.rows)
-    : sources.map((src) => ({ ...src, on: null, switchable: false, note: null }));
+    : sources.map((src) => ({ ...src, name: toolSourceName(src), on: null, switchable: false, note: null }));
   return (
     <VStack testID="context.toolSources" space="xs" className="ml-3 border-l border-border pl-2">
       {rows.map((row) => (

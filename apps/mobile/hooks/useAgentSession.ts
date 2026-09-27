@@ -34,6 +34,7 @@ import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessa
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 
 export type { WorkspaceChoice } from '@/lib/types';
@@ -108,6 +109,10 @@ export function useAgentSession(
   const recordPaging = olderMessages.record;
   const hasOlderHistory = olderMessages.hasOlder;
   const [activeId, setActiveIdState] = useState<string | null>(null);
+  // The last placeholder swapped for a server id. `useMcpSwitches` reads it to
+  // tell that apart from someone opening another thread, which moves
+  // `activeId` from pending to a server id just the same.
+  const [promotion, setPromotion] = useState<Promotion | null>(null);
   const [mode, setModeState] = useState<PermissionMode>('manual');
   const [runState, setRunState] = useState<RunState>('done');
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
@@ -414,7 +419,10 @@ export function useAgentSession(
           ];
         });
         // Follow it unless it is an older thread the person has since left.
-        if (isPending || localId === null || activeIdRef.current === localId) setActiveId(realId);
+        if (isPending || localId === null || activeIdRef.current === localId) {
+          if (localId && localId !== realId) setPromotion({ localId, realId });
+          setActiveId(realId);
+        }
         if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
@@ -937,6 +945,7 @@ export function useAgentSession(
   return {
     runs,
     activeId,
+    promotion,
     activeRun,
     selectRun,
     mode,

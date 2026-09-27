@@ -139,7 +139,12 @@ async function resolveMcpTools(
 
   // The conversation's own choices, then the server's default for its kind —
   // the one rule the client's switches render (`mcpServerActive`).
-  const { kind, overrides } = await conversationMcpState(opts.conversationId, opts.surface ?? "chat");
+  const state = await conversationMcpState(opts.conversationId, opts.surface ?? "chat");
+  if (!state) {
+    console.warn("Conversation MCP choices could not be read; running with builtins only");
+    return [];
+  }
+  const { kind, overrides } = state;
   const activeRows = rows.filter((r) => mcpServerActive(r, kind, overrides));
   if (activeRows.length === 0) return [];
 
@@ -235,10 +240,18 @@ async function builtinAllowlist(userId: string): Promise<Set<string>> {
   }
 }
 
+/**
+ * The conversation's kind and its own MCP choices. `fallbackKind` (the run's
+ * surface) is used only when there is no conversation to read; it can never be
+ * "routine", which is why a failed read answers null rather than falling back —
+ * a routine run resolved against `on_in_chat` would offer a server its owner
+ * switched off for exactly the unattended kind. The caller offers no MCP
+ * servers then, as it does when the server list itself cannot be read.
+ */
 async function conversationMcpState(
   conversationId: string | undefined,
   fallbackKind: McpConversationKind,
-): Promise<{ kind: McpConversationKind; overrides: McpOverrides | null }> {
+): Promise<{ kind: McpConversationKind; overrides: McpOverrides | null } | null> {
   if (!conversationId) return { kind: fallbackKind, overrides: null };
   try {
     const conv = await db.query.conversations.findFirst({
@@ -247,7 +260,7 @@ async function conversationMcpState(
     });
     return { kind: conv?.kind ?? fallbackKind, overrides: normalizeMcpOverrides(conv?.mcpOverrides) };
   } catch {
-    return { kind: fallbackKind, overrides: null };
+    return null;
   }
 }
 

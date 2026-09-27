@@ -255,6 +255,15 @@ describe("buildToolset: per-kind defaults and per-conversation choices", () => {
     await defaults({ onInChat: true, onInAgent: true });
   }, 30_000);
 
+  it("offers no MCP server when the conversation's choices cannot be read", async () => {
+    // The surface can never say "routine", so falling back to it on a failed
+    // read would resolve a routine run against the Chat default. A malformed id
+    // is a real failure of that read (Postgres refuses it as a uuid).
+    await defaults({ onInChat: true });
+    expect(await offered("not-a-uuid", "chat")).toBe(false);
+    expect(mustGet(await buildToolset(userId, { mode: "manual", conversationId: "not-a-uuid" }), "bash")).toBeTruthy();
+  }, 20_000);
+
   it("lets a conversation switch a server off that is on by default", async () => {
     await defaults({ onInChat: true });
     expect(await offered(await conversation("chat", { disabledServerIds: [serverId] }))).toBe(false);

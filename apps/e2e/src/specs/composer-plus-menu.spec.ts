@@ -149,6 +149,32 @@ describe('the composer + menu and per-chat MCP switches', () => {
     });
   });
 
+  it("drops an unsent new chat's choices rather than applying them to the thread opened next", async () => {
+    // The chat so far: Alpha switched off, Beta switched back on — both its
+    // own explicit choices.
+    const [conv] = await listConversations(creds);
+    const before = await conversationMcpOverrides(creds, conv.id);
+    expect(before).toMatchObject({ disabledServerIds: [alpha], enabledServerIds: [beta] });
+
+    // A new chat, a choice made for it, and then no message after all.
+    await startNewThread('chat');
+    await openPlusMenu();
+    await openMcpFromPlusMenu();
+    await tap(`composer.mcp.toggle.${beta}`);
+    await waitForSwitch(`composer.mcp.toggle.${beta}`, false);
+    await closePlusMenu();
+
+    // Opening the existing thread instead shows that thread's own choices...
+    await selectThread(conv.id);
+    await openPlusMenu();
+    await openMcpFromPlusMenu();
+    await waitForSwitch(`composer.mcp.toggle.${beta}`, true);
+    await waitForSwitch(`composer.mcp.toggle.${alpha}`, false);
+    await closePlusMenu();
+    // ...and they are still what the server holds, not the abandoned chat's.
+    expect(await conversationMcpOverrides(creds, conv.id)).toEqual(before);
+  });
+
   it('shows a shared editor the switches as locked, since only the owner may change them', async () => {
     const [conv] = await listConversations(creds);
     const guest: Credentials = await provisionUser(uniqueCreds());

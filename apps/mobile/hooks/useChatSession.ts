@@ -38,6 +38,7 @@ import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import type { Promotion } from '@/lib/mcpSwitches';
 
 export type { PendingApproval };
 
@@ -212,6 +213,10 @@ export function useChatSession(
    * different screens. */
   const [listLoaded, setListLoaded] = useState(false);
   const [activeId, setActiveIdState] = useState<string | null>(null);
+  // The last placeholder swapped for a server id. `useMcpSwitches` reads it to
+  // tell that apart from someone opening another thread, which moves
+  // `activeId` from pending to a server id just the same.
+  const [promotion, setPromotion] = useState<Promotion | null>(null);
   // Read through a ref by the stable callbacks below (`setActiveId` must not
   // re-create per render — `loadedConvIdsRef` dedupes against its identity).
   const scopeRef = useRef(scope);
@@ -603,7 +608,10 @@ export function useChatSession(
           );
         }
         // Follow it unless it is an older thread the person has since left.
-        if (isPending || localId === null || activeIdRef.current === localId) setActiveId(realId);
+        if (isPending || localId === null || activeIdRef.current === localId) {
+          if (localId && localId !== realId) setPromotion({ localId, realId });
+          setActiveId(realId);
+        }
         if (modelForPatch) {
           updateConversation(realId, { model_pref: { model: modelForPatch } }).catch(() => undefined);
         }
@@ -1193,6 +1201,7 @@ export function useChatSession(
     activeId,
     activeConv,
     setActiveId,
+    promotion,
     streaming: !!activeStream,
     // Overlaid on the live stream state, not replacing it: the run is still
     // streaming until it actually ends.

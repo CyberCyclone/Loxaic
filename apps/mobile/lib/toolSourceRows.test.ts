@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ContextToolSource } from '@loxaic/types';
 import type { McpSwitchRow } from './mcpSwitches';
-import { toolSourceRows } from './toolSourceRows';
+import { toolSourceRows, UNLISTED_SERVER_NAME } from './toolSourceRows';
 
 const sources: ContextToolSource[] = [
   { key: 'brave', kind: 'mcp', name: 'Brave', tools: 8, tokens: 11_000 },
@@ -44,5 +44,17 @@ describe('toolSourceRows', () => {
   it('shows a server removed or disabled everywhere as off, with no switch', () => {
     const brave = toolSourceRows(sources, [sw('gh', true)]).find((r) => r.key === 'brave');
     expect(brave).toMatchObject({ on: false, switchable: false });
+  });
+
+  it('names a server from this person\'s own list, since the breakdown carries no names', () => {
+    const unnamed: ContextToolSource[] = [
+      { key: 'builtin', kind: 'builtin', name: 'Built-in tools', tools: 8, tokens: 1_000 },
+      { key: 'gh', kind: 'mcp', tools: 45, tokens: 16_000 },
+      { key: 'theirs', kind: 'mcp', tools: 3, tokens: 900 },
+    ];
+    const rows = toolSourceRows(unnamed, [sw('gh', true, 'GitHub')]);
+    expect(rows.find((r) => r.key === 'gh')?.name).toBe('GitHub');
+    // A shared thread's sender's server, or one removed since: not named.
+    expect(rows.find((r) => r.key === 'theirs')?.name).toBe(UNLISTED_SERVER_NAME);
   });
 });

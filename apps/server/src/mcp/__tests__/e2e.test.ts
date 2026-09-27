@@ -336,11 +336,15 @@ describe("MCP choices made before the conversation existed", () => {
     }, 30_000);
   }
 
-  it("names the server and splits the tools part exactly", async () => {
+  it("keys the server by id, never by name, and splits the tools part exactly", async () => {
     const turn = await runTurn("hello there", "manual", null, { surface: "chat" });
     const breakdown = await lastBreakdown(turn.conversationId);
     const mock = breakdown.tool_sources?.find((s) => s.key === serverId);
-    expect(mock).toMatchObject({ kind: "mcp", name: "Mock MCP" });
+    expect(mock).toMatchObject({ kind: "mcp" });
+    // Stored and fanned out to shared viewers: the owner's name for the server
+    // must not be in it.
+    expect(mock).not.toHaveProperty("name");
+    expect(JSON.stringify(breakdown)).not.toContain("Mock MCP");
     expect(mock?.tools).toBeGreaterThan(0);
     const toolsPart = breakdown.parts.find((p) => p.category === "tools")?.tokens;
     expect(breakdown.tool_sources?.reduce((sum, s) => sum + s.tokens, 0)).toBe(toolsPart);

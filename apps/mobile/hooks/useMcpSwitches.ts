@@ -2,7 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getConversation, getMcpServers, updateConversation, type McpServer } from '@loxaic/api-client';
 import type { McpConversationKind, McpOverrides } from '@loxaic/types';
 import { useServerReachable } from '@/lib/connection';
-import { applyToggle, overridesToSend, switchRows, toggleTarget, type McpSwitchRow } from '@/lib/mcpSwitches';
+import {
+  applyToggle,
+  carriesChoices,
+  overridesToSend,
+  switchRows,
+  toggleTarget,
+  type McpSwitchRow,
+  type Promotion,
+} from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 
 export interface McpSwitches {
@@ -41,11 +49,15 @@ function sameOverrides(a: McpOverrides | null | undefined, b: McpOverrides | nul
  * conversation first gets its real id and the server's row does not have the
  * choices made meanwhile — an older server that ignores them on the send, or
  * a switch flipped while the send was in flight — they are PATCHed then.
+ * "Gets its real id" is the session's `promotion`, never an inference from the
+ * ids: leaving an unsent new chat for an existing thread also goes from
+ * pending to a server id, and must drop the choices rather than apply them.
  */
 export function useMcpSwitches(
   token: string | null,
   conversationId: string | null,
   kind: McpConversationKind,
+  promotion?: Promotion | null,
 ): McpSwitches {
   const reachable = useServerReachable();
   const { showToast } = useToastHelper();
@@ -61,6 +73,10 @@ export function useMcpSwitches(
   // `undefined` so the first render always runs the effect below, including
   // for a screen that opens straight onto an existing conversation.
   const prev = useRef<{ id: string | null | undefined; target: 'pending' | 'patch' }>({ id: undefined, target: 'pending' });
+  // Read inside the effect below, which must not re-run when only this changes:
+  // the session sets it in the same update that moves `conversationId`.
+  const promotionRef = useRef(promotion);
+  promotionRef.current = promotion;
 
   useEffect(() => {
     if (!token) return;
@@ -95,7 +111,9 @@ export function useMcpSwitches(
 
     // The conversation that just came into being carries the choices made for
     // it; show them while its row is fetched, rather than flashing defaults.
-    const carried = before.target === 'pending' ? overridesToSend(overridesRef.current) : undefined;
+    const carried = carriesChoices(before.id, conversationId, promotionRef.current)
+      ? overridesToSend(overridesRef.current)
+      : undefined;
     if (!carried) {
       setOverrides(null);
       setConvLoaded(false);

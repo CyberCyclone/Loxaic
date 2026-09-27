@@ -17,6 +17,20 @@ vi.mock("../../auth/middleware", () => ({
   authenticate: () => Promise.resolve(currentUser.id),
 }));
 
+// Wrapped, not replaced: counts how often an edit drops a server's live
+// connections, which a change to its per-kind defaults must not do.
+const closeServerClients = vi.hoisted(() => vi.fn());
+vi.mock("../../mcp/client-manager.ts", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../mcp/client-manager.ts")>();
+  return {
+    ...real,
+    closeServerClients: (id: string) => {
+      closeServerClients(id);
+      return real.closeServerClients(id);
+    },
+  };
+});
+
 const { mcpRoutes } = await import("../mcp.ts");
 
 const userId = `test-mcp-routes-${uuid()}`;
@@ -173,6 +187,47 @@ describe("per-kind defaults", () => {
     expect(res.json<{ error: string }>().error).toContain("onInAgent");
     const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
     expect(row).toMatchObject({ onInAgent: true, name: "Plain" });
+  });
+
+  it("are stored as asked when a server is added, not quietly left on", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/mcp/servers",
+      payload: { name: "Off for routines", slug: `off-${uuid().slice(0, 8)}`, transport: "stdio", command: "true", onInRoutines: false },
+    });
+    expect(res.statusCode).toBe(200);
+    const { id } = res.json<{ id: string }>();
+    expect(res.json()).toMatchObject({ onInChat: true, onInAgent: true, onInRoutines: false });
+    const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    expect(row).toMatchObject({ onInChat: true, onInAgent: true, onInRoutines: false });
+  });
+
+  it("are refused when malformed on add, and nothing is added", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/mcp/servers",
+      payload: { name: "Bad", slug: `bad-${uuid().slice(0, 8)}`, transport: "stdio", command: "true", onInChat: "no" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toContain("onInChat");
+    expect(await db.query.mcpServers.findFirst({ where: eq(mcpServers.ownerId, userId) })).toBeUndefined();
+  });
+
+  it("leave the server's connection alone when they are all that changed", async () => {
+    const id = await stdioServer();
+    const before = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    closeServerClients.mockClear();
+    await app.inject({ method: "PATCH", url: `/v1/mcp/servers/${id}`, payload: { onInChat: false, onInAgent: false } });
+    const after = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    // The stamp is what bypasses the connect-failure cache; it must not move.
+    expect(after?.updatedAt.getTime()).toBe(before?.updatedAt.getTime());
+    expect(closeServerClients).not.toHaveBeenCalled();
+
+    // Anything else in the same request is a connection change as before.
+    await app.inject({ method: "PATCH", url: `/v1/mcp/servers/${id}`, payload: { onInChat: true, command: "false" } });
+    const changed = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, id) });
+    expect(changed?.updatedAt.getTime()).toBeGreaterThan(before?.updatedAt.getTime() ?? 0);
+    expect(closeServerClients).toHaveBeenCalledWith(id);
   });
 
   it("can be changed on the GitHub server, which follows the connection", async () => {

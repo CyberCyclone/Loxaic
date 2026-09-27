@@ -35,6 +35,23 @@ function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
 
 /** Whether a server is on, by default, in each kind of conversation. */
 const SURFACE_DEFAULT_KEYS = ["onInChat", "onInAgent", "onInRoutines"] as const;
+type SurfaceDefaults = Partial<Record<(typeof SURFACE_DEFAULT_KEYS)[number], boolean>>;
+
+/**
+ * The per-kind defaults a create or update body asks for. Refused rather than
+ * ignored when malformed, on both routes: a client that believed it turned
+ * GitHub off for every chat must be told it did not.
+ */
+function readSurfaceDefaults(body: Record<string, unknown>): { error: string } | { values: SurfaceDefaults } {
+  const values: SurfaceDefaults = {};
+  for (const key of SURFACE_DEFAULT_KEYS) {
+    const value = body[key];
+    if (value === undefined) continue;
+    if (typeof value !== "boolean") return { error: `${key} must be true or false` };
+    values[key] = value;
+  }
+  return { values };
+}
 
 /** Merge a secrets patch over the stored blob: string sets, null deletes. */
 function mergeSecrets(existingBlob: string | null, patch: Record<string, unknown>): string | null {
@@ -110,6 +127,11 @@ export function mcpRoutes(app: FastifyInstance) {
   app.post("/v1/mcp/servers", async (request, reply) => {
     const userId = await authenticate(request, reply);
     const body = (request.body ?? {}) as Record<string, unknown>;
+    const defaults = readSurfaceDefaults(body);
+    if ("error" in defaults) {
+      reply.code(400);
+      return { error: defaults.error };
+    }
 
     let insert: Partial<typeof mcpServers.$inferInsert>;
     if (typeof body.builtinKey === "string") {
@@ -130,6 +152,14 @@ export function mcpRoutes(app: FastifyInstance) {
         if (!status.ok) {
           reply.code(409);
           return { error: status.error };
+        }
+        // The row may already exist (the GitHub screen made it); the defaults
+        // asked for here still land, and touch nothing about its connection.
+        if (Object.keys(defaults.values).length > 0) {
+          await db
+            .update(mcpServers)
+            .set(defaults.values)
+            .where(and(eq(mcpServers.id, status.serverId), eq(mcpServers.ownerId, userId)));
         }
         const row = await findOwnedServer(status.serverId, userId);
         if (!row) {
@@ -198,6 +228,7 @@ export function mcpRoutes(app: FastifyInstance) {
       .insert(mcpServers)
       .values({
         ...insert,
+        ...defaults.values,
         ownerId: userId,
         secrets: secretsPatch ? mergeSecrets(null, secretsPatch) : null,
         enabled: body.enabled !== false,
@@ -243,21 +274,15 @@ export function mcpRoutes(app: FastifyInstance) {
       }
     }
 
-    // The per-kind defaults are refused rather than ignored when malformed: a
-    // client that believed it turned GitHub off for every chat must be told
-    // it did not.
-    for (const key of SURFACE_DEFAULT_KEYS) {
-      if (body[key] !== undefined && typeof body[key] !== "boolean") {
-        reply.code(400);
-        return { error: `${key} must be true or false` };
-      }
+    const defaults = readSurfaceDefaults(body);
+    if ("error" in defaults) {
+      reply.code(400);
+      return { error: defaults.error };
     }
 
     if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
     if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
-    for (const key of SURFACE_DEFAULT_KEYS) {
-      if (typeof body[key] === "boolean") patch[key] = body[key];
-    }
+    Object.assign(patch, defaults.values);
     if (typeof body.command === "string" && existing.builtinKey === null) patch.command = body.command.trim();
     if (Array.isArray(body.args) && existing.builtinKey === null) patch.args = body.args.map(String);
     if (asOptionalRecord(body.env)) patch.env = asOptionalRecord(body.env);
@@ -290,9 +315,16 @@ export function mcpRoutes(app: FastifyInstance) {
     }
 
     // Any config change invalidates cached connections via the updatedAt stamp.
-    patch.updatedAt = new Date();
+    // Not a change that is only per-kind defaults: those decide whether a
+    // connected server is offered, which the registry reads from the row, so
+    // restamping would respawn a stdio child and skip the connect-failure
+    // cache for nothing — three times over on the /mcp screen's three switches.
+    const touchesConnection = Object.keys(patch).some(
+      (key) => !(SURFACE_DEFAULT_KEYS as readonly string[]).includes(key),
+    );
+    if (touchesConnection || Object.keys(patch).length === 0) patch.updatedAt = new Date();
     const [updated] = await db.update(mcpServers).set(patch).where(eq(mcpServers.id, existing.id)).returning();
-    await closeServerClients(existing.id);
+    if (touchesConnection) await closeServerClients(existing.id);
     return toApi(updated);
   });
 

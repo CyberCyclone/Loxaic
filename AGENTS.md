@@ -2271,7 +2271,18 @@ replies.
   when the real id arrives, PATCHes them if the row disagrees — which is also the fallback for an
   older server that ignores the send field. The session hooks read them through a ref the screen
   fills (`pendingMcp`), because the switches hook needs the session's `activeId` and so is
-  created after it.
+  created after it. **"The real id arrived" is the session's `promotion` (`{localId, realId}`,
+  set in `turn.started`), never an inference from the ids** (`carriesChoices`): leaving an
+  unsent new chat for an existing thread also goes from pending to a server id, and the first
+  version PATCHed the abandoned chat's choices over that thread's own. Found in review.
+- **A failed read of the conversation's choices offers no MCP servers.** The fallback kind is
+  the run's surface, which is only ever `chat` or `agent`, so falling back to it resolved a
+  routine run against `on_in_chat` — offering a server switched off for the unattended kind. It
+  fails the same way a failed read of the server list already did: builtins only.
+- **A PATCH that changes only per-kind defaults does not restamp `updatedAt` or drop the
+  server's connections.** Those keys decide whether a connected server is offered, read from the
+  row at toolset time; restamping respawned stdio children and bypassed the connect-failure
+  cache, three times over from the three switches. `POST` honours (and validates) the same keys.
 - **One `useMcpSwitches` instance per screen** feeds the `+` menu, the context popup's tool list
   and (on Agent) the Inspector, so the three cannot disagree. PATCH is owner-only, so a shared
   editor sees the switches locked with the reason; their own sends are offered *their own*
@@ -2285,7 +2296,13 @@ replies.
 - **`ContextBreakdown.tool_sources` splits the `tools` part by where each schema came from**
   (`tallyToolSources` + `splitToolTokens` in `inference/context.ts`, largest remainder, so it
   sums exactly to the part). Emit-only — it changes no request bytes — and it rides the
-  existing `usage_records.context_breakdown` jsonb, so it survives a reload. Absent on an older
+  existing `usage_records.context_breakdown` jsonb, so it survives a reload. **An MCP entry
+  carries the server's id and no name**: the breakdown reaches every subscriber, shared viewers
+  and the admin transcript included, on every request, so a name there disclosed every server
+  merely *offered* to the sender — where before a viewer learned a slug only when a tool was
+  called. The client names a row from its own server list (`toolSourceName`); a server not in
+  it (the sender's, on a shared thread, or one removed) is "MCP server not in your list".
+  Breakdowns stored before this still carry names and are not rewritten. Absent on an older
   breakdown, which the popup says ("per-server figures from your next message") rather than
   showing nothing. `lib/toolSourceRows.ts` merges the last request's figures with the switches'
   state *now*, and each row says which way they disagree ("Off · frees ~N tokens from your next

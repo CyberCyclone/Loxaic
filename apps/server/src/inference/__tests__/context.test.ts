@@ -219,7 +219,11 @@ describe("tool sources", () => {
       ["gh-id", 2],
       ["brave-id", 1],
     ]);
-    expect(tally.find((s) => s.key === "gh-id")?.name).toBe("GitHub");
+    // A server's name never enters the breakdown, which every viewer of a
+    // shared thread receives; the builtins keep their fixed label.
+    expect(tally.find((s) => s.key === "gh-id")).not.toHaveProperty("name");
+    expect(JSON.stringify(tally)).not.toContain("GitHub");
+    expect(tally.find((s) => s.key === "builtin")?.name).toBe("Built-in tools");
     const total = tally.reduce((sum, s) => sum + s.chars, 0);
     expect(total).toBe(tools.reduce((sum, t) => sum + JSON.stringify(t).length, 0));
   });

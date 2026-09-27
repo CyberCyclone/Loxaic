@@ -72,9 +72,10 @@ export default function ChatScreen() {
     noRoom,
     dismissNoRoom,
     returnedText,
+    promotion,
   } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef);
   // Read by the session at send time; see useChatSession's `pendingMcp`.
-  const mcp = useMcpSwitches(token, activeId, 'chat');
+  const mcp = useMcpSwitches(token, activeId, 'chat', promotion);
   pendingMcpRef.current = mcp.pendingOverrides;
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
