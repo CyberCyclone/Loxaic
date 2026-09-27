@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "dev": "turbo dev",
+    "dev": "LOXAIC_DEV_STACK=1 turbo dev",
     "build": "turbo build",
     "lint": "eslint .",
     "typecheck": "turbo typecheck",
