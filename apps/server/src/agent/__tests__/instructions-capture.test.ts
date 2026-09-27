@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
@@ -105,6 +105,25 @@ describe("a github workspace", () => {
     expect(await ensureInstructions(id, userId, github)).toMatchObject({ status: "found", path: "CLAUDE.md" });
   });
 
+  it("takes Codex's override first, then AGENTS.md, CLAUDE.md, GEMINI.md, and Copilot's file last", async () => {
+    const cases: [Record<string, string>, string][] = [
+      [{ "AGENTS.override.md": "o", "AGENTS.md": "a", "CLAUDE.md": "c" }, "AGENTS.override.md"],
+      [{ "AGENTS.md": "a", "CLAUDE.md": "c", "GEMINI.md": "g" }, "AGENTS.md"],
+      [{ "CLAUDE.md": "c", "GEMINI.md": "g" }, "CLAUDE.md"],
+      [{ "GEMINI.md": "g", ".github/copilot-instructions.md": "p" }, "GEMINI.md"],
+      [{ ".github/copilot-instructions.md": "copilot rules" }, ".github/copilot-instructions.md"],
+    ];
+    for (const [present, expected] of cases) {
+      files["octo/real"] = present;
+      const id = await conversation(github);
+      const snap = await ensureInstructions(id, userId, github);
+      expect({ present: Object.keys(present), path: snap?.status === "found" ? snap.path : null }).toEqual({
+        present: Object.keys(present),
+        path: expected,
+      });
+    }
+  });
+
   it("records that there is none, so it is not looked for again", async () => {
     const id = await conversation(github);
     expect(await ensureInstructions(id, userId, github)).toMatchObject({ status: "none" });
@@ -181,6 +200,18 @@ describe("other workspaces", () => {
       connectMachine([root]);
       const id = await conversation(local());
       expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "found", path: "AGENTS.md", text: "local rules ü\n" });
+    });
+
+    it("uses the same order on the user's machine, Copilot's file included", async () => {
+      mkdirSync(path.join(root, ".github"));
+      writeFileSync(path.join(root, ".github/copilot-instructions.md"), "copilot rules\n");
+      writeFileSync(path.join(root, "GEMINI.md"), "gemini rules\n");
+      connectMachine([root]);
+      const id = await conversation(local());
+      expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "found", path: "GEMINI.md" });
+      rmSync(path.join(root, "GEMINI.md"));
+      const id2 = await conversation(local());
+      expect(await ensureInstructions(id2, userId, local())).toMatchObject({ status: "found", path: ".github/copilot-instructions.md" });
     });
 
     it("records none for a folder without one", async () => {

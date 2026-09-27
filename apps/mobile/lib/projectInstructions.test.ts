@@ -11,7 +11,7 @@ describe('describeProjectInstructions', () => {
 
   it('keeps "not looked yet" apart from "there is none"', () => {
     expect(describeProjectInstructions(null, 'github')).toMatch(/when the first message is sent/);
-    expect(describeProjectInstructions({ status: 'none' }, 'local')).toBe('No AGENTS.md or CLAUDE.md at the root of this project.');
+    expect(describeProjectInstructions({ status: 'none' }, 'local')).toBe('No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.');
   });
 
   it('says whether the file went in whole or as an outline', () => {

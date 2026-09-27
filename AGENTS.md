@@ -2399,7 +2399,17 @@ replies.
 ### Project instructions (the workspace's own AGENTS.md)
 
 - **An agent conversation in a github or local workspace is given the project's own
-  `AGENTS.md` (else `CLAUDE.md`)**, all of it in `agent/instructions.ts`. OpenCode pastes every
+  instructions file**, all of it in `agent/instructions.ts`. It uses one file per directory
+  (the first that exists), never a merge:
+  1. `AGENTS.override.md`: Codex's override, usually someone's own uncommitted tweak.
+  2. `AGENTS.md`: the cross-tool convention (Codex, OpenCode, Cursor).
+  3. `CLAUDE.md`: Claude Code's.
+  4. `GEMINI.md`: Gemini CLI's.
+  5. `.github/copilot-instructions.md`: Copilot's, at the root only, since Copilot reads it
+     nowhere else.
+  
+  `.cursorrules` is deprecated, and `.cursor/rules/*.mdc` carries per-rule settings for when a
+  rule applies, which a plain read would ignore, so neither is read. OpenCode pastes every
   one from cwd to the git root into the system message verbatim, re-read every step, with no
   size limit. That doesn't work here: this repository's own file is ~307 KB (~77k tokens),
   more than a whole 32k local slot.

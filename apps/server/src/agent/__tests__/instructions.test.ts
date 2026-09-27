@@ -254,6 +254,22 @@ describe("nested files", () => {
       expect(out).not.toContain("root rules");
     });
 
+    it("takes a directory's override first, and never treats Copilot's root-only file as nested", async () => {
+      writeFileSync(path.join(root, "pkg/sub/AGENTS.override.md"), "override rules\n");
+      mkdirSync(path.join(root, "pkg/.github"));
+      writeFileSync(path.join(root, "pkg/.github/copilot-instructions.md"), "not for us\n");
+      rmSync(path.join(root, "pkg/CLAUDE.md"));
+      const out = await withNestedInstructions(handle, path.join(root, "pkg/sub/index.js"), "FILE", { messages: [], windowTokens: 100_000 });
+      expect(out).toContain(markerFor("pkg/sub/AGENTS.override.md"));
+      expect(out).not.toContain("Use tabs here.");
+      expect(out).not.toContain("not for us");
+    });
+
+    it("counts an override already sent as the directory's file", () => {
+      const seen: ChatMessage[] = [{ role: "tool", tool_call_id: "a", content: `${markerFor("pkg/AGENTS.override.md")} mode="full">…` }];
+      expect(alreadyAttached(seen, "pkg")).toBe(true);
+    });
+
     it("adds nothing for a file already in front of the model", async () => {
       const seen: ChatMessage[] = [
         { role: "tool", tool_call_id: "a", content: `${markerFor("pkg/sub/AGENTS.md")} mode="full">…` },

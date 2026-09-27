@@ -161,7 +161,7 @@ describe('agent: the project\'s own AGENTS.md', () => {
     expect(await instructionsSummary(await apiToken(creds), conversation.id)).toEqual({ status: 'none' });
 
     await openInspector();
-    await waitForTextIn('agent.inspector.instructions', 'No AGENTS.md or CLAUDE.md');
+    await waitForTextIn('agent.inspector.instructions', 'No AGENTS.md, CLAUDE.md or GEMINI.md');
     await shot('instructions-none-inspector');
   });
 });

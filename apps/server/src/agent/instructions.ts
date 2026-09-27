@@ -41,8 +41,20 @@ import { getFileText } from "../github/client.ts";
 import { getOwnerToken } from "../github/connection.ts";
 import { callExecutor } from "../executor/registry.ts";
 
-/** Looked for in this order; the first that exists is the one used. */
-export const INSTRUCTION_FILES = ["AGENTS.md", "CLAUDE.md"] as const;
+/**
+ * Looked for in each directory in this order; the first that exists is the
+ * one used, never a merge of several. `AGENTS.md` is the cross-tool convention
+ * (Codex, OpenCode, Cursor and others read it). `AGENTS.override.md` is Codex's
+ * per-directory override of it, so it wins when present — usually a person's
+ * own uncommitted tweak, which on a local workspace is exactly who is asking.
+ * `CLAUDE.md` and `GEMINI.md` are Claude Code's and Gemini CLI's own names, for
+ * a repository written for only one of them.
+ */
+export const INSTRUCTION_FILES = ["AGENTS.override.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"] as const;
+
+/** At the root, one more after those: GitHub Copilot reads its file from this
+ * path in the repository root and nowhere else, so it is never a nested one. */
+export const ROOT_INSTRUCTION_FILES = [...INSTRUCTION_FILES, ".github/copilot-instructions.md"] as const;
 
 /** How much of a file is ever read. Past it the outline covers what was read
  * and says so. Large enough for this repository's own 307 KB file to go in
@@ -311,13 +323,18 @@ async function readChunked(exec: Exec, file: string, size: number, maxBytes: num
   return { text, bytes: buf.length, truncated: size > buf.length };
 }
 
-/** For each directory, its instructions file (AGENTS.md, else CLAUDE.md) and
- * size, in one exec. Directories with neither are left out. */
-async function findInstructionFiles(exec: Exec, dirs: string[]): Promise<{ dir: string; file: string; size: number }[]> {
+/** For each directory, its instructions file (the first of `names` that
+ * exists) and size, in one exec. Directories with none are left out. The
+ * names are our own constants, never input, so they are safe in the script. */
+async function findInstructionFiles(
+  exec: Exec,
+  dirs: string[],
+  names: readonly string[] = INSTRUCTION_FILES,
+): Promise<{ dir: string; file: string; size: number }[]> {
   if (dirs.length === 0) return [];
   const res = await exec([
     "bash", "-c",
-    'for d in "$@"; do for f in ' + INSTRUCTION_FILES.join(" ") + '; do ' +
+    'for d in "$@"; do for f in ' + names.join(" ") + '; do ' +
       'if [ -f "$d/$f" ]; then printf "%s\\t%s\\t%s\\n" "$d" "$f" "$(wc -c < "$d/$f" | tr -d " ")"; break; fi; ' +
       "done; done",
     "_", ...dirs,
@@ -391,11 +408,17 @@ async function lookupRoot(
     const token = await getOwnerToken(ownerId);
     if (!token) return undefined;
     const [owner, repo] = workspace.repo.split("/");
-    for (const file of INSTRUCTION_FILES) {
-      const got = await getFileText(token, owner, repo, file, workspace.baseBranch, MAX_INSTRUCTIONS_SOURCE_BYTES, signal);
-      if (got) return { path: file, ...got };
-    }
-    return null;
+    // All at once, then the first in order that exists: a repository with
+    // none of them would otherwise spend five round trips of the lookup's
+    // five seconds finding that out.
+    const found = await Promise.all(
+      ROOT_INSTRUCTION_FILES.map((file) =>
+        getFileText(token, owner, repo, file, workspace.baseBranch, MAX_INSTRUCTIONS_SOURCE_BYTES, signal),
+      ),
+    );
+    const at = found.findIndex((got) => got !== null);
+    const hit = at >= 0 ? found[at] : null;
+    return hit ? { path: ROOT_INSTRUCTION_FILES[at], ...hit } : null;
   }
   // A local folder is read on its own machine, with the folder itself as the
   // ref: the executor accepts any approved directory as one and re-checks it
@@ -403,7 +426,7 @@ async function lookupRoot(
   // one whichever isolation the conversation chose.
   const exec: Exec = (command) =>
     callExecutor<ExecResult>(workspace.executorId, "exec", { ref: workspace.path, command }, { signal, timeoutMs: LOOKUP_TIMEOUT_MS });
-  const hits = await findInstructionFiles(exec, ["."]);
+  const hits = await findInstructionFiles(exec, ["."], ROOT_INSTRUCTION_FILES);
   if (hits.length === 0) return null;
   const hit = hits[0];
   const got = await readChunked(exec, hit.file, hit.size, MAX_INSTRUCTIONS_SOURCE_BYTES);

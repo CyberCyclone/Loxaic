@@ -14,8 +14,8 @@ export function describeProjectInstructions(
   workspaceKind: 'scratch' | 'github' | 'local',
 ): string | null {
   if (workspaceKind === 'scratch' || summary === undefined) return null;
-  if (summary === null) return 'Looked for AGENTS.md or CLAUDE.md when the first message is sent.';
-  if (summary.status === 'none') return 'No AGENTS.md or CLAUDE.md at the root of this project.';
+  if (summary === null) return 'Looked for AGENTS.md (or CLAUDE.md, GEMINI.md) when the first message is sent.';
+  if (summary.status === 'none') return 'No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.';
   const size = `~${formatTokens(summary.tokens)} tokens`;
   const partial = summary.sourceTruncated ? ` Only its first ${formatKb(summary.sourceBytes)} was read.` : '';
   switch (summary.mode) {
