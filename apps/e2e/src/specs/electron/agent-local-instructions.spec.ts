@@ -12,13 +12,16 @@
  * which an AGENTS.md left behind would change.
  */
 import { browser } from '@wdio/globals';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { E2E_PICK_DIR } from '../../../scripts/electron-env.ts';
 import { provisionUser, uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { waitForFreshText, waitForTextIn } from '../../helpers/selectors.ts';
+import { isVisible, tap, waitForFreshText, waitForTextIn, waitForVisible } from '../../helpers/selectors.ts';
 import {
+  MOCK_TOOL_DONE,
+  TOOL_PROMPT,
   chooseLocalWorkspace,
   getToolResults,
   goToSurface,
@@ -26,6 +29,8 @@ import {
   openInspector,
   sendMessage,
   signIn,
+  signOut,
+  startNewAgentRun,
   waitForRunDone,
 } from '../../helpers/app.ts';
 
@@ -95,5 +100,99 @@ describe('electron local workspace: the folder\'s AGENTS.md', () => {
     await waitForRunDone(creds, conversation.id);
     await waitForFreshText('chat.message.instructionsUpdate', 'The agent was given the change with this message.');
     await shot('local-instructions-update-notice');
+  });
+});
+
+/**
+ * An untrusted folder whose AGENTS.md is a symlink to a file elsewhere on this
+ * machine, beside a real CLAUDE.md. What the agent is given is the proof,
+ * because the mock names the file its system prompt carried: CLAUDE.md, never
+ * the symlink's target.
+ *
+ * - Direct: read on this machine, and passed over by real path.
+ * - Container-isolated: never read on this machine at all. Nothing is read
+ *   until the agent's first command has started the container, and inside it
+ *   the symlink points at nothing.
+ *
+ * The container case needs a container engine, as the sibling container spec
+ * does, and builds the sandbox image on a machine's first container run.
+ */
+/** The Inspector toggles, and stays open across conversations. */
+async function inspectorOpen(): Promise<void> {
+  if (!(await isVisible('agent.inspector.panel'))) await openInspector();
+}
+
+describe('electron local workspace: a symlinked AGENTS.md leading out of the folder', () => {
+  const creds = uniqueCreds();
+  const agentsLink = path.join(E2E_PICK_DIR, 'AGENTS.md');
+  const claude = path.join(E2E_PICK_DIR, 'CLAUDE.md');
+  const notes = path.join(E2E_PICK_DIR, 'notes.txt');
+  let outside: string;
+
+  before(async function () {
+    this.timeout(60_000);
+    outside = mkdtempSync(path.join(os.tmpdir(), 'loxaic-e2e-outside-'));
+    writeFileSync(path.join(outside, 'id_ed25519'), 'SECRET KEY, never to be read\n');
+    rmSync(agentsLink, { force: true });
+    symlinkSync(path.join(outside, 'id_ed25519'), agentsLink);
+    writeFileSync(claude, '# Inside rules\n\nThis folder uses pnpm.\n');
+    await provisionUser(creds);
+    // The block above left its own user signed in.
+    await signOut();
+    await signIn(creds);
+  });
+
+  after(() => {
+    rmSync(agentsLink, { force: true });
+    rmSync(claude, { force: true });
+    rmSync(notes, { force: true });
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('is passed over on this machine, and the folder\'s own CLAUDE.md is used', async function () {
+    this.timeout(3 * 60_000);
+    await executorOnline();
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await chooseLocalWorkspace(E2E_PICK_DIR);
+
+    await sendMessage('say hello');
+    await waitForTextIn('chat.messageList', 'Project instructions: CLAUDE.md (full).');
+    const [conversation] = await listConversations(creds);
+    await waitForRunDone(creds, conversation.id);
+    await inspectorOpen();
+    await waitForTextIn('agent.inspector.instructions', 'CLAUDE.md');
+    await shot('local-instructions-symlink-direct');
+  });
+
+  it('is never read on this machine for a container-isolated folder, and inside the container leads nowhere', async function () {
+    this.timeout(8 * 60_000);
+    await executorOnline();
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await chooseLocalWorkspace(E2E_PICK_DIR, 'container');
+
+    // No container yet, and nothing starts one to read the file.
+    await sendMessage('say hello');
+    const [conversation] = await listConversations(creds);
+    await waitForRunDone(creds, conversation.id);
+    await inspectorOpen();
+    await waitForTextIn('agent.inspector.instructions', 'inside the container, once the agent has started it');
+    await shot('local-instructions-container-waiting');
+
+    // The agent's first command starts the container.
+    await tap('agent.mode.manual');
+    await sendMessage(TOOL_PROMPT);
+    await waitForVisible('agent.permission.bar');
+    await tap('agent.permission.allow');
+    await waitForTextIn('chat.messageList', MOCK_TOOL_DONE, 5 * 60_000);
+    await waitForRunDone(creds, conversation.id);
+
+    // Read inside it: the symlink's target is not in the container.
+    await sendMessage('say hello again');
+    await waitForTextIn('chat.messageList', 'Project instructions: CLAUDE.md (full).');
+    await waitForRunDone(creds, conversation.id);
+    await waitForTextIn('agent.inspector.instructions', 'CLAUDE.md');
+    await shot('local-instructions-symlink-container');
   });
 });

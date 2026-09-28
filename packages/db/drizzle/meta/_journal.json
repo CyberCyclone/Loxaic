@@ -218,6 +218,13 @@
       "when": 1790545725893,
       "tag": "0030_conversation_instructions",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790597778264,
+      "tag": "0031_instructions_host_reads",
+      "breakpoints": true
     }
   ]
 }

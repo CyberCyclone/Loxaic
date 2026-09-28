@@ -26,14 +26,12 @@ import type {
 } from "@loxaic/types";
 import type { StreamProducer } from "../streams/broker.ts";
 import { historyFront } from "../streams/runs/engine.ts";
-import { attachActiveSandbox } from "./sandbox-manager.ts";
 import {
   buildOutline,
   cksumPaths,
   combinedText,
   ensureInstructions,
   escapeAttr,
-  executorExec,
   findInstructionFiles,
   instructionBudget,
   instructionTokens,
@@ -43,9 +41,9 @@ import {
   readRootWith,
   rootWindowShare,
   ROOT_INSTRUCTION_FILES,
-  STEP_EXEC_TIMEOUT_MS,
   truncatedNote,
   UPDATE_TAG,
+  workspaceExec,
   type Exec,
 } from "./instructions.ts";
 
@@ -292,22 +290,6 @@ type Check =
   | { kind: "same"; cksums: Record<string, string> }
   | { kind: "changed"; version: InstructionsVersion };
 
-/**
- * Where to look for the current version, if anywhere cheap: the user's own
- * folder, or — for a GitHub workspace — the checkout, but only while its
- * sandbox is live in this process. The checkout is the truth once it exists
- * (a pull or branch switch there is what matters), and waking a paused
- * container for a text-only turn is not worth it; the next run with the
- * sandbox up catches up. Before the clone there is nothing to compare.
- */
-async function changeExec(workspace: Workspace, convId: string, signal?: AbortSignal): Promise<Exec | null> {
-  if (workspace.kind === "local") return executorExec(workspace, signal);
-  if (workspace.kind !== "github") return null;
-  const handle = await attachActiveSandbox(convId);
-  if (!handle) return null;
-  return (command) => handle.exec(command, { ...(signal ? { signal } : {}), timeoutMs: STEP_EXEC_TIMEOUT_MS });
-}
-
 /** Compares the workspace against `known`: checksums first, and the files
  * are read only when one differs. Never throws — a check that cannot finish
  * is "unknown", and simply happens again next run. */
@@ -400,7 +382,9 @@ export async function prepareInstructions(input: {
   const known = snap.latest ?? base;
   let check: Check = { kind: "unchanged" };
   if (!fresh) {
-    const exec = await changeExec(workspace, convId, input.signal);
+    // Anywhere cheap, never by starting a sandbox or container: the next run
+    // with one up catches up (workspaceExec).
+    const exec = await workspaceExec(workspace, convId, input.signal);
     if (exec) check = await checkForChange(exec, known);
   }
   if (input.signal?.aborted) return snap;

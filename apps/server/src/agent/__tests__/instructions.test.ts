@@ -349,6 +349,37 @@ describe("nested files", () => {
       expect(out).not.toContain("root rules");
     });
 
+    it("never attaches a nested file whose real path leads out of the workspace", async () => {
+      // Either the file is a symlink out, or a directory on the way is — the
+      // model can make both with one bash call, and the read would put a file
+      // from elsewhere on the machine into the tool result.
+      const outside = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-instructions-outside-")));
+      try {
+        writeFileSync(path.join(outside, "AGENTS.md"), "SECRET\n");
+        rmSync(path.join(root, "pkg/sub/AGENTS.md"));
+        symlinkSync(path.join(outside, "AGENTS.md"), path.join(root, "pkg/sub/AGENTS.md"));
+        const viaFile = await withNestedInstructions(handle, path.join(root, "pkg/sub/index.js"), "FILE", { messages: [], windowTokens: 100_000 });
+        expect(viaFile).not.toContain("SECRET");
+        expect(viaFile).toContain(markerFor("pkg/CLAUDE.md"));
+
+        symlinkSync(outside, path.join(root, "linked"));
+        writeFileSync(path.join(outside, "index.js"), "export {};\n");
+        const viaDir = await withNestedInstructions(handle, path.join(root, "linked/index.js"), "FILE", { messages: [], windowTokens: 100_000 });
+        expect(viaDir).toBe("FILE");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("still attaches a nested file symlinked within the workspace", async () => {
+      writeFileSync(path.join(root, "shared.md"), "# Shared\nShared rules.\n");
+      rmSync(path.join(root, "pkg/sub/AGENTS.md"));
+      symlinkSync("../../shared.md", path.join(root, "pkg/sub/AGENTS.md"));
+      const out = await withNestedInstructions(handle, path.join(root, "pkg/sub/index.js"), "FILE", { messages: [], windowTokens: 100_000 });
+      expect(out).toContain(markerFor("pkg/sub/AGENTS.md"));
+      expect(out).toContain("Shared rules.");
+    });
+
     it("takes a directory's override first, and never treats Copilot's root-only file as nested", async () => {
       writeFileSync(path.join(root, "pkg/sub/AGENTS.override.md"), "override rules\n");
       mkdirSync(path.join(root, "pkg/.github"));

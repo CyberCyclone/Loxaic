@@ -2494,9 +2494,18 @@ replies.
   read where the files really are:
   - **github:** the contents API at `baseBranch` (`github/client.ts`'s `getFileText`, capped
     read).
-  - **local:** the executor, with the folder itself as the ref. `createRefResolver` accepts
-    any approved directory and re-checks it by realpath, so no sandbox row is needed and an
-    older desktop works.
+  - **local, direct:** the executor, with the folder itself as the ref. `createRefResolver`
+    accepts any approved directory and re-checks it by realpath, so no sandbox row is needed
+    and an older desktop works.
+  - **local, container-isolated:** inside the conversation's container, and only while it is
+    live in this process (`workspaceExec`). Before that, nothing is read and nothing is stored,
+    so the next run asks again; the snapshot lands on the run after the agent's first command
+    starts the container, at the cost of one full prompt re-evaluation of a one-turn thread.
+    **Never the folder ref.** That ref is a shell on the host, which is what the person chose
+    container isolation to rule out, and the first version used it for every local workspace.
+    A repository whose `AGENTS.md` is a symlink to `../../.ssh/id_ed25519` then had the key read
+    on the host into the stored snapshot and every system prompt. Inside the container the same
+    link points at nothing. Nothing starts a container just to read the file.
   
   "none" is stored so it is not looked for again. It goes in the system prompt, not history,
   because compaction and the history window drop history rows and the system prompt is
@@ -2558,10 +2567,21 @@ replies.
     package stays literal.
   - **Limits:** 4 levels, 20 files, and one 1 MB budget shared with the root file. Each file
     is read once, so a cycle ends.
+- **No instructions file is read from outside the workspace, by real path.** Every exec-based
+  read (the root file, nested files, imports, and the `cksum` checks) compares the file's
+  `realpath` with `realpath .` (`REAL_ROOT` in `agent/instructions.ts`), and `readChunked`
+  re-checks on every chunk. A candidate that leads outside is passed over for the next name. A
+  symlink that stays inside, like `CLAUDE.md -> AGENTS.md`, still works. The first version
+  confined only imports, so a symlinked root or nested file (or a directory the model linked out)
+  was read wherever it pointed. It needs `realpath`: coreutils, busybox, macOS 13 and later.
+  **Migration 0031 clears what the unconfined reads stored**, since `ensureInstructions` reuses a
+  stored snapshot unread forever. It clears every local workspace's snapshot and any carrying
+  `cksums` or `latest` (a shell read), and strips every `instructions_update` notice. An API-read
+  GitHub snapshot is kept. None of it ever shipped in a release; this is for databases that ran
+  `dev`. A fix to what a snapshot may contain needs a migration like this one, or the fix only
+  covers new conversations. Found in review.
 - **An import never leaves the repository.** The resolver refuses absolute, `~` and climbing
-  paths lexically. The exec reader (local folder, nested files) also compares each file's
-  *real* path against `realpath .`, so a symlink in the repo can't make the server put a file
-  from elsewhere into the prompt. On GitHub the contents API serves only the repo; it answers
+  paths lexically, and the reader confines by real path as above. On GitHub the contents API serves only the repo; it answers
   a directory, or a symlink leading out, in JSON, which `getFileText` treats as not a file.
 - **Imported files stay separate documents.** In full mode each one follows its importer in an
   `<imported-file path imported-by>` wrapper. In an outline each is listed under its own path,
@@ -2574,7 +2594,8 @@ replies.
   - **The check:** once per run, in the tool loop's `prepare` hook, *before* `loadHistory`. It is
     one `cksum` exec; the files are read only when a checksum differs.
   - **Where it reads:**
-    - the user's folder, through the executor;
+    - a direct local folder, through the executor;
+    - a container-isolated folder, inside its container while it is live, never on the host;
     - a GitHub workspace's **checkout**, only while its sandbox is live in this process
       (`attachActiveSandbox`). The checkout is the truth once it exists: it catches a pull, a
       branch switch, and a base that moved between the snapshot and the clone.
