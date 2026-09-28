@@ -4,6 +4,7 @@ import {
   MAX_IMPORTED_FILES,
   collectImports,
   findImportRefs,
+  stripInlineCode,
   importsEnabledFor,
   resolveImportPath,
   type ReadInstructionFile,
@@ -50,6 +51,54 @@ describe("which mentions are imports", () => {
       "But @real/one.md counts.",
     ].join("\n");
     expect(findImportRefs(text)).toEqual(["real/one.md"]);
+  });
+
+  it("closes an inline span only on a run of the same length, and leaves an unclosed run literal", () => {
+    expect(stripInlineCode("a `x` b")).toBe("a   b");
+    expect(stripInlineCode("a ``x ` y`` b")).toBe("a   b");
+    expect(stripInlineCode("a ``x` b")).toBe("a ``x` b");
+    expect(findImportRefs("Run `@not/this.md` then ``` @real/two.md")).toEqual(["real/two.md"]);
+  });
+
+  it("stops at the per-file cap, since nothing past it is followed", () => {
+    const text = Array.from({ length: 50 }, (_, i) => `@docs/${String(i)}.md`).join(" ");
+    expect(findImportRefs(text)).toHaveLength(20);
+    expect(findImportRefs(text)[19]).toBe("docs/19.md");
+  });
+
+  /**
+   * Each of these held the event loop for tens of seconds on the original
+   * code — every user's stream, the scheduler and /health with it — on a file
+   * any signed-in user can put in a repository, or the model can write.
+   * Generous bounds: linear work takes milliseconds.
+   */
+  describe("stays linear on a hostile file", () => {
+    const timed = (text: string): number => {
+      const start = performance.now();
+      findImportRefs(text);
+      return performance.now() - start;
+    };
+
+    it("a megabyte of distinct mentions", () => {
+      // 42.5 s measured on the quadratic membership check.
+      const text = Array.from({ length: 150_000 }, (_, i) => `@m${String(i)}`).join(" ");
+      expect(timed(text)).toBeLessThan(1_000);
+    });
+
+    it("a long run of backticks nothing closes", () => {
+      // 27.0 s measured on the backreference regex.
+      expect(timed(`x ${"`".repeat(300_000)}`)).toBeLessThan(1_000);
+    });
+
+    it("a mention that is a long run of punctuation", () => {
+      expect(timed(`@${".".repeat(300_000)}x`)).toBeLessThan(1_000);
+      expect(findImportRefs(`@${".".repeat(1_000)}x`)).toEqual([`${".".repeat(1_000)}x`]);
+    });
+
+    it("many backtick runs of different lengths", () => {
+      const text = Array.from({ length: 3_000 }, (_, i) => "`".repeat((i % 50) + 1)).join(" a ");
+      expect(timed(text)).toBeLessThan(1_000);
+    });
   });
 
   it("is only followed in the files whose tools define it", () => {

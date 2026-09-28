@@ -32,13 +32,23 @@ export function importsEnabledFor(path: string): boolean {
 }
 
 /**
- * The `@path` mentions in a file, in order, each once. A mention starts a line
- * or follows whitespace (so an email address is not one), and is ignored
- * inside fenced code and inline code spans — the same places Claude Code
- * ignores it. Trailing sentence punctuation is not part of the path.
+ * The `@path` mentions in a file, in order, each once, and at most
+ * `MAX_REFS_PER_FILE` of them — nothing past that is ever followed, so nothing
+ * past it is scanned. A mention starts a line or follows whitespace (so an
+ * email address is not one), and is ignored inside fenced code and inline code
+ * spans — the same places Claude Code ignores it. Trailing sentence
+ * punctuation is not part of the path.
+ *
+ * Linear in the file, deliberately, and so is everything it calls. It runs on
+ * the event loop over a file anyone can write — a crafted repository, or a
+ * nested CLAUDE.md the model wrote itself — and three quadratic steps once
+ * blocked it for tens of seconds on a 1 MB file: a list membership check over
+ * every mention, a backreference regex for inline code, and a trailing
+ * punctuation regex, each of which backtracks on a long enough run.
  */
 export function findImportRefs(text: string): string[] {
   const refs: string[] = [];
+  const seen = new Set<string>();
   let fence: string | null = null;
   for (const line of text.split("\n")) {
     const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
@@ -49,13 +59,64 @@ export function findImportRefs(text: string): string[] {
       continue;
     }
     if (fence !== null) continue;
-    const prose = line.replace(/(`+)[\s\S]*?\1/g, " ");
-    for (const m of prose.matchAll(/(?:^|\s)@([^\s`<>()[\]{}"']+)/g)) {
-      const ref = m[1].replace(/[.,;:!?]+$/, "");
-      if (ref && !ref.includes("://") && !refs.includes(ref)) refs.push(ref);
+    for (const m of stripInlineCode(line).matchAll(/(?:^|\s)@([^\s`<>()[\]{}"']+)/g)) {
+      const ref = trimTrailingPunctuation(m[1]);
+      if (!ref || ref.includes("://") || seen.has(ref)) continue;
+      seen.add(ref);
+      refs.push(ref);
+      if (refs.length >= MAX_REFS_PER_FILE) return refs;
     }
   }
   return refs;
+}
+
+/**
+ * A line with its inline code spans replaced by a space. A run of backticks
+ * opens a span that the next run of the *same* length closes (CommonMark's
+ * rule); a run nothing closes stays literal. One pass to list the runs, one to
+ * link each to the next run of its length, one to cut — where a backreference
+ * regex backtracked quadratically on a long unclosed run.
+ */
+export function stripInlineCode(line: string): string {
+  if (!line.includes("`")) return line;
+  const runs: { start: number; length: number }[] = [];
+  for (let i = 0; i < line.length; ) {
+    if (line[i] !== "`") {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j < line.length && line[j] === "`") j++;
+    runs.push({ start: i, length: j - i });
+    i = j;
+  }
+  const closer = new Array<number>(runs.length).fill(-1);
+  const nextOfLength = new Map<number, number>();
+  for (let k = runs.length - 1; k >= 0; k--) {
+    closer[k] = nextOfLength.get(runs[k].length) ?? -1;
+    nextOfLength.set(runs[k].length, k);
+  }
+  let out = "";
+  let from = 0;
+  for (let k = 0; k < runs.length; ) {
+    const close = closer[k];
+    if (close === -1) {
+      k++;
+      continue;
+    }
+    out += `${line.slice(from, runs[k].start)} `;
+    from = runs[close].start + runs[close].length;
+    k = close + 1;
+  }
+  return out + line.slice(from);
+}
+
+const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?"]);
+
+function trimTrailingPunctuation(ref: string): string {
+  let end = ref.length;
+  while (end > 0 && TRAILING_PUNCTUATION.has(ref[end - 1])) end--;
+  return ref.slice(0, end);
 }
 
 /**
@@ -98,7 +159,7 @@ export async function collectImports(
 
   const walk = async (from: string, text: string, depth: number): Promise<void> => {
     if (depth > MAX_IMPORT_DEPTH) return;
-    for (const ref of findImportRefs(text).slice(0, MAX_REFS_PER_FILE)) {
+    for (const ref of findImportRefs(text)) {
       if (out.length >= MAX_IMPORTED_FILES || remaining <= 0) return;
       const path = resolveImportPath(from, ref);
       if (path === null || seen.has(path)) continue;
