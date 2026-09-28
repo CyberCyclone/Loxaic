@@ -42,7 +42,7 @@ import type { ServerToExecutor } from "../../../executor/protocol.ts";
 const requests: string[][] = [];
 /** The options each request went out with, in the same order — so a case can
  * assert not just *what* was sent but under what constraint. */
-const requestOptions: { toolChoice?: string; toolCount: number }[] = [];
+const requestOptions: { toolChoice?: string; toolCount: number; tools: string }[] = [];
 
 vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../inference/provider.ts")>();
@@ -54,7 +54,13 @@ vi.mock("../../../inference/provider.ts", async (importOriginal) => {
       // like at the *end* of the run and quietly assert nothing.
       requests.push(msgs.map((m) => JSON.stringify(m)));
       const opts = (options ?? {}) as { toolChoice?: string; tools?: unknown[] };
-      requestOptions.push({ toolChoice: opts.toolChoice, toolCount: opts.tools?.length ?? 0 });
+      requestOptions.push({
+        toolChoice: opts.toolChoice,
+        toolCount: opts.tools?.length ?? 0,
+        // The schemas themselves: the same count of different tools rewrites
+        // the prompt as surely as a missing one.
+        tools: JSON.stringify(opts.tools ?? []),
+      });
       return actual.streamCompletion(model, msgs, options as never);
     },
   };
@@ -813,7 +819,8 @@ describe("a compaction extends the prompt it compacts", () => {
     expect(compaction.slice(0, lastRun.length)).toEqual(lastRun);
     expect(compaction.length).toBeGreaterThan(lastRun.length);
     expect(compaction.at(-1)).toContain("Summarize this conversation");
-    expect(requestOptions.at(-1)).toEqual({ toolChoice: "none", toolCount: lastOptions?.toolCount });
+    expect(requestOptions.at(-1)).toEqual({ ...lastOptions, toolChoice: "none" });
+    expect(lastOptions?.toolCount).toBeGreaterThan(0);
 
     // It finished — the usage row (fractional timings from the mock, as from
     // llama.cpp) no longer throws the summary away.

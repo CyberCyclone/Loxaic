@@ -280,6 +280,12 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promis
 const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
+/** A prompt the mock answers with no text at all — what a backend that ignores
+ * `tool_choice: "none"` and calls a tool leaves a summary with. Keyed on the
+ * prompt, so `/compact say nothing` reaches it: the guidance rides in the
+ * compaction's instruction. */
+const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
+
 /**
  * The mock's plan (#199), built from the prompt it answers so a revision is
  * visibly a different plan from the one it revises, and long enough — forty
@@ -513,6 +519,8 @@ async function* mockStream(
         function: { name: t.name, arguments: JSON.stringify(t.args) },
       });
     }
+  } else if (MOCK_EMPTY_MATCH.test(prompt)) {
+    fullText = "";
   } else if (noTools) {
     // Distinct wording so a spec can tell "the model wrapped up because it was
     // told to" from the generic post-tool summary below, which it would

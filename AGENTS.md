@@ -506,6 +506,10 @@ replies.
     redundant resync. `subscribeOnSelect`, the routine screen's version of this, is gone.
   - **The cost:** the first open of a thread on a socket also snapshots its last three finished
     runs, as a reconnect does. The routine screen paid that on every open.
+  - **A watch re-authorizes each run it delivers.** It outlives the command that installed it, so
+    without that a share revoked since kept receiving every later run on the conversation, a
+    compaction's summary of the whole thread included. Found in review.
+    `delivery-new-run.test.ts` revokes mid-watch.
   - `compaction-live.spec.ts` covers both: a thread this page created, and one opened from the
     list after a fresh start.
   - **On Android, an element beside a spinner cannot be found in time.** UiAutomator2 waits for
@@ -1654,6 +1658,15 @@ replies.
   - **The shape is kept in memory per conversation** (LRU, 500). Compaction falls back to the
     old stripped request for a different model, after a restart (no shape), or when the window
     lacks room for the summary: a quarter of it, up to 8k (`summaryHeadroomTokens`).
+    **Room is judged only on known figures** (`compactionHasRoom`): an unknown window or last
+    turn claims none. The stripped request is the one more likely to fit, and it keeps the stats'
+    `before` fallback (prompt minus instruction) true, since only that request carries no system
+    prompt or tools to subtract as well.
+- **An empty summary fails the compaction; it is never committed.** `loadHistory` skips a
+  textless summary as a cutoff, so a `complete` one compacted nothing while the card claimed the
+  whole saving, and the next turn re-crossed the threshold and paid for another. A backend that
+  ignores `tool_choice: "none"` and calls a tool is the likely way there. The mock's `say nothing`
+  prompt answers with no text.
 - **The turn after a compaction still costs one full prompt re-evaluation**, because its front
   is new: the summary replaces the history. That is the trade being made: one expensive turn to
   make every subsequent one cheap. It is also why the threshold is not lower.

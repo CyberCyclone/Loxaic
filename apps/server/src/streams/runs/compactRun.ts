@@ -99,6 +99,9 @@ export function summaryHeadroomTokens(windowTokens: number): number {
   return Math.min(8192, Math.floor(windowTokens / 4));
 }
 
+/** A compaction that produced no summary text: stored with its own reason. */
+class EmptySummaryError extends Error {}
+
 /**
  * What a compaction sends.
  *
@@ -145,6 +148,25 @@ export function compactionRequest(input: {
 }
 
 /**
+ * Whether the conversation's own request, plus the instruction, leaves room for
+ * a summary. Both figures have to be known: without the last turn's size or the
+ * window there is no telling, and the stripped request is the one more likely
+ * to fit. That costs a cache miss on a cold thread rather than a compaction the
+ * window cannot hold. It also keeps `computeCompactionStats`' fallback honest:
+ * an unknown `before` always means the stripped request, whose prompt minus the
+ * instruction really is the conversation.
+ */
+export function compactionHasRoom(input: {
+  windowTokens: number | null;
+  before: number | null;
+  instructionTokens: number;
+}): boolean {
+  const { windowTokens, before } = input;
+  if (windowTokens == null || before == null) return false;
+  return before + input.instructionTokens + summaryHeadroomTokens(windowTokens) <= windowTokens;
+}
+
+/**
  * The savings arithmetic, pure and exported for tests.
  *
  * `after` is the backend's own completion count for the summary — exact.
@@ -164,7 +186,9 @@ export function computeCompactionStats(input: {
   completionTokens: number;
   /** Estimated cost of the instruction we appended — it was in the compact
    * call's prompt but was never part of the conversation, so the fallback
-   * subtracts it. */
+   * subtracts it. The fallback only runs when `lastTurnTokens` is unknown, and
+   * then the request was always the stripped one (`compactionHasRoom`): no
+   * system prompt or tool schemas to subtract as well. */
   instructionTokens: number;
   summaryText: string;
   guidance?: string;
@@ -317,10 +341,11 @@ export async function startCompactRun(input: {
   const instruction = buildInstruction(guidance);
   const before = await lastTurnTokens(convId);
   const window = await resolveWindow(model).catch(() => null);
-  const hasRoom =
-    window == null ||
-    before == null ||
-    before + estimateTokens("current", instruction) + summaryHeadroomTokens(window) <= window;
+  const hasRoom = compactionHasRoom({
+    windowTokens: window,
+    before,
+    instructionTokens: estimateTokens("current", instruction),
+  });
   const request = compactionRequest({ shape: lastRequestShape(convId), model, history, instruction, hasRoom });
 
   void runCompactGeneration({
@@ -479,6 +504,20 @@ async function runCompactGeneration(ctx: {
       // replaying reasoning into the card (or the log) buys nothing.
     }
 
+    if (!summaryText.trim()) {
+      // Nothing to replace the history with. Committed as complete, this row
+      // would be skipped as a cutoff by loadHistory (it looks for a summary
+      // with text), so nothing would be compacted while the card claimed the
+      // whole saving — and the next turn would cross the threshold and pay for
+      // another compaction. A backend that ignored `tool_choice: "none"` and
+      // answered with a call is the likely way here.
+      throw new EmptySummaryError(
+        doneResult?.toolCalls.length
+          ? "The model called a tool instead of writing the summary, so nothing was compacted."
+          : "The model returned no summary, so nothing was compacted.",
+      );
+    }
+
     if (jitLoaded) {
       invalidateBackendModels(await resolveModelRef(model).then((r) => r.provider.id).catch(() => undefined));
       windowTokens = (await resolveWindow(model)) ?? windowTokens;
@@ -562,7 +601,11 @@ async function runCompactGeneration(ctx: {
   } catch (err) {
     const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
     const status = isAbort ? "cancelled" : "error";
-    const eventError = isAbort ? undefined : turnErrorText(err, `compaction failed in ${convId}`);
+    const eventError = isAbort
+      ? undefined
+      : err instanceof EmptySummaryError
+        ? err.message
+        : turnErrorText(err, `compaction failed in ${convId}`);
 
     // A partial summary must never be mistaken for a compaction point, so it
     // is persisted with a non-complete status — which the loaders' summary

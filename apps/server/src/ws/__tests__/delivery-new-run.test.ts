@@ -14,9 +14,14 @@ import type { ServerMessage } from "@loxaic/types";
  * compaction card that switched to the typing indicator minutes in, whenever a
  * later resync finally said so. Seen on the beta.
  */
+/** Flipped to stand in for a share revoked while the socket stays open. */
+const access = vi.hoisted(() => ({ revoked: false }));
 vi.mock("../../streams/authz.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../streams/authz.ts")>();
-  return { ...actual, assertConversationAccess: () => Promise.resolve() };
+  return {
+    ...actual,
+    assertConversationAccess: () => (access.revoked ? Promise.reject(new actual.NotFoundError()) : Promise.resolve()),
+  };
 });
 
 const { createDelivery } = await import("../delivery.ts");
@@ -83,5 +88,27 @@ describe("a run the server started", () => {
 
     await compaction.end("complete");
     delivery.close();
+  });
+
+  it("stops reaching a device whose access was revoked after it started watching", async () => {
+    // The watch outlives the command that installed it. Every command
+    // re-authorizes; a run announced to the watch must too, or a revoked share
+    // goes on receiving every later run — a compaction's summary included.
+    const sent: ServerMessage[] = [];
+    const delivery = createDelivery(userId, (m) => sent.push(m), () => 0);
+    await delivery.handleSubscribe(convId, {});
+    access.revoked = true;
+    try {
+      const streamId = uuid();
+      const producer = await getStreamBroker().openProducer({ streamId, conversationId: convId, userId, surface: "chat" });
+      announceNewRun(convId, streamId);
+      producer.emit({ kind: "text.delta", message_id: uuid(), text: "not for them" });
+      await new Promise((r) => setTimeout(r, 200));
+      expect(sent.filter((m) => "stream_id" in m && m.stream_id === streamId)).toEqual([]);
+      await producer.end("complete");
+    } finally {
+      access.revoked = false;
+      delivery.close();
+    }
   });
 });

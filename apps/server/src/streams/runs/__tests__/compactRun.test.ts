@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { compactionRequest, computeCompactionStats, stripImagesForCompaction, summaryHeadroomTokens } from "../compactRun.ts";
+import {
+  compactionHasRoom,
+  compactionRequest,
+  computeCompactionStats,
+  stripImagesForCompaction,
+  summaryHeadroomTokens,
+} from "../compactRun.ts";
 import type { ChatMessage } from "../../../inference/provider.ts";
 
 /**
@@ -206,5 +212,23 @@ describe("summaryHeadroomTokens", () => {
     expect(summaryHeadroomTokens(4096)).toBe(1024);
     expect(summaryHeadroomTokens(32_768)).toBe(8192);
     expect(summaryHeadroomTokens(262_144)).toBe(8192);
+  });
+});
+
+describe("compactionHasRoom", () => {
+  it("has room when the last turn, the instruction and a summary fit the window", () => {
+    expect(compactionHasRoom({ windowTokens: 32_768, before: 20_000, instructionTokens: 500 })).toBe(true);
+  });
+
+  it("has none when the summary would not fit after them", () => {
+    // 8k of headroom for a 32k window: 25k + 500 + 8192 > 32768.
+    expect(compactionHasRoom({ windowTokens: 32_768, before: 25_000, instructionTokens: 500 })).toBe(false);
+  });
+
+  it("claims none when either figure is unknown — the stripped request is the one more likely to fit", () => {
+    // A conversation with no usage row is exactly what every thread on the
+    // llama.cpp router was until usage rows stopped failing to write.
+    expect(compactionHasRoom({ windowTokens: 32_768, before: null, instructionTokens: 500 })).toBe(false);
+    expect(compactionHasRoom({ windowTokens: null, before: 1_000, instructionTokens: 500 })).toBe(false);
   });
 });

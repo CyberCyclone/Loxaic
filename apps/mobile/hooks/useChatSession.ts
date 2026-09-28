@@ -323,7 +323,9 @@ export function useChatSession(
   const watchesRef = useRef(new ConversationWatches());
   const watchConversation = useCallback((convId: string) => {
     const ws = wsRef.current;
-    // A socket still connecting subscribes everything it needs on open.
+    // A socket still connecting subscribes, on open, whatever is on screen
+    // then (resubscribeKnown). A thread opened and left while it connected is
+    // watched again the next time it is opened, which is when its runs matter.
     if (ws?.readyState !== WebSocket.OPEN || !watchesRef.current.claim(convId)) return;
     const tracked = streamingByConvRef.current[convId];
     subscribeStreams(ws, convId, tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined);

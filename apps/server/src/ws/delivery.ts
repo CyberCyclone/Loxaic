@@ -284,7 +284,14 @@ export function createDelivery(
       // the thread but never counted the run as going — no Stop button, a
       // composer that looked free, and a summary card that switched to the
       // typing indicator whenever a later resync finally said so.
-      subscribeToStream(streamId, conversationId, 0, "forceSync").catch(() => undefined);
+      //
+      // Re-authorized per run, because a watch outlives the command that
+      // installed it: a share revoked since must not go on receiving every
+      // later run on the conversation, a compaction's summary of the whole
+      // thread included. Every command re-authorizes; so does this.
+      assertConversationAccess(userId, conversationId)
+        .then(() => subscribeToStream(streamId, conversationId, 0, "forceSync"))
+        .catch(() => undefined);
     });
     convWatches.set(conversationId, unwatch);
   }
