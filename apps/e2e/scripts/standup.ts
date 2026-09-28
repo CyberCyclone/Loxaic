@@ -377,6 +377,7 @@ async function ensureServer(): Promise<void> {
     'other-repo': path.join(FIXTURES_DIR, 'bugfix-app'),
     'seeded-app': SEED_DIR,
     'instructions-app': path.join(FIXTURES_DIR, 'instructions-app'),
+    'imports-app': path.join(FIXTURES_DIR, 'imports-app'),
   };
   gitServer = await startGitServer({ dir: GIT_SERVER_DIR, fixtures: fixtureRepos });
   const mockGithub = await startMockGithub({

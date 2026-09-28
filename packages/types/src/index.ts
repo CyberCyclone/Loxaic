@@ -68,6 +68,16 @@ export interface InstructionsDecision {
   windowTokens: number | null;
   mode: InstructionsMode;
 }
+/** A file the instructions file pulls in with `@path` (CLAUDE.md, GEMINI.md). */
+export interface ImportedInstructions {
+  /** Relative to the workspace root. */
+  path: string;
+  /** The file whose `@path` mention brought this one in. */
+  importedBy: string;
+  text: string;
+  sourceBytes: number;
+  sourceTruncated: boolean;
+}
 export type ProjectInstructions =
   | {
       status: "found";
@@ -82,6 +92,11 @@ export type ProjectInstructions =
       /** Estimated tokens, measured once when the snapshot is written, so a
        * listing never re-measures megabytes it is about to throw away. */
       tokens?: number;
+      /** What `text` imports, in order; absent when it imports nothing. */
+      imports?: ImportedInstructions[];
+      /** `imports.length`, stored so a listing that leaves the texts out still
+       * knows how many there are. */
+      importCount?: number;
     }
   | { status: "none"; fetchedAt: string }
   /** Looked, and could not find out: kept so the next run does not pay the
@@ -92,7 +107,17 @@ export type InstructionsUnavailableReason = "no-github-connection" | "machine-of
 
 /** What a client is told about a conversation's instructions — never the text. */
 export type ProjectInstructionsSummary =
-  | { status: "found"; path: string; mode: InstructionsMode | null; tokens: number; sourceBytes: number; sourceTruncated: boolean }
+  | {
+      status: "found";
+      path: string;
+      mode: InstructionsMode | null;
+      /** The file and everything it imports. */
+      tokens: number;
+      sourceBytes: number;
+      sourceTruncated: boolean;
+      /** How many files it imports; absent on an older server. */
+      imports?: number;
+    }
   | { status: "none" }
   | { status: "unavailable"; reason: InstructionsUnavailableReason };
 

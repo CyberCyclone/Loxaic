@@ -16,7 +16,7 @@ import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
 import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
-import { ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
+import { combinedText, ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
 import { modelRunInfo } from "../../inference/models.ts";
 
 /**
@@ -77,7 +77,7 @@ export async function agentSystemPrompt(input: {
   });
   if (snap?.status !== "found") return base;
   const windowTokens = (await modelRunInfo(input.model).catch(() => null))?.windowTokens ?? null;
-  const resolved = resolveDecision(snap.text, snap.decision, input.model, windowTokens);
+  const resolved = resolveDecision(combinedText(snap.text, snap.imports), snap.decision, input.model, windowTokens);
   let decision: InstructionsDecision | undefined = resolved.decision;
   if (resolved.changed) {
     // The prompt follows what is stored, never a decision the database did

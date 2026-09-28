@@ -239,6 +239,12 @@ export async function getFileText(
     if (err instanceof GithubApiError && err.status === 404) return null;
     throw err;
   }
+  // A directory (or a symlink leading out of the repository) is answered in
+  // JSON whatever media type was asked for — not a file, so not an answer.
+  if ((res.headers.get("content-type") ?? "").startsWith("application/json")) {
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
   const body = await readCapped(res, maxBytes);
   return { text: new TextDecoder().decode(body.bytes), bytes: body.bytes.length, truncated: body.truncated };
 }

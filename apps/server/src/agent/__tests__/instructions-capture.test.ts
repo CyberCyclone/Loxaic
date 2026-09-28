@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
@@ -36,6 +36,8 @@ const userId = `test-instructions-${uuid()}`;
 const TOKEN = `ghp_${"z9y8x7w6v5".repeat(3)}qrstu`;
 let mock: Server;
 let hits: string[] = [];
+/** Called with each request's path, before it is answered. */
+let onRequest: (path: string) => void = () => undefined;
 /** repo → file → body, or a status to answer with. */
 let files: Partial<Record<string, Record<string, string | number>>> = {};
 
@@ -43,9 +45,14 @@ beforeAll(async () => {
   mock = createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://x");
     hits.push(`${url.pathname}${url.search}`);
+    onRequest(url.pathname);
     const m = /^\/repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(url.pathname);
     const entry = m ? files[m[1]]?.[decodeURIComponent(m[2])] : undefined;
-    if (typeof entry === "number") {
+    if (entry === "DIR") {
+      // What GitHub sends for a directory, whatever media type was asked for.
+      res.setHeader("content-type", "application/json; charset=utf-8");
+      res.end(JSON.stringify([{ type: "file", name: "x.md" }]));
+    } else if (typeof entry === "number") {
       res.statusCode = entry;
       res.end(JSON.stringify({ message: `failed; token was ${req.headers.authorization ?? ""}` }));
     } else if (typeof entry === "string" && url.searchParams.get("ref") === "trunk" && req.headers.accept === "application/vnd.github.raw") {
@@ -65,6 +72,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   hits = [];
   files = {};
+  onRequest = () => undefined;
   await upsertConnection(userId, { token: TOKEN, login: "octo", name: null, email: null, scopes: "repo" });
 });
 
@@ -129,6 +137,29 @@ describe("a github workspace", () => {
         path: expected,
       });
     }
+  });
+
+  it("follows a CLAUDE.md's imports through the same API, and not a directory's listing", async () => {
+    files["octo/real"] = {
+      "CLAUDE.md": "See @docs/rules.md, @docs and @someone.\n",
+      "docs/rules.md": "# Rules\nAlso @../extra.md\n",
+      "extra.md": "extra rules",
+      docs: "DIR",
+    };
+    const id = await conversation(github);
+    const snap = await ensureInstructions(id, userId, github);
+    expect(snap?.status === "found" && snap.imports?.map((i) => [i.path, i.importedBy])).toEqual([
+      ["docs/rules.md", "CLAUDE.md"],
+      ["extra.md", "docs/rules.md"],
+    ]);
+  });
+
+  it("follows nothing from AGENTS.md", async () => {
+    files["octo/real"] = { "AGENTS.md": "Uses @docs/rules.md\n", "docs/rules.md": "rules" };
+    const id = await conversation(github);
+    const snap = await ensureInstructions(id, userId, github);
+    expect(snap).toMatchObject({ status: "found", path: "AGENTS.md" });
+    expect(snap?.status === "found" && snap.imports).toBeUndefined();
   });
 
   it("records that there is none, so it is not looked for again", async () => {
@@ -215,8 +246,46 @@ describe("a github workspace", () => {
     expect(JSON.stringify(row.instructions)).not.toContain("Use pnpm");
     expect(summarizeInstructions(row.instructions)).toEqual({
       status: "found", path: "AGENTS.md", mode: null, tokens: instructionTokens("# Rules\nUse pnpm, always.\n"),
-      sourceBytes: 26, sourceTruncated: false,
+      sourceBytes: 26, sourceTruncated: false, imports: 0,
     });
+  });
+
+  it("keeps the root file when an import cannot be read", async () => {
+    files["octo/real"] = { "CLAUDE.md": "@docs/a.md @docs/b.md\n", "docs/a.md": 502, "docs/b.md": "b rules" };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const id = await conversation(github);
+      const snap = await ensureInstructions(id, userId, github);
+      expect(snap).toMatchObject({ status: "found", path: "CLAUDE.md" });
+      expect(snap?.status === "found" && snap.imports?.map((i) => i.path)).toEqual(["docs/b.md"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stores nothing when the run is stopped between the file and its imports", async () => {
+    files["octo/real"] = { "CLAUDE.md": "@docs/a.md\n", "docs/a.md": "a" };
+    const id = await conversation(github);
+    const stop = new AbortController();
+    // Stop lands after CLAUDE.md was read, as its import is asked for: the
+    // import's read fails and is left out, and that must not be frozen.
+    onRequest = (path) => { if (path.endsWith("/docs/a.md")) stop.abort(); };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      expect(await ensureInstructions(id, userId, github, stop.signal)).toBeNull();
+      expect(await stored(id)).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("lists a conversation without its imports' texts, and still counts them", async () => {
+    files["octo/real"] = { "CLAUDE.md": "@docs/a.md\n", "docs/a.md": "IMPORTED TEXT" };
+    const id = await conversation(github);
+    await ensureInstructions(id, userId, github);
+    const [row] = await db.select({ instructions: INSTRUCTIONS_SUMMARY_COLUMN }).from(conversations).where(eq(conversations.id, id));
+    expect(JSON.stringify(row.instructions)).not.toContain("IMPORTED TEXT");
+    expect(summarizeInstructions(row.instructions)).toMatchObject({ status: "found", imports: 1 });
   });
 });
 
@@ -268,6 +337,25 @@ describe("other workspaces", () => {
       rmSync(path.join(root, "GEMINI.md"));
       const id2 = await conversation(local());
       expect(await ensureInstructions(id2, userId, local())).toMatchObject({ status: "found", path: ".github/copilot-instructions.md" });
+    });
+
+    it("follows imports on the user's machine, but never through a symlink out of the folder", async () => {
+      const outside = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-instr-outside-")));
+      try {
+        writeFileSync(path.join(outside, "secret.md"), "SECRET\n");
+        mkdirSync(path.join(root, "docs"));
+        writeFileSync(path.join(root, "docs/rules.md"), "local imported rules\n");
+        symlinkSync(path.join(outside, "secret.md"), path.join(root, "docs/leak.md"));
+        writeFileSync(path.join(root, "CLAUDE.md"), "@docs/rules.md\n@docs/leak.md\n");
+        connectMachine([root]);
+        const id = await conversation(local());
+        const snap = await ensureInstructions(id, userId, local());
+        expect(snap?.status === "found" && snap.imports?.map((i) => [i.path, i.text])).toEqual([
+          ["docs/rules.md", "local imported rules\n"],
+        ]);
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
     });
 
     it("records none for a folder without one", async () => {

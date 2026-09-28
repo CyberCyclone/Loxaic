@@ -30,16 +30,21 @@ export function describeProjectInstructions(
   }
   const size = `~${formatTokens(summary.tokens)} tokens`;
   const partial = summary.sourceTruncated ? ` Only its first ${formatKb(summary.sourceBytes)} was read.` : '';
+  const n = summary.imports ?? 0;
+  // With imports, the size and the verdict are about all of them together.
+  const what = n > 0 ? `${summary.path} and the ${n === 1 ? 'file' : `${String(n)} files`} it imports (${size})` : `${summary.path} (${size})`;
+  const their = n > 0 ? 'their' : 'its';
+  const are = n > 0 ? 'are' : 'is';
   switch (summary.mode) {
     case 'full':
-      return `${summary.path} (${size}) is included in full.${partial}`;
+      return `${what} ${are} included in full.${partial}`;
     case 'outline':
       return (
-        `${summary.path} (${size}) is more than this model's context window can spare, so the agent gets its ` +
+        `${what} ${are} more than this model's context window can spare, so the agent gets ${their} ` +
         `opening and section headings, and reads sections as it needs them.${partial}`
       );
     default:
-      return `${summary.path} (${size}) found.${partial}`;
+      return `${what} found.${partial}`;
   }
 }
 

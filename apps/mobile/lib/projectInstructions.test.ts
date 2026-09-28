@@ -26,6 +26,13 @@ describe('describeProjectInstructions', () => {
     expect(describeProjectInstructions({ ...found, tokens: 812, mode: null }, 'local')).toBe('AGENTS.md (~812 tokens) found.');
   });
 
+  it('speaks of a file and what it imports together', () => {
+    const imported = { ...found, path: 'CLAUDE.md', tokens: 900, imports: 2 };
+    expect(describeProjectInstructions({ ...imported, mode: 'full' }, 'github')).toBe('CLAUDE.md and the 2 files it imports (~900 tokens) are included in full.');
+    expect(describeProjectInstructions({ ...imported, imports: 1, mode: 'outline' }, 'github')).toMatch(/^CLAUDE\.md and the file it imports \(~900 tokens\) are more than .* gets their opening/);
+    expect(describeProjectInstructions({ ...imported, imports: 0, mode: 'full' }, 'github')).toBe('CLAUDE.md (~900 tokens) is included in full.');
+  });
+
   it('says when only part of a huge file was read', () => {
     const out = describeProjectInstructions({ ...found, mode: 'outline', sourceBytes: 1024 * 1024, sourceTruncated: true }, 'github');
     expect(out).toMatch(/Only its first 1 MB was read\.$/);

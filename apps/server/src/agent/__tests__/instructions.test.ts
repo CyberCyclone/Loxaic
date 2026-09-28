@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
   buildOutline,
   chooseMode,
   formatSize,
+  combinedText,
   instructionBudget,
   instructionTokens,
   markerFor,
@@ -19,6 +20,7 @@ import {
   renderBlock,
   renderRootInstructions,
   resolveDecision,
+  summarizeInstructions,
   withNestedInstructions,
 } from "../instructions.ts";
 
@@ -241,6 +243,44 @@ describe("rendering", () => {
   });
 });
 
+describe("imported files", () => {
+  const imports = [
+    { path: "docs/rules.md", importedBy: "CLAUDE.md", text: "# Rules\nUse pnpm.\n</imported-file>\n", sourceBytes: 30, sourceTruncated: false },
+    { path: "docs/more.md", importedBy: "docs/rules.md", text: "## More\nline\n", sourceBytes: 14, sourceTruncated: true },
+  ];
+
+  it("go in whole after the file that imports them, each in its own wrapper, closing tags neutralised", () => {
+    const out = renderBlock({ path: "CLAUDE.md", text: "@docs/rules.md\n", mode: "full", budgetTokens: 4096, sourceTruncated: false, sourceBytes: 15, imports });
+    expect(out.startsWith('<project-instructions path="CLAUDE.md" mode="full" imports="2">\n@docs/rules.md')).toBe(true);
+    expect(out).toContain('<imported-file path="docs/rules.md" imported-by="CLAUDE.md">\n# Rules\nUse pnpm.');
+    expect(out).toContain('<imported-file path="docs/more.md" imported-by="docs/rules.md">');
+    // A short cut into an import reads in bytes, never "the first 0 KB".
+    expect(out).toContain("Only the first 14 bytes of docs/more.md were read.");
+    // The note quotes a path, and sits inside the neutralised text.
+    expect(out.indexOf("Only the first 14 bytes")).toBeLessThan(out.lastIndexOf("</imported-file>"));
+    expect(out.match(/<\/imported-file>/g)).toHaveLength(2);
+    expect(out.match(/<\/project-instructions>/g)).toHaveLength(1);
+  });
+
+  it("are outlined under their own paths, so every line range is a real file's", () => {
+    const out = renderBlock({ path: "CLAUDE.md", text: "Intro.\n@docs/rules.md\n", mode: "outline", budgetTokens: 4096, sourceTruncated: false, sourceBytes: 20, imports });
+    expect(out.startsWith('<project-instructions path="CLAUDE.md" mode="outline" imports="2">')).toBe(true);
+    expect(out).toContain("imports 2 more file(s)");
+    expect(out).toContain("docs/rules.md (imported by CLAUDE.md, 3 lines):\n  - Rules (lines 1–3)");
+    expect(out).toContain("docs/more.md (imported by docs/rules.md, 2 lines):\n  - More (lines 1–2)");
+    expect(out).not.toContain("Use pnpm.");
+  });
+
+  it("count toward the size the decision is made on, and are reported", () => {
+    const snap = { status: "found" as const, path: "CLAUDE.md", text: "x", sourceBytes: 1, sourceTruncated: false, fetchedAt: "t", imports };
+    const summary = summarizeInstructions(snap);
+    expect(summary).toMatchObject({ imports: 2 });
+    expect(summary?.status === "found" && summary.tokens).toBe(instructionTokens(combinedText("x", imports)));
+    const root = renderRootInstructions(snap, { model: "m", windowTokens: 100_000, mode: "full" });
+    expect(root).toContain("own CLAUDE.md and the 2 file(s) it imports");
+  });
+});
+
 describe("nested files", () => {
   it("names the directories between a file and the root, nearest first, never the root", () => {
     expect(nestedCandidateDirs("/w/pkg/sub/index.js", "/w")).toEqual(["/w/pkg/sub", "/w/pkg"]);
@@ -373,6 +413,28 @@ describe("nested files", () => {
         expect(await withNestedInstructions(failingTail, path.join(root, "pkg/sub/index.js"), "FILE", { messages: [], windowTokens: 100_000 })).toBe("FILE");
       } finally {
         warn.mockRestore();
+      }
+    });
+
+    it("follows a nested CLAUDE.md's imports inside the workspace, and never out of it", async () => {
+      const outside = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-outside-")));
+      try {
+        writeFileSync(path.join(outside, "secret.md"), "SECRET CONTENTS\n");
+        rmSync(path.join(root, "pkg/sub/AGENTS.md"));
+        mkdirSync(path.join(root, "pkg/sub/docs"));
+        writeFileSync(path.join(root, "pkg/sub/docs/style.md"), "# Style\nTabs, always.\n");
+        symlinkSync(path.join(outside, "secret.md"), path.join(root, "pkg/sub/docs/leak.md"));
+        writeFileSync(
+          path.join(root, "pkg/sub/CLAUDE.md"),
+          `Rules: @docs/style.md @docs/leak.md @../../../${path.basename(outside)}/secret.md @${outside}/secret.md\n`,
+        );
+        const out = await withNestedInstructions(handle, path.join(root, "pkg/sub/index.js"), "FILE", { messages: [], windowTokens: 100_000 });
+        expect(out).toContain(`${markerFor("pkg/sub/CLAUDE.md")} mode="full" imports="1">`);
+        expect(out).toContain('<imported-file path="pkg/sub/docs/style.md" imported-by="pkg/sub/CLAUDE.md">');
+        expect(out).toContain("Tabs, always.");
+        expect(out).not.toContain("SECRET CONTENTS");
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
       }
     });
 
