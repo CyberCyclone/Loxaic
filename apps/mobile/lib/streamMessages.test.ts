@@ -290,3 +290,38 @@ describe('a snapshot folded into a thread loaded a page at a time (#213)', () =>
     expect(msgs.map((m) => m.id)).toEqual(['a1', 'u2', 'a2', 'lm1']);
   });
 });
+
+describe('an instructions change on a user message', () => {
+  const update = { kind: 'instructions_update' as const, path: 'AGENTS.md', text: '<project-instructions-update …>', summary: 'AGENTS.md: 1 section changed' };
+
+  it('is read back from history, without touching what the user typed', () => {
+    const [m] = reconstructMessages([
+      row({ id: 'u1', authorType: 'user', content: [{ kind: 'text', text: 'hello' }, update] }),
+    ]);
+    expect(m.text).toBe('hello');
+    expect(m.instructionsUpdate).toEqual({ path: 'AGENTS.md', summary: 'AGENTS.md: 1 section changed' });
+  });
+
+  it('arrives live on the message it rode on, and only that one', () => {
+    const msgs = [
+      { id: 'u1', role: 'user' as const, text: 'one' },
+      { id: 'u2', role: 'user' as const, text: 'two' },
+    ];
+    const next = applyEventToMsgs(msgs, { kind: 'instructions.update', message_id: 'u2', path: 'AGENTS.md', summary: 'AGENTS.md: rewritten' });
+    expect(next[0].instructionsUpdate).toBeUndefined();
+    expect(next[1].instructionsUpdate).toEqual({ path: 'AGENTS.md', summary: 'AGENTS.md: rewritten' });
+  });
+
+  it('survives a reconnect through the snapshot', () => {
+    const snapshot = {
+      messages: [
+        {
+          message_id: 'u1', author_type: 'user', parent_id: null, text: 'hi', thinking: '', tool_calls: [], status: 'complete',
+          instructions_update: { path: 'AGENTS.md', summary: 'AGENTS.md was removed' },
+        },
+      ],
+    } as unknown as StreamSnapshot;
+    const [m] = applySnapshotToMsgs([], snapshot);
+    expect(m.instructionsUpdate).toEqual({ path: 'AGENTS.md', summary: 'AGENTS.md was removed' });
+  });
+});

@@ -19,6 +19,7 @@ import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
 import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
+import { instructionsUpdateLine } from '@/lib/projectInstructions';
 import { PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import type { Message as MessageType } from '@/lib/types';
 import { displayModelRef } from '@loxaic/types';
@@ -114,6 +115,17 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
 
   return (
     <>
+      {/* Loxaic's, not the user's: the project's instructions changed before
+          this run, and the agent was given the change ahead of this message. */}
+      {isUser && msg.instructionsUpdate && (
+        <Box className="px-4 pt-2">
+          {/* The testID is on the Text, an assertion anchor: XCUITest does not
+              expose a plain container view's identifier. */}
+          <Text testID="chat.message.instructionsUpdate" size="xs" className="text-center italic text-muted-foreground">
+            {instructionsUpdateLine(msg.instructionsUpdate)}
+          </Text>
+        </Box>
+      )}
       <Box
         testID={`chat.message.${msg.role}`}
         className={`px-4 py-2 ${isUser ? 'bg-primary/5' : ''}`}

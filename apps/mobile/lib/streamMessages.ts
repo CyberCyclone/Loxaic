@@ -39,6 +39,13 @@ export function extractCompaction(blocks: ContentBlock[]): CompactionStats | und
   return { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
 }
 
+/** The last instructions notice on a user message — normally the only one. */
+export function extractInstructionsUpdate(blocks: ContentBlock[]): Message['instructionsUpdate'] {
+  const notes = blocks.filter((b) => b.kind === 'instructions_update');
+  const last = notes.at(-1);
+  return last ? { path: last.path, summary: last.summary } : undefined;
+}
+
 /** Undefined rather than an empty array when there are none: `Message` treats
  * the field as absent, and the render sites all guard on truthiness. */
 export function extractAttachments(blocks: ContentBlock[]): Message['attachments'] {
@@ -130,6 +137,8 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         text: extractField(blocks, 'text'),
         attachments: extractAttachments(blocks),
       };
+      const update = extractInstructionsUpdate(blocks);
+      if (update) msg.instructionsUpdate = update;
       // Only the check-in instruction carries provenance worth rendering; a
       // row is authoritative, so null here really does mean "nobody".
       if (msg.text === CHECKIN_ANSWER_NUDGE) msg.authorUserId = row.authorUserId;
@@ -245,6 +254,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
     attachments: role === 'user' ? sm.attachments : undefined,
     ...('author_user_id' in sm ? { authorUserId: sm.author_user_id } : {}),
     ...(sm.checkin_decision ? { checkinDecision: sm.checkin_decision } : {}),
+    ...(role === 'user' && sm.instructions_update ? { instructionsUpdate: sm.instructions_update } : {}),
   };
 }
 
@@ -332,6 +342,10 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
       return msgs.map((m) => (m.id === event.message_id ? { ...m, text: m.text + event.text } : m));
     case 'thinking.delta':
       return msgs.map((m) => (m.id === event.message_id ? { ...m, thinking: (m.thinking ?? '') + event.text } : m));
+    case 'instructions.update':
+      return msgs.map((m) =>
+        m.id === event.message_id ? { ...m, instructionsUpdate: { path: event.path, summary: event.summary } } : m,
+      );
     case 'compaction': {
       const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
         event;

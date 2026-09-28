@@ -18,6 +18,7 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
 import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
 import { combinedText, ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
 import { modelRunInfo } from "../../inference/models.ts";
+import { prepareInstructions } from "../../agent/instruction-updates.ts";
 
 /**
  * Built at call time from the conversation's immutable workspace and the
@@ -226,6 +227,10 @@ export async function startAgentRun(input: {
     userLamport,
     model,
     mode,
+    // First, before the history loads: a change to the project's
+    // instructions since the last run becomes a notice on this run's user
+    // message (agent/instruction-updates.ts).
+    prepare: () => prepareInstructions({ convId, ownerId, workspace, userMsgId, producer, signal: abort.signal }),
     basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal }),
     surface: "agent",
     // The same gate agentSystemPrompt applies to the root file: a scratch

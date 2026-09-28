@@ -480,6 +480,11 @@ export async function runToolLoop(ctx: {
    * happens inside the run — after `turn.started`, under the run's error
    * handling — rather than in the starter. */
   basePrompt: string | null | (() => Promise<string | null>);
+  /** Runs before the history is loaded. The agent uses it to attach a notice
+   * to this run's user message when the project's instructions changed, so
+   * the live request and every replay read the same stored row. Never fails
+   * the run. */
+  prepare?: () => Promise<void>;
   /** Which surface started this run — so an automatic compaction opens its
    * stream on the same one, and as the MCP defaults to fall back on should the
    * conversation row be unreadable (its own `kind` wins otherwise). */
@@ -521,6 +526,11 @@ export async function runToolLoop(ctx: {
     // this turn carries a document decides whether the document addendum goes
     // in — the same pairing MCP has, where wrapResult's markers are only
     // meaningful alongside an addendum saying what they mean.
+    if (ctx.prepare) {
+      await ctx.prepare().catch((err: unknown) => {
+        console.warn(`run preparation failed for ${convId}: ${(err as Error).message}`);
+      });
+    }
     const history = await loadHistory(convId);
     const hasDocuments = history.messages.some(
       (m) => m.role === "user" && countDocumentParts(m.content) > 0,
@@ -1756,18 +1766,14 @@ async function recordUsage(input: {
  * prompt is a *prefix* of, which is the whole basis of the backend's KV
  * cache. See HISTORY_STEP for what a per-message slide costs.
  */
-export async function loadHistory(
-  conversationId: string,
-): Promise<{
-  messages: ChatMessage[];
-  truncated: boolean;
-  summaryText: string | null;
-  /** Attachments this prompt left out because their class's budget was full.
-   * The model is told (`attachmentContentParts` substitutes a marker), and
-   * this is how the *user* gets told too — without it the thumbnail sits in
-   * the transcript looking exactly like one the model can see. */
-  omittedAttachments: AttachmentRef[];
-}> {
+/**
+ * Where a conversation's replay starts: the newest real compaction point, and
+ * the history window's anchor. `loadHistory` builds its window from exactly
+ * this, and `historyFront` exposes it as a key — so "has the front of the
+ * prompt moved since the last run?" is answered by the same computation that
+ * moves it.
+ */
+async function historyWindow(conversationId: string) {
   // The newest real compaction point, keyed on lamport — the same ordering
   // the main query below uses. Rows at or before it are represented by the
   // summary text and excluded from the replay.
@@ -1784,7 +1790,6 @@ export async function loadHistory(
   const summaryRow = summaryRows
     .map((r) => ({ text: textOf(r.content as ContentBlock[]), lamport: r.lamport }))
     .find((r) => r.text.length > 0);
-  const summaryText = summaryRow?.text ?? null;
 
   const replayable = summaryRow
     ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
@@ -1801,7 +1806,34 @@ export async function loadHistory(
     .from(messages)
     .where(replayable);
 
-  const anchor = historyAnchor(total);
+  return { summaryRow, replayable, total, anchor: historyAnchor(total) };
+}
+
+/** The front of a conversation's replay as a key: it changes when a
+ * compaction lands or the window's anchor moves, and at no other time. */
+export async function historyFront(conversationId: string): Promise<string> {
+  const w = await historyWindow(conversationId);
+  return `${String(w.summaryRow?.lamport ?? 0)}:${String(w.anchor)}`;
+}
+
+export async function loadHistory(
+  conversationId: string,
+  /** `forCompaction`: leave out the instructions notices. They are superseded
+   * by the version the system prompt takes after a compaction, and a summary
+   * of them would carry the project's rules forward in a lossy form. */
+  opts: { forCompaction?: boolean } = {},
+): Promise<{
+  messages: ChatMessage[];
+  truncated: boolean;
+  summaryText: string | null;
+  /** Attachments this prompt left out because their class's budget was full.
+   * The model is told (`attachmentContentParts` substitutes a marker), and
+   * this is how the *user* gets told too — without it the thumbnail sits in
+   * the transcript looking exactly like one the model can see. */
+  omittedAttachments: AttachmentRef[];
+}> {
+  const { summaryRow, replayable, total, anchor } = await historyWindow(conversationId);
+  const summaryText = summaryRow?.text ?? null;
   const windowSize = total - anchor;
   const truncated = anchor > 0;
 
@@ -1868,17 +1900,19 @@ export async function loadHistory(
     if (row.authorType === "user") {
       const text = textOf(blocks);
       const atts = attachmentsOf(blocks);
+      // A notice that the project's instructions changed rides first on the
+      // message it was attached to, exactly as stored. A row without one
+      // keeps precisely its old shape, so no existing prefix moves.
+      const notice = opts.forCompaction ? "" : instructionsNoticeOf(blocks);
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {
-        out.push({
-          role: "user",
-          content: await attachmentContentParts(atts, text, affordable, (a, fullText) =>
-            writeOverflowToSandbox(conversationId, a, fullText),
-          ),
-        });
-      } else if (text) {
-        out.push({ role: "user", content: text });
+        const parts = await attachmentContentParts(atts, text, affordable, (a, fullText) =>
+          writeOverflowToSandbox(conversationId, a, fullText),
+        );
+        out.push({ role: "user", content: notice ? [{ type: "text", text: notice }, ...parts] : parts });
+      } else if (text || notice) {
+        out.push({ role: "user", content: notice ? (text ? `${notice}\n\n${text}` : notice) : text });
       }
       continue;
     }
@@ -1913,6 +1947,15 @@ function attachmentsOf(blocks: ContentBlock[]): AttachmentRef[] {
   return blocks
     .filter((b): b is Extract<ContentBlock, { kind: "attachment" }> => b.kind === "attachment")
     .map((b) => ({ ref: b.ref, mime: b.mime, ...(b.name === undefined ? {} : { name: b.name }) }));
+}
+
+/** The instructions notices on a user message, in the order they were
+ * attached — the text the model was given, verbatim. */
+function instructionsNoticeOf(blocks: ContentBlock[]): string {
+  return blocks
+    .filter((b): b is Extract<ContentBlock, { kind: "instructions_update" }> => b.kind === "instructions_update")
+    .map((b) => b.text)
+    .join("\n\n");
 }
 
 function textOf(blocks: ContentBlock[]): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeProjectInstructions } from './projectInstructions';
+import { describeProjectInstructions, instructionsUpdateLine } from './projectInstructions';
 
 const found = { status: 'found' as const, path: 'AGENTS.md', tokens: 76_830, sourceBytes: 307_321, sourceTruncated: false };
 
@@ -36,5 +36,19 @@ describe('describeProjectInstructions', () => {
   it('says when only part of a huge file was read', () => {
     const out = describeProjectInstructions({ ...found, mode: 'outline', sourceBytes: 1024 * 1024, sourceTruncated: true }, 'github');
     expect(out).toMatch(/Only its first 1 MB was read\.$/);
+  });
+});
+
+describe('a changed file', () => {
+  it('says the agent was told in the chat, and when it moves into its instructions', () => {
+    const out = describeProjectInstructions({ ...found, mode: 'full', tokens: 900, pendingUpdate: true }, 'local');
+    expect(out).toMatch(/is included in full\. It has changed since this conversation started: the agent was given the changes in the chat, and they move into its instructions at the next compaction\.$/);
+    expect(describeProjectInstructions({ status: 'none', pendingUpdate: true }, 'github')).toMatch(/has an instructions file now/);
+  });
+
+  it('shows the server\'s summary on the message it rode on', () => {
+    expect(instructionsUpdateLine({ path: 'AGENTS.md', summary: 'AGENTS.md: 1 section changed' })).toBe(
+      'AGENTS.md: 1 section changed. The agent was given the change with this message.',
+    );
   });
 });

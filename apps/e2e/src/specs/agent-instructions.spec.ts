@@ -18,13 +18,15 @@ import { apiToken, provisionAdmin, provisionUser, uniqueCreds } from '../helpers
 import { VALID_TOKEN } from '../../scripts/mock-github.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { platform, tap, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { platform, tap, waitForFreshText, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   chooseGithubWorkspace,
   connectGithub,
   getToolResults,
   goToSurface,
+  execInSandbox,
   listConversations,
+  listSandboxes,
   selectThread,
   openInspector,
   patchSandboxSettings,
@@ -69,6 +71,14 @@ async function startInRepo(creds: { email: string; password: string }, repoId: n
   await goToSurface('chat');
   await goToSurface('agent');
   await selectThread(id, 'agent');
+}
+
+/** How many instructions notices the conversation's stored messages carry —
+ * read from the API, so "the model was told once" is not the UI's word. */
+async function noticeCount(token: string, conversationId: string): Promise<number> {
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, { headers: { authorization: `Bearer ${token}` } });
+  const body = (await res.json()) as { messages: { content: { kind: string }[] }[] };
+  return body.messages.flatMap((m) => m.content).filter((b) => b.kind === 'instructions_update').length;
 }
 
 async function instructionsSummary(token: string, conversationId: string): Promise<unknown> {
@@ -148,6 +158,37 @@ describe('agent: the project\'s own AGENTS.md', () => {
     await waitForTextIn('agent.inspector.instructions', 'is included in full');
     await shot('instructions-full-inspector');
     await tap('agent.inspector.toggle');
+  });
+
+  it('tells the agent in the chat when AGENTS.md changes in the checkout, once', async function () {
+    this.timeout(2 * 60_000);
+    // Same conversation: its clone exists (the nested read made it), so the
+    // checkout is what each run compares against.
+    const [conversation] = await listConversations(creds);
+    const token = await apiToken(creds);
+    const [sandbox] = await listSandboxes(token, conversation.id);
+    const edit = await execInSandbox(
+      token,
+      sandbox.id,
+      "sed -i 's/Run the tests with node --test./Run the tests with node --test --watch./' AGENTS.md",
+      '/home/loxaic/repo',
+    );
+    expect(edit.exitCode).toBe(0);
+
+    await sendMessage('say hello once more');
+    // The mock reports the notice it found at the front of the user message.
+    await waitForTextIn('chat.messageList', 'Project instructions updated: AGENTS.md.');
+    await waitForRunDone(creds, conversation.id);
+    // Exists with its text, not "on screen": on a phone the keyboard is still
+    // up and the line sits above the message it rode on, out of view.
+    await waitForFreshText('chat.message.instructionsUpdate', 'The agent was given the change with this message.');
+    await shot('instructions-update-notice');
+    expect(await noticeCount(token, conversation.id)).toBe(1);
+
+    // Unchanged since: nothing more is said.
+    await sendMessage('and hello again');
+    await waitForRunDone(creds, conversation.id);
+    expect(await noticeCount(token, conversation.id)).toBe(1);
   });
 
   it('follows a CLAUDE.md\'s @path imports inside the repository', async function () {

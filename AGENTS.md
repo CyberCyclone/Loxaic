@@ -2500,6 +2500,52 @@ replies.
   indented from its own top heading. Inlining them at the mention would make every line range
   after it wrong for the file the model `fs_read`s. The whole-or-outline choice is made on the
   file and its imports together (`combinedText`), and the opening tag carries `imports="N"`.
+- **A change after the snapshot reaches the model in the chat, not the system prompt**
+  (`agent/instruction-updates.ts`). Rewriting the system prompt would re-evaluate the whole
+  conversation on that turn. A notice appended to the end costs only its own tokens.
+  - **The check:** once per run, in the tool loop's `prepare` hook, *before* `loadHistory`. It is
+    one `cksum` exec; the files are read only when a checksum differs.
+  - **Where it reads:**
+    - the user's folder, through the executor;
+    - a GitHub workspace's **checkout**, only while its sandbox is live in this process
+      (`attachActiveSandbox`). The checkout is the truth once it exists: it catches a pull, a
+      branch switch, and a base that moved between the snapshot and the clone.
+    
+    It does not wake a paused container for a text-only turn. Before the clone there is nothing
+    to compare, so nothing is checked.
+  - **Checksums** are the ones `cksum` reported in the workspace, never computed server-side. A
+    mismatch re-reads the files and compares the words, so a first check against an API-read
+    snapshot, a file over the read cap, or a touch stores new checksums and says nothing.
+- **The notice is an `instructions_update` block on that run's own user row**, rendered first
+  in the user message by `loadHistory`. The live request and every replay read the same stored
+  row.
+  - **Not a new row:** several chat templates refuse two user rows in a row.
+  - **Old rows are untouched:** a row without the block keeps exactly its old shape.
+  - **Content:** changed and added sections are sent whole, by heading path, and removed ones
+    are named. A rewrite (over half the file, or over the budget) sends the file whole or as an
+    outline. In outline mode the notice ends with fresh line ranges, since the system prompt's
+    no longer match.
+  - **Framing:** it is Loxaic's words, not the user's, and carries the root's boundary sentence.
+  - **Clients:** the `instructions.update` stream event tells a live one; history rebuilds it
+    from the block.
+  - **The mock** strips the notice before matching its keyword triggers, so the notice's own
+    wording can't fire tool calls, and echoes `Project instructions updated: <path>.`
+- **The system prompt takes the newest version only when the front of the prompt has moved
+  anyway.** `historyFront` keys on the compaction point and the window anchor. It is the same
+  computation `loadHistory` uses (`historyWindow`), so the two can't drift apart. The snapshot
+  keeps the front its last run was built on (`frontKey`), plus `latest`, the version the chat
+  was last told about.
+  - **Fold:** when the front changes and a newer version exists, `latest` replaces the base, and
+    whole-or-outline is decided again. Without a recorded `frontKey` (an older snapshot), the
+    front has not moved.
+  - **Cost:** a fold re-evaluates the system prompt itself too. For a large file in full mode
+    that is its size, once per compaction or window move that has a change pending.
+  - **Compaction** replays history with `forCompaction`, which leaves the notices out: the
+    summary must not carry the rules forward in a lossy form, and the fold replaces them anyway.
+  - **Announced once:** each change is compared against `latest ?? base`. The agent's own edit
+    to the file comes back as a notice on its next run; it costs tokens and does no harm.
+- **A nested file's checksum is part of its dedupe key** (`cksum="…"` right after the path on
+  its block). An edited nested file is attached again on the next `fs_read` below it.
 - **The text never reaches a client, and the listing never reads it.** `publicConversation`
   replaces it with a summary on every row it returns. `GET /v1/conversations` selects
   `INSTRUCTIONS_SUMMARY_COLUMN` (the jsonb without `text`) rather than `SELECT *`: fifty rows of

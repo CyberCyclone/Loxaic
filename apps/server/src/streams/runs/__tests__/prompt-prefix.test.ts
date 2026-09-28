@@ -707,3 +707,82 @@ describe("project instructions keep the prefix", () => {
     });
   });
 });
+
+describe("a change to the project's instructions keeps the prefix", () => {
+  /**
+   * An edit to AGENTS.md mid-conversation reaches the model as a notice on
+   * the next run's user message — appended at the end, so that request still
+   * extends the last one byte for byte. The system prompt takes the new
+   * version only on a request whose front has moved anyway (here, after a
+   * compaction), never on an ordinary turn.
+   */
+  const EXECUTOR = "prefix-laptop";
+  let dir: string;
+
+  beforeAll(async () => {
+    dir = realpathSync(mkdtempSync(path.join(tmpdir(), "instr-updates-prefix-")));
+    const { createExecutorService } = await import("../../../executor/service.ts");
+    const { registerExecutor, handleExecutorResult } = await import("../../../executor/registry.ts");
+    const service = createExecutorService({ roots: () => [dir], executorId: EXECUTOR });
+    registerExecutor({
+      executorId: EXECUTOR, userId, name: "Laptop", platform: process.platform,
+      capabilities: { direct: true, container: false }, roots: [dir],
+      send(message) {
+        if (message.type !== "call") return;
+        void service.handle(message.method, message.params)
+          .then((value) => { handleExecutorResult(EXECUTOR, { type: "result", id: message.id, ok: true, value }); })
+          .catch((err: unknown) => { handleExecutorResult(EXECUTOR, { type: "result", id: message.id, ok: false, error: (err as Error).message }); });
+      },
+      close: () => undefined,
+    });
+  });
+
+  afterAll(async () => {
+    const { __resetExecutorsForTest } = await import("../../../executor/registry.ts");
+    __resetExecutorsForTest();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends an edit in the chat, and puts it in the system prompt only after a compaction", async () => {
+    const rules = ["# Rules", "## Commands", "Use pnpm.", "## Stable", "Unchanged guidance. ".repeat(30)].join("\n");
+    writeFileSync(path.join(dir, "AGENTS.md"), rules);
+    const [conv] = await db
+      .insert(conversations)
+      .values({
+        ownerId: userId, title: "instructions updates", kind: "agent",
+        workspace: { kind: "local", executorId: EXECUTOR, executorName: "Laptop", path: dir, isolation: "direct" },
+      })
+      .returning();
+    convIds.push(conv.id);
+    const { startAgentRun } = await import("../agentRun.ts");
+    const run = async (content: string) => {
+      await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "manual", conversationId: conv.id });
+      await waitForRun(conv.id);
+    };
+    const system = (req: string[]) => (JSON.parse(req[0]) as { content: string }).content;
+
+    await run("say hello one");
+    writeFileSync(path.join(dir, "AGENTS.md"), rules.replace("Use pnpm.", "Use pnpm, never npm."));
+    await run("say hello two");
+    expectEachRequestExtendsTheLast();
+    const edited = requests.at(-1) ?? [];
+    const lastUser = JSON.parse(edited.at(-1) ?? "{}") as { role: string; content: string };
+    expect(lastUser.role).toBe("user");
+    expect(lastUser.content).toMatch(/^<project-instructions-update path="AGENTS.md">[\s\S]*Use pnpm, never npm\.[\s\S]*<\/project-instructions-update>\n\nsay hello two$/);
+    expect(system(edited)).not.toContain("never npm");
+
+    const { startCompactRun } = await import("../compactRun.ts");
+    await startCompactRun({ userId, conversationId: conv.id, model: "llama-3.1-8b-instruct", surface: "agent" });
+    await waitForRun(conv.id);
+    // The summary never carries the notice: it was left out of what was summarised.
+    const summarised = requests.at(-1) ?? [];
+    expect(summarised.join("")).not.toContain("project-instructions-update");
+
+    requests.length = 0;
+    await run("say hello three");
+    const folded = requests[0];
+    expect(system(folded)).toContain("Use pnpm, never npm.");
+    // And it moved on a request whose front was already new: the summary rides second.
+    expect((JSON.parse(folded[1]) as { role: string }).role).toBe("system");
+  });
+});

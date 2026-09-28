@@ -270,6 +270,9 @@ export class StreamBroker {
           ensure(message_id).compaction = stats;
           break;
         }
+        case "instructions.update":
+          ensure(event.message_id).instructions_update = { path: event.path, summary: event.summary };
+          break;
       }
     }
 
