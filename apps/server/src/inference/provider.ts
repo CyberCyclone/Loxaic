@@ -280,6 +280,12 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promis
 const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
+/** A prompt the mock answers with no text at all — what a backend that ignores
+ * `tool_choice: "none"` and calls a tool leaves a summary with. Keyed on the
+ * prompt, so `/compact say nothing` reaches it: the guidance rides in the
+ * compaction's instruction. */
+const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
+
 /**
  * The mock's plan (#199), built from the prompt it answers so a revision is
  * visibly a different plan from the one it revises, and long enough — forty
@@ -513,6 +519,8 @@ async function* mockStream(
         function: { name: t.name, arguments: JSON.stringify(t.args) },
       });
     }
+  } else if (MOCK_EMPTY_MATCH.test(prompt)) {
+    fullText = "";
   } else if (noTools) {
     // Distinct wording so a spec can tell "the model wrapped up because it was
     // told to" from the generic post-tool summary below, which it would
@@ -560,13 +568,17 @@ async function* mockStream(
       ttftMs,
       totalMs: Date.now() - startTime,
       usage: { prompt_tokens: 10, completion_tokens: completionTokens, total_tokens: 10 + completionTokens },
+      // Fractional milliseconds, as llama.cpp reports them. Whole numbers here
+      // are how every usage row on the beta could fail to write (the timing
+      // columns are integers) with nothing in the suite noticing — a mock
+      // tidier than the real thing hides exactly that.
       timings: {
         prompt_n: 10,
-        prompt_ms: 50,
+        prompt_ms: 50.125,
         prompt_per_token_ms: 5,
         prompt_per_second: 200,
         predicted_n: completionTokens,
-        predicted_ms: 150,
+        predicted_ms: 150.375,
         predicted_per_token_ms: 15,
         predicted_per_second: 66,
         cache_n: 3,

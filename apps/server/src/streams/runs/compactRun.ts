@@ -8,17 +8,26 @@ import {
   type ContextBreakdown,
   type TurnUsage,
 } from "@loxaic/types";
-import { streamCompletion, textOfContent, type ChatMessage, type CompletionResult } from "../../inference/provider.ts";
+import {
+  streamCompletion,
+  textOfContent,
+  type ChatMessage,
+  type CompletionResult,
+  type OpenAiTool,
+} from "../../inference/provider.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { assertModelUsable, resolveModelRef } from "../../inference/providers.ts";
-import { estimateTokens, summaryMessage } from "../../inference/context.ts";
+import { estimateTokens, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { fingerprintPrompt, measureReuse } from "../../inference/prompt-reuse.ts";
 import { assertConversationAccess } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, type RunSlot } from "../../inference/scheduler.ts";
 import { announceNewRun } from "../watchers.ts";
-import { loadHistory, HISTORY_LIMIT } from "./engine.ts";
+import { loadHistory, HISTORY_LIMIT, promptProgressEmitter, promptStatsFor } from "./engine.ts";
+import { lastRequestShape, type RequestShape } from "./request-shape.ts";
+import { usageRecordValues } from "./usage-record.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
 
 /**
@@ -59,6 +68,9 @@ const COMPACT_INSTRUCTION = [
   "and conclusions that still constrain the work. Section 6 is the exception and stays exhaustive:",
   "every user message must appear, however tersely, because nothing else survives verbatim.",
   "",
+  "Leave out the <project-instructions-update> notices: after this summary the system prompt carries",
+  "the project's current instructions, so a copy here would only repeat them in a lossier form.",
+  "",
   "Respond with ONLY the summary document. No preamble, no commentary, no questions.",
 ].join("\n");
 
@@ -82,6 +94,81 @@ export function stripImagesForCompaction(messages: ChatMessage[]): ChatMessage[]
   );
 }
 
+/** Room a summary needs after the prompt: a quarter of the window, up to
+ * 8k tokens. A compaction that reuses the conversation's prefix sends the
+ * whole of it, system prompt and tools included, so it must still leave this
+ * much for the reply — scaled, so a small window is not ruled out entirely. */
+export function summaryHeadroomTokens(windowTokens: number): number {
+  return Math.min(8192, Math.floor(windowTokens / 4));
+}
+
+/** A compaction that produced no summary text: stored with its own reason. */
+class EmptySummaryError extends Error {}
+
+/**
+ * What a compaction sends.
+ *
+ * When this process still has the conversation's last request shape for the
+ * same model, and the window has room for a summary after it, the request is
+ * that run's own front — its system prompt and tool schemas — then the history
+ * exactly as the next turn would replay it, then the instruction as the final
+ * user turn. That is a strict extension of the last request, so a backend with
+ * a prefix cache (llama.cpp, LM Studio, and hosted providers' own caching)
+ * reads only the instruction. Tools stay in with `tool_choice: "none"`, as an
+ * "answer now" does: dropping them would rewrite the front. Images stay in for
+ * the same reason, and the same model already read them.
+ *
+ * Otherwise — a different model, no shape after a restart, or a window too
+ * full — it falls back to the request compaction always made: no system
+ * prompt, no tools, images collapsed to their text.
+ */
+export function compactionRequest(input: {
+  shape: RequestShape | undefined;
+  model: string;
+  history: { messages: ChatMessage[]; summaryText: string | null };
+  instruction: string;
+  hasRoom: boolean;
+}): { messages: ChatMessage[]; tools?: OpenAiTool[]; toolChoice?: "none"; reusesPrefix: boolean } {
+  const { shape, history } = input;
+  const summary = history.summaryText ? [summaryMessage(history.summaryText)] : [];
+  const instruction: ChatMessage = { role: "user", content: input.instruction };
+  if (shape?.model === input.model && input.hasRoom) {
+    return {
+      messages: [
+        ...(shape.system ? [{ role: "system", content: shape.system } as ChatMessage] : []),
+        ...summary,
+        ...history.messages,
+        instruction,
+      ],
+      ...(shape.tools.length ? { tools: shape.tools, toolChoice: "none" as const } : {}),
+      reusesPrefix: true,
+    };
+  }
+  return {
+    messages: [...summary, ...stripImagesForCompaction(history.messages), instruction],
+    reusesPrefix: false,
+  };
+}
+
+/**
+ * Whether the conversation's own request, plus the instruction, leaves room for
+ * a summary. Both figures have to be known: without the last turn's size or the
+ * window there is no telling, and the stripped request is the one more likely
+ * to fit. That costs a cache miss on a cold thread rather than a compaction the
+ * window cannot hold. It also keeps `computeCompactionStats`' fallback honest:
+ * an unknown `before` always means the stripped request, whose prompt minus the
+ * instruction really is the conversation.
+ */
+export function compactionHasRoom(input: {
+  windowTokens: number | null;
+  before: number | null;
+  instructionTokens: number;
+}): boolean {
+  const { windowTokens, before } = input;
+  if (windowTokens == null || before == null) return false;
+  return before + input.instructionTokens + summaryHeadroomTokens(windowTokens) <= windowTokens;
+}
+
 /**
  * The savings arithmetic, pure and exported for tests.
  *
@@ -102,7 +189,9 @@ export function computeCompactionStats(input: {
   completionTokens: number;
   /** Estimated cost of the instruction we appended — it was in the compact
    * call's prompt but was never part of the conversation, so the fallback
-   * subtracts it. */
+   * subtracts it. The fallback only runs when `lastTurnTokens` is unknown, and
+   * then the request was always the stripped one (`compactionHasRoom`): no
+   * system prompt or tool schemas to subtract as well. */
   instructionTokens: number;
   summaryText: string;
   guidance?: string;
@@ -163,7 +252,11 @@ export async function startCompactRun(input: {
   // compacted is exactly what the next prompt would have replayed — starting
   // at any previous summary, which is what makes repeat compaction correct,
   // not cumulative.
-  const history = await loadHistory(convId, { forCompaction: true });
+  // Instructions notices included: the compaction request replays the history
+  // exactly as the last run sent it (see compactionRequest), and leaving them
+  // out would break the cached prefix at the first one. The instruction keeps
+  // them out of the summary instead.
+  const history = await loadHistory(convId);
   const historyLimit = HISTORY_LIMIT;
   const hasSummary = !!history.summaryText;
   const count = history.messages.length;
@@ -250,16 +343,17 @@ export async function startCompactRun(input: {
   registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map() });
   announceNewRun(convId, streamId);
 
-  // The conversation as the surface would send it, with the summarisation
-  // instruction as the final user turn. No agent system prompt and no tools:
-  // this call summarises the conversation, it doesn't continue the loop.
+  // The conversation as its last run sent it, with the summarisation
+  // instruction as the final user turn — see compactionRequest.
   const instruction = buildInstruction(guidance);
-  const textOnlyHistory: ChatMessage[] = stripImagesForCompaction(history.messages);
-  const promptMessages: ChatMessage[] = [
-    ...(history.summaryText ? [summaryMessage(history.summaryText)] : []),
-    ...textOnlyHistory,
-    { role: "user", content: instruction },
-  ];
+  const before = await lastTurnTokens(convId);
+  const window = await resolveWindow(model).catch(() => null);
+  const hasRoom = compactionHasRoom({
+    windowTokens: window,
+    before,
+    instructionTokens: estimateTokens("current", instruction),
+  });
+  const request = compactionRequest({ shape: lastRequestShape(convId), model, history, instruction, hasRoom });
 
   void runCompactGeneration({
     streamId,
@@ -269,7 +363,8 @@ export async function startCompactRun(input: {
     model,
     abort,
     producer,
-    promptMessages,
+    request,
+    before,
     instruction,
     guidance,
     messagesCompacted: count + (hasSummary ? 1 : 0),
@@ -313,7 +408,9 @@ async function runCompactGeneration(ctx: {
   model: string;
   abort: AbortController;
   producer: StreamProducer;
-  promptMessages: ChatMessage[];
+  request: ReturnType<typeof compactionRequest>;
+  /** The last turn's prompt + completion, read before this call records its own. */
+  before: number | null;
   instruction: string;
   guidance?: string;
   messagesCompacted: number;
@@ -355,10 +452,12 @@ async function runCompactGeneration(ctx: {
       });
     }
 
+    let reportProgress = false;
     try {
       // This model's own provider only — see the same lookup in engine.ts.
       const info = await modelRunInfo(model);
       windowTokens = info?.windowTokens ?? null;
+      reportProgress = info?.nativeRuntime ?? false;
       if (info && !info.loaded) {
         jitLoaded = true;
         producer.emit({ kind: "model.loading", message_id: summaryMsgId });
@@ -367,17 +466,44 @@ async function runCompactGeneration(ctx: {
       // Best-effort — the generic indicator covers it.
     }
 
-    // Read before generating: the compact call is about to write its own
-    // usage record, which must not become its own "before".
-    const before = await lastTurnTokens(convId);
+    const before = ctx.before;
+    const { messages: promptMessages, tools, toolChoice } = ctx.request;
+
+    // What the prompt is and how much of it the backend already holds, the
+    // way the tool loop announces each request — and the backend's measured
+    // progress as it reads it. A compaction that re-read 235k tokens used to
+    // show a bare spinner for twelve minutes.
+    const stats = promptStatsFor({
+      messageId: summaryMsgId,
+      model,
+      tally: tallyChatMessages(promptMessages, tools),
+      chatMessages: promptMessages,
+      reuse: measureReuse(convId, fingerprintPrompt(model, promptMessages, tools ?? [])),
+      windowTokens,
+      loadingModel: jitLoaded,
+      startedAt: Date.now(),
+    });
+    producer.emit({ kind: "prompt.stats", ...stats });
+    const emitProgress = promptProgressEmitter(stats, (e) => {
+      producer.emit(e);
+    });
 
     let doneResult: CompletionResult | null = null;
     // The same split the engine makes: only what the stream throws is stored
     // as the reason. This try also spans database writes whose errors are ours.
-    for await (const event of markBackendErrors(streamCompletion(model, ctx.promptMessages, { signal: abort.signal }))) {
+    for await (const event of markBackendErrors(
+      streamCompletion(model, promptMessages, {
+        signal: abort.signal,
+        ...(tools ? { tools } : {}),
+        ...(toolChoice ? { toolChoice } : {}),
+        reportProgress,
+      }),
+    )) {
       if (event.type === "delta") {
         summaryText += event.content;
         producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
+      } else if (event.type === "progress") {
+        emitProgress(event.progress);
       } else if (event.type === "done") {
         doneResult = event.result;
       }
@@ -385,12 +511,26 @@ async function runCompactGeneration(ctx: {
       // replaying reasoning into the card (or the log) buys nothing.
     }
 
+    if (!summaryText.trim()) {
+      // Nothing to replace the history with. Committed as complete, this row
+      // would be skipped as a cutoff by loadHistory (it looks for a summary
+      // with text), so nothing would be compacted while the card claimed the
+      // whole saving — and the next turn would cross the threshold and pay for
+      // another compaction. A backend that ignored `tool_choice: "none"` and
+      // answered with a call is the likely way here.
+      throw new EmptySummaryError(
+        doneResult?.toolCalls.length
+          ? "The model called a tool instead of writing the summary, so nothing was compacted."
+          : "The model returned no summary, so nothing was compacted.",
+      );
+    }
+
     if (jitLoaded) {
       invalidateBackendModels(await resolveModelRef(model).then((r) => r.provider.id).catch(() => undefined));
       windowTokens = (await resolveWindow(model)) ?? windowTokens;
     }
 
-    const stats = computeCompactionStats({
+    const compaction = computeCompactionStats({
       messagesCompacted: ctx.messagesCompacted,
       lastTurnTokens: before,
       promptTokens: doneResult?.usage.prompt_tokens ?? 0,
@@ -406,8 +546,8 @@ async function runCompactGeneration(ctx: {
     // after compacting: the compact call's own prompt_tokens is the whole
     // pre-compaction history.
     const postBreakdown: ContextBreakdown = {
-      used_tokens: stats.after_tokens,
-      parts: [{ category: "summary", tokens: stats.after_tokens }],
+      used_tokens: compaction.after_tokens,
+      parts: [{ category: "summary", tokens: compaction.after_tokens }],
       history_messages: 0,
       history_limit: ctx.historyLimit,
       history_truncated: false,
@@ -431,7 +571,7 @@ async function runCompactGeneration(ctx: {
       .set({
         content: [
           { kind: "text", text: summaryText },
-          { kind: "compaction", ...stats },
+          { kind: "compaction", ...compaction },
         ] as ContentBlock[],
         status: "complete",
       })
@@ -441,33 +581,38 @@ async function runCompactGeneration(ctx: {
       .set({ activeLeafId: summaryMsgId, updatedAt: new Date() })
       .where(eq(conversations.id, convId));
     if (doneResult && (doneResult.usage.total_tokens > 0 || doneResult.timings)) {
-      await db.insert(usageRecords).values({
-        id: uuid(),
-        userId,
-        conversationId: convId,
-        messageId: summaryMsgId,
-        model,
-        origin: "server",
-        inputTokens: doneResult.usage.prompt_tokens,
-        cachedTokens: doneResult.cachedTokens,
-        outputTokens: doneResult.usage.completion_tokens,
-        ttftMs: doneResult.ttftMs,
-        promptMs: doneResult.timings?.prompt_ms ?? null,
-        predictMs: doneResult.timings?.predicted_ms ?? null,
-        totalMs: doneResult.totalMs,
-        promptTps: doneResult.promptTps,
-        predictedTps: doneResult.genTps,
-        contextBreakdown: postBreakdown,
-      });
+      // Best-effort, as the tool loop's is: the summary above is already
+      // complete and is the compaction. A usage row that cannot be written is
+      // a missing statistic, never a reason to throw the summary away — which
+      // is exactly what happened on the beta, twelve minutes of work in.
+      await db
+        .insert(usageRecords)
+        .values(
+          usageRecordValues({
+            userId,
+            conversationId: convId,
+            messageId: summaryMsgId,
+            model,
+            result: doneResult,
+            context: postBreakdown,
+          }),
+        )
+        .catch((err: unknown) => {
+          console.error(`recording compaction usage failed for ${convId}:`, err);
+        });
     }
 
-    producer.emit({ kind: "compaction", message_id: summaryMsgId, ...stats });
+    producer.emit({ kind: "compaction", message_id: summaryMsgId, ...compaction });
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete", usage });
     await producer.end("complete", { usage });
   } catch (err) {
     const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
     const status = isAbort ? "cancelled" : "error";
-    const eventError = isAbort ? undefined : turnErrorText(err, `compaction failed in ${convId}`);
+    const eventError = isAbort
+      ? undefined
+      : err instanceof EmptySummaryError
+        ? err.message
+        : turnErrorText(err, `compaction failed in ${convId}`);
 
     // A partial summary must never be mistaken for a compaction point, so it
     // is persisted with a non-complete status — which the loaders' summary

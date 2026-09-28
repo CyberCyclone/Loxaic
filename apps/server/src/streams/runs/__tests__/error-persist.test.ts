@@ -164,6 +164,32 @@ describe("persisting why a turn failed", () => {
     expect(row.error).toMatch(/^Failed to load model "mock-model"\. Error: /);
   });
 
+  it("fails a compaction that produced no summary, rather than committing an empty one", async () => {
+    // Committed as complete, an empty summary is skipped as a cutoff, so
+    // nothing is compacted while the card claims the whole saving — and the
+    // next turn crosses the threshold and compacts again.
+    const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "empty compaction" }).returning();
+    convIds.push(conv.id);
+    await db.insert(messages).values([
+      { id: uuid(), conversationId: conv.id, authorType: "user", origin: "server", lamport: 1, content: [{ kind: "text", text: "hello" }], status: "complete", createdAt: new Date() },
+      { id: uuid(), conversationId: conv.id, authorType: "assistant", origin: "server", lamport: 2, content: [{ kind: "text", text: "hi" }], status: "complete", createdAt: new Date() },
+    ]);
+
+    const { summaryMessageId } = await startCompactRun({
+      userId,
+      conversationId: conv.id,
+      model: "llama-3.1-8b-instruct",
+      args: "say nothing",
+      surface: "chat",
+    });
+    await waitFor("the compaction to end", () => getRunByConversation(conv.id) === undefined);
+
+    const [row] = await db.select().from(messages).where(eq(messages.id, summaryMessageId));
+    expect(row.status).toBe("error");
+    expect(row.error).toBe("The model returned no summary, so nothing was compacted.");
+    expect(row.content).not.toContainEqual(expect.objectContaining({ kind: "compaction" }));
+  });
+
   it("bounds what it stores, strips control characters, and stores nothing for an empty message", () => {
     const capped = capErrorText("x".repeat(MAX_ERROR_TEXT_CHARS * 5));
     expect(capped).toHaveLength(MAX_ERROR_TEXT_CHARS);

@@ -482,6 +482,41 @@ replies.
   buffer, events are dropped and the client's gap detection resubscribes. `watchers.ts`
   announces new runs per conversation, which is how a second device learns of a run it did not
   start.
+- **A newly announced run always gets a snapshot** (`forceSync`), even at seq 0.
+  - **Why:** a run the server starts itself (an automatic compaction, a routine) is announced
+    before anything is stored. A client only counts a run as going on a `stream.sync`, so it
+    applied the run's events to the thread while showing the conversation idle: no Stop button,
+    a composer that looked free, and a compaction card that swapped to the typing indicator
+    minutes in, when some later resync finally said so. Seen on the beta.
+  - **The run's real start:** the snapshot carries `started_at` (the stream's `createdAt`, on
+    the same clock as `server_now`). A device that learns of a run late times it from its real
+    start (`lib/runStart.ts`), not from the moment it heard. "Compacting… 84s" six minutes in
+    was that.
+- **A socket watches every conversation it sends into or opens**, not only the ones it
+  subscribed to at connect.
+  - **Why:** a watch is installed by `stream.subscribe`, and both hooks subscribed only on socket
+    open and on a seq gap, on the theory that a Chat run always starts from this client. An
+    automatic compaction does not, so a conversation created or opened during a connection heard
+    nothing of it until the socket was replaced. On the beta that was a card that appeared on
+    returning to the app, twelve minutes into a compaction.
+  - **How:** `autoSubscribe` (the send path) installs the watch server-side, and the client
+    subscribes on select, once per conversation per socket (`lib/conversationWatch.ts`), after
+    the history fetch settles. The client does *not* subscribe after `turn.started`: the send
+    already watches, and an uncursored subscribe to an active run tears down its tap for a
+    redundant resync. `subscribeOnSelect`, the routine screen's version of this, is gone.
+  - **The cost:** the first open of a thread on a socket also snapshots its last three finished
+    runs, as a reconnect does. The routine screen paid that on every open.
+  - **A watch re-authorizes each run it delivers.** It outlives the command that installed it, so
+    without that a share revoked since kept receiving every later run on the conversation, a
+    compaction's summary of the whole thread included. Found in review.
+    `delivery-new-run.test.ts` revokes mid-watch.
+  - `compaction-live.spec.ts` covers both: a thread this page created, and one opened from the
+    list after a fresh start.
+  - **On Android, an element beside a spinner cannot be found in time.** UiAutomator2 waits for
+    the UI to go idle before every query, and an animating spinner never lets it: each lookup took
+    ~11 s, longer than the mock's whole slow compaction, while the page source showed the card with
+    its id and text. That spec sets `waitForIdleTimeout: 0` for itself and restores the default
+    after. Probe with `getPageSource()` before concluding that something is missing.
 - **A caught-up cursor skips the snapshot of an active run, never its tap** (#231). The cursor
   says what this *client* has, not what this *socket* has, and a reconnect is a new socket.
   Skipping the whole run left a phone that came back from the background deaf to a run parked
@@ -1611,9 +1646,33 @@ replies.
   importing each other — working only by the accident that every binding crossing it is a
   hoisted function declaration. The engine reaches `startCompactRun` itself through a dynamic
   `import()` for the same reason.
-- **Compaction always costs one full prompt re-evaluation**, because the whole prefix changes
-  (see the prompt-caching section). That is the trade being made: one expensive turn to make
-  every subsequent one cheap. It is also why the threshold is not lower.
+- **A compaction sends the conversation's own prompt and appends its instruction**
+  (`compactionRequest`, fed by `request-shape.ts`). It sends the last run's system prompt and
+  tool schemas, the history exactly as the next turn would replay it (images included), and
+  the instruction as the final user turn, with `tool_choice: "none"` as an "answer now" sends.
+  - **Why:** it used to drop the system prompt and the tools. llama.cpp renders both into the
+    prompt text, so the request diverged from the cache at the first token. On the beta that
+    was 235k tokens re-read from scratch, 749 s, after a turn that was 97% cached. Now the
+    backend reads only the instruction. `prompt-prefix.test.ts` asserts the compaction request
+    is a strict extension of the last run's.
+  - **The shape is kept in memory per conversation** (LRU, 500). Compaction falls back to the
+    old stripped request for a different model, after a restart (no shape), or when the window
+    lacks room for the summary: a quarter of it, up to 8k (`summaryHeadroomTokens`).
+    **Room is judged only on known figures** (`compactionHasRoom`): an unknown window or last
+    turn claims none. The stripped request is the one more likely to fit, and it keeps the stats'
+    `before` fallback (prompt minus instruction) true, since only that request carries no system
+    prompt or tools to subtract as well.
+- **An empty summary fails the compaction; it is never committed.** `loadHistory` skips a
+  textless summary as a cutoff, so a `complete` one compacted nothing while the card claimed the
+  whole saving, and the next turn re-crossed the threshold and paid for another. A backend that
+  ignores `tool_choice: "none"` and calls a tool is the likely way there. The mock's `say nothing`
+  prompt answers with no text.
+- **The turn after a compaction still costs one full prompt re-evaluation**, because its front
+  is new: the summary replaces the history. That is the trade being made: one expensive turn to
+  make every subsequent one cheap. It is also why the threshold is not lower.
+- **A compaction reports its prompt as the tool loop does:** `prompt.stats`, plus llama.cpp's
+  measured progress. The client shows both in the compaction card, which is the compaction's
+  only face for the whole run; the typing indicator no longer stands in for an empty summary.
 - The summarisation prompt **weights recency** — recent exchanges kept in near-full detail,
   older material compressed harder — with section 6 ("All User Messages") the deliberate
   exception, since nothing else survives verbatim. `stats.auto` reaches the client so the card
@@ -1708,7 +1767,16 @@ replies.
 - **`usage_records` has one row per completion** — each tool-loop iteration — with `run_id`
   set to the stream id, written right after `message.usage` is emitted. The insert is
   best-effort and never fails the turn: a reply the model finished is not undone because its
-  usage row could not be written. Compaction writes its own row.
+  usage row could not be written. Compaction writes its own row, just as best-effort. It used
+  to be the one exception: it wrote the row after marking the summary complete, with no catch,
+  so a failed insert re-marked a finished summary as failed.
+- **Both inserts go through `usageRecordValues` (`streams/runs/usage-record.ts`), which rounds
+  every figure bound for an integer column.** llama.cpp reports `timings` in fractional
+  milliseconds (`prompt_ms: 749609.667`), and the timing columns are `integer`. LM Studio sent
+  whole numbers, so nothing failed until the built-in router replaced it: from then on every
+  llama.cpp request lost its usage row (the Stats screen went blank for it), and a
+  twelve-minute compaction was discarded over one. The mock now reports fractional timings
+  too, since a mock tidier than the real backend is how this hid.
 - **Only llama.cpp reports what it actually reused** (`timings.cache_n`). LM Studio reports
   nothing about caching anywhere — no field in `usage`, no `/tokenize`, no `/slots`, no
   `/props` (all probed and absent), and its native `stats` block carries only TTFT and the
@@ -2011,11 +2079,11 @@ replies.
   conversation from the routines screen), and **reads and writes no offline cache** — those rows
   would take eviction slots from the user's own threads, and Chat's own list write prunes what it
   does not recognise.
-- **`subscribeOnSelect` exists because a scheduled run starts on the server.** The hook otherwise
-  subscribes only on socket open and on a seq gap, which is enough where every run starts from
-  this client; a routine's does not, so opening its chat is the first this client hears of it.
-  Sent *after* the history fetch settles: a snapshot landing first fills the thread, and the
-  history fill only applies to an empty one, so the older messages would be dropped.
+- **Opening a routine's chat subscribes to it, because a scheduled run starts on the server.**
+  This was the routine scope's own `subscribeOnSelect` and is now what every scope does (see
+  "A socket watches every conversation it sends into or opens"). Sent *after* the history fetch
+  settles: a snapshot landing first fills the thread, and the history fill only applies to an
+  empty one, so the older messages would be dropped.
 - **Never read a result back out of a `setState` updater.** `handleDelete` assigned `remaining`
   inside `setConversations(prev => …)` and read it on the next line. React runs an updater eagerly
   only when the fiber has nothing pending; with another update queued (a background stream event,
@@ -2561,8 +2629,14 @@ replies.
     front has not moved.
   - **Cost:** a fold re-evaluates the system prompt itself too. For a large file in full mode
     that is its size, once per compaction or window move that has a change pending.
-  - **Compaction** replays history with `forCompaction`, which leaves the notices out: the
-    summary must not carry the rules forward in a lossy form, and the fold replaces them anyway.
+  - **Compaction replays the notices, and its instruction keeps them out of the summary.** The
+    summary must not carry the rules forward in a lossy form, since the fold replaces them anyway.
+    But the compaction request is the last run's request plus the instruction (`compactionRequest`),
+    so leaving the notices out of the replay (the `forCompaction` option this first shipped with)
+    broke the cached prefix at the first one. The instruction's "Leave out the
+    `<project-instructions-update>` notices" costs nothing there, since it is the final user turn.
+    `prompt-prefix.test.ts` holds both: the compaction extends the notice-carrying request byte for
+    byte, and the next run folds the new version into the system prompt.
   - **Announced once:** each change is compared against `latest ?? base`. The agent's own edit
     to the file comes back as a notice on its next run; it costs tokens and does no harm.
 - **A nested file's checksum is part of its dedupe key** (`cksum="…"` right after the path on

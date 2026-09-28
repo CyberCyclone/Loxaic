@@ -50,6 +50,8 @@ import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
+import { usageRecordValues } from "./usage-record.ts";
+import { recordRequestShape } from "./request-shape.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import {
@@ -541,6 +543,9 @@ export async function runToolLoop(ctx: {
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
     const summaryMsg = history.summaryText ? summaryMessage(history.summaryText) : null;
+    // Fixed for the run, and what a compaction of this conversation needs to
+    // send the same front of the prompt (request-shape.ts).
+    recordRequestShape(convId, { model, system: systemPrompt, tools });
     const chatMessages: ChatMessage[] = [
       ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
       ...(summaryMsg ? [summaryMsg] : []),
@@ -1731,27 +1736,18 @@ async function recordUsage(input: {
   const { result } = input;
   // Guard against writing an all-zero row when a provider reports nothing.
   if (result.usage.total_tokens <= 0 && !result.timings) return;
-  await db.insert(usageRecords).values({
-    id: uuid(),
-    userId: input.userId,
-    conversationId: input.convId,
-    messageId: input.messageId,
-    runId: input.runId,
-    model: input.model,
-    origin: "server",
-    inputTokens: result.usage.prompt_tokens,
-    // Null, not 0, when the backend says nothing — see the column's comment.
-    cachedTokens: result.cachedTokens,
-    reusableTokens: input.reuse.tokens,
-    outputTokens: result.usage.completion_tokens,
-    ttftMs: result.ttftMs,
-    promptMs: result.timings?.prompt_ms ?? null,
-    predictMs: result.timings?.predicted_ms ?? null,
-    totalMs: result.totalMs,
-    promptTps: result.promptTps,
-    predictedTps: result.genTps,
-    contextBreakdown: input.context ?? null,
-  });
+  await db.insert(usageRecords).values(
+    usageRecordValues({
+      userId: input.userId,
+      conversationId: input.convId,
+      messageId: input.messageId,
+      runId: input.runId,
+      model: input.model,
+      result,
+      reusableTokens: input.reuse.tokens,
+      context: input.context ?? null,
+    }),
+  );
 }
 
 /**
@@ -1816,13 +1812,7 @@ export async function historyFront(conversationId: string): Promise<string> {
   return `${String(w.summaryRow?.lamport ?? 0)}:${String(w.anchor)}`;
 }
 
-export async function loadHistory(
-  conversationId: string,
-  /** `forCompaction`: leave out the instructions notices. They are superseded
-   * by the version the system prompt takes after a compaction, and a summary
-   * of them would carry the project's rules forward in a lossy form. */
-  opts: { forCompaction?: boolean } = {},
-): Promise<{
+export async function loadHistory(conversationId: string): Promise<{
   messages: ChatMessage[];
   truncated: boolean;
   summaryText: string | null;
@@ -1903,7 +1893,7 @@ export async function loadHistory(
       // A notice that the project's instructions changed rides first on the
       // message it was attached to, exactly as stored. A row without one
       // keeps precisely its old shape, so no existing prefix moves.
-      const notice = opts.forCompaction ? "" : instructionsNoticeOf(blocks);
+      const notice = instructionsNoticeOf(blocks);
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {

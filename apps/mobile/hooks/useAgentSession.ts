@@ -36,6 +36,8 @@ import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settl
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
+import { localRunStart } from '@/lib/runStart';
+import { ConversationWatches } from '@/lib/conversationWatch';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
@@ -221,6 +223,20 @@ export function useAgentSession(
   // (stream.subscribe replays live runs, not cold history).
   const loadedConvIdsRef = useRef<Set<string>>(new Set());
 
+  // Which conversations this socket has subscribed to, and so is told of new
+  // runs on (lib/conversationWatch.ts) — an automatic compaction the server
+  // starts after a turn, another device's send.
+  const watchesRef = useRef(new ConversationWatches());
+  const watchConversation = useCallback((convId: string) => {
+    const ws = wsRef.current;
+    // A socket still connecting subscribes, on open, whatever is on screen
+    // then (resubscribeKnown). A thread opened and left while it connected is
+    // watched again the next time it is opened, which is when its runs matter.
+    if (ws?.readyState !== WebSocket.OPEN || !watchesRef.current.claim(convId)) return;
+    const tracked = streamingByConvRef.current[convId];
+    subscribeStreams(ws, convId, tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined);
+  }, []);
+
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
@@ -228,7 +244,14 @@ export function useAgentSession(
     // one — see handleSend below) aren't fetchable: the server has never
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
-    if (!id || !isServerConvId(id) || loadedConvIdsRef.current.has(id)) return;
+    if (!id || !isServerConvId(id)) return;
+    // Watched only after the history fetch settles: a snapshot landing first
+    // would be followed by the page, which is applied in front of it anyway,
+    // but the chat hook's order is kept so the two cannot drift.
+    if (loadedConvIdsRef.current.has(id)) {
+      watchConversation(id);
+      return;
+    }
     loadedConvIdsRef.current.add(id);
     getMessages(id)
       .then((page) => {
@@ -239,8 +262,9 @@ export function useAgentSession(
         recordPaging(id, page);
         setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
       })
-      .catch(() => undefined);
-  }, [recordPaging]);
+      .catch(() => undefined)
+      .finally(() => { watchConversation(id); });
+  }, [recordPaging, watchConversation]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
@@ -339,6 +363,10 @@ export function useAgentSession(
       if (!ws) return;
       const targets = new Set(Object.keys(streamingByConvRef.current));
       if (activeIdRef.current) targets.add(activeIdRef.current);
+      // A new socket watches nothing until it subscribes; these are what it
+      // subscribes to now.
+      watchesRef.current.reset();
+      watchesRef.current.note(targets);
       // A conversation still waiting for its real id has nothing on the server
       // to subscribe to — sending its local id is what put
       // `invalid input syntax for type uuid` on screen. Ask instead what
@@ -418,6 +446,11 @@ export function useAgentSession(
             ...prev,
           ];
         });
+        // The send made this socket watch the conversation (ws/delivery.ts's
+        // autoSubscribe), so an automatic compaction after this turn reaches
+        // it; opening the thread below must not subscribe a second time, which
+        // would tear down the run's tap for a redundant resync.
+        watchesRef.current.note([realId]);
         // Follow it unless it is an older thread the person has since left.
         if (isPending || localId === null || activeIdRef.current === localId) {
           if (localId && localId !== realId) setPromotion({ localId, realId });
@@ -440,7 +473,8 @@ export function useAgentSession(
         } else {
           // Synchronously, before any further event can be handled.
           cursorsRef.current[event.stream_id] = event.seq;
-          const assistantMsg = event.snapshot.messages.find((m) => m.author_type === 'assistant');
+          // A compaction's model is on its summary message.
+          const assistantMsg = event.snapshot.messages.find((m) => m.author_type === 'assistant' || m.author_type === 'summary');
           setStreamingByConv((prev) => ({
             ...prev,
             [convId]:
@@ -450,7 +484,8 @@ export function useAgentSession(
                     streamId: event.stream_id,
                     loadingModel: false,
                     promptStats: event.snapshot.prompt_stats ?? null,
-                    responseStartedAt: Date.now(),
+                    // From the run's real start — see lib/runStart.ts.
+                    responseStartedAt: localRunStart(event.started_at, event.server_now),
                     model: assistantMsg?.model ?? '',
                   },
           }));

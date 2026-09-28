@@ -137,8 +137,21 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // redundant to the linter even though `lastIndex` is -1 for an empty
   // conversation and `msgs[-1]` is genuinely undefined then.
   const lastMsg = msgs[lastIndex] as MessageType | undefined;
+  // A reply with nothing to show yet is stood in for by the typing indicator.
+  // A compaction is not: its card is its face for the whole run — it used to
+  // hand over to the indicator whenever this device learnt the run was going,
+  // which could be minutes in, and switch styles mid-compaction.
   const lastIsEmptyGenerating =
-    !!lastMsg && (lastMsg.role === 'assistant' || lastMsg.role === 'summary') && !lastMsg.thinking && !lastMsg.text;
+    !!lastMsg && lastMsg.role === 'assistant' && !lastMsg.thinking && !lastMsg.text;
+  const liveCompactionIndex =
+    pending && lastMsg?.role === 'summary' && !lastMsg.compaction && !lastMsg.error ? lastIndex : -1;
+  const liveCompaction = useMemo(
+    () =>
+      liveCompactionIndex >= 0 && responseStartedAt
+        ? { since: responseStartedAt, queuePosition, loadingModel, promptStats }
+        : null,
+    [liveCompactionIndex, responseStartedAt, queuePosition, loadingModel, promptStats],
+  );
   const showTyping = pending && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyGenerating);
   // While the empty placeholder is represented by the typing indicator, don't
   // *also* render it as its own contentless row — that produced two stacked
@@ -170,11 +183,12 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
             liveThinking={originalIndex === liveThinkingIndex}
             elapsedSince={originalIndex === liveElapsedIndex ? responseStartedAt : null}
             isNewest={originalIndex === lastRenderIndex}
+            liveCompaction={originalIndex === liveCompactionIndex ? liveCompaction : null}
           />
         </Box>
       );
     },
-    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt],
+    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt, liveCompactionIndex, liveCompaction],
   );
 
   if (!conversation) return null;
@@ -199,7 +213,6 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
               promptStats={promptStats}
               since={responseStartedAt}
               model={model}
-              compacting={lastMsg?.role === 'summary'}
             />
           </Box>
         ) : null

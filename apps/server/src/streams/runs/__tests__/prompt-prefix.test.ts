@@ -42,7 +42,7 @@ import type { ServerToExecutor } from "../../../executor/protocol.ts";
 const requests: string[][] = [];
 /** The options each request went out with, in the same order — so a case can
  * assert not just *what* was sent but under what constraint. */
-const requestOptions: { toolChoice?: string; toolCount: number }[] = [];
+const requestOptions: { toolChoice?: string; toolCount: number; tools: string }[] = [];
 
 vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../inference/provider.ts")>();
@@ -54,7 +54,13 @@ vi.mock("../../../inference/provider.ts", async (importOriginal) => {
       // like at the *end* of the run and quietly assert nothing.
       requests.push(msgs.map((m) => JSON.stringify(m)));
       const opts = (options ?? {}) as { toolChoice?: string; tools?: unknown[] };
-      requestOptions.push({ toolChoice: opts.toolChoice, toolCount: opts.tools?.length ?? 0 });
+      requestOptions.push({
+        toolChoice: opts.toolChoice,
+        toolCount: opts.tools?.length ?? 0,
+        // The schemas themselves: the same count of different tools rewrites
+        // the prompt as surely as a missing one.
+        tools: JSON.stringify(opts.tools ?? []),
+      });
       return actual.streamCompletion(model, msgs, options as never);
     },
   };
@@ -774,9 +780,18 @@ describe("a change to the project's instructions keeps the prefix", () => {
     const { startCompactRun } = await import("../compactRun.ts");
     await startCompactRun({ userId, conversationId: conv.id, model: "llama-3.1-8b-instruct", surface: "agent" });
     await waitForRun(conv.id);
-    // The summary never carries the notice: it was left out of what was summarised.
+    // The compaction replays the notice exactly as the last run sent it, so it
+    // is still a strict extension of that request and the backend reads only
+    // the instruction. Leaving the notice out of the replay broke the prefix
+    // at the notice's message. The instruction is what keeps the rules out of
+    // the summary, since the fold below puts the current version in the
+    // system prompt.
     const summarised = requests.at(-1) ?? [];
-    expect(summarised.join("")).not.toContain("project-instructions-update");
+    expect(summarised.slice(0, edited.length)).toEqual(edited);
+    expect(summarised.at(-1)).toContain("project-instructions-update");
+    expect((JSON.parse(summarised.at(-1) ?? "{}") as { content: string }).content).toMatch(
+      /Leave out the <project-instructions-update> notices/,
+    );
 
     requests.length = 0;
     await run("say hello three");
@@ -784,5 +799,43 @@ describe("a change to the project's instructions keeps the prefix", () => {
     expect(system(folded)).toContain("Use pnpm, never npm.");
     // And it moved on a request whose front was already new: the summary rides second.
     expect((JSON.parse(folded[1]) as { role: string }).role).toBe("system");
+  });
+});
+
+describe("a compaction extends the prompt it compacts", () => {
+  /**
+   * A compaction used to drop the system prompt and the tools, so its request
+   * shared nothing with the conversation's cached prefix and the backend
+   * re-read everything: 749 s for 235k tokens on the beta, after a turn that
+   * was 97% cached. Now it sends the last run's own front and history and
+   * appends the instruction — a strict extension of that run's last request.
+   */
+  it("sends the last request plus the instruction, same tools, none callable — and keeps its usage", async () => {
+    const convId = await turn("first question about pnpm");
+    await turn("second question about bun", convId);
+    const lastRun = requests.at(-1) ?? [];
+    const lastOptions = requestOptions.at(-1);
+
+    const { startCompactRun } = await import("../compactRun.ts");
+    const { summaryMessageId } = await startCompactRun({
+      userId, conversationId: convId, model: "llama-3.1-8b-instruct", surface: "chat",
+    });
+    await waitForRun(convId);
+
+    const compaction = requests.at(-1) ?? [];
+    // Every message the last run sent, byte for byte, then the replayed
+    // reply to it, then the instruction.
+    expect(compaction.slice(0, lastRun.length)).toEqual(lastRun);
+    expect(compaction.length).toBeGreaterThan(lastRun.length);
+    expect(compaction.at(-1)).toContain("Summarize this conversation");
+    expect(requestOptions.at(-1)).toEqual({ ...lastOptions, toolChoice: "none" });
+    expect(lastOptions?.toolCount).toBeGreaterThan(0);
+
+    // It finished — the usage row (fractional timings from the mock, as from
+    // llama.cpp) no longer throws the summary away.
+    const summary = await db.query.messages.findFirst({ where: eq(messages.id, summaryMessageId) });
+    expect(summary?.status).toBe("complete");
+    const usage = await db.query.usageRecords.findFirst({ where: eq(usageRecords.messageId, summaryMessageId) });
+    expect(usage?.promptMs).toBe(50);
   });
 });

@@ -717,6 +717,8 @@ export type ServerMessage =
       /** The server's clock when this was sent, so a client can turn a
        * snapshot's `expires_at` into a countdown on its own clock. */
       server_now?: number;
+      /** When the run began, on the server's clock (read with `server_now`). */
+      started_at?: number;
     }
   | { type: "stream.event"; stream_id: string; conversation_id: string; seq: number; event: StreamEventKind }
   | {

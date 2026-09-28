@@ -127,9 +127,6 @@ export default function RoutineChatScreen() {
       // user's own threads, and the Chat surface's list write prunes anything
       // it does not recognise.
       cache: false,
-      // A scheduled run is already streaming by the time this screen opens it,
-      // and nothing else would subscribe to a run this client did not start.
-      subscribeOnSelect: true,
       initialActiveId: params.c ?? null,
     }),
     [routineId, params.c],
