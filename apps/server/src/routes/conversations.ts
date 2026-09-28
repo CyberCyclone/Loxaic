@@ -82,9 +82,16 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    const row = await db.query.conversations.findFirst({
-      where: eq(conversations.id, request.params.id),
-    });
+    // The summary, not the snapshot, as the listing does: this is read per
+    // opened thread and again at the end of every run, and a snapshot can be
+    // a megabyte that publicConversation would only throw away.
+    const row = (
+      await db
+        .select({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })
+        .from(conversations)
+        .where(eq(conversations.id, request.params.id))
+        .limit(1)
+    ).at(0);
     if (!row) {
       reply.code(404);
       return { error: "Not found" };
@@ -181,7 +188,11 @@ export function conversationRoutes(app: FastifyInstance) {
         updatedAt: new Date(),
       })
       .where(eq(conversations.id, request.params.id))
-      .returning()) as (typeof conversations.$inferSelect | undefined)[];
+      // The summary, not the snapshot — see the GET above.
+      .returning({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })) as (
+      | typeof conversations.$inferSelect
+      | undefined
+    )[];
     if (!row) {
       reply.code(404);
       return { error: "Not found" };

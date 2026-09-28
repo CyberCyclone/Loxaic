@@ -12,7 +12,8 @@ import type { ProjectInstructionsSummary } from '@loxaic/api-client';
  *   and the allowlist editor already follow.
  *
  * A refresh of the *same* conversation (a run ended) keeps what is shown until
- * the new answer lands, so the row does not blank at the end of every run.
+ * the new answer lands, so the row does not blank at the end of every run —
+ * and keeps it when no answer comes at all.
  *
  * `summary`: undefined = not known, null = the server has not looked yet.
  */
@@ -35,6 +36,10 @@ export function instructionsReducer(state: InstructionsState, event: Instruction
     case 'loaded':
       return event.conversationId === state.conversationId ? { ...state, summary: event.summary } : state;
     case 'failed':
-      return event.conversationId === state.conversationId ? { ...state, summary: undefined } : state;
+      // Could not ask is not "none": the snapshot on the server is permanent
+      // and nothing about it became unknown. A failed refresh — the one at the
+      // end of every run is the likely one — changes nothing; `select` is what
+      // clears a summary that no longer applies.
+      return state;
   }
 }

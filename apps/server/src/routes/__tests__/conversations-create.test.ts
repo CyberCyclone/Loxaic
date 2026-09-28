@@ -159,3 +159,41 @@ describe("MCP choices on a conversation", () => {
     expect(res.json<WithOverrides>().mcpOverrides).toEqual({ disabledServerIds: [], enabledServerIds: [] });
   });
 });
+
+describe("the instructions snapshot on a single conversation", () => {
+  /**
+   * GET and PATCH read the summary column, not the snapshot, as the listing
+   * does — a snapshot can be a megabyte, and the GET is polled at the end of
+   * every run. The size of the read is not visible from here; what is, and
+   * what the change must keep, is that both still answer with the summary and
+   * never with the text.
+   */
+  it("answers GET and PATCH with the summary, never the text", async () => {
+    const text = "# Rules\nThe secret house style.\n";
+    const [conv] = await db
+      .insert(conversations)
+      .values({
+        ownerId: userId,
+        title: "instructions",
+        kind: "agent",
+        instructions: {
+          status: "found", path: "AGENTS.md", text, sourceBytes: text.length, sourceTruncated: false,
+          fetchedAt: "2026-09-28T00:00:00.000Z",
+        },
+      })
+      .returning();
+    const expected = { status: "found", path: "AGENTS.md", sourceBytes: text.length, sourceTruncated: false };
+
+    const got = await app.inject({ method: "GET", url: `/v1/conversations/${conv.id}` });
+    expect(got.statusCode).toBe(200);
+    expect(got.json<{ instructions: unknown }>().instructions).toMatchObject(expected);
+    expect(got.body).not.toContain("secret house style");
+
+    const patched = await app.inject({
+      method: "PATCH", url: `/v1/conversations/${conv.id}`, payload: { model_pref: { model: "m" } },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json<{ instructions: unknown }>().instructions).toMatchObject(expected);
+    expect(patched.body).not.toContain("secret house style");
+  });
+});

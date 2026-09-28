@@ -24,4 +24,13 @@ describe('instructionsReducer', () => {
     });
     expect(instructionsReducer(a, { type: 'select', conversationId: 'a' })).toBe(a);
   });
+
+  it('keeps what is shown when a refresh of the same conversation fails', () => {
+    // The end-of-run refetch failing once used to blank the Inspector's whole
+    // section, for a snapshot that had not changed.
+    const a = instructionsReducer(instructionsReducer(initialInstructionsState, { type: 'select', conversationId: 'a' }), {
+      type: 'loaded', conversationId: 'a', summary: found,
+    });
+    expect(instructionsReducer(a, { type: 'failed', conversationId: 'a' })).toBe(a);
+  });
 });

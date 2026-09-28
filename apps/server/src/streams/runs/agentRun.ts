@@ -228,6 +228,9 @@ export async function startAgentRun(input: {
     mode,
     basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal }),
     surface: "agent",
+    // The same gate agentSystemPrompt applies to the root file: a scratch
+    // workspace has no project, only what the model wrote.
+    nestedInstructions: workspace.kind !== "scratch",
     abort,
     producer,
   });

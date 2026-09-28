@@ -484,6 +484,12 @@ export async function runToolLoop(ctx: {
    * stream on the same one, and as the MCP defaults to fall back on should the
    * conversation row be unreadable (its own `kind` wins otherwise). */
   surface: "chat" | "agent";
+  /** Whether a read inside a subdirectory brings that directory's own
+   * instructions file along. Only an agent run on a project workspace: chat is
+   * never given the project's instructions, and in a scratch workspace any such
+   * file is one the model wrote, which the framing would present back to it as
+   * the project's conventions. Absent means no. */
+  nestedInstructions?: boolean;
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
@@ -1101,6 +1107,7 @@ export async function runToolLoop(ctx: {
               // file is already in front of the model.
               messages: chatMessages,
               windowTokens,
+              nestedInstructions: ctx.nestedInstructions ?? false,
             },
             call,
           );
@@ -1387,6 +1394,8 @@ async function runOneToolCall(
     messages: readonly ChatMessage[];
     /** This iteration's window, which sizes a nested instructions file. */
     windowTokens: number | null;
+    /** See runToolLoop's `nestedInstructions`. */
+    nestedInstructions: boolean;
   },
   call: ToolCall,
 ): Promise<{
@@ -1496,7 +1505,7 @@ async function runOneToolCall(
   // A read inside a subdirectory with its own AGENTS.md brings that file
   // along, once — appended here so the live event and the persisted row carry
   // the same text, and the replay reproduces it (agent/instructions.ts).
-  if (builtinName === "fs_read" && result.ok && handle) {
+  if (ctx.nestedInstructions && builtinName === "fs_read" && result.ok && handle) {
     result.output = await withNestedInstructions(handle, resolvePath(handle, args.path), result.output, {
       messages: ctx.messages,
       windowTokens: ctx.windowTokens,
