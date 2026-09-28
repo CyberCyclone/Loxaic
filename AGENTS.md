@@ -2574,6 +2574,12 @@ replies.
   symlink that stays inside, like `CLAUDE.md -> AGENTS.md`, still works. The first version
   confined only imports, so a symlinked root or nested file (or a directory the model linked out)
   was read wherever it pointed. It needs `realpath`: coreutils, busybox, macOS 13 and later.
+  **Migration 0031 clears what the unconfined reads stored**, since `ensureInstructions` reuses a
+  stored snapshot unread forever. It clears every local workspace's snapshot and any carrying
+  `cksums` or `latest` (a shell read), and strips every `instructions_update` notice. An API-read
+  GitHub snapshot is kept. None of it ever shipped in a release; this is for databases that ran
+  `dev`. A fix to what a snapshot may contain needs a migration like this one, or the fix only
+  covers new conversations. Found in review.
 - **An import never leaves the repository.** The resolver refuses absolute, `~` and climbing
   paths lexically, and the reader confines by real path as above. On GitHub the contents API serves only the repo; it answers
   a directory, or a symlink leading out, in JSON, which `getFileText` treats as not a file.
