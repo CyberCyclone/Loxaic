@@ -15,7 +15,14 @@ import {
 } from "../../executor/registry.ts";
 import { createExecutorService } from "../../executor/service.ts";
 import type { ServerToExecutor } from "../../executor/protocol.ts";
-import { ensureInstructions, MAX_INSTRUCTIONS_SOURCE_BYTES } from "../instructions.ts";
+import {
+  ensureInstructions,
+  INSTRUCTIONS_SUMMARY_COLUMN,
+  instructionTokens,
+  MAX_INSTRUCTIONS_SOURCE_BYTES,
+  retryDelayMs,
+  summarizeInstructions,
+} from "../instructions.ts";
 import { agentSystemPrompt } from "../../streams/runs/agentRun.ts";
 
 process.env.MCP_ENCRYPTION_KEY ??= "instructions-test-key";
@@ -139,28 +146,77 @@ describe("a github workspace", () => {
     expect(snap).toMatchObject({ status: "found", sourceTruncated: true, sourceBytes: MAX_INSTRUCTIONS_SOURCE_BYTES });
   });
 
-  it("writes nothing when GitHub fails, tries again next time, and never logs the token", async () => {
+  it("records a failure, does not ask again until the retry is due, then asks and replaces it", async () => {
     files["octo/real"] = { "AGENTS.md": 500 };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       const id = await conversation(github);
-      expect(await ensureInstructions(id, userId, github)).toBeNull();
-      expect(await stored(id)).toBeNull();
+      let t = Date.parse("2026-09-28T00:00:00Z");
+      const clock = () => t;
+      expect(await ensureInstructions(id, userId, github, undefined, clock)).toMatchObject({
+        status: "unavailable",
+        reason: "error",
+        attempts: 1,
+        retryAfter: "2026-09-28T00:01:00.000Z",
+      });
       expect(warn).toHaveBeenCalled();
       expect(JSON.stringify(warn.mock.calls)).not.toContain(TOKEN);
+
+      // Before the retry is due: no lookup at all, not five seconds of one.
+      const asked = hits.length;
+      t += 30_000;
+      expect(await ensureInstructions(id, userId, github, undefined, clock)).toMatchObject({ status: "unavailable", attempts: 1 });
+      expect(hits.length).toBe(asked);
+
+      // Due, still failing: the wait doubles.
+      t += 31_000;
+      expect(await ensureInstructions(id, userId, github, undefined, clock)).toMatchObject({ attempts: 2, retryAfter: new Date(t + 120_000).toISOString() });
+
+      // Due again, and it works: the failure is replaced by the file.
       files["octo/real"] = { "AGENTS.md": "now it works" };
-      expect(await ensureInstructions(id, userId, github)).toMatchObject({ status: "found", text: "now it works" });
+      t += 121_000;
+      expect(await ensureInstructions(id, userId, github, undefined, clock)).toMatchObject({ status: "found", text: "now it works" });
+      expect(await stored(id)).toMatchObject({ status: "found" });
     } finally {
       warn.mockRestore();
     }
   });
 
-  it("does not look without a GitHub connection, and does not record none", async () => {
+  it("keeps a file found when a lower-priority name fails, but not when a higher one does", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      files["octo/real"] = { "AGENTS.md": "found it", "GEMINI.md": 502, ".github/copilot-instructions.md": 500 };
+      const a = await conversation(github);
+      expect(await ensureInstructions(a, userId, github)).toMatchObject({ status: "found", path: "AGENTS.md" });
+      files["octo/real"] = { "AGENTS.override.md": 502, "AGENTS.md": "found it" };
+      const b = await conversation(github);
+      // The override might exist and would win — not knowing is not "AGENTS.md".
+      expect(await ensureInstructions(b, userId, github)).toMatchObject({ status: "unavailable" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("records that it could not ask without a GitHub connection, and asks nothing", async () => {
     await db.delete(githubConnections).where(eq(githubConnections.userId, userId));
     const id = await conversation(github);
-    expect(await ensureInstructions(id, userId, github)).toBeNull();
-    expect(await stored(id)).toBeNull();
+    expect(await ensureInstructions(id, userId, github)).toMatchObject({ status: "unavailable", reason: "no-github-connection" });
     expect(hits).toEqual([]);
+  });
+
+  it("stores the token count, and a listing reads the summary without the text", async () => {
+    files["octo/real"] = { "AGENTS.md": "# Rules\nUse pnpm, always.\n" };
+    const id = await conversation(github);
+    await ensureInstructions(id, userId, github);
+    const [row] = await db
+      .select({ instructions: INSTRUCTIONS_SUMMARY_COLUMN })
+      .from(conversations)
+      .where(eq(conversations.id, id));
+    expect(JSON.stringify(row.instructions)).not.toContain("Use pnpm");
+    expect(summarizeInstructions(row.instructions)).toEqual({
+      status: "found", path: "AGENTS.md", mode: null, tokens: instructionTokens("# Rules\nUse pnpm, always.\n"),
+      sourceBytes: 26, sourceTruncated: false,
+    });
   });
 });
 
@@ -220,12 +276,12 @@ describe("other workspaces", () => {
       expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "none" });
     });
 
-    it("writes nothing while the machine is offline", async () => {
+    it("records that the machine is offline, so the client can say so", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
         const id = await conversation(local());
-        expect(await ensureInstructions(id, userId, local())).toBeNull();
-        expect(await stored(id)).toBeNull();
+        expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "unavailable", reason: "machine-offline" });
+        expect(summarizeInstructions(await stored(id))).toEqual({ status: "unavailable", reason: "machine-offline" });
       } finally {
         warn.mockRestore();
       }
@@ -237,11 +293,17 @@ describe("other workspaces", () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       try {
         const id = await conversation(local());
-        expect(await ensureInstructions(id, userId, local())).toBeNull();
+        expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "unavailable", reason: "error" });
       } finally {
         warn.mockRestore();
       }
     });
+  });
+});
+
+describe("retrying", () => {
+  it("waits a minute, doubling to an hour", () => {
+    expect([1, 2, 3, 6, 7, 20].map(retryDelayMs)).toEqual([60_000, 120_000, 240_000, 1_920_000, 3_600_000, 3_600_000]);
   });
 });
 

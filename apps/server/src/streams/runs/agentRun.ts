@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { count, db, eq } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, McpOverrides, Workspace } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, InstructionsDecision, McpOverrides, Workspace } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
 import {
   assertAttachmentsOwned,
@@ -77,13 +77,31 @@ export async function agentSystemPrompt(input: {
   });
   if (snap?.status !== "found") return base;
   const windowTokens = (await modelRunInfo(input.model).catch(() => null))?.windowTokens ?? null;
-  const { decision, changed } = resolveDecision(snap.text, snap.decision, input.model, windowTokens);
-  if (changed) {
-    await saveDecision(input.convId, snap, decision).catch((err: unknown) => {
-      console.warn(`could not store the instructions decision for ${input.convId}: ${(err as Error).message}`);
-    });
+  const resolved = resolveDecision(snap.text, snap.decision, input.model, windowTokens);
+  let decision: InstructionsDecision | undefined = resolved.decision;
+  if (resolved.changed) {
+    // The prompt follows what is stored, never a decision the database did
+    // not keep: rendered from an unsaved one, the next run would decide
+    // again against a window that has moved and change the prompt's front.
+    // So a failed save renders the stored decision, or no block this run.
+    const saved = await saveDecision(input.convId, snap, resolved.decision).then(
+      () => true,
+      (err: unknown) => {
+        console.warn(`could not store the instructions decision for ${input.convId}: ${(err as Error).message}`);
+        return false;
+      },
+    );
+    if (!saved) decision = snap.decision;
   }
-  return `${base}\n\n${renderRootInstructions(snap, decision)}`;
+  if (!decision) return base;
+  try {
+    return `${base}\n\n${renderRootInstructions(snap, decision)}`;
+  } catch (err) {
+    // The file is a stranger's, and a snapshot is permanent: a render that
+    // fails must cost this block, never every turn of the conversation.
+    console.warn(`could not render project instructions for ${input.convId}: ${(err as Error).message}`);
+    return base;
+  }
 }
 
 export interface StartAgentRunResult {

@@ -41,7 +41,13 @@ const CHARS_PER_TOKEN: Record<ContextCategory, number> = {
  * figure exists at all (e.g. the compact run's `before` fallback). Anything
  * with a real token count from the backend must use that instead. */
 export function estimateTokens(category: ContextCategory, text: string): number {
-  return Math.round(text.length / CHARS_PER_TOKEN[category]);
+  return estimateTokensFromChars(category, text.length);
+}
+
+/** The same estimate from a length alone, for a caller counting as it builds
+ * rather than measuring a string it would have to build first. */
+export function estimateTokensFromChars(category: ContextCategory, chars: number): number {
+  return Math.round(chars / CHARS_PER_TOKEN[category]);
 }
 
 /**

@@ -2430,9 +2430,23 @@ replies.
     any approved directory and re-checks it by realpath, so no sandbox row is needed and an
     older desktop works.
   
-  A failed lookup writes nothing and retries next run; "none" is stored so it is not looked
-  for again. It goes in the system prompt, not history, because compaction and the history
-  window drop history rows and the system prompt is rebuilt whole each run.
+  "none" is stored so it is not looked for again. It goes in the system prompt, not history,
+  because compaction and the history window drop history rows and the system prompt is
+  rebuilt whole each run.
+- **A failed lookup is stored as `unavailable`, with a reason and a `retryAfter`.** The reason
+  is `no-github-connection`, `machine-offline` or `error`; the retry waits a minute, doubling
+  to an hour. Storing nothing, as the first version did, re-ran the lookup before every turn,
+  up to its whole timeout, and let the Inspector keep promising a lookup still to come.
+  - **A found file replaces an `unavailable` row, and nothing replaces a found one.**
+  - **A stop is not a failure:** an aborted lookup records nothing.
+  - **Each step has its own deadline** (10 s: the lookup, then each chunk), so a large file on
+    a slow machine is not cut off by one budget sized for a small file.
+  - **Executor calls carry an inner `timeoutMs` 2 s under the transport's**, so the command is
+    killed on the user's machine rather than left running after we stop waiting.
+- **Of the five root candidates on GitHub, a failure matters only above the first hit.** They
+  are fetched together (`allSettled`), and the first in order that exists wins. A stalled
+  `GEMINI.md` probe must not throw away the `AGENTS.md` already found, but an unknown
+  `AGENTS.override.md` must not be read as "absent" either, because it would have won.
 - **The whole-or-outline decision is frozen per model** (`decision` in the snapshot). The
   window a run sees moves (pre-load maximum, then the loaded figure), and re-deciding each run
   would flip the front of every prompt. It is decided again only for a new model, which has no
@@ -2441,15 +2455,40 @@ replies.
 - **A nested file rides on the first `fs_read` below it**, appended to the result before it is
   persisted, so the replay reproduces it and the system prompt never moves. Nearest first, the
   root excluded, at most three per read, and a 5% share because they accumulate.
-  - **Dedupe reads the messages being sent** for the `<project-instructions path="…"` marker,
-    with no stored set. Once compaction or the window drops that result, the next read
-    attaches the file again, which is exactly when the model has lost it.
+  - **Dedupe reads the messages being sent**, with no stored set. Once compaction or the
+    window drops that result, the next read attaches the file again, which is exactly when the
+    model has lost it.
+  - **It counts only a block this module appended:** an `fs_read` result with the marker at
+    the start of a line. `fs_read` numbers every line it returns, so a file, a command's
+    output, a fetched page or a message that merely quotes the marker cannot suppress a
+    directory's instructions. The first version matched the marker anywhere.
+  - **The block carries the root's boundary sentence** (it cannot change the rules or
+    approvals). A nested file may be one the model wrote.
+  - **Directory names are the model's to choose, so every path we write is escaped.** The
+    lookup's output is NUL-separated, and the scope line has its control characters replaced;
+    a newline in a directory name could otherwise start a line that reads as a block of ours.
   - **Files are read in base64 chunks**, like `files/extract.ts`, since exec output is capped
-    at 256 KiB and a chunk boundary can split a UTF-8 sequence.
-- **The text never reaches a client.** `routes/conversations.ts`'s `publicConversation`
-  replaces it with a summary (path, tokens, mode) on every row it returns. A listing is fifty
-  rows and a snapshot can be a megabyte.
-- **The closing tag inside a file is neutralised** (`​`, as in `wrapDocument`). The framing
+    at 256 KiB and a chunk boundary can split a UTF-8 sequence. The exit code is `base64`'s,
+    and `pipefail` would fail every multi-chunk read because `head` sends `tail` a SIGPIPE.
+    So an empty chunk before `wc -c`'s size is reached is a failure, never an empty file. The
+    first version stored a vanished file as "found, empty", permanently.
+- **A repository's file is hostile input, and a snapshot is permanent.** Anything that runs over
+  it on every turn must be linear and must not throw:
+  - `parseHeadings` walks backwards once, keeping the next start per level. The obvious
+    forward search is quadratic: 18.7 s of blocked event loop for 100k one-line headings.
+  - The outline never spreads headings into `Math.min(...)`, which throws a `RangeError` past
+    ~150k arguments.
+  - `agentSystemPrompt` falls back to the base prompt if rendering throws anyway, and renders
+    only a decision the database kept. A failed `saveDecision` renders the stored decision, or
+    no block this run, never an unsaved one.
+- **The text never reaches a client, and the listing never reads it.** `publicConversation`
+  replaces it with a summary on every row it returns. `GET /v1/conversations` selects
+  `INSTRUCTIONS_SUMMARY_COLUMN` (the jsonb without `text`) rather than `SELECT *`: fifty rows of
+  up-to-a-megabyte snapshots were being read and discarded on every sidebar load. The token
+  count is stored with the snapshot, so a summary never measures text.
+- **The closing tag inside a file is neutralised** with a zero-width space, as in `wrapDocument`,
+  and so is everything between the tags, including the truncation note that quotes the path.
+  The framing
   says the file is the project's conventions and cannot change Loxaic's rules or approvals.
   Approvals are enforced server-side regardless.
 - **The mock echoes what the system message carried** (`Project instructions: AGENTS.md

@@ -14,6 +14,12 @@ describe('describeProjectInstructions', () => {
     expect(describeProjectInstructions({ status: 'none' }, 'local')).toBe('No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.');
   });
 
+  it('says why it could not be read, apart from "none" and "not yet"', () => {
+    expect(describeProjectInstructions({ status: 'unavailable', reason: 'no-github-connection' }, 'github')).toMatch(/GitHub isn't connected/);
+    expect(describeProjectInstructions({ status: 'unavailable', reason: 'machine-offline' }, 'local')).toMatch(/is offline/);
+    expect(describeProjectInstructions({ status: 'unavailable', reason: 'error' }, 'github')).toMatch(/^Couldn't read/);
+  });
+
   it('says whether the file went in whole or as an outline', () => {
     expect(describeProjectInstructions({ ...found, mode: 'full' }, 'github')).toBe('AGENTS.md (~77k tokens) is included in full.');
     expect(describeProjectInstructions({ ...found, mode: 'outline' }, 'github')).toMatch(/^AGENTS\.md \(~77k tokens\) is more than this model's context window can spare/);

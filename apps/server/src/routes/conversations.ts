@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { eq, ne, and, isNull, desc, inArray, or } from "@loxaic/db";
+import { eq, ne, and, isNull, desc, inArray, or, getTableColumns } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
 import { normalizeMcpOverrides, type ContextBreakdown } from "@loxaic/types";
@@ -12,7 +12,7 @@ import { BadCursorError, loadMessagePage, type MessagePage } from "../conversati
  * the start of the turn it cuts into. */
 const MESSAGE_PAGE_SIZE = 200;
 import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
-import { summarizeInstructions } from "../agent/instructions.ts";
+import { INSTRUCTIONS_SUMMARY_COLUMN, summarizeInstructions } from "../agent/instructions.ts";
 
 /**
  * A conversation row as a client may see it. The stored instructions
@@ -51,8 +51,10 @@ export function conversationRoutes(app: FastifyInstance) {
       .where(eq(conversationShares.userId, userId));
     const sharedRoles = new Map(shared.map((s) => [s.conversationId, s.role]));
 
+    // Every column but the instructions text: a snapshot can be a megabyte,
+    // this is fifty rows, and the listing only ever sends a summary of it.
     const rows = await db
-      .select()
+      .select({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })
       .from(conversations)
       .where(
         and(

@@ -16,6 +16,18 @@ export function describeProjectInstructions(
   if (workspaceKind === 'scratch' || summary === undefined) return null;
   if (summary === null) return 'Looked for AGENTS.md (or CLAUDE.md, GEMINI.md) when the first message is sent.';
   if (summary.status === 'none') return 'No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.';
+  // Tried, and could not find out — kept apart from "none" and from "not yet":
+  // the agent is working without them, and this says why.
+  if (summary.status === 'unavailable') {
+    switch (summary.reason) {
+      case 'no-github-connection':
+        return "Couldn't read the project's AGENTS.md: the conversation owner's GitHub isn't connected. It's tried again later.";
+      case 'machine-offline':
+        return "Couldn't read the project's AGENTS.md: the machine this folder is on is offline. It's tried again later.";
+      default:
+        return "Couldn't read the project's AGENTS.md just now. It's tried again later.";
+    }
+  }
   const size = `~${formatTokens(summary.tokens)} tokens`;
   const partial = summary.sourceTruncated ? ` Only its first ${formatKb(summary.sourceBytes)} was read.` : '';
   switch (summary.mode) {

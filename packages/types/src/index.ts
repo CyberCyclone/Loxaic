@@ -79,13 +79,22 @@ export type ProjectInstructions =
       sourceTruncated: boolean;
       fetchedAt: string;
       decision?: InstructionsDecision;
+      /** Estimated tokens, measured once when the snapshot is written, so a
+       * listing never re-measures megabytes it is about to throw away. */
+      tokens?: number;
     }
-  | { status: "none"; fetchedAt: string };
+  | { status: "none"; fetchedAt: string }
+  /** Looked, and could not find out: kept so the next run does not pay the
+   * lookup again until `retryAfter`, and so the client can say why. */
+  | { status: "unavailable"; reason: InstructionsUnavailableReason; checkedAt: string; retryAfter: string; attempts: number };
+
+export type InstructionsUnavailableReason = "no-github-connection" | "machine-offline" | "error";
 
 /** What a client is told about a conversation's instructions — never the text. */
 export type ProjectInstructionsSummary =
   | { status: "found"; path: string; mode: InstructionsMode | null; tokens: number; sourceBytes: number; sourceTruncated: boolean }
-  | { status: "none" };
+  | { status: "none" }
+  | { status: "unavailable"; reason: InstructionsUnavailableReason };
 
 export type MessageStatus = "streaming" | "complete" | "error" | "cancelled";
 
