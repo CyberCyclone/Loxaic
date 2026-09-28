@@ -1812,13 +1812,7 @@ export async function historyFront(conversationId: string): Promise<string> {
   return `${String(w.summaryRow?.lamport ?? 0)}:${String(w.anchor)}`;
 }
 
-export async function loadHistory(
-  conversationId: string,
-  /** `forCompaction`: leave out the instructions notices. They are superseded
-   * by the version the system prompt takes after a compaction, and a summary
-   * of them would carry the project's rules forward in a lossy form. */
-  opts: { forCompaction?: boolean } = {},
-): Promise<{
+export async function loadHistory(conversationId: string): Promise<{
   messages: ChatMessage[];
   truncated: boolean;
   summaryText: string | null;
@@ -1899,7 +1893,7 @@ export async function loadHistory(
       // A notice that the project's instructions changed rides first on the
       // message it was attached to, exactly as stored. A row without one
       // keeps precisely its old shape, so no existing prefix moves.
-      const notice = opts.forCompaction ? "" : instructionsNoticeOf(blocks);
+      const notice = instructionsNoticeOf(blocks);
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {

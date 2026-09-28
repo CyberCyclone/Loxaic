@@ -68,6 +68,9 @@ const COMPACT_INSTRUCTION = [
   "and conclusions that still constrain the work. Section 6 is the exception and stays exhaustive:",
   "every user message must appear, however tersely, because nothing else survives verbatim.",
   "",
+  "Leave out the <project-instructions-update> notices: after this summary the system prompt carries",
+  "the project's current instructions, so a copy here would only repeat them in a lossier form.",
+  "",
   "Respond with ONLY the summary document. No preamble, no commentary, no questions.",
 ].join("\n");
 
@@ -249,7 +252,11 @@ export async function startCompactRun(input: {
   // compacted is exactly what the next prompt would have replayed — starting
   // at any previous summary, which is what makes repeat compaction correct,
   // not cumulative.
-  const history = await loadHistory(convId, { forCompaction: true });
+  // Instructions notices included: the compaction request replays the history
+  // exactly as the last run sent it (see compactionRequest), and leaving them
+  // out would break the cached prefix at the first one. The instruction keeps
+  // them out of the summary instead.
+  const history = await loadHistory(convId);
   const historyLimit = HISTORY_LIMIT;
   const hasSummary = !!history.summaryText;
   const count = history.messages.length;

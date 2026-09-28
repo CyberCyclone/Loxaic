@@ -2629,8 +2629,14 @@ replies.
     front has not moved.
   - **Cost:** a fold re-evaluates the system prompt itself too. For a large file in full mode
     that is its size, once per compaction or window move that has a change pending.
-  - **Compaction** replays history with `forCompaction`, which leaves the notices out: the
-    summary must not carry the rules forward in a lossy form, and the fold replaces them anyway.
+  - **Compaction replays the notices, and its instruction keeps them out of the summary.** The
+    summary must not carry the rules forward in a lossy form, since the fold replaces them anyway.
+    But the compaction request is the last run's request plus the instruction (`compactionRequest`),
+    so leaving the notices out of the replay (the `forCompaction` option this first shipped with)
+    broke the cached prefix at the first one. The instruction's "Leave out the
+    `<project-instructions-update>` notices" costs nothing there, since it is the final user turn.
+    `prompt-prefix.test.ts` holds both: the compaction extends the notice-carrying request byte for
+    byte, and the next run folds the new version into the system prompt.
   - **Announced once:** each change is compared against `latest ?? base`. The agent's own edit
     to the file comes back as a notice on its next run; it costs tokens and does no harm.
 - **A nested file's checksum is part of its dedupe key** (`cksum="…"` right after the path on

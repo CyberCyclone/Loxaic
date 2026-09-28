@@ -780,9 +780,18 @@ describe("a change to the project's instructions keeps the prefix", () => {
     const { startCompactRun } = await import("../compactRun.ts");
     await startCompactRun({ userId, conversationId: conv.id, model: "llama-3.1-8b-instruct", surface: "agent" });
     await waitForRun(conv.id);
-    // The summary never carries the notice: it was left out of what was summarised.
+    // The compaction replays the notice exactly as the last run sent it, so it
+    // is still a strict extension of that request and the backend reads only
+    // the instruction. Leaving the notice out of the replay broke the prefix
+    // at the notice's message. The instruction is what keeps the rules out of
+    // the summary, since the fold below puts the current version in the
+    // system prompt.
     const summarised = requests.at(-1) ?? [];
-    expect(summarised.join("")).not.toContain("project-instructions-update");
+    expect(summarised.slice(0, edited.length)).toEqual(edited);
+    expect(summarised.at(-1)).toContain("project-instructions-update");
+    expect((JSON.parse(summarised.at(-1) ?? "{}") as { content: string }).content).toMatch(
+      /Leave out the <project-instructions-update> notices/,
+    );
 
     requests.length = 0;
     await run("say hello three");
