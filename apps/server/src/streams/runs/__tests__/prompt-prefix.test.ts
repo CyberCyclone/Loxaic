@@ -786,3 +786,40 @@ describe("a change to the project's instructions keeps the prefix", () => {
     expect((JSON.parse(folded[1]) as { role: string }).role).toBe("system");
   });
 });
+
+describe("a compaction extends the prompt it compacts", () => {
+  /**
+   * A compaction used to drop the system prompt and the tools, so its request
+   * shared nothing with the conversation's cached prefix and the backend
+   * re-read everything: 749 s for 235k tokens on the beta, after a turn that
+   * was 97% cached. Now it sends the last run's own front and history and
+   * appends the instruction — a strict extension of that run's last request.
+   */
+  it("sends the last request plus the instruction, same tools, none callable — and keeps its usage", async () => {
+    const convId = await turn("first question about pnpm");
+    await turn("second question about bun", convId);
+    const lastRun = requests.at(-1) ?? [];
+    const lastOptions = requestOptions.at(-1);
+
+    const { startCompactRun } = await import("../compactRun.ts");
+    const { summaryMessageId } = await startCompactRun({
+      userId, conversationId: convId, model: "llama-3.1-8b-instruct", surface: "chat",
+    });
+    await waitForRun(convId);
+
+    const compaction = requests.at(-1) ?? [];
+    // Every message the last run sent, byte for byte, then the replayed
+    // reply to it, then the instruction.
+    expect(compaction.slice(0, lastRun.length)).toEqual(lastRun);
+    expect(compaction.length).toBeGreaterThan(lastRun.length);
+    expect(compaction.at(-1)).toContain("Summarize this conversation");
+    expect(requestOptions.at(-1)).toEqual({ toolChoice: "none", toolCount: lastOptions?.toolCount });
+
+    // It finished — the usage row (fractional timings from the mock, as from
+    // llama.cpp) no longer throws the summary away.
+    const summary = await db.query.messages.findFirst({ where: eq(messages.id, summaryMessageId) });
+    expect(summary?.status).toBe("complete");
+    const usage = await db.query.usageRecords.findFirst({ where: eq(usageRecords.messageId, summaryMessageId) });
+    expect(usage?.promptMs).toBe(50);
+  });
+});

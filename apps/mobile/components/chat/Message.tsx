@@ -22,6 +22,7 @@ import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
 import { instructionsUpdateLine } from '@/lib/projectInstructions';
 import { PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import type { Message as MessageType } from '@/lib/types';
+import type { LiveCompaction } from './compactionState';
 import { displayModelRef } from '@loxaic/types';
 
 interface MessageProps {
@@ -34,6 +35,8 @@ interface MessageProps {
   /** True for the newest message in the thread. Only it carries standing
    * notices about the conversation's current state. */
   isNewest?: boolean;
+  /** A summary message still being made: what its card shows as it works. */
+  liveCompaction?: LiveCompaction | null;
 }
 
 /** "photo.png" when the server knew a name, "An image"/"A file" when it didn't
@@ -51,7 +54,7 @@ function listOmitted(atts: { mime: string; name?: string }[], max = 4): string {
   return rest > 0 ? `${shown} and ${String(rest)} more` : shown;
 }
 
-function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: MessageProps) {
+function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
   const { token, user } = useSession();
@@ -71,6 +74,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest }: Mes
         summaryText={msg.text || undefined}
         failed={msg.error}
         errorText={msg.errorText}
+        live={liveCompaction}
       />
     );
   }
@@ -342,5 +346,7 @@ export const Message = memo(
     // notice beside the new one — intermittently, whenever nothing else
     // happened to re-render it, which is what made attachment-budget.spec.ts
     // flaky.
-    prev.isNewest === next.isNewest,
+    prev.isNewest === next.isNewest &&
+    // The list memoises it, so it changes only when the run's state does.
+    prev.liveCompaction === next.liveCompaction,
 );

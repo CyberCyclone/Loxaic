@@ -15,9 +15,6 @@ interface TypingIndicatorProps {
   since: number;
   /** Model the request was sent to — shown the same way Message shows it, so this doesn't read as a headerless indicator. */
   model?: string;
-  /** True when this placeholder stands in for a /compact run's summary
-   * message rather than a normal reply — same gap, different label. */
-  compacting?: boolean;
   /** Place in the inference queue while this run waits for a slot. The
    * elapsed counter keeps running through it, deliberately: the time is real
    * and the user is entitled to see how long they have been waiting, even
@@ -40,9 +37,10 @@ interface TypingIndicatorProps {
 // `return_progress`), its own measured progress, which replaces the estimate
 // and adds a bar. Those are what tell twenty minutes of real work on 80k
 // fresh tokens apart from a hang; only the measured kind *proves* it.
-export function TypingIndicator({ loadingModel, since, model, compacting, queuePosition, promptStats }: TypingIndicatorProps) {
-  // Shown through a model load too — see showPromptStats for why.
-  const showStats = showPromptStats({ promptStats, queuePosition, compacting });
+export function TypingIndicator({ loadingModel, since, model, queuePosition, promptStats }: TypingIndicatorProps) {
+  // Shown through a model load too — see showPromptStats for why. A
+  // compaction never reaches here: its own card shows its progress.
+  const showStats = showPromptStats({ promptStats, queuePosition });
   return (
     <Box className="px-4 py-2">
       <HStack space="sm" className="items-start">
@@ -62,9 +60,7 @@ export function TypingIndicator({ loadingModel, since, model, compacting, queueP
                 ? `Queued · #${String(queuePosition)}`
                 : loadingModel
                   ? 'Loading model…'
-                  : compacting
-                    ? 'Compacting…'
-                    : 'Processing prompt…'}
+                  : 'Processing prompt…'}
             </Text>
             <LiveElapsed since={since} />
           </HStack>

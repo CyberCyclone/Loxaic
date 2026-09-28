@@ -560,13 +560,17 @@ async function* mockStream(
       ttftMs,
       totalMs: Date.now() - startTime,
       usage: { prompt_tokens: 10, completion_tokens: completionTokens, total_tokens: 10 + completionTokens },
+      // Fractional milliseconds, as llama.cpp reports them. Whole numbers here
+      // are how every usage row on the beta could fail to write (the timing
+      // columns are integers) with nothing in the suite noticing — a mock
+      // tidier than the real thing hides exactly that.
       timings: {
         prompt_n: 10,
-        prompt_ms: 50,
+        prompt_ms: 50.125,
         prompt_per_token_ms: 5,
         prompt_per_second: 200,
         predicted_n: completionTokens,
-        predicted_ms: 150,
+        predicted_ms: 150.375,
         predicted_per_token_ms: 15,
         predicted_per_second: 66,
         cache_n: 3,

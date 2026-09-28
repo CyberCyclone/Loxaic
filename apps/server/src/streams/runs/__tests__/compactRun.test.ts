@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCompactionStats, stripImagesForCompaction } from "../compactRun.ts";
+import { compactionRequest, computeCompactionStats, stripImagesForCompaction, summaryHeadroomTokens } from "../compactRun.ts";
 import type { ChatMessage } from "../../../inference/provider.ts";
 
 /**
@@ -151,5 +151,60 @@ describe("stripImagesForCompaction", () => {
       { role: "assistant", content: "reply" },
     ];
     expect(stripImagesForCompaction(messages)).toEqual(messages);
+  });
+});
+
+describe("compactionRequest", () => {
+  const shape = {
+    model: "m",
+    system: "You are Loxaic.",
+    tools: [{ type: "function" as const, function: { name: "fs_read", description: "Read", parameters: {} } }],
+  };
+  const imageTurn: ChatMessage = {
+    role: "user",
+    content: [
+      { type: "image_url", image_url: { url: "data:image/png;base64,AA" } },
+      { type: "text", text: "what is this" },
+    ],
+  };
+  const history = { messages: [imageTurn, { role: "assistant", content: "a cat" } as ChatMessage], summaryText: "Earlier." };
+
+  it("sends the last run's front, the history as replayed, then the instruction — tools kept, not callable", () => {
+    const r = compactionRequest({ shape, model: "m", history, instruction: "Summarize.", hasRoom: true });
+    expect(r.reusesPrefix).toBe(true);
+    expect(r.messages[0]).toEqual({ role: "system", content: "You are Loxaic." });
+    expect(r.messages[1]).toMatchObject({ role: "system" }); // the previous summary
+    // Images stay: stripping them would rewrite every message after the first.
+    expect(r.messages[2]).toBe(imageTurn);
+    expect(r.messages.at(-1)).toEqual({ role: "user", content: "Summarize." });
+    expect(r.tools).toBe(shape.tools);
+    expect(r.toolChoice).toBe("none");
+  });
+
+  it("falls back to the stripped request for another model, no shape, or no room for the summary", () => {
+    for (const r of [
+      compactionRequest({ shape, model: "other", history, instruction: "S", hasRoom: true }),
+      compactionRequest({ shape: undefined, model: "m", history, instruction: "S", hasRoom: true }),
+      compactionRequest({ shape, model: "m", history, instruction: "S", hasRoom: false }),
+    ]) {
+      expect(r.reusesPrefix).toBe(false);
+      expect(r.tools).toBeUndefined();
+      expect(r.messages.some((m) => m.role === "system" && m.content === "You are Loxaic.")).toBe(false);
+      expect(r.messages[1]).toEqual({ role: "user", content: "what is this" });
+    }
+  });
+
+  it("sends no tool choice when the run offered no tools", () => {
+    const r = compactionRequest({ shape: { ...shape, tools: [] }, model: "m", history, instruction: "S", hasRoom: true });
+    expect(r.tools).toBeUndefined();
+    expect(r.toolChoice).toBeUndefined();
+  });
+});
+
+describe("summaryHeadroomTokens", () => {
+  it("is a quarter of the window, up to 8k", () => {
+    expect(summaryHeadroomTokens(4096)).toBe(1024);
+    expect(summaryHeadroomTokens(32_768)).toBe(8192);
+    expect(summaryHeadroomTokens(262_144)).toBe(8192);
   });
 });

@@ -149,6 +149,10 @@ export function createDelivery(
         // client can count down on its own clock without trusting the two to
         // agree — a phone a minute fast would otherwise show a minute too few.
         server_now: Date.now(),
+        // When the run began, on the same clock: a device that learns of a
+        // run late (it started it elsewhere, or reconnected) times it from its
+        // real start rather than from the moment it heard.
+        ...(meta ? { started_at: meta.createdAt } : {}),
       });
     }
     syncSent = true;
@@ -266,17 +270,34 @@ export function createDelivery(
       await subscribeToStream(meta.streamId, conversationId, cursor);
     }
 
-    if (!convWatches.has(conversationId)) {
-      const unwatch = watchConversation(conversationId, (streamId) => {
-        subscribeToStream(streamId, conversationId, 0).catch(() => undefined);
-      });
-      convWatches.set(conversationId, unwatch);
-    }
+    watch(conversationId);
+  }
+
+  /** Registers the standing watch for new runs on a conversation, once per
+   * socket. */
+  function watch(conversationId: string): void {
+    if (convWatches.has(conversationId)) return;
+    const unwatch = watchConversation(conversationId, (streamId) => {
+      // A snapshot even at seq 0: a run the server started itself (an
+      // automatic compaction, a routine) is announced before anything is
+      // stored, and without a snapshot this device applied its events to
+      // the thread but never counted the run as going — no Stop button, a
+      // composer that looked free, and a summary card that switched to the
+      // typing indicator whenever a later resync finally said so.
+      subscribeToStream(streamId, conversationId, 0, "forceSync").catch(() => undefined);
+    });
+    convWatches.set(conversationId, unwatch);
   }
 
   /** Auto-subscribes the socket that just started a run to its own stream,
-   * without a separate round-trip. */
+   * without a separate round-trip — and watches the conversation, as a
+   * subscribe would. The sender is looking at it, and the next run on it may
+   * well be one the server starts: the automatic compaction after this very
+   * turn. Without the watch, a conversation created on this socket heard of
+   * nothing it did not send until the socket was replaced. The caller has
+   * already authorized the send. */
   function autoSubscribe(streamId: string, conversationId: string): Promise<void> {
+    watch(conversationId);
     return subscribeToStream(streamId, conversationId, 0);
   }
 

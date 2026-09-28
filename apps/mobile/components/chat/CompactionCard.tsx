@@ -7,7 +7,10 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Spinner } from '@/components/ui/spinner';
 import type { CompactionStats } from '@/lib/types';
-import { compactionCardState } from './compactionState';
+import { compactionCardState, liveCompactionLabel, type LiveCompaction } from './compactionState';
+import { LiveElapsed } from './LiveElapsed';
+import { PromptProgressBar } from './PromptProgressBar';
+import { describePromptStats } from '@/lib/promptStats';
 
 const fmt = (n: number) => n.toLocaleString();
 
@@ -27,6 +30,12 @@ interface CompactionCardProps {
   failed?: boolean;
   /** Why, when the server recorded a reason. */
   errorText?: string;
+  /** Set while this compaction is the run in flight: what the pill shows as
+   * it works — elapsed from the run's real start, the queue, the prompt's
+   * size and the backend's measured progress. The card is the compaction's
+   * one face for its whole life; it used to hand over to the chat's typing
+   * indicator mid-run whenever the client learnt the run was going. */
+  live?: LiveCompaction | null;
 }
 
 /**
@@ -35,7 +44,7 @@ interface CompactionCardProps {
  * is untouched and still on screen; this card just marks where prompt
  * assembly now starts.
  */
-export function CompactionCard({ stats, summaryText, failed, errorText }: CompactionCardProps) {
+export function CompactionCard({ stats, summaryText, failed, errorText, live: liveRun }: CompactionCardProps) {
   const [open, setOpen] = useState(false);
 
   if (compactionCardState(stats, failed) === 'failed') {
@@ -80,9 +89,10 @@ export function CompactionCard({ stats, summaryText, failed, errorText }: Compac
           {live ? (
             <>
               <Spinner size="small" className="text-muted-foreground" />
-              <Text size="xs" className="text-muted-foreground">
-                Compacting…
+              <Text testID="chat.compaction.live" size="xs" className="text-muted-foreground">
+                {liveRun ? liveCompactionLabel(liveRun) : 'Compacting…'}
               </Text>
+              {liveRun && <LiveElapsed since={liveRun.since} className="text-muted-foreground" />}
             </>
           ) : (
             <>
@@ -104,6 +114,15 @@ export function CompactionCard({ stats, summaryText, failed, errorText }: Compac
           )}
         </HStack>
       </Pressable>
+
+      {live && liveRun?.promptStats && !liveRun.queuePosition && (
+        <Box className="mx-auto mt-1 max-w-[820px] items-center">
+          <Text testID="chat.compaction.promptStats" size="2xs" className="text-center text-muted-foreground">
+            {describePromptStats(liveRun.promptStats)}
+          </Text>
+          <PromptProgressBar stats={liveRun.promptStats} />
+        </Box>
+      )}
 
       {stats?.auto && !stats.skipped && (
         // A summary nobody asked for, appearing mid-conversation, needs to say

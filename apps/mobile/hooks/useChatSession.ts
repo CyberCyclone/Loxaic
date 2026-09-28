@@ -39,6 +39,8 @@ import { toPendingApproval, toPendingCheckin, type PendingApproval, type Pending
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import type { Promotion } from '@/lib/mcpSwitches';
+import { localRunStart } from '@/lib/runStart';
+import { ConversationWatches } from '@/lib/conversationWatch';
 
 export type { PendingApproval };
 
@@ -117,16 +119,6 @@ export interface ChatScope {
    * recognise.
    */
   cache: boolean;
-  /**
-   * True to send `stream.subscribe` when a conversation is opened.
-   *
-   * The hook otherwise subscribes only on socket open and on a seq gap, which
-   * is enough for Chat, where a run always starts from this client. A routine
-   * run starts on the server, at 6am, so opening its chat is the first this
-   * client hears of it — without this the transcript sits there static while
-   * the run streams on.
-   */
-  subscribeOnSelect: boolean;
   /** Opened instead of the newest, when present and still in the list. */
   initialActiveId?: string | null;
 }
@@ -150,7 +142,6 @@ const CHAT_SCOPE: ChatScope = {
   kind: 'chat',
   allowCreate: true,
   cache: true,
-  subscribeOnSelect: false,
 };
 
 /** An API row as the surfaces hold it. Shared so a scope's own `list` does not
@@ -326,6 +317,18 @@ export function useChatSession(
   // (stream.subscribe replays live runs, not cold history).
   const loadedConvIdsRef = useRef<Set<string>>(new Set());
 
+  // Which conversations this socket has subscribed to, and so is told of new
+  // runs on (lib/conversationWatch.ts). One subscribe per conversation per
+  // socket is enough: the server keeps the watch for the socket's life.
+  const watchesRef = useRef(new ConversationWatches());
+  const watchConversation = useCallback((convId: string) => {
+    const ws = wsRef.current;
+    // A socket still connecting subscribes everything it needs on open.
+    if (ws?.readyState !== WebSocket.OPEN || !watchesRef.current.claim(convId)) return;
+    const tracked = streamingByConvRef.current[convId];
+    subscribeStreams(ws, convId, tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined);
+  }, []);
+
   const setActiveId = useCallback((id: string | null) => {
     activeIdRef.current = id;
     setActiveIdState(id);
@@ -334,26 +337,23 @@ export function useChatSession(
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
     if (!id || !isServerConvId(id)) return;
-    // A run this client did not start — a routine firing on a schedule — is
-    // already streaming by the time the screen opens it. The socket-open
-    // resubscribe cannot cover that: nothing was open then. Sent *after* the
-    // history fetch settles, because a snapshot landing first fills the thread
-    // and the history fill below only applies to an empty one, so the older
-    // messages would be dropped.
-    const subscribeIfWanted = () => {
-      if (!scopeRef.current.subscribeOnSelect) return;
-      const ws = wsRef.current;
-      if (ws) subscribeStreams(ws, id);
-    };
+    // Watch the conversation, so a run this client did not start reaches it:
+    // a routine firing on a schedule, an automatic compaction after a turn,
+    // another device's send. Sent *after* the history fetch settles, because a
+    // snapshot landing first fills the thread and the history fill below only
+    // applies to an empty one, so the older messages would be dropped.
     if (loadedConvIdsRef.current.has(id)) {
-      subscribeIfWanted();
+      watchConversation(id);
       return;
     }
     loadedConvIdsRef.current.add(id);
     getMessages(id)
       .then((page) => {
         const msgs = reconstructMessages(page.messages);
-        if (msgs.length === 0) return;
+        if (msgs.length === 0) {
+          watchConversation(id);
+          return;
+        }
         // A thread populated *from the cache* is overwritten by the server's
         // history — otherwise messages added from another device never appear
         // and the stale copy is written straight back to the cache. A thread
@@ -373,7 +373,7 @@ export function useChatSession(
           if (scope && conv) writeCachedConversation(scope.endpoint, scope.userId, conv);
           return next;
         });
-        subscribeIfWanted();
+        watchConversation(id);
       })
       .catch(() => {
         loadedConvIdsRef.current.delete(id);
@@ -381,9 +381,9 @@ export function useChatSession(
         // run is going right now, and the live stream is the more urgent half.
         // Whether the host is gone is the connection monitor's to decide: the
         // request already reported what it learned (lib/connectionMonitor.ts).
-        subscribeIfWanted();
+        watchConversation(id);
       });
-  }, [recordPaging]);
+  }, [recordPaging, watchConversation]);
 
   /** Renames the pending optimistic user bubble (if any) to its real
    * server-assigned id, in place — call this before any id-based upsert of
@@ -572,6 +572,10 @@ export function useChatSession(
       if (!ws) return;
       const targets = new Set(Object.keys(streamingByConvRef.current));
       if (activeIdRef.current) targets.add(activeIdRef.current);
+      // A new socket watches nothing until it subscribes; these are what it
+      // subscribes to now.
+      watchesRef.current.reset();
+      watchesRef.current.note(targets);
       // A conversation still waiting for its real id has nothing on the server
       // to subscribe to — sending its local id is what put
       // `invalid input syntax for type uuid` on screen. Ask instead what
@@ -607,6 +611,11 @@ export function useChatSession(
               : prev,
           );
         }
+        // The send made this socket watch the conversation (ws/delivery.ts's
+        // autoSubscribe), so an automatic compaction after this turn reaches
+        // it; opening the thread below must not subscribe a second time, which
+        // would tear down the run's tap for a redundant resync.
+        watchesRef.current.note([realId]);
         // Follow it unless it is an older thread the person has since left.
         if (isPending || localId === null || activeIdRef.current === localId) {
           if (localId && localId !== realId) setPromotion({ localId, realId });
@@ -666,7 +675,8 @@ export function useChatSession(
           // and the snapshot's own assistant message.
           // Synchronously, before any further event can be handled.
           cursorsRef.current[event.stream_id] = event.seq;
-          const assistantMsg = event.snapshot.messages.find((m) => m.author_type === 'assistant');
+          // A compaction's model is on its summary message.
+          const assistantMsg = event.snapshot.messages.find((m) => m.author_type === 'assistant' || m.author_type === 'summary');
           setStreamingByConv((prev) => ({
             ...prev,
             [convId]:
@@ -681,7 +691,8 @@ export function useChatSession(
                     // position hears nothing further until the run ahead ends —
                     // the snapshot is its only source for the wait.
                     queuePosition: event.snapshot.queued?.position ?? null,
-                    responseStartedAt: Date.now(),
+                    // From the run's real start — see lib/runStart.ts.
+                    responseStartedAt: localRunStart(event.started_at, event.server_now),
                     model: assistantMsg?.model ?? '',
                   },
           }));

@@ -50,6 +50,8 @@ import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
+import { usageRecordValues } from "./usage-record.ts";
+import { recordRequestShape } from "./request-shape.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import {
@@ -541,6 +543,9 @@ export async function runToolLoop(ctx: {
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
     const summaryMsg = history.summaryText ? summaryMessage(history.summaryText) : null;
+    // Fixed for the run, and what a compaction of this conversation needs to
+    // send the same front of the prompt (request-shape.ts).
+    recordRequestShape(convId, { model, system: systemPrompt, tools });
     const chatMessages: ChatMessage[] = [
       ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
       ...(summaryMsg ? [summaryMsg] : []),
@@ -1731,27 +1736,18 @@ async function recordUsage(input: {
   const { result } = input;
   // Guard against writing an all-zero row when a provider reports nothing.
   if (result.usage.total_tokens <= 0 && !result.timings) return;
-  await db.insert(usageRecords).values({
-    id: uuid(),
-    userId: input.userId,
-    conversationId: input.convId,
-    messageId: input.messageId,
-    runId: input.runId,
-    model: input.model,
-    origin: "server",
-    inputTokens: result.usage.prompt_tokens,
-    // Null, not 0, when the backend says nothing — see the column's comment.
-    cachedTokens: result.cachedTokens,
-    reusableTokens: input.reuse.tokens,
-    outputTokens: result.usage.completion_tokens,
-    ttftMs: result.ttftMs,
-    promptMs: result.timings?.prompt_ms ?? null,
-    predictMs: result.timings?.predicted_ms ?? null,
-    totalMs: result.totalMs,
-    promptTps: result.promptTps,
-    predictedTps: result.genTps,
-    contextBreakdown: input.context ?? null,
-  });
+  await db.insert(usageRecords).values(
+    usageRecordValues({
+      userId: input.userId,
+      conversationId: input.convId,
+      messageId: input.messageId,
+      runId: input.runId,
+      model: input.model,
+      result,
+      reusableTokens: input.reuse.tokens,
+      context: input.context ?? null,
+    }),
+  );
 }
 
 /**
