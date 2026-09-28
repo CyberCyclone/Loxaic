@@ -11,6 +11,9 @@ describe('describeProjectInstructions', () => {
 
   it('keeps "not looked yet" apart from "there is none"', () => {
     expect(describeProjectInstructions(null, 'github')).toMatch(/when the first message is sent/);
+    expect(describeProjectInstructions(null, 'local', 'direct')).toMatch(/when the first message is sent/);
+    // Read inside its container, which only the agent's first command starts.
+    expect(describeProjectInstructions(null, 'local', 'container')).toMatch(/inside the container, once the agent has started it/);
     expect(describeProjectInstructions({ status: 'none' }, 'local')).toBe('No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.');
   });
 

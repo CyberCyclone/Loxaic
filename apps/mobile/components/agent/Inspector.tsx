@@ -77,7 +77,8 @@ export interface WorkspaceView {
  */
 function InstructionsSection({ workspace }: { workspace: WorkspaceView }) {
   const kind = workspace.workspace?.kind ?? 'scratch';
-  const line = describeProjectInstructions(workspace.instructions, kind);
+  const isolation = workspace.workspace?.kind === 'local' ? workspace.workspace.isolation : undefined;
+  const line = describeProjectInstructions(workspace.instructions, kind, isolation);
   if (!line) return null;
   return (
     <VStack space="xs">

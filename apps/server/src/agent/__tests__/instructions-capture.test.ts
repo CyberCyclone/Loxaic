@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -24,6 +25,30 @@ import {
   summarizeInstructions,
 } from "../instructions.ts";
 import { agentSystemPrompt } from "../../streams/runs/agentRun.ts";
+import type { SandboxHandle } from "../../sandbox/provider.ts";
+
+/** A container-isolated folder's container, standing in for one: its handle
+ * runs commands in a directory of the test's choosing, as the container's
+ * own view of the mounted folder. Everything else uses the real manager. */
+const container = vi.hoisted(() => ({ live: null as null | { exec: (command: string[]) => Promise<unknown> } }));
+vi.mock("../sandbox-manager.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sandbox-manager.ts")>();
+  return {
+    ...actual,
+    attachActiveSandbox: (convId: string) =>
+      container.live ? Promise.resolve(container.live) : actual.attachActiveSandbox(convId),
+  };
+});
+
+/** A handle whose commands run in `dir`, as a container's do in its workdir. */
+function handleIn(dir: string): SandboxHandle {
+  return {
+    exec: (command: string[]) => {
+      const r = spawnSync(command[0], command.slice(1), { cwd: dir, encoding: "utf8" });
+      return Promise.resolve({ stdout: r.stdout, stderr: r.stderr, exitCode: r.status ?? 1 });
+    },
+  } as unknown as SandboxHandle;
+}
 
 process.env.MCP_ENCRYPTION_KEY ??= "instructions-test-key";
 
@@ -77,6 +102,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  container.live = null;
   __resetExecutorsForTest();
   await db.delete(conversations).where(eq(conversations.ownerId, userId));
   await db.delete(githubConnections).where(eq(githubConnections.userId, userId));
@@ -302,14 +328,16 @@ describe("other workspaces", () => {
     afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
     /** The desktop's executor, in process, over a real directory — only the
-     * socket elided (the executor-provider.test.ts pattern). */
-    function connectMachine(roots: string[]): void {
+     * socket elided (the executor-provider.test.ts pattern). Every call's
+     * method is recorded in `calls`. */
+    function connectMachine(roots: string[], calls: string[] = []): void {
       const service = createExecutorService({ roots: () => roots, executorId: "laptop-instr" });
       registerExecutor({
         executorId: "laptop-instr", userId, name: "Laptop", platform: process.platform,
         capabilities: { direct: true, container: false }, roots,
         send(message: ServerToExecutor) {
           if (message.type !== "call") return;
+          calls.push(message.method);
           void service.handle(message.method, message.params)
             .then((value) => { handleExecutorResult("laptop-instr", { type: "result", id: message.id, ok: true, value }); })
             .catch((err: unknown) => { handleExecutorResult("laptop-instr", { type: "result", id: message.id, ok: false, error: (err as Error).message }); });
@@ -356,6 +384,70 @@ describe("other workspaces", () => {
       } finally {
         rmSync(outside, { recursive: true, force: true });
       }
+    });
+
+    it("never reads the root file through a symlink out of the folder, and moves on to the next name", async () => {
+      // An untrusted repository's AGENTS.md pointing at a file elsewhere on
+      // the machine — a private key, the desktop's secrets — must not become
+      // the snapshot the prompt and the database carry.
+      const outside = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-instr-outside-")));
+      try {
+        writeFileSync(path.join(outside, "id_ed25519"), "SECRET KEY\n");
+        symlinkSync(path.join(outside, "id_ed25519"), path.join(root, "AGENTS.md"));
+        writeFileSync(path.join(root, "CLAUDE.md"), "inside rules\n");
+        connectMachine([root]);
+        const id = await conversation(local());
+        expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "found", path: "CLAUDE.md", text: "inside rules\n" });
+        expect(JSON.stringify(await stored(id))).not.toContain("SECRET");
+
+        rmSync(path.join(root, "CLAUDE.md"));
+        const id2 = await conversation(local());
+        expect(await ensureInstructions(id2, userId, local())).toMatchObject({ status: "none" });
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it("still follows a symlink that stays inside the folder", async () => {
+      // CLAUDE.md -> AGENTS.md is a common way to serve two tools one file.
+      mkdirSync(path.join(root, "docs"));
+      writeFileSync(path.join(root, "docs/agents.md"), "linked rules\n");
+      symlinkSync("docs/agents.md", path.join(root, "AGENTS.md"));
+      connectMachine([root]);
+      const id = await conversation(local());
+      expect(await ensureInstructions(id, userId, local())).toMatchObject({ status: "found", path: "AGENTS.md", text: "linked rules\n" });
+    });
+
+    describe("isolated in a container", () => {
+      const isolated = (): Workspace => ({ ...local(), isolation: "container" } as Workspace);
+
+      it("is never read on the host: before its container runs, nothing is read or stored", async () => {
+        // The folder ref is a shell on the host, which is what container
+        // isolation rules out: here a symlink to a host file would resolve.
+        writeFileSync(path.join(root, "AGENTS.md"), "host copy\n");
+        const calls: string[] = [];
+        connectMachine([root], calls);
+        const id = await conversation(isolated());
+        expect(await ensureInstructions(id, userId, isolated())).toBeNull();
+        expect(await stored(id)).toBeNull();
+        expect(calls).toEqual([]);
+      });
+
+      it("is read inside its container once that is running", async () => {
+        const view = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-instr-container-")));
+        try {
+          writeFileSync(path.join(view, "AGENTS.md"), "container view\n");
+          writeFileSync(path.join(root, "AGENTS.md"), "host copy\n");
+          const calls: string[] = [];
+          connectMachine([root], calls);
+          container.live = handleIn(view);
+          const id = await conversation(isolated());
+          expect(await ensureInstructions(id, userId, isolated())).toMatchObject({ status: "found", text: "container view\n" });
+          expect(calls).toEqual([]);
+        } finally {
+          rmSync(view, { recursive: true, force: true });
+        }
+      });
     });
 
     it("records none for a folder without one", async () => {

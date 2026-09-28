@@ -12,9 +12,17 @@ import type { ProjectInstructionsSummary } from '@loxaic/api-client';
 export function describeProjectInstructions(
   summary: ProjectInstructionsSummary | null | undefined,
   workspaceKind: 'scratch' | 'github' | 'local',
+  isolation?: 'direct' | 'container',
 ): string | null {
   if (workspaceKind === 'scratch' || summary === undefined) return null;
-  if (summary === null) return 'Looked for AGENTS.md (or CLAUDE.md, GEMINI.md) when the first message is sent.';
+  if (summary === null) {
+    // A container-isolated folder is read inside its container, never on the
+    // host, and nothing starts the container just to read it: the agent's
+    // first command does, and the next message is when it is looked for.
+    return workspaceKind === 'local' && isolation === 'container'
+      ? 'Looked for AGENTS.md (or CLAUDE.md, GEMINI.md) inside the container, once the agent has started it.'
+      : 'Looked for AGENTS.md (or CLAUDE.md, GEMINI.md) when the first message is sent.';
+  }
   if (summary.status === 'none') {
     return summary.pendingUpdate
       ? 'The project has an instructions file now; the agent was given it in the chat.'

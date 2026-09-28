@@ -43,6 +43,7 @@ import { getFileText } from "../github/client.ts";
 import { getOwnerToken } from "../github/connection.ts";
 import { callExecutor, ExecutorOfflineError } from "../executor/registry.ts";
 import { collectImports, importsEnabledFor, type ReadInstructionFile } from "./instruction-imports.ts";
+import { attachActiveSandbox } from "./sandbox-manager.ts";
 
 /**
  * Looked for in each directory in this order; the first that exists is the
@@ -468,9 +469,24 @@ export type Exec = (command: string[]) => Promise<Pick<ExecResult, "stdout" | "s
 const CHUNK_BYTES = 180 * 1024;
 
 /**
+ * The script prefix every instructions read starts with: `$root` is the real
+ * path of the exec's directory, the workspace root. A file counts only when its
+ * own real path is under it, so a symlink in the repository — AGENTS.md
+ * pointing at `../../.ssh/id_ed25519`, or a directory the model linked out —
+ * cannot put a file from elsewhere on the machine into the prompt. Needs
+ * `realpath`: coreutils, busybox, and macOS 13 and later.
+ */
+const REAL_ROOT = 'root=$(realpath .) || exit 3; ';
+
+/** Whether the real path in `$r` is inside `$root`; a script fragment. */
+const R_INSIDE_ROOT = 'case "$r" in "$root"/*) true ;; *) false ;; esac';
+
+/**
  * A file's first `maxBytes`, read in base64 chunks so neither the exec
  * layer's output cap nor a chunk boundary inside a UTF-8 sequence can corrupt
  * it — the same reasoning as files/extract.ts. `size` is what `wc -c` said.
+ * Each chunk re-resolves the path and refuses one that leads outside the
+ * workspace root, whatever the caller checked before.
  */
 async function readChunked(exec: Exec, file: string, size: number, maxBytes: number): Promise<{ text: string; bytes: number; truncated: boolean }> {
   const want = Math.min(size, maxBytes);
@@ -480,7 +496,10 @@ async function readChunked(exec: Exec, file: string, size: number, maxBytes: num
     const n = Math.min(CHUNK_BYTES, want - read);
     const res = await exec([
       "bash", "-c",
-      'tail -c +"$1" -- "$3" | head -c "$2" | base64',
+      REAL_ROOT +
+        'r=$(realpath -- "$3" 2>/dev/null) || exit 3; ' +
+        `${R_INSIDE_ROOT} || { echo "$3 leads outside the workspace" >&2; exit 4; }; ` +
+        'tail -c +"$1" -- "$r" | head -c "$2" | base64',
       "_", String(read + 1), String(n), file,
     ]);
     if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `could not read ${file}`);
@@ -500,13 +519,15 @@ async function readChunked(exec: Exec, file: string, size: number, maxBytes: num
 
 /** POSIX `cksum` of a file as "CRC SIZE": the same on macOS, GNU and
  * busybox, and cheap enough to run on every turn to learn whether a file
- * changed without reading it. The script fragment expects the path in `$p`. */
-const CKSUM_OF_P = '$(cksum < "$p" | awk \'{print $1" "$2}\')';
+ * changed without reading it. The script fragment expects the real path in
+ * `$r`. */
+const CKSUM_OF_R = '$(cksum < "$r" | awk \'{print $1" "$2}\')';
 
 /** For each directory, its instructions file (the first of `names` that
- * exists), size and `cksum`, in one exec. Directories with none are left out.
- * The names are our own constants, never input, so they are safe in the
- * script. */
+ * exists inside the workspace root, by real path), size and `cksum`, in one
+ * exec. A name that leads outside is passed over for the next. Directories
+ * with none are left out. The names are our own constants, never input, so
+ * they are safe in the script. */
 export async function findInstructionFiles(
   exec: Exec,
   dirs: string[],
@@ -515,8 +536,11 @@ export async function findInstructionFiles(
   if (dirs.length === 0) return [];
   const res = await exec([
     "bash", "-c",
-    'for d in "$@"; do for f in ' + names.join(" ") + '; do p="$d/$f"; ' +
-      `if [ -f "$p" ]; then printf "%s\\0%s\\0%s\\0%s\\0" "$d" "$f" "$(wc -c < "$p" | tr -d " ")" "${CKSUM_OF_P}"; break; fi; ` +
+    REAL_ROOT +
+      'for d in "$@"; do for f in ' + names.join(" ") + '; do p="$d/$f"; ' +
+      '[ -f "$p" ] || continue; r=$(realpath -- "$p" 2>/dev/null) || continue; ' +
+      `${R_INSIDE_ROOT} || continue; ` +
+      `printf "%s\\0%s\\0%s\\0%s\\0" "$d" "$f" "$(wc -c < "$r" | tr -d " ")" "${CKSUM_OF_R}"; break; ` +
       "done; done",
     "_", ...dirs,
   ]);
@@ -533,12 +557,15 @@ export async function findInstructionFiles(
 }
 
 /** `cksum` of each path, relative to the exec's directory; a path that is
- * not a file reports "-". */
+ * not a file inside the workspace root, by real path, reports "-". */
 export async function cksumPaths(exec: Exec, paths: readonly string[]): Promise<Record<string, string>> {
   if (paths.length === 0) return {};
   const res = await exec([
     "bash", "-c",
-    `for p in "$@"; do if [ -f "$p" ]; then printf "%s\\0%s\\0" "$p" "${CKSUM_OF_P}"; else printf "%s\\0-\\0" "$p"; fi; done`,
+    REAL_ROOT +
+      'for p in "$@"; do r=$(realpath -- "$p" 2>/dev/null) && [ -f "$r" ] && ' +
+      `${R_INSIDE_ROOT} && { printf "%s\\0%s\\0" "$p" "${CKSUM_OF_R}"; continue; }; ` +
+      'printf "%s\\0-\\0" "$p"; done',
     "_", ...paths,
   ]);
   if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "cksum failed");
@@ -613,10 +640,13 @@ export async function ensureInstructions(
     };
   };
   try {
-    const found = await lookupRoot(workspace, ownerId, signal);
+    const found = await lookupRoot(workspace, ownerId, convId, signal);
     // Stopped part-way, the imports' reads all failed and were left out:
     // storing that would freeze a snapshot missing them.
     if (signal?.aborted) return null;
+    // Nowhere to read it yet without starting something (a container-isolated
+    // folder before its container runs): nothing stored, asked again next run.
+    if (found === NOT_YET) return stored ?? null;
     const fetchedAt = new Date(now()).toISOString();
     snap =
       found === undefined
@@ -658,16 +688,23 @@ export async function ensureInstructions(
   }))?.instructions);
 }
 
+/** `lookupRoot`'s answer when the file cannot be read yet without starting
+ * something to read it with. */
+const NOT_YET = Symbol("not yet");
+
 /** The root file, null when the workspace has none, undefined when it could
- * not be asked (no GitHub connection to ask with). */
+ * not be asked (no GitHub connection to ask with), `NOT_YET` when there is
+ * nowhere to read it yet. */
 async function lookupRoot(
   workspace: Exclude<Workspace, { kind: "scratch" }>,
   ownerId: string,
+  convId: string,
   signal: AbortSignal | undefined,
 ): Promise<
   | { path: string; text: string; bytes: number; truncated: boolean; imports: ImportedInstructions[]; cksums?: Record<string, string> }
   | null
   | undefined
+  | typeof NOT_YET
 > {
   if (workspace.kind === "github") {
     const token = await getOwnerToken(ownerId);
@@ -704,13 +741,40 @@ async function lookupRoot(
     );
     return { path, ...hit, imports };
   }
-  // A local folder is read on its own machine, with the folder itself as the
-  // ref: the executor accepts any approved directory as one and re-checks it
-  // by realpath, so no sandbox needs to exist yet — and the folder is the same
-  // one whichever isolation the conversation chose. Every call carries an
-  // inner timeout shorter than the transport's, so the command is killed on
-  // the machine rather than left running after we stop waiting.
-  return readRootWith(executorExec(workspace, signal));
+  const exec = await workspaceExec(workspace, convId, signal);
+  return exec ? readRootWith(exec) : NOT_YET;
+}
+
+/**
+ * Where a workspace's instructions files are read: an exec whose directory is
+ * the workspace root, or null when there is nowhere to read them without
+ * starting something.
+ *
+ * - **A direct local folder**: on the user's machine, through the executor,
+ *   with the folder itself as the ref. The executor accepts any approved
+ *   directory as one and re-checks it by realpath, so no sandbox needs to
+ *   exist yet. A direct workspace already runs the agent's commands as the
+ *   user, so this reaches nothing it could not.
+ * - **A container-isolated local folder**: inside its container, and only
+ *   while that container is live in this process. Never the folder ref: that
+ *   is a shell on the host, which is exactly what the person chose container
+ *   isolation to rule out, and a symlink in an untrusted repository would
+ *   otherwise read a host file into the prompt.
+ * - **A GitHub workspace**: its checkout, only while its sandbox is live in
+ *   this process. Before the clone the snapshot comes from GitHub's API.
+ *
+ * A container or sandbox is never started for this: the agent's first command
+ * does that, and the next run reads the files.
+ */
+export async function workspaceExec(
+  workspace: Exclude<Workspace, { kind: "scratch" }>,
+  convId: string,
+  signal?: AbortSignal,
+): Promise<Exec | null> {
+  if (workspace.kind === "local" && workspace.isolation !== "container") return executorExec(workspace, signal);
+  const handle = await attachActiveSandbox(convId);
+  if (!handle) return null;
+  return (command) => handle.exec(command, { ...(signal ? { signal } : {}), timeoutMs: STEP_EXEC_TIMEOUT_MS });
 }
 
 /** A workspace's root instructions (the first candidate that exists), its
@@ -729,8 +793,11 @@ export async function readRootWith(
   return { path: hit.file, ...got, imports, cksums };
 }
 
-/** An exec on the user's machine, in the local workspace's folder. */
-export function executorExec(workspace: Extract<Workspace, { kind: "local" }>, signal?: AbortSignal): Exec {
+/** An exec on the user's machine, in the local workspace's folder — for a
+ * direct workspace only (`workspaceExec`). Every call carries an inner timeout
+ * shorter than the transport's, so the command is killed on the machine
+ * rather than left running after we stop waiting. */
+function executorExec(workspace: Extract<Workspace, { kind: "local" }>, signal?: AbortSignal): Exec {
   return (command) =>
     callExecutor<ExecResult>(
       workspace.executorId,

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,21 @@ import { createExecutorService } from "../../executor/service.ts";
 import type { ServerToExecutor } from "../../executor/protocol.ts";
 import { historyFront } from "../../streams/runs/engine.ts";
 import { prepareInstructions } from "../instruction-updates.ts";
+import type { SandboxHandle } from "../../sandbox/provider.ts";
+
+/** A container-isolated folder's container, standing in for one (the harness
+ * has no container engine behind its executor): commands run in a directory
+ * that plays the container's view of the mounted folder. Everything else
+ * uses the real manager. */
+const container = vi.hoisted(() => ({ live: null as null | SandboxHandle }));
+vi.mock("../sandbox-manager.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../sandbox-manager.ts")>();
+  return {
+    ...actual,
+    attachActiveSandbox: (convId: string) =>
+      container.live ? Promise.resolve(container.live) : actual.attachActiveSandbox(convId),
+  };
+});
 
 /**
  * The per-run check, end to end over a real database: a change becomes one
@@ -20,6 +36,8 @@ import { prepareInstructions } from "../instruction-updates.ts";
 const userId = `test-instr-updates-${uuid()}`;
 const EXECUTOR = "laptop-updates";
 let root: string;
+/** Every call the executor received this test, by method. */
+const executorCalls: string[] = [];
 
 beforeAll(async () => {
   await db.insert(user).values({
@@ -30,11 +48,13 @@ beforeAll(async () => {
 beforeEach(() => {
   root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-instr-updates-")));
   const service = createExecutorService({ roots: () => [root], executorId: EXECUTOR });
+  executorCalls.length = 0;
   registerExecutor({
     executorId: EXECUTOR, userId, name: "Laptop", platform: process.platform,
     capabilities: { direct: true, container: false }, roots: [root],
     send(message: ServerToExecutor) {
       if (message.type !== "call") return;
+      executorCalls.push(message.method);
       void service.handle(message.method, message.params)
         .then((value) => { handleExecutorResult(EXECUTOR, { type: "result", id: message.id, ok: true, value }); })
         .catch((err: unknown) => { handleExecutorResult(EXECUTOR, { type: "result", id: message.id, ok: false, error: (err as Error).message }); });
@@ -44,6 +64,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  container.live = null;
   __resetExecutorsForTest();
   const convs = await db.query.conversations.findMany({ where: eq(conversations.ownerId, userId), columns: { id: true } });
   for (const c of convs) await db.delete(messages).where(eq(messages.conversationId, c.id));
@@ -328,5 +349,52 @@ describe("the front of the prompt", () => {
       content: [{ kind: "text", text: "S" }], status: "complete", createdAt: new Date(),
     });
     expect(await historyFront(id)).not.toBe(b);
+  });
+});
+
+describe("a folder isolated in a container", () => {
+  /**
+   * The per-run check reads where the agent works: inside the container,
+   * while it runs. The folder ref would be a shell on the host, which the
+   * person chose container isolation to rule out, and where a symlink in the
+   * repository would resolve to a host file.
+   */
+  let view: string;
+  const isolated = (): Workspace => ({ kind: "local", executorId: EXECUTOR, executorName: "Laptop", path: root, isolation: "container" });
+
+  beforeEach(() => {
+    view = realpathSync(mkdtempSync(path.join(os.tmpdir(), "loxaic-instr-view-")));
+  });
+  afterEach(() => {
+    rmSync(view, { recursive: true, force: true });
+  });
+
+  function containerIn(dir: string): SandboxHandle {
+    return {
+      exec: (command: string[]) => {
+        const r = spawnSync(command[0], command.slice(1), { cwd: dir, encoding: "utf8" });
+        return Promise.resolve({ stdout: r.stdout, stderr: r.stderr, exitCode: r.status ?? 1 });
+      },
+    } as unknown as SandboxHandle;
+  }
+
+  it("checks inside the container while it runs, and never on the host", async () => {
+    writeFileSync(path.join(view, "AGENTS.md"), RULES);
+    writeFileSync(path.join(root, "AGENTS.md"), RULES.replace("Use pnpm.", "Host copy, never read."));
+    const id = await conversation(isolated());
+
+    // No container yet: nothing to read, nothing stored, nothing asked of the host.
+    const before = await run(id, isolated());
+    expect(before.handedOn).toBeNull();
+    expect(notices(await blocksOf(before.msgId))).toEqual([]);
+
+    container.live = containerIn(view);
+    const first = await run(id, isolated());
+    expect(first.handedOn).toMatchObject({ status: "found", text: RULES });
+
+    writeFileSync(path.join(view, "AGENTS.md"), RULES.replace("Use pnpm.", "Use bun."));
+    const changed = await run(id, isolated());
+    expect(notices(await blocksOf(changed.msgId))).toMatchObject([{ summary: "AGENTS.md: 1 section changed" }]);
+    expect(executorCalls.filter((m) => m === "exec")).toEqual([]);
   });
 });
