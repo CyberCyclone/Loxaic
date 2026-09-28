@@ -2525,11 +2525,32 @@ replies.
     are named. A rewrite (over half the file, or over the budget) sends the file whole or as an
     outline. In outline mode the notice ends with fresh line ranges, since the system prompt's
     no longer match.
+  - **One budget for the whole notice.** The fresh outline gets what the sections leave of it,
+    and with less than 256 tokens left the notice is the outline alone. The notice is persisted
+    and replayed every turn after, so a section list plus a full-budget outline (2× the budget)
+    was paid for as long as the row stayed in the window. Found in review.
+  - **Sized for the model reading it** (the run's live window, then the decision's). A
+    conversation that started with no file has no decision, and it is exactly the one whose
+    first notice is a whole new file: budgeted as an unknown window, a 40 KB AGENTS.md was
+    outlined on a 128k model. Unlike the system prompt, a notice needn't be reproducible from
+    stored state: it is written once and replayed as written.
+  - **A partly read file says so, in the system prompt's own words** (`truncatedNote`). Without
+    that, a notice presented the part as the whole and the missing tail read as deleted rules.
+    For the same reason a section missing from a truncated file is "no longer in the part that
+    was read", never "removed".
+  - **A file that vanishes between the lookup and the read is news only if the prompt had one.**
+    Otherwise the notice announced removing a file that was never there, and stayed in the
+    transcript.
   - **Framing:** it is Loxaic's words, not the user's, and carries the root's boundary sentence.
   - **Clients:** the `instructions.update` stream event tells a live one; history rebuilds it
     from the block.
   - **The mock** strips the notice before matching its keyword triggers, so the notice's own
     wording can't fire tool calls, and echoes `Project instructions updated: <path>.`
+- **The snapshot is read once per run.** `prepareInstructions` returns what it left stored, and
+  `agentSystemPrompt` builds from that. On this repository's own AGENTS.md that saves about a
+  megabyte of jsonb decoded per turn, while the run holds its slot. It must be what is *stored*,
+  never a draft: the system prompt follows the database, or the next run would render something
+  else. A failed prepare hands nothing on, and the prompt reads the column itself.
 - **The system prompt takes the newest version only when the front of the prompt has moved
   anyway.** `historyFront` keys on the compaction point and the window anchor. It is the same
   computation `loadHistory` uses (`historyWindow`), so the two can't drift apart. The snapshot

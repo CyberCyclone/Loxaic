@@ -331,7 +331,9 @@ export function formatSize(bytes: number): string {
   return `${String(Math.round((bytes / (1024 * 1024)) * 10) / 10)} MB`;
 }
 
-function truncatedNote(path: string, bytes: number): string {
+/** The note a partly read file carries wherever its text is shown — the
+ * system-prompt block and a change notice both, so the two say it alike. */
+export function truncatedNote(path: string, bytes: number): string {
   return `(Only the first ${formatSize(bytes)} of ${path} were read.)`;
 }
 

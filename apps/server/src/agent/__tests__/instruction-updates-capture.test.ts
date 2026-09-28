@@ -82,12 +82,19 @@ async function userMessage(convId: string, text = "hello"): Promise<string> {
   return id;
 }
 
-/** One run's preparation, as the tool loop would call it; returns what it emitted. */
-async function run(convId: string, workspace: Workspace): Promise<{ msgId: string; events: StreamEventKind[] }> {
+/** One run's preparation, as the tool loop would call it; returns what it
+ * emitted and the snapshot it handed on to the system prompt. */
+async function run(
+  convId: string,
+  workspace: Workspace,
+  windowTokens?: number | null,
+): Promise<{ msgId: string; events: StreamEventKind[]; handedOn: ProjectInstructions | null }> {
   const msgId = await userMessage(convId);
   const events: StreamEventKind[] = [];
-  await prepareInstructions({ convId, ownerId: userId, workspace, userMsgId: msgId, producer: { emit: (e) => { events.push(e); } } });
-  return { msgId, events };
+  const handedOn = await prepareInstructions({
+    convId, ownerId: userId, workspace, userMsgId: msgId, windowTokens, producer: { emit: (e) => { events.push(e); } },
+  });
+  return { msgId, events, handedOn };
 }
 
 async function snapshot(convId: string): Promise<ProjectInstructions> {
@@ -190,6 +197,31 @@ describe("a local folder", () => {
     writeFileSync(path.join(root, "CLAUDE.md"), "# New\nrules\n");
     const created = await run(bare, local());
     expect(notices(await blocksOf(created.msgId))).toMatchObject([{ summary: "The project now has CLAUDE.md" }]);
+  });
+
+  it("sizes a new file's notice for the model reading it, not for an unknown window", async () => {
+    // A conversation that started with no file has no decision to take a
+    // window from — exactly the one whose first notice is a whole new file.
+    const bare = await conversation(local());
+    await run(bare, local(), 131_072);
+    const big = ["# Big", ...Array.from({ length: 400 }, (_, i) => `## Rule ${String(i)}\n${"Do the thing. ".repeat(6)}`)].join("\n");
+    writeFileSync(path.join(root, "AGENTS.md"), big);
+    const created = await run(bare, local(), 131_072);
+    const [notice] = notices(await blocksOf(created.msgId));
+    expect(notice.text).toContain("## Rule 399\nDo the thing.");
+    rmSync(path.join(root, "AGENTS.md"));
+  });
+
+  it("hands the system prompt the snapshot exactly as stored, so it is not read again", async () => {
+    writeFileSync(path.join(root, "AGENTS.md"), RULES);
+    const id = await conversation(local());
+    const first = await run(id, local());
+    expect(first.handedOn).toEqual(await snapshot(id));
+    writeFileSync(path.join(root, "AGENTS.md"), RULES.replace("Use pnpm.", "Use pnpm, never npm."));
+    const edited = await run(id, local());
+    expect(edited.handedOn).toEqual(await snapshot(id));
+    const quiet = await run(id, local());
+    expect(quiet.handedOn).toEqual(await snapshot(id));
   });
 
   it("goes ahead without a check while the machine is offline", async () => {
