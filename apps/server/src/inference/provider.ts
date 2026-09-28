@@ -377,7 +377,12 @@ async function* mockStream(
   const currentTurn = messages.slice(lastUserIndex + 1);
   const alreadyRanTools = currentTurn.some((m) => m.role === "tool");
   const lastUser = lastUserIndex >= 0 ? messages[lastUserIndex] : undefined;
-  const prompt = textOfContent(lastUser?.content);
+  // A notice that the project's instructions changed rides first on the user
+  // message. It is Loxaic's, not the user's, so it must not fire the mock's
+  // keyword triggers ("read", "edit" …); it is reported in the echo instead.
+  const rawPrompt = textOfContent(lastUser?.content);
+  const updatePaths = [...rawPrompt.matchAll(/<project-instructions-update path="([^"]*)">/g)].map((m) => m[1]);
+  const prompt = rawPrompt.replace(/<project-instructions-update [\s\S]*?<\/project-instructions-update>\s*/g, "").trim();
   // Before anything is yielded, as a refused request is: nothing streamed.
   if (MOCK_FAIL_MATCH.test(prompt)) throw new Error(MOCK_FAIL_MESSAGE);
   const imageCount = countImageParts(lastUser?.content);
@@ -535,7 +540,9 @@ async function* mockStream(
     const system = messages[0]?.role === "system" ? textOfContent(messages[0].content) : "";
     const instructions = /<project-instructions path="([^"]*)" mode="(full|outline)"(?: imports="(\d+)")?>/.exec(system);
     const imported = instructions?.[3] ? `, ${instructions[3]} imported` : "";
-    const instructionsNote = instructions ? `Project instructions: ${instructions[1]} (${instructions[2]}${imported}). ` : "";
+    const instructionsNote =
+      (instructions ? `Project instructions: ${instructions[1]} (${instructions[2]}${imported}). ` : "") +
+      updatePaths.map((p) => `Project instructions updated: ${p}. `).join("");
     fullText = lastTool
       ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
       : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;

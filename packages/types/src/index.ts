@@ -78,8 +78,35 @@ export interface ImportedInstructions {
   sourceBytes: number;
   sourceTruncated: boolean;
 }
+/**
+ * The project's instructions as last read from the workspace — kept apart
+ * from the version in the system prompt so a change can reach the model in
+ * the chat (a notice on that run's user message) without rewriting the front
+ * of the prompt. It replaces the system-prompt version only when the front of
+ * the prompt changes anyway: a compaction, or the history window moving.
+ */
+export interface InstructionsVersion {
+  /** Null when the workspace no longer has one. */
+  path: string | null;
+  text: string;
+  imports?: ImportedInstructions[];
+  /** Each document's `cksum` ("CRC SIZE") as the workspace reported it, by
+   * path. Absent for a version read through GitHub's API. */
+  cksums?: Record<string, string>;
+  sourceBytes: number;
+  sourceTruncated: boolean;
+}
+/** Fields every settled snapshot carries for change tracking. */
+export interface InstructionsTracking {
+  /** The version the chat was last told about, when it differs from the one
+   * in the system prompt. Cleared when it is folded in. */
+  latest?: InstructionsVersion;
+  /** Which prompt front the last run was built on (compaction point and
+   * history-window anchor). A new one is what allows a fold. */
+  frontKey?: string;
+}
 export type ProjectInstructions =
-  | {
+  | ({
       status: "found";
       /** Relative to the workspace root, e.g. `AGENTS.md`. */
       path: string;
@@ -97,8 +124,10 @@ export type ProjectInstructions =
       /** `imports.length`, stored so a listing that leaves the texts out still
        * knows how many there are. */
       importCount?: number;
-    }
-  | { status: "none"; fetchedAt: string }
+      /** `cksum` of each document in this version, by path — see `InstructionsVersion`. */
+      cksums?: Record<string, string>;
+    } & InstructionsTracking)
+  | ({ status: "none"; fetchedAt: string } & InstructionsTracking)
   /** Looked, and could not find out: kept so the next run does not pay the
    * lookup again until `retryAfter`, and so the client can say why. */
   | { status: "unavailable"; reason: InstructionsUnavailableReason; checkedAt: string; retryAfter: string; attempts: number };
@@ -117,8 +146,11 @@ export type ProjectInstructionsSummary =
       sourceTruncated: boolean;
       /** How many files it imports; absent on an older server. */
       imports?: number;
+      /** The file has changed since the version in the system prompt, and the
+       * agent was told in the chat. */
+      pendingUpdate?: boolean;
     }
-  | { status: "none" }
+  | { status: "none"; pendingUpdate?: boolean }
   | { status: "unavailable"; reason: InstructionsUnavailableReason };
 
 export type MessageStatus = "streaming" | "complete" | "error" | "cancelled";
@@ -146,7 +178,12 @@ export type ContentBlock =
   /** Rides alongside a summary message's text block so a cold REST load can
    * render the compaction card with its stats — the stream isn't the only
    * path to this data. */
-  | ({ kind: "compaction" } & CompactionStats);
+  | ({ kind: "compaction" } & CompactionStats)
+  /** On a user message: the project's instructions file changed before this
+   * run, and `text` is the notice the model was given ahead of the message.
+   * Stored so every replay sends exactly what the live request sent; `summary`
+   * is the one line a client shows. */
+  | { kind: "instructions_update"; path: string; text: string; summary: string };
 
 export interface ModelInfo {
   id: string;

@@ -163,7 +163,7 @@ export async function startCompactRun(input: {
   // compacted is exactly what the next prompt would have replayed — starting
   // at any previous summary, which is what makes repeat compaction correct,
   // not cumulative.
-  const history = await loadHistory(convId);
+  const history = await loadHistory(convId, { forCompaction: true });
   const historyLimit = HISTORY_LIMIT;
   const hasSummary = !!history.summaryText;
   const count = history.messages.length;

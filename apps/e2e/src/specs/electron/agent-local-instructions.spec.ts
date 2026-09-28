@@ -17,7 +17,7 @@ import path from 'node:path';
 import { E2E_PICK_DIR } from '../../../scripts/electron-env.ts';
 import { provisionUser, uniqueCreds } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { waitForTextIn } from '../../helpers/selectors.ts';
+import { waitForFreshText, waitForTextIn } from '../../helpers/selectors.ts';
 import {
   chooseLocalWorkspace,
   getToolResults,
@@ -86,5 +86,14 @@ describe('electron local workspace: the folder\'s AGENTS.md', () => {
     expect(read.output).toContain('<project-instructions path="pkg/sub/AGENTS.md"');
     expect(read.output).toContain('Use tabs for indentation in this package.');
     await shot('local-instructions-nested-read');
+
+    // Edited on this machine between messages: the next run tells the agent,
+    // in the chat, without touching the system prompt.
+    writeFileSync(ROOT_FILE, '# Local rules\n\nThis folder uses pnpm, never npm or yarn.\n');
+    await sendMessage('say hello again');
+    await waitForTextIn('chat.messageList', 'Project instructions updated: AGENTS.md.');
+    await waitForRunDone(creds, conversation.id);
+    await waitForFreshText('chat.message.instructionsUpdate', 'The agent was given the change with this message.');
+    await shot('local-instructions-update-notice');
   });
 });

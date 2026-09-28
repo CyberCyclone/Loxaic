@@ -68,12 +68,12 @@ export const MAX_INSTRUCTIONS_SOURCE_BYTES = 1024 * 1024;
  * own deadline, so a large file on a slow machine is not cut off by a budget
  * sized for a small one. A lookup that fails records that it did (see
  * `unavailable`), so the next turn does not pay for it again straight away. */
-const STEP_TIMEOUT_MS = 10_000;
+export const STEP_TIMEOUT_MS = 10_000;
 /** The command's own limit, inside the step's: the executor's timeout fires
  * first and kills the command, rather than the server giving up on a command
  * that keeps running on someone's laptop (the ordering executor-provider.ts
  * keeps). */
-const STEP_EXEC_TIMEOUT_MS = STEP_TIMEOUT_MS - 2_000;
+export const STEP_EXEC_TIMEOUT_MS = STEP_TIMEOUT_MS - 2_000;
 /** First wait after a failed lookup, doubled per failure up to the ceiling. */
 const RETRY_BASE_MS = 60_000;
 const RETRY_CEILING_MS = 60 * 60_000;
@@ -81,7 +81,7 @@ const RETRY_CEILING_MS = 60 * 60_000;
 /** Share of the window a root file may take and still go in whole. */
 const DEFAULT_WINDOW_SHARE = 0.15;
 /** Smaller for a nested file: those accumulate in history, one per directory. */
-const NESTED_WINDOW_SHARE = 0.05;
+export const NESTED_WINDOW_SHARE = 0.05;
 /** Nothing is ever outlined below this many tokens — an outline of a short
  * file costs as much as the file and says less. */
 const FLOOR_TOKENS = 1024;
@@ -99,8 +99,10 @@ const MAX_NESTED_PER_READ = 3;
 
 const TAG = "project-instructions";
 const IMPORT_TAG = "imported-file";
+/** The wrapper around a change notice in the chat (instruction-updates.ts). */
+export const UPDATE_TAG = "project-instructions-update";
 
-function rootWindowShare(): number {
+export function rootWindowShare(): number {
   const raw = Number(process.env.AGENT_INSTRUCTIONS_WINDOW_SHARE);
   return Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : DEFAULT_WINDOW_SHARE;
 }
@@ -301,14 +303,15 @@ export function buildOutline(
   return `${head}\n${kept.join("\n")}${rest > 0 ? `\n… ${String(rest)} more; list them with grep -n '^#' ${path}` : ""}${also}`;
 }
 
-function escapeAttr(value: string): string {
+export function escapeAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
 /** What a closing marker inside the file becomes, so the file cannot end its
  * own wrapper — the same neutralisation wrapDocument and wrapResult use. Both
  * tags, since an imported file sits inside the outer one. */
-function neutralise(text: string): string {
+export function neutralise(text: string): string {
+  // `</project-instructions` also covers `</project-instructions-update`.
   return text
     .split(`</${TAG}`).join(`</\u200b${TAG}`)
     .split(`</${IMPORT_TAG}`).join(`</\u200b${IMPORT_TAG}`);
@@ -328,7 +331,9 @@ export function formatSize(bytes: number): string {
   return `${String(Math.round((bytes / (1024 * 1024)) * 10) / 10)} MB`;
 }
 
-function truncatedNote(path: string, bytes: number): string {
+/** The note a partly read file carries wherever its text is shown — the
+ * system-prompt block and a change notice both, so the two say it alike. */
+export function truncatedNote(path: string, bytes: number): string {
   return `(Only the first ${formatSize(bytes)} of ${path} were read.)`;
 }
 
@@ -340,13 +345,17 @@ export function renderBlock(input: {
   sourceTruncated: boolean;
   sourceBytes: number;
   imports?: readonly ImportedInstructions[];
+  /** A nested file's `cksum`, right after the path so it is part of what
+   * dedupe matches: an edited file is a different block. */
+  cksum?: string;
 }): string {
   const imports = input.imports ?? [];
   const note = input.sourceTruncated ? `\n${truncatedNote(input.path, input.sourceBytes)}` : "";
   // How many files it imports, on the tag itself, so it is stated the same
   // way whether the files are inlined below or only outlined.
+  const cksumAttr = input.cksum ? ` cksum="${escapeAttr(input.cksum)}"` : "";
   const open = (mode: InstructionsMode) =>
-    `${markerFor(input.path)} mode="${mode}"${imports.length ? ` imports="${String(imports.length)}"` : ""}>`;
+    `${markerFor(input.path)}${cksumAttr} mode="${mode}"${imports.length ? ` imports="${String(imports.length)}"` : ""}>`;
   // Everything between the tags is neutralised, notes included: they quote
   // paths, and a nested path is a directory name the model can create.
   if (input.mode === "outline") {
@@ -367,7 +376,7 @@ export function renderBlock(input: {
 
 /** Text we write outside a block that quotes a path: no control characters
  * (a newline could start a line that reads as a block of ours) and no tags. */
-function plainPath(value: string): string {
+export function plainPath(value: string): string {
   // eslint-disable-next-line no-control-regex -- the point is to remove them.
   return escapeAttr(value.replace(/[\x00-\x1f\x7f]/g, "?"));
 }
@@ -397,7 +406,6 @@ export function renderRootInstructions(
   })}`;
 }
 
-/** What the Inspector is told — never the text. */
 /**
  * What the Inspector is told — never the text. Works from the stored row or
  * from the listing's projection of it, which leaves the text out (see
@@ -407,7 +415,10 @@ export function renderRootInstructions(
 export function summarizeInstructions(raw: unknown): ProjectInstructionsSummary | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
-  if (r.status === "none") return { status: "none" };
+  // `latest` is left out of a listing's projection with the texts, and the
+  // projection reports whether there was one as `pendingUpdate`.
+  const pendingUpdate = r.pendingUpdate === true || (typeof r.latest === "object" && r.latest !== null);
+  if (r.status === "none") return { status: "none", ...(pendingUpdate ? { pendingUpdate } : {}) };
   if (r.status === "unavailable") {
     return { status: "unavailable", reason: (r.reason as InstructionsUnavailableReason | undefined) ?? "error" };
   }
@@ -427,15 +438,20 @@ export function summarizeInstructions(raw: unknown): ProjectInstructionsSummary 
     sourceBytes: typeof r.sourceBytes === "number" ? r.sourceBytes : 0,
     sourceTruncated: r.sourceTruncated === true,
     imports: typeof r.importCount === "number" ? r.importCount : Array.isArray(r.imports) ? r.imports.length : 0,
+    ...(pendingUpdate ? { pendingUpdate } : {}),
   };
 }
 
 /** The `instructions` column for a listing: the stored snapshot without its
- * text or its imports' texts, up to a megabyte per row between them, which a
- * summary never needs (the token and import counts are stored for it). */
-export const INSTRUCTIONS_SUMMARY_COLUMN = sql<unknown>`(${conversations.instructions} - 'text' - 'imports')`;
+ * text, its imports' texts or a pending newer version — up to megabytes per
+ * row between them, which a summary never needs (the token and import counts
+ * are stored for it, and whether a newer version is pending is kept as a flag). */
+export const INSTRUCTIONS_SUMMARY_COLUMN = sql<unknown>`(
+  (${conversations.instructions} - 'text' - 'imports' - 'latest')
+  || jsonb_build_object('pendingUpdate', ${conversations.instructions} ? 'latest')
+)`;
 
-function parseStored(raw: unknown): ProjectInstructions | null {
+export function parseStored(raw: unknown): ProjectInstructions | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<ProjectInstructions>;
   if (r.status === "none" || r.status === "unavailable") return r as ProjectInstructions;
@@ -445,7 +461,7 @@ function parseStored(raw: unknown): ProjectInstructions | null {
 
 // ── Reading files ─────────────────────────────────────────
 
-type Exec = (command: string[]) => Promise<Pick<ExecResult, "stdout" | "stderr" | "exitCode">>;
+export type Exec = (command: string[]) => Promise<Pick<ExecResult, "stdout" | "stderr" | "exitCode">>;
 
 /** Per exec: base64 inflates by 4/3, and an exec's stdout is capped at
  * MAX_OUTPUT_BYTES (256 KiB) — this leaves room. */
@@ -482,19 +498,25 @@ async function readChunked(exec: Exec, file: string, size: number, maxBytes: num
   return { text, bytes: buf.length, truncated: size > buf.length };
 }
 
+/** POSIX `cksum` of a file as "CRC SIZE": the same on macOS, GNU and
+ * busybox, and cheap enough to run on every turn to learn whether a file
+ * changed without reading it. The script fragment expects the path in `$p`. */
+const CKSUM_OF_P = '$(cksum < "$p" | awk \'{print $1" "$2}\')';
+
 /** For each directory, its instructions file (the first of `names` that
- * exists) and size, in one exec. Directories with none are left out. The
- * names are our own constants, never input, so they are safe in the script. */
-async function findInstructionFiles(
+ * exists), size and `cksum`, in one exec. Directories with none are left out.
+ * The names are our own constants, never input, so they are safe in the
+ * script. */
+export async function findInstructionFiles(
   exec: Exec,
   dirs: string[],
   names: readonly string[] = INSTRUCTION_FILES,
-): Promise<{ dir: string; file: string; size: number }[]> {
+): Promise<{ dir: string; file: string; size: number; cksum: string }[]> {
   if (dirs.length === 0) return [];
   const res = await exec([
     "bash", "-c",
-    'for d in "$@"; do for f in ' + names.join(" ") + '; do ' +
-      'if [ -f "$d/$f" ]; then printf "%s\\0%s\\0%s\\0" "$d" "$f" "$(wc -c < "$d/$f" | tr -d " ")"; break; fi; ' +
+    'for d in "$@"; do for f in ' + names.join(" ") + '; do p="$d/$f"; ' +
+      `if [ -f "$p" ]; then printf "%s\\0%s\\0%s\\0%s\\0" "$d" "$f" "$(wc -c < "$p" | tr -d " ")" "${CKSUM_OF_P}"; break; fi; ` +
       "done; done",
     "_", ...dirs,
   ]);
@@ -502,11 +524,27 @@ async function findInstructionFiles(
   // NUL-separated: a directory name can hold a newline or a tab, and the
   // workspace's directory names are the model's to choose.
   const fields = res.stdout.split("\0");
-  const out: { dir: string; file: string; size: number }[] = [];
-  for (let i = 0; i + 2 < fields.length; i += 3) {
-    const [dir, file, size] = [fields[i], fields[i + 1], fields[i + 2]];
-    if (dir && file && size) out.push({ dir, file, size: Number(size) || 0 });
+  const out: { dir: string; file: string; size: number; cksum: string }[] = [];
+  for (let i = 0; i + 3 < fields.length; i += 4) {
+    const [dir, file, size, cksum] = [fields[i], fields[i + 1], fields[i + 2], fields[i + 3]];
+    if (dir && file && size) out.push({ dir, file, size: Number(size) || 0, cksum: cksum.trim() });
   }
+  return out;
+}
+
+/** `cksum` of each path, relative to the exec's directory; a path that is
+ * not a file reports "-". */
+export async function cksumPaths(exec: Exec, paths: readonly string[]): Promise<Record<string, string>> {
+  if (paths.length === 0) return {};
+  const res = await exec([
+    "bash", "-c",
+    `for p in "$@"; do if [ -f "$p" ]; then printf "%s\\0%s\\0" "$p" "${CKSUM_OF_P}"; else printf "%s\\0-\\0" "$p"; fi; done`,
+    "_", ...paths,
+  ]);
+  if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "cksum failed");
+  const fields = res.stdout.split("\0");
+  const out: Record<string, string> = {};
+  for (let i = 0; i + 1 < fields.length; i += 2) if (fields[i]) out[fields[i]] = fields[i + 1].trim();
   return out;
 }
 
@@ -593,6 +631,7 @@ export async function ensureInstructions(
               tokens: instructionTokens(combinedText(found.text, found.imports)),
               fetchedAt,
               ...(found.imports.length ? { imports: found.imports, importCount: found.imports.length } : {}),
+              ...(found.cksums ? { cksums: found.cksums } : {}),
             }
           : { status: "none", fetchedAt };
   } catch (err) {
@@ -626,7 +665,9 @@ async function lookupRoot(
   ownerId: string,
   signal: AbortSignal | undefined,
 ): Promise<
-  { path: string; text: string; bytes: number; truncated: boolean; imports: ImportedInstructions[] } | null | undefined
+  | { path: string; text: string; bytes: number; truncated: boolean; imports: ImportedInstructions[]; cksums?: Record<string, string> }
+  | null
+  | undefined
 > {
   if (workspace.kind === "github") {
     const token = await getOwnerToken(ownerId);
@@ -669,19 +710,34 @@ async function lookupRoot(
   // one whichever isolation the conversation chose. Every call carries an
   // inner timeout shorter than the transport's, so the command is killed on
   // the machine rather than left running after we stop waiting.
-  const exec: Exec = (command) =>
+  return readRootWith(executorExec(workspace, signal));
+}
+
+/** A workspace's root instructions (the first candidate that exists), its
+ * imports and every document's `cksum`, over an exec whose directory is the
+ * workspace root — the user's folder through the executor, or a live
+ * sandbox's checkout. Null when there is none. */
+export async function readRootWith(
+  exec: Exec,
+): Promise<{ path: string; text: string; bytes: number; truncated: boolean; imports: ImportedInstructions[]; cksums: Record<string, string> } | null> {
+  const hits = await findInstructionFiles(exec, ["."], ROOT_INSTRUCTION_FILES);
+  if (hits.length === 0) return null;
+  const hit = hits[0];
+  const got = await readChunked(exec, hit.file, hit.size, MAX_INSTRUCTIONS_SOURCE_BYTES);
+  const imports = await collectImports(hit.file, got.text, execImportReader(exec), MAX_INSTRUCTIONS_SOURCE_BYTES - got.bytes);
+  const cksums = { [hit.file]: hit.cksum, ...(await cksumPaths(exec, imports.map((i) => i.path))) };
+  return { path: hit.file, ...got, imports, cksums };
+}
+
+/** An exec on the user's machine, in the local workspace's folder. */
+export function executorExec(workspace: Extract<Workspace, { kind: "local" }>, signal?: AbortSignal): Exec {
+  return (command) =>
     callExecutor<ExecResult>(
       workspace.executorId,
       "exec",
       { ref: workspace.path, command, options: { timeoutMs: STEP_EXEC_TIMEOUT_MS } },
       { ...(signal ? { signal } : {}), timeoutMs: STEP_TIMEOUT_MS },
     );
-  const hits = await findInstructionFiles(exec, ["."], ROOT_INSTRUCTION_FILES);
-  if (hits.length === 0) return null;
-  const hit = hits[0];
-  const got = await readChunked(exec, hit.file, hit.size, MAX_INSTRUCTIONS_SOURCE_BYTES);
-  const imports = await collectImports(hit.file, got.text, execImportReader(exec), MAX_INSTRUCTIONS_SOURCE_BYTES - got.bytes);
-  return { path: hit.file, ...got, imports };
 }
 
 export async function saveDecision(convId: string, snap: Extract<ProjectInstructions, { status: "found" }>, decision: InstructionsDecision): Promise<void> {
@@ -711,16 +767,15 @@ export function nestedCandidateDirs(fileAbs: string, workdir: string): string[] 
  * Read from the messages themselves, not stored anywhere: once compaction or
  * the history window drops the tool result that carried it, a later read
  * attaches it again — which is exactly when the model has lost it. */
-export function alreadyAttached(messages: readonly ChatMessage[], relDir: string): boolean {
+export function alreadyAttached(messages: readonly ChatMessage[], relPath: string, cksum: string): boolean {
   // Only a block this module appended counts: one in an fs_read result, at
   // the start of a line. fs_read numbers every line of a file it returns, so
   // a file (or an MCP result, a fetched page, a message) that merely *quotes*
-  // the marker can never suppress a directory's instructions.
-  const markers = INSTRUCTION_FILES.map((f) => `\n${markerFor(posix.join(relDir, f))}`);
-  return messages.some((m) => {
-    if (m.role !== "tool" || m.name !== "fs_read") return false;
-    return markers.some((mk) => m.content.includes(mk));
-  });
+  // the marker can never suppress a directory's instructions. The checksum is
+  // part of the match, so a file edited since it was attached is attached
+  // again — and the edit reaches the model where the old version did.
+  const marker = `\n${markerFor(relPath)} cksum="${escapeAttr(cksum)}"`;
+  return messages.some((m) => m.role === "tool" && m.name === "fs_read" && m.content.includes(marker));
 }
 
 /**
@@ -734,16 +789,19 @@ export async function withNestedInstructions(
   ctx: { messages: readonly ChatMessage[]; windowTokens: number | null; signal?: AbortSignal },
 ): Promise<string> {
   try {
-    const dirs = nestedCandidateDirs(readPathAbs, handle.workdir).filter(
-      (d) => !alreadyAttached(ctx.messages, posix.relative(handle.workdir, d)),
-    );
+    const dirs = nestedCandidateDirs(readPathAbs, handle.workdir);
     if (dirs.length === 0) return output;
     const exec: Exec = (command) =>
       handle.exec(command, { ...(ctx.signal ? { signal: ctx.signal } : {}), timeoutMs: STEP_EXEC_TIMEOUT_MS });
-    const hits = (await findInstructionFiles(exec, dirs)).slice(0, MAX_NESTED_PER_READ);
+    // Found first, then filtered: whether a file was already sent depends on
+    // its checksum *now*, which only the lookup knows.
+    const hits = (await findInstructionFiles(exec, dirs))
+      .map((hit) => ({ ...hit, rel: posix.relative(handle.workdir, posix.join(hit.dir, hit.file)) }))
+      .filter((hit) => !alreadyAttached(ctx.messages, hit.rel, hit.cksum))
+      .slice(0, MAX_NESTED_PER_READ);
     const blocks: string[] = [];
     for (const hit of hits) {
-      const rel = posix.relative(handle.workdir, posix.join(hit.dir, hit.file));
+      const rel = hit.rel;
       const got = await readChunked(exec, posix.join(hit.dir, hit.file), hit.size, MAX_INSTRUCTIONS_SOURCE_BYTES);
       // The exec runs in the workspace root, so imports resolve against it
       // and the reader confines them to it.
@@ -766,6 +824,7 @@ export async function withNestedInstructions(
             sourceTruncated: got.truncated,
             sourceBytes: got.bytes,
             imports,
+            cksum: hit.cksum,
           }),
       );
     }

@@ -1,7 +1,14 @@
 import { v4 as uuid } from "uuid";
 import { count, db, eq } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, InstructionsDecision, McpOverrides, Workspace } from "@loxaic/types";
+import type {
+  AttachmentRef,
+  ContentBlock,
+  InstructionsDecision,
+  McpOverrides,
+  ProjectInstructions,
+  Workspace,
+} from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
 import {
   assertAttachmentsOwned,
@@ -18,6 +25,7 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
 import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
 import { combinedText, ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
 import { modelRunInfo } from "../../inference/models.ts";
+import { prepareInstructions } from "../../agent/instruction-updates.ts";
 
 /**
  * Built at call time from the conversation's immutable workspace and the
@@ -69,12 +77,18 @@ export async function agentSystemPrompt(input: {
   mode: PermissionMode;
   model: string;
   signal?: AbortSignal;
+  /** The snapshot as `prepareInstructions` just left it stored, so it is not
+   * read again; absent, it is read here. */
+  snapshot?: ProjectInstructions | null;
 }): Promise<string> {
   const base = input.mode === "planning" ? planningSystemPrompt(input.workspace) : baseSystemPrompt(input.workspace);
-  const snap = await ensureInstructions(input.convId, input.ownerId, input.workspace, input.signal).catch((err: unknown) => {
-    console.warn(`project instructions unavailable for ${input.convId}: ${(err as Error).message}`);
-    return null;
-  });
+  const snap =
+    input.snapshot !== undefined
+      ? input.snapshot
+      : await ensureInstructions(input.convId, input.ownerId, input.workspace, input.signal).catch((err: unknown) => {
+          console.warn(`project instructions unavailable for ${input.convId}: ${(err as Error).message}`);
+          return null;
+        });
   if (snap?.status !== "found") return base;
   const windowTokens = (await modelRunInfo(input.model).catch(() => null))?.windowTokens ?? null;
   const resolved = resolveDecision(combinedText(snap.text, snap.imports), snap.decision, input.model, windowTokens);
@@ -218,6 +232,9 @@ export async function startAgentRun(input: {
   registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map() });
   announceNewRun(convId, streamId);
 
+  // What prepare leaves stored, handed to the system prompt so it is not read
+  // a second time. Undefined when prepare failed: the prompt then reads it.
+  let prepared: ProjectInstructions | null | undefined;
   void runToolLoop({
     streamId,
     convId,
@@ -226,7 +243,16 @@ export async function startAgentRun(input: {
     userLamport,
     model,
     mode,
-    basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal }),
+    // First, before the history loads: a change to the project's
+    // instructions since the last run becomes a notice on this run's user
+    // message (agent/instruction-updates.ts).
+    prepare: async () => {
+      const windowTokens = (await modelRunInfo(model).catch(() => null))?.windowTokens ?? null;
+      prepared = await prepareInstructions({
+        convId, ownerId, workspace, userMsgId, producer, windowTokens, signal: abort.signal,
+      });
+    },
+    basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal, snapshot: prepared }),
     surface: "agent",
     // The same gate agentSystemPrompt applies to the root file: a scratch
     // workspace has no project, only what the model wrote.

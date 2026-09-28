@@ -140,6 +140,10 @@ export interface Message {
    * nobody answered, and what the run did about it. Live or from a snapshot —
    * never from REST, so it is absent after the stream log has expired. */
   checkinDecision?: CheckinDecisionNote
+  /** User messages only: the project's instructions file changed before this
+   * run, and the agent was given the change ahead of this message. From the
+   * stored block, or live from `instructions.update`. */
+  instructionsUpdate?: { path: string; summary: string }
 }
 
 export interface Conversation {

@@ -564,6 +564,11 @@ export type StreamEventKind =
       diff?: FileDiff[];
     }
   | { kind: "todos"; todos: Todo[] }
+  /** The project's instructions changed before this run, and the user message
+   * `message_id` now carries a notice about it (an `instructions_update`
+   * block). Sent separately because that message's own `message.start` went
+   * out before the check ran. */
+  | { kind: "instructions.update"; message_id: string; path: string; summary: string }
   /** Emitted once by a compact run, before its message.end — the stats the
    * card renders, attached to the summary message. */
   | ({ kind: "compaction"; message_id: string } & CompactionStats)
@@ -582,6 +587,8 @@ export interface StreamSnapshotMessage {
   attachments?: AttachmentRef[];
   /** Present on summary messages once their compaction event has landed. */
   compaction?: CompactionStats;
+  /** Folded from `instructions.update`: user messages only. */
+  instructions_update?: { path: string; summary: string };
   tool_calls: {
     call_id: string;
     tool: string;

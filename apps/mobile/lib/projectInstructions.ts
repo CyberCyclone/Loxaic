@@ -15,7 +15,11 @@ export function describeProjectInstructions(
 ): string | null {
   if (workspaceKind === 'scratch' || summary === undefined) return null;
   if (summary === null) return 'Looked for AGENTS.md (or CLAUDE.md, GEMINI.md) when the first message is sent.';
-  if (summary.status === 'none') return 'No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.';
+  if (summary.status === 'none') {
+    return summary.pendingUpdate
+      ? 'The project has an instructions file now; the agent was given it in the chat.'
+      : 'No AGENTS.md, CLAUDE.md or GEMINI.md at the root of this project.';
+  }
   // Tried, and could not find out — kept apart from "none" and from "not yet":
   // the agent is working without them, and this says why.
   if (summary.status === 'unavailable') {
@@ -31,21 +35,30 @@ export function describeProjectInstructions(
   const size = `~${formatTokens(summary.tokens)} tokens`;
   const partial = summary.sourceTruncated ? ` Only its first ${formatKb(summary.sourceBytes)} was read.` : '';
   const n = summary.imports ?? 0;
+  const pending = summary.pendingUpdate
+    ? " It has changed since this conversation started: the agent was given the changes in the chat, and they move into its instructions at the next compaction."
+    : '';
   // With imports, the size and the verdict are about all of them together.
   const what = n > 0 ? `${summary.path} and the ${n === 1 ? 'file' : `${String(n)} files`} it imports (${size})` : `${summary.path} (${size})`;
   const their = n > 0 ? 'their' : 'its';
   const are = n > 0 ? 'are' : 'is';
   switch (summary.mode) {
     case 'full':
-      return `${what} ${are} included in full.${partial}`;
+      return `${what} ${are} included in full.${partial}${pending}`;
     case 'outline':
       return (
         `${what} ${are} more than this model's context window can spare, so the agent gets ${their} ` +
-        `opening and section headings, and reads sections as it needs them.${partial}`
+        `opening and section headings, and reads sections as it needs them.${partial}${pending}`
       );
     default:
-      return `${what} found.${partial}`;
+      return `${what} found.${partial}${pending}`;
   }
+}
+
+/** The line shown with a user message the agent was given an instructions
+ * change on — `summary` is the server's ("AGENTS.md: 1 section changed"). */
+export function instructionsUpdateLine(update: { path: string; summary: string }): string {
+  return `${update.summary}. The agent was given the change with this message.`;
 }
 
 function formatTokens(n: number): string {
