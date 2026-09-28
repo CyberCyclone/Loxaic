@@ -626,10 +626,22 @@ export async function chooseScratchWorkspace(): Promise<void> {
  * that GitHub is connected. Returns the branch name the chooser generated, so
  * the caller can assert the clone landed on it.
  */
-export async function chooseGithubWorkspace(repoId: number): Promise<string> {
+export async function chooseGithubWorkspace(repoId: number, search?: string): Promise<string> {
   await tap('agent.workspace.button');
   await waitForVisible('agent.workspace.dialog');
   await tap('agent.workspace.source.github');
+  // The repo list scrolls inside the dialog, and on a phone only the first
+  // two or three rows fit — so a repo further down is found the way a person
+  // finds it, by searching, rather than by scrolling a list whose length
+  // depends on the fixture.
+  if (search !== undefined) {
+    await waitForVisible('agent.workspace.repoSearch');
+    // On a phone the keyboard would then cover the filtered rows. Return
+    // submits the single-line field, which blurs it and closes the keyboard —
+    // what a person does; iOS offers no dismiss key to press instead.
+    await typeInto('agent.workspace.repoSearch', search);
+    if (platform() === 'ios' || platform() === 'android') await byTestId('agent.workspace.repoSearch').addValue('\n');
+  }
   await waitForVisible(`agent.workspace.repo.${String(repoId)}`);
   await tap(`agent.workspace.repo.${String(repoId)}`);
   await waitForVisible('agent.workspace.branchName');

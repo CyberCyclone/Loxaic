@@ -87,6 +87,11 @@ export const conversations = pgTable("conversations", {
    * predates the column, and every conversation created without choosing. Set
    * once at creation and never patched: the system prompt is built from it. */
   workspace: jsonb("workspace"),
+  /** `ProjectInstructions` (packages/types): the workspace's AGENTS.md as read
+   * before the first request, frozen so the system prompt built from it stays
+   * byte-identical. Null means not looked for yet (scratch, chat, or a
+   * conversation whose lookup has not succeeded). See agent/instructions.ts. */
+  instructions: jsonb("instructions"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   /**

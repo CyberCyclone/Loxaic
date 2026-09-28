@@ -1,14 +1,17 @@
 import "./force-prompt-prefix.ts";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
-import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
+import { conversations, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
+import { __resetExecutorsForTest, handleExecutorResult, registerExecutor } from "../../../executor/registry.ts";
+import { createExecutorService } from "../../../executor/service.ts";
+import type { ServerToExecutor } from "../../../executor/protocol.ts";
 
 /**
  * The invariant the whole prompt-caching effort rests on, asserted end to end
@@ -546,5 +549,161 @@ describe("prompt prefix across a plan review (#199)", () => {
     const after = requests[planning];
     expect(after[0]).not.toEqual(before[0]);
     expect(after.slice(1, before.length)).toEqual(before.slice(1));
+  });
+});
+
+describe("project instructions keep the prefix", () => {
+  /**
+   * The project's AGENTS.md rides at the very front of every request, so any
+   * variation in it between runs — re-reading the file, re-deciding whole
+   * versus outline against a window that moved — would re-evaluate the whole
+   * conversation on every turn. A nested file rides inside a tool result,
+   * which the replay has to reproduce exactly and must not attach twice.
+   */
+  const run = async (convId: string, content: string, mode: "auto" | "manual" = "auto") => {
+    const { startAgentRun } = await import("../agentRun.ts");
+    await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode, conversationId: convId });
+    await waitForRun(convId);
+  };
+
+  it("renders a stored snapshot byte for byte on every run", async () => {
+    const big = Array.from({ length: 300 }, (_, i) => `## Rule ${String(i)}\n${"Always do the thing. ".repeat(20)}`).join("\n");
+    const [conv] = await db
+      .insert(conversations)
+      .values({
+        ownerId: userId,
+        title: "instructions prefix test",
+        kind: "agent",
+        workspace: {
+          kind: "github", repo: "octo/real", baseBranch: "main", branch: "loxaic/instr",
+          cloneUrl: "https://github.example/octo/real.git",
+        },
+        instructions: {
+          status: "found", path: "AGENTS.md", text: big, sourceBytes: big.length, sourceTruncated: false,
+          fetchedAt: "2026-09-28T00:00:00.000Z",
+        },
+      })
+      .returning();
+    convIds.push(conv.id);
+    await run(conv.id, "make a todo list for alpha");
+    await run(conv.id, "make a todo list for bravo");
+    expectEachRequestExtendsTheLast();
+    const system = (JSON.parse(requests[0][0]) as { content: string }).content;
+    expect(system).toContain('<project-instructions path="AGENTS.md"');
+  });
+
+  describe("a nested file attached to a read", () => {
+    let dir: string;
+    let file: string;
+    let hostRoot: string;
+    /** A local folder: the project's own files, served by the desktop's
+     * executor in process (the executor-provider.test.ts pattern). */
+    let project: string;
+
+    beforeAll(() => {
+      dir = mkdtempSync(path.join(tmpdir(), "instr-prefix-"));
+      hostRoot = mkdtempSync(path.join(tmpdir(), "instr-prefix-host-"));
+      project = realpathSync(mkdtempSync(path.join(tmpdir(), "instr-prefix-project-")));
+      mkdirSync(path.join(project, "pkg", "sub"), { recursive: true });
+      writeFileSync(path.join(project, "pkg", "sub", "AGENTS.md"), "# Sub\nUse tabs in pkg/sub.\n");
+      writeFileSync(path.join(project, "pkg", "sub", "index.js"), "export {};\n");
+      file = path.join(dir, "scenarios.json");
+      writeFileSync(
+        file,
+        JSON.stringify([
+          {
+            match: "read the sub package",
+            steps: [{ tool: "fs_read", args: { path: "pkg/sub/index.js" } }],
+            finalText: "[Mock] read.\n",
+          },
+          {
+            match: "write my own sub package",
+            steps: [
+              {
+                calls: [
+                  { tool: "fs_write", args: { path: "pkg/sub/AGENTS.md", content: "# Sub\nUse tabs in pkg/sub.\n" } },
+                  { tool: "fs_write", args: { path: "pkg/sub/index.js", content: "export {};\n" } },
+                ],
+              },
+              { tool: "fs_read", args: { path: "pkg/sub/index.js" } },
+            ],
+            finalText: "[Mock] written.\n",
+          },
+        ]),
+      );
+      // Read at call time, like every sandbox setting — no cache to reset.
+      process.env.SANDBOX_MODE = "host";
+      process.env.SANDBOX_HOST_ROOT = hostRoot;
+      process.env.MOCK_SCENARIOS_FILE = file;
+      __resetMockScenariosForTest();
+
+      const service = createExecutorService({ roots: () => [project], executorId: "laptop-prefix" });
+      registerExecutor({
+        executorId: "laptop-prefix", userId, name: "Laptop", platform: process.platform,
+        capabilities: { direct: true, container: false }, roots: [project],
+        send(message: ServerToExecutor) {
+          if (message.type !== "call") return;
+          void service.handle(message.method, message.params)
+            .then((value) => { handleExecutorResult("laptop-prefix", { type: "result", id: message.id, ok: true, value }); })
+            .catch((err: unknown) => {
+              handleExecutorResult("laptop-prefix", { type: "result", id: message.id, ok: false, error: (err as Error).message });
+            });
+        },
+        close: () => undefined,
+      });
+    });
+
+    afterAll(async () => {
+      const { destroyConversationSandboxes } = await import("../../../agent/sandbox-manager.ts");
+      for (const id of convIds) await destroyConversationSandboxes(id).catch(() => undefined);
+      // Scoped to this suite's user — never an unscoped delete, which would
+      // take other suites' rows out from under them.
+      await db.delete(sandboxes).where(eq(sandboxes.ownerId, userId));
+      __resetExecutorsForTest();
+      delete process.env.SANDBOX_MODE;
+      delete process.env.SANDBOX_HOST_ROOT;
+      delete process.env.MOCK_SCENARIOS_FILE;
+      __resetMockScenariosForTest();
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(hostRoot, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    });
+
+    const toolResults = () =>
+      (requests.at(-1) ?? [])
+        .map((j) => JSON.parse(j) as { role: string; content: string })
+        .filter((m) => m.role === "tool");
+
+    it("attaches the project's own file once, and the next turn replays it exactly", async () => {
+      const [conv] = await db
+        .insert(conversations)
+        .values({
+          ownerId: userId,
+          title: "nested",
+          kind: "agent",
+          workspace: { kind: "local", executorId: "laptop-prefix", executorName: "Laptop", path: project, isolation: "direct" },
+        })
+        .returning();
+      convIds.push(conv.id);
+      await run(conv.id, "read the sub package");
+      await run(conv.id, "read the sub package again");
+      expectEachRequestExtendsTheLast();
+
+      const withMarker = toolResults().filter((m) => m.content.includes('<project-instructions path="pkg/sub/AGENTS.md"'));
+      expect(withMarker).toHaveLength(1);
+      expect(withMarker[0].content).toContain("Use tabs in pkg/sub.");
+    });
+
+    it("never attaches one in a scratch workspace, where the model wrote it", async () => {
+      // No project, so any such file is the model's own output. Framed as the
+      // project's instructions, it would come back to the model as rules it
+      // must follow.
+      const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "nested scratch", kind: "agent" }).returning();
+      convIds.push(conv.id);
+      await run(conv.id, "write my own sub package");
+      const results = toolResults();
+      expect(results.some((m) => m.content.includes("export {};"))).toBe(true);
+      expect(results.some((m) => m.content.includes("<project-instructions"))).toBe(false);
+    });
   });
 });

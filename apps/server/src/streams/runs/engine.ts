@@ -50,7 +50,8 @@ import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
-import { executeTool, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { withNestedInstructions } from "../../agent/instructions.ts";
 import {
   attachActiveSandbox,
   getConversationSandbox,
@@ -474,12 +475,21 @@ export async function runToolLoop(ctx: {
   model: string;
   mode: PermissionMode;
   /** Surface-appropriate system prompt, or null for none. The engine appends
-   * the MCP untrusted-content addendum when MCP tools are offered. */
-  basePrompt: string | null;
+   * the MCP untrusted-content addendum when MCP tools are offered. A function
+   * when building it needs I/O (the agent's project instructions), so that
+   * happens inside the run — after `turn.started`, under the run's error
+   * handling — rather than in the starter. */
+  basePrompt: string | null | (() => Promise<string | null>);
   /** Which surface started this run — so an automatic compaction opens its
    * stream on the same one, and as the MCP defaults to fall back on should the
    * conversation row be unreadable (its own `kind` wins otherwise). */
   surface: "chat" | "agent";
+  /** Whether a read inside a subdirectory brings that directory's own
+   * instructions file along. Only an agent run on a project workspace: chat is
+   * never given the project's instructions, and in a scratch workspace any such
+   * file is one the model wrote, which the framing would present back to it as
+   * the project's conventions. Absent means no. */
+  nestedInstructions?: boolean;
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
@@ -515,7 +525,8 @@ export async function runToolLoop(ctx: {
     const hasDocuments = history.messages.some(
       (m) => m.role === "user" && countDocumentParts(m.content) > 0,
     );
-    const systemPrompt = assembleSystemPrompt(ctx.basePrompt, toolset.systemPromptAddendum, hasDocuments);
+    const basePrompt = typeof ctx.basePrompt === "function" ? await ctx.basePrompt() : ctx.basePrompt;
+    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
@@ -1091,6 +1102,12 @@ export async function runToolLoop(ctx: {
               // A getter, not a value: each approval in a batch starts its own
               // wait, and gets a deadline measured from its own start.
               approvalDeadline: () => waitDeadline(waits.approvalTimeoutMs, waits.adaptive, slowestTurnMs),
+              // What this request carried plus the results of this batch so
+              // far — what decides whether a subdirectory's instructions
+              // file is already in front of the model.
+              messages: chatMessages,
+              windowTokens,
+              nestedInstructions: ctx.nestedInstructions ?? false,
             },
             call,
           );
@@ -1373,6 +1390,12 @@ async function runOneToolCall(
     signal: AbortSignal;
     /** This approval's deadline, measured from the moment it starts. */
     approvalDeadline: () => WaitDeadline;
+    /** The messages being sent, for nested instructions dedupe. */
+    messages: readonly ChatMessage[];
+    /** This iteration's window, which sizes a nested instructions file. */
+    windowTokens: number | null;
+    /** See runToolLoop's `nestedInstructions`. */
+    nestedInstructions: boolean;
   },
   call: ToolCall,
 ): Promise<{
@@ -1479,6 +1502,16 @@ async function runOneToolCall(
   }
 
   const result: ToolResult = await executeTool(handle, builtinName, args, ctx.signal);
+  // A read inside a subdirectory with its own AGENTS.md brings that file
+  // along, once — appended here so the live event and the persisted row carry
+  // the same text, and the replay reproduces it (agent/instructions.ts).
+  if (ctx.nestedInstructions && builtinName === "fs_read" && result.ok && handle) {
+    result.output = await withNestedInstructions(handle, resolvePath(handle, args.path), result.output, {
+      messages: ctx.messages,
+      windowTokens: ctx.windowTokens,
+      signal: ctx.signal,
+    });
+  }
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",

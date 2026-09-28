@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { eq, ne, and, isNull, desc, inArray, or } from "@loxaic/db";
+import { eq, ne, and, isNull, desc, inArray, or, getTableColumns } from "@loxaic/db";
 import { db } from "@loxaic/db";
 import { conversationShares, conversations, usageRecords } from "@loxaic/db/schema";
 import { normalizeMcpOverrides, type ContextBreakdown } from "@loxaic/types";
@@ -12,6 +12,20 @@ import { BadCursorError, loadMessagePage, type MessagePage } from "../conversati
  * the start of the turn it cuts into. */
 const MESSAGE_PAGE_SIZE = 200;
 import { parseWorkspaceInput, WorkspaceError } from "../agent/workspace.ts";
+import { INSTRUCTIONS_SUMMARY_COLUMN, summarizeInstructions } from "../agent/instructions.ts";
+
+/**
+ * A conversation row as a client may see it. The stored instructions
+ * snapshot is the project's whole AGENTS.md — up to a megabyte, fifty times
+ * over in a listing — so it leaves as a summary: which file, how big, and how
+ * the model is shown it.
+ */
+function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T, "instructions"> & {
+  instructions: ReturnType<typeof summarizeInstructions>;
+} {
+  const { instructions, ...rest } = row;
+  return { ...rest, instructions: summarizeInstructions(instructions) };
+}
 import { getRunByConversation } from "../streams/registry.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
 
@@ -37,8 +51,10 @@ export function conversationRoutes(app: FastifyInstance) {
       .where(eq(conversationShares.userId, userId));
     const sharedRoles = new Map(shared.map((s) => [s.conversationId, s.role]));
 
+    // Every column but the instructions text: a snapshot can be a megabyte,
+    // this is fifty rows, and the listing only ever sends a summary of it.
     const rows = await db
-      .select()
+      .select({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })
       .from(conversations)
       .where(
         and(
@@ -53,7 +69,7 @@ export function conversationRoutes(app: FastifyInstance) {
       .limit(50);
 
     return rows.map((row) => ({
-      ...row,
+      ...publicConversation(row),
       role: row.ownerId === userId ? "owner" : (sharedRoles.get(row.id) ?? "viewer"),
     }));
   });
@@ -66,9 +82,16 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    const row = await db.query.conversations.findFirst({
-      where: eq(conversations.id, request.params.id),
-    });
+    // The summary, not the snapshot, as the listing does: this is read per
+    // opened thread and again at the end of every run, and a snapshot can be
+    // a megabyte that publicConversation would only throw away.
+    const row = (
+      await db
+        .select({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })
+        .from(conversations)
+        .where(eq(conversations.id, request.params.id))
+        .limit(1)
+    ).at(0);
     if (!row) {
       reply.code(404);
       return { error: "Not found" };
@@ -76,7 +99,7 @@ export function conversationRoutes(app: FastifyInstance) {
     // Whether a run is going right now, from the registry — exact, and the
     // signal a test (or a client) polls for "has the agent finished" rather
     // than guessing from message statuses. Process-local, like the registry.
-    return { ...row, role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
+    return { ...publicConversation(row), role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
   });
 
   /**
@@ -133,7 +156,7 @@ export function conversationRoutes(app: FastifyInstance) {
         mcpOverrides: normalizeMcpOverrides(mcp_overrides),
       })
       .returning();
-    return row;
+    return publicConversation(row);
   });
 
   // Update conversation (per-conversation model preference / MCP overrides)
@@ -165,12 +188,16 @@ export function conversationRoutes(app: FastifyInstance) {
         updatedAt: new Date(),
       })
       .where(eq(conversations.id, request.params.id))
-      .returning()) as (typeof conversations.$inferSelect | undefined)[];
+      // The summary, not the snapshot — see the GET above.
+      .returning({ ...getTableColumns(conversations), instructions: INSTRUCTIONS_SUMMARY_COLUMN })) as (
+      | typeof conversations.$inferSelect
+      | undefined
+    )[];
     if (!row) {
       reply.code(404);
       return { error: "Not found" };
     }
-    return row;
+    return publicConversation(row);
   });
 
   /**

@@ -660,7 +660,7 @@ export async function updateSandboxSettings(patch: SandboxSettingsPatch): Promis
   });
 }
 
-export type { ModelInfo, ModelPref } from "@loxaic/types";
+export type { ModelInfo, ModelPref, ProjectInstructionsSummary } from "@loxaic/types";
 
 export async function getModels(): Promise<import("@loxaic/types").ModelInfo[]> {
   return (await authedFetch("/v1/models")).json() as Promise<import("@loxaic/types").ModelInfo[]>;
@@ -779,6 +779,11 @@ export interface Conversation {
   /** Where an agent conversation's files live. Null is scratch. Fixed at
    * creation — see `createConversation`. */
   workspace?: import("@loxaic/types").Workspace | null;
+  /** The workspace's AGENTS.md as the agent is shown it — which file, how big,
+   * whole or as an outline — never the text. Null until it has been looked
+   * for, which happens on the conversation's first run; absent on an older
+   * server. */
+  instructions?: import("@loxaic/types").ProjectInstructionsSummary | null;
   /** Only on the single-conversation read: whether a run is going right now. */
   active_run?: boolean;
   createdAt: string;

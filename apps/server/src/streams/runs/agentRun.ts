@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { count, db, eq } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, McpOverrides, Workspace } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, InstructionsDecision, McpOverrides, Workspace } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
 import {
   assertAttachmentsOwned,
@@ -16,6 +16,8 @@ import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
 import { describeWorkspace, loadWorkspace } from "../../agent/workspace.ts";
+import { ensureInstructions, renderRootInstructions, resolveDecision, saveDecision } from "../../agent/instructions.ts";
+import { modelRunInfo } from "../../inference/models.ts";
 
 /**
  * Built at call time from the conversation's immutable workspace and the
@@ -50,6 +52,58 @@ export function planningSystemPrompt(workspace: Workspace): string {
   ].join(" ");
 }
 
+/**
+ * The run's whole system prompt: the mode's base prompt, then the project's
+ * own instructions file when the workspace has one (agent/instructions.ts).
+ *
+ * Run inside the tool loop, before its first request, rather than in the
+ * starter: reading the file can take a GitHub round trip or a call to the
+ * user's machine, and `turn.started` must not wait on that. Everything it
+ * adds is a function of what is stored — the snapshot and its frozen
+ * decision — so every run of a conversation builds the same text.
+ */
+export async function agentSystemPrompt(input: {
+  convId: string;
+  ownerId: string;
+  workspace: Workspace;
+  mode: PermissionMode;
+  model: string;
+  signal?: AbortSignal;
+}): Promise<string> {
+  const base = input.mode === "planning" ? planningSystemPrompt(input.workspace) : baseSystemPrompt(input.workspace);
+  const snap = await ensureInstructions(input.convId, input.ownerId, input.workspace, input.signal).catch((err: unknown) => {
+    console.warn(`project instructions unavailable for ${input.convId}: ${(err as Error).message}`);
+    return null;
+  });
+  if (snap?.status !== "found") return base;
+  const windowTokens = (await modelRunInfo(input.model).catch(() => null))?.windowTokens ?? null;
+  const resolved = resolveDecision(snap.text, snap.decision, input.model, windowTokens);
+  let decision: InstructionsDecision | undefined = resolved.decision;
+  if (resolved.changed) {
+    // The prompt follows what is stored, never a decision the database did
+    // not keep: rendered from an unsaved one, the next run would decide
+    // again against a window that has moved and change the prompt's front.
+    // So a failed save renders the stored decision, or no block this run.
+    const saved = await saveDecision(input.convId, snap, resolved.decision).then(
+      () => true,
+      (err: unknown) => {
+        console.warn(`could not store the instructions decision for ${input.convId}: ${(err as Error).message}`);
+        return false;
+      },
+    );
+    if (!saved) decision = snap.decision;
+  }
+  if (!decision) return base;
+  try {
+    return `${base}\n\n${renderRootInstructions(snap, decision)}`;
+  } catch (err) {
+    // The file is a stranger's, and a snapshot is permanent: a render that
+    // fails must cost this block, never every turn of the conversation.
+    console.warn(`could not render project instructions for ${input.convId}: ${(err as Error).message}`);
+    return base;
+  }
+}
+
 export interface StartAgentRunResult {
   streamId: string;
   conversationId: string;
@@ -82,12 +136,16 @@ export async function startAgentRun(input: {
 
   let convId = input.conversationId;
   let workspace: Workspace = { kind: "scratch" };
+  let ownerId = userId;
   if (convId) {
     // Sending is an editor action — see chatRun.ts.
     await assertConversationAccess(userId, convId, "editor");
     if (input.parentId) await assertParentInConversation(convId, input.parentId);
     const loaded = await loadWorkspace(convId);
-    if (loaded) workspace = loaded.workspace;
+    if (loaded) {
+      workspace = loaded.workspace;
+      ownerId = loaded.ownerId;
+    }
     // A conversation the client created up front (to choose a workspace) has
     // the placeholder title until its first message arrives — the implicit
     // path below names it from the message, so this one has to as well.
@@ -168,8 +226,11 @@ export async function startAgentRun(input: {
     userLamport,
     model,
     mode,
-    basePrompt: mode === "planning" ? planningSystemPrompt(workspace) : baseSystemPrompt(workspace),
+    basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal }),
     surface: "agent",
+    // The same gate agentSystemPrompt applies to the root file: a scratch
+    // workspace has no project, only what the model wrote.
+    nestedInstructions: workspace.kind !== "scratch",
     abort,
     producer,
   });
