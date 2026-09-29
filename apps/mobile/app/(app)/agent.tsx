@@ -221,6 +221,7 @@ export default function AgentScreen() {
     onCompact: () => { handleRunCommand('compact', ''); },
     refreshModels: () => { void refreshModels(); },
     stageCard,
+    promotion,
   });
   pendingStageRef.current = stages.pendingStage;
 

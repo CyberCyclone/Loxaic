@@ -38,7 +38,7 @@ import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
-import { foldStageCard, type StageCard } from '@/lib/stageCard';
+import { foldStageCard, isStageActive, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
@@ -812,6 +812,14 @@ export function useChatSession(
         // arrived first — WS delivery is ordered, and the server only sends
         // stream.end after the producer's last flush completes. This just
         // clears the "something is streaming" UI state.
+        // A switch whose run ended before it applied or failed — withdrawn
+        // ("Cancel switch") or stopped — leaves nothing to say: its pill would
+        // otherwise read "waiting" for ever.
+        setStageCardByConv((prev) => {
+          const card = prev[event.conversation_id];
+          if (card?.streamId !== event.stream_id || !isStageActive(card)) return prev;
+          return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== event.conversation_id));
+        });
         clearStream(event.conversation_id);
         // Safety net: a run that ends without an explicit tool.result for a
         // still-pending call (denied via timeout, aborted) must not leave a

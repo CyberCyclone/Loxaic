@@ -26,9 +26,11 @@ export function formatWindow(tokens: number | null | undefined): string {
   return String(tokens);
 }
 
-/** "512K · YaRN 2×" or "256K · standard". */
-export function stageLabel(window: number | null, yarnFactor: number | null): string {
-  return yarnFactor === null ? `${formatWindow(window)} · standard` : `${formatWindow(window)} · YaRN ${String(yarnFactor)}×`;
+/** "512K · YaRN 2×", "256K · standard", or just "80K" for a larger stage that
+ * needs no YaRN (no bigger than the model was trained for). */
+export function stageLabel(window: number | null, yarnFactor: number | null, isStandard: boolean): string {
+  if (yarnFactor !== null) return `${formatWindow(window)} · YaRN ${String(yarnFactor)}×`;
+  return isStandard ? `${formatWindow(window)} · standard` : formatWindow(window);
 }
 
 /** The stage the model is at, and whether the next one exists. */

@@ -506,6 +506,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_DEVICES) env.LOXAIC_FAKE_DEVICES = process.env.LOXAIC_FAKE_DEVICES;
   if (process.env.LOXAIC_FAKE_HARDWARE) env.LOXAIC_FAKE_HARDWARE = process.env.LOXAIC_FAKE_HARDWARE;
   if (process.env.LOXAIC_FAKE_MODEL_MIB) env.LOXAIC_FAKE_MODEL_MIB = process.env.LOXAIC_FAKE_MODEL_MIB;
+  if (process.env.LOXAIC_FAKE_LOAD_MS) env.LOXAIC_FAKE_LOAD_MS = process.env.LOXAIC_FAKE_LOAD_MS;
   if (process.env.LOXAIC_FAKE_VRAM_STATE) env.LOXAIC_FAKE_VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
   return env;
 }

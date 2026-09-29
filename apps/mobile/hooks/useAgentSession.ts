@@ -34,7 +34,7 @@ import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessa
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
-import { foldStageCard, type StageCard } from '@/lib/stageCard';
+import { foldStageCard, isStageActive, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 import { localRunStart } from '@/lib/runStart';
@@ -608,6 +608,14 @@ export function useAgentSession(
           if (isActive) setLiveTodos(inner.todos);
         }
       } else if (event.type === 'stream.end') {
+        // A switch whose run ended before it applied or failed — withdrawn
+        // ("Cancel switch") or stopped — leaves nothing to say: its pill would
+        // otherwise read "waiting" for ever.
+        setStageCardByConv((prev) => {
+          const card = prev[event.conversation_id];
+          if (card?.streamId !== event.stream_id || !isStageActive(card)) return prev;
+          return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== event.conversation_id));
+        });
         clearStream(event.conversation_id);
         if (event.conversation_id === activeIdRef.current) {
           setRunState(event.status === 'error' ? 'error' : 'done');

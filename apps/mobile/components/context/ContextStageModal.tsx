@@ -90,6 +90,8 @@ function Approaching({ stages }: { stages: ContextStagesState }) {
   const extra = target ? formatExtraMemory(target.extra_bytes) : null;
   const reread = info ? formatRereadTime(info.reread_seconds) : null;
   const yarn = target?.yarn_factor ? ` (YaRN ${String(target.yarn_factor)}×)` : '';
+  // An estimate warns, it does not forbid: the server refuses when pinned models
+  // genuinely block the load, and a load that fails puts the old stage back.
   const wontFit = target?.fit.label === 'wont-fit';
   return (
     <ModalContent testID="context.stageModal" className="max-h-[85%]">
@@ -148,7 +150,7 @@ function Approaching({ stages }: { stages: ContextStagesState }) {
               testID="context.stageModal.extend"
               size="sm"
               className="bg-primary"
-              isDisabled={!reachable || !info || stages.requesting || wontFit}
+              isDisabled={!reachable || !info || stages.requesting}
               onPress={() => { void stages.extend(); }}
             >
               <ButtonText className="text-primary-foreground">

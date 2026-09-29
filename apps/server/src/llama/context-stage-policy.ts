@@ -6,7 +6,7 @@ import { runsUsingModel } from "../streams/registry.ts";
 import { AUTO_COMPACT_THRESHOLD } from "../streams/runs/auto-compact.ts";
 import { rowMeta, type LocalModelRow } from "./catalog.ts";
 import { pendingStage, stageWindows } from "./context-stage-switch.ts";
-import { activeStageIndex, rowStages, settingsForStage, stageFactor, type WhenFull, type WhoMayChange } from "./context-stages.ts";
+import { activeStageIndex, rowStages, settingsForStage, yarnFactorOf, type WhenFull, type WhoMayChange } from "./context-stages.ts";
 import { fitFor } from "./downloads.ts";
 import type { FitEstimate } from "./fit.ts";
 import { refreshMemory } from "./memory.ts";
@@ -151,8 +151,8 @@ export async function stageInfo(input: { row: LocalModelRow; isAdmin: boolean; c
       index: i,
       context_tokens: w,
       load_tokens: loads[i],
-      yarn: i > 0,
-      yarn_factor: i > 0 && config ? stageFactor(config.stages[i - 1], rowMeta(row)) : null,
+      yarn: i > 0 && config !== null && yarnFactorOf(config.stages[i - 1], rowMeta(row)) !== null,
+      yarn_factor: i > 0 && config ? yarnFactorOf(config.stages[i - 1], rowMeta(row)) : null,
       fit: fits[i],
       extra_bytes: Math.max(0, fits[i].requiredBytes - fits[active].requiredBytes),
     })),

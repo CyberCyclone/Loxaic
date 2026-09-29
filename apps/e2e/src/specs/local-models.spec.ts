@@ -374,8 +374,15 @@ describe('local models', () => {
     await waitForVisible('localModels.settingsSheet');
     await waitForVisible('localModels.settingsSheet.fit');
     // The GGUF header was read at download: 22 layers, 32k trained context.
+    // The trained context is advice, not a limit (RoPE scaling exists to exceed
+    // it): a value past it is a warning, and Save stays possible.
     await typeInto('localModels.setting.ctxSize.input', '99999');
-    await waitForTextIn('localModels.setting.ctxSize.error', 'at most 32768');
+    await waitForTextIn('localModels.setting.ctxSize.warning', '32,768');
+    expect(await isVisible('localModels.setting.ctxSize.error')).toBe(false);
+    expect(await byTestId('localModels.settingsSheet.save').isEnabled()).toBe(true);
+    // What is still a limit: llama.cpp's own 32-bit ceiling.
+    await typeInto('localModels.setting.ctxSize.input', '99999999999');
+    await waitForTextIn('localModels.setting.ctxSize.error', 'at most 2147483647');
     await typeInto('localModels.setting.ctxSize.input', '8192');
     await tap('localModels.setting.gpuLayers.number');
     await typeInto('localModels.setting.gpuLayers.input', '20');

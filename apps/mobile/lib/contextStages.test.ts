@@ -36,8 +36,10 @@ describe('window names', () => {
     expect(formatWindow(1572864)).toBe('1.5M');
     expect(formatWindow(512)).toBe('512');
     expect(formatWindow(null)).toBe('unknown');
-    expect(stageLabel(524288, 2)).toBe('512K · YaRN 2×');
-    expect(stageLabel(262144, null)).toBe('256K · standard');
+    expect(stageLabel(524288, 2, false)).toBe('512K · YaRN 2×');
+    expect(stageLabel(262144, null, true)).toBe('256K · standard');
+    // A bigger stage that needs no YaRN is just its size.
+    expect(stageLabel(81920, null, false)).toBe('80K');
   });
 });
 

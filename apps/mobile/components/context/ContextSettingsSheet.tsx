@@ -83,7 +83,7 @@ export function ContextSettingsSheet({ stages }: { stages: ContextStagesState })
                   <HStack space="sm" className="items-center">
                     <Box className="w-4">{selected && <Icon as={Check} size="xs" className="text-primary" />}</Box>
                     <VStack className="min-w-0 flex-1 shrink">
-                      <Text size="sm" className="font-medium text-foreground">{stageLabel(s.context_tokens, s.yarn_factor)}</Text>
+                      <Text size="sm" className="font-medium text-foreground">{stageLabel(s.context_tokens, s.yarn_factor, s.index === 0)}</Text>
                       <HStack space="xs" className="flex-wrap items-center">
                         {s.index === info.active && <Text size="2xs" className="text-muted-foreground">Current</Text>}
                         {s.index === info.recommended && info.conversation_tokens !== null && (

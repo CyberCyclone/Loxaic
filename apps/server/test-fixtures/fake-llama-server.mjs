@@ -260,6 +260,16 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === "/models/load" && req.method === "POST") {
     const body = await readBody(req);
+    // A load that takes a moment, as a real one does (LOXAIC_FAKE_LOAD_MS), so
+    // a context-stage switch can be watched reloading. The model reads as
+    // `loading` meanwhile, and an unload during it wins.
+    const loadMs = Number(process.env.LOXAIC_FAKE_LOAD_MS ?? 0);
+    if (loadMs > 0 && preset.sections.has(body.model) && status.get(body.model) !== "loaded") {
+      status.set(body.model, "loading");
+      await new Promise((r) => setTimeout(r, loadMs));
+      if (status.get(body.model) !== "loading") return json(res, 200, { success: true });
+      status.set(body.model, "unloaded");
+    }
     const ok = load(body.model);
     if (ok === "oom") return json(res, 500, { error: { message: "failed to load model: out of device memory" } });
     return ok ? json(res, 200, { success: true }) : json(res, 400, { error: { message: "model not found" } });
@@ -286,12 +296,32 @@ const server = createServer(async (req, res) => {
     if (!ok) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const words = ["Hello", " from", ` ${body.model}`];
+    // "take your time" makes the reply slow (1.5 s a word; "take your time
+    // 6000" is 6 s a word), so a test can hold a run on the model while
+    // something else asks for it — a context-stage switch waits for exactly
+    // this. A client that goes away ends it.
+    const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
+    const slowMatch = /take your time(?: (\d+))?/i.exec(typeof lastUser?.content === "string" ? lastUser.content : JSON.stringify(lastUser?.content ?? ""));
+    const perWordMs = slowMatch ? Number(slowMatch[1] ?? 1500) : 0;
+    let gone = false;
+    res.on("close", () => { gone = true; });
     for (const w of words) {
+      if (perWordMs > 0) await new Promise((r) => setTimeout(r, perWordMs));
+      if (gone) return;
       res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: w }, finish_reason: null }] })}\n\n`);
     }
     res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+    // A prompt that says so reports itself as nearly filling the model's
+    // context, so an e2e run can cross the 75% and 85% thresholds without
+    // sending 200k real tokens: "fill the context" is 80% of `ctx-size`,
+    // "overflow the context" 90%. Read from what the model was loaded with, so
+    // it follows the model's context stage.
+    const last = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
+    const said = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
+    const fill = /overflow the context/i.test(said) ? 0.9 : /fill the context/i.test(said) ? 0.8 : 0;
+    const promptTokens = fill > 0 ? Math.round(Number(merged(body.model)["ctx-size"] ?? 4096) * fill) : 10;
     res.write(
-      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`,
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 3, total_tokens: promptTokens + 3 } })}\n\n`,
     );
     res.end("data: [DONE]\n\n");
     return;

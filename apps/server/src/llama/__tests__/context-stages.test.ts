@@ -5,6 +5,7 @@ import {
   normalizeContextStages,
   stageContexts,
   stageFactor,
+  yarnFactorOf,
   yarnLines,
 } from "../context-stages.ts";
 import { LoadSettingsError } from "../load-settings.ts";
@@ -45,6 +46,15 @@ describe("context stages", () => {
     expect(stageFactor({ ctxSize: 393216 }, meta)).toBe(1.5);
     expect(stageFactor({ ctxSize: 1024 * K, ropeScale: 3.5 }, meta)).toBe(3.5);
     expect(stageFactor({ ctxSize: 1024 * K, yarnOrigCtx: 131072 }, meta)).toBe(8);
+  });
+
+  it("a stage no larger than the trained context is a bigger ctx-size, not YaRN", () => {
+    const low = row({ loadSettings: { ctxSize: 65536 }, meta: { nCtxTrain: 262144, nLayers: 64 }, contextStages: { enabled: true, stages: [{ ctxSize: 131072 }, { ctxSize: 512 * K }] } });
+    expect(yarnLines(low, 1)).toEqual([]); // 128K < 256K trained: 0.5×
+    expect(yarnLines(low, 2)).toEqual(["rope-scaling = yarn", "rope-scale = 2", "yarn-orig-ctx = 262144"]);
+    expect(yarnFactorOf({ ctxSize: 262144 }, meta)).toBeNull(); // exactly trained: 1×
+    expect(yarnFactorOf({ ctxSize: 512 * K }, meta)).toBe(2);
+    expect(yarnFactorOf({ ctxSize: 512 * K, ropeScale: 3 }, meta)).toBe(3);
   });
 
   it("refuses stages that do not grow, and a factor nothing can derive", () => {

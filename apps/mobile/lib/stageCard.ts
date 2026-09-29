@@ -84,14 +84,14 @@ export function stageCardLabel(card: Pick<StageCard, 'status' | 'stepSince'>, no
         const lead = s.reason === 'full' ? 'Context full — enabling' : 'Enabling';
         return `${lead} YaRN ${String(s.yarn_factor)}× · reloading at ${formatWindow(s.to_tokens)}${time}`;
       }
-      if (s.yarn_factor === null) return `Switching back to standard context (${formatWindow(s.to_tokens)}) · reloading${time || '…'}`;
+      if (s.to_stage === 0) return `Switching back to standard context (${formatWindow(s.to_tokens)}) · reloading${time || '…'}`;
       return `Switching to ${target(s)} · reloading${time || '…'}`;
     }
     case 'rereading':
       return `Re-reading conversation${progressLine(s.progress)}`;
     case 'applied':
       if (dir === 'same') return `Context stays at ${target(s)}`;
-      return s.yarn_factor === null
+      return s.to_stage === 0
         ? `Switched to standard context (${formatWindow(s.to_tokens)})`
         : `Context ${dir === 'up' ? 'extended' : 'set'} to ${target(s)}`;
     case 'failed':

@@ -88,6 +88,18 @@ export function stageFactor(stage: ContextStage, meta: LocalModelMeta): number |
 }
 
 /**
+ * The factor a stage actually stretches by, or null when it does not need
+ * YaRN at all: a stage no larger than the context the model was trained for
+ * (a standard context set below it, say, and a stage above that) is simply a
+ * larger `ctx-size`. Scaling by less than 1 would compress positions, which is
+ * not extending anything.
+ */
+export function yarnFactorOf(stage: ContextStage, meta: LocalModelMeta): number | null {
+  const factor = stageFactor(stage, meta);
+  return factor !== null && factor > 1 ? factor : null;
+}
+
+/**
  * Validate an admin's stages against the model and its base settings. Null
  * (or `stages: []` with `enabled: false`) clears them. Unknown keys are refused,
  * never dropped, like the load settings.
@@ -219,7 +231,7 @@ export function yarnLines(row: Pick<LocalModelRow, "contextStages" | "meta" | "l
   const stage = rowStages(row)?.stages[index - 1];
   if (!stage) return [];
   const meta = row.meta as LocalModelMeta;
-  const factor = stageFactor(stage, meta);
+  const factor = yarnFactorOf(stage, meta);
   const orig = stage.yarnOrigCtx ?? meta.nCtxTrain ?? null;
   if (factor === null) return [];
   const lines = ["rope-scaling = yarn", `rope-scale = ${String(factor)}`];

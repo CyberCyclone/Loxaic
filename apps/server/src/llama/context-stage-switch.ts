@@ -2,7 +2,7 @@ import type { ContextStageReason, ContextStageStatus, PromptProgress } from "@lo
 import { acquireExclusiveSlot } from "../inference/scheduler.ts";
 import { runsUsingModel } from "../streams/registry.ts";
 import { getLocalModelRow, updateLocalModelRow, type LocalModelMeta, type LocalModelRow } from "./catalog.ts";
-import { activeStageIndex, rowStages, settingsForStage, stageContexts, stageFactor } from "./context-stages.ts";
+import { activeStageIndex, rowStages, settingsForStage, stageContexts, yarnFactorOf } from "./context-stages.ts";
 import { perRequestWindow } from "./load-settings.ts";
 import { loadWithRoom } from "./room.ts";
 import { routerEndpoint, syncPreset } from "./router.ts";
@@ -87,7 +87,7 @@ function statusBase(row: LocalModelRow, from: number, to: number, reason: Contex
     to_stage: to,
     from_tokens: contexts[from] ?? null,
     to_tokens: contexts[to] ?? null,
-    yarn_factor: stage ? stageFactor(stage, row.meta as LocalModelMeta) : null,
+    yarn_factor: stage ? yarnFactorOf(stage, row.meta as LocalModelMeta) : null,
   };
 }
 

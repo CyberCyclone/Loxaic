@@ -511,6 +511,13 @@ export async function runToolLoop(ctx: {
   // per-conversation lock this run is still holding until `finally` releases
   // it, so triggering in place would refuse itself with "already in progress".
   let autoCompact = false;
+  // Whether the turn filled the window, whatever the history's length: a model
+  // set to extend its context does so for a conversation full after one big
+  // paste, which compaction (needing something to summarise) could not help.
+  let windowFull = false;
+  // Read through a call: the type checker takes the flag to be false for good,
+  // and cannot see the closure that sets it during the run.
+  const wasWindowFull = () => windowFull;
 
   // Held from just before the first model call until the run ends, and handed
   // back only while waiting on a human — see acquireRunSlot.
@@ -979,11 +986,12 @@ export async function runToolLoop(ctx: {
         // was assembled against are both in hand. The threshold leaves room
         // for the turn that follows, which is what makes acting after the
         // fact safe.
-        const compact = shouldAutoCompact({
+        const fill = {
           usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
           windowTokens: breakdownMeta.windowTokens ?? null,
-          historyMessages: history.messages.length,
-        });
+        };
+        const compact = shouldAutoCompact({ ...fill, historyMessages: history.messages.length });
+        windowFull = shouldAutoCompact({ ...fill, historyMessages: Number.MAX_SAFE_INTEGER });
         // A turn ended by a handed-over plan has already sent this: its tools
         // ran first, and message.end follows their results.
         if (!messageEnded) {
@@ -1411,7 +1419,7 @@ export async function runToolLoop(ctx: {
   // that instead, when it has a stage left that fits — see stageRun.ts. Its
   // failure falls back to compaction there; a model that cannot extend
   // compacts here, exactly as before.
-  if (autoCompact) {
+  if (wasWindowFull()) {
     try {
       const { autoExtend } = await import("./stageRun.ts");
       if (await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface })) autoCompact = false;

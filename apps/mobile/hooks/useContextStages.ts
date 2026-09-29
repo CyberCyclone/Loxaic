@@ -76,6 +76,8 @@ interface Args {
   onCompact: () => void;
   refreshModels: () => void;
   stageCard: StageCard | null;
+  /** The placeholder → real id swap of a conversation this session created. */
+  promotion: { localId: string; realId: string } | null;
 }
 
 const POLL_PENDING_MS = 4000;
@@ -136,10 +138,17 @@ export function useContextStages(a: Args) {
     setDialog(null);
   }, []);
 
+  // The model list is fetched when a stream ends, so right after this device
+  // watched a switch apply it can still describe the stage before. Nothing is
+  // asked from a list that disagrees with a switch just seen finishing: an
+  // offer to extend "to the next stage" would be measured against the old one.
+  const listBehind =
+    a.stageCard?.status.step === 'applied' && stage !== undefined && stage.active !== a.stageCard.status.to_stage;
+
   // ── Approaching the limit: after a turn ends ────────────────────────────
   const anyDialog = dialog !== null;
   useEffect(() => {
-    if (anyDialog || !stage || !serverConvId) return;
+    if (anyDialog || !stage || !serverConvId || listBehind) return;
     if (
       shouldPromptApproaching({
         stage,
@@ -153,15 +162,36 @@ export function useContextStages(a: Args) {
       shown.current.add(approachingKey(serverConvId, stage.active));
       open({ kind: 'approaching' });
     }
-  }, [anyDialog, stage, serverConvId, a.context?.used, a.streaming, a.stageCard, a.readOnly, open]);
+  }, [anyDialog, stage, serverConvId, a.context?.used, a.streaming, a.stageCard, a.readOnly, listBehind, open]);
 
-  // ── Stepping down: on opening a conversation that needs less ────────────
+  // ── Stepping down: on *reopening* a conversation that needs less ────────
+  // Not for one this session has just been in: a chat started at 64K on
+  // purpose needs little, and being asked to switch back the moment it starts
+  // would undo the choice. The id is remembered while a reply streams — under
+  // its placeholder and again under its real one, which the switch between the
+  // two happens during.
+  const inThisSession = useRef(new Set<string>());
+  useEffect(() => {
+    if ((a.streaming || isStageActive(a.stageCard)) && a.conversationId) inThisSession.current.add(a.conversationId);
+  }, [a.streaming, a.stageCard, a.conversationId]);
+  // The swap is what says a conversation began here: read it directly rather
+  // than infer it from a stream that may not be flagged at the right render.
+  useEffect(() => {
+    if (a.promotion) inThisSession.current.add(a.promotion.realId);
+  }, [a.promotion]);
+  // A step-down offer the model no longer needs (it was switched meanwhile,
+  // here or by someone else) must not stay up describing a stage it left.
+  useEffect(() => {
+    if (dialog?.kind === 'stepdown' && (!stage || stage.active === 0)) setDialog(null);
+    // Likewise "nearly full — extend" once there is nothing larger to extend to.
+    if (dialog?.kind === 'approaching' && stage && nextStage(stage) === null) setDialog(null);
+  }, [dialog, stage]);
   const checkedDown = useRef(new Set<string>());
   useEffect(() => {
-    if (anyDialog || !stage || !serverConvId || !a.model || stage.active === 0 || a.readOnly || a.streaming) return;
+    if (anyDialog || !stage || !serverConvId || !a.model || stage.active === 0 || a.readOnly || a.streaming || listBehind) return;
     if (!mayChange) return;
     const key = stepDownKey(serverConvId, stage.active);
-    if (checkedDown.current.has(key) || shown.current.has(key)) return;
+    if (checkedDown.current.has(key) || shown.current.has(key) || inThisSession.current.has(serverConvId)) return;
     checkedDown.current.add(key);
     const model = a.model;
     void getContextStage(model, serverConvId)
@@ -173,16 +203,20 @@ export function useContextStages(a: Args) {
         setDialog({ kind: 'stepdown' });
       })
       .catch(() => undefined);
-  }, [anyDialog, stage, serverConvId, a.model, a.readOnly, a.streaming, mayChange]);
+  }, [anyDialog, stage, serverConvId, a.model, a.readOnly, a.streaming, mayChange, listBehind]);
 
   // A switch other people are waiting on: keep the popup honest.
+  // Also while this device's own switch is running: the request returns before
+  // the server has recorded the switch as pending, so the list fetched right
+  // after it can miss it, and nothing would ask again.
   const pending = stage?.pending ?? null;
   const refresh = a.refreshModels;
+  const switching = pending !== null || isStageActive(a.stageCard);
   useEffect(() => {
-    if (pending === null) return;
+    if (!switching) return;
     const id = setInterval(refresh, POLL_PENDING_MS);
     return () => { clearInterval(id); };
-  }, [pending, refresh]);
+  }, [switching, refresh]);
 
   // ── Requests ────────────────────────────────────────────────────────────
   const request = useCallback(
@@ -264,19 +298,26 @@ export function useContextStages(a: Args) {
     const next = nextStage(stage);
     const windows = stage.windows;
     return {
-      label: `${formatWindow(windows[stage.active])}${stage.active === 0 ? ' · standard' : ' · YaRN'}`,
+      label: `${formatWindow(windows[stage.active])}${stage.active === 0 ? ' · standard' : ''}`,
       mayChange,
       reason: mayChange ? null : "An admin controls this model's context.",
       canExtend: mayChange && next !== null && !!serverConvId,
       canSwitchBack: mayChange && stage.active > 0 && !!serverConvId,
-      pendingLabel: stage.pending === null ? null : `Switching to ${formatWindow(windows[stage.pending])} after the current reply…`,
+      // The model list knows another person's pending switch; this device's own
+      // is known at once from its card, before the list has caught up.
+      pendingLabel:
+        stage.pending !== null
+          ? `Switching to ${formatWindow(windows[stage.pending])} after the current reply…`
+          : a.stageCard?.status.step === 'waiting'
+            ? `Switching to ${formatWindow(a.stageCard.status.to_tokens)} after the current reply…`
+            : null,
       busy: requesting || a.streaming,
       onExtend: () => { open({ kind: 'approaching' }); },
       onSwitchBack: () => { void choose(stage.active - 1); },
       onOpenSettings: () => { open({ kind: 'settings' }); },
       onCancelPending: () => { void cancelPending(); },
     };
-  }, [stage, mayChange, serverConvId, requesting, a.streaming, open, choose, cancelPending]);
+  }, [stage, mayChange, serverConvId, requesting, a.streaming, a.stageCard, open, choose, cancelPending]);
 
   return {
     /** The model has YaRN stages. */

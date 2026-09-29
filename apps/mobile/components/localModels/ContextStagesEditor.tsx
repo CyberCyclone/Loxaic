@@ -122,7 +122,9 @@ export function ContextStagesEditor({ draft, onChange, standard, meta, fits, err
                       />
                     </Input>
                     <Text testID={`localModels.stage.${String(i)}.factor`} size="2xs" className="shrink text-muted-foreground">
-                      {factor !== null && !error ? `${formatWindow(Number(stage.ctx))} · YaRN ${String(factor)}×` : ''}
+                      {factor !== null && !error
+                        ? `${formatWindow(Number(stage.ctx))} · ${factor > 1 ? `YaRN ${String(factor)}×` : 'no YaRN needed'}`
+                        : ''}
                     </Text>
                     <Pressable
                       testID={`localModels.stage.${String(i)}.remove`}

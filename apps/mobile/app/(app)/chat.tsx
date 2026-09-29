@@ -145,6 +145,7 @@ export default function ChatScreen() {
     onCompact: () => { handleRunCommand('compact', ''); },
     refreshModels: () => { void refreshModels(); },
     stageCard,
+    promotion,
   });
   pendingStageRef.current = stages.pendingStage;
 

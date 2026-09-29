@@ -1289,7 +1289,9 @@ replies.
 - **Three things change a stage, and only one is a person pressing a button.** A new
   conversation's first run steps the model back to standard (or to the stage chosen in Context
   settings, `context_stage` on the send) before its first request; the model's `whenFull:
-  "extend"` moves up a stage where automatic compaction would have run, falling back to compaction
+  "extend"` moves up a stage where automatic compaction would have run — **without compaction's
+  8-message minimum**, since a conversation full after one big paste is exactly what extending helps and
+  compaction cannot (`windowFull` in `engine.ts`) — falling back to compaction
   at the last stage or when the next will not fit; and anyone the model's `whoMayChange` allows
   can move it from a conversation (`POST /v1/models/context-stage`). A step down that would
   shrink the window under another conversation active in the last two hours is refused when asked
@@ -1308,6 +1310,59 @@ replies.
 - **`usage_records` has its first index** (`model, created_at`, migration 0033): "who else is using
   this model" is asked on every new conversation, and was otherwise a scan of the fastest-growing
   table.
+
+### YaRN context stages on the client
+
+- **Every decision is a pure function** (`lib/contextStages.ts`, `lib/stageCard.ts`, `lib/localModels.ts`'s
+  stage helpers) and the components only render it: when to offer Extend, when to offer stepping back
+  down, whether a stage smaller than the conversation needs compacting first, what a switch does to
+  everyone else, what the pill says. `hooks/useContextStages.ts` is the state around them, shared by
+  Chat and Agent; it is not used for routines, whose conversations nobody is at.
+- **"Nearly full" is measured against the stage the model is at now**, from that stage's own window
+  (`ModelInfo.context_stage.windows[active]`), never the ring's. The ring keeps the last turn's window
+  until the next turn, so right after an extension a ring-based check still read 78% and asked again
+  for the next stage. It asks after a turn ends (never mid-reply), once per conversation per stage per
+  session, at 75% (`CONTEXT_STAGE_PROMPT_AT`, below the server's 85% automatic compaction so the choice
+  comes first), and never for a model set to extend by itself.
+- **A new conversation never asks about stepping down; the server does it** (see the server section).
+  Only *reopening* an existing conversation that needs less offers it, and only as far down as other
+  conversations allow (`blocked_down_to`).
+- **The modals say what a switch does to other people**, filled from the server's `others` — counts and
+  a last-used time, never names, since another person's conversation is not the asker's to see. When
+  one is replying right now the button reads "Extend when free": the switch waits behind it.
+- **A "won't fit" estimate warns; it never blocks Extend.** The button stays enabled and the modal shows
+  the fit badge and the memory sentence. The server refuses when pinned models genuinely block the load,
+  and a load that fails puts the previous stage back (the pill says so). Disabling it on an estimate
+  blocked every e2e case behind an open modal, and would block a real admin whose estimate is off.
+- **Stale model lists must not drive a prompt.** The list is fetched when a stream ends, so right after this
+  device watched a switch apply it can still describe the stage before: an offer to extend "to the next
+  stage" was made against the old one (`listBehind` in `useContextStages`), and a step-down offer appeared
+  for a chat started at 64K on purpose (`inThisSession`, keyed on the hook's own `promotion`). A dialog the
+  list then makes moot closes itself. A switch this device started also polls the list, because the request
+  returns before the server has recorded it as pending.
+- **The stage pill is a run, not a message.** `context.stage` events fold into `stageCardByConv` in both
+  session hooks (and from a snapshot's `context_stage`, so a reconnect or a second device shows the
+  current step). It stays after the switch ends so "extended to 64K" is readable, goes when the person
+  sends again — unless it came from that very run, which is how a new conversation's card arrives — and
+  goes when its run ends before it applied (Cancel switch). The typing indicator is hidden while a
+  switch is active: it would claim the model is writing a reply.
+- **A stage run starts a stream nobody on this device sent**, so a device learns of it the way it learns
+  of an automatic compaction: the socket watches every conversation it opens (`forceSync` snapshot,
+  then live events). The composer shows Stop for it, and Stop withdraws a switch still waiting.
+- **The stage a chat starts at is chosen before the chat exists** and rides the send that opens it
+  (`context_stage`, held in a ref the session reads at send time, like the MCP choices). The chip
+  ("Context: 1M") shows it until then. Choosing a stage smaller than the conversation opens
+  compact-first; the *server* runs the compact-then-switch sequence, so it survives a closed app.
+- **Context length past the trained maximum is a warning, not an error** (`softMax` on the spec):
+  `parseNumericInput` returns `{ value, warning }`, Save stays enabled, and only llama.cpp's 32-bit
+  ceiling is refused.
+- **e2e:** `context-stages.spec.ts` drives all of it against the fake router: "fill the context" and
+  "overflow the context" in a prompt make the fake report 80% and 90% of the window the model was loaded
+  with, "take your time N" holds a reply open N ms a word (how another person's reply stands on the
+  model), and `LOXAIC_FAKE_LOAD_MS` makes a load take a moment so the reload is watchable. **A case
+  that needs the model at a stage must put it there through the API after any new conversation has
+  started**, because a new conversation's first run steps the model back down — the first draft of
+  two cases failed for exactly that.
 
 ### The picker's "recently used"
 
