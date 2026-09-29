@@ -9,6 +9,7 @@ import {
   resumeLocalModel,
   updateLocalModel,
   updateLocalModelsSettings,
+  type ContextStagesConfig,
   type LoadSettings,
   type LocalModel,
   type LocalModelsView,
@@ -114,7 +115,13 @@ export function useLocalModels(token: string | null) {
   const update = useCallback(
     async (
       id: string,
-      patch: { enabled?: boolean; pinned?: boolean; displayName?: string; loadSettings?: LoadSettings },
+      patch: {
+        enabled?: boolean;
+        pinned?: boolean;
+        displayName?: string;
+        loadSettings?: LoadSettings;
+        contextStages?: ContextStagesConfig | null;
+      },
     ): Promise<LocalModel | null> => {
       // Optimistic for the switches, which should not lag a poll behind the
       // tap. Bumping `seq` is what makes that true: a poll already in flight

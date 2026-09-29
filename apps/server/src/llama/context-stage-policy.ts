@@ -6,7 +6,7 @@ import { runsUsingModel } from "../streams/registry.ts";
 import { AUTO_COMPACT_THRESHOLD } from "../streams/runs/auto-compact.ts";
 import { rowMeta, type LocalModelRow } from "./catalog.ts";
 import { pendingStage, stageWindows } from "./context-stage-switch.ts";
-import { activeStageIndex, rowStages, settingsForStage, type WhenFull, type WhoMayChange } from "./context-stages.ts";
+import { activeStageIndex, rowStages, settingsForStage, stageFactor, type WhenFull, type WhoMayChange } from "./context-stages.ts";
 import { fitFor } from "./downloads.ts";
 import type { FitEstimate } from "./fit.ts";
 import { refreshMemory } from "./memory.ts";
@@ -97,6 +97,8 @@ export interface StageView {
   /** The whole load's context (what `ctx-size` is set to). */
   load_tokens: number | null;
   yarn: boolean;
+  /** The YaRN factor this stage loads with (2 = 2×); null for standard. */
+  yarn_factor: number | null;
   fit: FitEstimate;
   /** Memory beyond the active stage's, when both are known. */
   extra_bytes: number;
@@ -150,6 +152,7 @@ export async function stageInfo(input: { row: LocalModelRow; isAdmin: boolean; c
       context_tokens: w,
       load_tokens: loads[i],
       yarn: i > 0,
+      yarn_factor: i > 0 && config ? stageFactor(config.stages[i - 1], rowMeta(row)) : null,
       fit: fits[i],
       extra_bytes: Math.max(0, fits[i].requiredBytes - fits[active].requiredBytes),
     })),

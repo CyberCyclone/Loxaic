@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   estimateLocalModel,
+  type ContextStagesConfig,
   type FitEstimate,
   type LoadSettingSpec,
   type LoadSettings,
@@ -24,7 +25,21 @@ import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText } from '@/components/ui/button';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { FitBadge } from './FitBadge';
-import { GROUP_ORDER, GROUP_TITLES, describeFit, parseNumericInput, setDraft, specMax } from '@/lib/localModels';
+import { ContextStagesEditor } from './ContextStagesEditor';
+import {
+  EMPTY_STAGES,
+  GROUP_ORDER,
+  GROUP_TITLES,
+  configFromDraft,
+  describeFit,
+  draftFromConfig,
+  parseNumericInput,
+  setDraft,
+  specMax,
+  standardCtx,
+  stageErrors,
+  type StagesDraft,
+} from '@/lib/localModels';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -33,7 +48,10 @@ interface ModelSettingsModalProps {
   model: LocalModel | null;
   specs: LoadSettingSpec[];
   onClose: () => void;
-  onSave: (id: string, patch: { loadSettings: LoadSettings; displayName: string }) => Promise<LocalModel | null>;
+  onSave: (
+    id: string,
+    patch: { loadSettings: LoadSettings; displayName: string; contextStages: ContextStagesConfig | null },
+  ) => Promise<LocalModel | null>;
 }
 
 const ESTIMATE_DEBOUNCE_MS = 400;
@@ -51,6 +69,11 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
   const [draft, setDraftState] = useState<LoadSettings>({});
   const [text, setText] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Advice rather than errors: a value that works but that the admin should
+  // know about (a context past what the model was trained for). Never blocks Save.
+  const [warnings, setWarnings] = useState<Record<string, string>>({});
+  const [stagesDraft, setStagesDraft] = useState<StagesDraft>(EMPTY_STAGES);
+  const [stageFits, setStageFits] = useState<FitEstimate[]>([]);
   const [name, setName] = useState('');
   const [fit, setFit] = useState<FitEstimate | null>(null);
   const [saving, setSaving] = useState(false);
@@ -63,22 +86,39 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
     setDraftState(model.loadSettings);
     setText(Object.fromEntries(Object.entries(model.loadSettings).map(([k, v]) => [k, typeof v === 'number' ? String(v) : ''])));
     setErrors({});
+    setWarnings({});
+    setStagesDraft(draftFromConfig(model.contextStages));
+    setStageFits([]);
     setName(model.displayName);
     setFit(model.fit);
     setNotice(null);
   }, [model]);
+
+  // What the stage editor is judged against.
+  const standard = model ? standardCtx(draft, model.meta) : null;
+  const stageProblems = model ? stageErrors(stagesDraft, standard, model.meta) : [];
+  const stagesInvalid = stagesDraft.enabled && stageProblems.some((p) => p !== null);
 
   // The live estimate: debounced, and only the newest answer lands.
   useEffect(() => {
     if (!model) return;
     const mine = ++estimateSeq.current;
     const timer = setTimeout(() => {
-      estimateLocalModel(model.id, draft)
-        .then((r) => { if (mine === estimateSeq.current) setFit(r.fit); })
+      // The draft stages are priced too, but only once they are sound: an
+      // estimate of a stage smaller than standard would be refused.
+      const staged = stagesDraft.enabled && !stagesInvalid && stagesDraft.stages.length > 0 ? configFromDraft(stagesDraft) : null;
+      estimateLocalModel(model.id, draft, staged)
+        .then((r) => {
+          if (mine !== estimateSeq.current) return;
+          setFit(r.fit);
+          setStageFits(r.stages ?? []);
+        })
         .catch(() => undefined);
     }, ESTIMATE_DEBOUNCE_MS);
     return () => { clearTimeout(timer); };
-  }, [draft, model]);
+    // stagesInvalid is derived from the two drafts already listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, stagesDraft, model]);
 
   if (!model) return null;
 
@@ -104,15 +144,25 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
       Reflect.deleteProperty(next, spec.key);
       return next;
     });
+    setWarnings((w) => {
+      if (parsed.warning) return { ...w, [spec.key]: parsed.warning };
+      const next = { ...w };
+      Reflect.deleteProperty(next, spec.key);
+      return next;
+    });
     choose(spec.key, parsed.value);
   };
 
-  const hasErrors = Object.keys(errors).length > 0;
+  const hasErrors = Object.keys(errors).length > 0 || stagesInvalid;
 
   const save = async () => {
     setSaving(true);
     try {
-      const updated = await onSave(model.id, { loadSettings: draft, displayName: name.trim() || model.displayName });
+      const updated = await onSave(model.id, {
+        loadSettings: draft,
+        displayName: name.trim() || model.displayName,
+        contextStages: configFromDraft(stagesDraft),
+      });
       if (!updated) return;
       if (updated.appliesOnNextLoad) {
         setNotice('Saved. This model is answering someone right now, so the new settings apply the next time it loads.');
@@ -173,11 +223,22 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
                       value={draft[spec.key]}
                       text={text[spec.key] ?? ''}
                       error={errors[spec.key] ?? null}
+                      warning={warnings[spec.key] ?? null}
                       max={specMax(spec, model.meta)}
                       onChoose={(v) => { choose(spec.key, v); }}
                       onType={(raw) => { typeNumber(spec, raw); }}
                     />
                   ))}
+                  {group === 'context' && (
+                    <ContextStagesEditor
+                      draft={stagesDraft}
+                      onChange={setStagesDraft}
+                      standard={standard}
+                      meta={model.meta}
+                      fits={stageFits}
+                      errors={stageProblems}
+                    />
+                  )}
                 </VStack>
               );
             })}
@@ -224,12 +285,13 @@ interface SettingControlProps {
   value: LoadSettings[string];
   text: string;
   error: string | null;
+  warning: string | null;
   max: number | null;
   onChoose: (value: LoadSettings[string] | null) => void;
   onType: (raw: string) => void;
 }
 
-function SettingControl({ spec, value, text, error, max, onChoose, onType }: SettingControlProps) {
+function SettingControl({ spec, value, text, error, warning, max, onChoose, onType }: SettingControlProps) {
   const id = `localModels.setting.${spec.key}`;
   let control: ReactNode;
   if (spec.type === 'bool') {
@@ -291,6 +353,8 @@ function SettingControl({ spec, value, text, error, max, onChoose, onType }: Set
             <Text size="2xs" className="text-muted-foreground">
               {spec.key === 'gpuLayers' && max !== null
                 ? `of ${String(max)} layers on the GPU`
+                : max !== null && spec.softMax
+                  ? `${String(spec.min ?? 0)}+ · trained for ${String(max)}`
                 : max !== null
                   ? `${String(spec.min ?? 0)}–${String(max)}`
                   : spec.min !== undefined
@@ -311,6 +375,10 @@ function SettingControl({ spec, value, text, error, max, onChoose, onType }: Set
       {error ? (
         <Text testID={`${id}.error`} size="2xs" className="text-destructive">
           {error}
+        </Text>
+      ) : warning ? (
+        <Text testID={`${id}.warning`} size="2xs" className="text-warning">
+          {warning}
         </Text>
       ) : (
         <Text size="2xs" className="text-muted-foreground">

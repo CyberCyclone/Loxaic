@@ -11,6 +11,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react-native';
 import type { ContextToolSource } from '@loxaic/types';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
+import type { StageControls } from '@/hooks/useContextStages';
 import { toolSourceName, toolSourceRows, type ToolSourceRow } from '@/lib/toolSourceRows';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { promptReuse } from '@/lib/usage';
@@ -50,6 +51,58 @@ function Note({ children, warn }: { children: string; warn?: boolean }) {
   );
 }
 
+/**
+ * Where the model's context stage is, and the way to change it without waiting
+ * to be asked: the same choices as the "nearly full" modal, always reachable.
+ * Shown only for a host model with YaRN stages.
+ */
+function StageRow({ stage }: { stage: StageControls }) {
+  return (
+    <VStack testID="context.stage" space="xs" className="rounded-md border border-border p-2">
+      <HStack className="items-center justify-between">
+        <Text size="xs" className="text-muted-foreground">Context stage</Text>
+        <Text testID="context.stage.label" size="xs" className="text-foreground">{stage.label}</Text>
+      </HStack>
+      {stage.pendingLabel && (
+        <VStack space="xs">
+          <Text testID="context.stage.pending" size="2xs" className="text-warning">{stage.pendingLabel}</Text>
+          {stage.mayChange && (
+            <Pressable testID="context.stage.cancel" onPress={stage.onCancelPending} className="self-start">
+              <Text size="2xs" className="text-foreground underline">Cancel switch</Text>
+            </Pressable>
+          )}
+        </VStack>
+      )}
+      {stage.reason && <Note>{stage.reason}</Note>}
+      <HStack space="sm" className="flex-wrap">
+        {stage.canExtend && (
+          <Pressable
+            testID="context.stage.extend"
+            onPress={stage.busy ? undefined : stage.onExtend}
+            disabled={stage.busy}
+            className={`rounded-md border border-border px-2 py-1 ${stage.busy ? 'opacity-40' : 'web:hover:bg-muted/50'}`}
+          >
+            <Text size="xs" className="font-medium text-foreground">Extend</Text>
+          </Pressable>
+        )}
+        {stage.canSwitchBack && (
+          <Pressable
+            testID="context.stage.switchBack"
+            onPress={stage.busy ? undefined : stage.onSwitchBack}
+            disabled={stage.busy}
+            className={`rounded-md border border-border px-2 py-1 ${stage.busy ? 'opacity-40' : 'web:hover:bg-muted/50'}`}
+          >
+            <Text size="xs" className="font-medium text-foreground">Switch back</Text>
+          </Pressable>
+        )}
+        <Pressable testID="context.stage.settings" onPress={stage.onOpenSettings} className="rounded-md px-2 py-1 web:hover:bg-muted/50">
+          <Text size="xs" className="text-muted-foreground underline">Context settings</Text>
+        </Pressable>
+      </HStack>
+    </VStack>
+  );
+}
+
 function CompactButton({ onPress, busy }: { onPress: () => void; busy?: boolean }) {
   return (
     <Pressable
@@ -74,8 +127,11 @@ export function ContextBreakdown({
   mcp = null,
   onCompact,
   busy,
+  stage = null,
 }: {
   context: ContextView;
+  /** The model's YaRN stage and how to change it. Null for a model without. */
+  stage?: StageControls | null;
   /** This conversation's MCP switches, shown beside each server's cost under
    * "Tool definitions". Null shows the costs alone. */
   mcp?: McpSwitches | null;
@@ -97,6 +153,7 @@ export function ContextBreakdown({
     return (
       <VStack space="sm">
         <Note>Context window unknown for this model.</Note>
+        {stage && <StageRow stage={stage} />}
         {onCompact && <CompactButton onPress={onCompact} busy={busy} />}
         {lastTurn && <LastTurnRows lastTurn={lastTurn} />}
       </VStack>
@@ -116,6 +173,8 @@ export function ContextBreakdown({
         </HStack>
         <ContextBar segments={segments} over={over} />
       </VStack>
+
+      {stage && <StageRow stage={stage} />}
 
       {context.breakdownAvailable ? (
         <VStack space="xs">

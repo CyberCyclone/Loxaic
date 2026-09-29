@@ -34,6 +34,7 @@ import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessa
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import { foldStageCard, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 import { localRunStart } from '@/lib/runStart';
@@ -95,6 +96,9 @@ export function useAgentSession(
   token: string | null,
   onStreamEnd?: () => void,
   pendingMcp?: { readonly current: McpOverrides | undefined },
+  /** The context stage chosen (Context settings) for a run that does not
+   * exist yet; carried by the send that creates it. */
+  pendingStage?: { readonly current: number | undefined },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -119,6 +123,8 @@ export function useAgentSession(
   const [runState, setRunState] = useState<RunState>('done');
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [pendingCheckin, setPendingCheckin] = useState<PendingCheckin | null>(null);
+  // The latest step of a context-stage switch, per run — see useChatSession.
+  const [stageCardByConv, setStageCardByConv] = useState<Partial<Record<string, StageCard>>>({});
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   /**
@@ -467,6 +473,14 @@ export function useAgentSession(
           applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }),
         );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
+        const stageSnapshot = event.snapshot.context_stage;
+        if (stageSnapshot) {
+          setStageCardByConv((prev) => {
+            const have = prev[convId];
+            if (have && have.streamId !== event.stream_id && event.status !== 'active') return prev;
+            return { ...prev, [convId]: foldStageCard(have ?? null, event.stream_id, stageSnapshot, Date.now()) };
+          });
+        }
         if (event.status !== 'active') {
           const tracked = streamingByConvRef.current[convId];
           if (!tracked || tracked.streamId === event.stream_id) clearStream(convId);
@@ -528,6 +542,18 @@ export function useAgentSession(
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
+        if (inner.kind === 'context.stage') {
+          const { kind: _kind, ...status } = inner;
+          setStageCardByConv((prev) => ({ ...prev, [convId]: foldStageCard(prev[convId] ?? null, event.stream_id, status, Date.now()) }));
+        } else if (inner.kind === 'message.start' && inner.author_type === 'user') {
+          // See useChatSession: sending again clears the last switch's card,
+          // unless it came from this very run.
+          setStageCardByConv((prev) =>
+            prev[convId] && prev[convId].streamId !== event.stream_id
+              ? Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId))
+              : prev,
+          );
+        }
         // Anything that is not itself a queue update means the run is past
         // the queue. Cleared here, up front, rather than on `iteration`
         // alone: a compaction run never emits one, and an agent run re-queued
@@ -752,7 +778,7 @@ export function useAgentSession(
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
           if (
-            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current)
+            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current, pendingStage?.current)
           ) {
             setRuns((prev) => prev.filter((r) => r.id !== localId));
             setActiveId(null);
@@ -776,7 +802,7 @@ export function useAgentSession(
           createConversation({ kind: 'agent', workspace: chosen, mcp_overrides: pendingMcp?.current })
             .then((created) => {
               const ws = wsRef.current;
-              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId);
+              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId, undefined, pendingStage?.current);
               if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
               sendsRef.current.markDispatched(localMsgId);
             })
@@ -806,7 +832,7 @@ export function useAgentSession(
       }
       return true;
     },
-    [mode, handleModeChange, setActiveId, showToast, pendingMcp],
+    [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage],
   );
 
   /** Take back a send the server refused before writing anything. */
@@ -992,6 +1018,8 @@ export function useAgentSession(
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     pendingCheckin,
+    /** The open run's latest context-stage step, or null. */
+    stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     iteration,
     queuePosition,
     pendingWorkspace,

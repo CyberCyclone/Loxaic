@@ -38,6 +38,7 @@ import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import { foldStageCard, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
@@ -167,6 +168,9 @@ export function useChatSession(
   onStreamEnd?: () => void,
   scope: ChatScope = CHAT_SCOPE,
   pendingMcp?: { readonly current: McpOverrides | undefined },
+  /** The context stage chosen (Context settings) for a conversation that does
+   * not exist yet; carried by the send that creates it. */
+  pendingStage?: { readonly current: number | undefined },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -233,6 +237,10 @@ export function useChatSession(
   /** Keyed for the same reason as the approvals above: a check-in belongs to
    * its conversation, not to whatever is on screen when it arrives. */
   const [pendingCheckinByConv, setPendingCheckinByConv] = useState<Partial<Record<string, PendingCheckin>>>({});
+  // The latest step of a context-stage switch, per conversation. Client-only:
+  // the server writes no message for it (see lib/stageCard.ts), and it is kept
+  // after the switch ends so "extended to 512K" stays readable.
+  const [stageCardByConv, setStageCardByConv] = useState<Partial<Record<string, StageCard>>>({});
   /** Which conversation the user asked to stop — see useAgentSession for why
    * this is keyed by id and why it exists at all (#113). */
   const [stoppingConvId, setStoppingConvId] = useState<string | null>(null);
@@ -659,6 +667,15 @@ export function useChatSession(
             return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now) };
           });
         }
+        const stageSnapshot = event.snapshot.context_stage;
+        if (stageSnapshot) {
+          setStageCardByConv((prev) => {
+            const have = prev[convId];
+            // An older finished run's catch-up must not replace a newer card.
+            if (have && have.streamId !== event.stream_id && event.status !== 'active') return prev;
+            return { ...prev, [convId]: foldStageCard(have ?? null, event.stream_id, stageSnapshot, Date.now()) };
+          });
+        }
         if (event.status !== 'active') {
           // A reconnect's catch-up re-syncs the conversation's last few
           // runs, not just the current one — an older, already-finished
@@ -751,6 +768,19 @@ export function useChatSession(
           prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event) } : c)),
         );
         const inner = event.event;
+        if (inner.kind === 'context.stage') {
+          const { kind: _kind, ...status } = inner;
+          setStageCardByConv((prev) => ({ ...prev, [convId]: foldStageCard(prev[convId] ?? null, event.stream_id, status, Date.now()) }));
+        } else if (inner.kind === 'message.start' && inner.author_type === 'user') {
+          // The person sent again: the last switch's card has said its piece.
+          // Not when it came from this very run — a new conversation's card
+          // arrives in the run that carries its first message.
+          setStageCardByConv((prev) =>
+            prev[convId] && prev[convId].streamId !== event.stream_id
+              ? Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId))
+              : prev,
+          );
+        }
         if (inner.kind === 'approval.request') {
           setPendingApprovalByConv((prev) => ({
             ...prev,
@@ -945,7 +975,7 @@ export function useChatSession(
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current)) {
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current, pendingStage?.current)) {
           // Undo, don't just toast. The bubble was already painted, and the
           // cache-on-settle effect would have persisted a message that was
           // never sent into the user's "saved copy" — replayed on every
@@ -975,7 +1005,7 @@ export function useChatSession(
         }
       }
     },
-    [setActiveId, showToast, pendingMcp],
+    [setActiveId, showToast, pendingMcp, pendingStage],
   );
 
   /** Take back a send the server refused before writing anything: the bubble,
@@ -1225,6 +1255,8 @@ export function useChatSession(
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval: activeId ? (pendingApprovalByConv[activeId] ?? null) : null,
     pendingCheckin: activeId ? (pendingCheckinByConv[activeId] ?? null) : null,
+    /** The open thread's latest context-stage step, or null. */
+    stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     handleSend,
     handleStop,
     handleCommand,

@@ -12,7 +12,7 @@ import { promptProgressSegments } from '@/lib/promptStats';
  * Percentage widths for the reason ContextBar gives: Yoga and CSS disagree
  * about a flex-grow sum below 1. Semantic tokens only.
  */
-export function PromptProgressBar({ stats }: { stats: PromptStats }) {
+export function PromptProgressBar({ stats }: { stats: Pick<PromptStats, 'progress'> }) {
   const segments = promptProgressSegments(stats);
   if (!segments) return null;
   return (

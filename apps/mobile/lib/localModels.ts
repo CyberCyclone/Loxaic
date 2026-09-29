@@ -1,4 +1,6 @@
 import type {
+  ContextStage,
+  ContextStagesConfig,
   FitEstimate,
   FitLabel,
   LoadSettingSpec,
@@ -171,16 +173,24 @@ export function specMax(spec: LoadSettingSpec, meta: LocalModel['meta']): number
   return spec.max ?? null;
 }
 
+/** llama.cpp's own 32-bit ceiling on a count, which the server enforces even
+ * where a model's trained maximum is only advice. */
+const INT32_MAX = 2 ** 31 - 1;
+
 /**
  * What a typed value means for a numeric setting: blank is "llama.cpp's
  * default" (the key is removed), a number in range is the value, a word the
  * spec allows (`all`) is itself, and anything else is an error sentence.
+ *
+ * A setting whose `max` is only advice (the context length's trained maximum —
+ * RoPE scaling exists to exceed it) takes a value past it with a `warning`
+ * instead: still a value, so Save stays possible.
  */
 export function parseNumericInput(
   spec: LoadSettingSpec,
   raw: string,
   meta: LocalModel['meta'],
-): { value: LoadSettingValue | null } | { error: string } {
+): { value: LoadSettingValue | null; warning?: string } | { error: string } {
   const text = raw.trim();
   if (text === '') return { value: null };
   if (spec.words?.includes(text.toLowerCase())) return { value: text.toLowerCase() };
@@ -189,6 +199,16 @@ export function parseNumericInput(
   if (spec.type === 'int' && !Number.isInteger(n)) return { error: `${spec.label} must be a whole number` };
   const max = specMax(spec, meta);
   if (spec.min !== undefined && n < spec.min) return { error: `${spec.label} must be at least ${String(spec.min)}` };
+  if (spec.softMax) {
+    if (n > INT32_MAX) return { error: `${spec.label} can be at most ${String(INT32_MAX)}` };
+    if (max !== null && n > max) {
+      return {
+        value: n,
+        warning: `${spec.label} is above the ${max.toLocaleString()} this model was trained for. It only works well with YaRN (Extended context, below) and uses much more memory.`,
+      };
+    }
+    return { value: n };
+  }
   if (max !== null && n > max) return { error: `${spec.label} can be at most ${String(max)}` };
   return { value: n };
 }
@@ -210,3 +230,106 @@ export const GROUP_TITLES: Record<LoadSettingSpec['group'], string> = {
 };
 
 export const GROUP_ORDER: LoadSettingSpec['group'][] = ['context', 'offload', 'performance', 'sampling', 'other'];
+
+// ── Extended context (YaRN stages) ──────────────────────────────────────────
+
+/** What the admin edits: each stage's context as typed text, beside the
+ * stage it came from so a field the sheet has no control for (a pinned factor,
+ * an expert YaRN knob) survives an edit. */
+export interface StageDraft {
+  ctx: string;
+  base?: ContextStage;
+  cacheTypeK?: string;
+  cacheTypeV?: string;
+}
+
+export interface StagesDraft {
+  enabled: boolean;
+  whoMayChange: 'everyone' | 'admins';
+  whenFull: 'compact' | 'extend';
+  stages: StageDraft[];
+}
+
+export const EMPTY_STAGES: StagesDraft = { enabled: false, whoMayChange: 'everyone', whenFull: 'compact', stages: [] };
+
+export function draftFromConfig(config: ContextStagesConfig | null | undefined): StagesDraft {
+  if (!config) return EMPTY_STAGES;
+  return {
+    enabled: config.enabled,
+    whoMayChange: config.whoMayChange,
+    whenFull: config.whenFull,
+    stages: config.stages.map((s) => ({ ctx: String(s.ctxSize), base: s, cacheTypeK: s.cacheTypeK, cacheTypeV: s.cacheTypeV })),
+  };
+}
+
+/** The standard stage's context: the admin's setting, else the trained one. */
+export function standardCtx(draft: LoadSettings, meta: LocalModel['meta']): number | null {
+  return typeof draft.ctxSize === 'number' ? draft.ctxSize : (meta.nCtxTrain ?? null);
+}
+
+/** The factor a stage would load with: target ÷ the model's original context. */
+export function draftFactor(stage: StageDraft, meta: LocalModel['meta']): number | null {
+  const ctx = Number(stage.ctx);
+  const orig = stage.base?.yarnOrigCtx ?? meta.nCtxTrain ?? null;
+  if (stage.base?.ropeScale !== undefined) return stage.base.ropeScale;
+  if (!orig || !Number.isFinite(ctx) || ctx <= 0) return null;
+  return Math.round((ctx / orig) * 100) / 100;
+}
+
+/** One sentence per stage that cannot be saved, or null. Mirrors the server's
+ * rules so the sheet can say so before Save; the server still decides. */
+export function stageErrors(draft: StagesDraft, standard: number | null, meta: LocalModel['meta']): (string | null)[] {
+  let previous = standard ?? 0;
+  return draft.stages.map((stage, i) => {
+    const n = Number(stage.ctx);
+    if (stage.ctx.trim() === '' || !Number.isInteger(n) || n < 512) return 'Enter a whole number of tokens, at least 512.';
+    if (n > 2 ** 31 - 1) return `At most ${String(2 ** 31 - 1)}.`;
+    if (n <= previous) {
+      return i === 0 ? `Must be larger than the standard context (${previous.toLocaleString()}).` : `Must be larger than stage ${String(i)}.`;
+    }
+    if (draftFactor(stage, meta) === null) return 'This file does not say how long it was trained for, so the YaRN factor cannot be worked out.';
+    previous = n;
+    return null;
+  });
+}
+
+/** The config to save: null when extended context is off and nothing was set
+ * up, so a model that never used it keeps a null column. */
+export function configFromDraft(draft: StagesDraft): ContextStagesConfig | null {
+  if (!draft.enabled && draft.stages.length === 0) return null;
+  return {
+    enabled: draft.enabled,
+    whoMayChange: draft.whoMayChange,
+    whenFull: draft.whenFull,
+    stages: draft.stages.map((s) => ({
+      ...(s.base ?? {}),
+      ctxSize: Number(s.ctx),
+      ...(s.cacheTypeK ? { cacheTypeK: s.cacheTypeK } : { cacheTypeK: undefined }),
+      ...(s.cacheTypeV ? { cacheTypeV: s.cacheTypeV } : { cacheTypeV: undefined }),
+    })),
+  };
+}
+
+/** How far the file itself says it can be stretched (its `rope.scaling.factor`),
+ * else 4× — what YaRN's authors report holds up for the models this is for. */
+function maxFactor(meta: LocalModel['meta']): number {
+  const f = meta.shape?.ropeScaling?.factor;
+  return typeof f === 'number' && f > 1 ? f : 4;
+}
+
+/**
+ * Suggested stages: the trained context ×2, ×3, ×4 (fewer when the file says it
+ * stretches less), each rounded to a multiple of 1,024. Empty when the trained
+ * context is unknown.
+ */
+export function suggestStages(meta: LocalModel['meta'], standard: number | null): number[] {
+  const trained = meta.nCtxTrain ?? null;
+  if (!trained) return [];
+  const out: number[] = [];
+  const top = Math.floor(maxFactor(meta));
+  for (let f = 2; f <= top; f++) {
+    const ctx = Math.round((trained * f) / 1024) * 1024;
+    if (ctx > (standard ?? 0)) out.push(ctx);
+  }
+  return out;
+}

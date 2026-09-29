@@ -18,6 +18,7 @@ import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { AttachmentRejectedModal } from './AttachmentRejectedModal';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
+import type { StageControls } from '@/hooks/useContextStages';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { useServerReachable } from '@/lib/connection';
 import { ContextRing } from './ContextRing';
@@ -52,6 +53,16 @@ interface ComposerProps {
   /** This conversation's MCP switches, shown in the `+` menu and under "Tool
    * definitions" in the context popup. Null leaves MCP out of both. */
   mcp?: McpSwitches | null;
+  /** The selected model's YaRN context stages: the `+` menu's Context settings
+   * row, the chip for a stage chosen before the chat exists, and the stage
+   * section of the context popup. Null for a model without stages. */
+  contextStage?: {
+    controls: StageControls | null;
+    onOpenSettings: () => void;
+    /** "Context: 1M", when a stage was chosen for a chat that does not exist yet. */
+    chip: string | null;
+    onClearChip: () => void;
+  } | null;
 }
 
 export function Composer({
@@ -67,6 +78,7 @@ export function Composer({
   onRunCommand,
   commandSeed,
   mcp = null,
+  contextStage = null,
 }: ComposerProps) {
   const [text, setText] = useState('');
   // Send and Stop wait for an open socket. While a resume is inside its grace
@@ -237,8 +249,23 @@ export function Composer({
             onPickDocument={() => { void pickDocument(); }}
             onFilesSelected={addWebFiles}
             mcp={mcp}
+            contextSettings={
+              contextStage
+                ? { onOpen: contextStage.onOpenSettings, disabledReason: contextStage.controls?.reason ?? null }
+                : null
+            }
             disabled={!connected}
           />
+          {contextStage?.chip && (
+            <Pressable
+              testID="composer.contextChip"
+              onPress={contextStage.onClearChip}
+              accessibilityLabel="Remove the chosen context"
+              className="shrink-0 rounded-full border border-border bg-muted px-2 py-1"
+            >
+              <Text size="2xs" className="text-foreground">{contextStage.chip}</Text>
+            </Pressable>
+          )}
           <AttachmentRejectedModal rejection={attachmentRejection} onClose={dismissRejection} />
 
           {/* Model selector — opens the model modal (search, live list, thinking chips).
@@ -305,6 +332,7 @@ export function Composer({
                     context={context}
                     mcp={mcp}
                     busy={streaming}
+                    stage={contextStage?.controls ?? null}
                     onCompact={() => {
                       setCtxPopoverOpen(false);
                       const cmd = findCommand('compact');

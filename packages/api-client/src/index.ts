@@ -413,6 +413,9 @@ export interface FitEstimate {
   /** How `availableBytes` is made up on a GPU. Absent for the CPU, before a
    * runtime has listed its devices, and from an older server. */
   breakdown?: MemoryBreakdown | null;
+  /** `shape` when priced from the model's own attention layout, `rough` when
+   * its file did not describe one. */
+  basis?: "shape" | "rough";
 }
 
 export interface MemoryBreakdown {
@@ -483,8 +486,31 @@ export interface LoadSettingSpec {
   type: "int" | "float" | "bool" | "enum";
   min?: number;
   max?: number | "nCtxTrain" | "nLayers";
+  /** `max` is advice: past it the sheet warns and the server still accepts. */
+  softMax?: boolean;
   words?: string[];
   values?: string[];
+}
+
+/** One extended (YaRN) context stage an admin defined for a model. */
+export interface ContextStage {
+  ctxSize: number;
+  ropeScale?: number;
+  yarnOrigCtx?: number;
+  extFactor?: number;
+  attnFactor?: number;
+  betaSlow?: number;
+  betaFast?: number;
+  ropeFreqBase?: number;
+  cacheTypeK?: string;
+  cacheTypeV?: string;
+}
+
+export interface ContextStagesConfig {
+  enabled: boolean;
+  whoMayChange: "everyone" | "admins";
+  whenFull: "compact" | "extend";
+  stages: ContextStage[];
 }
 
 export interface LocalModel {
@@ -500,7 +526,15 @@ export interface LocalModel {
   error: string | null;
   enabled: boolean;
   loadSettings: LoadSettings;
-  meta: { nLayers?: number | null; nCtxTrain?: number | null; architecture?: string | null; expertCount?: number | null };
+  meta: {
+    nLayers?: number | null;
+    nCtxTrain?: number | null;
+    architecture?: string | null;
+    expertCount?: number | null;
+    /** What the file says about itself; the attention layout is for the fit
+     * estimate, the rope scaling suggests how far YaRN can stretch it. */
+    shape?: { ropeScaling?: { type: string | null; factor: number | null; originalContext: number | null } | null } | null;
+  };
   hasVision: boolean;
   fit: FitEstimate;
   runtimeStatus: string | null;
@@ -509,6 +543,11 @@ export interface LocalModel {
   pinned?: boolean;
   /** Why a pinned model is not loaded, or null. */
   pinError?: string | null;
+  /** YaRN stages as stored, null until an admin sets them up. Absent from an
+   * older server. */
+  contextStages?: ContextStagesConfig | null;
+  /** The stage the model loads at now; 0 is standard. */
+  activeStage?: number;
   createdAt: string;
   /** Present on a PATCH answer: the model is answering someone and picks the
    * change up on its next load. */
@@ -635,13 +674,28 @@ export async function cancelLocalModel(id: string): Promise<void> {
 
 export async function updateLocalModel(
   id: string,
-  patch: { enabled?: boolean; pinned?: boolean; displayName?: string; loadSettings?: LoadSettings },
+  patch: {
+    enabled?: boolean;
+    pinned?: boolean;
+    displayName?: string;
+    loadSettings?: LoadSettings;
+    /** null clears them. */
+    contextStages?: ContextStagesConfig | null;
+  },
 ): Promise<LocalModel> {
   return adminFetch("/v1/admin/local-models/model", { method: "PATCH", ...json({ id, ...patch }) });
 }
 
-export async function estimateLocalModel(id: string, loadSettings: LoadSettings): Promise<{ fit: FitEstimate }> {
-  return adminFetch("/v1/admin/local-models/estimate", { method: "POST", ...json({ id, loadSettings }) });
+/** `stages` is each draft stage priced the way it would load. */
+export async function estimateLocalModel(
+  id: string,
+  loadSettings: LoadSettings,
+  contextStages?: ContextStagesConfig | null,
+): Promise<{ fit: FitEstimate; stages?: FitEstimate[] }> {
+  return adminFetch("/v1/admin/local-models/estimate", {
+    method: "POST",
+    ...json({ id, loadSettings, ...(contextStages ? { contextStages } : {}) }),
+  });
 }
 
 export async function deleteLocalModel(id: string): Promise<void> {
@@ -664,6 +718,80 @@ export type { ModelInfo, ModelPref, ProjectInstructionsSummary } from "@loxaic/t
 
 export async function getModels(): Promise<import("@loxaic/types").ModelInfo[]> {
   return (await authedFetch("/v1/models")).json() as Promise<import("@loxaic/types").ModelInfo[]>;
+}
+
+// ── YaRN context stages ───────────────────────────────────
+
+export interface ContextStageView {
+  index: number;
+  /** The window one request gets at this stage. */
+  context_tokens: number | null;
+  load_tokens: number | null;
+  yarn: boolean;
+  /** 2 = 2×; null for the standard stage. */
+  yarn_factor: number | null;
+  fit: FitEstimate;
+  /** Memory beyond the active stage's. */
+  extra_bytes: number;
+}
+
+/** Everything the stage modals and Context settings show. */
+export interface ContextStageInfo {
+  model: string;
+  active: number;
+  pending: number | null;
+  who_may_change: "everyone" | "admins";
+  may_change: boolean;
+  when_full: "compact" | "extend";
+  stages: ContextStageView[];
+  /** The smallest stage this conversation fits in; 0 for a new one. */
+  recommended: number;
+  conversation_tokens: number | null;
+  /** Other conversations (never names) that used this model in the last two
+   * hours, and how many are replying right now. */
+  others: { count: number; last_used_at: string | null; running: number };
+  /** A step down below this would shrink the window under another conversation. */
+  blocked_down_to: number;
+  reread_seconds: number | null;
+}
+
+export async function getContextStage(model: string, conversationId?: string | null): Promise<ContextStageInfo> {
+  const q = new URLSearchParams({ model });
+  if (conversationId) q.set("conversation_id", conversationId);
+  return (await authedFetch(`/v1/models/context-stage?${q.toString()}`)).json() as Promise<ContextStageInfo>;
+}
+
+export interface RequestContextStageResult {
+  started: "stage" | "compaction" | "detached";
+  stream_id?: string;
+  pending?: number | null;
+}
+
+/** Ask for a stage. Refusals throw an `ApiError` whose `code` is one of
+ * `not_allowed`, `others_need_stage`, `no_room`, `conversation_too_large`,
+ * `busy` — and whose message is the sentence to show. */
+export async function requestContextStage(input: {
+  model: string;
+  stage: number;
+  conversationId?: string | null;
+  compactFirst?: boolean;
+}): Promise<RequestContextStageResult> {
+  const res = await authedFetch("/v1/models/context-stage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: input.model,
+      stage: input.stage,
+      ...(input.conversationId ? { conversation_id: input.conversationId } : {}),
+      ...(input.compactFirst ? { compact_first: true } : {}),
+    }),
+  });
+  return res.json() as Promise<RequestContextStageResult>;
+}
+
+/** Cancel a switch that is waiting for other replies to finish. */
+export async function withdrawContextStage(model: string): Promise<{ withdrawn: boolean }> {
+  return (await authedFetch(`/v1/models/context-stage?model=${encodeURIComponent(model)}`, { method: "DELETE" })).json() as Promise<{ withdrawn: boolean }>;
 }
 
 // ── Auth ──────────────────────────────────────────────────
@@ -1860,6 +1988,10 @@ export type {
   WaitDeadlineFields,
   PromptStats,
   PromptProgress,
+  ContextStageStatus,
+  ContextStageStep,
+  ContextStageReason,
+  ModelContextStage,
   TimeoutBasis,
   LoopSensitivity,
   CompactionStats,
@@ -1985,6 +2117,9 @@ export function sendChatMessage(
   /** MCP choices made before the conversation existed; the server applies
    * them only when this send creates it. */
   mcpOverrides?: import("@loxaic/types").McpOverrides,
+  /** The context stage chosen before the conversation existed; read only by
+   * the send that opens it. */
+  contextStage?: number,
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -1995,6 +2130,7 @@ export function sendChatMessage(
     attachments,
     ...(clientRef ? { client_ref: clientRef } : {}),
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
+    ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
   });
 }
 
@@ -2010,6 +2146,8 @@ export function sendAgentMessage(
   clientRef?: string,
   /** As on `sendChatMessage`. */
   mcpOverrides?: import("@loxaic/types").McpOverrides,
+  /** As on `sendChatMessage`. */
+  contextStage?: number,
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -2021,6 +2159,7 @@ export function sendAgentMessage(
     attachments,
     ...(clientRef ? { client_ref: clientRef } : {}),
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
+    ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
   });
 }
 

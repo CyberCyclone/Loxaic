@@ -2,6 +2,7 @@ import type { PromptStats } from '@loxaic/api-client';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
+import type { StageCard } from '@/lib/stageCard';
 import { MessageList, type MessageHistory } from '@/components/chat/MessageList';
 import { RunHeader } from './RunHeader';
 import { PlanningBanner } from './PlanningBanner';
@@ -23,6 +24,8 @@ interface AgentStreamProps {
   pendingCheckin: PendingCheckin | null;
   /** Scroll-back through older history — see MessageList. */
   history?: MessageHistory | null;
+  /** The latest step of a context-stage switch in this run. */
+  stageCard?: StageCard | null;
   onAllow: () => void;
   onDeny: () => void;
   onCheckinContinue: () => void;
@@ -42,6 +45,7 @@ export function AgentStream({
   pendingApproval,
   pendingCheckin,
   history,
+  stageCard,
   onAllow,
   onDeny,
   onCheckinContinue,
@@ -75,6 +79,7 @@ export function AgentStream({
           promptStats={promptStats}
           queuePosition={queuePosition}
           history={history}
+          stageCard={stageCard}
         />
       </Box>
       {mode === 'planning' && <PlanningBanner />}
