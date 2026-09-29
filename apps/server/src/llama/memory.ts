@@ -1,4 +1,5 @@
 import { listServableModels, rowMeta, type LocalModelRow } from "./catalog.ts";
+import { effectiveSettings } from "./context-stages.ts";
 import { estimateFit } from "./fit.ts";
 import { offloadMemory, remeasureDevices, routerEndpoint, routerModelStatuses, runtimeView } from "./router.ts";
 
@@ -49,12 +50,14 @@ export interface LoadedFootprint {
   estBytes: number;
 }
 
-/** A model's estimated footprint on the GPU with its own settings. */
+/** A model's estimated footprint on the GPU with the settings it loads with —
+ * its active YaRN stage's, which at 1M is most of the footprint. */
 export function footprintBytes(row: LocalModelRow): number {
   return estimateFit({
     weightBytes: row.sizeBytes,
     nLayers: rowMeta(row).nLayers ?? null,
-    settings: row.loadSettings ?? {},
+    shape: rowMeta(row).shape ?? null,
+    settings: effectiveSettings(row),
     memoryBytes: null,
     cpu: false,
   }).requiredBytes;

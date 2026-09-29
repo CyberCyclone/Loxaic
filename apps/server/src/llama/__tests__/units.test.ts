@@ -21,7 +21,11 @@ describe("load settings", () => {
 
   it("range-checks against the model's own facts", () => {
     expect(normalizeLoadSettings({ ctxSize: 32768 }, { nCtxTrain: 40960 })).toEqual({ ctxSize: 32768 });
-    expect(() => normalizeLoadSettings({ ctxSize: 65536 }, { nCtxTrain: 40960 })).toThrow(/512 to 40960/);
+    // The trained context is advice (RoPE scaling exists to exceed it); only
+    // llama.cpp's 32-bit ceiling and the floor are limits.
+    expect(normalizeLoadSettings({ ctxSize: 1_048_576 }, { nCtxTrain: 262144 })).toEqual({ ctxSize: 1_048_576 });
+    expect(() => normalizeLoadSettings({ ctxSize: 2 ** 31 }, { nCtxTrain: 40960 })).toThrow(/512 to 2147483647/);
+    expect(() => normalizeLoadSettings({ ctxSize: 256 }, { nCtxTrain: 40960 })).toThrow();
     // llama.cpp counts the output layer, so "all on the GPU" is n_layers + 1.
     expect(normalizeLoadSettings({ gpuLayers: 29 }, { nLayers: 28 })).toEqual({ gpuLayers: 29 });
     expect(() => normalizeLoadSettings({ gpuLayers: 30 }, { nLayers: 28 })).toThrow();
@@ -240,7 +244,45 @@ describe("GGUF header", () => {
   it("reads layers and context length past a vocabulary array", async () => {
     const file = path.join(dir, "m.gguf");
     writeFileSync(file, denseModel());
-    await expect(readGgufFacts(file)).resolves.toEqual({ architecture: "qwen3", nLayers: 28, nCtxTrain: 40960, expertCount: null });
+    await expect(readGgufFacts(file)).resolves.toEqual({
+      architecture: "qwen3",
+      nLayers: 28,
+      nCtxTrain: 40960,
+      expertCount: null,
+      // The fixture describes no attention heads: the fit stays rough.
+      shape: null,
+    });
+  });
+
+  it("reads the attention layout, per-layer arrays included, and stops at the tokenizer", async () => {
+    const file = path.join(dir, "shape.gguf");
+    writeFileSync(
+      file,
+      buildGguf([
+        ["general.architecture", { type: "str", v: "gemma4" }],
+        ["gemma4.block_count", { type: "u32", v: 6 }],
+        ["gemma4.context_length", { type: "u32", v: 131072 }],
+        ["gemma4.attention.head_count", { type: "u32", v: 8 }],
+        ["gemma4.attention.head_count_kv", { type: "u32s", v: [2, 2, 2, 2, 2, 4] }],
+        ["gemma4.attention.key_length", { type: "u32", v: 512 }],
+        ["gemma4.attention.value_length", { type: "u32", v: 512 }],
+        ["gemma4.attention.sliding_window", { type: "u32", v: 512 }],
+        ["gemma4.attention.sliding_window_pattern", { type: "bools", v: [true, true, true, true, true, false] }],
+        ["gemma4.rope.scaling.factor", { type: "f32", v: 4 }],
+        ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`) }],
+        // Past the tokenizer: never read.
+        ["gemma4.attention.shared_kv_layers", { type: "u32", v: 3 }],
+      ]),
+    );
+    const facts = await readGgufFacts(file);
+    expect(facts.shape).toMatchObject({
+      nLayers: 6,
+      nHeadKv: [2, 2, 2, 2, 2, 4],
+      slidingWindow: 512,
+      swaLayers: [true, true, true, true, true, false],
+      sharedKvLayers: 0,
+      ropeScaling: { factor: 4 },
+    });
   });
 
   it("finds expert_count on a mixture-of-experts model", async () => {

@@ -29,6 +29,10 @@ export interface IntSpec extends Base {
   min: number;
   /** A fixed ceiling, or a model fact the ceiling comes from. */
   max: number | "nCtxTrain" | "nLayers";
+  /** `max` is advice, not a limit: past it the client warns and the server
+   * accepts anything up to `INT32_MAX`. The context length's trained maximum
+   * is exactly what RoPE scaling (YaRN) exists to exceed. */
+  softMax?: boolean;
   /** Values accepted besides numbers, e.g. `all` for GPU layers. */
   words?: readonly string[];
 }
@@ -55,7 +59,7 @@ const CACHE_TYPES = ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5
 export const LOAD_SETTINGS: readonly LoadSettingSpec[] = [
   // ── Context
   {
-    key: "ctxSize", flag: "ctx-size", group: "context", type: "int", min: 512, max: "nCtxTrain",
+    key: "ctxSize", flag: "ctx-size", group: "context", type: "int", min: 512, max: "nCtxTrain", softMax: true,
     label: "Context length",
     help: "How many tokens of conversation the model can see at once. Longer uses more memory.",
   },
@@ -205,7 +209,11 @@ export class LoadSettingsError extends Error {
   }
 }
 
+/** llama.cpp's context and counts are 32-bit. */
+export const INT32_MAX = 2 ** 31 - 1;
+
 function ceiling(spec: IntSpec, facts: ModelFacts): number {
+  if (spec.softMax) return INT32_MAX;
   if (spec.max === "nCtxTrain") return facts.nCtxTrain ?? 1_048_576;
   // One more than the layer count: llama.cpp counts the output layer too, and
   // `n_layers + 1` is what "everything on the GPU" really is.

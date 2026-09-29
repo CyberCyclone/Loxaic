@@ -11,6 +11,7 @@ import {
   insertLocalModelRow,
   listLocalModelRows,
   rowFiles,
+  rowMeta,
   rowMmproj,
   updateLocalModelRow,
   type LocalModelMeta,
@@ -115,6 +116,7 @@ export function fitFor(
     ...estimateFit({
       weightBytes,
       nLayers: meta.nLayers ?? null,
+      shape: meta.shape ?? null,
       settings: settings as never,
       memoryBytes: mem.bytes,
       cpu: mem.cpu,
@@ -336,20 +338,7 @@ async function run(row: LocalModelRow, entry: Active): Promise<void> {
     doneBefore += file.size;
   }
 
-  let meta: LocalModelMeta = {};
-  try {
-    const first = rowFiles(row)[0];
-    const facts = await readGgufFacts(modelFilePath(row.repo, row.revision, first.path));
-    meta = {
-      architecture: facts.architecture,
-      nLayers: facts.nLayers,
-      nCtxTrain: facts.nCtxTrain,
-      expertCount: facts.expertCount,
-    };
-  } catch (err) {
-    // The model still loads; the settings sheet just lacks exact ranges.
-    log(`Could not read ${row.id}'s GGUF header: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  const meta = (await describeFile(row)) ?? {};
   await updateLocalModelRow(row.id, { status: "ready", bytesDone: row.sizeBytes, meta, error: null });
   liveBytes.delete(row.id);
   log(`Downloaded ${row.id}`);
@@ -448,6 +437,45 @@ async function downloadFile(
   await rename(part, target);
 }
 
+/** The facts a downloaded file's header gives, or null when it could not be
+ * read — the model still loads; the settings sheet just lacks exact ranges and
+ * the fit estimate falls back to its rough figure. */
+async function describeFile(row: LocalModelRow): Promise<LocalModelMeta | null> {
+  try {
+    const first = rowFiles(row)[0];
+    const facts = await readGgufFacts(modelFilePath(row.repo, row.revision, first.path));
+    return {
+      architecture: facts.architecture,
+      nLayers: facts.nLayers,
+      nCtxTrain: facts.nCtxTrain,
+      expertCount: facts.expertCount,
+      shape: facts.shape,
+    };
+  } catch (err) {
+    log(`Could not read ${row.id}'s GGUF header: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Give rows downloaded before the attention layout was read their `shape`.
+ * Without it their fit — and every YaRN stage's — is the rough per-layer
+ * figure, which is several times too high for a hybrid model. The files are on
+ * this disk and the read stops at the tokenizer, so this is cheap; it runs once
+ * per row (a file that describes nothing stores `shape: null`, not absence).
+ */
+export async function backfillShapes(rows: LocalModelRow[]): Promise<number> {
+  let filled = 0;
+  for (const row of rows) {
+    if (row.status !== "ready" || rowMeta(row).shape !== undefined) continue;
+    const facts = await describeFile(row);
+    if (!facts) continue;
+    await updateLocalModelRow(row.id, { meta: { ...rowMeta(row), ...facts } }).catch(() => undefined);
+    filled++;
+  }
+  return filled;
+}
+
 // ── Lifecycle ───────────────────────────────────────────────────────────────
 
 /** Boot: anything that was mid-download when the server stopped is paused,
@@ -461,6 +489,8 @@ export function startDownloadQueue(logger: (m: string) => void): void {
       if (r.status === "downloading") await updateLocalModelRow(r.id, { status: "paused" }).catch(() => undefined);
     }
     pump();
+    const filled = await backfillShapes(rows).catch(() => 0);
+    if (filled > 0) log(`Read the attention layout of ${String(filled)} downloaded model(s)`);
   })();
 }
 

@@ -1,5 +1,6 @@
 import { and, db, eq, sql } from "@loxaic/db";
 import { localModels } from "@loxaic/db/schema";
+import type { ModelShape } from "./shape.ts";
 
 /**
  * The `local_models` table, read through a short cache.
@@ -23,6 +24,10 @@ export interface LocalModelMeta {
   nParams?: number | null;
   architecture?: string | null;
   expertCount?: number | null;
+  /** The attention layout from the GGUF header. Absent on rows downloaded
+   * before it was read (the boot backfill fills it); null when the file did
+   * not describe one. */
+  shape?: ModelShape | null;
 }
 
 /** This instance's identity for the `host_id` column. Files are on one

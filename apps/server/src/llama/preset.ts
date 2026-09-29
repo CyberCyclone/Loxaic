@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { rowFiles, rowMeta, rowMmproj, type LocalModelRow } from "./catalog.ts";
-import { presetLines, type LoadSettings } from "./load-settings.ts";
+import { activeStageIndex, settingsForStage, yarnLines } from "./context-stages.ts";
+import { presetLines } from "./load-settings.ts";
 import { modelFilePath, presetPath } from "./paths.ts";
 
 /**
@@ -73,13 +74,17 @@ export function modelSection(row: LocalModelRow, globals: PresetGlobals): string
     `[${routerModelName(row.id)}]`,
     `model = ${safeValue(modelFilePath(row.repo, row.revision, files[0].path))}`,
   ];
-  const settings = (row.loadSettings ?? {}) as LoadSettings;
+  // The active YaRN stage's context (and cache types) on top of the model's
+  // own settings; stage 0 is the settings as they are.
+  const stage = activeStageIndex(row);
+  const settings = settingsForStage(row, stage);
   const cpuOnly = globals.devices === "none";
   lines.push(
     ...presetLines(cpuOnly ? { ...settings, gpuLayers: 0 } : settings, {
       mmprojPath: mmproj ? safeValue(modelFilePath(row.repo, row.revision, mmproj.path)) : null,
       facts: rowMeta(row),
     }),
+    ...yarnLines(row, stage),
   );
   return lines;
 }

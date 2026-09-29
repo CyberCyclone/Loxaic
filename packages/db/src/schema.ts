@@ -537,6 +537,13 @@ export const localModels = pgTable(
     /** GGUF facts from HuggingFace, for the settings sheet's ranges and the
      * fit estimate: `{ nLayers?, nCtxTrain?, nParams?, architecture? }`. */
     meta: jsonb("meta").notNull().default({}),
+    /** YaRN context stages (see apps/server/src/llama/context-stages.ts):
+     * `{ enabled, whoMayChange, whenFull, stages: [{ ctxSize, … }] }`. Null
+     * until an admin sets them up. Stage 0 is always `loadSettings` as is. */
+    contextStages: jsonb("context_stages"),
+    /** Which stage the model loads at now — model-wide, since a load is shared
+     * by everyone using the model. 0 is the standard context. */
+    activeStage: integer("active_stage").notNull().default(0),
     displayName: text("display_name").notNull(),
     publisher: text("publisher").notNull(),
     createdBy: text("created_by").references(() => user.id, { onDelete: "set null" }),

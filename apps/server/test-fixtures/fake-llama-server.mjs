@@ -100,6 +100,22 @@ function routerId(name) {
   return name.slice(0, i + 1) + name.slice(i + 1).toUpperCase().replace(/^UD-/, "");
 }
 
+/**
+ * The preset keys this fake accepts — every key the server writes, and nothing
+ * else. The real router refuses an unknown key (`option 'mlock' not recognized
+ * in preset`: fatal at boot, a 500 on reload), and a fake that accepted
+ * anything would let a misspelt key pass every e2e run. The YaRN keys were
+ * confirmed against b11149 before they were added here.
+ */
+const PRESET_KEYS = new Set([
+  "version", "model", "mmproj", "jinja", "device",
+  "ctx-size", "rope-freq-base", "rope-freq-scale", "n-gpu-layers", "n-cpu-moe", "kv-offload", "load-mode",
+  "threads", "threads-batch", "batch-size", "ubatch-size", "flash-attn", "cache-type-k", "cache-type-v",
+  "parallel", "kv-unified", "temp", "top-k", "top-p", "min-p", "repeat-penalty", "presence-penalty",
+  "frequency-penalty", "seed",
+  "rope-scaling", "rope-scale", "yarn-orig-ctx", "yarn-ext-factor", "yarn-attn-factor", "yarn-beta-slow", "yarn-beta-fast",
+]);
+
 /** Parse the INI into { globals, sections: Map<id, Record<string,string>> }. */
 function readPreset() {
   const sections = new Map();
@@ -116,12 +132,20 @@ function readPreset() {
       continue;
     }
     const kv = /^([^=]+?)\s*=\s*(.*)$/.exec(line);
+    if (kv && !PRESET_KEYS.has(kv[1])) throw new Error(`option '${kv[1]}' not recognized in preset`);
     if (kv && current) current[kv[1]] = kv[2];
   }
   return { globals, sections };
 }
 
-let preset = readPreset();
+let preset;
+try {
+  preset = readPreset();
+} catch (err) {
+  // As the real router: an unrecognised key is fatal at boot.
+  process.stderr.write(`E srv  llama_server: failed to initialize router models: ${err.message}\n`);
+  process.exit(1);
+}
 /** id -> "unloaded" | "loaded" */
 const status = new Map();
 /** Ids whose last load failed. */
@@ -177,6 +201,7 @@ function load(id) {
 }
 
 function reload() {
+  // An unrecognised key on a live reload keeps the old list (the caller answers 500).
   const next = readPreset();
   for (const [id] of status) {
     const now = next.sections.get(id);
@@ -219,7 +244,13 @@ const server = createServer(async (req, res) => {
     return json(res, 401, { error: { code: 401, message: "Invalid API Key", type: "authentication_error" } });
   }
   if (url.pathname === "/models" && req.method === "GET") {
-    if (url.searchParams.get("reload") === "1") reload();
+    if (url.searchParams.get("reload") === "1") {
+      try {
+        reload();
+      } catch (err) {
+        return json(res, 500, { error: { message: err.message } });
+      }
+    }
     return json(res, 200, {
       data: [...preset.sections.keys()].map((id) => ({
         id,

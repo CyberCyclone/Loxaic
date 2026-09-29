@@ -1,4 +1,5 @@
 import { open, type FileHandle } from "node:fs/promises";
+import { shapeFromKeys, type ModelShape } from "./shape.ts";
 
 /**
  * Just enough of a GGUF reader to learn the facts the settings sheet and the
@@ -7,9 +8,12 @@ import { open, type FileHandle } from "node:fs/promises";
  * model is a mixture of experts. HuggingFace's API reports the parameter count
  * but not the layers, so the downloaded file's own header is the only source.
  *
+ * It also reads the attention layout (`shape`, see shape.ts), which is what
+ * lets the fit estimate price a long context correctly.
+ *
  * Reads the metadata key/value section sequentially through a small buffer and
- * stops as soon as it has what it wants — the tokenizer arrays that follow can
- * hold hundreds of thousands of strings and are skipped without being kept.
+ * stops at the tokenizer — its arrays can hold hundreds of thousands of
+ * strings, and every architecture key a model has comes before them.
  */
 
 export interface GgufFacts {
@@ -17,7 +21,13 @@ export interface GgufFacts {
   nLayers: number | null;
   nCtxTrain: number | null;
   expertCount: number | null;
+  /** Null when the file does not describe its attention (the fit estimate
+   * then falls back to a rough figure). */
+  shape: ModelShape | null;
 }
+
+/** The longest per-layer array kept (`head_count_kv`, the SWA pattern). */
+const MAX_KEPT_ARRAY = 4096;
 
 const MAGIC = 0x46554747; // "GGUF", little-endian
 const MAX_STRING = 16 * 1024 * 1024;
@@ -117,6 +127,26 @@ async function readScalar(r: Reader, type: number): Promise<number | string | bo
   }
 }
 
+/** A small array of numbers or booleans; null (after skipping it) otherwise. */
+async function readSmallArray(r: Reader): Promise<number[] | boolean[] | null> {
+  const inner = await r.u32();
+  const n = Number(await r.u64());
+  if (n > MAX_ARRAY) throw new Error("GGUF array too long");
+  const width = FIXED[inner];
+  if (inner === 8 || width === undefined || n > MAX_KEPT_ARRAY) {
+    if (inner === 8) for (let i = 0; i < n; i++) await skipValue(r, 8);
+    else if (width !== undefined) r.skip(width * n);
+    else throw new Error("Nested GGUF arrays are not supported");
+    return null;
+  }
+  const out: (number | boolean)[] = [];
+  for (let i = 0; i < n; i++) {
+    const v = await readScalar(r, inner);
+    if (typeof v === "number" || typeof v === "boolean") out.push(v);
+  }
+  return out as number[] | boolean[];
+}
+
 async function skipValue(r: Reader, type: number): Promise<void> {
   if (type === 8) {
     const len = Number(await r.u64());
@@ -139,7 +169,7 @@ async function skipValue(r: Reader, type: number): Promise<void> {
 }
 
 export async function readGgufFacts(file: string): Promise<GgufFacts> {
-  const facts: GgufFacts = { architecture: null, nLayers: null, nCtxTrain: null, expertCount: null };
+  const facts: GgufFacts = { architecture: null, nLayers: null, nCtxTrain: null, expertCount: null, shape: null };
   const fh = await open(file, "r");
   try {
     const r = new Reader(fh, (await fh.stat()).size);
@@ -148,31 +178,38 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
     if (version < 2) throw new Error("GGUF v1 is not supported");
     await r.u64(); // tensor count
     const kvCount = Math.min(Number(await r.u64()), MAX_KV);
-    const numeric: Partial<Record<string, number>> = {};
+    const keys: Record<string, number | boolean | string | number[] | boolean[]> = {};
     for (let i = 0; i < kvCount; i++) {
       const key = await r.str();
       const type = await r.u32();
-      const wanted =
-        key === "general.architecture" || key.endsWith(".block_count") || key.endsWith(".context_length") || key.endsWith(".expert_count");
-      if (!wanted || type === 9) {
+      if (key.startsWith("tokenizer.") && facts.architecture) break;
+      if (key === "general.architecture" && type === 8) {
+        facts.architecture = await r.str();
+        continue;
+      }
+      const arch = facts.architecture;
+      if (arch === null || !key.startsWith(`${arch}.`)) {
         await skipValue(r, type);
         continue;
       }
-      const value = await readScalar(r, type);
-      if (key === "general.architecture" && typeof value === "string") facts.architecture = value;
-      else if (typeof value === "number") numeric[key] = value;
-      const arch = facts.architecture;
-      if (arch && numeric[`${arch}.block_count`] !== undefined && numeric[`${arch}.context_length`] !== undefined) {
-        // expert_count, if present, comes right beside the others; do not
-        // walk the whole vocabulary looking for a key a dense model lacks.
-        if (numeric[`${arch}.expert_count`] !== undefined || i > 64) break;
+      const name = key.slice(arch.length + 1);
+      if (type === 9) {
+        const arr = await readSmallArray(r);
+        if (arr) keys[name] = arr;
+        continue;
       }
+      const value = await readScalar(r, type);
+      if (value !== null) keys[name] = value;
     }
-    const arch = facts.architecture;
-    if (arch) {
-      facts.nLayers = numeric[`${arch}.block_count`] ?? null;
-      facts.nCtxTrain = numeric[`${arch}.context_length`] ?? null;
-      facts.expertCount = numeric[`${arch}.expert_count`] ?? null;
+    const n = (k: string) => {
+      const v = keys[k];
+      return typeof v === "number" ? v : null;
+    };
+    if (facts.architecture) {
+      facts.nLayers = n("block_count");
+      facts.nCtxTrain = n("context_length");
+      facts.expertCount = n("expert_count");
+      facts.shape = shapeFromKeys(keys);
     }
     return facts;
   } finally {

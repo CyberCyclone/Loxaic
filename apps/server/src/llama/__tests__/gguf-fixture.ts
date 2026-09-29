@@ -3,7 +3,13 @@
  * tensors. Enough for the header reader, the download tests (which serve it
  * as a "model"), and anything else that needs a file that parses.
  */
-type Value = { type: "u32"; v: number } | { type: "str"; v: string } | { type: "strs"; v: string[] } | { type: "f32"; v: number };
+type Value =
+  | { type: "u32"; v: number }
+  | { type: "str"; v: string }
+  | { type: "strs"; v: string[] }
+  | { type: "f32"; v: number }
+  | { type: "u32s"; v: number[] }
+  | { type: "bools"; v: boolean[] };
 
 function u32(n: number): Buffer {
   const b = Buffer.alloc(4);
@@ -39,6 +45,12 @@ export function buildGguf(kvs: [string, Value][], padTo = 0): Buffer {
         break;
       case "strs":
         parts.push(u32(9), u32(8), u64(value.v.length), ...value.v.map(str));
+        break;
+      case "u32s":
+        parts.push(u32(9), u32(4), u64(value.v.length), ...value.v.map(u32));
+        break;
+      case "bools":
+        parts.push(u32(9), u32(7), u64(value.v.length), Buffer.from(value.v.map((b) => (b ? 1 : 0))));
         break;
     }
   }
