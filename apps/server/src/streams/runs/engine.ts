@@ -67,6 +67,7 @@ import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
+import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
 import {
@@ -497,6 +498,10 @@ export async function runToolLoop(ctx: {
    * file is one the model wrote, which the framing would present back to it as
    * the project's conventions. Absent means no. */
   nestedInstructions?: boolean;
+  /** Set when this run's send created the conversation: its model is moved
+   * to `chosenStage` (Context settings), or back to its standard context,
+   * before the first request — see stageRun.ts. */
+  newConversation?: { chosenStage?: number };
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
@@ -607,6 +612,28 @@ export async function runToolLoop(ctx: {
     // another run admitted in the gap evicts the prefix, and this run then
     // pays a full re-evaluation when it comes back, which is the cost the
     // queue exists to avoid. Fairness beyond FIFO is a follow-up.
+    // A new conversation starts at the stage it was started with, standard
+    // unless it chose otherwise: YaRN costs every request a little quality, so
+    // a model extended for someone's long conversation steps back down for a
+    // short one — only as far as other active conversations allow. Before the
+    // slot, because the switch takes the backend on its own. Never fails the
+    // run: a refusal is said on the card and the run goes on.
+    if (ctx.newConversation) {
+      try {
+        const { stageForNewConversation } = await import("./stageRun.ts");
+        await stageForNewConversation({
+          userId,
+          conversationId: convId,
+          model,
+          chosen: ctx.newConversation.chosenStage,
+          producer,
+          signal: abort.signal,
+        });
+      } catch (err) {
+        console.warn(`context stage for new conversation ${convId} skipped: ${(err as Error).message}`);
+      }
+    }
+
     slot = await acquireRunSlot({
       signal: abort.signal,
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
@@ -706,7 +733,14 @@ export async function runToolLoop(ctx: {
         reportProgress = info?.nativeRuntime ?? false;
         if (info && !info.loaded) {
           loadingModel = true;
-          producer.emit({ kind: "model.loading", message_id: assistantMsgId });
+          // Say why when the reload is another conversation's stage switch:
+          // otherwise a reply that starts with a long reload is a mystery.
+          const switched = recentSwitch(model, convId);
+          producer.emit(
+            switched
+              ? { kind: "model.loading", message_id: assistantMsgId, reason: "context_stage", to_tokens: switched.toTokens }
+              : { kind: "model.loading", message_id: assistantMsgId },
+          );
         }
       } catch {
         // Best-effort — fall back to the generic "thinking" indicator.
@@ -1373,6 +1407,18 @@ export async function runToolLoop(ctx: {
   // The pref is checked here rather than beside shouldAutoCompact so an
   // ordinary turn never pays for the query — only a turn that has already
   // decided it wants to compact asks whether it may.
+  // A model set to extend its context when full (`whenFull: "extend"`) does
+  // that instead, when it has a stage left that fits — see stageRun.ts. Its
+  // failure falls back to compaction there; a model that cannot extend
+  // compacts here, exactly as before.
+  if (autoCompact) {
+    try {
+      const { autoExtend } = await import("./stageRun.ts");
+      if (await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface })) autoCompact = false;
+    } catch (err) {
+      console.warn(`automatic context extension skipped for ${convId}: ${(err as Error).message}`);
+    }
+  }
   if (autoCompact && (await userAllowsAutoCompact(userId))) {
     try {
       // Dynamic on purpose: compactRun imports this module's history loader,

@@ -1,0 +1,266 @@
+import { v4 as uuid } from "uuid";
+import { count, db, eq } from "@loxaic/db";
+import { messages } from "@loxaic/db/schema";
+import type { ContextStageReason, ContextStageStatus, PromptProgress } from "@loxaic/types";
+import { summaryMessage } from "../../inference/context.ts";
+import { modelRunInfo } from "../../inference/models.ts";
+import { streamCompletion, type ChatMessage } from "../../inference/provider.ts";
+import { getLocalModelRow } from "../../llama/catalog.ts";
+import { applyStageChange, type StageOutcome } from "../../llama/context-stage-switch.ts";
+import { StageRequestError, checkStageRequest } from "../../llama/context-stage-policy.ts";
+import { activeStageIndex, rowStages } from "../../llama/context-stages.ts";
+import { isAdmin } from "../authz.ts";
+import type { StreamProducer } from "../broker.ts";
+import { getStreamBroker } from "../index.ts";
+import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
+import { announceNewRun } from "../watchers.ts";
+import { userAllowsAutoCompact } from "./auto-compact.ts";
+import { lastRequestShape } from "./request-shape.ts";
+
+/**
+ * Context-stage switches as they appear in a conversation (see
+ * llama/context-stage-switch.ts for the switch itself).
+ *
+ * A switch someone asks for from a conversation, or that the model's
+ * `whenFull: "extend"` makes when one fills up, is a **stage run**: a run of
+ * its own, like a compaction, so it holds the conversation's run lock (nothing
+ * can be sent mid-switch), shows as a live card on every device watching, and
+ * Stop withdraws it before it applies. A new conversation's step back down is
+ * not a run of its own — it happens inside that conversation's first run,
+ * before its first request, reported on the same stream.
+ *
+ * Nothing here writes a message row: the card is client-only, folded from the
+ * stream log like a check-in decision, because a row would enter the prompt
+ * and move the history anchor.
+ */
+
+function emitter(producer: StreamProducer) {
+  return (status: ContextStageStatus) => { producer.emit({ kind: "context.stage", ...status }); };
+}
+
+/**
+ * Re-read `convId`'s prompt after a reload so its next turn finds it cached:
+ * the same front its last run sent (request-shape.ts) and the same replayed
+ * history, capped at one token of reply that is thrown away. Only when the
+ * shape is this model's — any other front would warm nothing the next turn
+ * uses.
+ */
+export function warmer(convId: string, model: string) {
+  return async (signal: AbortSignal, onProgress: (p: PromptProgress) => void): Promise<void> => {
+    const shape = lastRequestShape(convId);
+    if (shape?.model !== model) return;
+    // Dynamic, as compaction does: the engine imports this module.
+    const { loadHistory } = await import("./engine.ts");
+    const history = await loadHistory(convId);
+    const messages: ChatMessage[] = [
+      ...(shape.system ? [{ role: "system", content: shape.system } as ChatMessage] : []),
+      ...(history.summaryText ? [summaryMessage(history.summaryText)] : []),
+      ...history.messages,
+    ];
+    const info = await modelRunInfo(model).catch(() => null);
+    for await (const event of streamCompletion(model, messages, {
+      tools: shape.tools,
+      signal,
+      maxTokens: 1,
+      reportProgress: info?.nativeRuntime ?? false,
+    })) {
+      if (event.type === "progress") onProgress(event.progress);
+    }
+  };
+}
+
+export interface StartStageRunResult {
+  streamId: string;
+  conversationId: string;
+}
+
+/**
+ * A stage switch as a run in `conversationId`. Resolves once the run has
+ * started; `onDone` hears how it ended. Permission and refusals are the
+ * caller's (`checkStageRequest`) — by here the target is one that may be asked for.
+ */
+export async function startStageRun(input: {
+  userId: string;
+  conversationId: string;
+  model: string;
+  target: number;
+  reason: ContextStageReason;
+  auto: boolean;
+  surface: "chat" | "agent";
+  onDone?: (outcome: StageOutcome) => void;
+  /** End the card as failed with this sentence instead of switching — a
+   * compact-first whose summary still does not fit the smaller stage. */
+  refuse?: string;
+}): Promise<StartStageRunResult> {
+  const { userId, conversationId: convId, model } = input;
+  if (getRunByConversation(convId)) throw new Error("A response is already in progress for this conversation");
+  const broker = getStreamBroker();
+  const streamId = uuid();
+  const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: input.surface });
+  const abort = new AbortController();
+  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
+  announceNewRun(convId, streamId);
+
+  void (async () => {
+    let outcome: StageOutcome = { kind: "cancelled" };
+    try {
+      if (input.refuse !== undefined) {
+        const row = await getLocalModelRow(model);
+        const from = row ? activeStageIndex(row) : 0;
+        emitter(producer)({
+          step: "failed",
+          reason: input.reason,
+          auto: input.auto,
+          model,
+          from_stage: from,
+          to_stage: input.target,
+          from_tokens: null,
+          to_tokens: null,
+          yarn_factor: null,
+          message: input.refuse,
+        });
+        outcome = { kind: "failed", message: input.refuse };
+        return;
+      }
+      outcome = await applyStageChange({
+        modelId: model,
+        target: input.target,
+        reason: input.reason,
+        auto: input.auto,
+        byUserId: input.auto ? null : userId,
+        conversationId: convId,
+        signal: abort.signal,
+        emit: emitter(producer),
+        warm: warmer(convId, model),
+      });
+    } finally {
+      unregisterRun(streamId);
+      const status = outcome.kind === "cancelled" ? "cancelled" : outcome.kind === "failed" ? "error" : "complete";
+      await producer.end(status, outcome.kind === "failed" ? { error: outcome.message } : undefined).catch(() => undefined);
+      input.onDone?.(outcome);
+    }
+  })();
+
+  return { streamId, conversationId: convId };
+}
+
+/**
+ * The model's `whenFull: "extend"`: called where automatic compaction would
+ * be, once a turn has crossed the threshold. True when a stage run started;
+ * false means "compact as usual" — the model is set to compact, is at its
+ * largest stage, or the next stage will not fit. A stage run that then fails
+ * compacts instead, so the conversation is never left full with nothing done.
+ */
+export async function autoExtend(input: { userId: string; conversationId: string; model: string; surface: "chat" | "agent" }): Promise<boolean> {
+  const row = await getLocalModelRow(input.model);
+  if (!row) return false;
+  const config = rowStages(row);
+  if (config?.whenFull !== "extend") return false;
+  const next = activeStageIndex(row) + 1;
+  if (next > config.stages.length) return false;
+  try {
+    await checkStageRequest({ row, target: next, isAdmin: true, conversationId: input.conversationId, auto: true });
+  } catch (err) {
+    if (err instanceof StageRequestError) return false;
+    throw err;
+  }
+  await startStageRun({
+    ...input,
+    target: next,
+    reason: "full",
+    auto: true,
+    onDone: (outcome) => {
+      if (outcome.kind !== "failed") return;
+      void (async () => {
+        if (!(await userAllowsAutoCompact(input.userId))) return;
+        const { startCompactRun } = await import("./compactRun.ts");
+        await startCompactRun({ ...input, auto: true });
+      })().catch((e: unknown) => { console.warn(`compaction after a failed extension skipped: ${(e as Error).message}`); });
+    },
+  });
+  return true;
+}
+
+/**
+ * A new conversation's first run, before its first request: move the model to
+ * the stage the conversation was started with (Context settings), or back down
+ * to standard when it names none. Reported on the run's own stream; never
+ * fails the run — a refusal is said in the card and the run goes on at the
+ * stage the model is on.
+ */
+export async function stageForNewConversation(input: {
+  userId: string;
+  conversationId: string;
+  model: string;
+  chosen?: number;
+  producer: StreamProducer;
+  signal: AbortSignal;
+}): Promise<void> {
+  const row = await getLocalModelRow(input.model);
+  const config = row ? rowStages(row) : null;
+  if (!row || !config) return;
+  const active = activeStageIndex(row);
+  const wanted = input.chosen ?? 0;
+  if (wanted === active) return;
+  const emit = emitter(input.producer);
+  const auto = input.chosen === undefined;
+  const reason: ContextStageReason = auto ? "new-conversation" : "chosen";
+  let target: number;
+  let limitedBy: number | null;
+  try {
+    ({ target, limitedBy } = await checkStageRequest({
+      row,
+      target: wanted,
+      isAdmin: await isAdmin(input.userId),
+      conversationId: input.conversationId,
+      auto,
+    }));
+  } catch (err) {
+    if (!(err instanceof StageRequestError)) throw err;
+    // Chosen and refused: say so on the card, and carry on at the stage it is.
+    emit({
+      step: "failed",
+      reason,
+      auto,
+      model: row.id,
+      from_stage: active,
+      to_stage: wanted,
+      from_tokens: null,
+      to_tokens: null,
+      yarn_factor: null,
+      message: err.message,
+    });
+    return;
+  }
+  if (target === active) return;
+  await applyStageChange({
+    modelId: row.id,
+    target,
+    reason,
+    auto,
+    byUserId: auto ? null : input.userId,
+    conversationId: input.conversationId,
+    signal: input.signal,
+    emit: (status) => {
+      emit(
+        status.step === "applied" && limitedBy !== null
+          ? { ...status, message: "Another conversation using this model still needs this much context, so it stopped here." }
+          : status,
+      );
+    },
+  });
+}
+
+/** Whether `convId` has no messages yet — the send about to write one opens
+ * it. True for a conversation created by this send, one the agent created up
+ * front to choose a workspace, and a routine's fresh run alike. */
+export async function hasNoMessages(convId: string): Promise<boolean> {
+  const [row] = await db.select({ n: count() }).from(messages).where(eq(messages.conversationId, convId));
+  return row.n === 0;
+}
+
+/** A `context_stage` off the socket: a claim like any other field. Range is
+ * checked against the model later; here only the shape. */
+export function normalizeContextStage(raw: unknown): number | undefined {
+  return typeof raw === "number" && Number.isInteger(raw) && raw >= 0 && raw < 16 ? raw : undefined;
+}

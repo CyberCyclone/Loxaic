@@ -507,7 +507,20 @@ export type StreamEventKind =
    * the context meter had nothing to show until the whole turn ended (#193).
    */
   | { kind: "message.usage"; message_id: string; usage: TurnUsage }
-  | { kind: "model.loading"; message_id: string }
+  /**
+   * The model is being loaded for this request. `reason: "context_stage"` when
+   * it is loading because its context stage changed (someone extended or
+   * stepped it down), with the new context — so a conversation whose next
+   * reply starts with a reload is told why. Absent on an ordinary load.
+   */
+  | { kind: "model.loading"; message_id: string; reason?: "context_stage"; to_tokens?: number | null }
+  /**
+   * A context-stage switch, step by step (llama/context-stage-switch.ts): the
+   * model is reloaded at a larger (YaRN) or smaller context for everyone using
+   * it. Folded into the snapshot as the latest step, so a reconnecting device
+   * sees where the switch is.
+   */
+  | ({ kind: "context.stage" } & ContextStageStatus)
   /**
    * This run is waiting for an inference slot, and is `position` places from
    * the front (1 = next to run).
@@ -644,6 +657,41 @@ export interface PromptStats {
 }
 
 /** A backend's own account of how far prompt evaluation has got. */
+export type ContextStageStep = "waiting" | "reloading" | "rereading" | "applied" | "failed";
+/**
+ * Why a stage is changing:
+ * - `full`: the conversation filled its window and the model is set to extend.
+ * - `chosen`: someone chose it (the modal, Context settings, the popup).
+ * - `new-conversation`: a new conversation stepping the model back down.
+ * - `compact-first`: a switch to a smaller stage after compacting to fit it.
+ */
+export type ContextStageReason = "full" | "chosen" | "new-conversation" | "compact-first";
+
+export interface ContextStageStatus {
+  step: ContextStageStep;
+  reason: ContextStageReason;
+  /** Nobody pressed anything: the model's `whenFull` or a new conversation. */
+  auto: boolean;
+  model: string;
+  from_stage: number;
+  to_stage: number;
+  from_tokens: number | null;
+  to_tokens: number | null;
+  /** The YaRN factor the target stage loads with; null for standard. */
+  yarn_factor: number | null;
+  /** `waiting`: place in line, 1 = next. */
+  position?: number;
+  /** `waiting`: other conversations replying on this model right now. */
+  running?: number;
+  /** `reloading`: how long this model last took to load at this context. */
+  eta_ms?: number | null;
+  /** `rereading`: the backend's own progress through this conversation. */
+  progress?: PromptProgress;
+  /** `failed`, or an `applied` that stopped short of the target (another
+   * conversation still needs a larger stage). */
+  message?: string;
+}
+
 export interface PromptProgress {
   /** The prompt as the backend tokenised it — not an estimate. */
   total_tokens: number;
@@ -668,6 +716,9 @@ export interface StreamSnapshot {
    * soon as it starts, so a client that reconnects mid-queue sees the wait and
    * one that reconnects mid-answer does not. */
   queued?: { position: number };
+  /** The latest step of a context-stage switch this run made. Kept once it
+   * ends too, so the card reads the same after a reconnect. */
+  context_stage?: ContextStageStatus;
   // agent-only:
   iteration?: { n: number; max: number };
   todos?: Todo[];
@@ -769,6 +820,9 @@ export type ClientMessage =
        * leaves out what was switched off; ignored for an existing one, which
        * changes through `PATCH /v1/conversations/:id`. */
       mcp_overrides?: McpOverrides;
+      /** The context stage chosen in Context settings before the conversation
+       * existed; read only by the send that opens it. */
+      context_stage?: number;
     }
   | {
       type: "agent.send";
@@ -783,6 +837,9 @@ export type ClientMessage =
       client_ref?: string;
       /** As on `chat.send`. */
       mcp_overrides?: McpOverrides;
+      /** The context stage chosen in Context settings before the conversation
+       * existed; read only by the send that opens it. */
+      context_stage?: number;
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

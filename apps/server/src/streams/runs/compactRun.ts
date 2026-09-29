@@ -340,7 +340,7 @@ export async function startCompactRun(input: {
   });
 
   const abort = new AbortController();
-  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map() });
+  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
   announceNewRun(convId, streamId);
 
   // The conversation as its last run sent it, with the summarisation

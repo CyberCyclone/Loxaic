@@ -133,7 +133,7 @@ export async function resolveAccess(
 
 /** Admin lookup, by id rather than by session, because the WS path has only
  * the user id by the time authorization runs. */
-async function isAdmin(userId: string): Promise<boolean> {
+export async function isAdmin(userId: string): Promise<boolean> {
   const row = await db.query.user.findFirst({
     where: eq(user.id, userId),
     columns: { role: true },

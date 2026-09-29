@@ -87,6 +87,10 @@ export interface RunSlot {
 interface Waiter {
   /** Front-of-queue re-entry after an approval — see the module comment. */
   priority: boolean;
+  /** Needs the whole backend: admitted only once nothing is running, and holds
+   * everyone behind it until it lets go. A context-stage switch reloads the
+   * model under every run on it. */
+  exclusive?: boolean;
   notify: QueuedListener;
   admit: () => void;
   /** Resolves the acquire call with "aborted" rather than rejecting. */
@@ -100,6 +104,8 @@ interface Waiter {
  * would lose the accounting that decides who runs next. */
 interface Queue {
   running: number;
+  /** An exclusive holder has the backend: nothing else is admitted. */
+  exclusive: boolean;
   waiting: Waiter[];
   probed: { value: number | null; at: number } | null;
 }
@@ -109,7 +115,7 @@ const queues = new Map<string, Queue>();
 function queueFor(providerId: string): Queue {
   let q = queues.get(providerId);
   if (!q) {
-    q = { running: 0, waiting: [], probed: null };
+    q = { running: 0, exclusive: false, waiting: [], probed: null };
     queues.set(providerId, q);
   }
   return q;
@@ -169,6 +175,38 @@ function makeSlot(providerId: string, signal: AbortSignal, onQueued: QueuedListe
   };
 }
 
+/**
+ * Take the whole backend: wait until every run ahead in line has finished,
+ * then hold it with nothing else admitted until `release()`.
+ *
+ * For a context-stage switch, which reloads a model under every run on it —
+ * a reload mid-reply would cut that reply off. It joins the back of the line
+ * like a run, and once it reaches the front nothing behind it is admitted
+ * (head-of-line), so a steady stream of new runs cannot starve it: they queue
+ * behind the switch and run at the new stage. Null when aborted first, like
+ * `acquireRunSlot`.
+ */
+export async function acquireExclusiveSlot(opts: {
+  signal: AbortSignal;
+  onQueued: QueuedListener;
+  providerId?: string;
+}): Promise<{ release(): void } | null> {
+  const providerId = opts.providerId ?? DEFAULT_PROVIDER_ID;
+  const admitted = await enter(providerId, opts.signal, opts.onQueued, false, true);
+  if (!admitted) return null;
+  let held = true;
+  return {
+    release() {
+      if (!held) return;
+      held = false;
+      const q = queueFor(providerId);
+      q.running--;
+      q.exclusive = false;
+      pump(providerId);
+    },
+  };
+}
+
 /** Thrown out of `yieldWhile` when the run was stopped while it waited. */
 export class RunSlotAbortedError extends Error {
   constructor() {
@@ -184,6 +222,7 @@ async function enter(
   signal: AbortSignal,
   onQueued: QueuedListener,
   priority: boolean,
+  exclusive = false,
 ): Promise<boolean> {
   // Read through a call, not as `signal.aborted` directly: the type checker
   // narrows the property to false after the first check and cannot see that
@@ -196,18 +235,21 @@ async function enter(
   // stopped, or for slots to free or fill.
   if (stopped()) return false;
   const q = queueFor(providerId);
-  if (q.running < max && q.waiting.length === 0) {
+  if (!q.exclusive && q.waiting.length === 0 && (exclusive ? q.running === 0 : q.running < max)) {
     q.running++;
+    if (exclusive) q.exclusive = true;
     return true;
   }
 
   return new Promise<boolean>((resolve) => {
     const waiter: Waiter = {
       priority,
+      exclusive,
       notify: onQueued,
       admit: () => {
         signal.removeEventListener("abort", waiter.onAbort);
         q.running++;
+        if (exclusive) q.exclusive = true;
         resolve(true);
       },
       cancel: () => {
@@ -245,9 +287,13 @@ function pump(providerId: string): void {
   void (async () => {
     const max = await resolveMaxConcurrent(providerId);
     const q = queueFor(providerId);
-    while (q.waiting.length > 0 && q.running < max) {
-      const next = q.waiting.shift();
-      if (next) next.admit();
+    // Head of line: an exclusive waiter at the front waits for the running
+    // runs to finish and lets nobody past it; an exclusive holder admits no one.
+    while (q.waiting.length > 0 && !q.exclusive) {
+      const next = q.waiting[0];
+      if (next.exclusive ? q.running > 0 : q.running >= max) break;
+      q.waiting.shift();
+      next.admit();
     }
     notifyPositions(q);
   })();
@@ -365,7 +411,7 @@ export function __resetSchedulerForTest(): void {
 
 /** Diagnostics: what a queue looks like right now. Defaults to the built-in
  * backend's, which is the one every existing caller means. */
-export function schedulerState(providerId: string = DEFAULT_PROVIDER_ID): { running: number; waiting: number } {
+export function schedulerState(providerId: string = DEFAULT_PROVIDER_ID): { running: number; waiting: number; exclusive: boolean } {
   const q = queues.get(providerId);
-  return { running: q?.running ?? 0, waiting: q?.waiting.length ?? 0 };
+  return { running: q?.running ?? 0, waiting: q?.waiting.length ?? 0, exclusive: q?.exclusive ?? false };
 }

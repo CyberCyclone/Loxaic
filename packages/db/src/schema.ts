@@ -267,7 +267,12 @@ export const usageRecords = pgTable("usage_records", {
    * @loxaic/types. Nullable: rows predating this column have none. */
   contextBreakdown: jsonb("context_breakdown"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [
+  // Who else is using a model right now, asked whenever a context stage might
+  // change (llama/context-stage-policy.ts). Without it that question is a scan
+  // of the fastest-growing table in the database.
+  index("usage_records_model_created_idx").on(t.model, t.createdAt),
+]);
 
 // ── Workspaces ──
 export const workspaces = pgTable("workspaces", {

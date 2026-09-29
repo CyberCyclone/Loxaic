@@ -170,6 +170,12 @@ export interface StreamOptions {
    * Adds a request-body field, never a message, so the prompt is unchanged.
    */
   reportProgress?: boolean;
+  /**
+   * Cap the reply. Only the context-stage warm-up sets it (to 1): it sends a
+   * conversation's prompt so the backend caches it after a reload, and the
+   * reply is thrown away. A body field, never a message.
+   */
+  maxTokens?: number;
 }
 
 /**
@@ -678,6 +684,7 @@ async function* liveStream(
   // The preset check is a second lock behind the caller's: a named hosted API
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
+  if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
 
   // Not the global fetch: see transport.ts for the 300-second cut-off it has.
   const response = await inferenceFetch(`${provider.apiBase}/chat/completions`, {

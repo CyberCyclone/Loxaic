@@ -357,7 +357,10 @@ function presetGlobals(): PresetGlobals {
  * the model layer, which reaches this module. */
 async function builtinRunsActive(): Promise<number> {
   const { schedulerState } = await import("../inference/scheduler.ts");
-  return schedulerState(DEFAULT_PROVIDER_ID).running;
+  const s = schedulerState(DEFAULT_PROVIDER_ID);
+  // An exclusive holder is a context-stage switch, the one thing that wants
+  // this reload now — no reply is running under it.
+  return s.exclusive ? 0 : s.running;
 }
 
 async function reloadNow(): Promise<void> {

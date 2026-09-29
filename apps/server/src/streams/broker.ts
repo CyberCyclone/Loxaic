@@ -120,6 +120,7 @@ export class StreamBroker {
     const messages = new Map<string, StreamSnapshotMessage>();
     const orderedMessages: StreamSnapshotMessage[] = [];
     let queued: StreamSnapshot["queued"];
+    let contextStage: StreamSnapshot["context_stage"];
     let iteration: StreamSnapshot["iteration"];
     let todos: StreamSnapshot["todos"];
     let pendingApproval: StreamSnapshot["pending_approval"];
@@ -198,6 +199,12 @@ export class StreamBroker {
         case "model.loading":
           // Transient-only — not meaningful to fold into a catch-up snapshot.
           break;
+        case "context.stage": {
+          const { kind: _kind, ...status } = event;
+          void _kind;
+          contextStage = status;
+          break;
+        }
         case "run.queued":
           queued = { position: event.position };
           break;
@@ -279,6 +286,7 @@ export class StreamBroker {
     return {
       messages: orderedMessages,
       ...(queued ? { queued } : {}),
+      ...(contextStage ? { context_stage: contextStage } : {}),
       ...(iteration ? { iteration } : {}),
       ...(todos ? { todos } : {}),
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),

@@ -1255,6 +1255,60 @@ replies.
   (a separate process) reads what is held from `LOXAIC_FAKE_VRAM_STATE`. Its log records unloads
   too, which is how a test tells "unloaded to make room" from "failed to load".
 
+### YaRN context stages (extending a host model past its trained context)
+
+- **A stage is model-wide, because a llama.cpp load is.** `ctx-size` and YaRN are fixed when the
+  router loads a model, so a stage cannot belong to a request or a conversation: moving to one
+  reloads the model for everyone using it and discards every conversation's cached prompt on it.
+  The row carries it (`local_models.active_stage`, migration 0032); `context_stages` holds the
+  admin's stages. Stage 0 is the ordinary `loadSettings`, untouched.
+- **Every consumer of "what will this model load with" goes through `settingsForStage` /
+  `effectiveSettings`** (`llama/context-stages.ts`): the preset, `footprintBytes` (eviction),
+  `fitFor`, the listing's window. One that read `loadSettings` would plan for 256K while the
+  router loaded 1M.
+- **The YaRN keys were confirmed against a real b11149 router before anything was written**:
+  `rope-scaling`, `rope-scale`, `yarn-orig-ctx` and the four `yarn-*` knobs boot and reload, and
+  each becomes its flag. The factor is derived (`ctxSize ÷ yarnOrigCtx`, 1M ÷ 256K = 4) unless
+  pinned, and stages are refused while the base settings carry `rope-freq-scale` — llama.cpp's
+  `--rope-scale` and `--rope-freq-scale` set the same parameter. **The fake router now refuses an
+  unknown preset key**, as the real one does (fatal at boot, 500 on reload); a test holds its key
+  list against `LOAD_SETTINGS` plus the YaRN keys, so a new setting that nobody added there fails.
+- **The trained context is advice, not a limit** (`softMax` on `ctxSize`): RoPE scaling exists to
+  exceed it. The server refuses only llama.cpp's 32-bit ceiling.
+- **A switch takes the built-in queue exclusively** (`acquireExclusiveSlot`,
+  `llama/context-stage-switch.ts`): it waits for every run ahead of it, and once at the front it
+  admits nothing behind it until it has reloaded. That is both "never reload under a reply" and
+  "a stream of new runs cannot starve it". All local models share that queue, so the wait includes
+  a reply on another local model — the wait every run already has. `syncPreset`'s deferral
+  ignores the exclusive holder (`builtinRunsActive`), or the switch would defer its own reload.
+- **The switch writes the stage, rewrites the preset, then loads explicitly** (`loadWithRoom`), so
+  the reload happens under the stage card rather than on some later request; a failed load puts
+  the stage back. It then **warms the conversation's cache** with the same front and history the
+  next turn will send, `max_tokens: 1`, reply discarded — `prompt-prefix.test.ts` holds that the
+  warm request extends the last turn's and the next turn extends it.
+- **Three things change a stage, and only one is a person pressing a button.** A new
+  conversation's first run steps the model back to standard (or to the stage chosen in Context
+  settings, `context_stage` on the send) before its first request; the model's `whenFull:
+  "extend"` moves up a stage where automatic compaction would have run, falling back to compaction
+  at the last stage or when the next will not fit; and anyone the model's `whoMayChange` allows
+  can move it from a conversation (`POST /v1/models/context-stage`). A step down that would
+  shrink the window under another conversation active in the last two hours is refused when asked
+  for and *limited* when automatic (`llama/context-stage-policy.ts`).
+- **A stage run has no message rows.** Its steps (`context.stage`: waiting → reloading →
+  rereading → applied/failed) are folded into the snapshot as `context_stage` and rendered from
+  run state, like a check-in decision: a row would enter the prompt and move the history anchor.
+- **The fit estimate reads the model's attention layout** (`llama/shape.ts`, from the GGUF
+  header): only KV-bearing layers count (a hybrid Qwen3.5+ keeps KV in one layer of four), a
+  sliding-window layer stops at `n_swa × slots + ubatch` cells, shared-KV layers hold none, the
+  recurrent state is per slot, and the compute buffer grows ~5 KiB a token with flash attention
+  (~32 KiB without). All measured against b11149's allocation log on real files, and pinned in
+  `shape.test.ts`; the old flat estimate put Qwen3.5-9B's 64K cache at 4× what llama.cpp
+  allocates. Rows downloaded before the shape was read are backfilled at boot. The beta box's
+  Qwen3.8-27B needs ~64 GiB of f16 KV at 1M, so a 1M stage there has to quantize the cache.
+- **`usage_records` has its first index** (`model, created_at`, migration 0033): "who else is using
+  this model" is asked on every new conversation, and was otherwise a scan of the fastest-growing
+  table.
+
 ### The picker's "recently used"
 
 - **Recorded on a send, not on a tap.** What belongs at the top is what the user ran; a model
