@@ -2,7 +2,7 @@ module github.com/loxaic/tsnet-proxy
 
 go 1.27.0
 
-require tailscale.com v1.102.4
+require tailscale.com v1.102.5
 
 require (
 	filippo.io/edwards25519 v1.2.0 // indirect
