@@ -34,6 +34,8 @@ interface Pending {
   target: number;
   abort: AbortController;
   byUserId: string | null;
+  /** The conversation it was started from, which decides who else may cancel it. */
+  conversationId?: string;
   since: number;
 }
 
@@ -44,6 +46,13 @@ const pending = new Map<string, Pending>();
 /** The stage a switch is heading to, while one is waiting or running. */
 export function pendingStage(modelId: string): number | null {
   return pending.get(modelId)?.target ?? null;
+}
+
+/** Who started the switch waiting or running for this model, for the checks
+ * on who may replace or withdraw it. */
+export function pendingSwitch(modelId: string): { byUserId: string | null; conversationId?: string } | null {
+  const p = pending.get(modelId);
+  return p ? { byUserId: p.byUserId, conversationId: p.conversationId } : null;
 }
 
 /** Withdraw a switch that has not applied yet. True when there was one. */
@@ -57,6 +66,24 @@ export function withdrawStageChange(modelId: string): boolean {
 /** model id -> the last switch that applied, so a conversation whose next
  * request finds the model reloading can be told why. */
 const lastApplied = new Map<string, { at: number; toTokens: number | null; conversationId?: string }>();
+
+/** How long a person who may change the stage must wait after the last switch
+ * before asking for another (milliseconds). Every switch takes the whole
+ * backend and reloads the model for everyone, so "who may ask" is not the only
+ * limit a shared model needs: without this one signed-in user can alternate two
+ * stages and stall every other conversation for as long as they like.
+ * Admins, the model's own `whenFull` extension and a new conversation's
+ * step-down are not subject to it. Read at call time. */
+export function stageCooldownMs(): number {
+  const v = Number(process.env.CONTEXT_STAGE_COOLDOWN_MS);
+  return process.env.CONTEXT_STAGE_COOLDOWN_MS !== undefined && process.env.CONTEXT_STAGE_COOLDOWN_MS !== "" && Number.isFinite(v) && v >= 0 ? v : 30_000;
+}
+
+/** Milliseconds until a person may switch this model again; 0 when they may. */
+export function stageCooldownRemaining(modelId: string): number {
+  const s = lastApplied.get(modelId);
+  return s ? Math.max(0, s.at + stageCooldownMs() - Date.now()) : 0;
+}
 
 /** A switch made by another conversation in the last half hour, if any. */
 export function recentSwitch(modelId: string, conversationId: string): { toTokens: number | null } | null {
@@ -129,13 +156,16 @@ export async function applyStageChange(opts: {
   // A newer request replaces one still waiting; the older one ends cancelled.
   pending.get(opts.modelId)?.abort.abort();
   const abort = new AbortController();
-  const mine: Pending = { target, abort, byUserId: opts.byUserId, since: Date.now() };
+  const mine: Pending = { target, abort, byUserId: opts.byUserId, conversationId: opts.conversationId, since: Date.now() };
   pending.set(opts.modelId, mine);
   const onOuter = () => { abort.abort(); };
   opts.signal.addEventListener("abort", onOuter, { once: true });
   if (opts.signal.aborted) abort.abort();
 
   let slot: { release(): void } | null = null;
+  // The stage the row held before this switch wrote its own, set once it has:
+  // what a cancelled switch has to put back.
+  let movedFrom: number | null = null;
   try {
     slot = await acquireExclusiveSlot({
       signal: abort.signal,
@@ -159,6 +189,7 @@ export async function applyStageChange(opts: {
     const key = `${row.id}|${String(ctx)}`;
     emit({ step: "reloading", eta_ms: loadTimes.get(key) ?? null });
     await updateLocalModelRow(row.id, { activeStage: now });
+    movedFrom = before;
     console.log(
       `[llama] ${row.id}: context stage ${String(before)} → ${String(now)} (${opts.reason}${opts.byUserId ? `, by ${opts.byUserId}` : ", automatic"})`,
     );
@@ -177,9 +208,8 @@ export async function applyStageChange(opts: {
       }
       if (!loaded) {
         // Put it back as it was, so the model is usable at the stage it had.
-        await updateLocalModelRow(row.id, { activeStage: before });
-        await syncPreset();
-        await invalidateModelList();
+        await putBack(row.id, before);
+        movedFrom = null;
         const message = `llama.cpp could not load ${row.displayName} at ${formatTokens(ctx)} — it is back at ${formatTokens(stageContexts(row)[before] ?? null)}.`;
         emit({ step: "failed", message });
         return { kind: "failed", message };
@@ -197,10 +227,24 @@ export async function applyStageChange(opts: {
       }
     }
     lastApplied.set(row.id, { at: Date.now(), toTokens: ctx, conversationId: opts.conversationId });
+    movedFrom = null;
     emit({ step: "applied" });
     return { kind: "applied", stage: now };
   } catch (err) {
-    if (abort.signal.aborted) return { kind: "cancelled" };
+    if (abort.signal.aborted) {
+      // `cancelled` has to mean "nothing changed", which the client acts on.
+      // An abort after the stage was written (during the reload, or while
+      // the preset was being rewritten) leaves the row and the preset on the
+      // new stage unless it is put back — the same step a failed load takes.
+      if (movedFrom !== null) {
+        const back = movedFrom;
+        movedFrom = null;
+        await putBack(row0.id, back).catch((e: unknown) => {
+          console.warn(`[llama] ${row0.id}: could not put stage ${String(back)} back after a cancelled switch: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
+      return { kind: "cancelled" };
+    }
     const message = err instanceof Error ? err.message : String(err);
     emit({ step: "failed", message });
     return { kind: "failed", message };
@@ -211,6 +255,14 @@ export async function applyStageChange(opts: {
   }
 }
 
+/** Write a stage back and re-render the preset, so the row, the router's
+ * section and the listing agree again. */
+async function putBack(modelId: string, stage: number): Promise<void> {
+  await updateLocalModelRow(modelId, { activeStage: stage });
+  await syncPreset();
+  await invalidateModelList();
+}
+
 /** The model list caches each model's window; a stage change moves it.
  * Imported lazily: the model layer reaches the listing, which reaches this. */
 async function invalidateModelList(): Promise<void> {
@@ -219,6 +271,9 @@ async function invalidateModelList(): Promise<void> {
   invalidateBackendModels(DEFAULT_PROVIDER_ID);
 }
 
+// Three formatters say a window in words — this, `label` in context-stage-policy.ts and
+// `formatWindow` in the client's lib/contextStages.ts. They are not shared across the
+// server/client line; keep the wording of one in step with the others when it changes.
 export function formatTokens(n: number | null): string {
   if (n === null) return "its standard context";
   if (n >= 1024 * 1024 && n % (1024 * 1024) === 0) return `${String(n / (1024 * 1024))}M`;

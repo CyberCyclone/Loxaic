@@ -109,3 +109,25 @@ export function stageCardDetail(status: ContextStageStatus): string | null {
   }
   return null;
 }
+
+/**
+ * Whether a snapshot's `context_stage` may become the conversation's card.
+ *
+ * A reconnect's catch-up re-syncs the conversation's last few runs, and a
+ * finished stage run's `context_stage` stays in the log for the stream TTL.
+ * Two things must not bring a card back: an older finished run replacing a
+ * newer card, and a card the person already dismissed by sending again — for
+ * which "no card" is indistinguishable from "never had one" unless the
+ * dismissed run's id is remembered (`dropped`). Without that the card came
+ * back above a newer reply on every reconnect until the log expired.
+ */
+export function shouldInstallStageSnapshot(input: {
+  have: StageCard | null | undefined;
+  dropped: ReadonlySet<string>;
+  streamId: string;
+  runActive: boolean;
+}): boolean {
+  if (input.dropped.has(input.streamId)) return false;
+  if (input.have && input.have.streamId !== input.streamId && !input.runActive) return false;
+  return true;
+}

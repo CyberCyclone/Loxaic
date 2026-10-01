@@ -1296,6 +1296,37 @@ replies.
   can move it from a conversation (`POST /v1/models/context-stage`). A step down that would
   shrink the window under another conversation active in the last two hours is refused when asked
   for and *limited* when automatic (`llama/context-stage-policy.ts`).
+- **`cancelled` has to mean "nothing changed", and a switch that is stopped after it wrote the stage
+  puts it back.** The client acts on it (Cancel switch reads as "the stage is as it was"), and the
+  row, the preset and the listing all follow `activeStage`. An abort during the reload, or while the
+  preset is rewritten, used to return `cancelled` with the new stage still written — the model then
+  loaded at a context nobody had agreed to, and eviction and `whenFull` planned with it. `putBack`
+  is the one step a failed load and a cancelled one share.
+- **A switch takes the whole backend, so *how often* is limited as well as *who*.** A non-admin may
+  not ask for another switch within `CONTEXT_STAGE_COOLDOWN_MS` (30 s) of the last one that applied,
+  for a stage the model is not already at: one signed-in user alternating two stages would otherwise
+  stall every other conversation for as long as they liked. Admins, a model's own `whenFull` and a
+  new conversation's step-down are not subject to it (`checkStageRequest`'s `auto` / `isAdmin`);
+  the e2e server sets it to 0 because its specs switch back to back on purpose, and the cooldown has
+  its own route tests. **A newer request replaces a switch still waiting — but only the same
+  person's.** Someone else is refused (`switch_pending`), and `DELETE` (Cancel switch) is for the
+  switch's starter, an admin, or anyone who can edit the conversation it was started from
+  (`pendingSwitch`); a switch made by a model's own extension belongs to the conversation that filled.
+- **Anything that holds the queue and then leaves must pump it.** An exclusive waiter queues while
+  `running < max`, so its cancelling can make the run behind it admissible with no release to
+  trigger `pump()`; `onAbort` pumps for that reason.
+- **A stage run claims its conversation before it awaits** (`registerRun` ahead of
+  `openProducer`) and re-raises nothing it cannot answer: a throw under it ends the card `failed`
+  with a reason, never as a silent `cancelled` plus an unhandled rejection. The compaction a failed
+  extension falls back to honours the 8-message floor (`canCompact`) that the extension itself
+  ignores — otherwise a three-message thread over the threshold would extend, fail and compact on
+  every turn. `windowFull` also ignores the user's own auto-compact preference, deliberately: the
+  admin chose `extend` for the model and, unlike a compaction, it discards nothing; the preference
+  still gates that fallback.
+- **Compact-then-switch waits for the conversation to be free, not for something to take a while**
+  (`waitForRunEnd` in the route): the compaction's end is announced from inside its run, before its
+  `finally` releases the conversation, so starting the stage run at once is refused as "already in
+  progress". `context-stage.test.ts` releases the conversation late to pin it.
 - **A stage run has no message rows.** Its steps (`context.stage`: waiting → reloading →
   rereading → applied/failed) are folded into the snapshot as `context_stage` and rendered from
   run state, like a check-in decision: a row would enter the prompt and move the history anchor.
@@ -1305,7 +1336,11 @@ replies.
   recurrent state is per slot, and the compute buffer grows ~5 KiB a token with flash attention
   (~32 KiB without). All measured against b11149's allocation log on real files, and pinned in
   `shape.test.ts`; the old flat estimate put Qwen3.5-9B's 64K cache at 4× what llama.cpp
-  allocates. Rows downloaded before the shape was read are backfilled at boot. The beta box's
+  allocates. **Every size in that header is positive or the file is treated as lacking the fact**
+  (`pos()` in `shape.ts`): a finite `-4096` is still a number, and it made the KV estimate negative —
+  an oversized stage labelled "will fit", nothing evicted for a load that then fails. Rows
+  downloaded before the shape was read are backfilled at boot, and a header that cannot be read
+  stores `shape: null` so it is not read again on every boot. The beta box's
   Qwen3.8-27B needs ~64 GiB of f16 KV at 1M, so a 1M stage there has to quantize the cache.
 - **`usage_records` has its first index** (`model, created_at`, migration 0033): "who else is using
   this model" is asked on every new conversation, and was otherwise a scan of the fastest-growing
@@ -1346,6 +1381,22 @@ replies.
   sends again — unless it came from that very run, which is how a new conversation's card arrives — and
   goes when its run ends before it applied (Cancel switch). The typing indicator is hidden while a
   switch is active: it would claim the model is writing a reply.
+- **A dismissed card is remembered by its run's id** (`droppedStageStreams`, `shouldInstallStageSnapshot`).
+  A reconnect's catch-up re-syncs the conversation's last three runs and a finished stage run's
+  `context_stage` stays in the log for the stream TTL, so "no card" is indistinguishable from "never
+  had one" unless the id of a card that sending again (or a stopped run) cleared is kept. It lasts
+  for the page's life: a full reload shows the card again until the TTL, which reads as "we were not
+  told", as for every stream-log-only fact. (Stripping it server-side, as for a parked check-in,
+  would hide the finished "extended to 64K" the person has not yet moved past.)
+- **Context settings ticks the stage the chat will be at, not where the model is**
+  (`chatStage`): with no conversation open the server steps a new chat's first run to standard, so
+  ticking the loaded stage read "this chat will be 1M" for a chat that starts at standard, and
+  tapping the ticked row then forced a reload the person thought was already in effect. The rows say
+  "Loaded now" and "New chats start here" until a conversation exists.
+- **An answer that arrives after the person moved on opens nothing**
+  (`stepDownAnswerStillApplies`): the step-down check asks the server and the modal's Switch acts on
+  the hook's *current* conversation, so an answer for thread A landing on thread B sent B with A's
+  target. It also is not marked as shown, so coming back asks again.
 - **A stage run starts a stream nobody on this device sent**, so a device learns of it the way it learns
   of an automatic compaction: the socket watches every conversation it opens (`forceSync` snapshot,
   then live events). The composer shows Stop for it, and Stop withdraws a switch still waiting.

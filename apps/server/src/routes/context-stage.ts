@@ -3,11 +3,12 @@ import { authenticate } from "../auth/middleware";
 import { invalidateBackendModels } from "../inference/models.ts";
 import { getLocalModelRow, isServable, type LocalModelRow } from "../llama/catalog.ts";
 import { StageRequestError, checkStageRequest, conversationTokens, stageInfo } from "../llama/context-stage-policy.ts";
-import { applyStageChange, formatTokens, pendingStage, stageWindows, withdrawStageChange } from "../llama/context-stage-switch.ts";
+import { applyStageChange, formatTokens, pendingStage, pendingSwitch, stageWindows, withdrawStageChange } from "../llama/context-stage-switch.ts";
 import { rowStages } from "../llama/context-stages.ts";
 import { AUTO_COMPACT_THRESHOLD } from "../streams/runs/auto-compact.ts";
 import { NotFoundError, assertConversationAccess, isAdmin } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
+import { waitForRunEnd } from "../streams/registry.ts";
 import { startStageRun } from "../streams/runs/stageRun.ts";
 
 /**
@@ -79,6 +80,7 @@ export function contextStageRoutes(app: FastifyInstance) {
         isAdmin: await isAdmin(userId),
         conversationId,
         compactFirst,
+        userId,
       });
       const surface = surfaceOf(grant?.kind);
 
@@ -92,6 +94,13 @@ export function contextStageRoutes(app: FastifyInstance) {
           off();
           if (info.status !== "complete") return;
           void (async () => {
+            // The stream's end is announced from inside the compaction run,
+            // *before* its `finally` lets go of the conversation. Starting the
+            // stage run now would be refused as "already in progress", so wait
+            // for the conversation to be free rather than for something else
+            // to take long enough. (This once worked only because the read
+            // below happened to yield for a few milliseconds.)
+            await waitForRunEnd(conversationId, 30_000);
             const tokens = await conversationTokens(conversationId);
             const w = stageWindows(row)[target];
             const fits = tokens === null || w === null || tokens < w * (AUTO_COMPACT_THRESHOLD || 0.85);
@@ -140,6 +149,19 @@ export function contextStageRoutes(app: FastifyInstance) {
     if (!row || !config) return reply.code(404).send({ error: "This model has no context stages" });
     if (config.whoMayChange === "admins" && !(await isAdmin(userId))) {
       return reply.code(403).send({ error: "An admin controls this model's context.", code: "not_allowed" });
+    }
+    // A switch is its starter's to cancel (and an admin's). One an automatic
+    // extension started belongs to the conversation that filled up, so whoever
+    // can edit that conversation may cancel it. Anyone else could otherwise
+    // withdraw a switch they cannot see, again and again.
+    const waiting = pendingSwitch(row.id);
+    if (waiting && waiting.byUserId !== userId && !(await isAdmin(userId))) {
+      const mayCancel = waiting.conversationId
+        ? await assertConversationAccess(userId, waiting.conversationId, "editor").then(() => true, () => false)
+        : false;
+      if (!mayCancel) {
+        return reply.code(403).send({ error: "That switch was started by someone else.", code: "not_allowed" });
+      }
     }
     return { withdrawn: withdrawStageChange(row.id) };
   });

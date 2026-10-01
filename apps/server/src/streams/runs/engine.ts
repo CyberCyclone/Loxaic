@@ -1422,7 +1422,13 @@ export async function runToolLoop(ctx: {
   if (wasWindowFull()) {
     try {
       const { autoExtend } = await import("./stageRun.ts");
-      if (await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface })) autoCompact = false;
+      // `canCompact` is what compaction itself would have decided, floor
+      // included — read before it is cleared below. Extending ignores the
+      // floor; the compaction a failed extension falls back to does not.
+      // The user's own auto-compact preference does not stop an extension:
+      // the admin chose `extend` for this model, and unlike a compaction it
+      // discards nothing. It does still gate that fallback.
+      if (await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface, canCompact: autoCompact })) autoCompact = false;
     } catch (err) {
       console.warn(`automatic context extension skipped for ${convId}: ${(err as Error).message}`);
     }

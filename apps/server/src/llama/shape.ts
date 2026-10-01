@@ -78,28 +78,50 @@ function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+/** A size or a count that has to be above zero. These keys come out of a file
+ * from a stranger's repository, and `-4096` is a finite number: left through,
+ * a negative `key_length` makes the KV estimate negative, a stage that cannot
+ * possibly fit is labelled "will fit", and nothing is evicted for a load that
+ * then fails. A header that fails here is treated as lacking the fact, which
+ * returns the file to the rough estimate and says so. */
+function pos(v: unknown): number | null {
+  const n = num(v);
+  return n !== null && n > 0 ? n : null;
+}
+
+/** As `pos`, for a count that may legitimately be zero (a layer with no KV
+ * heads, a model with no extra prediction layers). */
+function nonneg(v: unknown): number | null {
+  const n = num(v);
+  return n !== null && n >= 0 ? n : null;
+}
+
+function isCounts(v: unknown): v is number[] {
+  return isNumbers(v) && v.every((x) => Number.isFinite(x) && x >= 0);
+}
+
 /**
  * Build the shape from a GGUF header's `<arch>.*` keys (arch prefix removed).
  * Null when the file lacks the attention facts the estimate needs — the
  * caller then falls back to the rough estimate and says so.
  */
 export function shapeFromKeys(k: Scalars): ModelShape | null {
-  const blocks = num(k.block_count);
+  const blocks = pos(k.block_count);
   const headKvRaw = k["attention.head_count_kv"];
-  const nHeadKv = isNumbers(headKvRaw) ? headKvRaw : num(headKvRaw);
-  const nHead = num(k["attention.head_count"]);
-  const embd = num(k.embedding_length);
-  const keyLength = num(k["attention.key_length"]) ?? (embd && nHead ? embd / nHead : null);
-  const valueLength = num(k["attention.value_length"]) ?? keyLength;
+  const nHeadKv = isCounts(headKvRaw) ? headKvRaw : nonneg(headKvRaw);
+  const nHead = pos(k["attention.head_count"]);
+  const embd = pos(k.embedding_length);
+  const keyLength = pos(k["attention.key_length"]) ?? (embd && nHead ? embd / nHead : null);
+  const valueLength = pos(k["attention.value_length"]) ?? keyLength;
   if (blocks === null || nHeadKv === null || keyLength === null || valueLength === null) return null;
 
-  const nextn = num(k.nextn_predict_layers) ?? 0;
+  const nextn = nonneg(k.nextn_predict_layers) ?? 0;
   const nLayers = Math.max(1, blocks - nextn);
-  const slidingWindow = num(k["attention.sliding_window"]);
+  const slidingWindow = pos(k["attention.sliding_window"]);
 
   let swaLayers: boolean[] | null = null;
   const pattern = k["attention.sliding_window_pattern"];
-  const every = num(pattern);
+  const every = pos(pattern);
   if (isBooleans(pattern)) {
     swaLayers = pattern;
   } else if (every && slidingWindow) {
@@ -109,11 +131,11 @@ export function shapeFromKeys(k: Scalars): ModelShape | null {
   }
   if (!slidingWindow) swaLayers = null;
 
-  const interval = num(k.full_attention_interval);
-  const stateSize = num(k["ssm.state_size"]);
-  const innerSize = num(k["ssm.inner_size"]);
-  const conv = num(k["ssm.conv_kernel"]);
-  const groups = num(k["ssm.group_count"]) ?? 1;
+  const interval = pos(k.full_attention_interval);
+  const stateSize = pos(k["ssm.state_size"]);
+  const innerSize = pos(k["ssm.inner_size"]);
+  const conv = pos(k["ssm.conv_kernel"]);
+  const groups = pos(k["ssm.group_count"]) ?? 1;
   let recurrentBytesPerSeq = 0;
   if (stateSize && innerSize) {
     const recurrentLayers = interval ? nLayers - Math.floor(nLayers / interval) : nLayers;
@@ -132,11 +154,11 @@ export function shapeFromKeys(k: Scalars): ModelShape | null {
     nHeadKv,
     keyLength,
     valueLength,
-    keyLengthSwa: num(k["attention.key_length_swa"]),
-    valueLengthSwa: num(k["attention.value_length_swa"]),
+    keyLengthSwa: pos(k["attention.key_length_swa"]),
+    valueLengthSwa: pos(k["attention.value_length_swa"]),
     slidingWindow,
     swaLayers,
-    sharedKvLayers: num(k["attention.shared_kv_layers"]) ?? 0,
+    sharedKvLayers: nonneg(k["attention.shared_kv_layers"]) ?? 0,
     fullAttentionInterval: interval,
     recurrentBytesPerSeq,
     ropeScaling: scalingType || factor || original ? { type: scalingType, factor, originalContext: original } : null,

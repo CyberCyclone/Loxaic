@@ -38,7 +38,7 @@ import { useToastHelper } from './useToastHelper';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
-import { foldStageCard, isStageActive, type StageCard } from '@/lib/stageCard';
+import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
@@ -241,6 +241,22 @@ export function useChatSession(
   // the server writes no message for it (see lib/stageCard.ts), and it is kept
   // after the switch ends so "extended to 512K" stays readable.
   const [stageCardByConv, setStageCardByConv] = useState<Partial<Record<string, StageCard>>>({});
+  // Stage runs whose card the person has dismissed (sent again, or the run was
+  // stopped before it said anything): a reconnect's catch-up must not bring them back.
+  const droppedStageStreams = useRef(new Set<string>());
+  /** The person is sending again: a finished switch's card has said its piece.
+   * Done here, at the send, not on the run's own `message.start`: that event
+   * is written before this client's subscription exists, so it reaches the
+   * client inside the catch-up snapshot and never as a live event — the card
+   * stayed above the newest reply. */
+  const dismissStageCard = useCallback((convId: string) => {
+    setStageCardByConv((prev) => {
+      const card = prev[convId];
+      if (!card || isStageActive(card)) return prev;
+      droppedStageStreams.current.add(card.streamId);
+      return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+    });
+  }, []);
   /** Which conversation the user asked to stop — see useAgentSession for why
    * this is keyed by id and why it exists at all (#113). */
   const [stoppingConvId, setStoppingConvId] = useState<string | null>(null);
@@ -671,8 +687,9 @@ export function useChatSession(
         if (stageSnapshot) {
           setStageCardByConv((prev) => {
             const have = prev[convId];
-            // An older finished run's catch-up must not replace a newer card.
-            if (have && have.streamId !== event.stream_id && event.status !== 'active') return prev;
+            // An older finished run's catch-up must not replace a newer card,
+            // nor bring back one that was dismissed.
+            if (!shouldInstallStageSnapshot({ have, dropped: droppedStageStreams.current, streamId: event.stream_id, runActive: event.status === 'active' })) return prev;
             return { ...prev, [convId]: foldStageCard(have ?? null, event.stream_id, stageSnapshot, Date.now()) };
           });
         }
@@ -775,11 +792,12 @@ export function useChatSession(
           // The person sent again: the last switch's card has said its piece.
           // Not when it came from this very run — a new conversation's card
           // arrives in the run that carries its first message.
-          setStageCardByConv((prev) =>
-            prev[convId] && prev[convId].streamId !== event.stream_id
-              ? Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId))
-              : prev,
-          );
+          setStageCardByConv((prev) => {
+            const have = prev[convId];
+            if (!have || have.streamId === event.stream_id) return prev;
+            droppedStageStreams.current.add(have.streamId);
+            return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+          });
         }
         if (inner.kind === 'approval.request') {
           setPendingApprovalByConv((prev) => ({
@@ -818,6 +836,7 @@ export function useChatSession(
         setStageCardByConv((prev) => {
           const card = prev[event.conversation_id];
           if (card?.streamId !== event.stream_id || !isStageActive(card)) return prev;
+          droppedStageStreams.current.add(card.streamId);
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== event.conversation_id));
         });
         clearStream(event.conversation_id);
@@ -1010,10 +1029,12 @@ export function useChatSession(
           );
           pendingUserMsgIdRef.current = null;
           showToast('Not connected — your message was not sent');
+        } else {
+          dismissStageCard(id);
         }
       }
     },
-    [setActiveId, showToast, pendingMcp, pendingStage],
+    [setActiveId, showToast, pendingMcp, pendingStage, dismissStageCard],
   );
 
   /** Take back a send the server refused before writing anything: the bubble,

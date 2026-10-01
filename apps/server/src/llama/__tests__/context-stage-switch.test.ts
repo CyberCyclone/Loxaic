@@ -12,9 +12,10 @@ import { __resetModelCachesForTest, listBackendModels } from "../../inference/mo
 import { registerRun, unregisterRun } from "../../streams/registry.ts";
 import { getLocalModelRow, invalidateLocalModelCache } from "../catalog.ts";
 import { __resetStageSwitchForTest, applyStageChange, pendingStage, withdrawStageChange } from "../context-stage-switch.ts";
+import { presetPath } from "../paths.ts";
 import { routerModelName } from "../preset.ts";
 import { __resetRoomForTest } from "../room.ts";
-import { __resetRouterForTest, __setHardwareForTest, ensureRuntime, routerModelStatuses } from "../router.ts";
+import { __resetRouterForTest, __setHardwareForTest, ensureRuntime, routerModelStatuses, syncPreset } from "../router.ts";
 
 /**
  * A context-stage switch end to end against the fake router: it waits for
@@ -47,6 +48,10 @@ beforeAll(async () => {
   vi.stubEnv("LLAMA_DIR", dir);
   vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", FAKE);
   vi.stubEnv("LOXAIC_FAKE_ROUTER_LOG", loadLog);
+  // Without a GPU the runtime re-detects, finds none in a container, and
+  // `routerEndpoint()` is null — the "load fails, stage reverts" case then
+  // passes by never loading. The suite pins its own hardware.
+  vi.stubEnv("LOXAIC_FAKE_HARDWARE", "gpu");
   vi.stubEnv("LOXAIC_FAKE_DEVICES", "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)");
   vi.stubEnv("MOCK_INFERENCE", "false");
   vi.stubEnv("LLAMA_MODE", "managed");
@@ -160,6 +165,61 @@ describe("a context-stage switch", () => {
     const load = loads().filter((e) => e.event === "load" && e.model === routerModelName(model)).at(-1);
     expect(load?.section?.["ctx-size"]).toBe("8192");
     expect(load?.section).not.toHaveProperty("rope-scaling");
+  });
+
+  it("puts the stage back when it is cancelled after being written, so `cancelled` means nothing changed", async () => {
+    // A load that takes a moment, so there is a window to stop it in.
+    vi.stubEnv("LOXAIC_FAKE_LOAD_MS", "3000");
+    await __resetRouterForTest();
+    await ensureRuntime();
+    expect(await activeStage()).toBe(0);
+
+    const stop = new AbortController();
+    const steps: ContextStageStatus[] = [];
+    const switching = applyStageChange({
+      modelId: model,
+      target: 1,
+      reason: "chosen",
+      auto: false,
+      byUserId: "someone",
+      signal: stop.signal,
+      emit: (s) => steps.push(s),
+    });
+    // "reloading" is emitted just before the row is written; give the write
+    // and the first poll of the load a moment, then cancel mid-load.
+    for (let i = 0; i < 200 && !steps.some((s) => s.step === "reloading"); i++) await new Promise((r) => setTimeout(r, 10));
+    await new Promise((r) => setTimeout(r, 400));
+    expect(await activeStage()).toBe(1); // written, and the load is in flight
+    stop.abort();
+
+    expect(await switching).toEqual({ kind: "cancelled" });
+    // The row is back where it was, and so is the preset the router reads.
+    expect(await activeStage()).toBe(0);
+    const info = (await listBackendModels()).find((m) => m.id === model);
+    expect(info?.context_stage).toMatchObject({ active: 0, pending: null });
+    vi.stubEnv("LOXAIC_FAKE_LOAD_MS", "");
+  });
+
+  it("keeps writing the stage's YaRN keys when the preset is rewritten for something unrelated", async () => {
+    // What an admin changing `threads`, or the runtime starting, does: rewrite
+    // the preset with no stage run involved. The section must still carry the
+    // stage, or the router would load the model at standard behind everyone.
+    expect(await applyStageChange({ modelId: model, target: 1, reason: "chosen", auto: false, byUserId: "x", signal: live() })).toEqual({ kind: "applied", stage: 1 });
+    await db.update(localModels).set({ loadSettings: { ctxSize: 8192, threads: 4 } }).where(eq(localModels.id, model));
+    invalidateLocalModelCache();
+    await syncPreset();
+    const text = readFileSync(presetPath(), "utf8");
+    const section = text.slice(text.indexOf(`[${routerModelName(model)}]`)).split(/\n\[/)[0];
+    expect(section).toMatch(/threads = 4/);
+    expect(section).toMatch(/ctx-size = 16384/);
+    expect(section).toMatch(/rope-scaling = yarn/);
+    expect(section).toMatch(/rope-scale = 2/);
+    expect(section).toMatch(/yarn-orig-ctx = 8192/);
+
+    // Put it back for the cases below.
+    await db.update(localModels).set({ loadSettings: { ctxSize: 8192 } }).where(eq(localModels.id, model));
+    invalidateLocalModelCache();
+    expect(await applyStageChange({ modelId: model, target: 0, reason: "chosen", auto: false, byUserId: "x", signal: live() })).toEqual({ kind: "applied", stage: 0 });
   });
 
   it("puts the model back at the stage it had when the load fails", async () => {

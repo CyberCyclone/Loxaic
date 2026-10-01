@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ContextStageStatus } from '@loxaic/api-client';
-import { foldStageCard, isStageActive, reloadRemaining, stageCardDetail, stageCardLabel } from './stageCard';
+import { foldStageCard, isStageActive, reloadRemaining, shouldInstallStageSnapshot, stageCardDetail, stageCardLabel } from './stageCard';
 
 const K = 1024;
 const status = (over: Partial<ContextStageStatus> = {}): ContextStageStatus => ({
@@ -89,5 +89,27 @@ describe('folding the steps of one switch', () => {
     expect(isStageActive(foldStageCard(null, 's', status({ step: 'rereading' }), 0))).toBe(true);
     expect(isStageActive(foldStageCard(null, 's', status({ step: 'applied' }), 0))).toBe(false);
     expect(isStageActive(foldStageCard(null, 's', status({ step: 'failed' }), 0))).toBe(false);
+  });
+});
+
+describe('a reconnect replaying finished stage runs', () => {
+  const card = (streamId: string) => foldStageCard(null, streamId, status({ step: 'applied' }), 0);
+
+  it('installs the card for a run it has no card for', () => {
+    expect(shouldInstallStageSnapshot({ have: undefined, dropped: new Set(), streamId: 's1', runActive: false })).toBe(true);
+    expect(shouldInstallStageSnapshot({ have: null, dropped: new Set(), streamId: 's1', runActive: true })).toBe(true);
+  });
+
+  it('does not bring back a card the person dismissed by sending again', () => {
+    // The card was cleared, so `have` is empty — only the remembered id tells it from a card never seen.
+    expect(shouldInstallStageSnapshot({ have: undefined, dropped: new Set(['s1']), streamId: 's1', runActive: false })).toBe(false);
+    // Another run's card is still welcome.
+    expect(shouldInstallStageSnapshot({ have: undefined, dropped: new Set(['s1']), streamId: 's2', runActive: false })).toBe(true);
+  });
+
+  it('does not let an older finished run replace a newer card, but a live one may', () => {
+    expect(shouldInstallStageSnapshot({ have: card('new'), dropped: new Set(), streamId: 'old', runActive: false })).toBe(false);
+    expect(shouldInstallStageSnapshot({ have: card('new'), dropped: new Set(), streamId: 'old', runActive: true })).toBe(true);
+    expect(shouldInstallStageSnapshot({ have: card('same'), dropped: new Set(), streamId: 'same', runActive: false })).toBe(true);
   });
 });

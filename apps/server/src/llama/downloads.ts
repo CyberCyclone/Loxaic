@@ -462,14 +462,21 @@ async function describeFile(row: LocalModelRow): Promise<LocalModelMeta | null> 
  * Without it their fit — and every YaRN stage's — is the rough per-layer
  * figure, which is several times too high for a hybrid model. The files are on
  * this disk and the read stops at the tokenizer, so this is cheap; it runs once
- * per row (a file that describes nothing stores `shape: null`, not absence).
+ * per row (a file that describes nothing, or cannot be read, stores
+ * `shape: null`, not absence).
  */
 export async function backfillShapes(rows: LocalModelRow[]): Promise<number> {
   let filled = 0;
   for (const row of rows) {
     if (row.status !== "ready" || rowMeta(row).shape !== undefined) continue;
     const facts = await describeFile(row);
-    if (!facts) continue;
+    if (!facts) {
+      // A header that cannot be read is an answer too. Storing nothing, as this
+      // once did, re-parsed an unreadable (or hostile) file on every boot for
+      // ever, on the event loop, before the API was serving.
+      await updateLocalModelRow(row.id, { meta: { ...rowMeta(row), shape: null } }).catch(() => undefined);
+      continue;
+    }
     await updateLocalModelRow(row.id, { meta: { ...rowMeta(row), ...facts } }).catch(() => undefined);
     filled++;
   }

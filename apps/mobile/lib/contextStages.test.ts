@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ModelContextStage } from '@loxaic/types';
 import {
   approachingKey,
+  chatStage,
   formatAgo,
   formatExtraMemory,
   formatRereadTime,
@@ -14,6 +15,7 @@ import {
   shouldPromptStepDown,
   stageFill,
   stageLabel,
+  stepDownAnswerStillApplies,
   stepDownKey,
   stepDownTarget,
 } from './contextStages';
@@ -168,5 +170,36 @@ describe('the cost lines', () => {
     expect(formatExtraMemory(0)).toBeNull();
     expect(formatExtraMemory(6.4 * 1024 ** 3)).toBe('about 6.4 GB more memory');
     expect(formatExtraMemory(48 * 1024 ** 3)).toBe('about 48 GB more memory');
+  });
+});
+
+describe('the stage a chat is at', () => {
+  it('is where the model is once a conversation exists', () => {
+    expect(chatStage({ chosen: undefined, hasConversation: true, active: 2 })).toBe(2);
+  });
+
+  it('is standard for a new chat, whatever stage the last conversation left the model at', () => {
+    expect(chatStage({ chosen: undefined, hasConversation: false, active: 3 })).toBe(0);
+  });
+
+  it('is the stage chosen for the chat, when one was', () => {
+    expect(chatStage({ chosen: 1, hasConversation: false, active: 3 })).toBe(1);
+    expect(chatStage({ chosen: 0, hasConversation: false, active: 3 })).toBe(0);
+  });
+});
+
+describe('a step-down answer arriving late', () => {
+  const askedFor = { conversationId: 'a', model: 'm' };
+
+  it('opens its modal only on the conversation it was asked for', () => {
+    expect(stepDownAnswerStillApplies({ askedFor, now: { conversationId: 'a', model: 'm', dialogOpen: false } })).toBe(true);
+    // The person moved to another thread while the request was out.
+    expect(stepDownAnswerStillApplies({ askedFor, now: { conversationId: 'b', model: 'm', dialogOpen: false } })).toBe(false);
+    expect(stepDownAnswerStillApplies({ askedFor, now: { conversationId: null, model: 'm', dialogOpen: false } })).toBe(false);
+  });
+
+  it('does not open over another dialog, or after the model was changed', () => {
+    expect(stepDownAnswerStillApplies({ askedFor, now: { conversationId: 'a', model: 'm', dialogOpen: true } })).toBe(false);
+    expect(stepDownAnswerStillApplies({ askedFor, now: { conversationId: 'a', model: 'other', dialogOpen: false } })).toBe(false);
   });
 });

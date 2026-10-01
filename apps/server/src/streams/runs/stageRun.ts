@@ -96,9 +96,20 @@ export async function startStageRun(input: {
   if (getRunByConversation(convId)) throw new Error("A response is already in progress for this conversation");
   const broker = getStreamBroker();
   const streamId = uuid();
-  const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: input.surface });
   const abort = new AbortController();
+  // Claim the conversation before the await below, not after it. The check
+  // above and the claim have to be one synchronous step: with `openProducer`
+  // between them, a send, a stage run and an automatic extension that all
+  // arrive together each pass the check, and `registerRun` overwrites the
+  // conversation's entry silently — Stop then reaches only one of them.
   registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
+  let producer: StreamProducer;
+  try {
+    producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: input.surface });
+  } catch (err) {
+    unregisterRun(streamId);
+    throw err;
+  }
   announceNewRun(convId, streamId);
 
   void (async () => {
@@ -133,6 +144,30 @@ export async function startStageRun(input: {
         emit: emitter(producer),
         warm: warmer(convId, model),
       });
+    } catch (err) {
+      // applyStageChange answers its own failures, so this is what is left: a
+      // database read or an emit that threw. Without a catch the finally below
+      // ended the stream `cancelled` — the card reading "stopped" for a switch
+      // that broke — and the rejection escaped unhandled.
+      const message = `The context switch stopped unexpectedly: ${err instanceof Error ? err.message : String(err)}`;
+      console.warn(`stage run ${streamId} failed: ${message}`);
+      outcome = { kind: "failed", message };
+      try {
+        emitter(producer)({
+          step: "failed",
+          reason: input.reason,
+          auto: input.auto,
+          model,
+          from_stage: 0,
+          to_stage: input.target,
+          from_tokens: null,
+          to_tokens: null,
+          yarn_factor: null,
+          message,
+        });
+      } catch {
+        // The stream's own end carries the error below.
+      }
     } finally {
       unregisterRun(streamId);
       const status = outcome.kind === "cancelled" ? "cancelled" : outcome.kind === "failed" ? "error" : "complete";
@@ -151,7 +186,19 @@ export async function startStageRun(input: {
  * largest stage, or the next stage will not fit. A stage run that then fails
  * compacts instead, so the conversation is never left full with nothing done.
  */
-export async function autoExtend(input: { userId: string; conversationId: string; model: string; surface: "chat" | "agent" }): Promise<boolean> {
+export async function autoExtend(input: {
+  userId: string;
+  conversationId: string;
+  model: string;
+  surface: "chat" | "agent";
+  /** Whether automatic compaction would have fired for this turn, the
+   * `AUTO_COMPACT_MIN_MESSAGES` floor included. Extending ignores the floor
+   * (one big paste can fill a short thread), but the compaction a failed
+   * extension falls back to must not: a three-message thread whose summary
+   * is still over the threshold would otherwise extend, fail and compact on
+   * every turn, paying a model call and a full re-read each time. */
+  canCompact: boolean;
+}): Promise<boolean> {
   const row = await getLocalModelRow(input.model);
   if (!row) return false;
   const config = rowStages(row);
@@ -165,16 +212,19 @@ export async function autoExtend(input: { userId: string; conversationId: string
     throw err;
   }
   await startStageRun({
-    ...input,
+    userId: input.userId,
+    conversationId: input.conversationId,
+    model: input.model,
+    surface: input.surface,
     target: next,
     reason: "full",
     auto: true,
     onDone: (outcome) => {
-      if (outcome.kind !== "failed") return;
+      if (outcome.kind !== "failed" || !input.canCompact) return;
       void (async () => {
         if (!(await userAllowsAutoCompact(input.userId))) return;
         const { startCompactRun } = await import("./compactRun.ts");
-        await startCompactRun({ ...input, auto: true });
+        await startCompactRun({ userId: input.userId, conversationId: input.conversationId, model: input.model, surface: input.surface, auto: true });
       })().catch((e: unknown) => { console.warn(`compaction after a failed extension skipped: ${(e as Error).message}`); });
     },
   });
@@ -214,6 +264,7 @@ export async function stageForNewConversation(input: {
       isAdmin: await isAdmin(input.userId),
       conversationId: input.conversationId,
       auto,
+      userId: input.userId,
     }));
   } catch (err) {
     if (!(err instanceof StageRequestError)) throw err;

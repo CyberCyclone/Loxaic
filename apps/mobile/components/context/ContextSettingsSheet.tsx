@@ -15,7 +15,7 @@ import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import type { ContextStagesState } from '@/hooks/useContextStages';
 import { useServerReachable } from '@/lib/connection';
 import { describeFit } from '@/lib/localModels';
-import { formatExtraMemory, othersWarning, stageLabel } from '@/lib/contextStages';
+import { chatStage, formatExtraMemory, othersWarning, stageLabel } from '@/lib/contextStages';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 /**
@@ -34,7 +34,8 @@ export function ContextSettingsSheet({ stages }: { stages: ContextStagesState })
   const warning = info ? othersWarning(info.others, Date.now()) : null;
   const mayChange = info?.may_change ?? stages.mayChange;
   const chosen = stages.pendingStage;
-  const current = chosen ?? stage?.active ?? 0;
+  const hasConversation = Boolean(stages.serverConvId);
+  const current = chatStage({ chosen, hasConversation, active: stage?.active ?? 0 });
 
   return (
     <Modal isOpen={isOpen} onClose={stages.close} size="md">
@@ -85,7 +86,14 @@ export function ContextSettingsSheet({ stages }: { stages: ContextStagesState })
                     <VStack className="min-w-0 flex-1 shrink">
                       <Text size="sm" className="font-medium text-foreground">{stageLabel(s.context_tokens, s.yarn_factor, s.index === 0)}</Text>
                       <HStack space="xs" className="flex-wrap items-center">
-                        {s.index === info.active && <Text size="2xs" className="text-muted-foreground">Current</Text>}
+                        {s.index === info.active && (
+                          <Text size="2xs" className="text-muted-foreground">{hasConversation ? 'Current' : 'Loaded now'}</Text>
+                        )}
+                        {!hasConversation && selected && (
+                          <Text testID="context.settings.startsHere" size="2xs" className="text-muted-foreground">
+                            {chosen === undefined ? 'New chats start here' : 'This chat will start here'}
+                          </Text>
+                        )}
                         {s.index === info.recommended && info.conversation_tokens !== null && (
                           <Text size="2xs" className="text-muted-foreground">Recommended for this chat</Text>
                         )}

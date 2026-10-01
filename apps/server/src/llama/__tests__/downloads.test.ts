@@ -227,6 +227,25 @@ describe("downloads", () => {
     expect(await backfillShapes([after])).toBe(0);
   });
 
+  it("does not read a file it could not read again on the next boot", async () => {
+    const id = `${repo}:Q4_K_M`;
+    const read = async () => {
+      invalidateLocalModelCache();
+      const r = await getLocalModelRow(id);
+      if (!r) throw new Error("row missing");
+      return r;
+    };
+    const { shape: _drop, ...older } = (await read()).meta as Record<string, unknown>;
+    await db.update(localModels).set({ meta: older }).where(eq(localModels.id, id));
+    // The file is gone from under the row: the read fails.
+    const broken = { ...(await read()), files: [{ path: "no-such-file.gguf", size: 1, sha256: null }] };
+    expect(await backfillShapes([broken])).toBe(0);
+    const after = await read();
+    expect(after.meta).toMatchObject({ shape: null });
+    // Recorded, so the retry is not made — a row with `shape` present is skipped.
+    expect(Object.keys(after.meta as object)).toContain("shape");
+  });
+
   it("refuses the same model twice", async () => {
     await expect(queueDownload({ repo, quant: "Q4_K_M" }, userId)).rejects.toMatchObject({ status: 409 });
   });

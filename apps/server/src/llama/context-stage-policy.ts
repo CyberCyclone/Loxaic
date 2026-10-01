@@ -5,7 +5,7 @@ import { prefillRate } from "../inference/prefill-rate.ts";
 import { runsUsingModel } from "../streams/registry.ts";
 import { AUTO_COMPACT_THRESHOLD } from "../streams/runs/auto-compact.ts";
 import { rowMeta, type LocalModelRow } from "./catalog.ts";
-import { pendingStage, stageWindows } from "./context-stage-switch.ts";
+import { pendingStage, pendingSwitch, stageCooldownRemaining, stageWindows } from "./context-stage-switch.ts";
 import { activeStageIndex, rowStages, settingsForStage, yarnFactorOf, type WhenFull, type WhoMayChange } from "./context-stages.ts";
 import { fitFor } from "./downloads.ts";
 import type { FitEstimate } from "./fit.ts";
@@ -168,7 +168,14 @@ export async function stageInfo(input: { row: LocalModelRow; isAdmin: boolean; c
   };
 }
 
-export type StageRefusal = "not_staged" | "not_allowed" | "others_need_stage" | "no_room" | "conversation_too_large";
+export type StageRefusal =
+  | "not_staged"
+  | "not_allowed"
+  | "others_need_stage"
+  | "no_room"
+  | "conversation_too_large"
+  | "too_soon"
+  | "switch_pending";
 
 export class StageRequestError extends Error {
   constructor(
@@ -195,6 +202,8 @@ export async function checkStageRequest(input: {
   conversationId?: string | null;
   compactFirst?: boolean;
   auto?: boolean;
+  /** Who is asking, so a person cannot replace another person's waiting switch. */
+  userId?: string;
 }): Promise<{ target: number; limitedBy: number | null }> {
   const { row } = input;
   const config = rowStages(row);
@@ -207,6 +216,20 @@ export async function checkStageRequest(input: {
     throw new StageRequestError("not_allowed", "An admin controls this model's context.", 403);
   }
   const active = activeStageIndex(row);
+  if (!input.auto && !input.isAdmin && input.target !== active) {
+    // A switch takes the whole backend, so how often one person may ask is
+    // limited as well as whether they may (see `stageCooldownMs`).
+    const wait = stageCooldownRemaining(row.id);
+    if (wait > 0) {
+      throw new StageRequestError("too_soon", `The context was switched a moment ago. You can change it again in ${String(Math.ceil(wait / 1000))} s.`, 429);
+    }
+    // A newer request replaces one still waiting, which is right for the same
+    // person changing their mind and wrong for someone else cancelling it.
+    const waiting = pendingSwitch(row.id);
+    if (waiting && waiting.byUserId !== (input.userId ?? null)) {
+      throw new StageRequestError("switch_pending", "Someone else's switch is already waiting or under way for this model. Try again once it has applied.");
+    }
+  }
   let target = input.target;
   let limitedBy: number | null = null;
   if (target < active) {
@@ -245,6 +268,7 @@ export async function checkStageRequest(input: {
   return { target, limitedBy };
 }
 
+// See `formatTokens` in context-stage-switch.ts: three formatters, one wording.
 function label(n: number | null | undefined): string {
   if (n == null) return "its standard context";
   if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(n % (1024 * 1024) === 0 ? 0 : 1)}M`;

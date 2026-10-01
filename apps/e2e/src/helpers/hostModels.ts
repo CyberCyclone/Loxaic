@@ -125,6 +125,14 @@ export async function putModelAtStage(creds: Pick<Credentials, 'email' | 'passwo
   const res = await userApi(creds, '/v1/models/context-stage', { method: 'POST', body: JSON.stringify({ model: id, stage }) });
   if (!res.ok) throw new Error(`[e2e] moving ${id} to stage ${String(stage)} failed (${String(res.status)}): ${await res.text()}`);
   await waitForModelStage(creds, id, stage);
+  // The stage is written before the reload: until the switch has finished it is
+  // still *pending*, and the server refuses someone else's request meanwhile
+  // (one person's waiting switch is not another's to replace).
+  await browser.waitUntil(async () => (await modelInfo(creds, id))?.context_stage?.pending == null, {
+    timeout: 60_000,
+    interval: 400,
+    timeoutMsg: `[e2e] the switch of ${id} to stage ${String(stage)} never finished`,
+  });
 }
 
 /** A reply another person is in the middle of: sent from a connection of its

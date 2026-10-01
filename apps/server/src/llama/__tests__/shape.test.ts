@@ -128,6 +128,36 @@ describe("model shape against llama.cpp's own allocations", () => {
     expect(shape.swaLayers?.slice(0, 6)).toEqual([true, true, true, true, true, false]);
   });
 
+  it("treats a header with a zero or negative size as lacking the fact, not as a cheap model", () => {
+    // These keys come from a file in a stranger's repository. A finite negative
+    // would make the KV estimate negative, label an oversized stage "will fit"
+    // and skip eviction for a load that then fails.
+    for (const bad of [
+      { "attention.key_length": -4096 },
+      { "attention.key_length": 0 },
+      { "attention.value_length": -1 },
+      { block_count: -32 },
+      { block_count: 0 },
+      { "attention.head_count_kv": -4 },
+      { "attention.head_count_kv": [4, -4, 4, -4] },
+    ]) {
+      const shape = shapeFromKeys({ ...QWEN35_9B, ...bad });
+      // Either rejected outright (the rough estimate, which says so), or — for
+      // a fact with a fallback — never a negative cost.
+      if (shape) expect(shapeCost(shape, { ...defaults, ctx: 262144 }).kvBytes).toBeGreaterThanOrEqual(0);
+      else expect(shape).toBeNull();
+    }
+    // A negative sliding window, key length or recurrent size is ignored rather than trusted.
+    const swa = shapeOf({ ...GEMMA4_E4B, "attention.sliding_window": -512, "attention.key_length_swa": -256 });
+    expect(swa.slidingWindow).toBeNull();
+    expect(swa.keyLengthSwa).toBeNull();
+    expect(shapeCost(swa, { ...defaults, ctx: 262144 }).kvBytes).toBeGreaterThan(0);
+    const ssm = shapeOf({ ...QWEN35_9B, "ssm.state_size": -128 });
+    expect(ssm.recurrentBytesPerSeq).toBeGreaterThanOrEqual(0);
+    // A layer with no KV heads is real (a recurrent layer in a hybrid), so zero stays valid.
+    expect(shapeFromKeys({ ...QWEN35_9B, "attention.head_count_kv": [4, 0, 4, 0], block_count: 4 })).not.toBeNull();
+  });
+
   it("uses a per-layer KV head count when the file gives one", () => {
     const shape = shapeOf({ ...QWEN35_9B, full_attention_interval: undefined, "ssm.state_size": undefined, "attention.head_count_kv": [4, 0, 4, 0] , block_count: 4 });
     expect(shapeCost(shape, { ...defaults, ctx: 1024 }).kvBytes).toBe(1024 * 2 * 4 * 512 * 2);

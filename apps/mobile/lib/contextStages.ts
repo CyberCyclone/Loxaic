@@ -164,3 +164,30 @@ export function formatExtraMemory(bytes: number): string | null {
   const gb = bytes / 1024 ** 3;
   return gb >= 10 ? `about ${String(Math.round(gb))} GB more memory` : `about ${gb.toFixed(1)} GB more memory`;
 }
+
+/**
+ * The stage a chat will be at, for the Context settings sheet's tick. With a
+ * conversation open that is where the model is. With none, the server steps a
+ * new conversation's first run to standard (or to the stage chosen here), so
+ * ticking the model's *loaded* stage would read "this chat will be 1M" for a
+ * chat that starts at standard — and tapping the ticked row would then be a
+ * real choice, forcing a reload the person thought was already in effect.
+ */
+export function chatStage(input: { chosen: number | undefined; hasConversation: boolean; active: number }): number {
+  return input.chosen ?? (input.hasConversation ? input.active : 0);
+}
+
+/**
+ * Whether an answer fetched for one conversation may still open its modal.
+ * The step-down check asks the server and the answer lands later; by then the
+ * person may be on another thread, or already looking at a dialog. Opening it
+ * anyway describes one conversation's stage over another, and Switch would
+ * send the thread now on screen with the first one's target.
+ */
+export function stepDownAnswerStillApplies(input: {
+  askedFor: { conversationId: string; model: string };
+  now: { conversationId: string | null; model: string | undefined; dialogOpen: boolean };
+}): boolean {
+  const { askedFor, now } = input;
+  return !now.dialogOpen && now.conversationId === askedFor.conversationId && now.model === askedFor.model;
+}

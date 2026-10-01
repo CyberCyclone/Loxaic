@@ -16,6 +16,7 @@ import {
   nextStage,
   shouldPromptApproaching,
   shouldPromptStepDown,
+  stepDownAnswerStillApplies,
   approachingKey,
   stepDownKey,
   stepDownTarget,
@@ -187,6 +188,9 @@ export function useContextStages(a: Args) {
     if (dialog?.kind === 'approaching' && stage && nextStage(stage) === null) setDialog(null);
   }, [dialog, stage]);
   const checkedDown = useRef(new Set<string>());
+  // What is on screen *now*, for answers that arrive after the person moved on.
+  const live = useRef({ conversationId: serverConvId, model: a.model, dialogOpen: anyDialog });
+  live.current = { conversationId: serverConvId, model: a.model, dialogOpen: anyDialog };
   useEffect(() => {
     if (anyDialog || !stage || !serverConvId || !a.model || stage.active === 0 || a.readOnly || a.streaming || listBehind) return;
     if (!mayChange) return;
@@ -196,13 +200,18 @@ export function useContextStages(a: Args) {
     const model = a.model;
     void getContextStage(model, serverConvId)
       .then((fresh) => {
+        if (!stepDownAnswerStillApplies({ askedFor: { conversationId: serverConvId, model }, now: live.current })) {
+          // Not shown, so not spent: coming back to this thread asks again.
+          checkedDown.current.delete(key);
+          return;
+        }
         if (!shouldPromptStepDown({ stage, info: fresh, conversationId: serverConvId, readOnly: a.readOnly, shown: shown.current })) return;
         shown.current.add(key);
         setInfo(fresh);
         setInfoError(null);
         setDialog({ kind: 'stepdown' });
       })
-      .catch(() => undefined);
+      .catch(() => { checkedDown.current.delete(key); });
   }, [anyDialog, stage, serverConvId, a.model, a.readOnly, a.streaming, mayChange, listBehind]);
 
   // A switch other people are waiting on: keep the popup honest.
@@ -217,6 +226,20 @@ export function useContextStages(a: Args) {
     const id = setInterval(refresh, POLL_PENDING_MS);
     return () => { clearInterval(id); };
   }, [switching, refresh]);
+
+  // A switch that has just finished: read the list once more. Polling stops the
+  // moment the card ends, and a switch started by a send (a new chat's chosen
+  // stage, or an automatic extension) never went through `request`'s refresh —
+  // so the list could still name the stage the model had before, and the next
+  // choice in Context settings was judged against it ("already there": the
+  // sheet closed and nothing happened). Keyed on the run that ended, and read
+  // through a ref: `refreshModels` is a new function each render.
+  const refreshRef = useRef(a.refreshModels);
+  refreshRef.current = a.refreshModels;
+  const endedStream = a.stageCard && !isStageActive(a.stageCard) ? a.stageCard.streamId : null;
+  useEffect(() => {
+    if (endedStream) refreshRef.current();
+  }, [endedStream]);
 
   // ── Requests ────────────────────────────────────────────────────────────
   const request = useCallback(
@@ -264,18 +287,24 @@ export function useContextStages(a: Args) {
         close();
         return;
       }
-      if (target === stage.active && stage.pending === null) {
+      // Where the model is *now*: the sheet's own read, fetched when it opened,
+      // over the model list, which a switch started by a send (a new chat's
+      // chosen stage, an automatic extension) has not always refreshed yet.
+      // Judged against a stale list, a tap on the stage the model had just left
+      // read as "already there" and the sheet simply closed.
+      const active = info?.active ?? stage.active;
+      if (target === active && stage.pending === null) {
         close();
         return;
       }
-      const targetWindow = stage.windows[target] as number | null | undefined;
-      if (target < stage.active && needsCompactFirst(a.context?.used ?? null, targetWindow ?? null)) {
+      const targetWindow = (info?.stages[target]?.context_tokens ?? stage.windows[target]) as number | null | undefined;
+      if (target < active && needsCompactFirst(a.context?.used ?? null, targetWindow ?? null)) {
         setDialog({ kind: 'compactFirst', target });
         return;
       }
       if (await request(target)) close();
     },
-    [stage, a.model, a.context?.used, serverConvId, request, close],
+    [stage, info, a.model, a.context?.used, serverConvId, request, close],
   );
 
   const confirmCompactFirst = useCallback(async () => {

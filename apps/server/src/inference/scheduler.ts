@@ -263,6 +263,11 @@ async function enter(
         waiter.cancel();
         // Someone leaving the middle of the line moves everyone behind them up.
         notifyPositions(q);
+        // And a waiter that was holding the head of the line (an exclusive one
+        // queues while `running < max`) leaving can make the next admissible:
+        // without a pump it would wait out a release that has nothing to do
+        // with it.
+        pump(providerId);
       },
     };
     if (priority) q.waiting.unshift(waiter);

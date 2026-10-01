@@ -440,4 +440,28 @@ describe("taking the whole backend (a context-stage switch)", () => {
     // With the switch gone, the run that queued behind it is not stranded.
     expect(await behind).not.toBeNull();
   });
+
+  it("admits the run behind a cancelled switch at once when a slot is free — no release needed", async () => {
+    pin(2);
+    // One ordinary run holds a slot; the other is free.
+    const running = await acquireRunSlot({ signal: live(), onQueued: noop });
+    const stop = new AbortController();
+    const exclusive = acquireExclusiveSlot({ signal: stop.signal, onQueued: noop });
+    await waitForWaiters();
+    // The fast path refuses it: a switch is at the front of the line.
+    let admitted = false;
+    const behind = acquireRunSlot({ signal: live(), onQueued: noop }).then((s) => { admitted = true; return s; });
+    await waitForWaiters(undefined, 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(admitted).toBe(false);
+
+    stop.abort();
+    expect(await exclusive).toBeNull();
+    // The running run has not finished and nothing else released; the run that
+    // was held back must not wait for one.
+    expect(await Promise.race([behind, new Promise((r) => setTimeout(() => { r("stranded"); }, 1000))])).not.toBe("stranded");
+    expect(schedulerState()).toMatchObject({ running: 2 });
+    (await behind)?.release();
+    running?.release();
+  });
 });

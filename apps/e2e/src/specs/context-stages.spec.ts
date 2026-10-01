@@ -64,6 +64,21 @@ async function pickModel(id: string): Promise<void> {
   await waitForGone('models.dialog', 10_000);
 }
 
+/** The page goes to the background and comes back — what react-native-web's
+ * AppState reads — which makes the chat hook replace its socket and ask the
+ * server to catch it up on the conversation's last runs. */
+async function leaveAndReturn(): Promise<void> {
+  await browser.execute(() => {
+    let state: DocumentVisibilityState = 'hidden';
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+    document.dispatchEvent(new Event('visibilitychange'));
+    state = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    // Put the page's own visibility back: the override would outlive this case.
+    Reflect.deleteProperty(document, 'visibilityState');
+  });
+}
+
 async function waitForPill(text: string, timeout = 60_000): Promise<void> {
   await waitForTextIn('chat.contextStage.label', text, timeout);
 }
@@ -434,5 +449,28 @@ describe('YaRN context stages', () => {
     await waitForPill('Context set to 64K (YaRN 2×)', 90_000);
     await waitForModelStage(alice, model, 1);
     await shot('context-stages-compacted-then-switched');
+  });
+
+  it('a card the person has moved past does not come back when the connection is replaced', async function () {
+    this.timeout(4 * 60_000);
+    // Replacing the socket from a script is a page's trick; on a phone it is a
+    // return from the background, which connection-lifecycle.spec.ts drives.
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    // The case before leaves its thread showing "Context set to 64K": a finished
+    // switch, which is what a reconnect's catch-up would bring back.
+    await waitForPill('Context set to 64K (YaRN 2×)', 10_000);
+    // Sending again is what dismisses it.
+    await sendMessage('thank you');
+    await waitForGone('chat.contextStage', 30_000);
+    await waitForComposerReady();
+    await shot('context-stages-card-dismissed');
+
+    // The connection is replaced, and the server catches the client up on the
+    // conversation's last runs — the finished stage run's card is still in the
+    // stream log. It must stay gone, above a reply that has already superseded it.
+    await leaveAndReturn();
+    await browser.pause(4_000);
+    if (await isVisible('chat.contextStage')) throw new Error('the stage card came back after a reconnect');
+    await shot('context-stages-card-stays-dismissed');
   });
 });
