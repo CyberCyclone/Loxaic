@@ -1,4 +1,5 @@
 import type { CompactionStats, ContextBreakdown } from "./stream-protocol";
+import type { ModelThinking } from "./thinking";
 
 export type Result<T, E = Error> =
   | { ok: true; data: T }
@@ -241,6 +242,9 @@ export interface ModelInfo {
    * details a modal shows come from `GET /v1/models/context-stage`.
    */
   context_stage?: ModelContextStage;
+  /** How hard the model can be asked to think (see thinking.ts). Absent on a
+   * model that takes no level, and from an older server. */
+  thinking?: ModelThinking;
   /** Which configured backend serves this model. `"default"` is the
    * local llama.cpp runtime; anything else is an admin-added provider row.
    * The picker groups on this. */
@@ -330,6 +334,7 @@ export * from "./stream-protocol";
 export * from "./waits";
 export * from "./commands";
 export * from "./mcp-state";
+export * from "./thinking";
 
 export interface UsageRecord {
   id: string;

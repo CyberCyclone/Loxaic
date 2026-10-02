@@ -1,7 +1,8 @@
-import { DEFAULT_PROVIDER_ID, formatModelRef, type ModelInfo } from "@loxaic/types";
+import { DEFAULT_PROVIDER_ID, formatModelRef, type ModelInfo, type ModelThinking } from "@loxaic/types";
 import { selfHost } from "../cluster.ts";
 import { builtinSlots, listLocalModelInfos } from "../llama/listing.ts";
 import { redactSecrets } from "./provider-secrets.ts";
+import { openAiThinking, openRouterThinking, thinkingFromTemplate } from "./thinking.ts";
 import {
   defaultProvider,
   getProviderById,
@@ -44,6 +45,9 @@ const MOCK_MODELS: ModelInfo[] = [
     host_name: null,
     price: 0,
     loaded: true,
+    // Graded levels, like Qwen3.8's template (effort words, and `None`
+    // through enable_thinking), so the mock lane drives the whole path.
+    thinking: { levels: ["None", "Low", "Medium", "High"], toggle: false, dialect: "llama", wire: { None: "none", Low: "low", Medium: "medium", High: "high" } },
     provider_id: DEFAULT_PROVIDER_ID,
     provider_name: "Built-in",
     upstream_id: "llama-3.1-8b-instruct",
@@ -62,6 +66,8 @@ const MOCK_MODELS: ModelInfo[] = [
     host_name: null,
     price: 0,
     loaded: false,
+    // On or off only, like a Qwen3.5/3.6 template.
+    thinking: { levels: ["None", "Medium"], toggle: true, dialect: "llama", wire: {} },
     provider_id: DEFAULT_PROVIDER_ID,
     provider_name: "Built-in",
     upstream_id: "qwen2.5-14b-instruct",
@@ -106,6 +112,9 @@ interface LmStudioModelsResponse {
 
 interface LlamaCppPropsResponse {
   default_generation_settings?: { n_ctx?: number };
+  /** The loaded model's chat template — what says whether it takes a
+   * thinking level (thinking.ts). */
+  chat_template?: string;
   /** How many requests llama.cpp can hold prefixes for at once — its
    * `--parallel`. Absent on every other backend. */
   total_slots?: number;
@@ -125,6 +134,9 @@ interface OpenAiModel {
   max_model_len?: number;
   max_input_tokens?: number;
   pricing?: { prompt?: string | number };
+  /** OpenRouter: the request parameters this model honours, `reasoning`
+   * among them for a model that takes a thinking level. */
+  supported_parameters?: unknown;
 }
 
 interface OpenAiModelsResponse {
@@ -197,15 +209,27 @@ async function listViaLmStudioNative(provider: ResolvedProvider): Promise<ModelI
  * really allocated, and llama.cpp serves exactly one model, so it applies to
  * every entry in the list.
  */
-async function fetchLoadedCtx(provider: ResolvedProvider): Promise<number | null> {
+async function fetchLlamaProps(provider: ResolvedProvider): Promise<{ nCtx: number | null; thinking: ModelThinking | null }> {
   try {
     const props = await fetchJson<LlamaCppPropsResponse>(`${provider.nativeRoot}/props`, provider);
     const ctx = props.default_generation_settings?.n_ctx;
-    return typeof ctx === "number" && ctx > 0 ? ctx : null;
+    const nCtx = typeof ctx === "number" && ctx > 0 ? ctx : null;
+    // Only from a backend that answered as llama.cpp: the request fields a
+    // level becomes are llama.cpp's own.
+    return { nCtx, thinking: nCtx !== null ? thinkingFromTemplate(props.chat_template) : null };
   } catch {
     // Not llama.cpp, older build, or unreachable — degrade to the training bound.
-    return null;
+    return { nCtx: null, thinking: null };
   }
+}
+
+/** A hosted model's thinking control, from what its provider's listing says
+ * (OpenRouter) or from its id (OpenAI). Null everywhere else: an unknown
+ * vendor is never sent a field it might refuse. */
+function hostedThinking(provider: ResolvedProvider, m: OpenAiModel): ModelThinking | null {
+  if (provider.preset === "openrouter") return openRouterThinking(m.supported_parameters);
+  if (provider.preset === "openai") return openAiThinking(m.id);
+  return null;
 }
 
 /**
@@ -262,11 +286,13 @@ function parsePrice(raw: string | number | undefined): number {
  * carries its own.
  */
 async function listViaOpenAiCompat(provider: ResolvedProvider): Promise<ModelInfo[]> {
-  const [data, loadedCtx] = await Promise.all([
+  const [data, props] = await Promise.all([
     fetchJson<OpenAiModelsResponse>(`${provider.apiBase}/models`, provider),
-    provider.preset === null ? fetchLoadedCtx(provider) : Promise.resolve(null),
+    provider.preset === null ? fetchLlamaProps(provider) : Promise.resolve({ nCtx: null, thinking: null }),
   ]);
+  const loadedCtx = props.nCtx;
   return (data.data ?? []).map((m): ModelInfo => {
+    const thinking = props.thinking ?? hostedThinking(provider, m);
     const declared = m.context_length ?? m.max_model_len ?? m.max_input_tokens ?? m.meta?.n_ctx_train ?? null;
     const known = loadedCtx ?? declared;
     return stamp(provider, {
@@ -294,6 +320,7 @@ async function listViaOpenAiCompat(provider: ResolvedProvider): Promise<ModelInf
       // `model.loading` on every turn and re-resolve the window after each one,
       // describing a JIT load that does not exist.
       loaded: provider.isDefault ? loadedCtx != null : true,
+      ...(thinking ? { thinking } : {}),
       provider_id: provider.id,
       provider_name: provider.name,
       upstream_id: m.id,
@@ -311,8 +338,10 @@ async function listViaOpenAiCompat(provider: ResolvedProvider): Promise<ModelInf
  * which is the shape of every vendor that has ever diverged there.
  */
 function listFromAllowlist(provider: ResolvedProvider): ModelInfo[] {
-  return (provider.modelAllowlist ?? []).map((id) =>
-    stamp(provider, {
+  return (provider.modelAllowlist ?? []).map((id) => {
+    // An id is all there is here, which is all OpenAI's table needs.
+    const thinking = provider.preset === "openai" ? openAiThinking(id) : null;
+    return stamp(provider, {
       id,
       display_name: id,
       quant: "—",
@@ -326,11 +355,12 @@ function listFromAllowlist(provider: ResolvedProvider): ModelInfo[] {
       host_name: null,
       price: 0,
       loaded: true,
+      ...(thinking ? { thinking } : {}),
       provider_id: provider.id,
       provider_name: provider.name,
       upstream_id: id,
-    }),
-  );
+    });
+  });
 }
 
 function asError(err: unknown): Error {
@@ -485,14 +515,14 @@ export async function resolveWindow(ref: string): Promise<number | null> {
  * with a 400. LM Studio passes and ignores the field, which costs nothing. */
 export async function modelRunInfo(
   ref: string,
-): Promise<{ windowTokens: number | null; loaded: boolean; nativeRuntime: boolean } | null> {
+): Promise<{ windowTokens: number | null; loaded: boolean; nativeRuntime: boolean; thinking: ModelThinking | null } | null> {
   const model = await getModelInfo(ref);
   if (!model) return null;
   // The built-in provider is always llama.cpp now, loaded or not, so it may
   // always be asked for prompt progress — including on the request that loads
   // the model, which is the one that waits longest.
   const nativeRuntime = model.loaded_context_tokens != null || (model.provider_id === DEFAULT_PROVIDER_ID && !MOCK_MODE());
-  return { windowTokens: windowFor(model), loaded: model.loaded, nativeRuntime };
+  return { windowTokens: windowFor(model), loaded: model.loaded, nativeRuntime, thinking: model.thinking ?? null };
 }
 
 /**

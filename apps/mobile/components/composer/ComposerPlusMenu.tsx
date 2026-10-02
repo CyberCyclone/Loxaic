@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ScrollView, useWindowDimensions } from 'react-native';
-import { Camera, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Layers, Plug, Plus } from 'lucide-react-native';
+import { Brain, Camera, Check, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Layers, Plug, Plus } from 'lucide-react-native';
+import type { ModelThinking, ThinkingLevel } from '@loxaic/types';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Box } from '@/components/ui/box';
@@ -18,10 +19,21 @@ import {
 import { VStack } from '@/components/ui/vstack';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { McpServerList } from './McpServerList';
+import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
 
 /** Long enough for the sheet's exit animation to finish before another modal
  * is presented (the plan sheet and the no-room modal found the same). */
 const SHEET_EXIT_MS = 300;
+
+/** The thinking level, for the selected model. */
+export interface ComposerThinking {
+  /** What the model takes; null for a model that takes no level, whose row is
+   * shown disabled with the reason rather than hidden. */
+  capability: ModelThinking | null;
+  /** This conversation's level (or the one chosen before it exists). */
+  level: ThinkingLevel;
+  onChange: (level: ThinkingLevel) => void;
+}
 
 export interface ComposerPlusMenuProps {
   /** Native only: opens the camera. */
@@ -37,6 +49,9 @@ export interface ComposerPlusMenuProps {
   /** Context settings, when the selected model has YaRN stages; null leaves
    * the row out. `disabledReason` says why it cannot be used, when it cannot. */
   contextSettings?: { onOpen: () => void; disabledReason: string | null } | null;
+  /** The thinking level; null leaves the row out (a routine's chat, whose
+   * runs the server starts). */
+  thinking?: ComposerThinking | null;
   /** An attachment is uploaded as soon as it is picked, and the MCP switches
    * are saved on the server, so there is nothing to do while it is
    * unreachable. */
@@ -58,10 +73,11 @@ export function ComposerPlusMenu({
   onPickDocument,
   mcp,
   contextSettings = null,
+  thinking = null,
   disabled = false,
 }: ComposerPlusMenuProps) {
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<'main' | 'mcp'>('main');
+  const [page, setPage] = useState<'main' | 'mcp' | 'thinking'>('main');
   const { height } = useWindowDimensions();
 
   const close = () => {
@@ -88,7 +104,16 @@ export function ComposerPlusMenu({
           <ActionsheetDragIndicatorWrapper>
             <ActionsheetDragIndicator />
           </ActionsheetDragIndicatorWrapper>
-          {page === 'main' || !mcp ? (
+          {page === 'thinking' && thinking?.capability ? (
+            <ThinkingPage
+              thinking={thinking}
+              capability={thinking.capability}
+              onBack={() => {
+                setPage('main');
+              }}
+              onChose={close}
+            />
+          ) : page === 'main' || !mcp ? (
             <>
               <ActionsheetItem
                 testID="composer.attach.camera"
@@ -145,6 +170,34 @@ export function ComposerPlusMenu({
                   </ActionsheetItem>
                 </>
               ) : null}
+              {thinking ? (
+                <>
+                  <Box className="my-1 h-px w-full bg-border" />
+                  <ActionsheetItem
+                    testID="composer.plus.thinking"
+                    isDisabled={thinking.capability === null}
+                    onPress={() => {
+                      setPage('thinking');
+                    }}
+                  >
+                    <ActionsheetIcon as={Brain} />
+                    <VStack className="flex-1">
+                      <ActionsheetItemText>Thinking</ActionsheetItemText>
+                      {thinking.capability === null && (
+                        <Text testID="composer.plus.thinking.reason" size="2xs" className="text-muted-foreground">
+                          {NO_THINKING_REASON}
+                        </Text>
+                      )}
+                    </VStack>
+                    {thinking.capability ? (
+                      <Text testID="composer.plus.thinking.value" size="sm" className="text-muted-foreground">
+                        {selectedThinkingOption(thinking.capability, thinking.level).label}
+                      </Text>
+                    ) : null}
+                    {thinking.capability ? <ActionsheetIcon as={ChevronRight} /> : null}
+                  </ActionsheetItem>
+                </>
+              ) : null}
               {mcp ? (
                 <>
                   <Box className="my-1 h-px w-full bg-border" />
@@ -183,5 +236,48 @@ export function ComposerPlusMenu({
         </ActionsheetContent>
       </Actionsheet>
     </>
+  );
+}
+
+/** The level list, swapped into the sheet in place of the main page — the
+ * MCP page's pattern, since iOS will not present a second sheet. */
+function ThinkingPage({
+  thinking,
+  capability,
+  onBack,
+  onChose,
+}: {
+  thinking: ComposerThinking;
+  capability: ModelThinking;
+  onBack: () => void;
+  onChose: () => void;
+}) {
+  const selected = selectedThinkingOption(capability, thinking.level);
+  return (
+    <Box testID="composer.thinking.submenu" className="w-full">
+      <Pressable testID="composer.thinking.back" onPress={onBack} className="flex-row items-center gap-2 px-3 py-3">
+        <Icon as={ChevronLeft} size="sm" className="text-foreground" />
+        <Text size="md" className="font-semibold text-foreground">Thinking</Text>
+      </Pressable>
+      {thinkingOptions(capability).map((option) => (
+        <ActionsheetItem
+          key={option.level}
+          testID={`composer.thinking.level.${option.level}`}
+          aria-selected={option.level === selected.level}
+          onPress={() => {
+            thinking.onChange(option.level);
+            onChose();
+          }}
+        >
+          <ActionsheetItemText className="flex-1">{option.label}</ActionsheetItemText>
+          {option.level === selected.level ? <ActionsheetIcon as={Check} /> : null}
+        </ActionsheetItem>
+      ))}
+      {levelChangeRereads(capability) ? (
+        <Text size="2xs" className="px-3 pb-2 pt-1 text-muted-foreground">
+          Changing it makes the model re-read this conversation once.
+        </Text>
+      ) : null}
+    </Box>
   );
 }

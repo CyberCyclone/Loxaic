@@ -294,6 +294,14 @@ const server = createServer(async (req, res) => {
     const ok = load(body.model);
     if (ok === "oom") return json(res, 500, { error: { code: 500, message: "failed to load model: out of device memory" } });
     if (!ok) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
+    // What the thinking level became on the wire, so a test can tell the level
+    // picked in the composer reached the backend, in llama.cpp's own fields.
+    logEvent({
+      event: "chat",
+      model: body.model,
+      reasoning_effort: body.reasoning_effort ?? null,
+      chat_template_kwargs: body.chat_template_kwargs ?? null,
+    });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const words = ["Hello", " from", ` ${body.model}`];
     // "take your time" makes the reply slow (1.5 s a word; "take your time

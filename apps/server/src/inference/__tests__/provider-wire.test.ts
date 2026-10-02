@@ -142,6 +142,75 @@ describe("a rejected key", () => {
   });
 });
 
+describe("the thinking level on an added provider", () => {
+  /** Qwen3.8's validation of the effort, as a llama.cpp `/props` reports it. */
+  const TEMPLATE =
+    "{%- if enable_thinking is undefined or enable_thinking is true %}" +
+    "{%- if reasoning_effort not in ('xhigh', 'high', 'medium', 'low') %}{{ raise_exception('no') }}{%- endif %}{%- endif %}";
+
+  async function send(model: string, level: "None" | "Low" | "Medium" | "High") {
+    const { thinkingFields } = await import("../thinking.ts");
+    const info = await getModelInfo(model);
+    for await (const _ of streamCompletion(model, [{ role: "user", content: "hi" }], { thinking: thinkingFields(info?.thinking, level) })) {
+      // drain
+    }
+  }
+
+  it("detects llama.cpp's levels from /props and sends reasoning_effort in the body", async () => {
+    const llama = await startMockOpenAi({ apiKey: API_KEY, nCtx: 8192, chatTemplate: TEMPLATE });
+    try {
+      const row = await makeProvider({ baseUrl: llama.apiBase });
+      const ref = `${row.slug}::mock-remote-model`;
+      expect((await getModelInfo(ref))?.thinking?.levels).toEqual(["None", "Low", "Medium", "High"]);
+      await send(ref, "High");
+      await send(ref, "None");
+      expect(llama.completions.map((r) => r.body.reasoning_effort)).toEqual(["high", "none"]);
+    } finally {
+      await llama.stop();
+    }
+  });
+
+  it("takes OpenRouter's word for which models reason, and sends reasoning.effort", async () => {
+    const router = await startMockOpenAi({
+      apiKey: API_KEY,
+      models: [
+        { id: "deepseek/deepseek-r1", supported_parameters: ["tools", "reasoning"] },
+        { id: "meta/llama-3.3-70b", supported_parameters: ["tools"] },
+      ],
+    });
+    try {
+      const row = await makeProvider({ baseUrl: router.apiBase, preset: "openrouter" });
+      expect((await getModelInfo(`${row.slug}::deepseek/deepseek-r1`))?.thinking?.dialect).toBe("openrouter");
+      expect((await getModelInfo(`${row.slug}::meta/llama-3.3-70b`))?.thinking).toBeUndefined();
+      await send(`${row.slug}::deepseek/deepseek-r1`, "Low");
+      await send(`${row.slug}::meta/llama-3.3-70b`, "High");
+      const [reasoner, plain] = router.completions;
+      expect(reasoner.body.reasoning).toEqual({ effort: "low" });
+      // A model that takes no level is sent no field it might refuse.
+      expect(plain.body).not.toHaveProperty("reasoning");
+      expect(plain.body).not.toHaveProperty("reasoning_effort");
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("knows OpenAI's reasoning models by id, and sends a hosted API nothing otherwise", async () => {
+    const openai = await startMockOpenAi({ apiKey: API_KEY, models: [{ id: "gpt-5.1" }, { id: "gpt-4o" }] });
+    try {
+      const row = await makeProvider({ baseUrl: openai.apiBase, preset: "openai" });
+      await send(`${row.slug}::gpt-5.1`, "None");
+      await send(`${row.slug}::gpt-4o`, "High");
+      expect(openai.completions[0].body.reasoning_effort).toBe("none");
+      expect(openai.completions[1].body).not.toHaveProperty("reasoning_effort");
+      // A custom provider with no /props: unknown, so nothing.
+      const custom = await makeProvider();
+      expect((await getModelInfo(`${custom.slug}::mock-remote-model`))?.thinking).toBeUndefined();
+    } finally {
+      await openai.stop();
+    }
+  });
+});
+
 describe("listing an added provider's models", () => {
   it("qualifies every id and keeps the upstream one beside it", async () => {
     const row = await makeProvider();

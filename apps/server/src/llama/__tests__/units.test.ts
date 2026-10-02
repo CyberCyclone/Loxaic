@@ -251,7 +251,30 @@ describe("GGUF header", () => {
       expertCount: null,
       // The fixture describes no attention heads: the fit stays rough.
       shape: null,
+      chatTemplate: null,
     });
+  });
+
+  it("reads the chat template past the vocabulary arrays, and nothing else after the tokenizer", async () => {
+    const file = path.join(dir, "template.gguf");
+    const template = "{%- if enable_thinking is defined and enable_thinking is false %}<think></think>{%- endif %}";
+    writeFileSync(
+      file,
+      buildGguf([
+        ["general.architecture", { type: "str", v: "qwen35" }],
+        ["qwen35.block_count", { type: "u32", v: 32 }],
+        ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`) }],
+        ["tokenizer.ggml.token_type", { type: "u32s", v: Array.from({ length: 5000 }, () => 1) }],
+        // A real file never puts an architecture key here; one that does is
+        // not believed.
+        ["qwen35.context_length", { type: "u32", v: 999 }],
+        ["tokenizer.chat_template", { type: "str", v: template }],
+      ]),
+    );
+    const facts = await readGgufFacts(file);
+    expect(facts.chatTemplate).toBe(template);
+    expect(facts.nLayers).toBe(32);
+    expect(facts.nCtxTrain).toBeNull();
   });
 
   it("reads the attention layout, per-layer arrays included, and stops at the tokenizer", async () => {

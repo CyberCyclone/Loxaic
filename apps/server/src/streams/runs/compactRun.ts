@@ -3,6 +3,7 @@ import { db, desc, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import {
   DEFAULT_PROVIDER_ID,
+  DEFAULT_THINKING_LEVEL,
   type CompactionStats,
   type ContentBlock,
   type ContextBreakdown,
@@ -18,6 +19,7 @@ import {
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { assertModelUsable, resolveModelRef } from "../../inference/providers.ts";
 import { estimateTokens, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { thinkingFields } from "../../inference/thinking.ts";
 import { fingerprintPrompt, measureReuse } from "../../inference/prompt-reuse.ts";
 import { assertConversationAccess } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
@@ -128,7 +130,16 @@ export function compactionRequest(input: {
   history: { messages: ChatMessage[]; summaryText: string | null };
   instruction: string;
   hasRoom: boolean;
-}): { messages: ChatMessage[]; tools?: OpenAiTool[]; toolChoice?: "none"; reusesPrefix: boolean } {
+}): {
+  messages: ChatMessage[];
+  tools?: OpenAiTool[];
+  toolChoice?: "none";
+  /** The last run's thinking fields, when its front is reused: llama.cpp
+   * renders the level into the system prompt, so a different one would
+   * diverge from the cache at the first message. Absent otherwise. */
+  thinking?: Record<string, unknown>;
+  reusesPrefix: boolean;
+} {
   const { shape, history } = input;
   const summary = history.summaryText ? [summaryMessage(history.summaryText)] : [];
   const instruction: ChatMessage = { role: "user", content: input.instruction };
@@ -141,6 +152,7 @@ export function compactionRequest(input: {
         instruction,
       ],
       ...(shape.tools.length ? { tools: shape.tools, toolChoice: "none" as const } : {}),
+      thinking: shape.thinking,
       reusesPrefix: true,
     };
   }
@@ -453,11 +465,15 @@ async function runCompactGeneration(ctx: {
     }
 
     let reportProgress = false;
+    // A stripped request has no prefix to match, so it gets the default level
+    // rather than the model's own default (Qwen3.8's is its highest).
+    let thinking = ctx.request.thinking;
     try {
       // This model's own provider only — see the same lookup in engine.ts.
       const info = await modelRunInfo(model);
       windowTokens = info?.windowTokens ?? null;
       reportProgress = info?.nativeRuntime ?? false;
+      thinking ??= thinkingFields(info?.thinking, DEFAULT_THINKING_LEVEL);
       if (info && !info.loaded) {
         jitLoaded = true;
         producer.emit({ kind: "model.loading", message_id: summaryMsgId });
@@ -496,6 +512,7 @@ async function runCompactGeneration(ctx: {
         signal: abort.signal,
         ...(tools ? { tools } : {}),
         ...(toolChoice ? { toolChoice } : {}),
+        ...(thinking ? { thinking } : {}),
         reportProgress,
       }),
     )) {

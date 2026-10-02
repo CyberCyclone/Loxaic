@@ -55,6 +55,7 @@ function toModelInfo(
     loaded: live.loaded,
     loading: live.loading,
     pinned: row.pinned,
+    ...(meta.thinking ? { thinking: meta.thinking } : {}),
     ...(stages && windows
       ? {
           context_stage: {

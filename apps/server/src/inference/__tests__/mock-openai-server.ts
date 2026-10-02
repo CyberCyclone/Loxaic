@@ -24,6 +24,9 @@ export interface RecordedRequest {
     tools?: unknown[];
     tool_choice?: unknown;
     return_progress?: unknown;
+    reasoning_effort?: unknown;
+    reasoning?: unknown;
+    chat_template_kwargs?: unknown;
   };
 }
 
@@ -33,7 +36,7 @@ export interface MockOpenAiOptions {
    * error path has to redact. */
   apiKey?: string;
   /** Model ids `/models` reports. */
-  models?: { id: string; context_length?: number }[];
+  models?: { id: string; context_length?: number; supported_parameters?: string[] }[];
   /** What a completion replies with. */
   reply?: string;
   /** Delay before the first token, for observing a queue. */
@@ -41,6 +44,9 @@ export interface MockOpenAiOptions {
   /** Answer `/props` the way llama.cpp does, identifying itself as a local
    * runtime with this allocated window. */
   nCtx?: number;
+  /** The chat template `/props` reports with `nCtx` — what says which
+   * thinking levels the loaded model takes. */
+  chatTemplate?: string;
   /** Stream `prompt_progress` chunks, in llama.cpp's exact shape, when the
    * request asked with `return_progress` — one malformed one among them. */
   progress?: boolean;
@@ -161,7 +167,13 @@ export async function startMockOpenAi(options: MockOpenAiOptions = {}): Promise<
 
       if (req.url === "/props" && options.nCtx) {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ default_generation_settings: { n_ctx: options.nCtx }, total_slots: 1 }));
+        res.end(
+          JSON.stringify({
+            default_generation_settings: { n_ctx: options.nCtx },
+            total_slots: 1,
+            ...(options.chatTemplate ? { chat_template: options.chatTemplate } : {}),
+          }),
+        );
         return;
       }
 

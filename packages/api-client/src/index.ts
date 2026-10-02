@@ -2120,6 +2120,8 @@ export function sendChatMessage(
   /** The context stage chosen before the conversation existed; read only by
    * the send that opens it. */
   contextStage?: number,
+  /** How hard to think, from the composer's `+` menu. Every send carries it. */
+  thinkingLevel?: import("@loxaic/types").ThinkingLevel,
 ): boolean {
   return trySend(ws, {
     type: "chat.send",
@@ -2131,6 +2133,7 @@ export function sendChatMessage(
     ...(clientRef ? { client_ref: clientRef } : {}),
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
+    ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
   });
 }
 
@@ -2148,6 +2151,8 @@ export function sendAgentMessage(
   mcpOverrides?: import("@loxaic/types").McpOverrides,
   /** As on `sendChatMessage`. */
   contextStage?: number,
+  /** As on `sendChatMessage`. */
+  thinkingLevel?: import("@loxaic/types").ThinkingLevel,
 ): boolean {
   return trySend(ws, {
     type: "agent.send",
@@ -2160,6 +2165,7 @@ export function sendAgentMessage(
     ...(clientRef ? { client_ref: clientRef } : {}),
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
+    ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
   });
 }
 

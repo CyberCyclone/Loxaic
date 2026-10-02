@@ -2,7 +2,8 @@ import type { OpenAiTool } from "../../inference/provider.ts";
 
 /**
  * What a conversation's last run sent ahead of its history: the model, the
- * system prompt and the tool schemas. Kept so a compaction can send the very
+ * system prompt, the tool schemas and the thinking fields (llama.cpp renders
+ * the thinking level into the system prompt, so it is part of the front too). Kept so a compaction can send the very
  * same front and append its instruction — reusing the prefix the backend
  * already holds instead of re-reading the whole conversation.
  *
@@ -21,6 +22,8 @@ export interface RequestShape {
   model: string;
   system: string | null;
   tools: OpenAiTool[];
+  /** The run's thinking body fields (inference/thinking.ts), `{}` for none. */
+  thinking: Record<string, unknown>;
 }
 
 const MAX_SHAPES = 500;

@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
-import type { McpOverrides } from '@loxaic/types';
+import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -31,7 +31,7 @@ import { DeleteConversationModal } from '@/components/chat/DeleteConversationMod
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
-import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
+import { useThinkingChoice } from '@/hooks/useThinkingChoice';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
@@ -50,6 +50,7 @@ export default function ChatScreen() {
   // The context stage chosen for a chat that does not exist yet; read by the
   // session at send time, like the MCP choices above.
   const pendingStageRef = useRef<number | undefined>(undefined);
+  const thinkingRef = useRef<ThinkingLevel | undefined>(undefined);
   const {
     conversations,
     activeId,
@@ -81,7 +82,7 @@ export default function ChatScreen() {
     returnedText,
     promotion,
     stageCard,
-  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef, pendingStageRef);
+  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef, pendingStageRef, thinkingRef);
   // Read by the session at send time; see useChatSession's `pendingMcp`.
   const mcp = useMcpSwitches(token, activeId, 'chat', promotion);
   pendingMcpRef.current = mcp.pendingOverrides;
@@ -90,8 +91,6 @@ export default function ChatScreen() {
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
   const { showToast } = useToastHelper();
 
-  const [settings] = useSettings();
-  const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   // Puts an unsent message back in the message box (a no-room refusal).
@@ -105,10 +104,6 @@ export default function ChatScreen() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const { config } = useServerConfig();
 
-  const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
-  const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
-  const thinkingLevel = storedThinkingLevel ?? settings.defaultThinkingLevel;
-
   const prefModel = activeConv?.model;
   // See lib/selectModel.ts for the order, and for why "last used" applies only
   // to a conversation that does not exist yet.
@@ -121,6 +116,15 @@ export default function ChatScreen() {
     isKnown,
     defaultModelId: defaultModel?.id,
   });
+
+  // The level every send carries, read by the session at send time.
+  const thinking = useThinkingChoice({
+    activeId,
+    promotion,
+    model: models.find((m) => m.id === selectedModel),
+    modelsLoaded: models.length > 0,
+  });
+  thinkingRef.current = thinking.level;
 
   const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
 
@@ -303,6 +307,7 @@ export default function ChatScreen() {
           onRunCommand={handleRunCommand}
           commandSeed={composerSeed}
           mcp={mcp}
+          thinking={thinking.composer}
           contextStage={
             stages.staged
               ? {
@@ -358,10 +363,6 @@ export default function ChatScreen() {
         onSelect={(id) => {
           if (activeId) setConversationModel(activeId, id);
           else setPendingModel(id);
-        }}
-        thinkingLevel={thinkingLevel}
-        onThinkingLevel={(level) => {
-          if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));
         }}
         onOpenSettings={() => {
           setModelModalOpen(false);

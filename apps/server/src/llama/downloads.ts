@@ -20,6 +20,7 @@ import {
 } from "./catalog.ts";
 import { estimateFit, type FitEstimate } from "./fit.ts";
 import { readGgufFacts } from "./gguf.ts";
+import { thinkingFromTemplate } from "../inference/thinking.ts";
 import { downloadErrorMessage, hfHeaders, isRepoId, repoFiles, resolveUrl, type QuantFile } from "./hf.ts";
 import { llamaDir, modelFilePath, repoDir } from "./paths.ts";
 import { availableMemory, refreshMemory } from "./memory.ts";
@@ -450,6 +451,7 @@ async function describeFile(row: LocalModelRow): Promise<LocalModelMeta | null> 
       nCtxTrain: facts.nCtxTrain,
       expertCount: facts.expertCount,
       shape: facts.shape,
+      thinking: thinkingFromTemplate(facts.chatTemplate),
     };
   } catch (err) {
     log(`Could not read ${row.id}'s GGUF header: ${err instanceof Error ? err.message : String(err)}`);
@@ -458,26 +460,29 @@ async function describeFile(row: LocalModelRow): Promise<LocalModelMeta | null> 
 }
 
 /**
- * Give rows downloaded before the attention layout was read their `shape`.
- * Without it their fit — and every YaRN stage's — is the rough per-layer
- * figure, which is several times too high for a hybrid model. The files are on
- * this disk and the read stops at the tokenizer, so this is cheap; it runs once
- * per row (a file that describes nothing, or cannot be read, stores
- * `shape: null`, not absence).
+ * Give rows downloaded before a header fact was read that fact: the attention
+ * layout (`shape`) and the thinking control (`thinking`, from the chat
+ * template). Without the first their fit — and every YaRN stage's — is the
+ * rough per-layer figure, several times too high for a hybrid model; without
+ * the second the model is offered no thinking level and sent none, so its
+ * template's own default (Qwen3.8's is its highest) applies. The files are on
+ * this disk, so this is cheap; it runs once per row (a file that describes
+ * nothing, or cannot be read, stores null, not absence).
  */
-export async function backfillShapes(rows: LocalModelRow[]): Promise<number> {
+export async function backfillHeaderFacts(rows: LocalModelRow[]): Promise<number> {
   let filled = 0;
   for (const row of rows) {
-    if (row.status !== "ready" || rowMeta(row).shape !== undefined) continue;
+    const meta = rowMeta(row);
+    if (row.status !== "ready" || (meta.shape !== undefined && meta.thinking !== undefined)) continue;
     const facts = await describeFile(row);
     if (!facts) {
       // A header that cannot be read is an answer too. Storing nothing, as this
       // once did, re-parsed an unreadable (or hostile) file on every boot for
       // ever, on the event loop, before the API was serving.
-      await updateLocalModelRow(row.id, { meta: { ...rowMeta(row), shape: null } }).catch(() => undefined);
+      await updateLocalModelRow(row.id, { meta: { ...meta, shape: meta.shape ?? null, thinking: meta.thinking ?? null } }).catch(() => undefined);
       continue;
     }
-    await updateLocalModelRow(row.id, { meta: { ...rowMeta(row), ...facts } }).catch(() => undefined);
+    await updateLocalModelRow(row.id, { meta: { ...meta, ...facts } }).catch(() => undefined);
     filled++;
   }
   return filled;
@@ -496,8 +501,8 @@ export function startDownloadQueue(logger: (m: string) => void): void {
       if (r.status === "downloading") await updateLocalModelRow(r.id, { status: "paused" }).catch(() => undefined);
     }
     pump();
-    const filled = await backfillShapes(rows).catch(() => 0);
-    if (filled > 0) log(`Read the attention layout of ${String(filled)} downloaded model(s)`);
+    const filled = await backfillHeaderFacts(rows).catch(() => 0);
+    if (filled > 0) log(`Read the header of ${String(filled)} downloaded model(s)`);
   })();
 }
 

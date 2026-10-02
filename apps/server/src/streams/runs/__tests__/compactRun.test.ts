@@ -165,6 +165,7 @@ describe("compactionRequest", () => {
     model: "m",
     system: "You are Loxaic.",
     tools: [{ type: "function" as const, function: { name: "fs_read", description: "Read", parameters: {} } }],
+    thinking: { reasoning_effort: "high" },
   };
   const imageTurn: ChatMessage = {
     role: "user",
@@ -185,6 +186,9 @@ describe("compactionRequest", () => {
     expect(r.messages.at(-1)).toEqual({ role: "user", content: "Summarize." });
     expect(r.tools).toBe(shape.tools);
     expect(r.toolChoice).toBe("none");
+    // llama.cpp renders the level into the system prompt: a different one
+    // would diverge from the cache at the first message.
+    expect(r.thinking).toEqual({ reasoning_effort: "high" });
   });
 
   it("falls back to the stripped request for another model, no shape, or no room for the summary", () => {
@@ -195,6 +199,8 @@ describe("compactionRequest", () => {
     ]) {
       expect(r.reusesPrefix).toBe(false);
       expect(r.tools).toBeUndefined();
+      // No front to match: the generation picks the default level instead.
+      expect(r.thinking).toBeUndefined();
       expect(r.messages.some((m) => m.role === "system" && m.content === "You are Loxaic.")).toBe(false);
       expect(r.messages[1]).toEqual({ role: "user", content: "what is this" });
     }

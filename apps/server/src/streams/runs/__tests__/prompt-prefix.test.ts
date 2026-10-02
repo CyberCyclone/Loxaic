@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
+import { CHECKIN_ANSWER_NUDGE, PLAN_ACCEPTED_MESSAGE, QUESTIONS_ANSWERED_PREFIX, type ThinkingLevel } from "@loxaic/types";
 import type { ChatMessage } from "../../../inference/provider.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { __resetExecutorsForTest, handleExecutorResult, registerExecutor } from "../../../executor/registry.ts";
@@ -42,7 +42,7 @@ import type { ServerToExecutor } from "../../../executor/protocol.ts";
 const requests: string[][] = [];
 /** The options each request went out with, in the same order — so a case can
  * assert not just *what* was sent but under what constraint. */
-const requestOptions: { toolChoice?: string; toolCount: number; tools: string }[] = [];
+const requestOptions: { toolChoice?: string; toolCount: number; tools: string; thinking: string }[] = [];
 
 vi.mock("../../../inference/provider.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../inference/provider.ts")>();
@@ -53,13 +53,16 @@ vi.mock("../../../inference/provider.ts", async (importOriginal) => {
       // keeps appending to, so holding a reference would record what it looked
       // like at the *end* of the run and quietly assert nothing.
       requests.push(msgs.map((m) => JSON.stringify(m)));
-      const opts = (options ?? {}) as { toolChoice?: string; tools?: unknown[] };
+      const opts = (options ?? {}) as { toolChoice?: string; tools?: unknown[]; thinking?: unknown };
       requestOptions.push({
         toolChoice: opts.toolChoice,
         toolCount: opts.tools?.length ?? 0,
         // The schemas themselves: the same count of different tools rewrites
         // the prompt as surely as a missing one.
         tools: JSON.stringify(opts.tools ?? []),
+        // llama.cpp renders the thinking level into the system prompt, so it
+        // is as much a part of the prefix as the tools are.
+        thinking: JSON.stringify(opts.thinking ?? {}),
       });
       return actual.streamCompletion(model, msgs, options as never);
     },
@@ -116,12 +119,13 @@ async function waitForRun(convId: string): Promise<void> {
 }
 
 /** Sends one turn and resolves when the run has fully finished. */
-async function turn(content: string, conversationId?: string): Promise<string> {
+async function turn(content: string, conversationId?: string, thinkingLevel?: ThinkingLevel): Promise<string> {
   const result = await startChatRun({
     userId,
     content,
     model: "llama-3.1-8b-instruct",
     ...(conversationId === undefined ? {} : { conversationId }),
+    ...(thinkingLevel === undefined ? {} : { thinkingLevel }),
   });
   const convId = result.conversationId;
   if (!convIds.includes(convId)) convIds.push(convId);
@@ -241,6 +245,41 @@ describe("the context-stage warm-up", () => {
     // The same tools, so the backend renders the same system region.
     const warm = requestOptions.at(-2);
     expect(warm?.tools).toBe(requestOptions.at(-1)?.tools);
+  });
+
+  it("re-reads at the level the conversation's last run used", async () => {
+    const convId = await turn("first question", undefined, "High");
+    const { warmer } = await import("../stageRun.ts");
+    await warmer(convId, "llama-3.1-8b-instruct")(new AbortController().signal, () => undefined);
+    // The warm-up's own level would put a different system prompt in the
+    // cache than the one the next High turn renders.
+    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "high" }));
+  });
+});
+
+describe("the thinking level", () => {
+  it("is sent on every request of a run, and the default when the send names none", async () => {
+    await turn("make a todo list for this work", undefined, "Low");
+    expect(requestOptions.length).toBeGreaterThan(1); // the tool loop iterated
+    for (const o of requestOptions) expect(o.thinking).toBe(JSON.stringify({ reasoning_effort: "low" }));
+    requestOptions.length = 0;
+    await turn("a question with no level");
+    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "medium" }));
+  });
+
+  it("turns thinking off through llama.cpp's own word for it", async () => {
+    await turn("a quick one", undefined, "None");
+    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "none" }));
+  });
+
+  it("changes nothing but the level when it changes between turns", async () => {
+    const convId = await turn("first question", undefined, "High");
+    await turn("second question", convId, "Low");
+    // The messages still extend; only the field moved (and with it, on
+    // llama.cpp, the system prompt — the one re-read a level change costs).
+    expectEachRequestExtendsTheLast();
+    expect(requestOptions.at(0)?.thinking).toBe(JSON.stringify({ reasoning_effort: "high" }));
+    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "low" }));
   });
 });
 
@@ -850,5 +889,16 @@ describe("a compaction extends the prompt it compacts", () => {
     expect(summary?.status).toBe("complete");
     const usage = await db.query.usageRecords.findFirst({ where: eq(usageRecords.messageId, summaryMessageId) });
     expect(usage?.promptMs).toBe(50);
+  });
+
+  it("compacts at the level the conversation's last run used, not the default", async () => {
+    const convId = await turn("first question about pnpm", undefined, "High");
+    await turn("second question about bun", convId, "High");
+    const { startCompactRun } = await import("../compactRun.ts");
+    await startCompactRun({ userId, conversationId: convId, model: "llama-3.1-8b-instruct", surface: "chat" });
+    await waitForRun(convId);
+    // The default (medium) here would render a different system prompt from
+    // the one the backend has cached, and re-read the whole conversation.
+    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "high" }));
   });
 });

@@ -22,6 +22,17 @@ import { createServer, type Server } from 'node:http';
 const GiB = 1024 ** 3;
 export const MOCK_GPU_BYTES = 24 * GiB;
 
+/** The thinking part of Qwen3.8's chat template: graded efforts it validates,
+ * and `enable_thinking` to switch thinking off — so a downloaded mock model is
+ * offered levels the way a real Qwen3.8 is (inference/thinking.ts). */
+const CHAT_TEMPLATE = [
+  "{%- if enable_thinking is undefined or enable_thinking is true %}",
+  "{%- set effort = reasoning_effort|default('xhigh') %}",
+  "{%- if reasoning_effort not in ('xhigh', 'high', 'medium', 'low') %}{{- raise_exception('Unexpected reasoning effort') }}{%- endif %}",
+  "{%- endif %}",
+  "{%- for message in messages %}{{ message.content }}{%- endfor %}",
+].join('\n');
+
 /** A small but valid GGUF: header, the metadata the server reads, padding. */
 function buildGguf(padTo: number): Buffer {
   const u32 = (n: number) => {
@@ -40,10 +51,11 @@ function buildGguf(padTo: number): Buffer {
     Buffer.from('GGUF', 'ascii'),
     u32(3),
     u64(0),
-    u64(3),
+    u64(4),
     kv('general.architecture', 8, str('llama')),
     kv('llama.block_count', 4, u32(22)),
     kv('llama.context_length', 4, u32(32768)),
+    kv('tokenizer.chat_template', 8, str(CHAT_TEMPLATE)),
   ]);
   return Buffer.concat([out, Buffer.alloc(Math.max(0, padTo - out.length))]);
 }

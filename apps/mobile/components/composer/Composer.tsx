@@ -14,7 +14,7 @@ import { Popover, PopoverBackdrop, PopoverContent, PopoverBody } from '@/compone
 import { ContextBreakdown } from '@/components/context/ContextBreakdown';
 import { CommandPalette } from './CommandPalette';
 import { AttachmentPreview } from './AttachmentPreview';
-import { ComposerPlusMenu } from './ComposerPlusMenu';
+import { ComposerPlusMenu, type ComposerThinking } from './ComposerPlusMenu';
 import { AttachmentRejectedModal } from './AttachmentRejectedModal';
 import type { ContextView } from '@/hooks/useContextUsage';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
@@ -63,6 +63,8 @@ interface ComposerProps {
     chip: string | null;
     onClearChip: () => void;
   } | null;
+  /** The thinking level, in the `+` menu. Null leaves the row out. */
+  thinking?: ComposerThinking | null;
 }
 
 export function Composer({
@@ -79,6 +81,7 @@ export function Composer({
   commandSeed,
   mcp = null,
   contextStage = null,
+  thinking = null,
 }: ComposerProps) {
   const [text, setText] = useState('');
   // Send and Stop wait for an open socket. While a resume is inside its grace
@@ -239,7 +242,7 @@ export function Composer({
         </Box>
 
         <HStack space="sm" className="items-center">
-          {/* The `+`: attach and MCP. A sheet on native, a popup with a
+          {/* The `+`: attach, context, thinking and MCP. A sheet on native, a popup with a
               hover submenu on web (ComposerPlusMenu.web.tsx) — see its own
               comment for why the web attach path isn't expo-image-picker's
               shim. */}
@@ -254,6 +257,7 @@ export function Composer({
                 ? { onOpen: contextStage.onOpenSettings, disabledReason: contextStage.controls?.reason ?? null }
                 : null
             }
+            thinking={thinking}
             disabled={!connected}
           />
           {contextStage?.chip && (

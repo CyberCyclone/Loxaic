@@ -31,6 +31,10 @@ export interface RecordedRequest {
   path: string;
   authorization: string | null;
   model: string | null;
+  /** Every thinking field the request carried — `reasoning_effort`,
+   * `reasoning`, `chat_template_kwargs`. A provider no thinking control was
+   * detected for must be sent none of them. */
+  thinkingFields: string[];
 }
 
 export interface MockProvider {
@@ -60,15 +64,16 @@ export async function startMockProvider(): Promise<MockProvider> {
         return;
       }
 
-      let body: { model?: string } = {};
+      let body: { model?: string } & Record<string, unknown> = {};
       try {
         const raw = Buffer.concat(chunks).toString('utf8');
-        body = raw ? (JSON.parse(raw) as { model?: string }) : {};
+        body = raw ? (JSON.parse(raw) as { model?: string } & Record<string, unknown>) : {};
       } catch {
         // A malformed body is still a request that arrived.
       }
       const authorization = req.headers.authorization ?? null;
-      requests.push({ path: url, authorization, model: body.model ?? null });
+      const thinkingFields = ['reasoning_effort', 'reasoning', 'chat_template_kwargs'].filter((k) => k in body);
+      requests.push({ path: url, authorization, model: body.model ?? null, thinkingFields });
 
       if (authorization !== `Bearer ${VALID_KEY}`) {
         res.writeHead(401, { 'Content-Type': 'application/json' });

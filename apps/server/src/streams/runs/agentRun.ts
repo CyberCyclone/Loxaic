@@ -7,6 +7,7 @@ import type {
   InstructionsDecision,
   McpOverrides,
   ProjectInstructions,
+  ThinkingLevel,
   Workspace,
 } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
@@ -140,6 +141,8 @@ export async function startAgentRun(input: {
   mcpOverrides?: McpOverrides | null;
   /** See chatRun.ts. */
   contextStage?: number;
+  /** See chatRun.ts. */
+  thinkingLevel?: ThinkingLevel;
 }): Promise<StartAgentRunResult> {
   const { userId, content, model, mode } = input;
   const broker = getStreamBroker();
@@ -262,6 +265,7 @@ export async function startAgentRun(input: {
     basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal, snapshot: prepared }),
     surface: "agent",
     newConversation: opening ? { chosenStage: input.contextStage } : undefined,
+    thinkingLevel: input.thinkingLevel,
     // The same gate agentSystemPrompt applies to the root file: a scratch
     // workspace has no project, only what the model wrote.
     nestedInstructions: workspace.kind !== "scratch",

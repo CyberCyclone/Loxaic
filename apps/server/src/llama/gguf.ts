@@ -11,9 +11,11 @@ import { shapeFromKeys, type ModelShape } from "./shape.ts";
  * It also reads the attention layout (`shape`, see shape.ts), which is what
  * lets the fit estimate price a long context correctly.
  *
- * Reads the metadata key/value section sequentially through a small buffer and
- * stops at the tokenizer — its arrays can hold hundreds of thousands of
- * strings, and every architecture key a model has comes before them.
+ * Reads the metadata key/value section sequentially through a small buffer.
+ * The tokenizer's arrays (hundreds of thousands of strings) are skipped, never
+ * held: the one tokenizer key wanted is the chat template, which is what says
+ * whether the model takes a thinking level (inference/thinking.ts), and it
+ * usually comes after them. The read stops as soon as it has it.
  */
 
 export interface GgufFacts {
@@ -24,7 +26,13 @@ export interface GgufFacts {
   /** Null when the file does not describe its attention (the fit estimate
    * then falls back to a rough figure). */
   shape: ModelShape | null;
+  /** `tokenizer.chat_template`, or null when the file carries none (or one
+   * past `MAX_TEMPLATE`, which no real template comes near). */
+  chatTemplate: string | null;
 }
+
+/** The longest chat template kept. Real ones are a few to a few tens of KB. */
+const MAX_TEMPLATE = 1024 * 1024;
 
 /** The longest per-layer array kept (`head_count_kv`, the SWA pattern). */
 const MAX_KEPT_ARRAY = 4096;
@@ -169,7 +177,7 @@ async function skipValue(r: Reader, type: number): Promise<void> {
 }
 
 export async function readGgufFacts(file: string): Promise<GgufFacts> {
-  const facts: GgufFacts = { architecture: null, nLayers: null, nCtxTrain: null, expertCount: null, shape: null };
+  const facts: GgufFacts = { architecture: null, nLayers: null, nCtxTrain: null, expertCount: null, shape: null, chatTemplate: null };
   const fh = await open(file, "r");
   try {
     const r = new Reader(fh, (await fh.stat()).size);
@@ -179,10 +187,23 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
     await r.u64(); // tensor count
     const kvCount = Math.min(Number(await r.u64()), MAX_KV);
     const keys: Record<string, number | boolean | string | number[] | boolean[]> = {};
+    let pastTokenizer = false;
     for (let i = 0; i < kvCount; i++) {
       const key = await r.str();
       const type = await r.u32();
-      if (key.startsWith("tokenizer.") && facts.architecture) break;
+      if (key.startsWith("tokenizer.")) pastTokenizer = true;
+      if (pastTokenizer) {
+        // Every architecture key comes before the tokenizer's, so anything
+        // after it is skipped unread, whatever it claims to be.
+        if (key === "tokenizer.chat_template" && type === 8) {
+          const len = Number(await r.u64());
+          if (len <= MAX_TEMPLATE) facts.chatTemplate = (await r.take(len)).toString("utf8");
+          else r.skip(len);
+          break;
+        }
+        await skipValue(r, type);
+        continue;
+      }
       if (key === "general.architecture" && type === 8) {
         facts.architecture = await r.str();
         continue;

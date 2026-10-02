@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, routineRuns, routines } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, McpOverrides } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, McpOverrides, ThinkingLevel } from "@loxaic/types";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
@@ -65,6 +65,9 @@ export async function startChatRun(input: {
   /** The context stage chosen in Context settings before the conversation
    * existed. Read only when this send opens the conversation. */
   contextStage?: number;
+  /** How hard to think (inference/thinking.ts). Absent means
+   * `DEFAULT_THINKING_LEVEL` — what a routine, which has no picker, gets. */
+  thinkingLevel?: ThinkingLevel;
   /**
    * False for a send nobody typed — a scheduled routine run. The picker's
    * "recently used" list is a record of what the user chose to run, and a
@@ -206,6 +209,7 @@ export async function startChatRun(input: {
     basePrompt: chatSystemPrompt(),
     surface: "chat",
     newConversation: opening ? { chosenStage: input.contextStage } : undefined,
+    thinkingLevel: input.thinkingLevel,
     abort,
     producer,
   }).then(

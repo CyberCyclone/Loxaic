@@ -9,7 +9,7 @@ import { db, eq } from "@loxaic/db";
 import { localModels, user } from "@loxaic/db/schema";
 import { getLocalModelRow, invalidateLocalModelCache } from "../catalog.ts";
 import {
-  backfillShapes,
+  backfillHeaderFacts,
   cancelDownload,
   DownloadError,
   pauseDownload,
@@ -219,12 +219,29 @@ describe("downloads", () => {
     // As a row from before the shape was read: no `shape` key at all.
     const { shape: _drop, ...older } = (await read()).meta as Record<string, unknown>;
     await db.update(localModels).set({ meta: older }).where(eq(localModels.id, id));
-    expect(await backfillShapes([await read()])).toBe(1);
+    expect(await backfillHeaderFacts([await read()])).toBe(1);
     // The fixture describes no attention heads, so it is stored as read-and-
     // absent (null), and the next boot does not read the file again.
     const after = await read();
-    expect(after.meta).toMatchObject({ nLayers: 28, shape: null });
-    expect(await backfillShapes([after])).toBe(0);
+    expect(after.meta).toMatchObject({ nLayers: 28, shape: null, thinking: null });
+    expect(await backfillHeaderFacts([after])).toBe(0);
+  });
+
+  it("reads the thinking control of a model downloaded before it was recorded", async () => {
+    const id = `${repo}:Q4_K_M`;
+    invalidateLocalModelCache();
+    const row = await getLocalModelRow(id);
+    if (!row) throw new Error("row missing");
+    // As a row from before the template was read: `shape` known, no `thinking`.
+    const { thinking: _drop, ...older } = row.meta as Record<string, unknown>;
+    await db.update(localModels).set({ meta: older }).where(eq(localModels.id, id));
+    invalidateLocalModelCache();
+    const before = await getLocalModelRow(id);
+    if (!before) throw new Error("row missing");
+    expect(await backfillHeaderFacts([before])).toBe(1);
+    invalidateLocalModelCache();
+    // The fixture carries no chat template: read, and found to take no level.
+    expect((await getLocalModelRow(id))?.meta).toMatchObject({ thinking: null });
   });
 
   it("does not read a file it could not read again on the next boot", async () => {
@@ -239,7 +256,7 @@ describe("downloads", () => {
     await db.update(localModels).set({ meta: older }).where(eq(localModels.id, id));
     // The file is gone from under the row: the read fails.
     const broken = { ...(await read()), files: [{ path: "no-such-file.gguf", size: 1, sha256: null }] };
-    expect(await backfillShapes([broken])).toBe(0);
+    expect(await backfillHeaderFacts([broken])).toBe(0);
     const after = await read();
     expect(after.meta).toMatchObject({ shape: null });
     // Recorded, so the retry is not made — a row with `shape` present is skipped.

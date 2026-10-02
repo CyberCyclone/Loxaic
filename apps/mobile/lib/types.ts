@@ -11,7 +11,8 @@ export type AgentMode = 'planning' | 'manual' | 'auto'
 
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error'
 
-export type ThinkingLevel = 'None' | 'Low' | 'Medium' | 'High'
+export type { ThinkingLevel } from '@loxaic/types'
+import type { ThinkingLevel } from '@loxaic/types'
 
 export type ThemePref = 'light' | 'dark' | 'system'
 
@@ -21,7 +22,7 @@ export type { ModelInfo } from '@loxaic/api-client'
 export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand, AttachmentRef } from '@loxaic/api-client'
 import type { ContextBreakdown, CompactionStats, AttachmentRef, CheckinDecisionNote } from '@loxaic/api-client'
 
-export const THINKING_LEVELS: ThinkingLevel[] = ['None', 'Low', 'Medium', 'High']
+export { THINKING_LEVELS } from '@loxaic/types'
 
 export type { Workspace } from '@loxaic/types'
 
