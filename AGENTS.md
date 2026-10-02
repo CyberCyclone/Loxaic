@@ -1323,6 +1323,16 @@ replies.
   every turn. `windowFull` also ignores the user's own auto-compact preference, deliberately: the
   admin chose `extend` for the model and, unlike a compaction, it discards nothing; the preference
   still gates that fallback.
+- **On a model set to compact, the first crossing at a stage is the person's to decide.** The
+  "nearly full" prompt starts at 75% and automatic compaction runs after a turn that ends past 85%,
+  so a single turn that jumped across both (a big paste, a long tool result, a real model's first
+  large prompt) compacted before Extend could ever be offered — reported from a real test of this
+  PR. `leaveCompactionToPerson` (stageRun.ts) skips that compaction once per conversation and
+  stage when the person could extend right now (`checkStageRequest` for the next stage: allowed,
+  fits, no cooldown or someone else's switch) and the conversation is interactive (never a
+  routine). If nobody chooses, the next turn past the threshold compacts as before, so a
+  conversation is not left over its window because someone looked away. Remembered in memory: a
+  restart leaves one more turn to the person, the cheap direction.
 - **Compact-then-switch waits for the conversation to be free, not for something to take a while**
   (`waitForRunEnd` in the route): the compaction's end is announced from inside its run, before its
   `finally` releases the conversation, so starting the stage run at once is refused as "already in

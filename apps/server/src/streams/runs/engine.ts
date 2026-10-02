@@ -1433,6 +1433,18 @@ export async function runToolLoop(ctx: {
       console.warn(`automatic context extension skipped for ${convId}: ${(err as Error).message}`);
     }
   }
+  // A model that can still be extended by this person leaves the first
+  // crossing at a stage to them: the client offers Compact or Extend, and the
+  // next turn past the threshold compacts if nobody chose (stageRun.ts).
+  if (autoCompact) {
+    try {
+      const { leaveCompactionToPerson } = await import("./stageRun.ts");
+      if (await leaveCompactionToPerson({ userId, conversationId: convId, model })) autoCompact = false;
+    } catch (err) {
+      // Unable to tell: compact, as before this existed.
+      console.warn(`could not decide whether to ask before compacting ${convId}: ${(err as Error).message}`);
+    }
+  }
   if (autoCompact && (await userAllowsAutoCompact(userId))) {
     try {
       // Dynamic on purpose: compactRun imports this module's history loader,

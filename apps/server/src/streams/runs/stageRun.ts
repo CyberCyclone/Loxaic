@@ -1,6 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { count, db, eq } from "@loxaic/db";
-import { messages } from "@loxaic/db/schema";
+import { conversations, messages } from "@loxaic/db/schema";
 import type { ContextStageReason, ContextStageStatus, PromptProgress } from "@loxaic/types";
 import { summaryMessage } from "../../inference/context.ts";
 import { modelRunInfo } from "../../inference/models.ts";
@@ -229,6 +229,70 @@ export async function autoExtend(input: {
     },
   });
   return true;
+}
+
+/** `conversation|model|stage` → when a crossing there was left to the person.
+ * In memory: after a restart one more turn is left to them, which is the cheap
+ * direction. Bounded, oldest first. */
+const leftToPerson = new Map<string, number>();
+const LEFT_TO_PERSON_MAX = 5_000;
+
+/**
+ * The model's `whenFull: "compact"` with a larger stage the person could move
+ * to: is the first turn that crosses the compaction threshold theirs to decide?
+ *
+ * The "nearly full" prompt (Compact or Extend) is offered from 75% of the
+ * window, and automatic compaction runs after any turn that ends past 85%. A
+ * single turn that jumps across both — a big paste, a long tool result, a real
+ * model's first large prompt — used to compact before the prompt could ever be
+ * shown, so the choice the stages exist for was never offered. So the first
+ * crossing at a stage is left to the person: nothing compacts, and the client
+ * shows the prompt. If they do not choose (Not now, or just send again), the
+ * next turn past the threshold compacts as before — a conversation is never
+ * left over its window for long because someone looked away.
+ *
+ * Only when asking means something: an interactive conversation (a routine has
+ * nobody to ask), and only if this person could extend right now —
+ * `checkStageRequest` for the next stage says whether they may change it, the
+ * next stage fits, and no cooldown or someone else's switch is in the way.
+ */
+export async function leaveCompactionToPerson(input: { userId: string; conversationId: string; model: string }): Promise<boolean> {
+  const row = await getLocalModelRow(input.model);
+  const config = row ? rowStages(row) : null;
+  if (!row || config?.whenFull !== "compact") return false;
+  const active = activeStageIndex(row);
+  if (active >= config.stages.length) return false; // nothing larger to offer
+  const convs = await db
+    .select({ kind: conversations.kind })
+    .from(conversations)
+    .where(eq(conversations.id, input.conversationId));
+  // A routine's conversation has nobody to ask; a missing one, nothing to ask about.
+  if (convs.length === 0 || convs[0].kind === "routine") return false;
+  try {
+    await checkStageRequest({
+      row,
+      target: active + 1,
+      isAdmin: await isAdmin(input.userId),
+      conversationId: input.conversationId,
+      userId: input.userId,
+    });
+  } catch (err) {
+    if (err instanceof StageRequestError) return false;
+    throw err;
+  }
+  const key = `${input.conversationId}|${row.id}|${String(active)}`;
+  if (leftToPerson.has(key)) return false; // asked once at this stage: compact now
+  leftToPerson.set(key, Date.now());
+  if (leftToPerson.size > LEFT_TO_PERSON_MAX) {
+    const oldest = leftToPerson.keys().next();
+    if (!oldest.done) leftToPerson.delete(oldest.value);
+  }
+  return true;
+}
+
+/** Test seam. */
+export function __resetLeftToPersonForTest(): void {
+  leftToPerson.clear();
 }
 
 /**

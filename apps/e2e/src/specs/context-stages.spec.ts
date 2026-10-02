@@ -24,6 +24,7 @@ import {
   isVisible,
   platform,
   tap,
+  testIdSelector,
   typeInto,
   waitForAbsent,
   waitForGone,
@@ -472,5 +473,46 @@ describe('YaRN context stages', () => {
     await browser.pause(4_000);
     if (await isVisible('chat.contextStage')) throw new Error('the stage card came back after a reconnect');
     await shot('context-stages-card-stays-dismissed');
+  });
+
+  it('a turn that jumps past the compaction threshold asks first — and compacts on the next one if nobody chose', async function () {
+    this.timeout(6 * 60_000);
+    // Counting replies reads the page; the rule itself is the server's, the
+    // same on every platform.
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    const replies = (): Promise<number> =>
+      browser.execute(
+        (selector: string) => (document.querySelector(selector)?.textContent ?? '').split('Hello from').length - 1,
+        testIdSelector('chat.messageList'),
+      );
+    const listText = (): Promise<string> =>
+      browser.execute((selector: string) => document.querySelector(selector)?.textContent ?? '', testIdSelector('chat.messageList'));
+
+    await relaunch();
+    await startNewThread();
+    // Enough of a conversation for automatic compaction to apply at all (its
+    // 8-message floor), all of it small.
+    for (let i = 1; i <= 4; i++) {
+      await sendMessage(`note number ${String(i)}`);
+      await browser.waitUntil(async () => (await replies()) >= i, { timeout: 60_000, timeoutMsg: `reply ${String(i)} never arrived` });
+      await waitForComposerReady();
+    }
+    // One turn that reports 90% of the window: from well below the prompt
+    // (75%) straight past automatic compaction (85%). It used to compact at
+    // once, so Extend was never offered.
+    await sendMessage('please overflow the context');
+    await browser.waitUntil(async () => (await replies()) >= 5, { timeout: 60_000, timeoutMsg: 'the overflowing reply never arrived' });
+    await waitForVisible('context.stageModal', 30_000);
+    await waitForVisible('context.stageModal.extend');
+    await shot('context-stages-asked-before-compacting');
+    await browser.pause(3_000);
+    if ((await listText()).includes('Compacted')) throw new Error('it compacted instead of asking');
+
+    // Nobody chose: the next turn past the threshold compacts, as it always did.
+    await tap('context.stageModal.notNow');
+    await waitForGone('context.stageModal', 10_000);
+    await sendMessage('please overflow the context');
+    await waitForTextIn('chat.messageList', 'Compacted', 90_000);
+    await shot('context-stages-compacted-when-nobody-chose');
   });
 });

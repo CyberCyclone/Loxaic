@@ -54,7 +54,7 @@ vi.mock("../../auth/middleware", () => ({
   requireAdmin: () => Promise.resolve(currentUser.id),
 }));
 const { contextStageRoutes } = await import("../context-stage.ts");
-const { autoExtend, stageForNewConversation, startStageRun } = await import("../../streams/runs/stageRun.ts");
+const { __resetLeftToPersonForTest, autoExtend, leaveCompactionToPerson, stageForNewConversation, startStageRun } = await import("../../streams/runs/stageRun.ts");
 
 const host = `test-stage-routes-${uuid()}`;
 const model = `test/stage-routes-${uuid().slice(0, 8)}:Q4_K_M`;
@@ -427,6 +427,49 @@ describe("a new conversation", () => {
     await stageForNewConversation({ userId: alice, conversationId: aliceConv, model, chosen: 2, producer, signal: new AbortController().signal });
     expect(await activeStage()).toBe(0);
     expect(producer.events.at(-1)).toMatchObject({ kind: "context.stage", step: "failed", message: "An admin controls this model's context." });
+  });
+});
+
+describe("a turn that crosses the compaction threshold, on a model set to compact", () => {
+  const leave = (userId = alice, conversationId = aliceConv) => leaveCompactionToPerson({ userId, conversationId, model });
+  beforeEach(() => { __resetLeftToPersonForTest(); __resetStageSwitchForTest(); });
+
+  it("is left to the person the first time at a stage, and compacts the next time nobody chose", async () => {
+    // A single turn can jump from below the prompt (75%) past compaction (85%);
+    // compacting at once meant Extend was never offered.
+    expect(await leave()).toBe(true);
+    expect(await leave()).toBe(false);
+    // At the next stage it is asked again.
+    await setModel({ activeStage: 1 });
+    expect(await leave()).toBe(true);
+  });
+
+  it("is not left to anyone at the largest stage, or on a model that extends by itself", async () => {
+    await setModel({ activeStage: 2 });
+    expect(await leave()).toBe(false);
+    await setModel({ activeStage: 0, contextStages: stagesConfig({ whenFull: "extend" }) });
+    expect(await leave()).toBe(false);
+  });
+
+  it("is not left to someone who could not extend: an admins-only model compacts for everyone else", async () => {
+    await setModel({ contextStages: stagesConfig({ whoMayChange: "admins" }) });
+    expect(await leave()).toBe(false);
+    // An admin, on a conversation of their own, is asked.
+    const [{ id: adminConv }] = await db.insert(conversations).values({ ownerId: admin, title: "admin's" }).returning();
+    try {
+      expect(await leave(admin, adminConv)).toBe(true);
+    } finally {
+      await db.delete(conversations).where(eq(conversations.id, adminConv));
+    }
+  });
+
+  it("is not left to anyone on a routine's conversation, which has nobody to ask", async () => {
+    const [{ id: routineConv }] = await db.insert(conversations).values({ ownerId: alice, title: "a routine's", kind: "routine" }).returning();
+    try {
+      expect(await leave(alice, routineConv)).toBe(false);
+    } finally {
+      await db.delete(conversations).where(eq(conversations.id, routineConv));
+    }
   });
 });
 
