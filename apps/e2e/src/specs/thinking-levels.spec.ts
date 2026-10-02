@@ -19,7 +19,7 @@ import { provisionAdmin, provisionUser, uniqueCreds } from '../helpers/auth.ts';
 import { mockProviderApiBase } from '../../scripts/standup.ts';
 import { VALID_KEY } from '../../scripts/mock-provider.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, isVisible, platform, tap, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, platform, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   chooseScratchWorkspace,
   chooseThinkingLevel,
@@ -46,11 +46,14 @@ const GRADED = 'llama-3.1-8b-instruct';
 const TOGGLE = 'qwen2.5-14b-instruct';
 const PROMPT = 'what thinking level is this';
 
+/** Waits on an element inside the modal, with waitForAbsent: under UiAutomator2
+ * a dismissed modal's root (and an element found earlier) goes on reporting
+ * `displayed` — settings-every-screen.spec.ts does the same. */
 async function pickModel(id: string): Promise<void> {
   await tap('composer.model');
   await waitForVisible(`models.row.${id}`);
   await tap(`models.row.${id}`);
-  await waitForGone('models.dialog', 10_000);
+  await waitForAbsent('models.search', 10_000);
 }
 
 describe('the thinking level in the + menu', () => {
@@ -71,7 +74,7 @@ describe('the thinking level in the + menu', () => {
       expect(await isVisible(`models.thinking.${level}`)).toBe(false);
     }
     await tap(`models.row.${GRADED}`);
-    await waitForGone('models.dialog', 10_000);
+    await waitForAbsent('models.search', 10_000);
   });
 
   it('starts a new chat at the default, Medium, and sends it', async () => {
@@ -150,7 +153,7 @@ describe('the thinking level in the + menu', () => {
     await tap('settings.save');
     // Save keeps the modal open; closing it is the person's own step.
     await tap('settings.close');
-    await waitForGone('settings.close', 10_000);
+    await waitForAbsent('settings.name', 10_000);
     await startNewThread('chat');
     await pickModel(GRADED);
     expect(await thinkingRowValue()).toBe('Low');
@@ -161,7 +164,7 @@ describe('the thinking level in the + menu', () => {
     await tap('settings.save');
     // Save keeps the modal open; closing it is the person's own step.
     await tap('settings.close');
-    await waitForGone('settings.close', 10_000);
+    await waitForAbsent('settings.name', 10_000);
   });
 
   it('opens the submenu at phone width in place of the menu, on a press but never on a hover', async function () {
