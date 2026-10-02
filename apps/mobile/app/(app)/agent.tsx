@@ -29,6 +29,10 @@ import { useRecentModels } from '@/hooks/useRecentModels';
 import { pickSelectedModel } from '@/lib/selectModel';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
+import { useContextStages } from '@/hooks/useContextStages';
+import { ContextStageModal } from '@/components/context/ContextStageModal';
+import { ContextSettingsSheet } from '@/components/context/ContextSettingsSheet';
+import { formatWindow } from '@/lib/contextStages';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useProjectInstructions } from '@/hooks/useProjectInstructions';
@@ -63,6 +67,9 @@ export default function AgentScreen() {
   const { config } = useServerConfig();
   const breakpoint = useBreakpoint();
   const pendingMcpRef = useRef<McpOverrides | undefined>(undefined);
+  // The context stage chosen for a run that does not exist yet; read by the
+  // session at send time, like the MCP choices above.
+  const pendingStageRef = useRef<number | undefined>(undefined);
   const {
     runs,
     activeId,
@@ -100,7 +107,8 @@ export default function AgentScreen() {
     dismissNoRoom,
     returnedText,
     promotion,
-  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef);
+    stageCard,
+  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef);
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
@@ -192,6 +200,30 @@ export default function AgentScreen() {
   // only offered once there is a run to have one — and it holds a socket (and,
   // on a local workspace, a shell) only while it is open.
   const [terminalOpen, setTerminalOpen] = useState(false);
+
+  const readOnlyReason =
+    activeRun && !canEdit(activeRun)
+      ? 'This run is shared with you for viewing. You can follow it as it happens, but not send.'
+      : !showsDisconnected(connection)
+        ? null
+        : disconnectedCopy(connection).readOnly('run');
+
+  // A host model with YaRN stages — see chat.tsx.
+  const stages = useContextStages({
+    token,
+    model: selectedModel || undefined,
+    models,
+    conversationId: activeId,
+    context,
+    streaming: busy,
+    readOnly: readOnlyReason !== null,
+    isAdmin,
+    onCompact: () => { handleRunCommand('compact', ''); },
+    refreshModels: () => { void refreshModels(); },
+    stageCard,
+    promotion,
+  });
+  pendingStageRef.current = stages.pendingStage;
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
@@ -439,6 +471,7 @@ export default function AgentScreen() {
                   pendingApproval={pendingApproval}
                   pendingCheckin={pendingCheckin}
                   history={history}
+                  stageCard={stageCard}
                   onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
                   onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
                   onCheckinContinue={() => { handleSteps('continue'); }}
@@ -485,13 +518,20 @@ export default function AgentScreen() {
                 mcp={mcp}
                 onRunCommand={handleRunCommand}
                 commandSeed={commandSeed}
-                readOnlyReason={
-                  activeRun && !canEdit(activeRun)
-                    ? 'This run is shared with you for viewing. You can follow it as it happens, but not send.'
-                    : !showsDisconnected(connection)
-                      ? null
-                      : disconnectedCopy(connection).readOnly('run')
+                contextStage={
+                  stages.staged
+                    ? {
+                        controls: stages.controls,
+                        onOpenSettings: () => { stages.open({ kind: 'settings' }); },
+                        chip:
+                          stages.pendingStage !== undefined && stages.pendingStage > 0 && stages.stage
+                            ? `Context: ${formatWindow(stages.stage.windows[stages.pendingStage])}`
+                            : null,
+                        onClearChip: stages.clearChoice,
+                      }
+                    : null
                 }
+                readOnlyReason={readOnlyReason}
               />
             </VStack>
 
@@ -545,6 +585,8 @@ export default function AgentScreen() {
         config={config}
         token={token}
       />
+      <ContextStageModal stages={stages} />
+      <ContextSettingsSheet stages={stages} />
       <NoRoomModal
         notice={noRoom}
         isAdmin={isAdmin}

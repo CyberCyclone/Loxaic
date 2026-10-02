@@ -23,6 +23,13 @@ import {
   removeFiles,
   resumeDownload,
 } from "../llama/downloads.ts";
+import {
+  activeStageIndex,
+  effectiveSettings,
+  normalizeContextStages,
+  rowStages,
+  settingsForStage,
+} from "../llama/context-stages.ts";
 import { bestFit, type FitLabel } from "../llama/fit.ts";
 import { HfError, repoDetails, searchModels, type HfSort } from "../llama/hf.ts";
 import { LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
@@ -71,9 +78,14 @@ function modelView(row: LocalModelRow, loaded: Map<string, { value: string; fail
     /** Why a pinned model is not loaded, or null. */
     pinError: row.pinned ? pinErrorFor(row.id) : null,
     loadSettings: row.loadSettings,
+    /** YaRN stages as stored (null until set up), and the stage the model
+     * loads at now — 0 is standard. */
+    contextStages: row.contextStages ?? null,
+    activeStage: activeStageIndex(row),
     meta,
     hasVision: rowMmproj(row) !== null,
-    fit: fitFor(row.sizeBytes, meta, row.loadSettings as Record<string, unknown>, row.id),
+    /** At the settings it loads with now, its active stage's included. */
+    fit: fitFor(row.sizeBytes, meta, effectiveSettings(row), row.id),
     /** The router's view: `loaded`, `loading`, `unloaded`, `sleeping`, or null
      * when it cannot be asked. */
     runtimeStatus: status?.value ?? null,
@@ -302,6 +314,16 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
       if (body.loadSettings !== undefined) {
         patch.loadSettings = normalizeLoadSettings(body.loadSettings, rowMeta(row));
       }
+      if (body.contextStages !== undefined || body.loadSettings !== undefined) {
+        // Stages are checked against the base settings they extend, whichever
+        // of the two changed: raising the standard context past stage 1 must
+        // be refused, not leave a stage that is smaller than standard.
+        const base = (patch.loadSettings ?? row.loadSettings ?? {}) as Record<string, never>;
+        const stages = normalizeContextStages(body.contextStages !== undefined ? body.contextStages : row.contextStages, rowMeta(row), base);
+        if (body.contextStages !== undefined) patch.contextStages = stages;
+        const count = stages?.enabled ? stages.stages.length : 0;
+        if (row.activeStage > count) patch.activeStage = count;
+      }
     } catch (err) {
       return fail(reply, err);
     }
@@ -325,8 +347,15 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     try {
       const settings = normalizeLoadSettings(body.loadSettings ?? {}, rowMeta(row));
       const weights = row.sizeBytes - (settings.vision === false ? (rowMmproj(row)?.size ?? 0) : 0);
+      // The draft stages, priced the way they would load: each one's context
+      // and cache types on top of the draft base settings.
+      const stagesDraft = body.contextStages !== undefined ? normalizeContextStages(body.contextStages, rowMeta(row), settings) : null;
+      const draftRow = { ...row, loadSettings: settings, contextStages: stagesDraft ? { ...stagesDraft, enabled: true } : null };
       await refreshMemory();
-      return { fit: fitFor(weights, rowMeta(row), settings, row.id) };
+      return {
+        fit: fitFor(weights, rowMeta(row), settings, row.id),
+        stages: (rowStages(draftRow)?.stages ?? []).map((_, i) => fitFor(weights, rowMeta(row), settingsForStage(draftRow, i + 1), row.id)),
+      };
     } catch (err) {
       return fail(reply, err);
     }

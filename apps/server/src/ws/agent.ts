@@ -8,6 +8,7 @@ import { assertConversationAccess, atLeast, resolveAccess } from "../streams/aut
 import { findRunsByApprovalCallId, isStepsDecision, getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
+import { normalizeContextStage } from "../streams/runs/stageRun.ts";
 
 /** Minimal shape of the underlying `ws` socket we actually touch. `ws` ships
  * no type declarations of its own (and none are installed here), so without
@@ -132,6 +133,7 @@ export function agentWsHandler(app: FastifyInstance) {
             // A claim off the socket like any other field: normalised here,
             // and only ever applied to a conversation this send creates.
             mcpOverrides: normalizeMcpOverrides(msg.mcp_overrides),
+            contextStage: normalizeContextStage(msg.context_stage),
           });
           pendingSend?.started(run);
           const result = await run;

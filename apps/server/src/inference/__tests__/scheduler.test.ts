@@ -4,6 +4,7 @@ import { localModels } from "@loxaic/db/schema";
 import { invalidateLocalModelCache } from "../../llama/catalog.ts";
 import {
   __resetSchedulerForTest,
+  acquireExclusiveSlot,
   acquireRunSlot,
   kickScheduler,
   RunSlotAbortedError,
@@ -85,7 +86,7 @@ describe("one slot", () => {
 
     await Promise.resolve();
     expect(secondAdmitted).toBe(false);
-    expect(schedulerState()).toEqual({ running: 1, waiting: 1 });
+    expect(schedulerState()).toMatchObject({ running: 1, waiting: 1 });
 
     first?.release();
     expect(await second).not.toBeNull();
@@ -132,7 +133,7 @@ describe("more slots than runs", () => {
       acquireRunSlot({ signal: live(), onQueued: noop }),
     ]);
     expect(slots.every(Boolean)).toBe(true);
-    expect(schedulerState()).toEqual({ running: 3, waiting: 0 });
+    expect(schedulerState()).toMatchObject({ running: 3, waiting: 0 });
   });
 });
 
@@ -197,14 +198,14 @@ describe("a stopped run does not hold up the queue", () => {
     expect(schedulerState().waiting).toBe(0);
 
     first?.release();
-    expect(schedulerState()).toEqual({ running: 0, waiting: 0 });
+    expect(schedulerState()).toMatchObject({ running: 0, waiting: 0 });
   });
 
   it("does not admit a run that was already stopped before it asked", async () => {
     const stopping = new AbortController();
     stopping.abort();
     expect(await acquireRunSlot({ signal: stopping.signal, onQueued: noop })).toBeNull();
-    expect(schedulerState()).toEqual({ running: 0, waiting: 0 });
+    expect(schedulerState()).toMatchObject({ running: 0, waiting: 0 });
   });
 
   it("throws out of an approval wait when the run is stopped meanwhile", async () => {
@@ -242,7 +243,7 @@ describe("raising the limit applies at once", () => {
     pin(2);
     kickScheduler();
     expect(await second).not.toBeNull();
-    expect(schedulerState()).toEqual({ running: 2, waiting: 0 });
+    expect(schedulerState()).toMatchObject({ running: 2, waiting: 0 });
     first?.release();
   });
 });
@@ -286,9 +287,9 @@ describe("one queue per backend", () => {
     // A run on another provider is admitted immediately, not queued.
     const remote = await acquireRunSlot({ signal: live(), onQueued: noop, providerId: "prov-a" });
     expect(remote).not.toBeNull();
-    expect(schedulerState("prov-a")).toEqual({ running: 1, waiting: 0 });
+    expect(schedulerState("prov-a")).toMatchObject({ running: 1, waiting: 0 });
     // And the built-in queue is untouched by it.
-    expect(schedulerState()).toEqual({ running: 1, waiting: 0 });
+    expect(schedulerState()).toMatchObject({ running: 1, waiting: 0 });
 
     local?.release();
     remote?.release();
@@ -308,7 +309,7 @@ describe("one queue per backend", () => {
     // more than a tick and a fixed wait would be a race either way.
     await waitForWaiters("prov-b");
     expect(admitted).toBe(false);
-    expect(schedulerState("prov-b")).toEqual({ running: 1, waiting: 1 });
+    expect(schedulerState("prov-b")).toMatchObject({ running: 1, waiting: 1 });
 
     first?.release();
     const slot = await second;
@@ -317,7 +318,7 @@ describe("one queue per backend", () => {
   });
 
   it("reports an untouched provider as idle rather than inventing a queue", () => {
-    expect(schedulerState("never-used")).toEqual({ running: 0, waiting: 0 });
+    expect(schedulerState("never-used")).toMatchObject({ running: 0, waiting: 0 });
   });
 
   it("gives an unresolvable provider the floor, not the built-in backend's slot count", async () => {
@@ -379,5 +380,88 @@ describe("one queue per backend", () => {
     // floor of 1 — never "unlimited", which would restore the interleaving
     // invisibly.
     await expect(resolveMaxConcurrent("prov-unknown")).resolves.toBe(1);
+  });
+});
+
+describe("taking the whole backend (a context-stage switch)", () => {
+  it("waits for every running run, even with slots to spare", async () => {
+    pin(4);
+    const a = await acquireRunSlot({ signal: live(), onQueued: noop });
+    const b = await acquireRunSlot({ signal: live(), onQueued: noop });
+    let held = false;
+    const exclusive = acquireExclusiveSlot({ signal: live(), onQueued: noop }).then((s) => { held = true; return s; });
+    await waitForWaiters();
+    a?.release();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(held).toBe(false);
+    b?.release();
+    const slot = await exclusive;
+    expect(slot).not.toBeNull();
+    expect(schedulerState()).toMatchObject({ running: 1, exclusive: true });
+    slot?.release();
+    expect(schedulerState()).toMatchObject({ running: 0, exclusive: false });
+  });
+
+  it("lets nothing start behind it — a stream of new runs cannot starve it", async () => {
+    pin(4);
+    const running = await acquireRunSlot({ signal: live(), onQueued: noop });
+    const exclusive = acquireExclusiveSlot({ signal: live(), onQueued: noop });
+    await waitForWaiters();
+    // Slots are free, but the switch is at the front of the line.
+    let laterAdmitted = false;
+    const later = acquireRunSlot({ signal: live(), onQueued: noop }).then((s) => { laterAdmitted = true; return s; });
+    await waitForWaiters(undefined, 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(laterAdmitted).toBe(false);
+
+    running?.release();
+    const slot = await exclusive;
+    await new Promise((r) => setTimeout(r, 20));
+    // Still nothing while the switch holds the backend...
+    expect(laterAdmitted).toBe(false);
+    slot?.release();
+    // ...and the run behind it goes as soon as it lets go.
+    expect(await later).not.toBeNull();
+  });
+
+  it("is admitted at once on an idle backend, and gives way when stopped in line", async () => {
+    const idle = await acquireExclusiveSlot({ signal: live(), onQueued: noop });
+    expect(idle).not.toBeNull();
+    idle?.release();
+
+    const running = await acquireRunSlot({ signal: live(), onQueued: noop });
+    const stop = new AbortController();
+    const exclusive = acquireExclusiveSlot({ signal: stop.signal, onQueued: noop });
+    const behind = acquireRunSlot({ signal: live(), onQueued: noop });
+    await waitForWaiters(undefined, 2);
+    stop.abort();
+    expect(await exclusive).toBeNull();
+    running?.release();
+    // With the switch gone, the run that queued behind it is not stranded.
+    expect(await behind).not.toBeNull();
+  });
+
+  it("admits the run behind a cancelled switch at once when a slot is free — no release needed", async () => {
+    pin(2);
+    // One ordinary run holds a slot; the other is free.
+    const running = await acquireRunSlot({ signal: live(), onQueued: noop });
+    const stop = new AbortController();
+    const exclusive = acquireExclusiveSlot({ signal: stop.signal, onQueued: noop });
+    await waitForWaiters();
+    // The fast path refuses it: a switch is at the front of the line.
+    let admitted = false;
+    const behind = acquireRunSlot({ signal: live(), onQueued: noop }).then((s) => { admitted = true; return s; });
+    await waitForWaiters(undefined, 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(admitted).toBe(false);
+
+    stop.abort();
+    expect(await exclusive).toBeNull();
+    // The running run has not finished and nothing else released; the run that
+    // was held back must not wait for one.
+    expect(await Promise.race([behind, new Promise((r) => setTimeout(() => { r("stranded"); }, 1000))])).not.toBe("stranded");
+    expect(schedulerState()).toMatchObject({ running: 2 });
+    (await behind)?.release();
+    running?.release();
   });
 });

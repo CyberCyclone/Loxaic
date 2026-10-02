@@ -35,6 +35,10 @@ import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
+import { useContextStages } from '@/hooks/useContextStages';
+import { ContextStageModal } from '@/components/context/ContextStageModal';
+import { ContextSettingsSheet } from '@/components/context/ContextSettingsSheet';
+import { formatWindow } from '@/lib/contextStages';
 
 export default function ChatScreen() {
   const connection = useConnection();
@@ -43,6 +47,9 @@ export default function ChatScreen() {
   const router = useRouter();
   const breakpoint = useBreakpoint();
   const pendingMcpRef = useRef<McpOverrides | undefined>(undefined);
+  // The context stage chosen for a chat that does not exist yet; read by the
+  // session at send time, like the MCP choices above.
+  const pendingStageRef = useRef<number | undefined>(undefined);
   const {
     conversations,
     activeId,
@@ -73,7 +80,8 @@ export default function ChatScreen() {
     dismissNoRoom,
     returnedText,
     promotion,
-  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef);
+    stageCard,
+  } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef, pendingStageRef);
   // Read by the session at send time; see useChatSession's `pendingMcp`.
   const mcp = useMcpSwitches(token, activeId, 'chat', promotion);
   pendingMcpRef.current = mcp.pendingOverrides;
@@ -115,6 +123,31 @@ export default function ChatScreen() {
   });
 
   const context = useContextUsage(activeConv?.msgs, selectedModel ? getWindow(selectedModel) : null);
+
+  const readOnlyReason =
+    activeConv && !canEdit(activeConv)
+      ? 'This conversation is shared with you for viewing. You can read it as it happens, but not send.'
+      : !showsDisconnected(connection)
+        ? null
+        : disconnectedCopy(connection).readOnly('conversation');
+
+  // A host model with YaRN stages: the approaching-the-limit and step-down
+  // modals, Context settings, and the stage chosen before a chat exists.
+  const stages = useContextStages({
+    token,
+    model: selectedModel || undefined,
+    models,
+    conversationId: activeId,
+    context,
+    streaming,
+    readOnly: readOnlyReason !== null,
+    isAdmin,
+    onCompact: () => { handleRunCommand('compact', ''); },
+    refreshModels: () => { void refreshModels(); },
+    stageCard,
+    promotion,
+  });
+  pendingStageRef.current = stages.pendingStage;
 
   // The dialog's "reason" is whatever the model said alongside this call —
   // no separate protocol field for it, just the assistant message that owns
@@ -167,6 +200,9 @@ export default function ChatScreen() {
         conversationId={sharingId}
         title={conversations.find((c) => c.id === sharingId)?.title ?? ''}
       />
+
+      <ContextStageModal stages={stages} />
+      <ContextSettingsSheet stages={stages} />
 
       <NoRoomModal
         notice={noRoom}
@@ -228,6 +264,7 @@ export default function ChatScreen() {
             queuePosition={queuePosition}
             model={selectedModel ? getName(selectedModel) : undefined}
             history={history}
+            stageCard={stageCard}
           />
         ) : (
           <PromptSuggestions
@@ -266,13 +303,20 @@ export default function ChatScreen() {
           onRunCommand={handleRunCommand}
           commandSeed={composerSeed}
           mcp={mcp}
-          readOnlyReason={
-            activeConv && !canEdit(activeConv)
-              ? 'This conversation is shared with you for viewing. You can read it as it happens, but not send.'
-              : !showsDisconnected(connection)
-                ? null
-                : disconnectedCopy(connection).readOnly('conversation')
+          contextStage={
+            stages.staged
+              ? {
+                  controls: stages.controls,
+                  onOpenSettings: () => { stages.open({ kind: 'settings' }); },
+                  chip:
+                    stages.pendingStage !== undefined && stages.pendingStage > 0 && stages.stage
+                      ? `Context: ${formatWindow(stages.stage.windows[stages.pendingStage])}`
+                      : null,
+                  onClearChip: stages.clearChoice,
+                }
+              : null
           }
+          readOnlyReason={readOnlyReason}
         />
         </KeyboardAvoidingView>
       </VStack>

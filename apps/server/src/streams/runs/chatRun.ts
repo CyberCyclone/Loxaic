@@ -12,6 +12,7 @@ import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { runToolLoop } from "./engine.ts";
+import { hasNoMessages } from "./stageRun.ts";
 import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
@@ -61,6 +62,9 @@ export async function startChatRun(input: {
    * send creates the conversation, so its first request already follows
    * them; an existing conversation's choices change through PATCH. */
   mcpOverrides?: McpOverrides | null;
+  /** The context stage chosen in Context settings before the conversation
+   * existed. Read only when this send opens the conversation. */
+  contextStage?: number;
   /**
    * False for a send nobody typed — a scheduled routine run. The picker's
    * "recently used" list is a record of what the user chose to run, and a
@@ -126,6 +130,11 @@ export async function startChatRun(input: {
     throw new Error("A response is already in progress for this conversation");
   }
 
+  // Before the user message lands: this send opens the conversation (a new
+  // chat, or a routine's fresh run), so its model starts at the stage it chose
+  // or at standard — see stageRun.ts.
+  const opening = await hasNoMessages(convId);
+
   const userMsgId = uuid();
   const userLamport = Date.now();
   await db.insert(messages).values({
@@ -177,7 +186,7 @@ export async function startChatRun(input: {
   producer.emit({ kind: "message.end", message_id: userMsgId, status: "complete" });
 
   const abort = new AbortController();
-  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map() });
+  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
   announceNewRun(convId, streamId);
 
   // Wired before the loop starts, because a run that fails inside its first
@@ -196,6 +205,7 @@ export async function startChatRun(input: {
     mode: "manual",
     basePrompt: chatSystemPrompt(),
     surface: "chat",
+    newConversation: opening ? { chosenStage: input.contextStage } : undefined,
     abort,
     producer,
   }).then(

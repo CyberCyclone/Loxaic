@@ -12,6 +12,10 @@ export interface RunHandle {
   conversationId: string;
   userId: string;
   abort: AbortController;
+  /** The model reference the run is using, so a context-stage switch can say
+   * how many conversations are replying on a model right now. Absent on runs
+   * that name none. */
+  model?: string;
   /** call_id -> resolver. Approvals are run-scoped, not connection-scoped: a
    * different device/socket than the one that started the run can approve. */
   approvals: Map<string, (approved: boolean) => void>;
@@ -99,6 +103,11 @@ export function waitForRunEnd(conversationId: string, timeoutMs: number): Promis
     if (existing) existing.push(done);
     else runEndWaiters.set(conversationId, [done]);
   });
+}
+
+/** Runs in flight on `model`, other than in `exceptConversationId`. */
+export function runsUsingModel(model: string, exceptConversationId?: string): RunHandle[] {
+  return [...runsByStreamId.values()].filter((r) => r.model === model && r.conversationId !== exceptConversationId);
 }
 
 export function getRun(streamId: string): RunHandle | undefined {

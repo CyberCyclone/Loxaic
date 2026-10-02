@@ -34,6 +34,7 @@ import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessa
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
+import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 import { localRunStart } from '@/lib/runStart';
@@ -95,6 +96,9 @@ export function useAgentSession(
   token: string | null,
   onStreamEnd?: () => void,
   pendingMcp?: { readonly current: McpOverrides | undefined },
+  /** The context stage chosen (Context settings) for a run that does not
+   * exist yet; carried by the send that creates it. */
+  pendingStage?: { readonly current: number | undefined },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -119,6 +123,22 @@ export function useAgentSession(
   const [runState, setRunState] = useState<RunState>('done');
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
   const [pendingCheckin, setPendingCheckin] = useState<PendingCheckin | null>(null);
+  // The latest step of a context-stage switch, per run — see useChatSession.
+  const [stageCardByConv, setStageCardByConv] = useState<Partial<Record<string, StageCard>>>({});
+  // Stage runs whose card the person has dismissed (sent again, or the run was
+  // stopped before it said anything): a reconnect's catch-up must not bring them back.
+  const droppedStageStreams = useRef(new Set<string>());
+  /** See useChatSession's `dismissStageCard`: the send is where a finished
+   * switch's card is dismissed, because the run's own `message.start` reaches
+   * the client in a snapshot, not as a live event. */
+  const dismissStageCard = useCallback((convId: string) => {
+    setStageCardByConv((prev) => {
+      const card = prev[convId];
+      if (!card || isStageActive(card)) return prev;
+      droppedStageStreams.current.add(card.streamId);
+      return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+    });
+  }, []);
   const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   /**
@@ -467,6 +487,14 @@ export function useAgentSession(
           applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }),
         );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
+        const stageSnapshot = event.snapshot.context_stage;
+        if (stageSnapshot) {
+          setStageCardByConv((prev) => {
+            const have = prev[convId];
+            if (!shouldInstallStageSnapshot({ have, dropped: droppedStageStreams.current, streamId: event.stream_id, runActive: event.status === 'active' })) return prev;
+            return { ...prev, [convId]: foldStageCard(have ?? null, event.stream_id, stageSnapshot, Date.now()) };
+          });
+        }
         if (event.status !== 'active') {
           const tracked = streamingByConvRef.current[convId];
           if (!tracked || tracked.streamId === event.stream_id) clearStream(convId);
@@ -528,6 +556,19 @@ export function useAgentSession(
 
         const isActive = convId === activeIdRef.current;
         const inner = event.event;
+        if (inner.kind === 'context.stage') {
+          const { kind: _kind, ...status } = inner;
+          setStageCardByConv((prev) => ({ ...prev, [convId]: foldStageCard(prev[convId] ?? null, event.stream_id, status, Date.now()) }));
+        } else if (inner.kind === 'message.start' && inner.author_type === 'user') {
+          // See useChatSession: sending again clears the last switch's card,
+          // unless it came from this very run.
+          setStageCardByConv((prev) => {
+            const have = prev[convId];
+            if (!have || have.streamId === event.stream_id) return prev;
+            droppedStageStreams.current.add(have.streamId);
+            return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+          });
+        }
         // Anything that is not itself a queue update means the run is past
         // the queue. Cleared here, up front, rather than on `iteration`
         // alone: a compaction run never emits one, and an agent run re-queued
@@ -582,6 +623,15 @@ export function useAgentSession(
           if (isActive) setLiveTodos(inner.todos);
         }
       } else if (event.type === 'stream.end') {
+        // A switch whose run ended before it applied or failed — withdrawn
+        // ("Cancel switch") or stopped — leaves nothing to say: its pill would
+        // otherwise read "waiting" for ever.
+        setStageCardByConv((prev) => {
+          const card = prev[event.conversation_id];
+          if (card?.streamId !== event.stream_id || !isStageActive(card)) return prev;
+          droppedStageStreams.current.add(card.streamId);
+          return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== event.conversation_id));
+        });
         clearStream(event.conversation_id);
         if (event.conversation_id === activeIdRef.current) {
           setRunState(event.status === 'error' ? 'error' : 'done');
@@ -752,7 +802,7 @@ export function useAgentSession(
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
           if (
-            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current)
+            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current, pendingStage?.current)
           ) {
             setRuns((prev) => prev.filter((r) => r.id !== localId));
             setActiveId(null);
@@ -776,7 +826,12 @@ export function useAgentSession(
           createConversation({ kind: 'agent', workspace: chosen, mcp_overrides: pendingMcp?.current })
             .then((created) => {
               const ws = wsRef.current;
-              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId);
+              // The ninth slot (MCP choices) is empty here on purpose: they rode
+              // `createConversation` above. The tenth, the stage, is read only by
+              // the send that opens a conversation — which this one is. Both sit
+              // in a positional list no type would catch a reorder in; an options
+              // object is the fix when it next grows.
+              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId, undefined, pendingStage?.current);
               if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
               sendsRef.current.markDispatched(localMsgId);
             })
@@ -803,10 +858,11 @@ export function useAgentSession(
           showToast(NOT_SENT_RECONNECTING, 4000);
           return false;
         }
+        dismissStageCard(convId);
       }
       return true;
     },
-    [mode, handleModeChange, setActiveId, showToast, pendingMcp],
+    [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage, dismissStageCard],
   );
 
   /** Take back a send the server refused before writing anything. */
@@ -992,6 +1048,8 @@ export function useAgentSession(
     responseStartedAt: activeStream?.responseStartedAt ?? null,
     pendingApproval,
     pendingCheckin,
+    /** The open run's latest context-stage step, or null. */
+    stageCard: activeId ? (stageCardByConv[activeId] ?? null) : null,
     iteration,
     queuePosition,
     pendingWorkspace,

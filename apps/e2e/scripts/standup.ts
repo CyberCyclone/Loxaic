@@ -470,6 +470,14 @@ async function ensureServer(): Promise<void> {
       // Each loaded model holds almost the whole fake GPU, so two never fit
       // together: loading a second has to unload the first, or be refused
       // when the first is pinned (apps/server/src/llama/room.ts).
+      // A load that takes a moment, as a real one does, so a context-stage
+      // switch can be watched reloading (context-stages.spec.ts).
+      LOXAIC_FAKE_LOAD_MS: '4000',
+      // The wait between one person's context switches (30 s in production,
+      // see llama/context-stage-switch.ts) would turn every spec that moves a
+      // model's stage twice as the same user into a refusal. The cooldown has
+      // its own server tests; here switches are made back to back on purpose.
+      CONTEXT_STAGE_COOLDOWN_MS: '0',
       LOXAIC_FAKE_MODEL_MIB: '23500',
       LOXAIC_FAKE_VRAM_STATE: FAKE_VRAM_STATE,
       HF_ENDPOINT: hf.url,

@@ -18,6 +18,7 @@ import {
 import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
+import { hasNoMessages } from "./stageRun.ts";
 import { runToolLoop } from "./engine.ts";
 import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
@@ -137,6 +138,8 @@ export async function startAgentRun(input: {
    * send creates the conversation, so its first request already follows
    * them; an existing conversation's choices change through PATCH. */
   mcpOverrides?: McpOverrides | null;
+  /** See chatRun.ts. */
+  contextStage?: number;
 }): Promise<StartAgentRunResult> {
   const { userId, content, model, mode } = input;
   const broker = getStreamBroker();
@@ -182,6 +185,10 @@ export async function startAgentRun(input: {
   if (getRunByConversation(convId)) {
     throw new Error("A run is already in progress for this conversation");
   }
+
+  // See chatRun.ts. The agent may have created the conversation up front to
+  // choose a workspace, so "opens" is "has no messages", not "created here".
+  const opening = await hasNoMessages(convId);
 
   const userMsgId = uuid();
   const userLamport = Date.now();
@@ -229,7 +236,7 @@ export async function startAgentRun(input: {
   producer.emit({ kind: "message.end", message_id: userMsgId, status: "complete" });
 
   const abort = new AbortController();
-  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map() });
+  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
   announceNewRun(convId, streamId);
 
   // What prepare leaves stored, handed to the system prompt so it is not read
@@ -254,6 +261,7 @@ export async function startAgentRun(input: {
     },
     basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal, snapshot: prepared }),
     surface: "agent",
+    newConversation: opening ? { chosenStage: input.contextStage } : undefined,
     // The same gate agentSystemPrompt applies to the root file: a scratch
     // workspace has no project, only what the model wrote.
     nestedInstructions: workspace.kind !== "scratch",

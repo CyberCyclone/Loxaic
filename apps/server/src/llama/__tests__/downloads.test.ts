@@ -9,6 +9,7 @@ import { db, eq } from "@loxaic/db";
 import { localModels, user } from "@loxaic/db/schema";
 import { getLocalModelRow, invalidateLocalModelCache } from "../catalog.ts";
 import {
+  backfillShapes,
   cancelDownload,
   DownloadError,
   pauseDownload,
@@ -205,6 +206,44 @@ describe("downloads", () => {
     expect(done?.meta).toMatchObject({ architecture: "qwen3", nLayers: 28, nCtxTrain: 40960 });
     expect(statSync(modelFilePath(repo, REV, "Mini-Q4_K_M.gguf")).size).toBe(good.length);
     expect(existsSync(`${modelFilePath(repo, REV, "Mini-Q4_K_M.gguf")}.part`)).toBe(false);
+  });
+
+  it("reads the attention layout of a model downloaded before it was recorded, once", async () => {
+    const id = `${repo}:Q4_K_M`;
+    const read = async () => {
+      invalidateLocalModelCache();
+      const r = await getLocalModelRow(id);
+      if (!r) throw new Error("row missing");
+      return r;
+    };
+    // As a row from before the shape was read: no `shape` key at all.
+    const { shape: _drop, ...older } = (await read()).meta as Record<string, unknown>;
+    await db.update(localModels).set({ meta: older }).where(eq(localModels.id, id));
+    expect(await backfillShapes([await read()])).toBe(1);
+    // The fixture describes no attention heads, so it is stored as read-and-
+    // absent (null), and the next boot does not read the file again.
+    const after = await read();
+    expect(after.meta).toMatchObject({ nLayers: 28, shape: null });
+    expect(await backfillShapes([after])).toBe(0);
+  });
+
+  it("does not read a file it could not read again on the next boot", async () => {
+    const id = `${repo}:Q4_K_M`;
+    const read = async () => {
+      invalidateLocalModelCache();
+      const r = await getLocalModelRow(id);
+      if (!r) throw new Error("row missing");
+      return r;
+    };
+    const { shape: _drop, ...older } = (await read()).meta as Record<string, unknown>;
+    await db.update(localModels).set({ meta: older }).where(eq(localModels.id, id));
+    // The file is gone from under the row: the read fails.
+    const broken = { ...(await read()), files: [{ path: "no-such-file.gguf", size: 1, sha256: null }] };
+    expect(await backfillShapes([broken])).toBe(0);
+    const after = await read();
+    expect(after.meta).toMatchObject({ shape: null });
+    // Recorded, so the retry is not made — a row with `shape` present is skipped.
+    expect(Object.keys(after.meta as object)).toContain("shape");
   });
 
   it("refuses the same model twice", async () => {

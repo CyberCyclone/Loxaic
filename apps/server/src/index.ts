@@ -36,6 +36,7 @@ import { adminSettingsRoutes } from "./routes/admin-settings";
 import { adminProviderRoutes } from "./routes/admin-providers";
 import { adminUserRoutes } from "./routes/admin-users";
 import { adminLocalModelRoutes } from "./routes/admin-local-models.ts";
+import { contextStageRoutes } from "./routes/context-stage.ts";
 import { migrateLegacyInferenceUrl } from "./inference/legacy-migration.ts";
 import { bootLocalRuntime, runtimeView, stopLocalRuntime } from "./llama/router.ts";
 import { startDownloadQueue, stopDownloads } from "./llama/downloads.ts";
@@ -186,6 +187,7 @@ adminSettingsRoutes(app);
 adminProviderRoutes(app);
 adminUserRoutes(app);
 adminLocalModelRoutes(app);
+contextStageRoutes(app);
 fileRoutes(app);
 
 // ── WebSocket ─────────────────────────────────────────────

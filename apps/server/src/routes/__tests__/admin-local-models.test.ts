@@ -124,13 +124,20 @@ describe("admin local models", () => {
   });
 
   it("validates load settings against the model before storing them", async () => {
-    const bad = await app.inject({
+    // Past the trained 40960 is advice, not a limit: RoPE scaling exists to
+    // exceed it. Only llama.cpp's own 32-bit ceiling is refused.
+    const past = await app.inject({
       method: "PATCH",
       url: "/v1/admin/local-models/model",
       payload: { id: ready, loadSettings: { ctxSize: 100_000 } },
     });
+    expect(past.statusCode).toBe(200);
+    const bad = await app.inject({
+      method: "PATCH",
+      url: "/v1/admin/local-models/model",
+      payload: { id: ready, loadSettings: { ctxSize: 2 ** 31 } },
+    });
     expect(bad.statusCode).toBe(400);
-    expect(bad.json<{ error: string }>().error).toMatch(/40960/);
     const unknown = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { mlock: true } } });
     expect(unknown.statusCode).toBe(400);
     const good = await app.inject({
@@ -146,6 +153,36 @@ describe("admin local models", () => {
     const res = await app.inject({ method: "POST", url: "/v1/admin/local-models/estimate", payload: { id: ready, loadSettings: { ctxSize: 32768 } } });
     expect(res.statusCode).toBe(200);
     expect(res.json<{ fit: { requiredBytes: number } }>().fit.requiredBytes).toBeGreaterThan(1000);
+  });
+
+  it("stores YaRN stages checked against the base settings, and prices each one", async () => {
+    const stages = { enabled: true, whenFull: "extend", stages: [{ ctxSize: 81920 }, { ctxSize: 163840, cacheTypeK: "q8_0", cacheTypeV: "q8_0" }] };
+    const est = await app.inject({ method: "POST", url: "/v1/admin/local-models/estimate", payload: { id: ready, loadSettings: { ctxSize: 8192 }, contextStages: stages } });
+    expect(est.statusCode).toBe(200);
+    const fits = est.json<{ fit: { requiredBytes: number }; stages: { requiredBytes: number }[] }>();
+    expect(fits.stages).toHaveLength(2);
+    expect(fits.stages[0].requiredBytes).toBeGreaterThan(fits.fit.requiredBytes);
+
+    const saved = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { ctxSize: 8192 }, contextStages: stages } });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json<{ contextStages: { whoMayChange: string }; activeStage: number }>()).toMatchObject({
+      contextStages: { whoMayChange: "everyone", whenFull: "extend" },
+      activeStage: 0,
+    });
+
+    // Raising the standard context past stage 1 is refused, not left behind a
+    // stage that is now smaller than standard.
+    const raised = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { ctxSize: 90000 } } });
+    expect(raised.statusCode).toBe(400);
+    expect(raised.json<{ error: string }>().error).toMatch(/larger than the standard context/);
+    // YaRN and a manual frequency scale would multiply.
+    const scaled = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { ctxSize: 8192, ropeFreqScale: 0.5 } } });
+    expect(scaled.statusCode).toBe(400);
+    expect(scaled.json<{ error: string }>().error).toMatch(/RoPE frequency scale/);
+
+    const cleared = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, contextStages: null } });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json<{ contextStages: unknown }>().contextStages).toBeNull();
   });
 
   it("refuses CPU without the acknowledgement", async () => {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ScrollView, useWindowDimensions } from 'react-native';
-import { Camera, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Plug, Plus } from 'lucide-react-native';
+import { Camera, ChevronLeft, ChevronRight, FileText, Image as ImageIcon, Layers, Plug, Plus } from 'lucide-react-native';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Box } from '@/components/ui/box';
@@ -15,8 +15,13 @@ import {
   ActionsheetItemText,
   ActionsheetIcon,
 } from '@/components/ui/actionsheet';
+import { VStack } from '@/components/ui/vstack';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { McpServerList } from './McpServerList';
+
+/** Long enough for the sheet's exit animation to finish before another modal
+ * is presented (the plan sheet and the no-room modal found the same). */
+const SHEET_EXIT_MS = 300;
 
 export interface ComposerPlusMenuProps {
   /** Native only: opens the camera. */
@@ -29,6 +34,9 @@ export interface ComposerPlusMenuProps {
   onFilesSelected: (files: File[]) => void;
   /** This conversation's MCP switches; null hides the MCP item. */
   mcp: McpSwitches | null;
+  /** Context settings, when the selected model has YaRN stages; null leaves
+   * the row out. `disabledReason` says why it cannot be used, when it cannot. */
+  contextSettings?: { onOpen: () => void; disabledReason: string | null } | null;
   /** An attachment is uploaded as soon as it is picked, and the MCP switches
    * are saved on the server, so there is nothing to do while it is
    * unreachable. */
@@ -49,6 +57,7 @@ export function ComposerPlusMenu({
   onPickFromLibrary,
   onPickDocument,
   mcp,
+  contextSettings = null,
   disabled = false,
 }: ComposerPlusMenuProps) {
   const [open, setOpen] = useState(false);
@@ -111,6 +120,31 @@ export function ComposerPlusMenu({
                 <ActionsheetIcon as={FileText} />
                 <ActionsheetItemText>Files</ActionsheetItemText>
               </ActionsheetItem>
+              {contextSettings ? (
+                <>
+                  <Box className="my-1 h-px w-full bg-border" />
+                  <ActionsheetItem
+                    testID="composer.plus.contextSettings"
+                    isDisabled={contextSettings.disabledReason !== null}
+                    onPress={() => {
+                      close();
+                      // The sheet is a modal of its own: iOS will not present
+                      // one while this is still being dismissed.
+                      setTimeout(contextSettings.onOpen, SHEET_EXIT_MS);
+                    }}
+                  >
+                    <ActionsheetIcon as={Layers} />
+                    <VStack className="flex-1">
+                      <ActionsheetItemText>Context settings</ActionsheetItemText>
+                      {contextSettings.disabledReason && (
+                        <Text testID="composer.plus.contextSettings.reason" size="2xs" className="text-muted-foreground">
+                          {contextSettings.disabledReason}
+                        </Text>
+                      )}
+                    </VStack>
+                  </ActionsheetItem>
+                </>
+              ) : null}
               {mcp ? (
                 <>
                   <Box className="my-1 h-px w-full bg-border" />

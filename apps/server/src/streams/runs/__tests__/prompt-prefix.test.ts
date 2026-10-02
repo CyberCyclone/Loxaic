@@ -231,6 +231,19 @@ describe("two conversations do not interleave their requests", () => {
   });
 });
 
+describe("the context-stage warm-up", () => {
+  it("sends exactly the prefix the next turn will, so the reload's cache is the one it needs", async () => {
+    const convId = await turn("make a todo list for this work");
+    const { warmer } = await import("../stageRun.ts");
+    await warmer(convId, "llama-3.1-8b-instruct")(new AbortController().signal, () => undefined);
+    await turn("thanks, what is next?", convId);
+    expectEachRequestExtendsTheLast();
+    // The same tools, so the backend renders the same system region.
+    const warm = requestOptions.at(-2);
+    expect(warm?.tools).toBe(requestOptions.at(-1)?.tools);
+  });
+});
+
 describe("every prompt extends the previous one", () => {
   it("holds across a plain two-turn conversation", async () => {
     const convId = await turn("first question");

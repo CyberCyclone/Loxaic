@@ -170,6 +170,12 @@ export interface StreamOptions {
    * Adds a request-body field, never a message, so the prompt is unchanged.
    */
   reportProgress?: boolean;
+  /**
+   * Cap the reply. Only the context-stage warm-up sets it (to 1): it sends a
+   * conversation's prompt so the backend caches it after a reload, and the
+   * reply is thrown away. A body field, never a message.
+   */
+  maxTokens?: number;
 }
 
 /**
@@ -662,6 +668,7 @@ async function* liveStream(
   const startTime = Date.now();
   let ttftMs: number | null = null;
   let fullText = "";
+  let promptEvaluated = false;
 
   const body: Record<string, unknown> = {
     model,
@@ -678,6 +685,7 @@ async function* liveStream(
   // The preset check is a second lock behind the caller's: a named hosted API
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
+  if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
 
   // Not the global fetch: see transport.ts for the 300-second cut-off it has.
   const response = await inferenceFetch(`${provider.apiBase}/chat/completions`, {
@@ -775,12 +783,23 @@ async function* liveStream(
 
         // Before anything else in the chunk, and deliberately not touching
         // ttftMs: a progress chunk also carries an empty assistant delta
-        // (`content: null`), which is not output. Only reported until output
-        // starts — llama.cpp's last one can ride on the first token's chunk,
-        // and "evaluating" after the answer has begun would be false.
-        if (parsed.prompt_progress !== undefined && ttftMs === null) {
+        // (`content: null`), which is not output. Reported until a report says
+        // the whole prompt is evaluated, and not after — llama.cpp's last one
+        // can ride on the first token's chunk again, and "evaluating" after
+        // the answer has begun would be false.
+        //
+        // Not "until output starts". A request whose last message is the
+        // assistant's (a context-stage switch re-reading the conversation
+        // ends on its last reply) is a prefill to llama.cpp, which echoes that
+        // text back as content before it evaluates anything. Gated on output,
+        // every report after the 0% one was dropped and the re-read sat at 0%
+        // for its whole length.
+        if (parsed.prompt_progress !== undefined && !promptEvaluated) {
           const progress = parsePromptProgress(parsed.prompt_progress);
-          if (progress) yield { type: "progress", progress };
+          if (progress) {
+            yield { type: "progress", progress };
+            if (progress.processed_tokens >= progress.total_tokens) promptEvaluated = true;
+          }
         }
 
         const choice = parsed.choices?.[0];

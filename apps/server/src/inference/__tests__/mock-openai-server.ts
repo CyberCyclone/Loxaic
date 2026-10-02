@@ -44,6 +44,10 @@ export interface MockOpenAiOptions {
   /** Stream `prompt_progress` chunks, in llama.cpp's exact shape, when the
    * request asked with `return_progress` — one malformed one among them. */
   progress?: boolean;
+  /** When the request ends on an assistant message, echo its text back as
+   * content before anything else — llama.cpp treats a trailing assistant
+   * message as a prefill to continue, and does exactly this. */
+  echoPrefill?: boolean;
 }
 
 /** What `progress` streams before the reply: llama.cpp's 0% report as the
@@ -119,6 +123,10 @@ export async function startMockOpenAi(options: MockOpenAiOptions = {}): Promise<
             Connection: "keep-alive",
           });
           const id = "chatcmpl-mock";
+          const lastMessage = (body.messages as { role?: string; content?: unknown }[] | undefined)?.at(-1);
+          if (options.echoPrefill && lastMessage?.role === "assistant" && typeof lastMessage.content === "string") {
+            res.write(sse({ id, choices: [{ delta: { content: lastMessage.content } }] }));
+          }
           if (options.progress && body.return_progress === true) {
             // Each carries an empty assistant delta with `content: null`,
             // exactly as llama.cpp's do — which must not read as output.

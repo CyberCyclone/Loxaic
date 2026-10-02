@@ -185,6 +185,18 @@ export type ContentBlock =
    * is the one line a client shows. */
   | { kind: "instructions_update"; path: string; text: string; summary: string };
 
+export interface ModelContextStage {
+  /** The stage the model loads at now; 0 is its standard context. */
+  active: number;
+  /** Per-request window of every stage, standard first. */
+  windows: (number | null)[];
+  /** A switch waiting for other replies to finish, or null. */
+  pending: number | null;
+  who_may_change: "everyone" | "admins";
+  /** What happens when a conversation fills the window. */
+  when_full: "compact" | "extend";
+}
+
 export interface ModelInfo {
   id: string;
   display_name: string;
@@ -222,6 +234,13 @@ export interface ModelInfo {
   /** A host model an admin pinned: kept loaded, never unloaded to make room.
    * Absent on other models and from an older server. */
   pinned?: boolean;
+  /**
+   * A host model with YaRN context stages (see the server's
+   * llama/context-stages.ts). Absent on every other model and from an older
+   * server. Enough for the client to decide whether to ask anything; the
+   * details a modal shows come from `GET /v1/models/context-stage`.
+   */
+  context_stage?: ModelContextStage;
   /** Which configured backend serves this model. `"default"` is the
    * local llama.cpp runtime; anything else is an admin-added provider row.
    * The picker groups on this. */
@@ -259,6 +278,14 @@ export const MODEL_REF_SEPARATOR = "::";
  * `"default"` when a client names no model, and `DEFAULT_PROVIDER_ID` is what
  * the synthesized built-in provider reports. */
 export const DEFAULT_PROVIDER_ID = "default";
+
+/**
+ * How full a conversation's window is when the client offers to extend its
+ * model's context (YaRN stages) or compact. Below the server's automatic
+ * compaction (0.85), so the choice comes before compaction does; the server
+ * also uses it for "the smallest stage this conversation fits in comfortably".
+ */
+export const CONTEXT_STAGE_PROMPT_AT = 0.75;
 
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 

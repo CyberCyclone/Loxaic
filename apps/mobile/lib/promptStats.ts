@@ -82,7 +82,7 @@ function floorPct(part: number, whole: number): number {
  * backend reused from its cache, and what it has evaluated beyond that. Null
  * when the backend reported no progress — the bar is for measurements only.
  */
-export function promptProgressSegments(stats: PromptStats): { cachedPct: number; evaluatedPct: number } | null {
+export function promptProgressSegments(stats: Pick<PromptStats, 'progress'>): { cachedPct: number; evaluatedPct: number } | null {
   const p = stats.progress;
   if (!p) return null;
   const cachedPct = floorPct(p.cached_tokens, p.total_tokens);

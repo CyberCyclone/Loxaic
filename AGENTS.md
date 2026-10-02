@@ -1255,6 +1255,176 @@ replies.
   (a separate process) reads what is held from `LOXAIC_FAKE_VRAM_STATE`. Its log records unloads
   too, which is how a test tells "unloaded to make room" from "failed to load".
 
+### YaRN context stages (extending a host model past its trained context)
+
+- **A stage is model-wide, because a llama.cpp load is.** `ctx-size` and YaRN are fixed when the
+  router loads a model, so a stage cannot belong to a request or a conversation: moving to one
+  reloads the model for everyone using it and discards every conversation's cached prompt on it.
+  The row carries it (`local_models.active_stage`, migration 0032); `context_stages` holds the
+  admin's stages. Stage 0 is the ordinary `loadSettings`, untouched.
+- **Every consumer of "what will this model load with" goes through `settingsForStage` /
+  `effectiveSettings`** (`llama/context-stages.ts`): the preset, `footprintBytes` (eviction),
+  `fitFor`, the listing's window. One that read `loadSettings` would plan for 256K while the
+  router loaded 1M.
+- **The YaRN keys were confirmed against a real b11149 router before anything was written**:
+  `rope-scaling`, `rope-scale`, `yarn-orig-ctx` and the four `yarn-*` knobs boot and reload, and
+  each becomes its flag. The factor is derived (`ctxSize ÷ yarnOrigCtx`, 1M ÷ 256K = 4) unless
+  pinned, and stages are refused while the base settings carry `rope-freq-scale` — llama.cpp's
+  `--rope-scale` and `--rope-freq-scale` set the same parameter. **The fake router now refuses an
+  unknown preset key**, as the real one does (fatal at boot, 500 on reload); a test holds its key
+  list against `LOAD_SETTINGS` plus the YaRN keys, so a new setting that nobody added there fails.
+- **The trained context is advice, not a limit** (`softMax` on `ctxSize`): RoPE scaling exists to
+  exceed it. The server refuses only llama.cpp's 32-bit ceiling.
+- **A switch takes the built-in queue exclusively** (`acquireExclusiveSlot`,
+  `llama/context-stage-switch.ts`): it waits for every run ahead of it, and once at the front it
+  admits nothing behind it until it has reloaded. That is both "never reload under a reply" and
+  "a stream of new runs cannot starve it". All local models share that queue, so the wait includes
+  a reply on another local model — the wait every run already has. `syncPreset`'s deferral
+  ignores the exclusive holder (`builtinRunsActive`), or the switch would defer its own reload.
+- **The switch writes the stage, rewrites the preset, then loads explicitly** (`loadWithRoom`), so
+  the reload happens under the stage card rather than on some later request; a failed load puts
+  the stage back. It then **warms the conversation's cache** with the same front and history the
+  next turn will send, `max_tokens: 1`, reply discarded — `prompt-prefix.test.ts` holds that the
+  warm request extends the last turn's and the next turn extends it.
+- **Three things change a stage, and only one is a person pressing a button.** A new
+  conversation's first run steps the model back to standard (or to the stage chosen in Context
+  settings, `context_stage` on the send) before its first request; the model's `whenFull:
+  "extend"` moves up a stage where automatic compaction would have run — **without compaction's
+  8-message minimum**, since a conversation full after one big paste is exactly what extending helps and
+  compaction cannot (`windowFull` in `engine.ts`) — falling back to compaction
+  at the last stage or when the next will not fit; and anyone the model's `whoMayChange` allows
+  can move it from a conversation (`POST /v1/models/context-stage`). A step down that would
+  shrink the window under another conversation active in the last two hours is refused when asked
+  for and *limited* when automatic (`llama/context-stage-policy.ts`).
+- **`cancelled` has to mean "nothing changed", and a switch that is stopped after it wrote the stage
+  puts it back.** The client acts on it (Cancel switch reads as "the stage is as it was"), and the
+  row, the preset and the listing all follow `activeStage`. An abort during the reload, or while the
+  preset is rewritten, used to return `cancelled` with the new stage still written — the model then
+  loaded at a context nobody had agreed to, and eviction and `whenFull` planned with it. `putBack`
+  is the one step a failed load and a cancelled one share.
+- **A switch takes the whole backend, so *how often* is limited as well as *who*.** A non-admin may
+  not ask for another switch within `CONTEXT_STAGE_COOLDOWN_MS` (30 s) of the last one that applied,
+  for a stage the model is not already at: one signed-in user alternating two stages would otherwise
+  stall every other conversation for as long as they liked. Admins, a model's own `whenFull` and a
+  new conversation's step-down are not subject to it (`checkStageRequest`'s `auto` / `isAdmin`);
+  the e2e server sets it to 0 because its specs switch back to back on purpose, and the cooldown has
+  its own route tests. **A newer request replaces a switch still waiting — but only the same
+  person's.** Someone else is refused (`switch_pending`), and `DELETE` (Cancel switch) is for the
+  switch's starter, an admin, or anyone who can edit the conversation it was started from
+  (`pendingSwitch`); a switch made by a model's own extension belongs to the conversation that filled.
+- **Anything that holds the queue and then leaves must pump it.** An exclusive waiter queues while
+  `running < max`, so its cancelling can make the run behind it admissible with no release to
+  trigger `pump()`; `onAbort` pumps for that reason.
+- **A stage run claims its conversation before it awaits** (`registerRun` ahead of
+  `openProducer`) and re-raises nothing it cannot answer: a throw under it ends the card `failed`
+  with a reason, never as a silent `cancelled` plus an unhandled rejection. The compaction a failed
+  extension falls back to honours the 8-message floor (`canCompact`) that the extension itself
+  ignores — otherwise a three-message thread over the threshold would extend, fail and compact on
+  every turn. `windowFull` also ignores the user's own auto-compact preference, deliberately: the
+  admin chose `extend` for the model and, unlike a compaction, it discards nothing; the preference
+  still gates that fallback.
+- **On a model set to compact, the first crossing at a stage is the person's to decide.** The
+  "nearly full" prompt starts at 75% and automatic compaction runs after a turn that ends past 85%,
+  so a single turn that jumped across both (a big paste, a long tool result, a real model's first
+  large prompt) compacted before Extend could ever be offered — reported from a real test of this
+  PR. `leaveCompactionToPerson` (stageRun.ts) skips that compaction once per conversation and
+  stage when the person could extend right now (`checkStageRequest` for the next stage: allowed,
+  fits, no cooldown or someone else's switch) and the conversation is interactive (never a
+  routine). If nobody chooses, the next turn past the threshold compacts as before, so a
+  conversation is not left over its window because someone looked away. Remembered in memory: a
+  restart leaves one more turn to the person, the cheap direction.
+- **Compact-then-switch waits for the conversation to be free, not for something to take a while**
+  (`waitForRunEnd` in the route): the compaction's end is announced from inside its run, before its
+  `finally` releases the conversation, so starting the stage run at once is refused as "already in
+  progress". `context-stage.test.ts` releases the conversation late to pin it.
+- **A stage run has no message rows.** Its steps (`context.stage`: waiting → reloading →
+  rereading → applied/failed) are folded into the snapshot as `context_stage` and rendered from
+  run state, like a check-in decision: a row would enter the prompt and move the history anchor.
+- **The fit estimate reads the model's attention layout** (`llama/shape.ts`, from the GGUF
+  header): only KV-bearing layers count (a hybrid Qwen3.5+ keeps KV in one layer of four), a
+  sliding-window layer stops at `n_swa × slots + ubatch` cells, shared-KV layers hold none, the
+  recurrent state is per slot, and the compute buffer grows ~5 KiB a token with flash attention
+  (~32 KiB without). All measured against b11149's allocation log on real files, and pinned in
+  `shape.test.ts`; the old flat estimate put Qwen3.5-9B's 64K cache at 4× what llama.cpp
+  allocates. **Every size in that header is positive or the file is treated as lacking the fact**
+  (`pos()` in `shape.ts`): a finite `-4096` is still a number, and it made the KV estimate negative —
+  an oversized stage labelled "will fit", nothing evicted for a load that then fails. Rows
+  downloaded before the shape was read are backfilled at boot, and a header that cannot be read
+  stores `shape: null` so it is not read again on every boot. The beta box's
+  Qwen3.8-27B needs ~64 GiB of f16 KV at 1M, so a 1M stage there has to quantize the cache.
+- **`usage_records` has its first index** (`model, created_at`, migration 0033): "who else is using
+  this model" is asked on every new conversation, and was otherwise a scan of the fastest-growing
+  table.
+
+### YaRN context stages on the client
+
+- **Every decision is a pure function** (`lib/contextStages.ts`, `lib/stageCard.ts`, `lib/localModels.ts`'s
+  stage helpers) and the components only render it: when to offer Extend, when to offer stepping back
+  down, whether a stage smaller than the conversation needs compacting first, what a switch does to
+  everyone else, what the pill says. `hooks/useContextStages.ts` is the state around them, shared by
+  Chat and Agent; it is not used for routines, whose conversations nobody is at.
+- **"Nearly full" is measured against the stage the model is at now**, from that stage's own window
+  (`ModelInfo.context_stage.windows[active]`), never the ring's. The ring keeps the last turn's window
+  until the next turn, so right after an extension a ring-based check still read 78% and asked again
+  for the next stage. It asks after a turn ends (never mid-reply), once per conversation per stage per
+  session, at 75% (`CONTEXT_STAGE_PROMPT_AT`, below the server's 85% automatic compaction so the choice
+  comes first), and never for a model set to extend by itself.
+- **A new conversation never asks about stepping down; the server does it** (see the server section).
+  Only *reopening* an existing conversation that needs less offers it, and only as far down as other
+  conversations allow (`blocked_down_to`).
+- **The modals say what a switch does to other people**, filled from the server's `others` — counts and
+  a last-used time, never names, since another person's conversation is not the asker's to see. When
+  one is replying right now the button reads "Extend when free": the switch waits behind it.
+- **A "won't fit" estimate warns; it never blocks Extend.** The button stays enabled and the modal shows
+  the fit badge and the memory sentence. The server refuses when pinned models genuinely block the load,
+  and a load that fails puts the previous stage back (the pill says so). Disabling it on an estimate
+  blocked every e2e case behind an open modal, and would block a real admin whose estimate is off.
+- **Stale model lists must not drive a prompt.** The list is fetched when a stream ends, so right after this
+  device watched a switch apply it can still describe the stage before: an offer to extend "to the next
+  stage" was made against the old one (`listBehind` in `useContextStages`), and a step-down offer appeared
+  for a chat started at 64K on purpose (`inThisSession`, keyed on the hook's own `promotion`). A dialog the
+  list then makes moot closes itself. A switch this device started also polls the list, because the request
+  returns before the server has recorded it as pending.
+- **The stage pill is a run, not a message.** `context.stage` events fold into `stageCardByConv` in both
+  session hooks (and from a snapshot's `context_stage`, so a reconnect or a second device shows the
+  current step). It stays after the switch ends so "extended to 64K" is readable, goes when the person
+  sends again — unless it came from that very run, which is how a new conversation's card arrives — and
+  goes when its run ends before it applied (Cancel switch). The typing indicator is hidden while a
+  switch is active: it would claim the model is writing a reply.
+- **A dismissed card is remembered by its run's id** (`droppedStageStreams`, `shouldInstallStageSnapshot`).
+  A reconnect's catch-up re-syncs the conversation's last three runs and a finished stage run's
+  `context_stage` stays in the log for the stream TTL, so "no card" is indistinguishable from "never
+  had one" unless the id of a card that sending again (or a stopped run) cleared is kept. It lasts
+  for the page's life: a full reload shows the card again until the TTL, which reads as "we were not
+  told", as for every stream-log-only fact. (Stripping it server-side, as for a parked check-in,
+  would hide the finished "extended to 64K" the person has not yet moved past.)
+- **Context settings ticks the stage the chat will be at, not where the model is**
+  (`chatStage`): with no conversation open the server steps a new chat's first run to standard, so
+  ticking the loaded stage read "this chat will be 1M" for a chat that starts at standard, and
+  tapping the ticked row then forced a reload the person thought was already in effect. The rows say
+  "Loaded now" and "New chats start here" until a conversation exists.
+- **An answer that arrives after the person moved on opens nothing**
+  (`stepDownAnswerStillApplies`): the step-down check asks the server and the modal's Switch acts on
+  the hook's *current* conversation, so an answer for thread A landing on thread B sent B with A's
+  target. It also is not marked as shown, so coming back asks again.
+- **A stage run starts a stream nobody on this device sent**, so a device learns of it the way it learns
+  of an automatic compaction: the socket watches every conversation it opens (`forceSync` snapshot,
+  then live events). The composer shows Stop for it, and Stop withdraws a switch still waiting.
+- **The stage a chat starts at is chosen before the chat exists** and rides the send that opens it
+  (`context_stage`, held in a ref the session reads at send time, like the MCP choices). The chip
+  ("Context: 1M") shows it until then. Choosing a stage smaller than the conversation opens
+  compact-first; the *server* runs the compact-then-switch sequence, so it survives a closed app.
+- **Context length past the trained maximum is a warning, not an error** (`softMax` on the spec):
+  `parseNumericInput` returns `{ value, warning }`, Save stays enabled, and only llama.cpp's 32-bit
+  ceiling is refused.
+- **e2e:** `context-stages.spec.ts` drives all of it against the fake router: "fill the context" and
+  "overflow the context" in a prompt make the fake report 80% and 90% of the window the model was loaded
+  with, "take your time N" holds a reply open N ms a word (how another person's reply stands on the
+  model), and `LOXAIC_FAKE_LOAD_MS` makes a load take a moment so the reload is watchable. **A case
+  that needs the model at a stage must put it there through the API after any new conversation has
+  started**, because a new conversation's first run steps the model back down — the first draft of
+  two cases failed for exactly that.
+
 ### The picker's "recently used"
 
 - **Recorded on a send, not on a tap.** What belongs at the top is what the user ran; a model
@@ -1837,6 +2007,15 @@ replies.
   `prompt.stats` with a `progress` object merged in; both folds already replace on `prompt.stats`,
   so a reconnecting client gets the latest report and an older client ignores the field.
   **`progress` is absent, never null-filled**, when the backend reported nothing.
+- **Reports are read until one says the prompt is evaluated, not until output appears.** A request
+  that ends on the assistant's own message is a prefill to llama.cpp, which echoes that text back as
+  content before it evaluates anything. A context-stage switch's re-read of a conversation ends on
+  its last reply, so gating on output dropped every report after the 0% one: the pill sat at
+  "Re-reading conversation · 0%" for the whole re-read, on a real Qwen3.5-4B, while llama.cpp was
+  sending a report every couple of seconds (found driving the dev Electron app). The fake router
+  echoes a trailing assistant message too. The re-read asks for progress unconditionally — a stage
+  only exists on the built-in llama.cpp router — because the model list it would ask was just
+  invalidated by the reload and still said "not a native runtime".
 - **Ask only a backend that identified itself** (`modelRunInfo`'s `nativeRuntime`: it reported an
   allocated window via llama.cpp's `/props` or LM Studio's native listing). Not "has no preset" — a
   hand-entered provider pointed at a hosted API has none either, and OpenAI answers an unknown

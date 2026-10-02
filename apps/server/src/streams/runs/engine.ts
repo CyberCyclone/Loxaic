@@ -67,6 +67,7 @@ import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
+import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
 import {
@@ -497,6 +498,10 @@ export async function runToolLoop(ctx: {
    * file is one the model wrote, which the framing would present back to it as
    * the project's conventions. Absent means no. */
   nestedInstructions?: boolean;
+  /** Set when this run's send created the conversation: its model is moved
+   * to `chosenStage` (Context settings), or back to its standard context,
+   * before the first request — see stageRun.ts. */
+  newConversation?: { chosenStage?: number };
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
@@ -506,6 +511,13 @@ export async function runToolLoop(ctx: {
   // per-conversation lock this run is still holding until `finally` releases
   // it, so triggering in place would refuse itself with "already in progress".
   let autoCompact = false;
+  // Whether the turn filled the window, whatever the history's length: a model
+  // set to extend its context does so for a conversation full after one big
+  // paste, which compaction (needing something to summarise) could not help.
+  let windowFull = false;
+  // Read through a call: the type checker takes the flag to be false for good,
+  // and cannot see the closure that sets it during the run.
+  const wasWindowFull = () => windowFull;
 
   // Held from just before the first model call until the run ends, and handed
   // back only while waiting on a human — see acquireRunSlot.
@@ -607,6 +619,28 @@ export async function runToolLoop(ctx: {
     // another run admitted in the gap evicts the prefix, and this run then
     // pays a full re-evaluation when it comes back, which is the cost the
     // queue exists to avoid. Fairness beyond FIFO is a follow-up.
+    // A new conversation starts at the stage it was started with, standard
+    // unless it chose otherwise: YaRN costs every request a little quality, so
+    // a model extended for someone's long conversation steps back down for a
+    // short one — only as far as other active conversations allow. Before the
+    // slot, because the switch takes the backend on its own. Never fails the
+    // run: a refusal is said on the card and the run goes on.
+    if (ctx.newConversation) {
+      try {
+        const { stageForNewConversation } = await import("./stageRun.ts");
+        await stageForNewConversation({
+          userId,
+          conversationId: convId,
+          model,
+          chosen: ctx.newConversation.chosenStage,
+          producer,
+          signal: abort.signal,
+        });
+      } catch (err) {
+        console.warn(`context stage for new conversation ${convId} skipped: ${(err as Error).message}`);
+      }
+    }
+
     slot = await acquireRunSlot({
       signal: abort.signal,
       onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
@@ -706,7 +740,14 @@ export async function runToolLoop(ctx: {
         reportProgress = info?.nativeRuntime ?? false;
         if (info && !info.loaded) {
           loadingModel = true;
-          producer.emit({ kind: "model.loading", message_id: assistantMsgId });
+          // Say why when the reload is another conversation's stage switch:
+          // otherwise a reply that starts with a long reload is a mystery.
+          const switched = recentSwitch(model, convId);
+          producer.emit(
+            switched
+              ? { kind: "model.loading", message_id: assistantMsgId, reason: "context_stage", to_tokens: switched.toTokens }
+              : { kind: "model.loading", message_id: assistantMsgId },
+          );
         }
       } catch {
         // Best-effort — fall back to the generic "thinking" indicator.
@@ -945,11 +986,12 @@ export async function runToolLoop(ctx: {
         // was assembled against are both in hand. The threshold leaves room
         // for the turn that follows, which is what makes acting after the
         // fact safe.
-        const compact = shouldAutoCompact({
+        const fill = {
           usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
           windowTokens: breakdownMeta.windowTokens ?? null,
-          historyMessages: history.messages.length,
-        });
+        };
+        const compact = shouldAutoCompact({ ...fill, historyMessages: history.messages.length });
+        windowFull = shouldAutoCompact({ ...fill, historyMessages: Number.MAX_SAFE_INTEGER });
         // A turn ended by a handed-over plan has already sent this: its tools
         // ran first, and message.end follows their results.
         if (!messageEnded) {
@@ -1373,6 +1415,36 @@ export async function runToolLoop(ctx: {
   // The pref is checked here rather than beside shouldAutoCompact so an
   // ordinary turn never pays for the query — only a turn that has already
   // decided it wants to compact asks whether it may.
+  // A model set to extend its context when full (`whenFull: "extend"`) does
+  // that instead, when it has a stage left that fits — see stageRun.ts. Its
+  // failure falls back to compaction there; a model that cannot extend
+  // compacts here, exactly as before.
+  if (wasWindowFull()) {
+    try {
+      const { autoExtend } = await import("./stageRun.ts");
+      // `canCompact` is what compaction itself would have decided, floor
+      // included — read before it is cleared below. Extending ignores the
+      // floor; the compaction a failed extension falls back to does not.
+      // The user's own auto-compact preference does not stop an extension:
+      // the admin chose `extend` for this model, and unlike a compaction it
+      // discards nothing. It does still gate that fallback.
+      if (await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface, canCompact: autoCompact })) autoCompact = false;
+    } catch (err) {
+      console.warn(`automatic context extension skipped for ${convId}: ${(err as Error).message}`);
+    }
+  }
+  // A model that can still be extended by this person leaves the first
+  // crossing at a stage to them: the client offers Compact or Extend, and the
+  // next turn past the threshold compacts if nobody chose (stageRun.ts).
+  if (autoCompact) {
+    try {
+      const { leaveCompactionToPerson } = await import("./stageRun.ts");
+      if (await leaveCompactionToPerson({ userId, conversationId: convId, model })) autoCompact = false;
+    } catch (err) {
+      // Unable to tell: compact, as before this existed.
+      console.warn(`could not decide whether to ask before compacting ${convId}: ${(err as Error).message}`);
+    }
+  }
   if (autoCompact && (await userAllowsAutoCompact(userId))) {
     try {
       // Dynamic on purpose: compactRun imports this module's history loader,

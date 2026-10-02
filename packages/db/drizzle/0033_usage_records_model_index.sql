@@ -1,0 +1,1 @@
+CREATE INDEX "usage_records_model_created_idx" ON "usage_records" USING btree ("model","created_at");

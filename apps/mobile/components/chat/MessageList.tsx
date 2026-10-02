@@ -5,10 +5,12 @@ import { Box } from '@/components/ui/box';
 import { Pressable } from '@/components/ui/pressable';
 import { Spinner } from '@/components/ui/spinner';
 import { Text } from '@/components/ui/text';
+import { ContextStageCard } from './ContextStageCard';
 import { Message } from './Message';
 import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
+import { isStageActive, type StageCard } from '@/lib/stageCard';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -29,6 +31,8 @@ interface MessageListProps {
   /** Scroll-back through history older than what is loaded (#213). Absent
    * where a thread has no server history to page through. */
   history?: MessageHistory | null;
+  /** The latest step of a context-stage switch in this thread. */
+  stageCard?: StageCard | null;
 }
 
 /** What the session hooks expose for the open thread's scroll-back. */
@@ -53,7 +57,7 @@ export interface MessageHistory {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
   const reachable = useServerReachable();
@@ -152,7 +156,9 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
         : null,
     [liveCompactionIndex, responseStartedAt, queuePosition, loadingModel, promptStats],
   );
-  const showTyping = pending && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyGenerating);
+  // A switch in progress is its own status: the typing indicator beside it
+  // would claim the model is working on a reply.
+  const showTyping = pending && !isStageActive(stageCard ?? null) && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyGenerating);
   // While the empty placeholder is represented by the typing indicator, don't
   // *also* render it as its own contentless row — that produced two stacked
   // "S" rows for the same in-flight response.
@@ -205,15 +211,18 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
       // Inverted, so the header renders at the visual bottom — directly below
       // the newest message, which is where the typing indicator belongs.
       ListHeaderComponent={
-        showTyping ? (
+        stageCard || showTyping ? (
           <Box className="mx-auto w-full max-w-[820px]">
-            <TypingIndicator
-              loadingModel={loadingModel}
-              queuePosition={queuePosition}
-              promptStats={promptStats}
-              since={responseStartedAt}
-              model={model}
-            />
+            {stageCard ? <ContextStageCard card={stageCard} /> : null}
+            {showTyping ? (
+              <TypingIndicator
+                loadingModel={loadingModel}
+                queuePosition={queuePosition}
+                promptStats={promptStats}
+                since={responseStartedAt}
+                model={model}
+              />
+            ) : null}
           </Box>
         ) : null
       }

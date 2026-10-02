@@ -225,6 +225,20 @@
       "when": 1790597778264,
       "tag": "0031_instructions_host_reads",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790648359544,
+      "tag": "0032_local_model_context_stages",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790648997372,
+      "tag": "0033_usage_records_model_index",
+      "breakpoints": true
     }
   ]
 }

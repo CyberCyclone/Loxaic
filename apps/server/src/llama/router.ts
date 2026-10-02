@@ -357,7 +357,10 @@ function presetGlobals(): PresetGlobals {
  * the model layer, which reaches this module. */
 async function builtinRunsActive(): Promise<number> {
   const { schedulerState } = await import("../inference/scheduler.ts");
-  return schedulerState(DEFAULT_PROVIDER_ID).running;
+  const s = schedulerState(DEFAULT_PROVIDER_ID);
+  // An exclusive holder is a context-stage switch, the one thing that wants
+  // this reload now — no reply is running under it.
+  return s.exclusive ? 0 : s.running;
 }
 
 async function reloadNow(): Promise<void> {
@@ -503,6 +506,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_DEVICES) env.LOXAIC_FAKE_DEVICES = process.env.LOXAIC_FAKE_DEVICES;
   if (process.env.LOXAIC_FAKE_HARDWARE) env.LOXAIC_FAKE_HARDWARE = process.env.LOXAIC_FAKE_HARDWARE;
   if (process.env.LOXAIC_FAKE_MODEL_MIB) env.LOXAIC_FAKE_MODEL_MIB = process.env.LOXAIC_FAKE_MODEL_MIB;
+  if (process.env.LOXAIC_FAKE_LOAD_MS) env.LOXAIC_FAKE_LOAD_MS = process.env.LOXAIC_FAKE_LOAD_MS;
   if (process.env.LOXAIC_FAKE_VRAM_STATE) env.LOXAIC_FAKE_VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
   return env;
 }

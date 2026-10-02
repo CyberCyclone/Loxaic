@@ -272,6 +272,44 @@ export async function checkRoom(id: string): Promise<void> {
   if (plan.kind === "refuse") throw new NoRoomError(row.displayName, plan.blockers);
 }
 
+/**
+ * Would `row` fit at `stage`? The context-stage switch's up-front refusal: like
+ * `checkRoom`, but priced at the target stage's footprint, and without the
+ * "already loaded" shortcut — a model loaded at 256K says nothing about 1M.
+ */
+export async function checkStageRoom(row: LocalModelRow, stage: number): Promise<void> {
+  if (!routerEndpoint()) return;
+  await refreshMemory({ force: true });
+  const plan = planRoom({
+    requiredBytes: footprintBytes({ ...row, activeStage: stage }),
+    freeBytes: planFreeBytes(),
+    // This model's own memory comes back when it reloads, and busy models will
+    // be idle by the time the switch holds the backend.
+    loaded: candidates(loadedFootprints())
+      .filter((m) => m.id !== row.id)
+      .map((m) => ({ ...m, busy: false })),
+    countCap: getLocalModelsSettings().modelsMax,
+  });
+  if (plan.kind === "refuse") throw new NoRoomError(row.displayName, plan.blockers);
+}
+
+/**
+ * Load `id` now, making room first, and wait for it — what a context-stage
+ * switch does after the preset changed, so the reload happens under its pill
+ * rather than on some later request. Resolves to whether it loaded.
+ */
+export async function loadWithRoom(id: string, signal: AbortSignal, timeoutMs: number): Promise<boolean> {
+  if (!routerEndpoint()) return true;
+  const row = await servableRow(id);
+  if (!row) return false;
+  return withRoomLock(async () => {
+    await ensureRoomLocked(row, signal);
+    if (!(await isLoaded(id))) await loadModel(id);
+    const status = await waitForModelStatus(id, "loaded", timeoutMs);
+    return status?.value === "loaded";
+  }, signal);
+}
+
 // ── Pinned models ───────────────────────────────────────────────────────────
 
 /** Why a pinned model is not loaded, by id. Cleared when it loads or is

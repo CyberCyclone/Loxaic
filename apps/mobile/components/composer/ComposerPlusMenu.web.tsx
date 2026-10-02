@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef, type ReactNode, type RefObject } from 'react';
 import { Modal, StyleSheet } from 'react-native';
-import { ChevronLeft, ChevronRight, Paperclip, Plug, Plus } from 'lucide-react-native';
+import { ChevronLeft, ChevronRight, Layers, Paperclip, Plug, Plus } from 'lucide-react-native';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
+import { VStack } from '@/components/ui/vstack';
 import {
   MENU_WIDTH,
   SUBMENU_WIDTH,
@@ -45,7 +46,7 @@ const rectOf = (el: unknown): Rect | null =>
  * same file can be picked twice in a row. The click happens inside the press
  * itself, so the browser still counts it as the user's gesture.
  */
-export function ComposerPlusMenu({ onFilesSelected, mcp, disabled = false }: ComposerPlusMenuProps) {
+export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null, disabled = false }: ComposerPlusMenuProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<PressableRef>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -173,6 +174,22 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, disabled = false }: Com
                 if (sub) scheduleCloseSub();
               }}
             />
+            {contextSettings ? (
+              <MenuRow
+                testID="composer.plus.contextSettings"
+                icon={Layers}
+                label="Context settings"
+                sublabel={contextSettings.disabledReason}
+                disabled={contextSettings.disabledReason !== null}
+                onPress={() => {
+                  close();
+                  contextSettings.onOpen();
+                }}
+                onHoverIn={() => {
+                  if (sub) scheduleCloseSub();
+                }}
+              />
+            ) : null}
             {mcp ? (
               <MenuRow
                 testID="composer.plus.mcp"
@@ -265,6 +282,8 @@ function MenuRow({
   label,
   trailing,
   active = false,
+  disabled = false,
+  sublabel,
   onPress,
   onHoverIn,
   onHoverOut,
@@ -275,6 +294,9 @@ function MenuRow({
   label: string;
   trailing?: typeof Plus;
   active?: boolean;
+  disabled?: boolean;
+  /** A line under the label — why a disabled row is disabled. */
+  sublabel?: string | null;
   onPress: () => void;
   onHoverIn?: () => void;
   onHoverOut?: () => void;
@@ -284,15 +306,24 @@ function MenuRow({
       ref={refObj}
       testID={testID}
       role="menuitem"
+      aria-disabled={disabled}
+      disabled={disabled}
       onPress={onPress}
       onHoverIn={onHoverIn}
       onHoverOut={onHoverOut}
-      className={`flex-row items-center gap-2 rounded-md px-3 py-2 hover:bg-muted focus:bg-muted ${active ? 'bg-muted' : ''}`}
+      className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${disabled ? 'opacity-60' : 'hover:bg-muted focus:bg-muted'} ${active ? 'bg-muted' : ''}`}
     >
       <Icon as={icon} size="xs" className="text-muted-foreground" />
-      <Text size="sm" className="flex-1 text-foreground">
-        {label}
-      </Text>
+      <VStack className="flex-1">
+        <Text size="sm" className="text-foreground">
+          {label}
+        </Text>
+        {sublabel ? (
+          <Text testID={`${testID}.reason`} size="2xs" className="text-muted-foreground">
+            {sublabel}
+          </Text>
+        ) : null}
+      </VStack>
       {trailing ? <Icon as={trailing} size="xs" className="text-muted-foreground" /> : null}
     </Pressable>
   );

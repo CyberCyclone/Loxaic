@@ -1,5 +1,7 @@
 import type { ModelInfo } from "@loxaic/types";
 import { listServableModels, rowMeta, type LocalModelRow } from "./catalog.ts";
+import { pendingStage, stageWindows } from "./context-stage-switch.ts";
+import { activeStageIndex, effectiveSettings, rowStages } from "./context-stages.ts";
 import { perRequestWindow, type LoadSettings } from "./load-settings.ts";
 import { routerEndpoint, routerModelProps, routerModelStatuses, type RouterModelStatus } from "./router.ts";
 
@@ -23,9 +25,12 @@ function toModelInfo(
   row: LocalModelRow,
   live: { loaded: boolean; loading: boolean; nCtx: number | null },
 ): ModelInfo {
-  const settings = (row.loadSettings ?? {}) as LoadSettings;
+  // The settings it loads with now — its active YaRN stage's context.
+  const settings = effectiveSettings(row);
   const meta = rowMeta(row);
   const trained = meta.nCtxTrain ?? null;
+  const stages = rowStages(row);
+  const windows = stages ? stageWindows(row) : null;
   const configured = typeof settings.ctxSize === "number" ? settings.ctxSize : null;
   // Before a load, predict the per-request window from the settings; once
   // loaded, the router's own per-slot figure wins (see perRequestWindow).
@@ -38,7 +43,9 @@ function toModelInfo(
     quant: row.quant,
     format: "gguf",
     context_tokens: window ?? 8192,
-    max_context_tokens: trained ?? window ?? 8192,
+    // The largest it can be loaded at: its largest stage, when that is past
+    // what it was trained for.
+    max_context_tokens: Math.max(trained ?? 0, window ?? 0, ...(windows ?? []).map((w) => w ?? 0)) || 8192,
     loaded_context_tokens: live.nCtx,
     context_source: live.nCtx !== null ? "loaded" : configured !== null ? "max" : trained !== null ? "trained" : "default",
     location: "server",
@@ -48,6 +55,17 @@ function toModelInfo(
     loaded: live.loaded,
     loading: live.loading,
     pinned: row.pinned,
+    ...(stages && windows
+      ? {
+          context_stage: {
+            active: activeStageIndex(row),
+            windows,
+            pending: pendingStage(row.id),
+            who_may_change: stages.whoMayChange,
+            when_full: stages.whenFull,
+          },
+        }
+      : {}),
     provider_id: provider.id,
     provider_name: provider.name,
     upstream_id: row.id,
