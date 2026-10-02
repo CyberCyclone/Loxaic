@@ -685,7 +685,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   routerLog ??= openRouterLog(routerLogPath());
   // One line per start, so a run's timings can be matched to the build and
   // devices that produced them.
-  routerLog.write(`=== llama-server ${runtime.tag} (${runtime.flavour}) starting on port ${String(port)}`);
+  routerLog.write(`=== llama-server ${runtime.tag} (${runtime.flavour}) starting on port ${String(port)}\n`);
   const child = spawn(runtime.bin, args, {
     env: childEnv(runtime.bin, apiKey),
     cwd: path.dirname(runtime.bin),

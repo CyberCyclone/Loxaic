@@ -1092,10 +1092,15 @@ replies.
     `/props` and `prompt_progress`;
   - boot the new build with a preset that uses every whitelisted key;
   - benchmark the model the beta serves, with the beta idle (the model fills ~88 of its 90 GB).
-- **The router's output goes to `LLAMA_DIR/logs/router.log` as well** (`llama/router-log.ts`).
-  - Format: synchronous appends, a wall-clock stamp on each line, and a `===` line at each start
-    naming the build. Mode 0600.
-  - Size: one rotation at 10 MB.
+- **In `managed` mode, the router's output goes to `LLAMA_DIR/logs/router.log` as well**
+  (`llama/router-log.ts`). In `attach` mode nothing writes it: the Compose sidecar's output stays
+  in `docker compose logs`, and is lost on `compose down`.
+  - Format: synchronous appends, whole lines (a line split across two reads is carried over),
+    a wall-clock stamp on each, and a `===` line at each start naming the build.
+  - Permissions: the file is made 0600 and `logs/` 0700 whatever the umask or an earlier run
+    left, and a symlink at the path is refused (`O_NOFOLLOW`; not on Windows).
+  - Size: one rotation at 10 MB. If the old file cannot be moved (held open on Windows, a
+    directory in the way), it stops rotating and keeps appending rather than retrying per write.
   - Why: it used to exist only as the in-memory 200-line tail, so a restart erased whether a
     model had been offloaded to the CPU. A three-hour run on the beta could not be diagnosed
     after the fact for exactly that reason.
