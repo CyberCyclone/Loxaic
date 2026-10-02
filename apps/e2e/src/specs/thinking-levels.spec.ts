@@ -25,7 +25,9 @@ import {
   chooseThinkingLevel,
   closePlusMenu,
   deleteProvidersWithBaseUrl,
+  getMessageTexts,
   goToSurface,
+  listConversations,
   mockProviderRequests,
   mockThinking,
   openPlusMenu,
@@ -120,12 +122,26 @@ describe('the thinking level in the + menu', () => {
 
   it('works on the agent screen too', async () => {
     await goToSurface('agent');
-    await startNewAgentRun();
-    await chooseScratchWorkspace();
-    await pickModel(GRADED);
-    await chooseThinkingLevel('Low');
-    await sendAndAwaitReply(PROMPT, mockThinking('reasoning_effort=low'));
-    await goToSurface('chat');
+    try {
+      await startNewAgentRun();
+      await chooseScratchWorkspace();
+      await pickModel(GRADED);
+      await chooseThinkingLevel('Low');
+      await sendMessage(PROMPT);
+      // Read from the server: the agent screen's message list is not readable
+      // by XCUITest text queries (#89), and the stored reply is the stronger
+      // proof anyway.
+      const expected = mockThinking('reasoning_effort=low');
+      await browser.waitUntil(
+        async () => {
+          const agent = (await listConversations(creds)).find((c) => c.kind === 'agent');
+          return agent !== undefined && (await getMessageTexts(creds, agent.id)).some((t) => t.includes(expected));
+        },
+        { timeout: 30_000, interval: 500, timeoutMsg: `[e2e] the agent run never replied "${expected}"` },
+      );
+    } finally {
+      await goToSurface('chat');
+    }
   });
 
   it('applies a default changed in Settings to an open screen without a reload', async () => {
@@ -237,9 +253,7 @@ describe('the thinking level in the + menu', () => {
 
     it('reads its levels from the chat template and sends llama.cpp its reasoning_effort', async () => {
       await startNewThread('chat');
-      // The model list is fetched when the screen loads; a new model needs it again.
-      await browser.refresh();
-      await waitForVisible('composer.input');
+      // Opening the picker fetches the list again, so the new model is in it.
       await pickModel(id);
       await chooseThinkingLevel('High');
       await sendMessage('hello');
