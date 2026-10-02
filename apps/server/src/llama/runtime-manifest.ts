@@ -5,91 +5,91 @@
 import type { RuntimeManifest } from "./runtime-types.ts";
 
 export const RUNTIME_MANIFEST: RuntimeManifest = {
-  "tag": "b11149",
-  "commit": "d2e54583c7452353eb35d40431281f6ee984332f",
+  "tag": "b11342",
+  "commit": "f1cee9941b0e843ea260bf8dd9a090fbd9711b6a",
   "builds": {
     "darwin-arm64-metal": {
       "asset": {
-        "name": "llama-b11149-bin-macos-arm64.tar.gz",
-        "sha256": "791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e",
-        "size": 11189509
+        "name": "llama-b11342-bin-macos-arm64.tar.gz",
+        "sha256": "1050318ed5fb941a1b4c1c603f6c3c7fd3f065b56af3b8cfab39aee70f3ad076",
+        "size": 11828239
       }
     },
     "darwin-arm64-cpu": {
       "asset": {
-        "name": "llama-b11149-bin-macos-arm64.tar.gz",
-        "sha256": "791eb0200a7c846ca925b6274fc21f0f21f537fda2924cc5a47402655816f56e",
-        "size": 11189509
+        "name": "llama-b11342-bin-macos-arm64.tar.gz",
+        "sha256": "1050318ed5fb941a1b4c1c603f6c3c7fd3f065b56af3b8cfab39aee70f3ad076",
+        "size": 11828239
       }
     },
     "linux-x64-vulkan": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-vulkan-x64.tar.gz",
-        "sha256": "d93606c124863e26750f0fa02daba8ae73aa39395507534fcbb57f5e7bbe7b55",
-        "size": 30598088
+        "name": "llama-b11342-bin-ubuntu-vulkan-x64.tar.gz",
+        "sha256": "e88910ac1a46955f8d088a2b518245c32d620a02c954906e0a05884dca48e5be",
+        "size": 31495696
       }
     },
     "linux-arm64-vulkan": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-vulkan-arm64.tar.gz",
-        "sha256": "83ee53735830ab2650cbf71c931f4d038e5ea345c2c3c4a2350a1dc8abc646a5",
-        "size": 24418109
+        "name": "llama-b11342-bin-ubuntu-vulkan-arm64.tar.gz",
+        "sha256": "59e8bdd28b6a5f0d6773d6bf2017dc490c5818acdccf4b0f950e6c0902e15452",
+        "size": 24747943
       }
     },
     "linux-x64-cuda12": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-cuda-12.8-x64.tar.gz",
-        "sha256": "c7dad8798b8aecfb1cf7dff2392979560c9e563facab51ee4df4e87a34acc92f",
-        "size": 168929846
+        "name": "llama-b11342-bin-ubuntu-cuda-12.8-x64.tar.gz",
+        "sha256": "e8e5b32e1abf829c08e24c7c99aa4f66dc046100682260b1625a272d1f80e8d1",
+        "size": 171310151
       }
     },
     "linux-x64-cuda13": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-cuda-13.4-x64.tar.gz",
-        "sha256": "aea31810318a224026b723c154da1835ab5cca5e80a3834c72f644ac0e14750f",
-        "size": 149275085
+        "name": "llama-b11342-bin-ubuntu-cuda-13.4-x64.tar.gz",
+        "sha256": "f9f8d31e10777c1fc45c2f6a7d9226bd0c9459ee640bdda3d2521341ad6622b1",
+        "size": 152145392
       }
     },
     "linux-arm64-cuda13": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-cuda-13.4-arm64.tar.gz",
-        "sha256": "daa1441eb70434b00046902008090a02238a821f56f78c9cd065afaf7a71efe5",
-        "size": 145036509
+        "name": "llama-b11342-bin-ubuntu-cuda-13.4-arm64.tar.gz",
+        "sha256": "a071df57cb8956fd4b2c83090d7447402cd01a6c6ae4b0adf040d94e6a1ba4da",
+        "size": 147329393
       }
     },
     "linux-x64-rocm": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-rocm-10.0-x64.tar.gz",
-        "sha256": "8c5a1381376a8afd4690d6d6c2241368dcb5ccb69011733b28792bc3a26f6242",
-        "size": 234721397
+        "name": "llama-b11342-bin-ubuntu-rocm-10.0-x64.tar.gz",
+        "sha256": "5ff935b55f5588eac72b2753d9a456ab6cde724e2bb7312111f7323fff19aa8c",
+        "size": 243006574
       }
     },
     "linux-x64-cpu": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-x64.tar.gz",
-        "sha256": "214b9e26677221df9b6c84d396f236839c716a10acaf3eff8dde01fb26fbcd2c",
-        "size": 16997871
+        "name": "llama-b11342-bin-ubuntu-x64.tar.gz",
+        "sha256": "7c8f7eb14cfb4a8dceb1f6cc6220ea387a1940f0c95cab76ca63ac35d2934fd4",
+        "size": 17552025
       }
     },
     "linux-arm64-cpu": {
       "asset": {
-        "name": "llama-b11149-bin-ubuntu-arm64.tar.gz",
-        "sha256": "7a4ca8a91014a399dacb987efbd408621634e9079974f5a4fec80152d65b5e5b",
-        "size": 13593527
+        "name": "llama-b11342-bin-ubuntu-arm64.tar.gz",
+        "sha256": "6f5f88d9e105230c32b13ad9d8bba9611ab29ee27532717ba6bb5bb4120f3c85",
+        "size": 13587967
       }
     },
     "win32-x64-vulkan": {
       "asset": {
-        "name": "llama-b11149-bin-win-vulkan-x64.zip",
-        "sha256": "ca432b775c5dcb5af85bbdcf22b06b6e2dca792f30334b19ef4a45ee4a512446",
-        "size": 32126960
+        "name": "llama-b11342-bin-win-vulkan-x64.zip",
+        "sha256": "134d8b04da54047c4edc20e9c6a356e7dcca260f80f19490de100f4a869cc688",
+        "size": 33207870
       }
     },
     "win32-x64-cuda12": {
       "asset": {
-        "name": "llama-b11149-bin-win-cuda-12.4-x64.zip",
-        "sha256": "d3140fe21ab2e665a706ca27923b27ca264f1c564b5837abea4566cc49c16096",
-        "size": 253869752
+        "name": "llama-b11342-bin-win-cuda-12.4-x64.zip",
+        "sha256": "78e15a116a372a3ac5bb654c31709bee45f575d01e2e967b42ec6395cced9a64",
+        "size": 263290310
       },
       "extra": {
         "name": "cudart-llama-bin-win-cuda-12.4-x64.zip",
@@ -99,9 +99,9 @@ export const RUNTIME_MANIFEST: RuntimeManifest = {
     },
     "win32-x64-cuda13": {
       "asset": {
-        "name": "llama-b11149-bin-win-cuda-13.4-x64.zip",
-        "sha256": "24fa117fa4d34e24d121e13d7d1a542adbfc0fca24c96409e0824e9b5666072c",
-        "size": 149758790
+        "name": "llama-b11342-bin-win-cuda-13.4-x64.zip",
+        "sha256": "95343961b21067de6a826dad662deba29c25ba517a423559c87a22308666acc1",
+        "size": 152775637
       },
       "extra": {
         "name": "cudart-llama-bin-win-cuda-13.4-x64.zip",
@@ -111,16 +111,16 @@ export const RUNTIME_MANIFEST: RuntimeManifest = {
     },
     "win32-x64-rocm": {
       "asset": {
-        "name": "llama-b11149-bin-win-rocm-10.0-x64.zip",
-        "sha256": "46a4eb51eb6ba6b677f67f1a4b37a82034560f484767915e6afaec43048c0ff0",
-        "size": 251910635
+        "name": "llama-b11342-bin-win-rocm-10.0-x64.zip",
+        "sha256": "fdf8da76f136d56ebefdd47d8978c2065f52da9ab6fb73e76010b9d20b3f8bd8",
+        "size": 256206881
       }
     },
     "win32-x64-cpu": {
       "asset": {
-        "name": "llama-b11149-bin-win-cpu-x64.zip",
-        "sha256": "d1cb5f9ef7bbb7068954b4c9767d5b5309e20bcefeb61d4aafc47f9581f38752",
-        "size": 18559583
+        "name": "llama-b11342-bin-win-cpu-x64.zip",
+        "sha256": "cc6f3ac938988f6ed4ce204b119d6d1ffe59342cb3157adef20e8132681acd8d",
+        "size": 19274166
       }
     }
   }

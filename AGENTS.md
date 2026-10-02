@@ -1084,6 +1084,23 @@ replies.
   (bsdtar reads zip on macOS/Windows). Older builds are pruned only after the new one answered
   its health check. A first install waits for an admin to open the screen or queue a download;
   an upgrade of an existing install fetches itself at boot.
+- **Moving the pin is a measurement, not a version bump.** b11149 → b11342 was taken for #29751
+  ("fix qwen4exp", Qwen3.8-Flash-Next's arch). On Pheonix's three V620s (Vulkan, IQ4_XS, q8_0
+  KV, `llama-bench -p 512 -n 128`), prompt speed went 335 → 596 tok/s empty, 241 → 315 at 128k,
+  and generation 15.6 → 25.2 tok/s at 128k. Before choosing the next tag:
+  - diff `common/arg.cpp`, `common/preset.*` and `tools/server/` for preset keys, `/models`,
+    `/props` and `prompt_progress`;
+  - boot the new build with a preset that uses every whitelisted key;
+  - benchmark the model the beta serves, with the beta idle (the model fills ~88 of its 90 GB).
+- **The router's output goes to `LLAMA_DIR/logs/router.log` as well** (`llama/router-log.ts`).
+  - Format: synchronous appends, a wall-clock stamp on each line, and a `===` line at each start
+    naming the build. Mode 0600.
+  - Size: one rotation at 10 MB.
+  - Why: it used to exist only as the in-memory 200-line tail, so a restart erased whether a
+    model had been offloaded to the CPU. A three-hour run on the beta could not be diagnosed
+    after the fact for exactly that reason.
+  - Placement on Pheonix, for the record: all 49 layers of Flash-Next on the GPUs, 27.5 GB of
+    per-layer token embeddings in host RAM by design, and 4 graph splits.
 - **The CPU is never chosen automatically.** `auto` resolves to Metal/CUDA/Vulkan or to nothing
   (`needs-gpu`), and a GPU build whose `--list-devices` finds no GPU is an *error*, not a
   fallback — llama.cpp would otherwise quietly run everything on the CPU. CPU is an admin's

@@ -15,7 +15,8 @@ import {
   type HardwareGuess,
   type RuntimeDevice,
 } from "./hardware.ts";
-import { presetPath } from "./paths.ts";
+import { presetPath, routerLogPath } from "./paths.ts";
+import { openRouterLog, type RouterLog } from "./router-log.ts";
 import {
   modelIdFromRouterName,
   renderPreset,
@@ -154,8 +155,14 @@ let attachTimer: NodeJS.Timeout | null = null;
 
 const LOG_LINES = 200;
 const logTail: string[] = [];
+/** Everything the router prints, on disk as well (router-log.ts): the tail
+ * above is what this process explains failures from, the file is what a person
+ * reads after a restart. Opened at the first spawn, so a server that never runs
+ * a router writes nothing. */
+let routerLog: RouterLog | null = null;
 
 function recordLog(chunk: string): void {
+  routerLog?.write(chunk);
   for (const line of chunk.split("\n")) {
     if (!line.trim()) continue;
     logTail.push(line);
@@ -675,6 +682,10 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   ];
   st.state = "starting";
   st.reason = null;
+  routerLog ??= openRouterLog(routerLogPath());
+  // One line per start, so a run's timings can be matched to the build and
+  // devices that produced them.
+  routerLog.write(`=== llama-server ${runtime.tag} (${runtime.flavour}) starting on port ${String(port)}`);
   const child = spawn(runtime.bin, args, {
     env: childEnv(runtime.bin, apiKey),
     cwd: path.dirname(runtime.bin),
@@ -1032,6 +1043,8 @@ export async function ensureHardwareDetected(): Promise<void> {
 /** Test seam: forget everything, stopping a live router first. */
 export async function __resetRouterForTest(): Promise<void> {
   await stopLocalRuntime();
+  await routerLog?.close();
+  routerLog = null;
   Object.assign(st, {
     state: "not-installed",
     reason: null,
