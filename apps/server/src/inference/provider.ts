@@ -8,6 +8,7 @@ import { routerModelName } from "../llama/preset.ts";
 import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { listServableModels } from "../llama/catalog.ts";
 import { ensureRoom, trackRequest } from "../llama/room.ts";
+import { describeLoadFailure } from "../llama/load-failure.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 
 // Read at call time, not module load — a supervisor sets these in the child's
@@ -88,6 +89,10 @@ export interface LlamaTimings {
   predicted_per_second: number;
   cache_n?: number;
   total_ms?: number;
+  /** Speculative decoding (an MTP head): tokens drafted, and how many the
+   * model accepted. llama.cpp sends them only when something was drafted. */
+  draft_n?: number;
+  draft_n_accepted?: number;
 }
 
 export interface CompletionResult {
@@ -233,6 +238,12 @@ export async function* streamCompletion(
   const release = trackRequest(upstreamModel);
   try {
     yield* liveStream(provider, routerModelName(upstreamModel), messages, options);
+  } catch (err) {
+    // The router says only "model name=… failed to load"; say why, and what
+    // an admin can change (llama/load-failure.ts).
+    const explained = err instanceof Error ? await describeLoadFailure(upstreamModel, err.message) : null;
+    if (explained) throw new Error(explained, { cause: err });
+    throw err;
   } finally {
     release();
   }

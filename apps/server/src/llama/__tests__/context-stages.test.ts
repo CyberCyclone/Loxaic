@@ -112,11 +112,14 @@ describe("context stages", () => {
 describe("the fake router's preset keys", () => {
   it("accept every key the server can write, and so fail on any new one nobody added", async () => {
     const { readFileSync } = await import("node:fs");
-    const { LOAD_SETTINGS } = await import("../load-settings.ts");
+    const { LOAD_SETTINGS, presetLines } = await import("../load-settings.ts");
     const fake = readFileSync(new URL("../../../test-fixtures/fake-llama-server.mjs", import.meta.url), "utf8");
     const listed = new Set(fake.slice(fake.indexOf("PRESET_KEYS = new Set"), fake.indexOf("]);", fake.indexOf("PRESET_KEYS"))).match(/"[a-z-]+"/g)?.map((k) => k.slice(1, -1)));
     const written = [
       ...LOAD_SETTINGS.map((s) => s.flag),
+      // Keys written by presetLines itself rather than as a spec's flag: the
+      // projector path and a separate MTP head.
+      ...presetLines({ mtp: true, mtpDraftMax: 2 }, { mmprojPath: "/p.gguf", mtp: { draftModelPath: "/h.gguf" } }).map((l) => l.split(" = ")[0]),
       ...yarnLines(row({ contextStages: { enabled: true, stages: [{ ctxSize: 512 * K, extFactor: -1, attnFactor: 1, betaSlow: 1, betaFast: 32 }] } }), 1).map((l) => l.split(" = ")[0]),
     ];
     for (const key of written) expect(listed.has(key), key).toBe(true);

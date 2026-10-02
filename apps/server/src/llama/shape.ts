@@ -19,6 +19,18 @@
  * - **The KV cache is `ctx` cells in total**, unified or not — `parallel`
  *   divides it between slots, it does not multiply it. The recurrent state is
  *   per slot.
+ * - **Multi-token prediction adds a second, small context** (measured against
+ *   b11342 on Qwen3.5-0.8B, 32k cells, `draft-mtp`): its own KV cache for the
+ *   head's layers at the same cells as the main one (64 MiB beside the main
+ *   384 MiB — exactly one attention layer's worth), a compute buffer the size
+ *   of the main one (126 MiB and 126 MiB), and the recurrent state kept
+ *   `1 + n-max` times over per slot so drafts can be rolled back (19 MiB →
+ *   58 MiB at n-max 2, 96 MiB at 4, 308 MiB at 3 with 4 slots). The head's
+ *   cache is **f16 whatever the model's cache type** — llama.cpp's own
+ *   `--spec-draft-type-k/v` default: Qwen3.8-27B on Vulkan with a q8_0 cache at
+ *   65,536 cells drafted from a 256 MiB f16 cache beside its 2,176 MiB q8_0
+ *   one. With MTP on, the embedded head's own weights load too (335 MiB more
+ *   on one device for the 27B); off, llama.cpp skips them.
  * - **The compute buffer grows with the context too**: about 5 KiB a token with
  *   flash attention (both models measured, to within 1%), and `heads × ubatch
  *   × 4` bytes a token without it. At 1M that is 5 GiB, not a rounding error.
@@ -205,4 +217,28 @@ export function shapeCost(shape: ModelShape, input: ShapeCostInput): ShapeCost {
     recurrentBytes: shape.recurrentBytesPerSeq * input.slots,
     computeBytes: Math.round(COMPUTE_BASE_BYTES + perToken * input.ctx),
   };
+}
+
+/** llama.cpp's `spec-draft-n-max` when it is not set. */
+export const DEFAULT_DRAFT_MAX = 3;
+
+/**
+ * What turning MTP on adds to a load, by the rules measured above: the head's
+ * KV cache (its layers are full attention, at the main cache's cells), a
+ * second compute buffer as large as the main one, and the recurrent state
+ * (hybrid models only) kept `draftMax` more times per slot.
+ */
+export function mtpCost(shape: ModelShape, layers: number, draftMax: number, input: ShapeCostInput): number {
+  // f16, not the model's cache type: llama.cpp gives the draft context its own
+  // (`--spec-draft-type-k/v`, default f16), which Loxaic does not set.
+  const k = 2;
+  const v = 2;
+  // The head sits after the main layers; a per-layer array that covers it says
+  // its width, otherwise the widest layer's stands in.
+  const heads = Array.isArray(shape.nHeadKv)
+    ? (shape.nHeadKv[shape.nLayers] || Math.max(0, ...shape.nHeadKv.slice(0, 4096)))
+    : shape.nHeadKv;
+  const kv = layers * input.ctx * heads * (shape.keyLength * k + shape.valueLength * v);
+  const main = shapeCost(shape, input);
+  return Math.round(kv + main.computeBytes + shape.recurrentBytesPerSeq * input.slots * draftMax);
 }

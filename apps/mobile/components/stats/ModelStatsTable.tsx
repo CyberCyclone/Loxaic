@@ -76,6 +76,18 @@ export function ModelStatsTable({ models }: { models: ModelStats[] }) {
                   {fmt(m.ppSpeed)} / {fmt(m.tgSpeed)}
                 </Text>
               </VStack>
+              {m.mtpAcceptPct != null && (
+                // Only for a model something was drafted on: for any other
+                // there is nothing to say, and "—" would read as a failure.
+                <VStack>
+                  <Text size="2xs" className="text-muted-foreground">
+                    MTP accepted
+                  </Text>
+                  <Text testID={`stats.model.mtp.${m.model}`} size="sm" className="text-foreground">
+                    {`${String(m.mtpAcceptPct)}%`}
+                  </Text>
+                </VStack>
+              )}
             </HStack>
             <VStack space="xs" className="mt-3">
               <PercentileRow label="p50" value={m.ttftP50} max={maxTtft} />

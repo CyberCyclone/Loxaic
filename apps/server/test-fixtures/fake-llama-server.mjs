@@ -23,7 +23,7 @@
 // from the router, so the router writes what it holds to
 // LOXAIC_FAKE_VRAM_STATE for the listing to read. `--models-max N` (N > 0)
 // unloads the least recently used model past N, as the real router does.
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const args = process.argv.slice(2);
@@ -114,6 +114,9 @@ const PRESET_KEYS = new Set([
   "parallel", "kv-unified", "temp", "top-k", "top-p", "min-p", "repeat-penalty", "presence-penalty",
   "frequency-penalty", "seed",
   "rope-scaling", "rope-scale", "yarn-orig-ctx", "yarn-ext-factor", "yarn-attn-factor", "yarn-beta-slow", "yarn-beta-fast",
+  // Multi-token prediction, confirmed against b11342 (a Qwen3.5-0.8B with
+  // its own head drafted and reported `draft_n`/`draft_n_accepted`).
+  "spec-type", "spec-draft-model", "spec-draft-n-max",
 ]);
 
 /** Parse the INI into { globals, sections: Map<id, Record<string,string>> }. */
@@ -153,6 +156,8 @@ const failed = new Set();
 /** id -> last use, for --models-max. */
 const lastUse = new Map();
 let loadedArgs = new Map();
+/** Loads so far, for each one's own child port. */
+let spawnCount = 0;
 const modelsMax = Number(arg("--models-max") ?? 0);
 
 function merged(id) {
@@ -186,6 +191,37 @@ function load(id) {
   if (modelsMax > 0) {
     const others = loadedIds().sort((a, b) => (lastUse.get(a) ?? 0) - (lastUse.get(b) ?? 0));
     while (others.length >= modelsMax) unload(others.shift());
+  }
+  // As the real router: each load is a child on its own port, announced on
+  // the router's output, with the child's lines forwarded as `[    P] line`.
+  const childPort = 40000 + (spawnCount++ % 20000);
+  process.stderr.write(`0.00.000.100 I srv    operator(): spawning server instance with name=${id} on port ${childPort}\n`);
+  // As the real child: an unknown speculative type, or a draft file that is
+  // not there, fails the load (not the router). A model file named "Crashy"
+  // loaded with MTP dies the way llama.cpp b11342 dies loading
+  // Qwen3.8-Flash-Next with unsloth's head (ggml-org/llama.cpp#29811).
+  const spec = merged(id);
+  const crashes = spec["spec-type"] === "draft-mtp" && /crashy/i.test(spec.model ?? "");
+  const badSpec =
+    (spec["spec-type"] !== undefined && spec["spec-type"] !== "draft-mtp") ||
+    (spec["spec-draft-model"] !== undefined && !existsSync(spec["spec-draft-model"])) ||
+    crashes;
+  if (badSpec) {
+    const p = String(childPort).padStart(5, " ");
+    if (crashes) {
+      process.stderr.write(
+        [
+          `[${p}] 0.33.703.461 I spec common_specu: adding speculative implementation 'draft-mtp'`,
+          `[${p}] /home/runner/work/llama.cpp/llama.cpp/ggml/src/ggml-backend.cpp:205: GGML_ASSERT(buffer) failed`,
+          `[${p}] #5  0x00007bed0de6f0e2 in ggml_abort () from /opt/llama/libggml-base.so.0`,
+          `[${p}] #8  0x00007bed0c84367e in llama_kv_cache::set_input_k_idxs(ggml_tensor*, llama_ubatch const*) const ()`,
+          `0.00.000.200 I srv    operator(): instance name=${id} exited with status 134`,
+        ].join("\n") + "\n",
+      );
+    }
+    failed.add(id);
+    logEvent({ event: "load-failed", model: id, reason: "speculative" });
+    return "failed";
   }
   if (MODEL_MIB > 0 && (loadedIds().length + 1) * MODEL_MIB > baseFreeMib()) {
     failed.add(id);
@@ -293,6 +329,8 @@ const server = createServer(async (req, res) => {
     const body = await readBody(req);
     const ok = load(body.model);
     if (ok === "oom") return json(res, 500, { error: { code: 500, message: "failed to load model: out of device memory" } });
+    // The real router's words, which name nothing: the reason is in the log.
+    if (ok === "failed") return json(res, 500, { error: { code: 500, message: `model name=${body.model} failed to load` } });
     if (!ok) return json(res, 400, { error: { code: 400, message: `model '${body.model}' not found` } });
     // What the thinking level became on the wire, so a test can tell the level
     // picked in the composer reached the backend, in llama.cpp's own fields.
@@ -349,8 +387,18 @@ const server = createServer(async (req, res) => {
     // "overflow the context" 90%. Read from what the model was loaded with, so
     // it follows the model's context stage.
     const promptTokens = promptSize(body);
+    // A model loaded with an MTP head reports what it drafted, as llama.cpp
+    // does on its last chunk: 30 drafted, 20 accepted (66%).
+    const speculating = merged(body.model)["spec-type"] === "draft-mtp";
+    const timings = speculating
+      ? {
+          prompt_n: promptTokens, prompt_ms: 50.5, prompt_per_token_ms: 5.05, prompt_per_second: 198.02,
+          predicted_n: 3, predicted_ms: 30.25, predicted_per_token_ms: 10.08, predicted_per_second: 99.17,
+          cache_n: 0, draft_n: 30, draft_n_accepted: 20,
+        }
+      : undefined;
     res.write(
-      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 3, total_tokens: promptTokens + 3 } })}\n\n`,
+      `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 3, total_tokens: promptTokens + 3 }, ...(timings ? { timings } : {}) })}\n\n`,
     );
     res.end("data: [DONE]\n\n");
     return;

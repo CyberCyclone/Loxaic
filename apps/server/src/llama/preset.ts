@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { rowFiles, rowMeta, rowMmproj, type LocalModelRow } from "./catalog.ts";
+import { mtpSource, rowFiles, rowMeta, rowMmproj, rowMtpHead, type LocalModelRow } from "./catalog.ts";
 import { activeStageIndex, settingsForStage, yarnLines } from "./context-stages.ts";
 import { presetLines } from "./load-settings.ts";
 import { modelFilePath, presetPath } from "./paths.ts";
@@ -83,10 +83,22 @@ export function modelSection(row: LocalModelRow, globals: PresetGlobals): string
     ...presetLines(cpuOnly ? { ...settings, gpuLayers: 0 } : settings, {
       mmprojPath: mmproj ? safeValue(modelFilePath(row.repo, row.revision, mmproj.path)) : null,
       facts: rowMeta(row),
+      mtp: mtpDraft(row),
     }),
     ...yarnLines(row, stage),
   );
   return lines;
+}
+
+/** What MTP drafts with, for `presetLines`: the model's own head (no draft
+ * file), a separate head that has finished downloading and passed its header
+ * check (its path, under its own revision), or nothing yet. */
+function mtpDraft(row: LocalModelRow): { draftModelPath: string | null } | null {
+  const source = mtpSource(row);
+  if (source === "embedded") return { draftModelPath: null };
+  const head = rowMtpHead(row);
+  if (source === "head" && head) return { draftModelPath: safeValue(modelFilePath(row.repo, head.revision, head.path)) };
+  return null;
 }
 
 export function renderPreset(rows: LocalModelRow[], globals: PresetGlobals): string {

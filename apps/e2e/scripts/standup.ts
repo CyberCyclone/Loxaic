@@ -141,11 +141,11 @@ export function mockProviderApiBase(): string {
  * database. */
 const MOCK_HF_FILE = path.join(RUN_DIR, 'mock-hf.json');
 
-export function mockHf(): Pick<MockHf, 'url' | 'repos' | 'quants'> {
+export function mockHf(): Pick<MockHf, 'url' | 'repos' | 'quants' | 'mtpHeads'> {
   if (!existsSync(MOCK_HF_FILE)) {
     throw new Error(`[e2e] no mock HuggingFace recorded at ${MOCK_HF_FILE} — was standup() run?`);
   }
-  return JSON.parse(readFileSync(MOCK_HF_FILE, 'utf8')) as Pick<MockHf, 'url' | 'repos' | 'quants'>;
+  return JSON.parse(readFileSync(MOCK_HF_FILE, 'utf8')) as Pick<MockHf, 'url' | 'repos' | 'quants' | 'mtpHeads'>;
 }
 
 /** Where the server under test keeps its llama.cpp runtime and models, so a
@@ -389,7 +389,7 @@ async function ensureServer(): Promise<void> {
 
   const hf = await startMockHf();
   stopMockHf = hf.stop;
-  writeFileSync(MOCK_HF_FILE, JSON.stringify({ url: hf.url, repos: hf.repos, quants: hf.quants }), 'utf8');
+  writeFileSync(MOCK_HF_FILE, JSON.stringify({ url: hf.url, repos: hf.repos, quants: hf.quants, mtpHeads: hf.mtpHeads }), 'utf8');
   rmSync(LLAMA_DIR, { recursive: true, force: true });
   writeFileSync(FAKE_HARDWARE_FILE, 'gpu', 'utf8');
   rmSync(FAKE_ROUTER_LOG, { force: true });

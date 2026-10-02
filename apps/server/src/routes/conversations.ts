@@ -273,6 +273,8 @@ export function conversationRoutes(app: FastifyInstance) {
               totalMs: u.totalMs,
               promptTps: u.promptTps,
               predictedTps: u.predictedTps,
+              draftTokens: u.draftTokens,
+              draftAcceptedTokens: u.draftAcceptedTokens,
               contextBreakdown: (u.contextBreakdown as ContextBreakdown | null) ?? null,
             }
           : null,

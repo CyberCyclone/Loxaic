@@ -480,7 +480,7 @@ export type LoadSettings = Partial<Record<string, LoadSettingValue>>;
 export interface LoadSettingSpec {
   key: string;
   flag: string;
-  group: "context" | "offload" | "performance" | "sampling" | "other";
+  group: "context" | "offload" | "performance" | "speculative" | "sampling" | "other";
   label: string;
   help: string;
   type: "int" | "float" | "bool" | "enum";
@@ -534,8 +534,17 @@ export interface LocalModel {
     /** What the file says about itself; the attention layout is for the fit
      * estimate, the rope scaling suggests how far YaRN can stretch it. */
     shape?: { ropeScaling?: { type: string | null; factor: number | null; originalContext: number | null } | null } | null;
+    /** A multi-token-prediction head in the model's own file. Absent until
+     * the server has read it; null when there is none. */
+    mtp?: { layers: number } | null;
   };
   hasVision: boolean;
+  /** Where an MTP head would come from: the model's own file (`embedded`), a
+   * downloaded separate head (`head`), one still downloading or refused
+   * (`head-pending`), or none. Absent from an older server. */
+  mtpSource?: MtpSource;
+  /** A separate MTP head and its download, or null. */
+  mtpHead?: LocalMtpHead | null;
   fit: FitEstimate;
   runtimeStatus: string | null;
   loadFailed: boolean;
@@ -552,6 +561,26 @@ export interface LocalModel {
   /** Present on a PATCH answer: the model is answering someone and picks the
    * change up on its next load. */
   appliesOnNextLoad?: boolean;
+}
+
+export type MtpSource = "embedded" | "head" | "head-pending" | null;
+
+export interface LocalMtpHead {
+  path: string;
+  size: number;
+  status: "queued" | "downloading" | "ready" | "failed";
+  bytesDone: number;
+  error: string | null;
+  layers: number | null;
+}
+
+/** A repository's separate MTP head. `shared` heads borrow the main model's
+ * tensors, which the server's llama.cpp cannot load. */
+export interface HfMtpHead {
+  path: string;
+  size: number;
+  sha256: string | null;
+  shared: boolean;
 }
 
 export interface LocalModelsView {
@@ -604,7 +633,13 @@ export interface HfRepoDetails {
   /** The model card's markdown. Untrusted: render it as text. */
   card: string | null;
   cardTruncated: boolean;
-  files: { revision: string; quants: HfQuant[]; mmproj: { path: string; size: number; sha256: string | null }[] };
+  files: {
+    revision: string;
+    quants: HfQuant[];
+    mmproj: { path: string; size: number; sha256: string | null }[];
+    /** Absent from an older server. */
+    mtpHeads?: HfMtpHead[];
+  };
   bestFit: FitLabel;
 }
 
@@ -655,6 +690,8 @@ export async function downloadLocalModel(input: {
   repo: string;
   quant: string;
   mmproj?: string | null;
+  /** A separate MTP head to download after the model. */
+  mtpHead?: string | null;
   force?: boolean;
 }): Promise<LocalModel> {
   return adminFetch("/v1/admin/local-models/downloads", { method: "POST", ...json(input) });
@@ -696,6 +733,17 @@ export async function estimateLocalModel(
     method: "POST",
     ...json({ id, loadSettings, ...(contextStages ? { contextStages } : {}) }),
   });
+}
+
+/** Download a separate MTP head for a model in the list. */
+export async function downloadMtpHead(id: string, path: string): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/model/mtp-head", { method: "POST", ...json({ id, path }) });
+}
+
+/** Remove a model's separate MTP head, stopping its download; MTP goes off
+ * unless the model carries its own head. */
+export async function removeMtpHead(id: string): Promise<LocalModel> {
+  return adminFetch(`/v1/admin/local-models/model/mtp-head?id=${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 export async function deleteLocalModel(id: string): Promise<void> {
@@ -1226,6 +1274,10 @@ export interface ApiMessageUsage {
   totalMs: number | null;
   promptTps: number | null;
   predictedTps: number | null;
+  /** Speculative decoding: tokens an MTP head drafted, and how many the model
+   * accepted. Null when nothing was drafted; absent from an older server. */
+  draftTokens?: number | null;
+  draftAcceptedTokens?: number | null;
   /** null for rows written before this column existed, and for any backend
    * that reported no usage — the UI must degrade rather than assume. */
   contextBreakdown: import("@loxaic/types").ContextBreakdown | null;
@@ -1940,6 +1992,10 @@ export interface ModelStats {
   ttftP50: number | null;
   ttftP95: number | null;
   ttftP99: number | null;
+  /** Share of MTP-drafted tokens the model accepted, in percent. Null when
+   * nothing was drafted; absent from an older server. */
+  mtpAcceptPct?: number | null;
+  mtpDraftTokens?: number | null;
 }
 
 export async function getModelStats(range?: StatsRange): Promise<ModelStats[]> {

@@ -18,6 +18,7 @@ import { ImageViewer } from '@/components/viewer/ImageViewer';
 import { DocumentPreview } from '@/components/viewer/DocumentPreview';
 import { useSession } from '@/lib/session';
 import { promptReuse } from '@/lib/usage';
+import { describeMtpAcceptance } from '@/lib/mtp';
 import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
 import { instructionsUpdateLine } from '@/lib/projectInstructions';
 import { PLAN_REQUIRED_NUDGE } from '@loxaic/types';
@@ -61,6 +62,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
   const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [previewAtt, setPreviewAtt] = useState<NonNullable<MessageType['attachments']>[number] | null>(null);
   const reuse = msg.usage ? promptReuse(msg.usage) : null;
+  const mtp = msg.usage ? describeMtpAcceptance(msg.usage.draftTokens, msg.usage.draftAcceptedTokens) : null;
   const omitted = msg.usage?.omittedAttachments ?? [];
   const keptGoing = msg.role === 'assistant' ? autoContinueNotice(msg.checkinDecision) : null;
 
@@ -258,6 +260,12 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
                 {reuse && (
                   <Text testID="chat.usage.reuse" size="xs" className="text-muted-foreground">
                     {reuse.pct}% {reuse.measured ? 'cached' : 'reused'}
+                  </Text>
+                )}
+                {mtp && (
+                  // How many of the tokens an MTP head guessed the model kept.
+                  <Text testID="chat.usage.mtp" size="xs" className="text-muted-foreground">
+                    {mtp}
                   </Text>
                 )}
               </HStack>

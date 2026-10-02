@@ -12,7 +12,7 @@
  * real router — `mlock`/`no-mmap` are *not* preset keys, `load-mode` is.
  */
 
-export type LoadSettingGroup = "context" | "offload" | "performance" | "sampling" | "other";
+export type LoadSettingGroup = "context" | "offload" | "performance" | "speculative" | "sampling" | "other";
 
 interface Base {
   key: string;
@@ -178,6 +178,21 @@ export const LOAD_SETTINGS: readonly LoadSettingSpec[] = [
     label: "Frequency penalty",
     help: "Discourage tokens in proportion to how often they have appeared.",
   },
+  // ── Multi-token prediction. Rendered by `presetLines` itself, not as
+  // `flag = value`: on is `spec-type = draft-mtp`, plus `spec-draft-model` for
+  // a separate head file, and only once the model has a head to draft with.
+  // Keys confirmed against a real b11342 router (a 0.8B Qwen3.5 with an
+  // embedded head: `draft acceptance = 1.00000 (132 accepted / 132 generated)`).
+  {
+    key: "mtp", flag: "spec-type", group: "speculative", type: "bool",
+    label: "Multi-token prediction",
+    help: "Draft the next few tokens with the model's MTP head and check them in one pass. The same replies, faster when one conversation runs at a time. Uses a little more memory.",
+  },
+  {
+    key: "mtpDraftMax", flag: "spec-draft-n-max", group: "speculative", type: "int", min: 1, max: 8,
+    label: "Tokens drafted",
+    help: "How far ahead the head guesses. llama.cpp's default, 3, was fastest for Qwen3.8-27B; more guesses further but each is accepted less often.",
+  },
   // ── Other
   {
     key: "seed", flag: "seed", group: "other", type: "int", min: -1, max: 2 ** 31 - 1,
@@ -206,6 +221,24 @@ export class LoadSettingsError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "LoadSettingsError";
+  }
+}
+
+/**
+ * Whether MTP may be turned on, given where the model's head would come from
+ * (catalog.ts `mtpSource`). Separate from `normalizeLoadSettings` on purpose:
+ * that one also re-validates stored rows on their way to the preset, and a
+ * head deleted after MTP was turned on must cost the model its MTP lines, not
+ * every setting it has. Called where an admin writes settings.
+ */
+export function checkMtpSetting(settings: LoadSettings, source: "embedded" | "head" | "head-pending" | null): void {
+  if (settings.mtp === true && source === null) {
+    throw new LoadSettingsError(
+      "This model has no multi-token-prediction head. Download one from its repository's MTP folder first, if it has one.",
+    );
+  }
+  if (settings.mtpDraftMax !== undefined && settings.mtp !== true) {
+    throw new LoadSettingsError("Tokens drafted only applies with multi-token prediction on");
   }
 }
 
@@ -277,7 +310,18 @@ function checkValue(spec: LoadSettingSpec, value: unknown, facts: ModelFacts): L
  * re-validated here as well — the row is plain data, and an unknown key in the
  * preset would take the whole router down rather than one model.
  */
-export function presetLines(settings: LoadSettings, opts: { mmprojPath: string | null; facts?: ModelFacts }): string[] {
+export function presetLines(
+  settings: LoadSettings,
+  opts: {
+    mmprojPath: string | null;
+    facts?: ModelFacts;
+    /** The head MTP drafts with, when it has one ready: `{ draftModelPath:
+     * null }` for a head inside the model's own file, a path for a separate
+     * head. Null while there is none, or while a separate one is still
+     * downloading — then MTP writes nothing and every other setting stands. */
+    mtp?: { draftModelPath: string | null } | null;
+  },
+): string[] {
   let valid: LoadSettings;
   try {
     valid = normalizeLoadSettings(settings, opts.facts);
@@ -290,9 +334,14 @@ export function presetLines(settings: LoadSettings, opts: { mmprojPath: string |
   const lines: string[] = [];
   for (const spec of LOAD_SETTINGS) {
     const value = valid[spec.key];
-    if (spec.key === "vision") continue;
+    if (spec.group === "speculative" || spec.key === "vision") continue;
     if (value === undefined) continue;
     lines.push(`${spec.flag} = ${String(value)}`);
+  }
+  if (valid.mtp === true && opts.mtp) {
+    lines.push("spec-type = draft-mtp");
+    if (opts.mtp.draftModelPath) lines.push(`spec-draft-model = ${opts.mtp.draftModelPath}`);
+    if (typeof valid.mtpDraftMax === "number") lines.push(`spec-draft-n-max = ${String(valid.mtpDraftMax)}`);
   }
   // Vision defaults on when a projector was downloaded — that is why it was.
   if (opts.mmprojPath && valid.vision !== false) lines.push(`mmproj = ${opts.mmprojPath}`);

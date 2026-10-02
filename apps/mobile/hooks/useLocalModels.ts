@@ -3,9 +3,11 @@ import {
   cancelLocalModel,
   deleteLocalModel,
   downloadLocalModel,
+  downloadMtpHead,
   getLocalModels,
   pauseLocalModel,
   restartLocalRuntime,
+  removeMtpHead,
   resumeLocalModel,
   updateLocalModel,
   updateLocalModelsSettings,
@@ -111,6 +113,8 @@ export function useLocalModels(token: string | null) {
   const resume = useCallback((id: string) => act(() => resumeLocalModel(id)), [act]);
   const cancel = useCallback((id: string) => act(() => cancelLocalModel(id), 'Download cancelled'), [act]);
   const remove = useCallback((id: string) => act(() => deleteLocalModel(id), 'Model deleted'), [act]);
+  const downloadHead = useCallback((id: string, path: string) => act(() => downloadMtpHead(id, path), 'MTP head download started'), [act]);
+  const removeHead = useCallback((id: string) => act(() => removeMtpHead(id), 'MTP head removed'), [act]);
 
   const update = useCallback(
     async (
@@ -162,5 +166,5 @@ export function useLocalModels(token: string | null) {
     [act],
   );
 
-  return { view, error, refresh, restart, updateSettings, download, pause, resume, cancel, remove, update };
+  return { view, error, refresh, restart, updateSettings, download, pause, resume, cancel, remove, update, downloadHead, removeHead };
 }
