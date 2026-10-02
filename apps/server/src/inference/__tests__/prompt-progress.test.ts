@@ -133,6 +133,29 @@ describe("progress through a live stream", () => {
     expect(events.filter((e) => e.type === "delta").map((e) => (e as { content: string }).content).join("")).toBe("Hi.");
   });
 
+  it("keeps reporting through a prefill echo, until the prompt is evaluated", async () => {
+    // A stage switch's re-read ends on the conversation's last reply. llama.cpp
+    // treats that as a prefill and echoes it as content before evaluating
+    // anything; gating progress on output dropped every report after that.
+    const echo = await startMockOpenAi({ nCtx: 8192, progress: true, echoPrefill: true, reply: "" });
+    try {
+      const row = await provider(echo.apiBase);
+      const events: StreamEvent[] = [];
+      const messages = [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "OK" },
+      ] as const;
+      for await (const ev of streamCompletion(`${row.slug}::mock-remote-model`, [...messages], { reportProgress: true })) {
+        events.push(ev);
+      }
+      expect(events[0]).toMatchObject({ type: "delta", content: "OK" });
+      const reports = events.filter((e): e is Extract<StreamEvent, { type: "progress" }> => e.type === "progress");
+      expect(reports.map((r) => r.progress.processed_tokens)).toEqual([200, 600, 1000]);
+    } finally {
+      await echo.stop();
+    }
+  });
+
   it("does not ask unless told to — and the backend then sends none", async () => {
     const row = await provider(llama.apiBase);
     const events = await run(`${row.slug}::mock-remote-model`, false);

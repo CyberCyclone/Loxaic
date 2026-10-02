@@ -309,6 +309,13 @@ const server = createServer(async (req, res) => {
     // batch, each on a content-less chunk of this same stream. A warm-up after
     // a context-stage switch (`max_tokens: 1`) evaluates slowly, as re-reading
     // a whole conversation does, so the pill's percentage can be watched.
+    // A request that ends on the assistant's message is a prefill to
+    // llama.cpp, which echoes that text back as content before evaluating
+    // anything — as a stage switch's re-read of the conversation does.
+    const lastMessage = (body.messages ?? []).at(-1);
+    if (lastMessage?.role === "assistant" && typeof lastMessage.content === "string" && lastMessage.content) {
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: lastMessage.content }, finish_reason: null }] })}\n\n`);
+    }
     if (body.return_progress === true) {
       const total = promptSize(body);
       const steps = 5;

@@ -2007,6 +2007,15 @@ replies.
   `prompt.stats` with a `progress` object merged in; both folds already replace on `prompt.stats`,
   so a reconnecting client gets the latest report and an older client ignores the field.
   **`progress` is absent, never null-filled**, when the backend reported nothing.
+- **Reports are read until one says the prompt is evaluated, not until output appears.** A request
+  that ends on the assistant's own message is a prefill to llama.cpp, which echoes that text back as
+  content before it evaluates anything. A context-stage switch's re-read of a conversation ends on
+  its last reply, so gating on output dropped every report after the 0% one: the pill sat at
+  "Re-reading conversation · 0%" for the whole re-read, on a real Qwen3.5-4B, while llama.cpp was
+  sending a report every couple of seconds (found driving the dev Electron app). The fake router
+  echoes a trailing assistant message too. The re-read asks for progress unconditionally — a stage
+  only exists on the built-in llama.cpp router — because the model list it would ask was just
+  invalidated by the reload and still said "not a native runtime".
 - **Ask only a backend that identified itself** (`modelRunInfo`'s `nativeRuntime`: it reported an
   allocated window via llama.cpp's `/props` or LM Studio's native listing). Not "has no preset" — a
   hand-entered provider pointed at a hosted API has none either, and OpenAI answers an unknown
