@@ -3,7 +3,6 @@ import { count, db, eq } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
 import type { ContextStageReason, ContextStageStatus, PromptProgress } from "@loxaic/types";
 import { summaryMessage } from "../../inference/context.ts";
-import { modelRunInfo } from "../../inference/models.ts";
 import { streamCompletion, type ChatMessage } from "../../inference/provider.ts";
 import { getLocalModelRow } from "../../llama/catalog.ts";
 import { applyStageChange, type StageOutcome } from "../../llama/context-stage-switch.ts";
@@ -57,15 +56,31 @@ export function warmer(convId: string, model: string) {
       ...(history.summaryText ? [summaryMessage(history.summaryText)] : []),
       ...history.messages,
     ];
-    const info = await modelRunInfo(model).catch(() => null);
+    const started = Date.now();
+    let reports = 0;
+    let last: PromptProgress | null = null;
     for await (const event of streamCompletion(model, messages, {
       tools: shape.tools,
       signal,
       maxTokens: 1,
-      reportProgress: info?.nativeRuntime ?? false,
+      // Always asked for. A stage only exists on the built-in llama.cpp
+      // router, which reports progress; reading that off the model list asked
+      // a list this very reload had just invalidated, which still said "not
+      // loaded, not a native runtime" — and the re-read showed no progress.
+      reportProgress: true,
     })) {
-      if (event.type === "progress") onProgress(event.progress);
+      if (event.type === "progress") {
+        reports++;
+        last = event.progress;
+        onProgress(event.progress);
+      }
     }
+    // One line per re-read, so a pill that sat at one figure can be told apart
+    // from a backend that stopped reporting.
+    console.log(
+      `[llama] ${model}: re-read ${String(messages.length)} messages in ${String(Math.round((Date.now() - started) / 1000))} s, ` +
+        `${String(reports)} progress report(s)${last ? `, last ${String(last.processed_tokens)}/${String(last.total_tokens)} tokens` : ""}`,
+    );
   };
 }
 

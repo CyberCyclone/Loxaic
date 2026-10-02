@@ -279,6 +279,17 @@ describe('YaRN context stages', () => {
     await waitForGone('context.stageModal', 10_000);
     await waitForPill('reloading at 64K');
     await shot('context-stages-reloading');
+    // Then the re-read, with the backend's own progress: a percentage that
+    // moves, not one stuck at the 0% llama.cpp reports as the slot starts.
+    let seen = '';
+    await browser.waitUntil(
+      async () => {
+        seen = await byTestId('chat.contextStage.label').getText();
+        return /Re-reading conversation · [1-9]\d*%/.test(seen);
+      },
+      { timeout: 30_000, interval: 100, timeoutMsg: `the re-read never showed progress past 0% (last: "${seen}")` },
+    );
+    await shot('context-stages-rereading');
     await waitForPill('Context extended to 64K (YaRN 2×)');
     await shot('context-stages-extended');
     await waitForModelStage(alice, model, 1);

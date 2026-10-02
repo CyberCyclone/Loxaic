@@ -305,6 +305,23 @@ const server = createServer(async (req, res) => {
     const perWordMs = slowMatch ? Number(slowMatch[1] ?? 1500) : 0;
     let gone = false;
     res.on("close", () => { gone = true; });
+    // llama.cpp's `return_progress`: a report as the slot starts, then one per
+    // batch, each on a content-less chunk of this same stream. A warm-up after
+    // a context-stage switch (`max_tokens: 1`) evaluates slowly, as re-reading
+    // a whole conversation does, so the pill's percentage can be watched.
+    if (body.return_progress === true) {
+      const total = promptSize(body);
+      const steps = 5;
+      const stepMs = body.max_tokens === 1 ? 700 : 0;
+      for (let i = 0; i <= steps; i++) {
+        if (i > 0 && stepMs > 0) await new Promise((r) => setTimeout(r, stepMs));
+        if (gone) return;
+        const processed = Math.round((total * i) / steps);
+        res.write(
+          `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: null }, finish_reason: null }], prompt_progress: { total, cache: 0, processed, time_ms: i * stepMs } })}\n\n`,
+        );
+      }
+    }
     for (const w of words) {
       if (perWordMs > 0) await new Promise((r) => setTimeout(r, perWordMs));
       if (gone) return;
@@ -316,10 +333,7 @@ const server = createServer(async (req, res) => {
     // sending 200k real tokens: "fill the context" is 80% of `ctx-size`,
     // "overflow the context" 90%. Read from what the model was loaded with, so
     // it follows the model's context stage.
-    const last = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
-    const said = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
-    const fill = /overflow the context/i.test(said) ? 0.9 : /fill the context/i.test(said) ? 0.8 : 0;
-    const promptTokens = fill > 0 ? Math.round(Number(merged(body.model)["ctx-size"] ?? 4096) * fill) : 10;
+    const promptTokens = promptSize(body);
     res.write(
       `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: promptTokens, completion_tokens: 3, total_tokens: promptTokens + 3 } })}\n\n`,
     );
@@ -328,6 +342,16 @@ const server = createServer(async (req, res) => {
   }
   json(res, 404, { error: { message: "not found" } });
 });
+
+/** What a request's prompt "costs": "fill the context" in the last user
+ * message is 80% of the window the model was loaded with, "overflow the
+ * context" 90%, anything else 10 tokens. */
+function promptSize(body) {
+  const last = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
+  const said = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
+  const fill = /overflow the context/i.test(said) ? 0.9 : /fill the context/i.test(said) ? 0.8 : 0;
+  return fill > 0 ? Math.round(Number(merged(body.model)["ctx-size"] ?? 4096) * fill) : 10;
+}
 
 writeVram();
 server.listen(port, "127.0.0.1", () => {
