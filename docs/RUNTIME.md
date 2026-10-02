@@ -434,6 +434,33 @@ the model's settings can switch vision off to save memory. Without a projector,
 image attachments are still saved but the model cannot see them, and the chat
 says so.
 
+### Multi-token prediction (MTP)
+
+Some models were trained with a *multi-token-prediction head* that guesses the
+next few tokens, which the model then checks in one pass. The replies are the
+same and come faster, by about 1.3–1.7× on one conversation at a time. With
+several conversations running at once it was measured *slower*, so it only pays
+off with **Max concurrent predictions** at 1.
+
+- **Turning it on.** It is a per-model setting in the model's Settings sheet,
+  and is offered only to a model that has a head.
+- **Where the head comes from.** Some models carry their head inside the model
+  file (Qwen3.8-27B). Others publish it as a separate file in their repository's
+  `MTP/` folder (Qwen3.8-Flash-Next). Download that file from the Settings sheet,
+  or tick "Include MTP head" when downloading the model. The model stays usable
+  while the head downloads.
+- **Heads that cannot be used.** Heads with `shared` in their name borrow the
+  model's own tensors, which the bundled llama.cpp cannot do yet, so they are
+  listed but disabled.
+- **When llama.cpp can't load a model with MTP on**, the chat says what stopped it
+  and where to turn MTP off. The bundled llama.cpp crashes loading
+  Qwen3.8-Flash-Next with unsloth's MTP head (ggml-org/llama.cpp#29811).
+- **What to expect.** Qwen3.8-27B runs about 2.2–2.4× faster with MTP on (16 to
+  35–39 tokens a second on three V620s), at 3 drafted tokens, which is
+  llama.cpp's default.
+- **Is it helping?** Each reply's usage line, and the Stats screen per model,
+  say what share of the drafted tokens the model accepted.
+
 ### Docker Compose
 
 In Compose the server does not run llama.cpp itself (`LLAMA_MODE=attach`): the

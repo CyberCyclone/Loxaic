@@ -153,7 +153,9 @@ let attachTimer: NodeJS.Timeout | null = null;
 
 // ── Log capture ─────────────────────────────────────────────────────────────
 
-const LOG_LINES = 200;
+/** Enough for a model that crashed while loading: its error line comes just
+ * before a backtrace of thirty-odd lines, and other models keep logging. */
+const LOG_LINES = 400;
 const logTail: string[] = [];
 /** Everything the router prints, on disk as well (router-log.ts): the tail
  * above is what this process explains failures from, the file is what a person
@@ -188,6 +190,57 @@ export function explainRouterExit(lines: string[], code: number | null, signal: 
   // Strip llama.cpp's own timestamp and level prefix: `0.00.067.911 E srv  llama_server: `.
   const text = pick.replace(/^\[\d+\]\s*/, "").replace(/^[\d.]+\s+[A-Z]\s+\w+\s+/, "").trim();
   return `llama.cpp ${how}: ${text}`;
+}
+
+const SPAWN_LINE = /spawning server instance with name=(\S+) on port (\d+)/;
+const CHILD_LINE = /^\[\s*(\d+)\]\s?(.*)$/;
+
+/**
+ * Why a model's own llama-server stopped while loading, from the router's
+ * output — the router itself only answers `model name=… failed to load`.
+ *
+ * The router logs `spawning server instance with name=<name> on port <P>` and
+ * forwards that child's stdout and stderr as `[    P] line`, so the lines
+ * after the newest spawn of this model, on its port, are its own. Of those, an
+ * assertion (`GGML_ASSERT(buffer) failed`, which is how llama.cpp b11342 dies
+ * loading Qwen3.8-Flash-Next with unsloth's MTP head) wins, then an error-level
+ * line, then anything that says it failed — never a backtrace frame or
+ * gdb's chatter. Source paths are cut to the file name: the reason reaches
+ * the chat, and the CI runner's home directory means nothing there.
+ */
+export function explainModelLoadFailure(lines: string[], routerName: string): string | null {
+  let port = "";
+  let from = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = SPAWN_LINE.exec(lines[i] ?? "");
+    if (m?.[1] === routerName) {
+      port = m[2];
+      from = i;
+    }
+  }
+  if (from < 0) return null;
+  const own: string[] = [];
+  for (const line of lines.slice(from + 1)) {
+    const m = CHILD_LINE.exec(line);
+    if (m?.[1] === port && m[2]) own.push(m[2].trim());
+  }
+  const candidates = own.filter((l) => !/^#\d+\s/.test(l) && !/^warning:/i.test(l) && !/^\[(Inferior|New Thread|Thread debugging)/.test(l) && !l.includes("⚠"));
+  const last = (test: (l: string) => boolean) => [...candidates].reverse().find(test);
+  const pick =
+    last((l) => l.includes("GGML_ASSERT")) ??
+    last((l) => /^[\d.]+\s+E\s/.test(l)) ??
+    last((l) => /\b(error|failed|abort(ed)?|terminate called)\b/i.test(l));
+  if (!pick) return null;
+  const text = pick
+    .replace(/^[\d.]+\s+[A-Z]\s+\S+\s+/, "")
+    .replace(/(?:[A-Za-z]:)?[\\/](?:[^\s:\\/]+[\\/])+([^\s:\\/]+)/g, "$1")
+    .trim();
+  return text.length > 240 ? `${text.slice(0, 239)}…` : text || null;
+}
+
+/** `explainModelLoadFailure` over what this process has seen the router print. */
+export function modelLoadFailureReason(id: string): string | null {
+  return explainModelLoadFailure(logTail, routerModelName(id));
 }
 
 // ── Where requests go ───────────────────────────────────────────────────────

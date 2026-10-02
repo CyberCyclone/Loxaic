@@ -47,6 +47,22 @@ export async function removeMockModels(): Promise<void> {
   }
 }
 
+/** A model from the mock HuggingFace, downloaded and waited for (and its MTP
+ * head, when one is asked for: the head follows the model). */
+export async function downloadMockModel(repo: string, quant: string, extra: Record<string, unknown> = {}): Promise<string> {
+  const id = `${repo}:${quant}`;
+  const res = await adminApi('/v1/admin/local-models/downloads', { method: 'POST', body: JSON.stringify({ repo, quant, ...extra }) });
+  if (!res.ok) throw new Error(`[e2e] download of ${id} failed (${String(res.status)}): ${await res.text()}`);
+  await browser.waitUntil(
+    async () => {
+      const list = (await (await adminApi('/v1/admin/local-models')).json()) as { models: AdminModel[] };
+      return list.models.find((m) => m.id === id)?.status === 'ready';
+    },
+    { timeout: 90_000, interval: 300, timeoutMsg: `[e2e] ${id} never finished downloading` },
+  );
+  return id;
+}
+
 /** The mock's small model, downloaded and waited for. */
 export async function downloadTinyModel(): Promise<string> {
   const hf = mockHf();

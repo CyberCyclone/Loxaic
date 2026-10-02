@@ -33,6 +33,44 @@ export interface LocalModelMeta {
    * Absent on rows downloaded before it was read (the boot backfill fills it);
    * null when the template takes none, or the file has no template. */
   thinking?: ModelThinking | null;
+  /** A multi-token-prediction head inside the model's own file (Qwen3.8-27B
+   * carries one). Absent on rows downloaded before it was read (the boot
+   * backfill fills it); null when the file carries none. */
+  mtp?: { layers: number } | null;
+}
+
+export type MtpHeadStatus = "queued" | "downloading" | "ready" | "failed";
+
+/** A separate MTP head file, downloaded beside a model (see `mtp_head`). */
+export interface MtpHead extends ModelFile {
+  /** The commit the head was resolved at — not necessarily the model's: a
+   * model downloaded before its repo published heads gets one from a later
+   * commit, and the file lives under that commit's directory. */
+  revision: string;
+  status: MtpHeadStatus;
+  bytesDone: number;
+  error: string | null;
+  /** Its `nextn_predict_layers`, once the downloaded file has been read. */
+  layers: number | null;
+}
+
+/**
+ * Where a model's MTP head comes from, which decides whether turning MTP on
+ * writes anything:
+ * - `embedded`: the model's own file carries one (wins over a sidecar);
+ * - `head`: a downloaded, verified sidecar head;
+ * - `head-pending`: a sidecar queued or downloading — the setting may be on,
+ *   but nothing is written until the head is ready;
+ * - null: no head at all, or only one that was refused (it is kept to say
+ *   why, and nothing can draft with it).
+ */
+export type MtpSource = "embedded" | "head" | "head-pending" | null;
+
+export function mtpSource(row: Pick<LocalModelRow, "meta" | "mtpHead">): MtpSource {
+  if (rowMeta(row).mtp) return "embedded";
+  const head = rowMtpHead(row);
+  if (!head || head.status === "failed") return null;
+  return head.status === "ready" ? "head" : "head-pending";
 }
 
 /** This instance's identity for the `host_id` column. Files are on one
@@ -108,6 +146,26 @@ export function rowFiles(row: Pick<LocalModelRow, "files">): ModelFile[] {
 export function rowMmproj(row: Pick<LocalModelRow, "mmproj">): ModelFile | null {
   const m = row.mmproj as ModelFile | null;
   return m && typeof m.path === "string" ? m : null;
+}
+
+export function rowMtpHead(row: Pick<LocalModelRow, "mtpHead">): MtpHead | null {
+  const h = row.mtpHead as MtpHead | null;
+  return h && typeof h.path === "string" && typeof h.revision === "string" ? h : null;
+}
+
+/** What the fit estimate needs to price MTP for these settings: the head's
+ * layer count and, for a separate head, its file size. Null when MTP is off or
+ * there is no head. A head still downloading is priced too — the settings
+ * sheet is showing what the load will cost once it is there. */
+export function mtpFitInput(
+  row: Pick<LocalModelRow, "meta" | "mtpHead">,
+  settings: Record<string, unknown>,
+): { layers: number; headBytes: number } | null {
+  if (settings.mtp !== true) return null;
+  const own = rowMeta(row).mtp;
+  if (own) return { layers: own.layers, headBytes: 0 };
+  const head = rowMtpHead(row);
+  return head && head.status !== "failed" ? { layers: head.layers ?? 1, headBytes: head.size } : null;
 }
 
 export function rowMeta(row: Pick<LocalModelRow, "meta">): LocalModelMeta {

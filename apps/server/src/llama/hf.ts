@@ -256,6 +256,14 @@ export interface RepoFiles {
   quants: QuantOption[];
   /** Vision projectors, smallest first. */
   mmproj: QuantFile[];
+  /** Separate multi-token-prediction heads (`MTP/mtp-*.gguf`), smallest
+   * first. `shared` marks one that borrows the main model's tensors, which
+   * the pinned llama.cpp cannot load. */
+  mtpHeads: MtpHeadFile[];
+}
+
+export interface MtpHeadFile extends QuantFile {
+  shared: boolean;
 }
 
 function basename(p: string): string {
@@ -291,7 +299,26 @@ export function isProjectorFile(filePath: string): boolean {
   return /(?:^|[-_.])mmproj(?:[-_.]|$)/i.test(basename(filePath));
 }
 
-export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; mmproj: QuantFile[] } {
+/**
+ * A multi-token-prediction head, not a model: llama.cpp's own sidecar rule is a
+ * file name containing `mtp-` (`find_best_sibling(…, "mtp-")` in
+ * common/download.cpp). Matched case-sensitively and at a word start, so a
+ * full model named `…-MTP-Q4_K_M.gguf` stays a model. Before this,
+ * `MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf` was read as quant "Q8_0", joined the
+ * real three-part `Q8_0/` split, and made that quant vanish from the list.
+ */
+export function isMtpHeadFile(filePath: string): boolean {
+  return /(?:^|[-_.])mtp-/.test(basename(filePath));
+}
+
+/** A head that borrows the main model's embeddings and output projection
+ * (`nextn_shared_target_tensors`). Unsloth names them `mtp-…-shared-…`; the
+ * downloaded header is checked as well, this is only what the list can see. */
+export function isSharedMtpHead(filePath: string): boolean {
+  return /(?:^|[-_.])shared(?:[-_.]|$)/i.test(basename(filePath));
+}
+
+export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; mmproj: QuantFile[]; mtpHeads: MtpHeadFile[] } {
   // A GGUF with no LFS object id has no checksum to verify against, and a
   // download this server will mmap and run must never be accepted on length
   // alone — so such a file is simply not offered. On HuggingFace every GGUF is
@@ -305,9 +332,13 @@ export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; m
     sha256: e.lfs?.oid ?? null,
   });
   const mmproj = ggufs.filter((e) => isProjectorFile(e.path)).map(toFile).sort((a, b) => a.size - b.size);
+  const mtpHeads = ggufs
+    .filter((e) => !isProjectorFile(e.path) && isMtpHeadFile(e.path))
+    .map((e) => ({ ...toFile(e), shared: isSharedMtpHead(e.path) }))
+    .sort((a, b) => a.size - b.size);
   const groups = new Map<string, QuantFile[]>();
   for (const e of ggufs) {
-    if (isProjectorFile(e.path)) continue;
+    if (isProjectorFile(e.path) || isMtpHeadFile(e.path)) continue;
     const q = quantOf(e.path);
     groups.set(q, [...(groups.get(q) ?? []), toFile(e)]);
   }
@@ -330,7 +361,7 @@ export function groupQuants(entries: RawTreeEntry[]): { quants: QuantOption[]; m
     quants.push({ quant, files, sizeBytes: files.reduce((n, f) => n + f.size, 0) });
   }
   quants.sort((a, b) => a.sizeBytes - b.sizeBytes);
-  return { quants, mmproj };
+  return { quants, mmproj, mtpHeads };
 }
 
 export async function repoFiles(repo: string): Promise<RepoFiles> {

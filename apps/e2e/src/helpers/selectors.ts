@@ -193,6 +193,53 @@ export async function typeInto(id: string, text: string): Promise<void> {
   throw new Error(`typeInto(${id}): field still disagrees with the intended text after 3 attempts`);
 }
 
+/**
+ * Brings the element carrying `id` on screen, scrolling whatever holds it.
+ * A row below a modal's or a screen's fold is not "displayed" to XCUITest or
+ * UiAutomator2, so a tap on it times out on a phone while working in a
+ * browser. On the web the element exists either way; it is scrolled into
+ * view so a screenshot shows it.
+ */
+export async function scrollTo(id: string, timeout = 20_000): Promise<void> {
+  const p = platform();
+  if (p === 'web' || p === 'electron') {
+    await byTestId(id).waitForExist({ timeout });
+    await browser.execute((selector: string) => {
+      document.querySelector(selector)?.scrollIntoView({ block: 'center' });
+    }, testIdSelector(id));
+    return;
+  }
+  // A drag through the middle of the screen moves whatever is there — an open
+  // sheet's body, or the screen itself. XCUITest's own `mobile: scroll` with a
+  // predicate gave up after one page inside a modal; UiScrollable picks the
+  // first scrollable, which can be the screen behind the sheet.
+  // A keyboard left up by the last field covers the bottom of the screen. On
+  // iOS a number pad has no key that closes it and WebDriverAgent cannot
+  // either, so the drags below stay above it — and a scroll view that
+  // dismisses the keyboard on drag (the host-model settings sheet does) puts
+  // it away with the first one.
+  if (p === 'android' && (await browser.isKeyboardShown().catch(() => false))) await browser.hideKeyboard().catch(() => undefined);
+  const { width, height } = await browser.getWindowSize();
+  const drag = async (fromY: number, toY: number) => {
+    await browser
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * fromY) })
+      .down()
+      .pause(100)
+      .move({ duration: 400, x: Math.round(width / 2), y: Math.round(height * toY) })
+      .up()
+      .perform();
+    await browser.pause(300);
+  };
+  for (const [fromY, toY] of [[0.55, 0.25], [0.25, 0.55]] as const) {
+    for (let i = 0; i < 12; i++) {
+      if (await isVisible(id).catch(() => false)) return;
+      await drag(fromY, toY);
+    }
+  }
+  await byTestId(id).waitForDisplayed({ timeout });
+}
+
 export async function waitForVisible(id: string, timeout = 20_000): Promise<void> {
   await byTestId(id).waitForDisplayed({ timeout });
 }

@@ -12,15 +12,19 @@ import {
   backfillHeaderFacts,
   cancelDownload,
   DownloadError,
+  onMtpHeadSettled,
   pauseDownload,
   queueDownload,
+  queueMtpHead,
+  removeFiles,
+  removeMtpHead,
   resumeDownload,
   startDownloadQueue,
   stopDownloads,
 } from "../downloads.ts";
 import { groupQuants, searchModels } from "../hf.ts";
 import { modelFilePath } from "../paths.ts";
-import { denseModel } from "./gguf-fixture.ts";
+import { buildGguf, denseModel } from "./gguf-fixture.ts";
 
 /**
  * Downloads from a mock HuggingFace (`HF_ENDPOINT`): verified against the
@@ -56,7 +60,41 @@ const small = denseModel(256 * 1024);
 const projector = denseModel(2 * 1024 * 1024);
 const visionRepo = `tester/Vision-${uuid().slice(0, 6)}-GGUF`;
 
+/** A head file: `arch`'s keys, one nextn layer and its tensors. */
+function headFile(arch: string, opts: { shared?: boolean; pad?: number } = {}): Buffer {
+  return buildGguf(
+    [
+      ["general.architecture", { type: "str", v: arch }],
+      [`${arch}.block_count`, { type: "u32", v: 29 }],
+      [`${arch}.nextn_predict_layers`, { type: "u32", v: 1 }],
+      ...(opts.shared ? [[`${arch}.nextn_shared_target_tensors`, { type: "bool", v: true }] as [string, { type: "bool"; v: boolean }]] : []),
+    ],
+    opts.pad ?? 0,
+    ["token_embd.weight", "blk.28.nextn.eh_proj.weight", "blk.28.nextn.enorm.weight"],
+  );
+}
+const mtpRepo = `tester/Heady-${uuid().slice(0, 6)}-GGUF`;
+const head = headFile("qwen3", { pad: 2 * 1024 * 1024 });
+const otherArchHead = headFile("llama");
+const sharedHead = headFile("qwen3", { shared: true });
+const notAHead = denseModel(64 * 1024);
+
+const embRepo = `tester/Emb-${uuid().slice(0, 6)}-GGUF`;
+const embedded = headFile("qwen3", { pad: 128 * 1024 });
+
 const repos: Partial<Record<string, Partial<Record<string, FileSpec>>>> = {
+  // A model whose own file carries its head (Qwen3.8-27B's layout).
+  [embRepo]: { "Emb-Q4_K_M.gguf": { body: embedded, sha: sha256(embedded) } },
+  // A model with no head of its own, and the heads its repo publishes beside
+  // it, the way unsloth's Qwen3.8-Flash-Next does.
+  [mtpRepo]: {
+    "Heady-Q4_K_M.gguf": { body: small, sha: sha256(small) },
+    "Heady-Q8_0.gguf": { body: small, sha: sha256(small) },
+    "MTP/mtp-Heady-Q8_0.gguf": { body: head, sha: sha256(head), slow: true },
+    "MTP/mtp-Heady-shared-Q8_0.gguf": { body: sharedHead, sha: sha256(sharedHead) },
+    "MTP/mtp-Other-Q4_0.gguf": { body: otherArchHead, sha: sha256(otherArchHead) },
+    "MTP/mtp-Empty-Q4_0.gguf": { body: notAHead, sha: sha256(notAHead) },
+  },
   [repo]: {
     "Mini-Q4_K_M.gguf": { body: good, sha: goodSha },
     // Served with the right size but recorded under the wrong checksum.
@@ -352,3 +390,103 @@ describe("downloads", () => {
     await expect(queueDownload({ repo: "../../etc", quant: "Q4_K_M" }, userId)).rejects.toThrow(/not a HuggingFace repository/);
   });
 });
+
+describe("MTP heads", () => {
+  const id = `${mtpRepo}:Q4_K_M`;
+  const settled = vi.fn();
+  beforeAll(() => {
+    onMtpHeadSettled(settled);
+  });
+  const read = async () => {
+    invalidateLocalModelCache();
+    const row = await getLocalModelRow(id);
+    if (!row) throw new Error("row missing");
+    return row;
+  };
+  const headOf = async () => (await read()).mtpHead as { status: string; error: string | null; layers: number | null; revision: string; path: string } | null;
+  async function headUntil(pred: (s: string | undefined) => boolean, ms = 15_000) {
+    const end = Date.now() + ms;
+    for (;;) {
+      const h = await headOf();
+      if (pred(h?.status)) return h;
+      if (Date.now() > end) throw new Error(`timed out; head ${String(h?.status)}`);
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+
+  it("refuses a shared head before downloading anything, and one the repo does not have", async () => {
+    await expect(queueDownload({ repo: mtpRepo, quant: "Q4_K_M", mtpHead: "MTP/mtp-Heady-shared-Q8_0.gguf" }, userId)).rejects.toThrow(/shared/);
+    await expect(queueDownload({ repo: mtpRepo, quant: "Q4_K_M", mtpHead: "MTP/nope.gguf" }, userId)).rejects.toThrow(/not in this repository/);
+  });
+
+  it("downloads a head after its model, while the model stays ready, then reads and keeps it", async () => {
+    settled.mockClear();
+    await queueDownload({ repo: mtpRepo, quant: "Q4_K_M", mtpHead: "MTP/mtp-Heady-Q8_0.gguf" }, userId);
+    await until(id, (s) => s === "ready");
+    // The head is slow: caught mid-download, the model is ready all the same.
+    const during = await headUntil((s) => s === "downloading" || s === "ready");
+    if (during?.status === "downloading") expect((await read()).status).toBe("ready");
+    const done = await headUntil((s) => s === "ready");
+    expect(done).toMatchObject({ layers: 1, error: null, revision: REV });
+    expect(existsSync(modelFilePath(mtpRepo, REV, "MTP/mtp-Heady-Q8_0.gguf"))).toBe(true);
+    expect(settled).toHaveBeenCalled();
+    await expect(queueMtpHead(id, "MTP/mtp-Other-Q4_0.gguf")).rejects.toThrow(/already has an MTP head/);
+  });
+
+  it("removing the head deletes its file and turns MTP off", async () => {
+    await db.update(localModels).set({ loadSettings: { mtp: true, mtpDraftMax: 2, ctxSize: 4096 } }).where(eq(localModels.id, id));
+    const after = await removeMtpHead(id);
+    expect(after?.mtpHead).toBeNull();
+    expect(after?.loadSettings).toEqual({ ctxSize: 4096 });
+    expect(existsSync(modelFilePath(mtpRepo, REV, "MTP/mtp-Heady-Q8_0.gguf"))).toBe(false);
+  });
+
+  it("refuses, after the download, a head for another architecture and a file with no head in it", async () => {
+    await queueMtpHead(id, "MTP/mtp-Other-Q4_0.gguf");
+    expect((await headUntil((s) => s === "failed"))?.error).toMatch(/head for llama, not qwen3/);
+    expect(existsSync(modelFilePath(mtpRepo, REV, "MTP/mtp-Other-Q4_0.gguf"))).toBe(false);
+    // A failed head may be replaced without removing it first.
+    await queueMtpHead(id, "MTP/mtp-Empty-Q4_0.gguf");
+    expect((await headUntil((s) => s === "failed"))?.error).toMatch(/carries no MTP head/);
+    expect((await read()).status).toBe("ready");
+  });
+
+  it("keeps a head another quant still uses when one of them is deleted", async () => {
+    await removeMtpHead(id);
+    const other = `${mtpRepo}:Q8_0`;
+    await queueDownload({ repo: mtpRepo, quant: "Q8_0" }, userId);
+    await until(other, (s) => s === "ready");
+    await queueMtpHead(id, "MTP/mtp-Heady-Q8_0.gguf");
+    await queueMtpHead(other, "MTP/mtp-Heady-Q8_0.gguf");
+    await headUntil((s) => s === "ready");
+    for (const end = Date.now() + 15_000; ; ) {
+      invalidateLocalModelCache();
+      if ((await getLocalModelRow(other))?.mtpHead && ((await getLocalModelRow(other))?.mtpHead as { status: string }).status === "ready") break;
+      if (Date.now() > end) throw new Error("second head never ready");
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    await removeFiles(await read());
+    expect(existsSync(modelFilePath(mtpRepo, REV, "MTP/mtp-Heady-Q8_0.gguf"))).toBe(true);
+  });
+
+  it("finds a head in a model's own file on download, and on the backfill for a row from before", async () => {
+    const emb = `${embRepo}:Q4_K_M`;
+    await queueDownload({ repo: embRepo, quant: "Q4_K_M" }, userId);
+    const row = await until(emb, (s) => s === "ready");
+    expect(row?.meta).toMatchObject({ mtp: { layers: 1 } });
+    const { mtp: _drop, ...older } = row?.meta as Record<string, unknown>;
+    await db.update(localModels).set({ meta: older }).where(eq(localModels.id, emb));
+    invalidateLocalModelCache();
+    const before = await getLocalModelRow(emb);
+    if (!before) throw new Error("row missing");
+    expect(await backfillHeaderFacts([before])).toBe(1);
+    invalidateLocalModelCache();
+    expect((await getLocalModelRow(emb))?.meta).toMatchObject({ mtp: { layers: 1 } });
+  });
+
+  it("refuses a head for a model whose own file carries one", async () => {
+    await db.update(localModels).set({ meta: { mtp: { layers: 1 } } }).where(eq(localModels.id, id));
+    await expect(queueMtpHead(id, "MTP/mtp-Heady-Q8_0.gguf")).rejects.toThrow(/carries its own/);
+  });
+});
+

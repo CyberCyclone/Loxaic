@@ -1,6 +1,6 @@
 import { v4 as uuid } from "uuid";
 import { usageRecords } from "@loxaic/db/schema";
-import type { ContextBreakdown } from "@loxaic/types";
+import type { ContextBreakdown, TurnUsage } from "@loxaic/types";
 import type { CompletionResult } from "../../inference/provider.ts";
 
 /** A whole number for an integer column, or null. */
@@ -51,6 +51,18 @@ export function usageRecordValues(input: {
     totalMs: whole(result.totalMs),
     promptTps: result.promptTps,
     predictedTps: result.genTps,
+    // Null when nothing was drafted — never 0, see the column.
+    draftTokens: whole(result.timings?.draft_n),
+    draftAcceptedTokens: whole(result.timings?.draft_n) == null ? null : (whole(result.timings?.draft_n_accepted) ?? 0),
     contextBreakdown: input.context ?? null,
   };
+}
+
+/** The draft figures for a request's `TurnUsage` — present only when the
+ * backend drafted something (an MTP head), and absent otherwise, which the
+ * client reads as "not speculated", never as every guess wrong. */
+export function turnDraftUsage(result: CompletionResult): Pick<TurnUsage, "draft_tokens" | "draft_accepted_tokens"> {
+  const drafted = whole(result.timings?.draft_n);
+  if (drafted === null) return {};
+  return { draft_tokens: drafted, draft_accepted_tokens: whole(result.timings?.draft_n_accepted) ?? 0 };
 }

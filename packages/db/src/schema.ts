@@ -268,6 +268,15 @@ export const usageRecords = pgTable("usage_records", {
    */
   promptTps: real("prompt_tps"),
   predictedTps: real("predicted_tps"),
+  /**
+   * Speculative decoding (an MTP head, apps/server/src/llama/load-settings.ts):
+   * tokens the draft proposed, and how many of them the model accepted. Null
+   * when the request was not speculated — never 0, which would read as a head
+   * whose every guess was wrong. llama.cpp reports them as `timings.draft_n`
+   * and `timings.draft_n_accepted`.
+   */
+  draftTokens: integer("draft_tokens"),
+  draftAcceptedTokens: integer("draft_accepted_tokens"),
   /** What this turn's prompt was made of — see ContextBreakdown in
    * @loxaic/types. Nullable: rows predating this column have none. */
   contextBreakdown: jsonb("context_breakdown"),
@@ -531,6 +540,12 @@ export const localModels = pgTable(
     files: jsonb("files").notNull(),
     /** The vision projector, when one was downloaded with the weights. */
     mmproj: jsonb("mmproj"),
+    /** A separate multi-token-prediction head (a repo's `MTP/mtp-*.gguf`),
+     * with its own revision and download state:
+     * `{ path, size, sha256, revision, status, bytesDone, error, layers }`.
+     * Downloaded after the model, while the model stays usable. Null for none —
+     * a model whose own file carries a head needs none (`meta.mtp`). */
+    mtpHead: jsonb("mtp_head"),
     sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     status: text("status", { enum: ["queued", "downloading", "paused", "failed", "ready"] }).notNull(),
     bytesDone: bigint("bytes_done", { mode: "number" }).notNull().default(0),
