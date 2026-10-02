@@ -1488,6 +1488,12 @@ replies.
 
   A hosted API answers an unknown field with a 400, and a template rejects a word it does not
   name: Qwen3.8's raises "Unexpected reasoning effort" for anything but xhigh/high/medium/low.
+- **A template is a stranger's file, and its parse is a hand-rolled linear scan** (`tagBodies`),
+  never a regex. `/\{[%{]([\s\S]*?)[%}]\}/g` scans to the end of the input for every opener that
+  never closes: 164 s for 1 MB of `{%-`, all on the event loop. Both producers are capped
+  (`MAX_CHAT_TEMPLATE_CHARS`), and a provider's listing or `/props` body is read through
+  `readCapped` (16 MB), since that address is deliberately not behind the SSRF guard. Found in
+  review; the test that was meant to catch it used well-formed tags, which is the linear case.
 - **It was display-only until this.** The chips sat in the model picker, a new chat dropped the
   press (`if (activeId)`), and no request carried a level, so Qwen3.8's template used its
   default, `xhigh`, and wrote "think carefully … validate key assumptions" into every system
@@ -1495,8 +1501,10 @@ replies.
   **A send without `thinking_level` gets `DEFAULT_THINKING_LEVEL` (Medium)** — older clients and
   routines included — never the template's own default.
 - **On llama.cpp the level is `reasoning_effort`**, which llama.cpp forwards into the template;
-  `"none"` is its own word for `enable_thinking = false`. A toggle-only template (Qwen3.5/3.6)
-  gets `chat_template_kwargs.enable_thinking: true` for "on". Confirmed on a real b11342 with
+  `"none"` is its own word for `enable_thinking = false` (in b11149's `server-common.cpp` as well
+  as b11342's). Off also sends `chat_template_kwargs.enable_thinking: false`, for an added
+  provider on a build older than either. A toggle-only template (Qwen3.5/3.6) gets
+  `enable_thinking: true` for "on". Confirmed on a real b11342 with
   `/apply-template` against Flash-Next's template: nothing sent renders xhigh, `medium` adds no
   line, `low` says low, `none` closes the think block. A level a model does not offer is clamped
   to the nearest one it does, the cheaper of two (`effectiveThinkingLevel`), on the server and in
@@ -1505,10 +1513,25 @@ replies.
   prompt. It is fixed per run, carried in `RequestShape`, and sent unchanged by the compaction
   that reuses the run's front and by the context-stage warm-up; `prompt-prefix.test.ts` holds
   both. Changing the level re-reads the conversation once, which the submenu says.
-- **Client:** a level chosen before a chat exists is held as pending, rides the first send, and
-  moves onto the real id at `promotion` (`useThinkingChoice`). `useStoredState` now pushes a
+- **Each run records its level on `conversations.thinking_level`** (migration 0034). That is
+  what a compaction after a restart, which has no in-memory shape and sends the stripped
+  request, falls back to. The default was the only option before, so a thread set to Off got a
+  thinking compaction. Found in review.
+- **Client:** a level chosen before a chat exists is held as pending and rides the first send.
+  It then moves onto that chat's local `c<ts>`/`pending-*` id (`pendingOwner`), and from there
+  onto the real id at `promotion`, keyed by `promotion.localId` (`useThinkingChoice`). Moving one
+  pending slot at whatever promotion came next put one new chat's level on another (the MCP
+  switches' `carriesChoices` lesson). Found in review. `useStoredState` now pushes a
   write to every component holding the same key; each had its own copy, so a default saved in
-  Settings did not reach an open chat until it remounted.
+  Settings did not reach an open chat until it remounted. It resolves an update from a ref, not
+  inside a state updater, which must stay pure.
+- **`gguf.ts` reads the template wherever it is**, and only a tokenizer key that comes *after*
+  the architecture ends the reading of model keys (GGUF does not fix key order). Tokenizer
+  string arrays are skipped by `skipStrings`, which awaits only when its buffer runs low:
+  ~10× faster across a 500k-string vocabulary.
+- **The native `+` sheet picks its page with `plusMenuPage`**, which falls back to the main page.
+  When a page's content went away while it was open (the Thinking list after a switch to a
+  model with no level), the positional ternary showed the MCP list instead.
 - **On the web, hover never opens a submenu that would take the menu's place** (phone width):
   it would leave a level row under the pointer for the next click. A press opens it.
 - **e2e:** the mock answers a prompt containing "thinking level" with the fields it received;

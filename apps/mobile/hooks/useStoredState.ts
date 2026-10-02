@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { getJson, setJson } from '@/lib/storage';
 
 /** Every mounted copy of a key, so a write reaches the others. */
@@ -31,18 +31,20 @@ export function useStoredState<T>(key: string, initial: T) {
     };
   }, [key]);
 
+  // The latest value, so an update can be resolved outside a state updater:
+  // an updater must be pure (React may run it twice, or for a render it then
+  // discards), and this one would otherwise write storage and notify others.
+  const latest = useRef(value);
+  latest.current = value;
+
   const update = useCallback(
     (next: T | ((prev: T) => T)) => {
-      setValue((prev) => {
-        const resolved = typeof next === 'function' ? (next as (p: T) => T)(prev) : next;
-        setJson(key, resolved);
-        // After this render: a listener's setState must not run inside another
-        // component's updater.
-        queueMicrotask(() => {
-          for (const l of listeners.get(key) ?? []) l(resolved);
-        });
-        return resolved;
-      });
+      const resolved = typeof next === 'function' ? (next as (p: T) => T)(latest.current) : next;
+      // Two updates in one tick must chain, not both start from the old value.
+      latest.current = resolved;
+      setValue(resolved);
+      setJson(key, resolved);
+      for (const l of listeners.get(key) ?? []) l(resolved);
     },
     [key],
   );

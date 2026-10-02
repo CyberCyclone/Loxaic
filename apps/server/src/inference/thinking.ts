@@ -14,8 +14,44 @@ import { THINKING_LEVELS, effectiveThinkingLevel, type ModelThinking, type Think
 /** Every effort word a backend or template is known to use, cheapest first. */
 const KNOWN_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
-/** One Jinja tag: `{% … %}` or `{{ … }}`. */
-const TAG_RE = /\{[%{]-?([\s\S]*?)-?[%}]\}/g;
+/**
+ * The longest chat template read, from either producer (a GGUF header, a
+ * provider's `/props`). Real templates are a few to a few tens of KB.
+ */
+export const MAX_CHAT_TEMPLATE_CHARS = 1024 * 1024;
+
+/**
+ * The bodies of a template's Jinja tags (`{% … %}`, `{{ … }}`), in order.
+ *
+ * A hand-rolled scan rather than a regex: a lazy `[\s\S]*?` has to run to the
+ * end of the input before it can fail at an opener that never closes, so a
+ * template of unterminated `{%` was quadratic — 2.3 s for 128 KB, minutes at
+ * the cap, all of it on the event loop. Here each closer is searched for once
+ * per opener kind: once a kind's closer is known to be absent from a point on,
+ * no later opener of that kind is tried.
+ */
+function* tagBodies(template: string): Generator<string> {
+  let pos = 0;
+  let stmtClosed = true;
+  let exprClosed = true;
+  for (;;) {
+    const stmt = stmtClosed ? template.indexOf("{%", pos) : -1;
+    const expr = exprClosed ? template.indexOf("{{", pos) : -1;
+    if (stmt === -1 && expr === -1) return;
+    const isStmt = expr === -1 || (stmt !== -1 && stmt < expr);
+    const open = isStmt ? stmt : expr;
+    const close = template.indexOf(isStmt ? "%}" : "}}", open + 2);
+    if (close === -1) {
+      if (isStmt) stmtClosed = false;
+      else exprClosed = false;
+      pos = open + 2;
+      continue;
+    }
+    yield template.slice(open + 2, close);
+    pos = close + 2;
+  }
+}
+
 const LITERAL_RE = /'([^'\\]*)'|"([^"\\]*)"/g;
 
 /**
@@ -30,10 +66,11 @@ const LITERAL_RE = /'([^'\\]*)'|"([^"\\]*)"/g;
  *   is what `None` sends (llama.cpp turns `reasoning_effort: "none"` into
  *   `enable_thinking = false`). Alone, without efforts, it is an on/off toggle.
  *
- * Pure and linear in the template's length: it is a stranger's file.
+ * Pure and linear in the template's length (see `tagBodies`): it is a
+ * stranger's file, or a stranger's HTTP response.
  */
 export function thinkingFromTemplate(template: string | null | undefined): ModelThinking | null {
-  if (!template) return null;
+  if (!template || template.length > MAX_CHAT_TEMPLATE_CHARS) return null;
   const takesEffort = template.includes("reasoning_effort");
   const takesToggle = template.includes("enable_thinking");
   if (!takesEffort && !takesToggle) return null;
@@ -41,8 +78,7 @@ export function thinkingFromTemplate(template: string | null | undefined): Model
 
   const words = new Set<string>();
   let validates = false;
-  for (const tag of template.matchAll(TAG_RE)) {
-    const body = tag[1];
+  for (const body of tagBodies(template)) {
     if (!body.includes("reasoning_effort")) continue;
     if (/\bnot\s+in\b/.test(body) || body.includes("raise_exception")) validates = true;
     for (const lit of body.matchAll(LITERAL_RE)) {
@@ -134,7 +170,10 @@ export function thinkingFields(
   const level = effectiveThinkingLevel(thinking, wanted);
   switch (thinking.dialect) {
     case "llama":
-      if (level === "None") return { reasoning_effort: "none" };
+      // Both words for off: b11149 and later read `reasoning_effort: "none"` as
+      // `enable_thinking = false`, and the template kwarg also reaches an added
+      // provider running a build that predates that.
+      if (level === "None") return { reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } };
       if (thinking.toggle) return { chat_template_kwargs: { enable_thinking: true } };
       return thinking.wire[level] ? { reasoning_effort: thinking.wire[level] } : {};
     case "openai":

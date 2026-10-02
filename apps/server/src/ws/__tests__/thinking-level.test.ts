@@ -109,7 +109,7 @@ describe("thinking_level on a send", () => {
   });
 
   it("turns thinking off with None", async () => {
-    expect(await reply("chat", { model: GRADED, thinking_level: "None" })).toContain("Thinking level: reasoning_effort=none.");
+    expect(await reply("chat", { model: GRADED, thinking_level: "None" })).toContain("Thinking level: reasoning_effort=none, enable_thinking=false.");
   });
 
   it("switches an on/off model on for any level but None", async () => {

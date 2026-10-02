@@ -567,8 +567,16 @@ export async function runToolLoop(ctx: {
     // llama.cpp it is rendered into the system prompt, so a level that moved
     // between two requests of one run would break the cached prefix.
     const thinkingInfo = await modelRunInfo(model).catch(() => null);
-    const thinkingBody = thinkingFields(thinkingInfo?.thinking, ctx.thinkingLevel ?? DEFAULT_THINKING_LEVEL);
+    const thinkingLevel = ctx.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+    const thinkingBody = thinkingFields(thinkingInfo?.thinking, thinkingLevel);
     recordRequestShape(convId, { model, system: systemPrompt, tools, thinking: thinkingBody });
+    // Recorded on the conversation for a run nobody sends: a compaction after
+    // a restart has no request shape to copy the level from. Best-effort.
+    await db
+      .update(conversations)
+      .set({ thinkingLevel })
+      .where(eq(conversations.id, convId))
+      .catch((err: unknown) => { console.warn(`recording the thinking level of ${convId} failed: ${(err as Error).message}`); });
     const chatMessages: ChatMessage[] = [
       ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
       ...(summaryMsg ? [summaryMsg] : []),

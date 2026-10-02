@@ -44,9 +44,10 @@ export function levelChangeRereads(thinking: ModelThinking): boolean {
 }
 
 /**
- * The level a conversation's sends carry: its own, else — for a conversation
- * the server has not given an id yet (no id, or a local `c<ts>`/`pending-*`
- * placeholder) — the one chosen before it existed, else Settings' default.
+ * The level a conversation's sends carry: its own — keyed by whatever id it has
+ * now, the local `c<ts>`/`pending-*` placeholder included — else, for a chat
+ * that does not exist yet, the choice made before it existed, else Settings'
+ * default.
  */
 export function conversationThinkingLevel(input: {
   activeId: string | null;
@@ -54,15 +55,30 @@ export function conversationThinkingLevel(input: {
   pending: ThinkingLevel | null;
   fallback: ThinkingLevel;
 }): ThinkingLevel {
-  const real = input.activeId !== null && isServerConvId(input.activeId);
-  const own = real && input.activeId ? input.byConversation[input.activeId] : undefined;
+  const own = input.activeId !== null ? input.byConversation[input.activeId] : undefined;
   if (own) return own;
+  // Also for a placeholder in the moment before the pending choice is moved
+  // onto it (see `pendingOwner`).
+  const real = input.activeId !== null && isServerConvId(input.activeId);
   if (!real && input.pending) return input.pending;
   return input.fallback;
 }
 
-/** Where a choice is kept: on the conversation once it exists on the server,
- * otherwise as the pending choice its first send carries. */
+/** Where a choice is kept: on the conversation as soon as it has any id, or as
+ * the pending choice for a chat that has none yet. */
 export function thinkingTarget(activeId: string | null): 'conversation' | 'pending' {
-  return activeId !== null && isServerConvId(activeId) ? 'conversation' : 'pending';
+  return activeId !== null ? 'conversation' : 'pending';
+}
+
+/**
+ * The local placeholder a pending choice now belongs to: the id a new chat
+ * took when its first send went out (that send carried the choice), or null.
+ * Moving the choice onto that id, rather than holding one pending slot until
+ * some promotion arrives, is what ties it to the chat it was made for — two
+ * new chats in flight, or an unsent one left for another thread, otherwise put
+ * one chat's level on another (the MCP switches' `carriesChoices` lesson).
+ */
+export function pendingOwner(activeId: string | null, pending: ThinkingLevel | null): string | null {
+  if (pending === null || activeId === null || isServerConvId(activeId)) return null;
+  return activeId;
 }

@@ -231,9 +231,9 @@ export default function RoutinesScreen() {
           setFormModel(id);
           setModelPickerOpen(false);
         }}
-        // A routine has no per-conversation thinking level to set: its runs
-        // are started by the server, which reads no such preference. So the
-        // row is hidden rather than left there doing nothing.
+        // No thinking level here: the picker no longer has one (it is in the
+        // composer's + menu), and a routine's runs, started by the server, take
+        // the default level (DEFAULT_THINKING_LEVEL).
         onOpenSettings={() => {
           setModelPickerOpen(false);
           shell.openSettings();

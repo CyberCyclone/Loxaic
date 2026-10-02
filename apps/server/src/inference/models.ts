@@ -2,6 +2,7 @@ import { DEFAULT_PROVIDER_ID, formatModelRef, type ModelInfo, type ModelThinking
 import { selfHost } from "../cluster.ts";
 import { builtinSlots, listLocalModelInfos } from "../llama/listing.ts";
 import { redactSecrets } from "./provider-secrets.ts";
+import { readCapped } from "../llama/hf.ts";
 import { openAiThinking, openRouterThinking, thinkingFromTemplate } from "./thinking.ts";
 import {
   defaultProvider,
@@ -27,6 +28,9 @@ const FETCH_TIMEOUT_MS = 2000;
 /** More patience for a provider across the internet than for one on the LAN,
  * and still far less than any request a person is waiting on. */
 const REMOTE_FETCH_TIMEOUT_MS = 8000;
+/** The largest model listing or `/props` answer read. OpenRouter's whole
+ * catalogue, the largest real one, is a few MB. */
+const MAX_LISTING_BYTES = 16 * 1024 * 1024;
 
 const MOCK_MODELS: ModelInfo[] = [
   {
@@ -162,7 +166,11 @@ async function fetchJson<T>(url: string, provider: ResolvedProvider): Promise<T>
       redirect: "error",
     });
     if (!res.ok) throw new Error(`GET ${url} ${String(res.status)}`);
-    return (await res.json()) as T;
+    // Capped: a provider's address is admin-supplied and deliberately not
+    // behind the SSRF guard, so its answer is not ours to trust with memory.
+    const { text, truncated } = await readCapped(res, MAX_LISTING_BYTES);
+    if (truncated) throw new Error(`GET ${url}: the answer was over ${String(MAX_LISTING_BYTES / 1024 / 1024)} MB`);
+    return JSON.parse(text) as T;
   } finally {
     clearTimeout(timer);
   }

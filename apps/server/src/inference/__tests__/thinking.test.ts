@@ -84,11 +84,19 @@ describe("thinkingFromTemplate", () => {
     expect(thinkingFromTemplate(odd)).toBeNull();
   });
 
-  it("stays linear on a hostile template", () => {
-    const huge = "{% if reasoning_effort == 'low' %}".repeat(50_000) + "x".repeat(500_000);
-    const started = Date.now();
-    expect(thinkingFromTemplate(huge)?.levels).toContain("Low");
-    expect(Date.now() - started).toBeLessThan(2000);
+  it("stays linear on openers that never close", () => {
+    // The shape that made the old regex scan to the end of the input once per
+    // opener: 2.3 s for 128 KB, and quadratic. Both kinds, up to the cap.
+    for (const opener of ["{%-", "{{"]) {
+      const hostile = `{% if reasoning_effort == 'low' %}${opener.repeat(Math.floor((1024 * 1024 - 64) / opener.length))}`;
+      const started = Date.now();
+      expect(thinkingFromTemplate(hostile)?.levels).toContain("Low");
+      expect(Date.now() - started).toBeLessThan(500);
+    }
+  });
+
+  it("reads nothing from a template past the cap", () => {
+    expect(thinkingFromTemplate(QWEN38 + " ".repeat(1024 * 1024))).toBeNull();
   });
 });
 
@@ -137,11 +145,12 @@ describe("thinkingFields", () => {
     expect(thinkingFields(qwen38, "High")).toEqual({ reasoning_effort: "high" });
     expect(thinkingFields(qwen38, "Medium")).toEqual({ reasoning_effort: "medium" });
     expect(thinkingFields(qwen38, "Low")).toEqual({ reasoning_effort: "low" });
-    expect(thinkingFields(qwen38, "None")).toEqual({ reasoning_effort: "none" });
+    // Both words: b11149+ converts the effort, an older build reads the kwarg.
+    expect(thinkingFields(qwen38, "None")).toEqual({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } });
   });
 
   it("switches a toggle model on or off, whatever level was asked for", () => {
-    expect(thinkingFields(qwen36, "None")).toEqual({ reasoning_effort: "none" });
+    expect(thinkingFields(qwen36, "None")).toEqual({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } });
     for (const level of ["Low", "Medium", "High"] as const) {
       expect(thinkingFields(qwen36, level)).toEqual({ chat_template_kwargs: { enable_thinking: true } });
     }

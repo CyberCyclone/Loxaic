@@ -19,6 +19,7 @@ import {
 import { VStack } from '@/components/ui/vstack';
 import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import { McpServerList } from './McpServerList';
+import { plusMenuPage, type PlusMenuPage } from '@/lib/plusMenuPage';
 import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
 
 /** Long enough for the sheet's exit animation to finish before another modal
@@ -77,7 +78,8 @@ export function ComposerPlusMenu({
   disabled = false,
 }: ComposerPlusMenuProps) {
   const [open, setOpen] = useState(false);
-  const [page, setPage] = useState<'main' | 'mcp' | 'thinking'>('main');
+  const [page, setPage] = useState<PlusMenuPage>('main');
+  const shown = plusMenuPage(page, { thinking: Boolean(thinking?.capability), mcp: mcp !== null });
   const { height } = useWindowDimensions();
 
   const close = () => {
@@ -104,7 +106,7 @@ export function ComposerPlusMenu({
           <ActionsheetDragIndicatorWrapper>
             <ActionsheetDragIndicator />
           </ActionsheetDragIndicatorWrapper>
-          {page === 'thinking' && thinking?.capability ? (
+          {shown === 'thinking' && thinking?.capability ? (
             <ThinkingPage
               thinking={thinking}
               capability={thinking.capability}
@@ -113,7 +115,7 @@ export function ComposerPlusMenu({
               }}
               onChose={close}
             />
-          ) : page === 'main' || !mcp ? (
+          ) : shown === 'main' || !mcp ? (
             <>
               <ActionsheetItem
                 testID="composer.attach.camera"

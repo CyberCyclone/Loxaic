@@ -269,7 +269,7 @@ describe("the thinking level", () => {
 
   it("turns thinking off through llama.cpp's own word for it", async () => {
     await turn("a quick one", undefined, "None");
-    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "none" }));
+    expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } }));
   });
 
   it("changes nothing but the level when it changes between turns", async () => {
@@ -889,6 +889,22 @@ describe("a compaction extends the prompt it compacts", () => {
     expect(summary?.status).toBe("complete");
     const usage = await db.query.usageRecords.findFirst({ where: eq(usageRecords.messageId, summaryMessageId) });
     expect(usage?.promptMs).toBe(50);
+  });
+
+  it("compacts at the conversation's recorded level after a restart, when no request shape survives", async () => {
+    const convId = await turn("first question about pnpm", undefined, "None");
+    await turn("second question about bun", convId, "None");
+    // A restart: the in-memory shapes are gone, so the compaction sends the
+    // stripped request — and has only the conversation row to go on.
+    const { __forgetRequestShapesForTest } = await import("../request-shape.ts");
+    __forgetRequestShapesForTest();
+    const { startCompactRun } = await import("../compactRun.ts");
+    await startCompactRun({ userId, conversationId: convId, model: "llama-3.1-8b-instruct", surface: "chat" });
+    await waitForRun(convId);
+    expect(requestOptions.at(-1)?.toolCount).toBe(0); // the stripped request
+    expect(requestOptions.at(-1)?.thinking).toBe(
+      JSON.stringify({ reasoning_effort: "none", chat_template_kwargs: { enable_thinking: false } }),
+    );
   });
 
   it("compacts at the level the conversation's last run used, not the default", async () => {

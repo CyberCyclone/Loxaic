@@ -99,6 +99,21 @@ class Reader {
     }
   }
 
+  /**
+   * Skips `n` length-prefixed strings. Awaits only when the buffer runs low,
+   * not once per string: a vocabulary is a few hundred thousand of them, and
+   * reading past it to the chat template used to cost that many awaited reads
+   * on the event loop.
+   */
+  async skipStrings(n: number): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      if (this.buf.length - this.pos < 8) await this.fill(8);
+      const len = Number(this.buf.readBigUInt64LE(this.pos));
+      this.pos += 8;
+      this.skip(len);
+    }
+  }
+
   async u32(): Promise<number> {
     return (await this.take(4)).readUInt32LE(0);
   }
@@ -142,7 +157,7 @@ async function readSmallArray(r: Reader): Promise<number[] | boolean[] | null> {
   if (n > MAX_ARRAY) throw new Error("GGUF array too long");
   const width = FIXED[inner];
   if (inner === 8 || width === undefined || n > MAX_KEPT_ARRAY) {
-    if (inner === 8) for (let i = 0; i < n; i++) await skipValue(r, 8);
+    if (inner === 8) await r.skipStrings(n);
     else if (width !== undefined) r.skip(width * n);
     else throw new Error("Nested GGUF arrays are not supported");
     return null;
@@ -166,7 +181,7 @@ async function skipValue(r: Reader, type: number): Promise<void> {
     const n = Number(await r.u64());
     if (n > MAX_ARRAY) throw new Error("GGUF array too long");
     const width = FIXED[inner];
-    if (inner === 8) for (let i = 0; i < n; i++) await skipValue(r, 8);
+    if (inner === 8) await r.skipStrings(n);
     else if (width !== undefined) r.skip(width * n);
     else throw new Error("Nested GGUF arrays are not supported");
     return;
@@ -191,16 +206,20 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
     for (let i = 0; i < kvCount; i++) {
       const key = await r.str();
       const type = await r.u32();
-      if (key.startsWith("tokenizer.")) pastTokenizer = true;
+      if (key === "tokenizer.chat_template" && type === 8) {
+        const len = Number(await r.u64());
+        if (len <= MAX_TEMPLATE) facts.chatTemplate = (await r.take(len)).toString("utf8");
+        else r.skip(len);
+        // Nothing past the template is wanted once the architecture is known.
+        if (facts.architecture) break;
+        continue;
+      }
+      // Architecture keys come before the tokenizer's in every file seen, but
+      // GGUF does not require it: only a tokenizer key that follows the
+      // architecture ends the reading of model keys, so one that comes first
+      // cannot hide `general.architecture` and everything keyed under it.
+      if (key.startsWith("tokenizer.") && facts.architecture) pastTokenizer = true;
       if (pastTokenizer) {
-        // Every architecture key comes before the tokenizer's, so anything
-        // after it is skipped unread, whatever it claims to be.
-        if (key === "tokenizer.chat_template" && type === 8) {
-          const len = Number(await r.u64());
-          if (len <= MAX_TEMPLATE) facts.chatTemplate = (await r.take(len)).toString("utf8");
-          else r.skip(len);
-          break;
-        }
         await skipValue(r, type);
         continue;
       }

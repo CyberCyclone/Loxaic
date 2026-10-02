@@ -4,6 +4,7 @@ import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import {
   DEFAULT_PROVIDER_ID,
   DEFAULT_THINKING_LEVEL,
+  isThinkingLevel,
   type CompactionStats,
   type ContentBlock,
   type ContextBreakdown,
@@ -465,15 +466,25 @@ async function runCompactGeneration(ctx: {
     }
 
     let reportProgress = false;
-    // A stripped request has no prefix to match, so it gets the default level
-    // rather than the model's own default (Qwen3.8's is its highest).
+    // A stripped request has no prefix to match: it takes the level the
+    // conversation's last run recorded, or the default when none did — never
+    // the model's own default (Qwen3.8's is its highest).
     let thinking = ctx.request.thinking;
+    const recorded = thinking
+      ? null
+      : await db
+          .select({ level: conversations.thinkingLevel })
+          .from(conversations)
+          .where(eq(conversations.id, ctx.convId))
+          .then((rows) => rows.at(0)?.level ?? null)
+          .catch(() => null);
+    const fallbackLevel = isThinkingLevel(recorded) ? recorded : DEFAULT_THINKING_LEVEL;
     try {
       // This model's own provider only — see the same lookup in engine.ts.
       const info = await modelRunInfo(model);
       windowTokens = info?.windowTokens ?? null;
       reportProgress = info?.nativeRuntime ?? false;
-      thinking ??= thinkingFields(info?.thinking, DEFAULT_THINKING_LEVEL);
+      thinking ??= thinkingFields(info?.thinking, fallbackLevel);
       if (info && !info.loaded) {
         jitLoaded = true;
         producer.emit({ kind: "model.loading", message_id: summaryMsgId });

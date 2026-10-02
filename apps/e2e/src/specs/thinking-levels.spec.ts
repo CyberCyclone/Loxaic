@@ -105,7 +105,7 @@ describe('the thinking level in the + menu', () => {
     await sendAndAwaitReply(`${PROMPT} now`, mockThinking('reasoning_effort=low'));
     await chooseThinkingLevel('None');
     expect(await thinkingRowValue()).toBe('Off');
-    await sendAndAwaitReply(`${PROMPT} once more`, mockThinking('reasoning_effort=none'));
+    await sendAndAwaitReply(`${PROMPT} once more`, mockThinking('reasoning_effort=none, enable_thinking=false'));
   });
 
   it('offers an on/off model only Off and On, and switches it with enable_thinking', async () => {
@@ -120,7 +120,7 @@ describe('the thinking level in the + menu', () => {
     await tap('composer.thinking.level.Medium');
     await sendAndAwaitReply(PROMPT, mockThinking('enable_thinking=true'));
     await chooseThinkingLevel('None');
-    await sendAndAwaitReply(`${PROMPT} now`, mockThinking('reasoning_effort=none'));
+    await sendAndAwaitReply(`${PROMPT} now`, mockThinking('reasoning_effort=none, enable_thinking=false'));
   });
 
   it('works on the agent screen too', async () => {

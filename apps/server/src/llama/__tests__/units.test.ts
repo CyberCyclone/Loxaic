@@ -308,6 +308,46 @@ describe("GGUF header", () => {
     });
   });
 
+  it("reads the architecture when a tokenizer key comes before it", async () => {
+    // GGUF does not fix key order: a tokenizer key first must not end the
+    // reading of model keys before the architecture is even known.
+    const file = path.join(dir, "early-tokenizer.gguf");
+    writeFileSync(
+      file,
+      buildGguf([
+        ["tokenizer.ggml.model", { type: "str", v: "gpt2" }],
+        ["general.architecture", { type: "str", v: "qwen3" }],
+        ["qwen3.block_count", { type: "u32", v: 28 }],
+        ["qwen3.context_length", { type: "u32", v: 40960 }],
+        ["tokenizer.ggml.tokens", { type: "strs", v: ["a", "b"] }],
+        ["tokenizer.chat_template", { type: "str", v: "{{ enable_thinking }}" }],
+      ]),
+    );
+    await expect(readGgufFacts(file)).resolves.toMatchObject({
+      architecture: "qwen3",
+      nLayers: 28,
+      nCtxTrain: 40960,
+      chatTemplate: "{{ enable_thinking }}",
+    });
+  });
+
+  it("walks a large vocabulary to the chat template quickly", async () => {
+    const file = path.join(dir, "big-vocab.gguf");
+    writeFileSync(
+      file,
+      buildGguf([
+        ["general.architecture", { type: "str", v: "qwen3" }],
+        ["qwen3.block_count", { type: "u32", v: 28 }],
+        ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 250_000 }, (_, i) => `token-${String(i)}`) }],
+        ["tokenizer.ggml.merges", { type: "strs", v: Array.from({ length: 250_000 }, (_, i) => `m ${String(i)}`) }],
+        ["tokenizer.chat_template", { type: "str", v: "{{ reasoning_effort }}" }],
+      ]),
+    );
+    const started = Date.now();
+    expect((await readGgufFacts(file)).chatTemplate).toBe("{{ reasoning_effort }}");
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it("finds expert_count on a mixture-of-experts model", async () => {
     const file = path.join(dir, "moe.gguf");
     writeFileSync(

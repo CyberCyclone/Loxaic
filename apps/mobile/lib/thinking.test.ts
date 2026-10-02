@@ -6,6 +6,7 @@ import {
   selectedThinkingOption,
   thinkingOptions,
   thinkingTarget,
+  pendingOwner,
 } from './thinking';
 
 const graded: ModelThinking = {
@@ -54,28 +55,42 @@ describe('levelChangeRereads', () => {
 });
 
 describe('conversationThinkingLevel', () => {
-  it('uses the conversation\'s own level once it exists', () => {
+  it("uses the conversation's own level, under whatever id it has", () => {
     expect(conversationThinkingLevel({ activeId: REAL, byConversation: { [REAL]: 'High' }, pending: 'Low', fallback: 'Medium' })).toBe('High');
+    expect(conversationThinkingLevel({ activeId: 'c1700000000000', byConversation: { c1700000000000: 'Low' }, pending: null, fallback: 'Medium' })).toBe('Low');
   });
 
-  it('uses the choice made before a new chat existed, until it has an id', () => {
+  it('uses the choice made before a new chat existed, until it is moved onto the chat', () => {
     expect(conversationThinkingLevel({ activeId: null, byConversation: {}, pending: 'High', fallback: 'Medium' })).toBe('High');
-    // Sent, but the server has not named it yet: still the pending choice.
-    expect(conversationThinkingLevel({ activeId: 'c1700000000000', byConversation: {}, pending: 'High', fallback: 'Medium' })).toBe('High');
+    // The render after the first send, before the move: still the pending choice.
     expect(conversationThinkingLevel({ activeId: 'pending-ab12', byConversation: {}, pending: 'Low', fallback: 'Medium' })).toBe('Low');
   });
 
-  it('falls back to the default, never to another chat\'s pending choice', () => {
+  it("falls back to the default, never to another chat's pending choice", () => {
     expect(conversationThinkingLevel({ activeId: REAL, byConversation: {}, pending: 'High', fallback: 'Medium' })).toBe('Medium');
     expect(conversationThinkingLevel({ activeId: null, byConversation: {}, pending: null, fallback: 'Low' })).toBe('Low');
   });
 });
 
 describe('thinkingTarget', () => {
-  it('keeps a choice on the conversation only once the server has named it', () => {
+  it('keeps a choice on the conversation as soon as it has any id', () => {
     expect(thinkingTarget(REAL)).toBe('conversation');
+    expect(thinkingTarget('c1700000000000')).toBe('conversation');
     expect(thinkingTarget(null)).toBe('pending');
-    expect(thinkingTarget('c1700000000000')).toBe('pending');
-    expect(thinkingTarget('pending-x')).toBe('pending');
+  });
+});
+
+describe('pendingOwner', () => {
+  it('gives a pending choice to the placeholder of the chat whose first send carried it', () => {
+    expect(pendingOwner('c1700000000000', 'High')).toBe('c1700000000000');
+    expect(pendingOwner('pending-x', 'Low')).toBe('pending-x');
+  });
+
+  it('gives it to nobody else', () => {
+    // Left for an existing thread: that thread keeps its own level, and the
+    // choice waits for the next new chat.
+    expect(pendingOwner(REAL, 'High')).toBeNull();
+    expect(pendingOwner(null, 'High')).toBeNull();
+    expect(pendingOwner('c1700000000000', null)).toBeNull();
   });
 });

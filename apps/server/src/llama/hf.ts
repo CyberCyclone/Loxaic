@@ -61,7 +61,8 @@ async function hfFetchText(pathname: string, maxBytes: number): Promise<{ status
   }
 }
 
-async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+/** A response body read up to `maxBytes`, never past it. */
+export async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
   if (!res.body) return { text: "", truncated: false };
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];

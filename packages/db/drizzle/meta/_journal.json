@@ -239,6 +239,13 @@
       "when": 1790648997372,
       "tag": "0033_usage_records_model_index",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790935415679,
+      "tag": "0034_conversation_thinking_level",
+      "breakpoints": true
     }
   ]
 }

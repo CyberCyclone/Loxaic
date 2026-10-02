@@ -3,16 +3,16 @@ import type { ModelInfo, ThinkingLevel } from '@loxaic/types';
 import type { ComposerThinking } from '@/components/composer/ComposerPlusMenu';
 import { useSettings, useThinkingLevels } from '@/hooks/useSettings';
 import type { Promotion } from '@/lib/mcpSwitches';
-import { conversationThinkingLevel, thinkingTarget } from '@/lib/thinking';
+import { conversationThinkingLevel, pendingOwner, thinkingTarget } from '@/lib/thinking';
 
 /**
  * The thinking level for the conversation on screen, shared by Chat and Agent:
  * the level its sends carry and the `+` menu's Thinking row.
  *
- * A conversation that exists keeps its own level (on this device). One that
- * does not yet — a new chat — holds the choice until its first send, which
- * carries it, and the level then moves onto the id the server gave it. Before
- * this, choosing a level on a new chat did nothing at all.
+ * A conversation keeps its own level (on this device). A new chat holds the
+ * choice as pending until its first send, which carries it; the choice then
+ * moves onto the chat's local id, and from there onto the id the server gives
+ * that same chat. Before this, choosing a level on a new chat did nothing.
  */
 export function useThinkingChoice(input: {
   activeId: string | null;
@@ -33,15 +33,28 @@ export function useThinkingChoice(input: {
     fallback: settings.defaultThinkingLevel,
   });
 
-  // The new chat's choice moves onto its real id once the server names it.
+  // A new chat's first send carried the pending choice, and the chat now has a
+  // local id: the choice moves onto that id, so it belongs to this chat alone.
+  const owner = pendingOwner(activeId, pending);
+  useEffect(() => {
+    if (owner === null || pending === null) return;
+    setByConversation((prev) => ({ ...prev, [owner]: pending }));
+    setPending(null);
+  }, [owner, pending, setByConversation]);
+
+  // ...and onto the real id once the server names that same chat.
   const handled = useRef<Promotion | null>(null);
   useEffect(() => {
     if (!promotion || handled.current === promotion) return;
     handled.current = promotion;
-    if (pending === null) return;
-    setByConversation((prev) => ({ ...prev, [promotion.realId]: pending }));
-    setPending(null);
-  }, [promotion, pending, setByConversation]);
+    setByConversation((prev) => {
+      // Partial: the stored map need not hold this chat at all.
+      const moved = (prev as Partial<Record<string, ThinkingLevel>>)[promotion.localId];
+      if (moved === undefined) return prev;
+      const { [promotion.localId]: _local, ...rest } = prev;
+      return { ...rest, [promotion.realId]: moved };
+    });
+  }, [promotion, setByConversation]);
 
   const onChange = useCallback(
     (next: ThinkingLevel) => {
