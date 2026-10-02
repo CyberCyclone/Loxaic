@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ComponentRef, type ReactNode, type RefObject } from 'react';
 import { Modal, StyleSheet } from 'react-native';
-import { ChevronLeft, ChevronRight, Layers, Paperclip, Plug, Plus } from 'lucide-react-native';
+import { Brain, Check, ChevronLeft, ChevronRight, Layers, Paperclip, Plug, Plus } from 'lucide-react-native';
 import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Text } from '@/components/ui/text';
@@ -16,15 +16,22 @@ import {
 } from '@/lib/submenuPlacement';
 import type { ComposerPlusMenuProps } from './ComposerPlusMenu';
 import { McpServerList } from './McpServerList';
+import { levelChangeRereads, NO_THINKING_REASON, selectedThinkingOption, thinkingOptions } from '@/lib/thinking';
 
-/** Long enough for the pointer to cross the gap from the MCP row to the
- * submenu without it closing on the way. */
+/** Which row's submenu is open. */
+type SubKind = 'mcp' | 'thinking';
+
+/** Long enough for the pointer to cross the gap from a row to its submenu
+ * without it closing on the way. */
 const HOVER_CLOSE_MS = 150;
 
 const ACCEPT =
   'image/*,.pdf,.docx,.xlsx,.pptx,.odt,.rtf,.epub,.txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.html,.htm,.xml,.yaml,.yml,.ts,.tsx,.js,.jsx,.py,.rb,.go,.rs,.java,.c,.h,.cpp,.cs,.php,.swift,.kt,.sh,.bash,.zsh,.sql,.toml,.ini,.cfg,.conf,.env,.diff,.patch,.log,.gitignore,.gitattributes,.dockerignore,.editorconfig,.npmrc,.nvmrc,.bashrc,.zshrc,.profile';
 
 type PressableRef = ComponentRef<typeof Pressable>;
+
+/** Four short words and a footnote: narrower than the MCP list. */
+const THINKING_WIDTH = 224;
 
 const viewport = () => ({ width: window.innerWidth, height: window.innerHeight });
 const rectOf = (el: unknown): Rect | null =>
@@ -46,14 +53,15 @@ const rectOf = (el: unknown): Rect | null =>
  * same file can be picked twice in a row. The click happens inside the press
  * itself, so the browser still counts it as the user's gesture.
  */
-export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null, disabled = false }: ComposerPlusMenuProps) {
+export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null, thinking = null, disabled = false }: ComposerPlusMenuProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<PressableRef>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const mcpRowRef = useRef<PressableRef>(null);
+  const thinkingRowRef = useRef<PressableRef>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [menu, setMenu] = useState<MenuPlacement | null>(null);
-  const [sub, setSub] = useState<SubmenuPlacement | null>(null);
+  const [sub, setSub] = useState<(SubmenuPlacement & { kind: SubKind }) | null>(null);
 
   const cancelClose = () => {
     if (closeTimer.current) clearTimeout(closeTimer.current);
@@ -74,11 +82,20 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
     setMenu(placeMenu(trigger, viewport()));
   };
 
-  const openSub = () => {
+  /**
+   * Opens a row's submenu. Hover only opens one that goes *beside* the menu:
+   * at phone width it takes the menu's place, and opening that on hover swapped
+   * the menu out from under the pointer, so the click that followed landed on
+   * whatever submenu row was now beneath it — choosing a level nobody picked.
+   */
+  const openSub = (kind: SubKind, how: 'press' | 'hover') => {
     cancelClose();
     const m = rectOf(menuRef.current);
-    const row = rectOf(mcpRowRef.current);
-    if (m && row) setSub(placeSubmenu(m, row, viewport()));
+    const row = rectOf((kind === 'mcp' ? mcpRowRef : thinkingRowRef).current);
+    if (!m || !row) return;
+    const placed = placeSubmenu(m, row, viewport(), kind === 'thinking' ? THINKING_WIDTH : SUBMENU_WIDTH);
+    if (placed.mode === 'replace' && how === 'hover') return;
+    setSub({ ...placed, kind });
   };
 
   // A replaced menu is navigated, not hovered: leaving it must not close it.
@@ -102,7 +119,10 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
         setSub(null);
       } else if (e.key === 'ArrowRight' && !sub && document.activeElement === (mcpRowRef.current as unknown)) {
         e.preventDefault();
-        openSub();
+        openSub('mcp', 'press');
+      } else if (e.key === 'ArrowRight' && !sub && document.activeElement === (thinkingRowRef.current as unknown)) {
+        e.preventDefault();
+        openSub('thinking', 'press');
       }
     };
     // Positions are computed once, from rects that a resize invalidates.
@@ -119,6 +139,7 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
   useEffect(() => cancelClose, []);
 
   const replaced = sub?.mode === 'replace';
+  const selectedLevel = thinking?.capability ? selectedThinkingOption(thinking.capability, thinking.level).level : null;
 
   return (
     <>
@@ -190,6 +211,25 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
                 }}
               />
             ) : null}
+            {thinking ? (
+              <MenuRow
+                testID="composer.plus.thinking"
+                refObj={thinkingRowRef}
+                icon={Brain}
+                label="Thinking"
+                value={thinking.capability ? selectedThinkingOption(thinking.capability, thinking.level).label : undefined}
+                sublabel={thinking.capability ? null : NO_THINKING_REASON}
+                disabled={thinking.capability === null}
+                trailing={thinking.capability ? ChevronRight : undefined}
+                active={sub?.kind === 'thinking'}
+                onPress={() => { openSub('thinking', 'press'); }}
+                onHoverIn={() => {
+                  if (thinking.capability) openSub('thinking', 'hover');
+                  else if (sub) scheduleCloseSub();
+                }}
+                onHoverOut={scheduleCloseSub}
+              />
+            ) : null}
             {mcp ? (
               <MenuRow
                 testID="composer.plus.mcp"
@@ -197,15 +237,63 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
                 icon={Plug}
                 label="MCP"
                 trailing={ChevronRight}
-                active={sub !== null}
-                onPress={openSub}
-                onHoverIn={openSub}
+                active={sub?.kind === 'mcp'}
+                onPress={() => { openSub('mcp', 'press'); }}
+                onHoverIn={() => { openSub('mcp', 'hover'); }}
                 onHoverOut={scheduleCloseSub}
               />
             ) : null}
           </Panel>
         ) : null}
-        {sub && mcp ? (
+        {sub?.kind === 'thinking' && thinking?.capability ? (
+          <Panel
+            testID="composer.thinking.submenu"
+            placement={sub.mode}
+            left={sub.left}
+            bottom={sub.bottom}
+            width={THINKING_WIDTH}
+            maxHeight={sub.maxHeight}
+            onMouseEnter={cancelClose}
+            onMouseLeave={scheduleCloseSub}
+          >
+            {replaced ? (
+              <MenuRow
+                testID="composer.thinking.back"
+                icon={ChevronLeft}
+                label="Thinking"
+                onPress={() => {
+                  setSub(null);
+                }}
+              />
+            ) : null}
+            {thinkingOptions(thinking.capability).map((option) => {
+              const selected = selectedLevel === option.level;
+              return (
+                <MenuRow
+                  key={option.level}
+                  testID={`composer.thinking.level.${option.level}`}
+                  checked={selected}
+                  label={option.label}
+                  trailing={selected ? Check : undefined}
+                  onPress={() => {
+                    thinking.onChange(option.level);
+                    close();
+                  }}
+                />
+              );
+            })}
+            {levelChangeRereads(thinking.capability) ? (
+              // A block around it: the web Text is an inline span, whose
+              // padding would hold for its first line only.
+              <div style={{ padding: '4px 12px' }}>
+                <Text size="2xs" className="text-muted-foreground">
+                  Changing it makes the model re-read this conversation once.
+                </Text>
+              </div>
+            ) : null}
+          </Panel>
+        ) : null}
+        {sub?.kind === 'mcp' && mcp ? (
           <Panel
             testID="composer.mcp.submenu"
             placement={sub.mode}
@@ -280,7 +368,9 @@ function MenuRow({
   refObj,
   icon,
   label,
+  value,
   trailing,
+  checked,
   active = false,
   disabled = false,
   sublabel,
@@ -290,9 +380,15 @@ function MenuRow({
 }: {
   testID: string;
   refObj?: RefObject<PressableRef | null>;
-  icon: typeof Plus;
+  icon?: typeof Plus;
   label: string;
+  /** The current choice, right-aligned — "Medium" on the Thinking row. */
+  value?: string;
   trailing?: typeof Plus;
+  /** For a choice row: whether it is the one in force. `aria-selected`, as on
+   * the agent's mode chips: react-native-web drops the `menuitemradio` role
+   * and `aria-checked` through the gluestack Pressable. */
+  checked?: boolean;
   active?: boolean;
   disabled?: boolean;
   /** A line under the label — why a disabled row is disabled. */
@@ -306,6 +402,7 @@ function MenuRow({
       ref={refObj}
       testID={testID}
       role="menuitem"
+      aria-selected={checked}
       aria-disabled={disabled}
       disabled={disabled}
       onPress={onPress}
@@ -313,7 +410,7 @@ function MenuRow({
       onHoverOut={onHoverOut}
       className={`flex-row items-center gap-2 rounded-md px-3 py-2 ${disabled ? 'opacity-60' : 'hover:bg-muted focus:bg-muted'} ${active ? 'bg-muted' : ''}`}
     >
-      <Icon as={icon} size="xs" className="text-muted-foreground" />
+      {icon ? <Icon as={icon} size="xs" className="text-muted-foreground" /> : null}
       <VStack className="flex-1">
         <Text size="sm" className="text-foreground">
           {label}
@@ -324,6 +421,11 @@ function MenuRow({
           </Text>
         ) : null}
       </VStack>
+      {value ? (
+        <Text testID={`${testID}.value`} size="sm" className="text-muted-foreground">
+          {value}
+        </Text>
+      ) : null}
       {trailing ? <Icon as={trailing} size="xs" className="text-muted-foreground" /> : null}
     </Pressable>
   );

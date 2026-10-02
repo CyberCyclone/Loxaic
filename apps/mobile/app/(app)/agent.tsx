@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
 import { findCommand } from '@loxaic/api-client';
-import type { McpOverrides } from '@loxaic/types';
+import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -48,7 +48,8 @@ import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode, formatAnswers
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { useSession } from '@/lib/session';
-import { useThinkingLevels, useSettings } from '@/hooks/useSettings';
+import { useSettings } from '@/hooks/useSettings';
+import { useThinkingChoice } from '@/hooks/useThinkingChoice';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { useToastHelper } from '@/hooks/useToastHelper';
 
@@ -70,6 +71,7 @@ export default function AgentScreen() {
   // The context stage chosen for a run that does not exist yet; read by the
   // session at send time, like the MCP choices above.
   const pendingStageRef = useRef<number | undefined>(undefined);
+  const thinkingRef = useRef<ThinkingLevel | undefined>(undefined);
   const {
     runs,
     activeId,
@@ -108,14 +110,13 @@ export default function AgentScreen() {
     returnedText,
     promotion,
     stageCard,
-  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef);
+  } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef);
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
   const { showToast } = useToastHelper();
 
   const [settings] = useSettings();
-  const [thinkingLevels, setThinkingLevels] = useThinkingLevels();
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [threadListOpen, setThreadListOpen] = useState(false);
@@ -131,9 +132,6 @@ export default function AgentScreen() {
   // A send the server never heard of comes back to the message box.
   useEffect(() => { if (returnedText) setCommandSeed(returnedText); }, [returnedText]);
 
-  const thinkingLevelsById: Partial<Record<string, typeof settings.defaultThinkingLevel>> = thinkingLevels;
-  const storedThinkingLevel = activeId ? thinkingLevelsById[activeId] : undefined;
-  const thinkingLevel = storedThinkingLevel ?? settings.defaultThinkingLevel;
   const wide = breakpoint === 'wide';
 
   const prefModel = activeRun?.model;
@@ -148,6 +146,15 @@ export default function AgentScreen() {
     isKnown,
     defaultModelId: defaultModel?.id,
   });
+
+  // The level every send carries, read by the session at send time.
+  const thinking = useThinkingChoice({
+    activeId,
+    promotion,
+    model: models.find((m) => m.id === selectedModel),
+    modelsLoaded: models.length > 0,
+  });
+  thinkingRef.current = thinking.level;
 
   const context = useContextUsage(activeRun?.msgs, selectedModel ? getWindow(selectedModel) : null);
   // One instance for the composer's `+` menu, the context popup and the
@@ -516,6 +523,7 @@ export default function AgentScreen() {
                 onOpenModelModal={() => { setModelModalOpen(true); }}
                 surface="agent"
                 mcp={mcp}
+                thinking={thinking.composer}
                 onRunCommand={handleRunCommand}
                 commandSeed={commandSeed}
                 contextStage={
@@ -670,10 +678,6 @@ export default function AgentScreen() {
           if (pickingPlanModel) setPlanModelChoice({ callId: pickingPlanModel, model: id });
           else if (activeId) setRunModel(activeId, id);
           else setPendingModel(id);
-        }}
-        thinkingLevel={thinkingLevel}
-        onThinkingLevel={(level) => {
-          if (activeId) setThinkingLevels((prev) => ({ ...prev, [activeId]: level }));
         }}
         onOpenSettings={() => {
           setModelModalOpen(false);

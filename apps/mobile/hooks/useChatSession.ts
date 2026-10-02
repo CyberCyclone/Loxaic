@@ -24,7 +24,7 @@ import {
   type PromptStats,
   type Conversation as ApiConversation,
 } from '@loxaic/api-client';
-import type { McpOverrides } from '@loxaic/types';
+import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
@@ -171,6 +171,9 @@ export function useChatSession(
   /** The context stage chosen (Context settings) for a conversation that does
    * not exist yet; carried by the send that creates it. */
   pendingStage?: { readonly current: number | undefined },
+  /** The thinking level from the composer's `+` menu, read at send time and
+   * carried by every send. Absent (routines) leaves it to the server. */
+  thinking?: { readonly current: ThinkingLevel | undefined },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -1002,7 +1005,7 @@ export function useChatSession(
         };
         setConversations((prev) => [newConv, ...prev]);
         setActiveId(newConv.id);
-        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current, pendingStage?.current)) {
+        if (!sendChatMessage(wsRef.current, text, model, undefined, undefined, refs, localMsgId, pendingMcp?.current, pendingStage?.current, thinking?.current)) {
           // Undo, don't just toast. The bubble was already painted, and the
           // cache-on-settle effect would have persisted a message that was
           // never sent into the user's "saved copy" — replayed on every
@@ -1023,7 +1026,7 @@ export function useChatSession(
               : c,
           ),
         );
-        if (!sendChatMessage(wsRef.current, text, model, id, undefined, refs, localMsgId)) {
+        if (!sendChatMessage(wsRef.current, text, model, id, undefined, refs, localMsgId, undefined, undefined, thinking?.current)) {
           setConversations((prev) =>
             prev.map((c) => (c.id === id ? { ...c, msgs: c.msgs.filter((m) => m.id !== localMsgId) } : c)),
           );
@@ -1034,7 +1037,7 @@ export function useChatSession(
         }
       }
     },
-    [setActiveId, showToast, pendingMcp, pendingStage, dismissStageCard],
+    [setActiveId, showToast, pendingMcp, pendingStage, thinking, dismissStageCard],
   );
 
   /** Take back a send the server refused before writing anything: the bubble,

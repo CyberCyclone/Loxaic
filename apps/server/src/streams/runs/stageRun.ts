@@ -63,6 +63,7 @@ export function warmer(convId: string, model: string) {
       tools: shape.tools,
       signal,
       maxTokens: 1,
+      thinking: shape.thinking,
       // Always asked for. A stage only exists on the built-in llama.cpp
       // router, which reports progress; reading that off the model list asked
       // a list this very reload had just invalidated, which still said "not

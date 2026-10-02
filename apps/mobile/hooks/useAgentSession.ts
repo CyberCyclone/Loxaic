@@ -23,7 +23,7 @@ import {
   type StepsDecision,
   type PromptStats,
 } from '@loxaic/api-client';
-import type { McpOverrides } from '@loxaic/types';
+import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { useEndpoint } from './useEndpoint';
 import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } from '@/lib/connection';
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
@@ -99,6 +99,8 @@ export function useAgentSession(
   /** The context stage chosen (Context settings) for a run that does not
    * exist yet; carried by the send that creates it. */
   pendingStage?: { readonly current: number | undefined },
+  /** As on `useChatSession`. */
+  thinking?: { readonly current: ThinkingLevel | undefined },
 ) {
   // Re-run the socket effect when the API endpoint changes, so a desktop
   // mode switch or a Settings change reconnects to the new host instead of
@@ -802,7 +804,7 @@ export function useAgentSession(
           // The implicit path: the server opens a scratch conversation on the
           // first send. Unchanged from before workspaces existed.
           if (
-            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current, pendingStage?.current)
+            !sendAgentMessage(wsRef.current, text, sendMode, undefined, undefined, model, refs, localMsgId, pendingMcp?.current, pendingStage?.current, thinking?.current)
           ) {
             setRuns((prev) => prev.filter((r) => r.id !== localId));
             setActiveId(null);
@@ -831,7 +833,7 @@ export function useAgentSession(
               // the send that opens a conversation — which this one is. Both sit
               // in a positional list no type would catch a reorder in; an options
               // object is the fix when it next grows.
-              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId, undefined, pendingStage?.current);
+              const sent = ws !== null && sendAgentMessage(ws, text, sendMode, created.id, undefined, model, refs, localMsgId, undefined, pendingStage?.current, thinking?.current);
               if (!sent) throw new Error('Lost the connection before the message could be sent — try again');
               sendsRef.current.markDispatched(localMsgId);
             })
@@ -850,7 +852,7 @@ export function useAgentSession(
               : r,
           ),
         );
-        if (!sendAgentMessage(wsRef.current, text, sendMode, convId, undefined, model, refs, localMsgId)) {
+        if (!sendAgentMessage(wsRef.current, text, sendMode, convId, undefined, model, refs, localMsgId, undefined, undefined, thinking?.current)) {
           setRuns((prev) =>
             prev.map((r) => (r.id === convId ? { ...r, msgs: r.msgs.filter((m) => m.id !== localMsgId) } : r)),
           );
@@ -862,7 +864,7 @@ export function useAgentSession(
       }
       return true;
     },
-    [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage, dismissStageCard],
+    [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage, thinking, dismissStageCard],
   );
 
   /** Take back a send the server refused before writing anything. */

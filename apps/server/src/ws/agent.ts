@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { findCommand, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
+import { findCommand, isThinkingLevel, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
 import { startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
@@ -134,6 +134,9 @@ export function agentWsHandler(app: FastifyInstance) {
             // and only ever applied to a conversation this send creates.
             mcpOverrides: normalizeMcpOverrides(msg.mcp_overrides),
             contextStage: normalizeContextStage(msg.context_stage),
+            // Anything that is not one of the four words is dropped, not
+            // forwarded: it becomes a request field on the model's backend.
+            thinkingLevel: isThinkingLevel(msg.thinking_level) ? msg.thinking_level : undefined,
           });
           pendingSend?.started(run);
           const result = await run;

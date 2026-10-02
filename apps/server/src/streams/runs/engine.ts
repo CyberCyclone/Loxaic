@@ -20,6 +20,8 @@ import {
   type StepsDecision,
   type TimeoutBasis,
   type TurnUsage,
+  DEFAULT_THINKING_LEVEL,
+  type ThinkingLevel,
 } from "@loxaic/types";
 import {
   countDocumentParts,
@@ -52,6 +54,7 @@ import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
 import { usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
+import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import {
@@ -502,6 +505,9 @@ export async function runToolLoop(ctx: {
    * to `chosenStage` (Context settings), or back to its standard context,
    * before the first request — see stageRun.ts. */
   newConversation?: { chosenStage?: number };
+  /** How hard to think, from the send. Absent (an older client, a routine)
+   * means `DEFAULT_THINKING_LEVEL`; ignored for a model that takes none. */
+  thinkingLevel?: ThinkingLevel;
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
@@ -557,7 +563,20 @@ export async function runToolLoop(ctx: {
     const summaryMsg = history.summaryText ? summaryMessage(history.summaryText) : null;
     // Fixed for the run, and what a compaction of this conversation needs to
     // send the same front of the prompt (request-shape.ts).
-    recordRequestShape(convId, { model, system: systemPrompt, tools });
+    // The thinking level as body fields, fixed for the run like the tools: on
+    // llama.cpp it is rendered into the system prompt, so a level that moved
+    // between two requests of one run would break the cached prefix.
+    const thinkingInfo = await modelRunInfo(model).catch(() => null);
+    const thinkingLevel = ctx.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+    const thinkingBody = thinkingFields(thinkingInfo?.thinking, thinkingLevel);
+    recordRequestShape(convId, { model, system: systemPrompt, tools, thinking: thinkingBody });
+    // Recorded on the conversation for a run nobody sends: a compaction after
+    // a restart has no request shape to copy the level from. Best-effort.
+    await db
+      .update(conversations)
+      .set({ thinkingLevel })
+      .where(eq(conversations.id, convId))
+      .catch((err: unknown) => { console.warn(`recording the thinking level of ${convId} failed: ${(err as Error).message}`); });
     const chatMessages: ChatMessage[] = [
       ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
       ...(summaryMsg ? [summaryMsg] : []),
@@ -826,6 +845,7 @@ export async function runToolLoop(ctx: {
               : forceTool
                 ? { toolChoice: "required" as const }
                 : {}),
+            thinking: thinkingBody,
             reportProgress,
           }),
         )) {

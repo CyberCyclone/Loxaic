@@ -263,10 +263,15 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <Text size="xs" className="text-muted-foreground">
                 Default thinking level
               </Text>
+              <Text size="2xs" className="text-muted-foreground">
+                For any chat you haven't set one for, on models that take one. Set it per chat in the composer's + menu.
+              </Text>
               <HStack space="xs">
                 {THINKING.map((level) => (
                   <Pressable
                     key={level}
+                    testID={`settings.thinking.${level}`}
+                    aria-selected={draft.defaultThinkingLevel === level}
                     onPress={() => { update('defaultThinkingLevel', level); }}
                     className={`rounded-full px-3 py-1.5 ${
                       draft.defaultThinkingLevel === level ? 'bg-primary/15' : 'bg-muted'

@@ -944,6 +944,40 @@ export async function openMcpFromPlusMenu(): Promise<void> {
   await waitForVisible('composer.mcp.manage');
 }
 
+/**
+ * Opens the Thinking level list from an open `+` menu: a submenu beside the
+ * menu on web and Electron, in its place at phone width, a page of the sheet
+ * on native. Pressed, not hovered: hover only opens a submenu that goes
+ * beside the menu, and a click hovers on its way anyway. Anchored on the
+ * Medium row, which every model with a level offers (a toggle's "On").
+ */
+export async function openThinkingFromPlusMenu(): Promise<void> {
+  await tap('composer.plus.thinking');
+  await waitForVisible('composer.thinking.level.Medium');
+}
+
+/** Picks a thinking level from the composer's `+` menu; the menu closes. */
+export async function chooseThinkingLevel(level: 'None' | 'Low' | 'Medium' | 'High'): Promise<void> {
+  await openPlusMenu();
+  await openThinkingFromPlusMenu();
+  await tap(`composer.thinking.level.${level}`);
+  await waitForAbsent('composer.thinking.level.Medium');
+}
+
+/** What the `+` menu's Thinking row says is in force ("High", "Off", "On"). */
+export async function thinkingRowValue(): Promise<string> {
+  await openPlusMenu();
+  const value = await byTestId('composer.plus.thinking.value').getText();
+  await closePlusMenu();
+  return value.trim();
+}
+
+/** The mock's answer to a "thinking level" prompt: the thinking fields the
+ * request carried, as the backend received them. */
+export function mockThinking(fields: string): string {
+  return `[Mock] Thinking level: ${fields}.`;
+}
+
 /** Closes whatever the `+` opened. */
 export async function closePlusMenu(): Promise<void> {
   if (platform() === 'web' || platform() === 'electron') {
@@ -1119,11 +1153,11 @@ export async function deleteProvidersWithBaseUrl(baseUrl: string): Promise<void>
  * appear here. */
 export async function mockProviderRequests(
   apiBase: string,
-): Promise<{ path: string; authorization: string | null; model: string | null }[]> {
+): Promise<{ path: string; authorization: string | null; model: string | null; thinkingFields: string[] }[]> {
   const origin = new URL(apiBase).origin;
   const res = await fetch(`${origin}/__e2e/requests`);
   if (!res.ok) throw new Error(`[e2e] reading mock provider requests failed (${String(res.status)})`);
-  return (await res.json()) as { path: string; authorization: string | null; model: string | null }[];
+  return (await res.json()) as { path: string; authorization: string | null; model: string | null; thinkingFields: string[] }[];
 }
 
 /**

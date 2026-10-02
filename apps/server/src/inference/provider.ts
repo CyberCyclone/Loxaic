@@ -176,6 +176,14 @@ export interface StreamOptions {
    * reply is thrown away. A body field, never a message.
    */
   maxTokens?: number;
+  /**
+   * The thinking level as request-body fields (`thinkingFields` in
+   * thinking.ts): `reasoning_effort`, `chat_template_kwargs` or `reasoning`,
+   * already chosen for this model's backend and level, or empty for a model
+   * that takes none. Fixed for a run, and part of the prompt prefix on
+   * llama.cpp, which renders the level into the system prompt.
+   */
+  thinking?: Record<string, unknown>;
 }
 
 /**
@@ -291,6 +299,27 @@ const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock ba
  * prompt, so `/compact say nothing` reaches it: the guidance rides in the
  * compaction's instruction. */
 const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
+
+/** A prompt the mock answers by naming the thinking fields it was sent, so an
+ * e2e can prove the level picked in the `+` menu reached the request — not
+ * merely that the menu showed it. Keyed on the prompt, so no other reply
+ * changes. */
+const MOCK_THINKING_MATCH = /\bthinking level\b/i;
+
+/** `reasoning_effort=high`, `enable_thinking=true`, `reasoning.effort=low`, or
+ * `none sent` — the fields `thinkingFields` produced, flattened. */
+function describeThinkingFields(fields: Record<string, unknown> | undefined): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(fields ?? {})) {
+    if (v && typeof v === "object") {
+      for (const [ik, iv] of Object.entries(v as Record<string, unknown>)) {
+        const inner = k === "chat_template_kwargs" ? ik : `${k}.${ik}`;
+        parts.push(`${inner}=${String(iv)}`);
+      }
+    } else parts.push(`${k}=${String(v)}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "none sent";
+}
 
 /**
  * The mock's plan (#199), built from the prompt it answers so a revision is
@@ -527,6 +556,9 @@ async function* mockStream(
     }
   } else if (MOCK_EMPTY_MATCH.test(prompt)) {
     fullText = "";
+  } else if (MOCK_THINKING_MATCH.test(prompt) && !alreadyRanTools) {
+    fullText = `[Mock] Thinking level: ${describeThinkingFields(options.thinking)}.`;
+    yield* emit(fullText);
   } else if (noTools) {
     // Distinct wording so a spec can tell "the model wrapped up because it was
     // told to" from the generic post-tool summary below, which it would
@@ -686,6 +718,9 @@ async function* liveStream(
   // never gets a field it would refuse, whatever the caller believed.
   if (options.reportProgress && provider.preset === null) body.return_progress = true;
   if (options.maxTokens !== undefined) body.max_tokens = options.maxTokens;
+  // Merged last but never over the fields above: none of them is a thinking
+  // field, and thinkingFields only ever produces those.
+  for (const [k, v] of Object.entries(options.thinking ?? {})) if (!(k in body)) body[k] = v;
 
   // Not the global fetch: see transport.ts for the 300-second cut-off it has.
   const response = await inferenceFetch(`${provider.apiBase}/chat/completions`, {

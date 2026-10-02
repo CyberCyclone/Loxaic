@@ -1,6 +1,7 @@
 import type { FileDiff } from "./index";
 import type { TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
+import type { ThinkingLevel } from "./thinking";
 
 /** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
@@ -823,6 +824,10 @@ export type ClientMessage =
       /** The context stage chosen in Context settings before the conversation
        * existed; read only by the send that opens it. */
       context_stage?: number;
+      /** How hard to think, from the composer's `+` menu. Every send carries
+       * it; absent (an older client) means `DEFAULT_THINKING_LEVEL`. Ignored
+       * for a model that takes no level. */
+      thinking_level?: ThinkingLevel;
     }
   | {
       type: "agent.send";
@@ -840,6 +845,8 @@ export type ClientMessage =
       /** The context stage chosen in Context settings before the conversation
        * existed; read only by the send that opens it. */
       context_stage?: number;
+      /** As on `chat.send`. */
+      thinking_level?: ThinkingLevel;
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

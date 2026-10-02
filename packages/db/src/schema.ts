@@ -92,6 +92,11 @@ export const conversations = pgTable("conversations", {
    * byte-identical. Null means not looked for yet (scratch, chat, or a
    * conversation whose lookup has not succeeded). See agent/instructions.ts. */
   instructions: jsonb("instructions"),
+  /** The thinking level (`ThinkingLevel` in packages/types) its last run was
+   * sent with, recorded by the run. What a run nobody sent can follow — a
+   * compaction after a restart, which has no in-memory request shape — rather
+   * than the default. Null until a run names one. */
+  thinkingLevel: text("thinking_level"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   /**

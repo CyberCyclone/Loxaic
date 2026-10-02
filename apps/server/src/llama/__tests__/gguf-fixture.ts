@@ -44,7 +44,9 @@ export function buildGguf(kvs: [string, Value][], padTo = 0): Buffer {
         parts.push(u32(8), str(value.v));
         break;
       case "strs":
-        parts.push(u32(9), u32(8), u64(value.v.length), ...value.v.map(str));
+        parts.push(u32(9), u32(8), u64(value.v.length));
+        // A loop, not a spread: a real vocabulary is past the argument limit.
+        for (const v of value.v) parts.push(str(v));
         break;
       case "u32s":
         parts.push(u32(9), u32(4), u64(value.v.length), ...value.v.map(u32));

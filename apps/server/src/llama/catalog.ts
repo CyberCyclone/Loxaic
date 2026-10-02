@@ -1,5 +1,6 @@
 import { and, db, eq, sql } from "@loxaic/db";
 import { localModels } from "@loxaic/db/schema";
+import type { ModelThinking } from "@loxaic/types";
 import type { ModelShape } from "./shape.ts";
 
 /**
@@ -28,6 +29,10 @@ export interface LocalModelMeta {
    * before it was read (the boot backfill fills it); null when the file did
    * not describe one. */
   shape?: ModelShape | null;
+  /** The thinking control its chat template describes (inference/thinking.ts).
+   * Absent on rows downloaded before it was read (the boot backfill fills it);
+   * null when the template takes none, or the file has no template. */
+  thinking?: ModelThinking | null;
 }
 
 /** This instance's identity for the `host_id` column. Files are on one

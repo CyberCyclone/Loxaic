@@ -22,7 +22,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { loadedFirst, loadState } from '@/lib/modelOrder';
 import { DEFAULT_PROVIDER_ID } from '@loxaic/types';
-import { THINKING_LEVELS, type ModelInfo, type ThinkingLevel } from '@/lib/types';
+import type { ModelInfo } from '@/lib/types';
 
 interface ModelModalProps {
   open: boolean;
@@ -35,16 +35,6 @@ interface ModelModalProps {
   onSelect: (modelId: string) => void;
   /** Model references this user last sent with, newest first. */
   recentModels: string[];
-  thinkingLevel: ThinkingLevel;
-  onThinkingLevel: (level: ThinkingLevel) => void;
-  /**
-   * Omit the thinking selector, for a caller with nowhere to put the answer.
-   *
-   * A routine's runs are started by the server, which reads no per-conversation
-   * thinking preference — so the row would be four buttons that silently do
-   * nothing, which is worse than not offering them.
-   */
-  hideThinking?: boolean;
   onOpenSettings: () => void;
 }
 
@@ -83,9 +73,6 @@ export function ModelModal({
   selectedModel,
   onSelect,
   recentModels,
-  thinkingLevel,
-  onThinkingLevel,
-  hideThinking,
   onOpenSettings,
 }: ModelModalProps) {
   const [search, setSearch] = useState('');
@@ -291,33 +278,9 @@ export function ModelModal({
             )
           )}
         </ModalBody>
-        <ModalFooter className="justify-between border-t border-border">
-          <HStack space="xs" className="items-center">
-            {hideThinking ? null : (
-              <>
-                <Text size="2xs" className="text-muted-foreground">
-                  Thinking
-                </Text>
-                {THINKING_LEVELS.map((level) => (
-                  <Pressable
-                    key={level}
-                    testID={`models.thinking.${level}`}
-                    onPress={() => { onThinkingLevel(level); }}
-                    className={`rounded-md border px-2.5 py-1 ${
-                      thinkingLevel === level ? 'border-primary bg-primary' : 'border-border bg-background'
-                    }`}
-                  >
-                    <Text
-                      size="2xs"
-                      className={thinkingLevel === level ? 'text-primary-foreground' : 'text-muted-foreground'}
-                    >
-                      {level}
-                    </Text>
-                  </Pressable>
-                ))}
-              </>
-            )}
-          </HStack>
+        {/* The thinking level lives in the composer's + menu, beside the other
+            per-message choices: here it took the footer's whole width. */}
+        <ModalFooter className="justify-end border-t border-border">
           <Pressable
             testID="models.settings"
             onPress={() => {
