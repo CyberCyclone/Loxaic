@@ -82,11 +82,20 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
     setMenu(placeMenu(trigger, viewport()));
   };
 
-  const openSub = (kind: SubKind) => {
+  /**
+   * Opens a row's submenu. Hover only opens one that goes *beside* the menu:
+   * at phone width it takes the menu's place, and opening that on hover swapped
+   * the menu out from under the pointer, so the click that followed landed on
+   * whatever submenu row was now beneath it — choosing a level nobody picked.
+   */
+  const openSub = (kind: SubKind, how: 'press' | 'hover') => {
     cancelClose();
     const m = rectOf(menuRef.current);
     const row = rectOf((kind === 'mcp' ? mcpRowRef : thinkingRowRef).current);
-    if (m && row) setSub({ ...placeSubmenu(m, row, viewport(), kind === 'thinking' ? THINKING_WIDTH : SUBMENU_WIDTH), kind });
+    if (!m || !row) return;
+    const placed = placeSubmenu(m, row, viewport(), kind === 'thinking' ? THINKING_WIDTH : SUBMENU_WIDTH);
+    if (placed.mode === 'replace' && how === 'hover') return;
+    setSub({ ...placed, kind });
   };
 
   // A replaced menu is navigated, not hovered: leaving it must not close it.
@@ -110,10 +119,10 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
         setSub(null);
       } else if (e.key === 'ArrowRight' && !sub && document.activeElement === (mcpRowRef.current as unknown)) {
         e.preventDefault();
-        openSub('mcp');
+        openSub('mcp', 'press');
       } else if (e.key === 'ArrowRight' && !sub && document.activeElement === (thinkingRowRef.current as unknown)) {
         e.preventDefault();
-        openSub('thinking');
+        openSub('thinking', 'press');
       }
     };
     // Positions are computed once, from rects that a resize invalidates.
@@ -213,9 +222,9 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
                 disabled={thinking.capability === null}
                 trailing={thinking.capability ? ChevronRight : undefined}
                 active={sub?.kind === 'thinking'}
-                onPress={() => { openSub('thinking'); }}
+                onPress={() => { openSub('thinking', 'press'); }}
                 onHoverIn={() => {
-                  if (thinking.capability) openSub('thinking');
+                  if (thinking.capability) openSub('thinking', 'hover');
                   else if (sub) scheduleCloseSub();
                 }}
                 onHoverOut={scheduleCloseSub}
@@ -229,8 +238,8 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
                 label="MCP"
                 trailing={ChevronRight}
                 active={sub?.kind === 'mcp'}
-                onPress={() => { openSub('mcp'); }}
-                onHoverIn={() => { openSub('mcp'); }}
+                onPress={() => { openSub('mcp', 'press'); }}
+                onHoverIn={() => { openSub('mcp', 'hover'); }}
                 onHoverOut={scheduleCloseSub}
               />
             ) : null}
@@ -274,9 +283,13 @@ export function ComposerPlusMenu({ onFilesSelected, mcp, contextSettings = null,
               );
             })}
             {levelChangeRereads(thinking.capability) ? (
-              <Text size="2xs" className="px-3 pb-1 pt-1 text-muted-foreground">
-                Changing it makes the model re-read this conversation once.
-              </Text>
+              // A block around it: the web Text is an inline span, whose
+              // padding would hold for its first line only.
+              <div style={{ padding: '4px 12px' }}>
+                <Text size="2xs" className="text-muted-foreground">
+                  Changing it makes the model re-read this conversation once.
+                </Text>
+              </div>
             ) : null}
           </Panel>
         ) : null}

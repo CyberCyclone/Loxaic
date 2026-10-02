@@ -78,6 +78,9 @@ export interface RouterEvent {
   event: string;
   model: string;
   section?: Record<string, string>;
+  /** On a "chat" event: the thinking fields the request carried. */
+  reasoning_effort?: string | null;
+  chat_template_kwargs?: Record<string, unknown> | null;
 }
 
 export function routerEvents(): RouterEvent[] {
