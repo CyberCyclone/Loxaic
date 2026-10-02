@@ -17,6 +17,11 @@ export function llamaDir(): string {
   return configured ? path.resolve(configured) : path.resolve(process.cwd(), "llama");
 }
 
+/** The router's output, kept across restarts (router-log.ts). */
+export function routerLogPath(): string {
+  return path.join(llamaDir(), "logs", "router.log");
+}
+
 /** Downloaded weights, one directory per HuggingFace repo. */
 export function modelsDir(): string {
   return path.join(llamaDir(), "models");
