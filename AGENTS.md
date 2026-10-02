@@ -1475,6 +1475,49 @@ replies.
   list is a plain `.map` (a virtualized FlatList cannot nest in a ScrollView) and OpenRouter
   lists several hundred.
 
+### Thinking levels (the `+` menu's Thinking row)
+
+- **A model offers only the levels it is known to take, and a model with none is sent no
+  field** — OpenCode's design. `ModelInfo.thinking` (`packages/types/src/thinking.ts`) is
+  worked out when the model is listed (`inference/thinking.ts`):
+  - a host model, from its GGUF chat template (read past the tokenizer arrays by
+    `llama/gguf.ts`, stored in `meta.thinking`, backfilled at boot);
+  - an added llama.cpp provider, from `/props`' `chat_template`;
+  - OpenRouter, from `supported_parameters`;
+  - OpenAI, from an id table that goes stale by design.
+
+  A hosted API answers an unknown field with a 400, and a template rejects a word it does not
+  name: Qwen3.8's raises "Unexpected reasoning effort" for anything but xhigh/high/medium/low.
+- **It was display-only until this.** The chips sat in the model picker, a new chat dropped the
+  press (`if (activeId)`), and no request carried a level, so Qwen3.8's template used its
+  default, `xhigh`, and wrote "think carefully … validate key assumptions" into every system
+  prompt. One PR review on the beta spent 143 minutes generating, about 80% of it thinking.
+  **A send without `thinking_level` gets `DEFAULT_THINKING_LEVEL` (Medium)** — older clients and
+  routines included — never the template's own default.
+- **On llama.cpp the level is `reasoning_effort`**, which llama.cpp forwards into the template;
+  `"none"` is its own word for `enable_thinking = false`. A toggle-only template (Qwen3.5/3.6)
+  gets `chat_template_kwargs.enable_thinking: true` for "on". Confirmed on a real b11342 with
+  `/apply-template` against Flash-Next's template: nothing sent renders xhigh, `medium` adds no
+  line, `low` says low, `none` closes the think block. A level a model does not offer is clamped
+  to the nearest one it does, the cheaper of two (`effectiveThinkingLevel`), on the server and in
+  the menu alike.
+- **The level is part of the prompt prefix on llama.cpp**: it is rendered into the system
+  prompt. It is fixed per run, carried in `RequestShape`, and sent unchanged by the compaction
+  that reuses the run's front and by the context-stage warm-up; `prompt-prefix.test.ts` holds
+  both. Changing the level re-reads the conversation once, which the submenu says.
+- **Client:** a level chosen before a chat exists is held as pending, rides the first send, and
+  moves onto the real id at `promotion` (`useThinkingChoice`). `useStoredState` now pushes a
+  write to every component holding the same key; each had its own copy, so a default saved in
+  Settings did not reach an open chat until it remounted.
+- **On the web, hover never opens a submenu that would take the menu's place** (phone width):
+  it would leave a level row under the pointer for the next click. A press opens it.
+- **e2e:** the mock answers a prompt containing "thinking level" with the fields it received;
+  the fake router logs them on a `chat` event; the mock provider records `thinkingFields`.
+  Chrome will not size a window below 500 px, where the submenu still fits beside the menu, so
+  the phone-width case uses `browser.setViewport`. On Android, wait for an element *inside* a
+  closed modal with `waitForAbsent` (`models.search`, `settings.name`): the modal's root goes on
+  reporting `displayed`.
+
 ### Prompt caching (why the history window is anchored)
 
 - **llama.cpp and LM Studio cache the KV state of a prompt *prefix*.** A turn is cheap only
