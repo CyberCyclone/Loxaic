@@ -96,6 +96,14 @@ export const LOAD_SETTINGS: readonly LoadSettingSpec[] = [
     label: "Memory mapping",
     help: "mmap loads faster and shares pages; mlock keeps the model in RAM instead of letting it be swapped out.",
   },
+  {
+    // Rendered by `presetLines` (as `lazy-mode`, with `load-mode`), and only
+    // for a model that has a table (catalog `meta.lookupTable`).
+    key: "tablePlacement", flag: "lazy-mode", group: "offload", type: "enum",
+    values: ["auto", "ssd", "ram"],
+    label: "Lookup table",
+    help: "Where the per-layer lookup table lives. SSD reads its rows from the model file as they are needed, and the system keeps recent ones in spare RAM. RAM copies all of it into memory when the model loads. Measured on Qwen3.8-Flash-Next: the same speed either way.",
+  },
   // ── Performance
   {
     key: "threads", flag: "threads", group: "performance", type: "int", min: 1, max: 256,
@@ -215,6 +223,9 @@ export type LoadSettings = Partial<Record<string, LoadSettingValue>>;
 export interface ModelFacts {
   nLayers?: number | null;
   nCtxTrain?: number | null;
+  /** The model's per-layer lookup table: absent when not read yet, null when
+   * it has none. */
+  lookupTable?: { bytes: number } | null;
 }
 
 export class LoadSettingsError extends Error {
@@ -239,6 +250,18 @@ export function checkMtpSetting(settings: LoadSettings, source: "embedded" | "he
   }
   if (settings.mtpDraftMax !== undefined && settings.mtp !== true) {
     throw new LoadSettingsError("Tokens drafted only applies with multi-token prediction on");
+  }
+}
+
+/**
+ * Whether the lookup-table setting applies. Like `checkMtpSetting`, kept out
+ * of `normalizeLoadSettings`, which stored rows go through on their way to the
+ * preset: a setting this module would not render must not cost a model every
+ * other setting it has.
+ */
+export function checkTableSetting(settings: LoadSettings, facts: ModelFacts): void {
+  if (settings.tablePlacement !== undefined && settings.tablePlacement !== "auto" && facts.lookupTable === null) {
+    throw new LoadSettingsError("This model has no per-layer lookup table");
   }
 }
 
@@ -334,9 +357,22 @@ export function presetLines(
   const lines: string[] = [];
   for (const spec of LOAD_SETTINGS) {
     const value = valid[spec.key];
-    if (spec.group === "speculative" || spec.key === "vision") continue;
+    if (spec.group === "speculative" || spec.key === "vision" || spec.key === "tablePlacement") continue;
     if (value === undefined) continue;
     lines.push(`${spec.flag} = ${String(value)}`);
+  }
+  // The lookup table, measured against b11342 on Pheonix: `lazy-mode = on`
+  // reads its rows from the mapped file on demand (llama.cpp's own choice for
+  // a tensor over 4 GiB), `off` with `load-mode = none` copies it into the
+  // process's RAM at load. `off` alone leaves it mapped, which is the file
+  // again. A GPU is not offered: llama.cpp refuses the lookup there ("cannot
+  // run the operation") and the load aborts.
+  if (opts.facts?.lookupTable) {
+    if (valid.tablePlacement === "ssd") lines.push("lazy-mode = on");
+    if (valid.tablePlacement === "ram") {
+      lines.push("lazy-mode = off");
+      if (valid.loadMode === undefined) lines.push("load-mode = none");
+    }
   }
   if (valid.mtp === true && opts.mtp) {
     lines.push("spec-type = draft-mtp");

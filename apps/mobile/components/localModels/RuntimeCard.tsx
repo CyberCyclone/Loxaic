@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Cpu, RotateCcw, TriangleAlert } from 'lucide-react-native';
-import type { LlamaBackend, LocalModelsSettings, LocalRuntimeView } from '@loxaic/api-client';
+import type { LlamaBackend, LocalModel, LocalModelsSettings, LocalRuntimeView } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -12,7 +12,7 @@ import { Input, InputField } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
-import { cpuWarning, formatBytes, runtimeHeadline } from '@/lib/localModels';
+import { cpuWarning, formatBytes, restartHeadline, runtimeHeadline } from '@/lib/localModels';
 import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
@@ -28,6 +28,8 @@ const BACKENDS: { value: LlamaBackend; label: string }[] = [
 interface RuntimeCardProps {
   runtime: LocalRuntimeView;
   settings: LocalModelsSettings;
+  /** The installed models, for a restart's "loading X (1 of 2)". */
+  models: LocalModel[];
   onRestart: () => void;
   onSettings: (patch: {
     backend?: LlamaBackend;
@@ -47,12 +49,22 @@ interface RuntimeCardProps {
  * not. Nothing ever lands on the CPU without that confirmation, and a card
  * running on the CPU says so for as long as it does.
  */
-export function RuntimeCard({ runtime, settings, onRestart, onSettings }: RuntimeCardProps) {
+export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }: RuntimeCardProps) {
   const [advanced, setAdvanced] = useState(false);
   const [confirmCpu, setConfirmCpu] = useState(false);
   const [token, setToken] = useState('');
   const warning = cpuWarning(runtime);
-  const busy = runtime.state === 'installing' || runtime.state === 'starting' || runtime.state === 'not-installed';
+  const restarting = Boolean(runtime.restart);
+  const busy = restarting || runtime.state === 'installing' || runtime.state === 'starting' || runtime.state === 'not-installed';
+  // Ticks the elapsed time while a restart is under way, and only then.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!restarting) return;
+    setNow(Date.now());
+    const timer = setInterval(() => { setNow(Date.now()); }, 1000);
+    return () => { clearInterval(timer); };
+  }, [restarting]);
+  const headline = restartHeadline(runtime, models, now) ?? runtimeHeadline(runtime);
   const progress = runtime.installProgress;
   const pct = progress && progress.totalBytes > 0 ? Math.floor((progress.doneBytes / progress.totalBytes) * 100) : null;
   const pinnedBackend = settings.envOverrides.backend;
@@ -81,7 +93,7 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
           {busy ? <Spinner size="small" /> : <Icon as={Cpu} size="sm" className="shrink-0 text-muted-foreground" />}
           <VStack className="min-w-0 shrink">
             <Text testID="localModels.runtime.headline" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-              {runtimeHeadline(runtime)}
+              {headline}
             </Text>
             <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
               llama.cpp {runtime.tag}
@@ -98,8 +110,8 @@ export function RuntimeCard({ runtime, settings, onRestart, onSettings }: Runtim
             className="shrink-0 flex-row items-center gap-1 p-1"
           >
             <Icon as={RotateCcw} size="xs" className="text-muted-foreground" />
-            <Text size="xs" className="text-muted-foreground">
-              {runtime.state === 'error' || runtime.state === 'needs-gpu' ? 'Retry' : 'Restart'}
+            <Text testID={restarting ? 'localModels.runtime.restarting' : undefined} size="xs" className="text-muted-foreground">
+              {restarting ? 'Restarting…' : runtime.state === 'error' || runtime.state === 'needs-gpu' ? 'Retry' : 'Restart'}
             </Text>
           </Pressable>
         )}

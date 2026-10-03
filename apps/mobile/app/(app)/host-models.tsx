@@ -18,7 +18,7 @@ import { DiscoverPanel } from '@/components/localModels/DiscoverPanel';
 import { RepoDetailsModal } from '@/components/localModels/RepoDetailsModal';
 import { ModelSettingsModal } from '@/components/localModels/ModelSettingsModal';
 import { useLocalModels } from '@/hooks/useLocalModels';
-import { formatBytes } from '@/lib/localModels';
+import { formatBytes, loadedFirst } from '@/lib/localModels';
 import { useSession } from '@/lib/session';
 
 type Tab = 'installed' | 'discover';
@@ -75,6 +75,7 @@ export default function LocalModelsScreen() {
         <RuntimeCard
           runtime={view.runtime}
           settings={view.settings}
+          models={view.models}
           onRestart={() => { void lm.restart(); }}
           onSettings={lm.updateSettings}
         />
@@ -117,7 +118,7 @@ export default function LocalModelsScreen() {
     return (
       <FlatList
         testID="localModels.list"
-        data={view.models}
+        data={loadedFirst(view.models)}
         keyExtractor={(m) => m.id}
         contentContainerStyle={{ padding: 12, gap: 8 }}
         ListHeaderComponent={
@@ -147,6 +148,8 @@ export default function LocalModelsScreen() {
             model={item}
             onToggle={(enabled) => { void lm.update(item.id, { enabled }); }}
             onPin={(pinned) => { void lm.update(item.id, { pinned }); }}
+            onLoad={() => { void lm.load(item.id); }}
+            onUnload={() => { void lm.unload(item.id); }}
             onPause={() => { void lm.pause(item.id); }}
             onResume={() => { void lm.resume(item.id); }}
             onCancel={() => { setCancelling(item); }}
@@ -180,6 +183,7 @@ export default function LocalModelsScreen() {
         onDownloadHead={(id, path) => { void lm.downloadHead(id, path); }}
         onRemoveHead={(id) => { void lm.removeHead(id); }}
         specs={lm.view?.settingSpecs ?? []}
+        hostMemory={lm.view?.runtime.hostMemory}
         onClose={() => { setEditing(null); }}
         onSave={(id, patch) => lm.update(id, patch)}
       />

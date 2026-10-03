@@ -39,15 +39,20 @@ import {
 } from "../llama/context-stages.ts";
 import { bestFit, type FitLabel } from "../llama/fit.ts";
 import { HfError, repoDetails, repoFiles, searchModels, type HfSort } from "../llama/hf.ts";
-import { checkMtpSetting, LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
+import { checkMtpSetting, checkTableSetting, LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
 import { refreshMemory } from "../llama/memory.ts";
-import { pinErrorFor } from "../llama/room.ts";
+import { describePlacement, measuredFrom, type Placement } from "../llama/placement.ts";
+import { measuredForPort } from "../llama/residency.ts";
+import { loadErrorFor, loadRequested, NoRoomError, pinErrorFor, requestLoad, requestUnload, UnloadRefusedError } from "../llama/room.ts";
 import {
   ensureHardwareDetected,
   ensureRuntime,
   modelBusy,
+  rawPlacementFor,
   refreshRuntimeState,
+  reloadPendingFor,
   routerModelStatuses,
+  routerPid,
   runtimeView,
   syncPreset,
   unloadModel,
@@ -66,7 +71,27 @@ import { getLocalModelsSettings, LocalModelsSettingsError, updateLocalModelsSett
  * (or the query, for DELETE) rather than the path.
  */
 
-function modelView(row: LocalModelRow, loaded: Map<string, { value: string; failed: boolean }>) {
+/**
+ * Where each loaded model's memory is: llama.cpp's allocation log, and on
+ * Linux the process's own VRAM and GTT (placement.ts, residency.ts).
+ */
+async function placementsFor(rows: LocalModelRow[], statuses: Map<string, { value: string; failed: boolean }>) {
+  const out = new Map<string, Placement>();
+  for (const row of rows) {
+    if (statuses.get(row.id)?.value !== "loaded") continue;
+    const raw = rawPlacementFor(row.id);
+    if (!raw || raw.weights.length === 0) continue;
+    const drm = await measuredForPort(routerPid(), raw.port).catch(() => null);
+    out.set(row.id, describePlacement(raw, rowMeta(row).lookupTable?.bytes ?? null, drm ? measuredFrom(raw, drm) : null));
+  }
+  return out;
+}
+
+function modelView(
+  row: LocalModelRow,
+  loaded: Map<string, { value: string; failed: boolean }>,
+  placements = new Map<string, Placement>(),
+) {
   const meta = rowMeta(row);
   const status = loaded.get(row.id);
   const settings = effectiveSettings(row);
@@ -110,8 +135,17 @@ function modelView(row: LocalModelRow, loaded: Map<string, { value: string; fail
     fit: fitFor(row.sizeBytes, meta, settings, row.id, mtpFitInput(row, settings)),
     /** The router's view: `loaded`, `loading`, `unloaded`, `sleeping`, or null
      * when it cannot be asked. */
-    runtimeStatus: status?.value ?? null,
+    runtimeStatus: loadRequested(row.id) && status?.value !== "loaded" ? "loading" : (status?.value ?? null),
     loadFailed: status?.failed ?? false,
+    /** Why a load an admin asked for, or a reload after a settings change,
+     * did not happen — the same sentence a chat would get. */
+    loadError: loadErrorFor(row.id),
+    /** Saved settings waiting for a reply to end before the model reloads
+     * with them. */
+    reloadPending: reloadPendingFor(row.id),
+    /** Where its memory is while it is loaded, or null (not loaded, an older
+     * runtime, or attach mode, whose log this server never sees). */
+    placement: placements.get(row.id) ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -122,20 +156,23 @@ async function fullView() {
   await refreshMemory();
   const rows = await listLocalModelRows();
   const statuses = await routerModelStatuses();
+  const placements = await placementsFor(rows, statuses);
   return {
     runtime: runtimeView(),
     settings: getLocalModelsSettings(),
-    models: rows.map((r) => modelView(r, statuses)),
+    models: rows.map((r) => modelView(r, statuses, placements)),
     freeDiskBytes: await freeDiskBytes(),
     settingSpecs: LOAD_SETTINGS,
   };
 }
 
 /** Anything that changes which models are served or how. */
-async function afterModelWrite(): Promise<{ deferred: boolean }> {
-  const result = await syncPreset().catch((e: unknown) => {
+async function afterModelWrite(): Promise<{ deferred: boolean; reloading: string[] }> {
+  // A loaded model whose settings changed is unloaded by the router's reload
+  // and loaded again here, so saving means "reload it with these".
+  const result = await syncPreset({ restoreLoaded: true }).catch((e: unknown) => {
     console.error(`[llama] preset sync failed: ${e instanceof Error ? e.message : String(e)}`);
-    return { deferred: false };
+    return { deferred: false, reloading: [] as string[] };
   });
   invalidateBackendModels(DEFAULT_PROVIDER_ID);
   kickScheduler(DEFAULT_PROVIDER_ID);
@@ -356,6 +393,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
       if (body.loadSettings !== undefined) {
         const settings = normalizeLoadSettings(body.loadSettings, rowMeta(row));
         checkMtpSetting(settings, mtpSource(row));
+        checkTableSetting(settings, rowMeta(row));
         patch.loadSettings = settings;
       }
       if (body.contextStages !== undefined || body.loadSettings !== undefined) {
@@ -374,9 +412,48 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     if (Object.keys(patch).length === 0) return reply.code(400).send({ error: "nothing to update" });
     const updated = await updateLocalModelRow(id, patch);
     if (!updated) return reply.code(404).send({ error: "Model not found" });
-    const { deferred } = await afterModelWrite();
+    const { deferred, reloading } = await afterModelWrite();
     const statuses = await routerModelStatuses();
-    return { ...modelView(updated, statuses), appliesOnNextLoad: deferred };
+    return { ...modelView(updated, statuses), appliesOnNextLoad: deferred, reloading: reloading.includes(id) };
+  });
+
+  /**
+   * Load a model now, making room the way a chat would. Answers at once with
+   * the model `loading`; a load that fails later says why in `loadError`.
+   * Refused (409) when pinned models leave no room.
+   */
+  app.post("/v1/admin/local-models/model/load", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const id = idFrom((request.body as { id?: unknown } | undefined)?.id);
+    if (!id) return reply.code(400).send({ error: "id is required" });
+    const row = await getLocalModelRow(id);
+    if (!row) return reply.code(404).send({ error: "Model not found" });
+    if (row.status !== "ready" || !row.enabled) {
+      return reply.code(409).send({ error: "Only a model that is enabled for everyone can be loaded" });
+    }
+    try {
+      await requestLoad(id);
+    } catch (err) {
+      return reply.code(409).send({ error: err instanceof NoRoomError ? err.message : err instanceof Error ? err.message : String(err) });
+    }
+    return reply.code(202).send(modelView(row, await routerModelStatuses()));
+  });
+
+  /** Unload a model now. Refused (409) while it is pinned, loading, or
+   * answering someone. */
+  app.post("/v1/admin/local-models/model/unload", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const id = idFrom((request.body as { id?: unknown } | undefined)?.id);
+    if (!id) return reply.code(400).send({ error: "id is required" });
+    const row = await getLocalModelRow(id);
+    if (!row) return reply.code(404).send({ error: "Model not found" });
+    try {
+      await requestUnload(id, row.pinned);
+    } catch (err) {
+      if (err instanceof UnloadRefusedError) return reply.code(409).send({ error: err.message });
+      throw err;
+    }
+    return modelView(row, await routerModelStatuses());
   });
 
   /** Fit and memory for settings the admin has not saved yet — the settings
