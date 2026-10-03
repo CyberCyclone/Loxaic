@@ -1105,7 +1105,8 @@ replies.
     model had been offloaded to the CPU. A three-hour run on the beta could not be diagnosed
     after the fact for exactly that reason.
   - Placement on Pheonix, for the record: all 49 layers of Flash-Next on the GPUs, 27.5 GB of
-    per-layer token embeddings in host RAM by design, and 4 graph splits.
+    per-layer token embeddings read from the model file on demand, and 4 graph splits (5 on four
+    cards). The admin screen now shows this for every loaded model (see "Host model state").
 - **The CPU is never chosen automatically.** `auto` resolves to Metal/CUDA/Vulkan or to nothing
   (`needs-gpu`), and a GPU build whose `--list-devices` finds no GPU is an *error*, not a
   fallback — llama.cpp would otherwise quietly run everything on the CPU. CPU is an admin's
@@ -1544,6 +1545,98 @@ replies.
   - **A head download races a slow lane.** The iOS lane finished the mock head before Save, so the
     "nothing written while pending" check reads the preset *before* the head's status and asserts
     only when the head was still pending. Unit tests hold the rule itself.
+
+### Host model state: loading, unloading, reloading, restarting, and where the memory is
+
+- **A restart is a phase, not a state** (`RuntimeView.restart`, router.ts). It is set the
+  moment a restart is asked for (or the router crashes) and runs `stopping` → `starting` →
+  `loading-pinned`, cleared once the pinned models are back or the attempt ends short of
+  `running`. `state` keeps its old values, so an older client is unaffected.
+  - **Why:** a restart passes through `starting` for a second or two, which a 15-second poll
+    mostly never saw, so pressing Restart looked like it did nothing.
+  - The client also shows "Restarting…" from the press (`useLocalModels.restart`), since the
+    route answers after 100 ms.
+  - The card names the pinned model it is waiting on, from the list's own statuses
+    (`restartHeadline`).
+  - **Only pinned models come back after a restart.** A restart is often how an admin gets out
+    of a bad load, so restoring everything that was loaded would undo it.
+- **Load and Unload are admin routes** (`POST …/model/load` and `…/model/unload`, room.ts
+  `requestLoad` / `requestUnload`).
+  - **Load** answers 202 at once. It refuses up front with `NoRoomError`'s sentence only when
+    pinned models are in the way, and the load runs in the background under the room lock. A
+    failure is kept for `loadError`, in the same words a chat gets (`loadFailureMessage`).
+  - **The list says `loading` from the press** (`loadRequested`), because the router is only
+    asked once the lock is free.
+  - **Unload is refused (409) while the model is pinned**, since it would only be loaded again.
+    Turning Keep loaded off is the way, and the row says so. It is also refused while the model
+    is loading or answering someone (`trackRequest`'s count).
+- **Saving a loaded model's settings reloads it** (`syncPreset({ restoreLoaded: true })`).
+  - **How:** the router's `?reload=1` unloads a loaded model whose section changed. The ids it
+    is about to unload are kept, and `reloadNow` loads them back (`restoreModels`, unpinned only;
+    pinned ones come back through `loadPinnedModels`).
+  - **Before:** an unpinned model just sat unloaded until someone happened to ask it, which read
+    as "my settings did nothing".
+  - **The deferred path keeps the set** until its reload runs, and `reloadPending` tells the row.
+  - **A model disabled by the same write is not restored:** only ids still in the preset are
+    kept.
+  - **Only an admin's write asks for this.** A context-stage switch loads for itself under its
+    own pill, and a restart clears the set.
+- **Where a model's memory went comes from llama.cpp's own allocation log** (placement.ts), not
+  from our estimates.
+  - **Where the lines come from:** the router forwards each child's lines as `[port] …`, and
+    `foldPlacementLine` folds them as they arrive (`recordLog` now carries a partial line across
+    chunks). The lines are `<buffer> model buffer size`, `KV`/`RS`/`compute`/`output buffer
+    size`, `tensor … lazy read enabled`, `offloaded N/M layers`, and `graph: … splits = N`.
+  - **It needs `log-verbosity = 4`:** at the default these libllama info lines are not printed
+    at all (checked on b11342). The preset's globals ask for it in managed mode only
+    (`placementLog`).
+  - **The cost:** about 280 lines a load (the metadata dump) and about 40 a request, never a
+    prompt's text (checked by grepping a test prompt). `LOG_LINES` is 2000 so a load failure's
+    cause survives.
+  - **Placement is never read back from the tail:** one busy model scrolls past another's load.
+- **On Linux the process is measured too** (residency.ts).
+  - **What:** `/proc/<child>/fdinfo`'s `drm-memory-vram` and `drm-memory-gtt`, once per DRM
+    client (keyed by pdev and client id), for the router child started with `--port <P>`.
+  - **Spill:** GTT beyond the load's own `*_Host` buffers (plus 256 MiB slack; about 20 MiB is
+    normal) is memory the driver evicted from VRAM. That is the cause of Pheonix's 8.5 tok/s with
+    two quants loaded, and the row says to unload others and reload this one.
+  - **Off Linux** (Metal, attach mode) the log figures stand alone. Metal's GPU is labelled
+    "unified memory", never VRAM.
+- **The splits warning:** more than `2 × GPUs + 1` graph pieces means the CPU works between the
+  GPUs on every token. That was #263: automatic GPU layers gave 17 splits on Flash-Next, and
+  "All on GPU" gave 5.
+- **The per-layer lookup table** (`per_layer_token_embd.weight`, Flash-Next's 27.5 GiB,
+  Gemma 4 E4B's 1.8 GiB) is found by `findTensor` in whichever part of a split file holds it,
+  and stored as `meta.lookupTable` (backfilled at boot).
+  - **Its size** is the gap to the next tensor's data offset, so no quant block-size table is
+    needed. It matches llama.cpp's own figure exactly.
+  - **The setting** is `tablePlacement` (`auto | ssd | ram`):
+    - `ssd` writes `lazy-mode = on`;
+    - `ram` writes `lazy-mode = off`, plus `load-mode = none` unless the admin set a memory
+      mapping. With `off` alone the table stays mapped, which is the file again.
+    - `checkTableSetting` refuses it for a model without a table, outside
+      `normalizeLoadSettings`, the MTP rule.
+  - **Measured on Pheonix** (IQ4_XS, four V620s, b11342):
+
+    | Where the table is | Speed | What it costs |
+    |---|---|---|
+    | auto or `on` (on SSD) | 29.6–30.1 tok/s | about 30 MiB of the file in the process |
+    | `off` + `load-mode none` (in RAM) | 30.1 tok/s | 28 GB of anonymous RSS |
+
+    The same speed either way, so the choice is RAM against SSD reads.
+  - **VRAM is not offered.** `lazy-mode off` + `-ot per_layer_token_embd\.weight=Vulkan3`
+    aborts the load with "tensor … in a buffer (Vulkan3) that cannot run the operation". The
+    same override moved Gemma's table on Metal, but that is unified memory anyway. The sheet
+    shows VRAM disabled, with that reason.
+  - **How the tier is told apart:** a lazy table is its own `CPU_Mapped` buffer of the lazy
+    line's size. A copied one is a host buffer of `meta.lookupTable`'s size. Without the size
+    nothing is called a table.
+- **The fake router** accepts `log-verbosity` and `lazy-mode`. At verbosity 4 it prints the real
+  allocation lines for its devices; a model file named `Table` gets a 2 MiB table (lazy, or a
+  `CPU` buffer with `lazy-mode off` + `load-mode none`), and one named `Splitty` on automatic GPU
+  layers gets 17 splits. It also prints the router's `stopping model instance` line on every
+  unload, which the tracker needs. The mock HuggingFace's "Tabled" repo is both.
+  `host-model-state.test.ts` and `host-model-state.spec.ts` drive all of it.
 
 ### The picker's "recently used"
 

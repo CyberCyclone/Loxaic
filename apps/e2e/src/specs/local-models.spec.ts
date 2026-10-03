@@ -606,7 +606,9 @@ describe('local models', () => {
     const loaded = lastIndex('load', secondRouterName);
     expect(unloaded).toBeGreaterThanOrEqual(0);
     expect(unloaded).toBeLessThan(loaded);
-    expect(events.some((e) => e.event === 'load-failed')).toBe(false);
+    // These two models only: the router log is the whole run's, and another
+    // spec (mtp.spec.ts) fails a load on purpose.
+    expect(events.some((e) => e.event === 'load-failed' && (e.model === routerName || e.model === secondRouterName))).toBe(false);
 
     // The picker's badge moved with it.
     await tap('composer.model');
@@ -622,7 +624,7 @@ describe('local models', () => {
     await waitForVisible(`localModels.pinned.${downloadId}`);
     await waitForRuntimeStatus(downloadId, 'loaded');
     await waitForRuntimeStatus(secondId, 'unloaded');
-    await waitForFreshText(`localModels.status.${downloadId}`, 'loaded');
+    await waitForFreshText(`localModels.state.${downloadId}`, 'Loaded');
     await shot('local-models-pinned-loaded');
 
     // Its quant in the HuggingFace sheet counts its own memory as its own:

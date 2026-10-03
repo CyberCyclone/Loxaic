@@ -21,6 +21,12 @@ import { modelFilePath, presetPath } from "./paths.ts";
 export interface PresetGlobals {
   /** `--device` for every model: device names, or `none` for CPU only. */
   devices: string[] | "none" | null;
+  /** Have each model log where it put its memory (placement.ts). llama.cpp
+   * prints its allocation lines only at verbosity 4; the cost is the model's
+   * metadata dump at each load (a few hundred lines) and some forty lines a
+   * request, never a prompt's text. Off where nothing reads the log (attach
+   * mode: the sidecar's output stays in Docker's). */
+  placementLog?: boolean;
 }
 
 /** A value that can sit on the right of `key = value` without breaking the
@@ -111,6 +117,7 @@ export function renderPreset(rows: LocalModelRow[], globals: PresetGlobals): str
     // Native OpenAI tool calling needs the model's own chat template.
     "jinja = true",
   ];
+  if (globals.placementLog) out.push("log-verbosity = 4");
   if (globals.devices === "none") out.push("device = none", "n-gpu-layers = 0");
   else if (globals.devices && globals.devices.length > 0) out.push(`device = ${globals.devices.join(",")}`);
   for (const row of rows) {

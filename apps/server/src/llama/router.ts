@@ -16,6 +16,7 @@ import {
   type RuntimeDevice,
 } from "./hardware.ts";
 import { presetPath, routerLogPath } from "./paths.ts";
+import { foldPlacementLine, newPlacementTracker, type RawPlacement } from "./placement.ts";
 import { openRouterLog, type RouterLog } from "./router-log.ts";
 import {
   modelIdFromRouterName,
@@ -84,6 +85,23 @@ export interface RuntimeView {
   cpuActive: boolean;
   /** The last lines llama.cpp wrote that look like errors, newest last. */
   recentErrors: string[];
+  /** A restart under way, from the moment it is asked for (or the router
+   * crashed) until the pinned models are back, or null. `state` alone cannot
+   * say this: a restart passes through `starting` for a second or two, which
+   * a 15-second poll — or a 1-second one — mostly never sees. */
+  restart: RestartView | null;
+  /** This host's RAM, for settings that put part of a model there. */
+  hostMemory: { totalBytes: number; freeBytes: number };
+}
+
+export type RestartPhase = "stopping" | "starting" | "loading-pinned";
+
+export interface RestartView {
+  phase: RestartPhase;
+  /** Why: an admin pressed Restart (or changed the backend or devices), or
+   * the router stopped on its own and is being started again. */
+  cause: "requested" | "crashed";
+  startedAt: string;
 }
 
 interface State {
@@ -115,6 +133,11 @@ const st: State = {
   apiKey: null,
   stopping: false,
 };
+
+/** The restart under way (see `RuntimeView.restart`). Replaced, never
+ * mutated by a later restart, so a pass that finishes late clears only its
+ * own. */
+let restart: { phase: RestartPhase; cause: RestartView["cause"]; startedAt: number } | null = null;
 
 /** Attach mode's last health answer, refreshed on a timer and on demand. */
 let attachHealthy: boolean | null = null;
@@ -154,8 +177,10 @@ let attachTimer: NodeJS.Timeout | null = null;
 // ── Log capture ─────────────────────────────────────────────────────────────
 
 /** Enough for a model that crashed while loading: its error line comes just
- * before a backtrace of thirty-odd lines, and other models keep logging. */
-const LOG_LINES = 400;
+ * before a backtrace of thirty-odd lines, and other models keep logging. A
+ * model's load writes a few hundred lines at the verbosity placement needs
+ * (preset.ts `placementLog`), and each request some forty. */
+const LOG_LINES = 2000;
 const logTail: string[] = [];
 /** Everything the router prints, on disk as well (router-log.ts): the tail
  * above is what this process explains failures from, the file is what a person
@@ -163,13 +188,33 @@ const logTail: string[] = [];
  * a router writes nothing. */
 let routerLog: RouterLog | null = null;
 
+/** Where each loaded model's memory went, folded from the log as it arrives
+ * (placement.ts). */
+const placements = newPlacementTracker();
+/** The end of the last chunk when it stopped mid-line: a pipe hands output
+ * over in arbitrary pieces, and a buffer line cut in two parses as neither. */
+let partialLine = "";
+
 function recordLog(chunk: string): void {
   routerLog?.write(chunk);
-  for (const line of chunk.split("\n")) {
+  const lines = (partialLine + chunk).split("\n");
+  partialLine = (lines.pop() ?? "").slice(-64 * 1024);
+  for (const line of lines) {
     if (!line.trim()) continue;
     logTail.push(line);
     if (logTail.length > LOG_LINES) logTail.shift();
+    foldPlacementLine(placements, line);
   }
+}
+
+/** What the newest load of host model `id` allocated, while it is loaded. */
+export function rawPlacementFor(id: string): RawPlacement | null {
+  return placements.byName.get(routerModelName(id)) ?? null;
+}
+
+/** The router's pid, whose children serve the models. */
+export function routerPid(): number | null {
+  return getLlamaMode() === "managed" ? (st.child?.pid ?? null) : null;
 }
 
 /** llama.cpp marks errors with ` E ` after its timestamp, in the router's own
@@ -408,9 +453,21 @@ let lastSections = new Map<string, string>();
 let reloadPending = false;
 let reloadTimer: NodeJS.Timeout | null = null;
 let lastReloadError: string | null = null;
+/** Loaded models whose sections an admin's write changed, to be loaded again
+ * once the router has re-read the preset (which unloads them). Held across a
+ * deferred reload — that is when `reloadPendingFor` says so. */
+const restoreAfterReload = new Set<string>();
+
+/** A loaded model's new settings are waiting for a run to end. */
+export function reloadPendingFor(id: string): boolean {
+  return reloadPending && restoreAfterReload.has(id);
+}
 
 function presetGlobals(): PresetGlobals {
-  return { devices: st.activeDevices === "none" ? "none" : st.activeDevices.length > 0 ? st.activeDevices : null };
+  return {
+    devices: st.activeDevices === "none" ? "none" : st.activeDevices.length > 0 ? st.activeDevices : null,
+    placementLog: getLlamaMode() === "managed",
+  };
 }
 
 /** How busy the built-in provider is. Imported lazily: the scheduler reaches
@@ -442,14 +499,24 @@ async function reloadNow(): Promise<void> {
   // A reload unloads every loaded model whose section changed, a pinned one
   // included, and a newly pinned model has only just been written into the
   // preset: either way, pinned models are loaded again from here.
-  keepPinnedLoaded();
+  void keepPinnedLoaded();
+  // So are the unpinned ones that were loaded when an admin changed them: an
+  // admin who saves a loaded model's settings expects it to come back with
+  // them, not to wait for whoever happens to ask it next.
+  if (restoreAfterReload.size > 0) {
+    const ids = [...restoreAfterReload];
+    restoreAfterReload.clear();
+    void import("./room.ts")
+      .then((m) => { m.restoreModels(ids); })
+      .catch((e: unknown) => { console.error(`[llama] could not reload models: ${e instanceof Error ? e.message : String(e)}`); });
+  }
 }
 
 /** Load every pinned model that is not loaded. Imported lazily: room.ts
  * reaches this module for everything it does. Never awaited by the caller — a
  * load can take minutes, and nothing that triggered it should wait on it. */
-export function keepPinnedLoaded(): void {
-  void import("./room.ts")
+export function keepPinnedLoaded(): Promise<void> {
+  return import("./room.ts")
     .then((m) => m.loadPinnedModels())
     .catch((e: unknown) => { console.error(`[llama] could not load pinned models: ${e instanceof Error ? e.message : String(e)}`); });
 }
@@ -475,6 +542,15 @@ export interface SyncResult {
    * the router re-reads its settings once that run is done. Reloading now
    * would unload the model under the run. */
   deferred: boolean;
+  /** Loaded models the reload unloads (or will, when deferred) and that are
+   * being loaded again with their new settings — `restoreLoaded` only. */
+  reloading: string[];
+}
+
+export interface SyncOptions {
+  /** Load models again that were loaded when their sections changed. An
+   * admin's write wants this; a context-stage switch loads for itself. */
+  restoreLoaded?: boolean;
 }
 
 /**
@@ -490,15 +566,16 @@ export interface SyncResult {
  * preset would otherwise race each other's view of `lastSections`. */
 let presetChain: Promise<unknown> = Promise.resolve();
 
-export function syncPreset(): Promise<SyncResult> {
-  const next = presetChain.then(syncPresetNow, syncPresetNow);
+export function syncPreset(opts: SyncOptions = {}): Promise<SyncResult> {
+  const run = () => syncPresetNow(opts);
+  const next = presetChain.then(run, run);
   presetChain = next.catch(() => undefined);
   return next;
 }
 
-async function syncPresetNow(): Promise<SyncResult> {
+async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
   const mode = getLlamaMode();
-  if (mode === "off") return { deferred: false };
+  if (mode === "off") return { deferred: false, reloading: [] };
   const rows = await listServableModels();
   const globals = presetGlobals();
   const sections = sectionsById(rows, globals);
@@ -511,21 +588,28 @@ async function syncPresetNow(): Promise<SyncResult> {
     ...[...lastSections.keys()].filter((id) => !sections.has(id)),
   ];
   lastSections = sections;
-  if (!routerEndpoint()) return { deferred: false };
+  if (!routerEndpoint()) return { deferred: false, reloading: [] };
 
+  let reloading: string[] = [];
   if (changed.length > 0) {
     const statuses = await routerModelStatuses();
-    const touchesLoaded = changed.some((id) => {
+    const loaded = changed.filter((id) => {
       const s = statuses.get(id)?.value;
       return s === "loaded" || s === "loading";
     });
-    if (touchesLoaded && (await builtinRunsActive()) > 0) {
+    // Only a model still in the preset comes back: one disabled or deleted by
+    // this write is meant to stay unloaded.
+    if (opts.restoreLoaded) {
+      reloading = loaded.filter((id) => sections.has(id));
+      for (const id of reloading) restoreAfterReload.add(id);
+    }
+    if (loaded.length > 0 && (await builtinRunsActive()) > 0) {
       scheduleDeferredReload();
-      return { deferred: true };
+      return { deferred: true, reloading };
     }
   }
   await reloadNow();
-  return { deferred: false };
+  return { deferred: false, reloading };
 }
 
 // ── Process management (managed mode) ───────────────────────────────────────
@@ -758,6 +842,9 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   child.once("exit", (code, signal) => {
     live.delete(child);
     if (st.child !== child) return;
+    // Its models went with it.
+    placements.ports.clear();
+    placements.byName.clear();
     st.child = null;
     st.port = null;
     st.apiKey = null;
@@ -766,6 +853,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     console.error(`[llama] router stopped: ${why}`);
     fastFails = Date.now() - startedAt < FAST_FAIL_MS ? fastFails + 1 : 1;
     if (fastFails >= MAX_FAST_FAILS) {
+      restart = null;
       st.state = "error";
       st.reason = `${why} It failed ${String(fastFails)} times in a row, so it will not be restarted automatically — fix the cause and press Restart.`;
       return;
@@ -773,10 +861,12 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** (fastFails - 1));
     st.state = "starting";
     st.reason = `${why} Restarting in ${String(Math.round(delay / 1000))} s.`;
+    restart = { phase: "starting", cause: "crashed", startedAt: Date.now() };
     restartTimer = setTimeout(() => {
       restartTimer = null;
       if (st.stopping || !st.runtime) return;
       void spawnRouter(st.runtime).catch((e: unknown) => {
+        restart = null;
         st.state = "error";
         st.reason = e instanceof Error ? e.message : String(e);
       });
@@ -791,7 +881,11 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     if (st.child === child) {
       st.state = "running";
       st.reason = null;
-      keepPinnedLoaded();
+      const pass = restart;
+      if (pass) pass.phase = "loading-pinned";
+      void keepPinnedLoaded().finally(() => {
+        if (restart === pass) restart = null;
+      });
       // Only now is it safe to delete older builds: this one demonstrably runs.
       if (!binOverride()) void pruneRuntimes(runtime).catch(() => undefined);
     }
@@ -851,6 +945,7 @@ export function ensureRuntime(opts: { restart?: boolean } = {}): Promise<void> {
     // and straight back to Automatic left the CPU running with Automatic
     // selected, because the headline says "CPU" as soon as the attempt starts
     // and the second switch landed while it was still going.
+    if (getLlamaMode() === "managed") restart = { phase: "stopping", cause: "requested", startedAt: Date.now() };
     queuedRestart ??= ensuring
       .catch(() => undefined)
       .then(() => {
@@ -859,7 +954,19 @@ export function ensureRuntime(opts: { restart?: boolean } = {}): Promise<void> {
       });
     return queuedRestart;
   }
-  ensuring = doEnsure(opts).finally(() => { ensuring = null; });
+  if (opts.restart && getLlamaMode() === "managed") {
+    // A queued restart keeps the time it was asked for.
+    const since = restart?.cause === "requested" ? restart.startedAt : Date.now();
+    restart = { phase: "stopping", cause: "requested", startedAt: since };
+  }
+  const pass = restart;
+  ensuring = doEnsure(opts).finally(() => {
+    ensuring = null;
+    // Anything short of a running router ends the restart here: the state and
+    // its reason say what happened. A running one ends it once its pinned
+    // models are back (spawnRouter).
+    if (restart === pass && st.state !== "running") restart = null;
+  });
   return ensuring;
 }
 
@@ -869,6 +976,7 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   if (opts.restart) {
     fastFails = 0;
     await stopChild();
+    if (restart) restart.phase = "starting";
     // A deliberate Restart re-detects: the error it may be answering says
     // "install the Vulkan loader and restart the runtime", and a cached
     // detection would render the identical error back.
@@ -937,6 +1045,11 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   }
 
   lastSections = new Map();
+  // A fresh router has nothing loaded to restore; only pinned models come
+  // back after a restart (a restart is often how an admin gets out of a bad
+  // load).
+  restoreAfterReload.clear();
+  reloadPending = false;
   await syncPreset();
   await reapStaleRouter();
   await spawnRouter(runtime);
@@ -1046,6 +1159,10 @@ export function runtimeView(): RuntimeView {
     gpuAvailable: mode === "attach" && attachDevicesKnown ? st.devices.length > 0 : gpuAvailable,
     cpuActive: st.flavour === "cpu" || (mode === "attach" && attachDevicesKnown && st.devices.length === 0),
     recentErrors: recentErrors(),
+    // Node reads MemAvailable on Linux: memory the kernel would hand over,
+    // page cache included, not just what is idle.
+    hostMemory: { totalBytes: os.totalmem(), freeBytes: os.freemem() },
+    restart: mode === "managed" && restart ? { phase: restart.phase, cause: restart.cause, startedAt: new Date(restart.startedAt).toISOString() } : null,
   };
 }
 

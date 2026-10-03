@@ -415,6 +415,29 @@ HuggingFace's own SHA-256 before it is used. Gated models (Llama, Gemma and the
 like) need a HuggingFace token — under Runtime settings, or `HF_TOKEN` — and
 their terms accepted on huggingface.co.
 
+### Loaded models, and where their memory is
+
+The Downloaded list says which models are loaded, with a **Load** or
+**Unload** button on each. A model kept loaded can't be unloaded until *Keep
+loaded* is turned off. Saving a loaded model's settings reloads it with them
+straight away, or once the reply it is giving ends. While llama.cpp restarts,
+the runtime card says what it is doing until the kept-loaded models are back.
+
+A loaded model shows a bar of where its memory is: on the GPUs (VRAM, or
+unified memory on a Mac), in RAM, or read from the model file on the SSD as it
+is needed. On Linux the GPU figures are measured from the process itself, so
+memory the driver had to move out of VRAM (because two models were loaded
+together, say) shows up as a warning. So does a model llama.cpp split into
+more pieces than its GPUs need, which is what leaving *GPU layers* on
+automatic did to Qwen3.8-Flash-Next. Set it to *All on GPU*.
+
+Models with a **per-layer lookup table** (Qwen3.8-Flash-Next's is 27.5 GB) have
+a *Lookup table* setting. **SSD** reads its rows from the model file as they are
+needed, and the system keeps recent ones in spare RAM. **RAM** copies the whole
+table into memory when the model loads. Both ran at the same speed on
+Flash-Next. VRAM is not offered: the bundled llama.cpp stops loading the model
+if the table is put on a GPU.
+
 ### Per-model settings
 
 Each downloaded model has a Settings sheet with everything LM Studio offers when

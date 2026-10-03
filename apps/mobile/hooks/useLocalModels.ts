@@ -5,10 +5,12 @@ import {
   downloadLocalModel,
   downloadMtpHead,
   getLocalModels,
+  loadLocalModel,
   pauseLocalModel,
   restartLocalRuntime,
   removeMtpHead,
   resumeLocalModel,
+  unloadLocalModel,
   updateLocalModel,
   updateLocalModelsSettings,
   type ContextStagesConfig,
@@ -90,10 +92,41 @@ export function useLocalModels(token: string | null) {
     [refresh, showToast],
   );
 
+  /** Change one model on screen before the server answers, so a button press
+   * shows at once; `seq` keeps a poll already in flight from undoing it. */
+  const optimistic = useCallback((id: string, change: Partial<LocalModel>) => {
+    seq.current++;
+    setView((v) => (v ? { ...v, models: v.models.map((m) => (m.id === id ? { ...m, ...change } : m)) } : v));
+  }, []);
+
   const restart = useCallback(async () => {
+    // The route answers after 100 ms, often before the runtime has visibly
+    // moved, so the card says "Restarting" from the press.
+    seq.current++;
+    setView((v) =>
+      v ? { ...v, runtime: { ...v.runtime, restart: { phase: 'stopping', cause: 'requested', startedAt: new Date().toISOString() } } } : v,
+    );
     const next = await act(() => restartLocalRuntime());
     if (next) accept(next);
   }, [act, accept]);
+
+  const load = useCallback(
+    async (id: string) => {
+      optimistic(id, { runtimeStatus: 'loading', loadError: null });
+      await act(() => loadLocalModel(id));
+    },
+    [act, optimistic],
+  );
+
+  const unload = useCallback(
+    async (id: string) => {
+      const before = viewRef.current?.models.find((m) => m.id === id)?.runtimeStatus ?? null;
+      optimistic(id, { runtimeStatus: 'unloaded' });
+      const result = await act(() => unloadLocalModel(id));
+      if (result === null) optimistic(id, { runtimeStatus: before });
+    },
+    [act, optimistic],
+  );
 
   const updateSettings = useCallback(
     async (patch: Parameters<typeof updateLocalModelsSettings>[0]) => {
@@ -154,6 +187,9 @@ export function useLocalModels(token: string | null) {
         );
       }
       const result = await act(() => updateLocalModel(id, patch));
+      // Saving a loaded model's settings reloads it; say so, since the sheet
+      // closes and the row only shows "Loading…".
+      if (result?.reloading) showToast(`Saved. Reloading ${result.displayName} with the new settings.`);
       // Put the switch back when the server did not take it. The refresh act()
       // runs afterwards fails too while the server is unreachable, so it used
       // to stay in the position the server refused.
@@ -163,8 +199,8 @@ export function useLocalModels(token: string | null) {
       }
       return result;
     },
-    [act],
+    [act, showToast],
   );
 
-  return { view, error, refresh, restart, updateSettings, download, pause, resume, cancel, remove, update, downloadHead, removeHead };
+  return { view, error, refresh, restart, load, unload, updateSettings, download, pause, resume, cancel, remove, update, downloadHead, removeHead };
 }
