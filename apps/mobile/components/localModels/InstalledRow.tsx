@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pause, Pin, Play, SlidersHorizontal, Trash2, X, Eye, CircleAlert } from 'lucide-react-native';
+import { Pause, Pin, Play, SlidersHorizontal, Trash2, X, Eye, CircleAlert, Power, PowerOff } from 'lucide-react-native';
 import type { LocalModel } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -9,7 +9,8 @@ import { Pressable } from '@/components/ui/pressable';
 import { Icon } from '@/components/ui/icon';
 import { Switch } from '@/components/ui/switch';
 import { FitBadge } from './FitBadge';
-import { etaSeconds, formatBytes, formatEta, progressPercent } from '@/lib/localModels';
+import { PlacementBar } from './PlacementBar';
+import { etaSeconds, formatBytes, formatEta, LOAD_STATE_TEXT, modelLoadState, progressPercent, unloadBlockedReason } from '@/lib/localModels';
 import { mtpBadge } from '@/lib/mtp';
 import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -18,6 +19,8 @@ interface InstalledRowProps {
   model: LocalModel;
   onToggle: (enabled: boolean) => void;
   onPin: (pinned: boolean) => void;
+  onLoad: () => void;
+  onUnload: () => void;
   onPause: () => void;
   onResume: () => void;
   onCancel: () => void;
@@ -40,7 +43,7 @@ const STATUS_TEXT: Record<LocalModel['status'], string> = {
  * every user's picker; pinning keeps it loaded so it answers without a wait,
  * and stops it being unloaded to make room for another model.
  */
-export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCancel, onDelete, onSettings }: InstalledRowProps) {
+export function InstalledRow({ model, onToggle, onPin, onLoad, onUnload, onPause, onResume, onCancel, onDelete, onSettings }: InstalledRowProps) {
   const inProgress = model.status !== 'ready';
   const pct = progressPercent(model);
   // Two samples of the byte count, a poll apart, are what the ETA is made of.
@@ -57,8 +60,7 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
     sample.current = now;
   }, [model.bytesDone, model.status, model.sizeBytes]);
 
-  const loaded = model.runtimeStatus === 'loaded';
-  const loading = model.runtimeStatus === 'loading';
+  const loadState = modelLoadState(model);
   const pinned = model.pinned === true;
   const reachable = useServerReachable();
   const badge = mtpBadge(model);
@@ -97,9 +99,16 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
         )}
         {!inProgress && (
           <Text testID={`localModels.status.${model.id}`} size="2xs" className="rounded-full bg-muted px-2 py-0.5 text-muted-foreground">
-            {model.enabled
-              ? `In everyone’s picker${loaded ? ' · loaded' : loading ? ' · loading' : ''}`
-              : 'Not offered to users'}
+            {model.enabled ? 'In everyone’s picker' : 'Not offered to users'}
+          </Text>
+        )}
+        {!inProgress && model.enabled && (
+          <Text
+            testID={`localModels.state.${model.id}`}
+            size="2xs"
+            className={`rounded-full px-2 py-0.5 ${loadState === 'loaded' ? 'bg-success/15 text-success' : loadState === 'loading' ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'}`}
+          >
+            {model.reloadPending ? 'Loaded · reload pending' : LOAD_STATE_TEXT[loadState]}
           </Text>
         )}
         {!inProgress && badge && (
@@ -146,6 +155,17 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
         </HStack>
       )}
 
+      {!inProgress && loadState === 'loaded' && model.placement && (
+        <Box className="mt-2">
+          <PlacementBar placement={model.placement} testID={`localModels.placement.${model.id}`} />
+        </Box>
+      )}
+      {!inProgress && loadState === 'loaded' && pinned && (
+        <Text testID={`localModels.unloadBlocked.${model.id}`} size="2xs" className="mt-2 text-muted-foreground">
+          {unloadBlockedReason(model)}
+        </Text>
+      )}
+
       {inProgress && (
         <VStack space="xs" className="mt-2">
           <HStack className="items-center justify-between">
@@ -177,7 +197,17 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
           {model.pinError}
         </Text>
       )}
-      {model.loadFailed && (
+      {model.reloadPending && (
+        <Text testID={`localModels.reloadPending.${model.id}`} size="xs" className="mt-2 text-muted-foreground">
+          New settings are saved. It is answering someone right now, and reloads with them as soon as that reply ends.
+        </Text>
+      )}
+      {model.loadError && (
+        <Text testID={`localModels.loadError.${model.id}`} size="xs" className="mt-2 text-destructive">
+          {model.loadError}
+        </Text>
+      )}
+      {model.loadFailed && !model.loadError && (
         <Text size="xs" className="mt-2 text-destructive">
           llama.cpp could not load this model with its current settings. Try a shorter context or fewer GPU layers.
         </Text>
@@ -211,6 +241,32 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
           </Pressable>
         ) : (
           <>
+            {model.enabled && loadState === 'loaded' ? (
+              <Pressable
+                testID={`localModels.unload.${model.id}`}
+                disabled={!reachable || unloadBlockedReason(model) !== null}
+                onPress={onUnload}
+                accessibilityHint={unloadBlockedReason(model) ?? undefined}
+                className="flex-row items-center gap-1 p-1"
+              >
+                <Icon as={PowerOff} size="xs" className={unloadBlockedReason(model) ? 'text-muted-foreground/50' : 'text-muted-foreground'} />
+                <Text size="xs" className={unloadBlockedReason(model) ? 'text-muted-foreground/50' : 'text-muted-foreground'}>
+                  Unload
+                </Text>
+              </Pressable>
+            ) : model.enabled ? (
+              <Pressable
+                testID={`localModels.load.${model.id}`}
+                disabled={!reachable || loadState === 'loading'}
+                onPress={onLoad}
+                className="flex-row items-center gap-1 p-1"
+              >
+                <Icon as={Power} size="xs" className="text-muted-foreground" />
+                <Text size="xs" className="text-muted-foreground">
+                  {loadState === 'loading' ? 'Loading…' : 'Load'}
+                </Text>
+              </Pressable>
+            ) : null}
             <Pressable testID={`localModels.settings.${model.id}`} onPress={onSettings} className="flex-row items-center gap-1 p-1">
               <Icon as={SlidersHorizontal} size="xs" className="text-muted-foreground" />
               <Text size="xs" className="text-muted-foreground">

@@ -75,7 +75,7 @@ class Reader {
 
   /** Where the next read lands in the file. A skip that runs past the end is
    * a count that outlived the data backing it. */
-  private offset(): number {
+  offset(): number {
     return this.filePos - (this.buf.length - this.pos);
   }
 
@@ -303,6 +303,70 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
       facts.shape = shapeFromKeys(keys);
     }
     return facts;
+  } finally {
+    await fh.close();
+  }
+}
+
+/** A per-layer token-embedding table: one row per token per layer, looked up
+ * by token id on every step — 27.5 GiB in Qwen3.8-Flash-Next, 1.8 GiB in
+ * Gemma 4 E4B. llama.cpp keeps it on the CPU side (an input-layer tensor, read
+ * from the mapped file on demand when over 4 GiB), and where it lives is an
+ * admin's choice (load-settings.ts `tablePlacement`). */
+export const LOOKUP_TABLE_TENSOR = "per_layer_token_embd.weight";
+
+export interface GgufTensorSpan {
+  name: string;
+  bytes: number;
+}
+
+/**
+ * Find a tensor in one GGUF file and its size in bytes, or null when the file
+ * does not hold it. Every key is skipped (the tensor infos follow the last),
+ * then the info list is walked, bounded like the MTP walk. The size is the gap
+ * to the next tensor's data, so no table of quantisation block sizes is
+ * needed: data is laid out in offset order, each tensor padded to the file's
+ * alignment.
+ */
+export async function findTensor(file: string, name: string): Promise<GgufTensorSpan | null> {
+  const fh = await open(file, "r");
+  try {
+    const size = (await fh.stat()).size;
+    const r = new Reader(fh, size);
+    if ((await r.u32()) !== MAGIC) throw new Error("Not a GGUF file");
+    if ((await r.u32()) < 2) throw new Error("GGUF v1 is not supported");
+    const tensorCount = Number(await r.u64());
+    const kvCount = Number(await r.u64());
+    if (kvCount > MAX_KV) throw new Error("GGUF key count too large");
+    if (tensorCount > MAX_TENSORS) throw new Error("GGUF tensor count too large");
+    let alignment = 32;
+    for (let i = 0; i < kvCount; i++) {
+      const key = await r.str();
+      const type = await r.u32();
+      if (key === "general.alignment" && type === 4) {
+        const a = await r.u32();
+        if (a > 0 && a <= 1 << 20) alignment = a;
+        continue;
+      }
+      await skipValue(r, type);
+    }
+    const offsets: number[] = [];
+    let target: number | null = null;
+    for (let i = 0; i < tensorCount; i++) {
+      const tensorName = await r.str();
+      const dims = await r.u32();
+      if (dims > 8) throw new Error("GGUF tensor has too many dimensions");
+      r.skip(8 * dims + 4);
+      const offset = Number(await r.u64());
+      offsets.push(offset);
+      if (tensorName === name) target = offset;
+    }
+    if (target === null) return null;
+    const dataStart = Math.ceil(r.offset() / alignment) * alignment;
+    const next = offsets.filter((o) => o > target).reduce((a, b) => Math.min(a, b), Infinity);
+    const end = Number.isFinite(next) ? next : size - dataStart;
+    const bytes = end - target;
+    return bytes > 0 && dataStart + end <= size ? { name, bytes } : null;
   } finally {
     await fh.close();
   }

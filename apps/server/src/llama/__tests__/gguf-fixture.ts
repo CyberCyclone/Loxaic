@@ -27,9 +27,11 @@ function str(s: string): Buffer {
   return Buffer.concat([u64(bytes.length), bytes]);
 }
 
-/** `tensors` are tensor-info names, written after the keys as one-dimension
- * entries with no data behind them — enough for the reader's MTP check. */
-export function buildGguf(kvs: [string, Value][], padTo = 0, tensors: string[] = []): Buffer {
+/** `tensors` are tensor infos, written after the keys as one-dimension
+ * entries — a bare name sits at offset 0 with no data behind it (enough for
+ * the reader's MTP check); an `offset` places it in the data section, whose
+ * bytes `padTo` provides. */
+export function buildGguf(kvs: [string, Value][], padTo = 0, tensors: (string | { name: string; offset: number })[] = []): Buffer {
   const parts: Buffer[] = [Buffer.from("GGUF", "ascii"), u32(3), u64(tensors.length), u64(kvs.length)];
   for (const [key, value] of kvs) {
     parts.push(str(key));
@@ -62,7 +64,10 @@ export function buildGguf(kvs: [string, Value][], padTo = 0, tensors: string[] =
         break;
     }
   }
-  for (const name of tensors) parts.push(str(name), u32(1), u64(1), u32(0), u64(0));
+  for (const t of tensors) {
+    const { name, offset } = typeof t === "string" ? { name: t, offset: 0 } : t;
+    parts.push(str(name), u32(1), u64(1), u32(0), u64(offset));
+  }
   const out = Buffer.concat(parts);
   return padTo > out.length ? Buffer.concat([out, Buffer.alloc(padTo - out.length)]) : out;
 }
