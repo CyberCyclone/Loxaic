@@ -64,6 +64,10 @@ export interface MessageUsage {
    * — what the server offered the backend to reuse. Available on every
    * backend. */
   reusableTokens?: number | null
+  /** Speculative decoding (an MTP head): tokens drafted and accepted. Absent
+   * or null when nothing was drafted — not "every guess was wrong". */
+  draftTokens?: number | null
+  draftAcceptedTokens?: number | null
   /** Attachments this turn's prompt left out because the budget was full.
    * Only ever populated from a live turn, so an empty list means "this turn
    * dropped nothing" and an absent one means we were not told. */

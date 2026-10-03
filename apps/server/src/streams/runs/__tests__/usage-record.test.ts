@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CompletionResult } from "../../../inference/provider.ts";
-import { usageRecordValues } from "../usage-record.ts";
+import { turnDraftUsage, usageRecordValues } from "../usage-record.ts";
 
 /**
  * The one builder both usage inserts go through. Its job is to never hand an
@@ -47,5 +47,16 @@ describe("usageRecordValues", () => {
     const base = { userId: "u", conversationId: "c", messageId: "m", model: "x", result: result() };
     expect("reusableTokens" in usageRecordValues(base)).toBe(false);
     expect(usageRecordValues({ ...base, reusableTokens: 1000.4 }).reusableTokens).toBe(1000);
+  });
+
+  it("records what an MTP head drafted and the model accepted, and null when nothing was drafted", () => {
+    const base = { userId: "u", conversationId: "c", messageId: "m", model: "x" };
+    const drafted = result({ timings: { prompt_ms: 1, predicted_ms: 1, draft_n: 132, draft_n_accepted: 99 } as never });
+    expect(usageRecordValues({ ...base, result: drafted })).toMatchObject({ draftTokens: 132, draftAcceptedTokens: 99 });
+    expect(turnDraftUsage(drafted)).toEqual({ draft_tokens: 132, draft_accepted_tokens: 99 });
+    // Not speculated: null in the row and absent on the wire — never 0.
+    expect(usageRecordValues({ ...base, result: result() })).toMatchObject({ draftTokens: null, draftAcceptedTokens: null });
+    expect(turnDraftUsage(result())).toEqual({});
+    expect(turnDraftUsage(result({ timings: null }))).toEqual({});
   });
 });

@@ -5,8 +5,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { bestFit, estimateFit } from "../fit.ts";
 import { readGgufFacts } from "../gguf.ts";
 import { cudaFlavourForDriver, defaultDevices, parseDeviceList, resolveFlavour } from "../hardware.ts";
-import { groupQuants, isProjectorFile, isRepoId, quantOf } from "../hf.ts";
-import { LoadSettingsError, normalizeLoadSettings, perRequestWindow, presetLines } from "../load-settings.ts";
+import { groupQuants, isMtpHeadFile, isProjectorFile, isRepoId, quantOf } from "../hf.ts";
+import { checkMtpSetting, LoadSettingsError, normalizeLoadSettings, perRequestWindow, presetLines } from "../load-settings.ts";
 import { isSafeSectionName, modelIdFromRouterName, renderPreset, routerModelName } from "../preset.ts";
 import { explainRouterExit } from "../router.ts";
 import { buildGguf, denseModel } from "./gguf-fixture.ts";
@@ -60,6 +60,33 @@ describe("load settings", () => {
     expect(presetLines({ bogus: 1 }, { mmprojPath: null })).toEqual([]);
   });
 
+  describe("multi-token prediction", () => {
+    it("writes draft-mtp for a head in the model's own file, and the head's path for a separate one", () => {
+      expect(presetLines({ ctxSize: 8192, mtp: true }, { mmprojPath: null, mtp: { draftModelPath: null } })).toEqual([
+        "ctx-size = 8192",
+        "spec-type = draft-mtp",
+      ]);
+      expect(
+        presetLines({ mtp: true, mtpDraftMax: 2 }, { mmprojPath: null, mtp: { draftModelPath: "/m/MTP/mtp-x-Q8_0.gguf" } }),
+      ).toEqual(["spec-type = draft-mtp", "spec-draft-model = /m/MTP/mtp-x-Q8_0.gguf", "spec-draft-n-max = 2"]);
+    });
+
+    it("writes nothing for MTP while the head is not ready — and keeps every other setting", () => {
+      // A head mid-download, or deleted after MTP was turned on, must cost the
+      // model its MTP lines only: the fallback for an invalid row drops all.
+      expect(presetLines({ ctxSize: 8192, mtp: true, mtpDraftMax: 2 }, { mmprojPath: null, mtp: null })).toEqual(["ctx-size = 8192"]);
+      expect(presetLines({ mtp: false }, { mmprojPath: null, mtp: { draftModelPath: null } })).toEqual([]);
+    });
+
+    it("refuses MTP for a model with no head, and a draft length without MTP", () => {
+      expect(() => { checkMtpSetting({ mtp: true }, null); }).toThrow(/no multi-token-prediction head/);
+      expect(() => { checkMtpSetting({ mtpDraftMax: 2 }, "embedded"); }).toThrow(/only applies/);
+      expect(() => { checkMtpSetting({ mtp: true, mtpDraftMax: 2 }, "head-pending"); }).not.toThrow();
+      expect(() => { checkMtpSetting({ mtp: false }, null); }).not.toThrow();
+      expect(() => normalizeLoadSettings({ mtpDraftMax: 9 })).toThrow(/1 to 8/);
+    });
+  });
+
   it("predicts the per-request window: split between slots unless the KV cache is unified", () => {
     expect(perRequestWindow({}, 32768)).toBe(32768);
     expect(perRequestWindow({ parallel: 4, kvUnified: false }, 32768)).toBe(8192);
@@ -76,6 +103,7 @@ describe("preset file", () => {
       revision: "50968a4468ef4233ed78cd7c3de230dd1d61a56b",
       files: [{ path: "Qwen3-0.6B-Q4_K_M.gguf", size: 1, sha256: "a".repeat(64) }],
       mmproj: null,
+      mtpHead: null,
       loadSettings: {},
       meta: {},
       ...over,
@@ -97,6 +125,22 @@ describe("preset file", () => {
     }
     // Two quants the router's own rewrite would merge stay two names.
     expect(routerModelName("a/b:q4_k_m")).not.toBe(routerModelName("a/b:Q4_K_M"));
+  });
+
+  it("drafts with the model's own head, or a separate one under the head's own revision once it is ready", () => {
+    const own = renderPreset([row({ loadSettings: { mtp: true }, meta: { mtp: { layers: 1 } } })], { devices: null });
+    expect(own).toContain("spec-type = draft-mtp");
+    expect(own).not.toContain("spec-draft-model");
+    const head = (status: string) => ({
+      path: "MTP/mtp-Qwen3-0.6B-Q8_0.gguf", size: 1, sha256: "b".repeat(64),
+      revision: "c".repeat(40), status, bytesDone: 0, error: null, layers: 1,
+    });
+    const ready = renderPreset([row({ loadSettings: { mtp: true, mtpDraftMax: 2 }, mtpHead: head("ready") })], { devices: null });
+    // A head resolved at a later commit than the model lives under that commit.
+    expect(ready).toMatch(/spec-draft-model = .*cccccccccccc.*MTP\/mtp-Qwen3-0\.6B-Q8_0\.gguf\nspec-draft-n-max = 2/);
+    const pending = renderPreset([row({ loadSettings: { mtp: true, ctxSize: 4096 }, mtpHead: head("downloading") })], { devices: null });
+    expect(pending).not.toContain("spec-");
+    expect(pending).toContain("ctx-size = 4096");
   });
 
   it("CPU only forces zero GPU layers, whatever the model's settings say", () => {
@@ -229,6 +273,34 @@ describe("HuggingFace file grouping", () => {
     expect(isProjectorFile("Mmprojector-7B-Q4_K_M.gguf")).toBe(false);
   });
 
+  it("keeps MTP heads out of the quants, so a split quant beside them survives (Qwen3.8-Flash-Next)", () => {
+    // unsloth/Qwen3.8-Flash-Next-GGUF's layout: a three-part Q8_0 in its own
+    // folder, and MTP/mtp-…-Q8_0.gguf, which quantOf also reads as "Q8_0".
+    // Grouped together, the split failed "all parts and nothing else" and the
+    // Q8_0 quant vanished from Discover.
+    const sha = "a".repeat(64);
+    const entry = (path: string, size: number) => ({ type: "file", path, size, lfs: { oid: sha, size } });
+    const { quants, mtpHeads } = groupQuants([
+      entry("Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00003.gguf", 500),
+      entry("Q8_0/Qwen3.8-Flash-Next-Q8_0-00002-of-00003.gguf", 500),
+      entry("Q8_0/Qwen3.8-Flash-Next-Q8_0-00003-of-00003.gguf", 300),
+      entry("MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", 40),
+      entry("MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", 26),
+      entry("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 72),
+    ]);
+    expect(quants.map((q) => [q.quant, q.files.length])).toEqual([["Q8_0", 3]]);
+    expect(mtpHeads.map((h) => [h.path, h.shared])).toEqual([
+      ["MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", true],
+      ["MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", false],
+      ["MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", false],
+    ]);
+    // llama.cpp's own rule, case-sensitive at a word start: a full model
+    // named for its built-in head is still a model.
+    expect(isMtpHeadFile("Qwen3.5-0.8B-MTP-Q4_K_M.gguf")).toBe(false);
+    expect(isMtpHeadFile("Model-mtp-Q8_0.gguf")).toBe(true);
+    expect(isMtpHeadFile("Smtp-server-Q4_0.gguf")).toBe(false);
+  });
+
   it("only accepts owner/name repo ids", () => {
     expect(isRepoId("unsloth/Qwen3-8B-GGUF")).toBe(true);
     expect(isRepoId("../etc/passwd")).toBe(false);
@@ -252,10 +324,11 @@ describe("GGUF header", () => {
       // The fixture describes no attention heads: the fit stays rough.
       shape: null,
       chatTemplate: null,
+      mtp: null,
     });
   });
 
-  it("reads the chat template past the vocabulary arrays, and nothing else after the tokenizer", async () => {
+  it("reads the chat template past the vocabulary arrays, and model keys wherever they come", async () => {
     const file = path.join(dir, "template.gguf");
     const template = "{%- if enable_thinking is defined and enable_thinking is false %}<think></think>{%- endif %}";
     writeFileSync(
@@ -265,8 +338,8 @@ describe("GGUF header", () => {
         ["qwen35.block_count", { type: "u32", v: 32 }],
         ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`) }],
         ["tokenizer.ggml.token_type", { type: "u32s", v: Array.from({ length: 5000 }, () => 1) }],
-        // A real file never puts an architecture key here; one that does is
-        // not believed.
+        // GGUF fixes no key order: a model key after the tokenizer's is
+        // still the model's.
         ["qwen35.context_length", { type: "u32", v: 999 }],
         ["tokenizer.chat_template", { type: "str", v: template }],
       ]),
@@ -274,10 +347,10 @@ describe("GGUF header", () => {
     const facts = await readGgufFacts(file);
     expect(facts.chatTemplate).toBe(template);
     expect(facts.nLayers).toBe(32);
-    expect(facts.nCtxTrain).toBeNull();
+    expect(facts.nCtxTrain).toBe(999);
   });
 
-  it("reads the attention layout, per-layer arrays included, and stops at the tokenizer", async () => {
+  it("reads the attention layout, per-layer arrays included, before and after the tokenizer", async () => {
     const file = path.join(dir, "shape.gguf");
     writeFileSync(
       file,
@@ -293,7 +366,7 @@ describe("GGUF header", () => {
         ["gemma4.attention.sliding_window_pattern", { type: "bools", v: [true, true, true, true, true, false] }],
         ["gemma4.rope.scaling.factor", { type: "f32", v: 4 }],
         ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`) }],
-        // Past the tokenizer: never read.
+        // Past the tokenizer, and read all the same.
         ["gemma4.attention.shared_kv_layers", { type: "u32", v: 3 }],
       ]),
     );
@@ -303,7 +376,7 @@ describe("GGUF header", () => {
       nHeadKv: [2, 2, 2, 2, 2, 4],
       slidingWindow: 512,
       swaLayers: [true, true, true, true, true, false],
-      sharedKvLayers: 0,
+      sharedKvLayers: 3,
       ropeScaling: { factor: 4 },
     });
   });
@@ -360,6 +433,91 @@ describe("GGUF header", () => {
       ]),
     );
     await expect(readGgufFacts(file)).resolves.toMatchObject({ nLayers: 48, expertCount: 128 });
+  });
+
+  describe("multi-token prediction head", () => {
+    const tokens = Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`);
+    const tensorNames = (layer: number, nextn: boolean) => [
+      "token_embd.weight",
+      ...Array.from({ length: 200 }, (_, i) => `blk.${String(i % layer)}.attn_q.weight`),
+      ...(nextn ? [`blk.${String(layer)}.nextn.eh_proj.weight`, `blk.${String(layer)}.nextn.enorm.weight`] : []),
+      "output.weight",
+    ];
+    const model = (opts: { nextn?: number; tensors: boolean; shared?: boolean }) =>
+      buildGguf(
+        [
+          ["general.architecture", { type: "str", v: "qwen35" }],
+          ["qwen35.block_count", { type: "u32", v: 65 }],
+          ...(opts.nextn !== undefined ? [["qwen35.nextn_predict_layers", { type: "u32", v: opts.nextn }] as [string, { type: "u32"; v: number }]] : []),
+          ...(opts.shared ? [["qwen35.nextn_shared_target_tensors", { type: "bool", v: true }] as [string, { type: "bool"; v: boolean }]] : []),
+          ["tokenizer.ggml.tokens", { type: "strs", v: tokens }],
+          // The template comes before the tensor list: the reader must not
+          // stop there when the file claims a head.
+          ["tokenizer.chat_template", { type: "str", v: "{{ x }}" }],
+          ["tokenizer.ggml.eos_token_id", { type: "u32", v: 1 }],
+        ],
+        0,
+        tensorNames(64, opts.tensors),
+      );
+
+    it("finds an embedded head: the key and its nextn tensors (Qwen3.8-27B's layout)", async () => {
+      const file = path.join(dir, "mtp.gguf");
+      writeFileSync(file, model({ nextn: 1, tensors: true }));
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ chatTemplate: "{{ x }}", mtp: { layers: 1, sharedTarget: false } });
+    });
+
+    it("reports no head when the key survived but a quantizer dropped the tensors", async () => {
+      const file = path.join(dir, "mtp-stripped.gguf");
+      writeFileSync(file, model({ nextn: 1, tensors: false }));
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ mtp: null, nLayers: 65 });
+    });
+
+    it("reports no head without the key, even with nextn-looking tensors", async () => {
+      const file = path.join(dir, "mtp-nokey.gguf");
+      writeFileSync(file, model({ tensors: true }));
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ mtp: null });
+    });
+
+    it("marks a shared head, which borrows the main model's tensors", async () => {
+      const file = path.join(dir, "mtp-shared.gguf");
+      writeFileSync(file, model({ nextn: 1, tensors: true, shared: true }));
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ mtp: { layers: 1, sharedTarget: true } });
+    });
+
+    it("reads model keys written after the tokenizer's, the head and the layer count included", async () => {
+      // GGUF does not fix key order. A file that puts its tokenizer between
+      // the architecture and the rest of its model keys must not lose them —
+      // and a lost head would stay lost, since the boot backfill skips a row
+      // whose facts are stored, null included.
+      const file = path.join(dir, "mtp-late-keys.gguf");
+      writeFileSync(
+        file,
+        buildGguf(
+          [
+            ["general.architecture", { type: "str", v: "qwen35" }],
+            ["tokenizer.ggml.tokens", { type: "strs", v: tokens }],
+            ["tokenizer.chat_template", { type: "str", v: "{{ x }}" }],
+            ["qwen35.block_count", { type: "u32", v: 65 }],
+            ["qwen35.nextn_predict_layers", { type: "u32", v: 1 }],
+          ],
+          0,
+          tensorNames(64, true),
+        ),
+      );
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ nLayers: 65, chatTemplate: "{{ x }}", mtp: { layers: 1, sharedTarget: false } });
+    });
+
+    it("keeps every other fact when the tensor list is malformed or claims too many tensors", async () => {
+      const file = path.join(dir, "mtp-hostile.gguf");
+      const good = model({ nextn: 1, tensors: true });
+      // Tensor count is the u64 at offset 8: claim a billion.
+      const bad = Buffer.from(good);
+      bad.writeBigUInt64LE(1_000_000_000n, 8);
+      writeFileSync(file, bad);
+      const started = Date.now();
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ mtp: null, nLayers: 65, chatTemplate: "{{ x }}" });
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
   });
 
   it("refuses something that is not a GGUF", async () => {

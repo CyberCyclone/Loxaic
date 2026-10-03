@@ -1,7 +1,8 @@
 import { listServableModels, type LocalModelRow } from "./catalog.ts";
 import { labelFor } from "./fit.ts";
 import { availableMemory, footprintBytes, loadedFootprints, refreshMemory, type LoadedFootprint } from "./memory.ts";
-import { loadModel, routerEndpoint, routerModelStatuses, unloadModel, waitForModelStatus } from "./router.ts";
+import { loadModel, modelLoadFailureReason, routerEndpoint, routerModelStatuses, unloadModel, waitForModelStatus } from "./router.ts";
+import { loadFailureMessage } from "./load-failure.ts";
 import { getLocalModelsSettings } from "./settings.ts";
 
 /**
@@ -367,7 +368,11 @@ async function loadPinnedOnce(): Promise<void> {
         await loadModel(row.id);
         const status = await waitForModelStatus(row.id, "loaded", PIN_LOAD_WAIT_MS);
         if (status?.value === "loaded") pinErrors.delete(row.id);
-        else pinErrors.set(row.id, "Pinned, but llama.cpp could not load it with its current settings.");
+        else {
+          // The same sentence a chat gets: why, from the model's own output.
+          const why = status?.failed ? loadFailureMessage(row, modelLoadFailureReason(row.id)) : null;
+          pinErrors.set(row.id, why ? `Pinned, but not loaded. ${why}` : "Pinned, but llama.cpp could not load it with its current settings.");
+        }
       } catch (err) {
         pinErrors.set(
           row.id,

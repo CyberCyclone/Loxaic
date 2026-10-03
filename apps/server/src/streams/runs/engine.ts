@@ -52,7 +52,7 @@ import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
-import { usageRecordValues } from "./usage-record.ts";
+import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
@@ -380,6 +380,7 @@ export function turnUsageFor(input: {
     ttft_ms: result.ttftMs,
     cached_tokens: result.cachedTokens,
     reusable_tokens: input.reuse.tokens,
+    ...turnDraftUsage(result),
     ...(input.omittedAttachments.length ? { omitted_attachments: input.omittedAttachments } : {}),
     context: apportion(input.tally, result.usage.prompt_tokens, result.usage.completion_tokens, input.meta),
   };

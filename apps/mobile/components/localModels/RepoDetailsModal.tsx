@@ -20,6 +20,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { Markdown } from '@/components/markdown/Markdown';
 import { FitBadge } from './FitBadge';
 import { describeFit, formatBytes, formatCount, formatParams } from '@/lib/localModels';
+import { defaultMtpHead, headName } from '@/lib/mtp';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -27,7 +28,7 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
 interface RepoDetailsModalProps {
   repo: string | null;
   onClose: () => void;
-  onDownload: (input: { repo: string; quant: string; mmproj: string | null; force?: boolean }) => Promise<unknown>;
+  onDownload: (input: { repo: string; quant: string; mmproj: string | null; mtpHead?: string | null; force?: boolean }) => Promise<unknown>;
 }
 
 /**
@@ -44,6 +45,9 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
   const [details, setDetails] = useState<HfRepoDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [withVision, setWithVision] = useState(true);
+  // Off unless chosen: a head is gigabytes more, and only pays off when the
+  // model answers one conversation at a time.
+  const [withMtpHead, setWithMtpHead] = useState(false);
   const [confirm, setConfirm] = useState<HfQuant | null>(null);
   const [starting, setStarting] = useState<string | null>(null);
   const reachable = useServerReachable();
@@ -61,6 +65,7 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
         if (mine !== request.current) return;
         setDetails(d);
         setWithVision(d.summary.vision);
+        setWithMtpHead(false);
       })
       .catch((err: unknown) => {
         if (mine !== request.current) return;
@@ -69,12 +74,19 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
   }, [repo]);
 
   const mmproj = details?.files.mmproj.find((m) => /f16/i.test(m.path)) ?? details?.files.mmproj[0] ?? null;
+  const mtpHead = defaultMtpHead(details?.files.mtpHeads);
 
   const start = async (quant: HfQuant, force = false) => {
     if (!details) return;
     setStarting(quant.quant);
     try {
-      await onDownload({ repo: details.summary.repo, quant: quant.quant, mmproj: withVision && mmproj ? mmproj.path : null, force });
+      await onDownload({
+        repo: details.summary.repo,
+        quant: quant.quant,
+        mmproj: withVision && mmproj ? mmproj.path : null,
+        ...(withMtpHead && mtpHead ? { mtpHead: mtpHead.path } : {}),
+        force,
+      });
     } finally {
       setStarting(null);
     }
@@ -208,6 +220,23 @@ export function RepoDetailsModal({ repo, onClose, onDownload }: RepoDetailsModal
                       {withVision ? '✓ ' : ''}Include vision ({formatBytes(mmproj.size)})
                     </Text>
                   </Pressable>
+                )}
+                {mtpHead && (
+                  <VStack space="xs" className="mt-1">
+                    <Pressable
+                      testID="localModels.details.mtp"
+                      onPress={() => { setWithMtpHead((v) => !v); }}
+                      className={`self-start rounded-full px-3 py-1.5 ${withMtpHead ? 'bg-primary/15' : 'bg-muted'}`}
+                    >
+                      <Text size="sm" className={withMtpHead ? 'text-primary' : 'text-muted-foreground'}>
+                        {withMtpHead ? '✓ ' : ''}Include MTP head ({formatBytes(mtpHead.size)})
+                      </Text>
+                    </Pressable>
+                    <Text size="2xs" className="text-muted-foreground">
+                      {headName(mtpHead.path)} drafts a few tokens ahead for faster replies. Downloaded after the model;
+                      turn MTP on in the model&apos;s settings.
+                    </Text>
+                  </VStack>
                 )}
                 {details.files.quants.length === 0 && (
                   <Text size="sm" className="text-muted-foreground">

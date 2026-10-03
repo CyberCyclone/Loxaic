@@ -14,8 +14,9 @@ import { shapeFromKeys, type ModelShape } from "./shape.ts";
  * Reads the metadata key/value section sequentially through a small buffer.
  * The tokenizer's arrays (hundreds of thousands of strings) are skipped, never
  * held: the one tokenizer key wanted is the chat template, which is what says
- * whether the model takes a thinking level (inference/thinking.ts), and it
- * usually comes after them. The read stops as soon as it has it.
+ * whether the model takes a thinking level (inference/thinking.ts). Every key
+ * is read to the end of the section: GGUF does not fix their order, so a
+ * model key may come after the tokenizer's, and few come after the template.
  */
 
 export interface GgufFacts {
@@ -29,6 +30,18 @@ export interface GgufFacts {
   /** `tokenizer.chat_template`, or null when the file carries none (or one
    * past `MAX_TEMPLATE`, which no real template comes near). */
   chatTemplate: string | null;
+  /** The model's multi-token-prediction head, when the file carries one:
+   * `nextn_predict_layers` above zero **and** at least one `blk.N.nextn.`
+   * tensor, since a quantizer can keep the key and drop the tensors — and
+   * llama.cpp's `draft-mtp` then fails the load. `sharedTarget` is a sidecar
+   * head that borrows the main model's embeddings and output, which b11342
+   * cannot load. Null when there is no head. */
+  mtp: GgufMtp | null;
+}
+
+export interface GgufMtp {
+  layers: number;
+  sharedTarget: boolean;
 }
 
 /** The longest chat template kept. Real ones are a few to a few tens of KB. */
@@ -45,6 +58,10 @@ const MAX_KV = 100_000;
  * file, refused rather than iterated — each element is an awaited turn on the
  * server's event loop. */
 const MAX_ARRAY = 2_000_000;
+/** The most tensor-info entries walked looking for an MTP tensor. Real models
+ * have a few thousand; the walk stops at the first match anyway. */
+const MAX_TENSORS = 1_000_000;
+const NEXTN_TENSOR = /^blk\.\d+\.nextn\./;
 
 class Reader {
   private buf = Buffer.alloc(0);
@@ -191,18 +208,41 @@ async function skipValue(r: Reader, type: number): Promise<void> {
   r.skip(size);
 }
 
+/** Walks the tensor-info entries for a `blk.N.nextn.` tensor. Each entry is
+ * a name, a dimension count, the dimensions, a type and an offset. */
+async function hasNextnTensor(r: Reader, count: number): Promise<boolean> {
+  if (count > MAX_TENSORS) throw new Error("GGUF tensor count too large");
+  for (let i = 0; i < count; i++) {
+    const name = await r.str();
+    if (NEXTN_TENSOR.test(name)) return true;
+    const dims = await r.u32();
+    if (dims > 8) throw new Error("GGUF tensor has too many dimensions");
+    r.skip(8 * dims + 4 + 8);
+  }
+  return false;
+}
+
 export async function readGgufFacts(file: string): Promise<GgufFacts> {
-  const facts: GgufFacts = { architecture: null, nLayers: null, nCtxTrain: null, expertCount: null, shape: null, chatTemplate: null };
+  const facts: GgufFacts = {
+    architecture: null,
+    nLayers: null,
+    nCtxTrain: null,
+    expertCount: null,
+    shape: null,
+    chatTemplate: null,
+    mtp: null,
+  };
   const fh = await open(file, "r");
   try {
     const r = new Reader(fh, (await fh.stat()).size);
     if ((await r.u32()) !== MAGIC) throw new Error("Not a GGUF file");
     const version = await r.u32();
     if (version < 2) throw new Error("GGUF v1 is not supported");
-    await r.u64(); // tensor count
-    const kvCount = Math.min(Number(await r.u64()), MAX_KV);
+    const tensorCount = Number(await r.u64());
+    const declaredKv = Number(await r.u64());
+    const kvCount = Math.min(declaredKv, MAX_KV);
+    const allKeysRead = declaredKv <= MAX_KV;
     const keys: Record<string, number | boolean | string | number[] | boolean[]> = {};
-    let pastTokenizer = false;
     for (let i = 0; i < kvCount; i++) {
       const key = await r.str();
       const type = await r.u32();
@@ -210,17 +250,9 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
         const len = Number(await r.u64());
         if (len <= MAX_TEMPLATE) facts.chatTemplate = (await r.take(len)).toString("utf8");
         else r.skip(len);
-        // Nothing past the template is wanted once the architecture is known.
-        if (facts.architecture) break;
-        continue;
-      }
-      // Architecture keys come before the tokenizer's in every file seen, but
-      // GGUF does not require it: only a tokenizer key that follows the
-      // architecture ends the reading of model keys, so one that comes first
-      // cannot hide `general.architecture` and everything keyed under it.
-      if (key.startsWith("tokenizer.") && facts.architecture) pastTokenizer = true;
-      if (pastTokenizer) {
-        await skipValue(r, type);
+        // No stopping here: a model key may still follow (GGUF fixes no
+        // order), `nextn_predict_layers` among them, and an MTP head's tensors
+        // are only found in the tensor list after the last key.
         continue;
       }
       if (key === "general.architecture" && type === 8) {
@@ -240,6 +272,14 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
       }
       const value = await readScalar(r, type);
       if (value !== null) keys[name] = value;
+    }
+    if (Number(keys.nextn_predict_layers) > 0 && allKeysRead) {
+      // Every key has been read, so the tensor infos start here. A list that does
+      // not parse costs only this fact, never the others.
+      const found = await hasNextnTensor(r, tensorCount).catch(() => false);
+      if (found) {
+        facts.mtp = { layers: Number(keys.nextn_predict_layers), sharedTarget: keys.nextn_shared_target_tensors === true };
+      }
     }
     const n = (k: string) => {
       const v = keys[k];

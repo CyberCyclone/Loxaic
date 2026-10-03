@@ -4,7 +4,7 @@ import { CONTEXT_STAGE_PROMPT_AT } from "@loxaic/types";
 import { prefillRate } from "../inference/prefill-rate.ts";
 import { runsUsingModel } from "../streams/registry.ts";
 import { AUTO_COMPACT_THRESHOLD } from "../streams/runs/auto-compact.ts";
-import { rowMeta, type LocalModelRow } from "./catalog.ts";
+import { mtpFitInput, rowMeta, type LocalModelRow } from "./catalog.ts";
 import { pendingStage, pendingSwitch, stageCooldownRemaining, stageWindows } from "./context-stage-switch.ts";
 import { activeStageIndex, rowStages, settingsForStage, yarnFactorOf, type WhenFull, type WhoMayChange } from "./context-stages.ts";
 import { fitFor } from "./downloads.ts";
@@ -134,7 +134,10 @@ export async function stageInfo(input: { row: LocalModelRow; isAdmin: boolean; c
   });
   await refreshMemory();
   const active = activeStageIndex(row);
-  const fits = windows.map((_, i) => fitFor(row.sizeBytes, rowMeta(row), settingsForStage(row, i), row.id));
+  const fits = windows.map((_, i) => {
+    const settings = settingsForStage(row, i);
+    return fitFor(row.sizeBytes, rowMeta(row), settings, row.id, mtpFitInput(row, settings));
+  });
   const uses = await recentUses(row.id, input.conversationId);
   const tokens = input.conversationId ? await conversationTokens(input.conversationId) : null;
   const rate = prefillRate(row.id);

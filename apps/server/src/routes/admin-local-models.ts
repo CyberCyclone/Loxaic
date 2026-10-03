@@ -7,8 +7,11 @@ import {
   deleteLocalModelRow,
   getLocalModelRow,
   listLocalModelRows,
+  mtpFitInput,
+  mtpSource,
   rowMeta,
   rowMmproj,
+  rowMtpHead,
   updateLocalModelRow,
   type LocalModelRow,
 } from "../llama/catalog.ts";
@@ -18,8 +21,12 @@ import {
   fitFor,
   freeDiskBytes,
   liveBytesDone,
+  liveHeadBytesDone,
+  onMtpHeadSettled,
   pauseDownload,
   queueDownload,
+  queueMtpHead,
+  removeMtpHead,
   removeFiles,
   resumeDownload,
 } from "../llama/downloads.ts";
@@ -31,8 +38,8 @@ import {
   settingsForStage,
 } from "../llama/context-stages.ts";
 import { bestFit, type FitLabel } from "../llama/fit.ts";
-import { HfError, repoDetails, searchModels, type HfSort } from "../llama/hf.ts";
-import { LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
+import { HfError, repoDetails, repoFiles, searchModels, type HfSort } from "../llama/hf.ts";
+import { checkMtpSetting, LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
 import { refreshMemory } from "../llama/memory.ts";
 import { pinErrorFor } from "../llama/room.ts";
 import {
@@ -62,6 +69,8 @@ import { getLocalModelsSettings, LocalModelsSettingsError, updateLocalModelsSett
 function modelView(row: LocalModelRow, loaded: Map<string, { value: string; failed: boolean }>) {
   const meta = rowMeta(row);
   const status = loaded.get(row.id);
+  const settings = effectiveSettings(row);
+  const head = rowMtpHead(row);
   return {
     id: row.id,
     repo: row.repo,
@@ -84,8 +93,21 @@ function modelView(row: LocalModelRow, loaded: Map<string, { value: string; fail
     activeStage: activeStageIndex(row),
     meta,
     hasVision: rowMmproj(row) !== null,
+    /** Where an MTP head would come from (catalog.ts `mtpSource`). */
+    mtpSource: mtpSource(row),
+    /** A separate MTP head and its download, or null. */
+    mtpHead: head
+      ? {
+          path: head.path,
+          size: head.size,
+          status: head.status,
+          bytesDone: liveHeadBytesDone(row) ?? head.bytesDone,
+          error: head.error,
+          layers: head.layers,
+        }
+      : null,
     /** At the settings it loads with now, its active stage's included. */
-    fit: fitFor(row.sizeBytes, meta, effectiveSettings(row), row.id),
+    fit: fitFor(row.sizeBytes, meta, settings, row.id, mtpFitInput(row, settings)),
     /** The router's view: `loaded`, `loading`, `unloaded`, `sleeping`, or null
      * when it cannot be asked. */
     runtimeStatus: status?.value ?? null,
@@ -131,6 +153,12 @@ function fail(reply: FastifyReply, err: unknown) {
   }
   throw err;
 }
+
+// A head finishing (or being refused) changes what the preset says for a model
+// whose MTP setting was waiting on it.
+onMtpHeadSettled(() => {
+  void afterModelWrite();
+});
 
 function idFrom(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value.length < 300 ? value : null;
@@ -197,6 +225,20 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
           downloaded: rows.filter((m) => m.repo === r.repo).map((m) => m.quant),
         })),
       };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // A repository's MTP heads and nothing else, for the settings sheet: two
+  // HuggingFace requests (the revision and its file list) where the details
+  // route above makes four, the model card among them, and prices every quant.
+  app.get("/v1/admin/local-models/hf/mtp-heads", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const { repo } = request.query as { repo?: string };
+    try {
+      const files = await repoFiles(repo ?? "");
+      return { revision: files.revision, mtpHeads: files.mtpHeads };
     } catch (err) {
       return fail(reply, err);
     }
@@ -312,7 +354,9 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
         patch.displayName = name;
       }
       if (body.loadSettings !== undefined) {
-        patch.loadSettings = normalizeLoadSettings(body.loadSettings, rowMeta(row));
+        const settings = normalizeLoadSettings(body.loadSettings, rowMeta(row));
+        checkMtpSetting(settings, mtpSource(row));
+        patch.loadSettings = settings;
       }
       if (body.contextStages !== undefined || body.loadSettings !== undefined) {
         // Stages are checked against the base settings they extend, whichever
@@ -353,12 +397,47 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
       const draftRow = { ...row, loadSettings: settings, contextStages: stagesDraft ? { ...stagesDraft, enabled: true } : null };
       await refreshMemory();
       return {
-        fit: fitFor(weights, rowMeta(row), settings, row.id),
-        stages: (rowStages(draftRow)?.stages ?? []).map((_, i) => fitFor(weights, rowMeta(row), settingsForStage(draftRow, i + 1), row.id)),
+        fit: fitFor(weights, rowMeta(row), settings, row.id, mtpFitInput(row, settings)),
+        stages: (rowStages(draftRow)?.stages ?? []).map((_, i) => {
+          const stage = settingsForStage(draftRow, i + 1);
+          return fitFor(weights, rowMeta(row), stage, row.id, mtpFitInput(row, stage));
+        }),
       };
     } catch (err) {
       return fail(reply, err);
     }
+  });
+
+  /**
+   * Download a multi-token-prediction head for a model in the list — one from
+   * its repository's `MTP/` folder. The model stays usable throughout; the head
+   * is checked once it is on disk (it must carry a head, for this model's
+   * architecture, that the runtime can load) and only then used.
+   */
+  app.post("/v1/admin/local-models/model/mtp-head", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const id = idFrom(body.id);
+    if (!id) return reply.code(400).send({ error: "id is required" });
+    if (typeof body.path !== "string" || !body.path) return reply.code(400).send({ error: "path is required" });
+    try {
+      const row = await queueMtpHead(id, body.path);
+      return await reply.code(201).send(modelView(row, await routerModelStatuses()));
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  /** Remove a model's separate head (stopping its download), which turns MTP
+   * off unless the model carries its own. */
+  app.delete("/v1/admin/local-models/model/mtp-head", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const id = idFrom((request.query as { id?: unknown }).id);
+    if (!id) return reply.code(400).send({ error: "id is required" });
+    const row = await removeMtpHead(id);
+    if (!row) return reply.code(404).send({ error: "Model not found" });
+    const { deferred } = await afterModelWrite();
+    return { ...modelView(row, await routerModelStatuses()), appliesOnNextLoad: deferred };
   });
 
   app.delete("/v1/admin/local-models/model", async (request, reply) => {

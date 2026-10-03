@@ -23,6 +23,8 @@ export function toMessageUsage(usage: ApiMessageUsage | null): MessageUsage | un
     ttftMs: usage.ttftMs,
     cachedTokens: usage.cachedTokens,
     reusableTokens: usage.reusableTokens,
+    draftTokens: usage.draftTokens ?? null,
+    draftAcceptedTokens: usage.draftAcceptedTokens ?? null,
     context: usage.contextBreakdown ?? undefined,
   };
 }
@@ -38,6 +40,8 @@ export function usageFromTurn(u: TurnUsage): MessageUsage {
     ttftMs: u.ttft_ms ?? null,
     cachedTokens: u.cached_tokens ?? null,
     reusableTokens: u.reusable_tokens ?? null,
+    draftTokens: u.draft_tokens ?? null,
+    draftAcceptedTokens: u.draft_accepted_tokens ?? null,
     ...(u.omitted_attachments ? { omittedAttachments: u.omitted_attachments } : {}),
     context: u.context,
   };

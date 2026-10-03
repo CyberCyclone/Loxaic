@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   estimateLocalModel,
+  getHfMtpHeads,
   type ContextStagesConfig,
   type FitEstimate,
+  type HfMtpHead,
   type LoadSettingSpec,
   type LoadSettings,
   type LocalModel,
@@ -26,6 +28,8 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { FitBadge } from './FitBadge';
 import { ContextStagesEditor } from './ContextStagesEditor';
+import { MtpSection } from './MtpSection';
+import { mtpPanel, mtpParallelWarning, showsMtp, wantsRepoHeads, withMtp } from '@/lib/mtp';
 import {
   EMPTY_STAGES,
   GROUP_ORDER,
@@ -46,6 +50,12 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
 
 interface ModelSettingsModalProps {
   model: LocalModel | null;
+  /** The same model as the screen last polled it: what changes on the server
+   * while the sheet is open — a head downloading — is read from here, never
+   * from `model`, which is a snapshot so the draft is not reset each poll. */
+  live?: LocalModel | null;
+  onDownloadHead?: (id: string, path: string) => void;
+  onRemoveHead?: (id: string) => void;
   specs: LoadSettingSpec[];
   onClose: () => void;
   onSave: (
@@ -65,7 +75,7 @@ const ESTIMATE_DEBOUNCE_MS = 400;
  * "llama.cpp's default". A live estimate at the top says whether the model will
  * still fit with what has been chosen.
  */
-export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSettingsModalProps) {
+export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDownloadHead, onRemoveHead }: ModelSettingsModalProps) {
   const [draft, setDraftState] = useState<LoadSettings>({});
   const [text, setText] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -80,6 +90,29 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
   const reachable = useServerReachable();
   const [notice, setNotice] = useState<string | null>(null);
   const estimateSeq = useRef(0);
+  // The repository's MTP heads, for a model with none of its own: null while
+  // asking, 'error' when HuggingFace could not be asked.
+  // Kept with the model it answers for: the sheet stays mounted between
+  // models, and another model's answer must not show for a frame as this one's.
+  const [headsAnswer, setHeadsAnswer] = useState<{ id: string; heads: HfMtpHead[] | 'error' } | null>(null);
+  // Bumped by Retry, after the repository could not be asked.
+  const [headsAsk, setHeadsAsk] = useState(0);
+  const current = live && live.id === model?.id ? live : model;
+  const needsHeads = current ? wantsRepoHeads(current) : false;
+  const repoHeads = headsAnswer && headsAnswer.id === model?.id ? headsAnswer.heads : null;
+
+  useEffect(() => {
+    // Closing forgets the answer too, so reopening asks afresh from the first
+    // frame rather than showing the last answer while the new one comes.
+    if (!model) setHeadsAnswer(null);
+    if (!model || !needsHeads) return;
+    let cancelled = false;
+    setHeadsAnswer(null);
+    getHfMtpHeads(model.repo)
+      .then((d) => { if (!cancelled) setHeadsAnswer({ id: model.id, heads: d.mtpHeads }); })
+      .catch(() => { if (!cancelled) setHeadsAnswer({ id: model.id, heads: 'error' }); });
+    return () => { cancelled = true; };
+  }, [model, needsHeads, headsAsk]);
 
   useEffect(() => {
     if (!model) return;
@@ -120,13 +153,17 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, stagesDraft, model]);
 
-  if (!model) return null;
+  if (!model || !current) return null;
 
+  const panel = mtpPanel(current, repoHeads);
   const visible = specs.filter((s) => {
     if (s.key === 'cpuMoeLayers') return Boolean(model.meta.expertCount);
     if (s.key === 'vision') return model.hasVision;
+    if (s.key === 'mtp') return showsMtp(panel);
+    if (s.key === 'mtpDraftMax') return showsMtp(panel) && draft.mtp === true;
     return true;
   });
+  const mtpWarning = mtpParallelWarning(draft);
 
   const choose = (key: string, value: LoadSettings[string] | null) => {
     setDraftState((d) => setDraft(d, key, value ?? null));
@@ -190,7 +227,10 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody scrollEnabled>
+        {/* A drag on the sheet puts the keyboard away: the number fields open
+            iOS's number pad, which has no key that does. Without it the pad
+            covered Save for good. */}
+        <ModalBody scrollEnabled keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
           <VStack space="lg">
             <HStack testID="localModels.settingsSheet.estimate" space="sm" className="items-center rounded-md bg-muted/50 p-2">
               {fit && <FitBadge label={fit.label} testID="localModels.settingsSheet.fit" />}
@@ -216,7 +256,34 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
                   <Text size="sm" className="font-medium text-foreground">
                     {GROUP_TITLES[group]}
                   </Text>
-                  {inGroup.map((spec) => (
+                  {inGroup.map((spec) =>
+                    spec.key === 'mtp' ? (
+                      <MtpSection
+                        key={spec.key}
+                        panel={panel}
+                        on={draft.mtp === true}
+                        help={spec.help}
+                        reachable={reachable}
+                        onToggle={(on) => {
+                          setDraftState((d) => withMtp(d, on));
+                          if (!on) {
+                            setText((t) => ({ ...t, mtpDraftMax: '' }));
+                            setErrors((e) => {
+                              const next = { ...e };
+                              Reflect.deleteProperty(next, 'mtpDraftMax');
+                              return next;
+                            });
+                          }
+                        }}
+                        onDownloadHead={(path) => { onDownloadHead?.(model.id, path); }}
+                        onRetryHeads={() => { setHeadsAsk((n) => n + 1); }}
+                        onRemoveHead={() => {
+                          // The server turns MTP off with the head; the draft follows.
+                          if (!current.meta.mtp) setDraftState((d) => withMtp(d, false));
+                          onRemoveHead?.(model.id);
+                        }}
+                      />
+                    ) : (
                     <SettingControl
                       key={spec.key}
                       spec={spec}
@@ -228,7 +295,13 @@ export function ModelSettingsModal({ model, specs, onClose, onSave }: ModelSetti
                       onChoose={(v) => { choose(spec.key, v); }}
                       onType={(raw) => { typeNumber(spec, raw); }}
                     />
-                  ))}
+                    ),
+                  )}
+                  {group === 'speculative' && mtpWarning && (
+                    <Text testID="localModels.mtp.warning" size="2xs" className="text-warning">
+                      {mtpWarning}
+                    </Text>
+                  )}
                   {group === 'context' && (
                     <ContextStagesEditor
                       draft={stagesDraft}

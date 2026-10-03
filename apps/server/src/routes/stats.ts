@@ -243,6 +243,9 @@ export function statsRoutes(app: FastifyInstance) {
         ttftP50: sql<number>`percentile_cont(0.5) WITHIN GROUP (ORDER BY ${usageRecords.ttftMs})`,
         ttftP95: sql<number>`percentile_cont(0.95) WITHIN GROUP (ORDER BY ${usageRecords.ttftMs})`,
         ttftP99: sql<number>`percentile_cont(0.99) WITHIN GROUP (ORDER BY ${usageRecords.ttftMs})`,
+        // Speculative decoding, over the requests that drafted anything.
+        draftTokens: sql<number>`COALESCE(SUM(${usageRecords.draftTokens}), 0)::float8`,
+        draftAcceptedTokens: sql<number>`COALESCE(SUM(${usageRecords.draftAcceptedTokens}) FILTER (WHERE ${usageRecords.draftTokens} IS NOT NULL), 0)::float8`,
       })
       .from(usageRecords)
       .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
@@ -259,6 +262,10 @@ export function statsRoutes(app: FastifyInstance) {
       ttftP50: r.ttftP50,
       ttftP95: r.ttftP95,
       ttftP99: r.ttftP99,
+      // Null when nothing in the window was speculated — rendered "—", never
+      // 0%, which would read as an MTP head whose every guess was wrong.
+      mtpAcceptPct: r.draftTokens > 0 ? Math.floor((r.draftAcceptedTokens / r.draftTokens) * 1000) / 10 : null,
+      mtpDraftTokens: r.draftTokens > 0 ? r.draftTokens : null,
     }));
   });
 

@@ -33,8 +33,12 @@ const CHAT_TEMPLATE = [
   "{%- for message in messages %}{{ message.content }}{%- endfor %}",
 ].join('\n');
 
-/** A small but valid GGUF: header, the metadata the server reads, padding. */
-function buildGguf(padTo: number): Buffer {
+/** A small but valid GGUF: header, the metadata the server reads, padding.
+ * `mtp` writes a multi-token-prediction head's key and tensor infos (with no
+ * data behind them), which is what the server's reader looks for; `shared`
+ * marks a head that borrows the main model's tensors. */
+function buildGguf(padTo: number, opts: { arch?: string; mtp?: boolean; shared?: boolean } = {}): Buffer {
+  const arch = opts.arch ?? 'llama';
   const u32 = (n: number) => {
     const b = Buffer.alloc(4);
     b.writeUInt32LE(n);
@@ -47,15 +51,25 @@ function buildGguf(padTo: number): Buffer {
   };
   const str = (s: string) => Buffer.concat([u64(Buffer.byteLength(s)), Buffer.from(s)]);
   const kv = (key: string, type: number, value: Buffer) => Buffer.concat([str(key), u32(type), value]);
+  // Model keys before the tokenizer's: the server stops reading model keys at
+  // the first tokenizer key after the architecture.
+  const kvs = [
+    kv('general.architecture', 8, str(arch)),
+    kv(`${arch}.block_count`, 4, u32(opts.mtp ? 23 : 22)),
+    kv(`${arch}.context_length`, 4, u32(32768)),
+    ...(opts.mtp ? [kv(`${arch}.nextn_predict_layers`, 4, u32(1))] : []),
+    ...(opts.shared ? [kv(`${arch}.nextn_shared_target_tensors`, 7, Buffer.from([1]))] : []),
+    kv('tokenizer.chat_template', 8, str(CHAT_TEMPLATE)),
+  ];
+  const tensors = opts.mtp ? ['token_embd.weight', 'blk.22.nextn.eh_proj.weight', 'blk.22.nextn.enorm.weight'] : [];
   const out = Buffer.concat([
     Buffer.from('GGUF', 'ascii'),
     u32(3),
-    u64(0),
-    u64(4),
-    kv('general.architecture', 8, str('llama')),
-    kv('llama.block_count', 4, u32(22)),
-    kv('llama.context_length', 4, u32(32768)),
-    kv('tokenizer.chat_template', 8, str(CHAT_TEMPLATE)),
+    u64(tensors.length),
+    u64(kvs.length),
+    ...kvs,
+    // Tensor infos: name, one dimension of 1, type f32, offset 0.
+    ...tensors.map((name) => Buffer.concat([str(name), u32(1), u64(1), u32(0), u64(0)])),
   ]);
   return Buffer.concat([out, Buffer.alloc(Math.max(0, padTo - out.length))]);
 }
@@ -67,6 +81,15 @@ export interface MockHfRepos {
   huge: string;
   /** A vision model with a projector. */
   vision: string;
+  /** Downloadable; its own file carries an MTP head (Qwen3.8-27B's layout). */
+  mtpEmbedded: string;
+  /** Downloadable, with no head of its own; its `MTP/` folder publishes heads
+   * (Qwen3.8-Flash-Next's layout), and a split Q8_0 sits beside them. */
+  mtpSidecar: string;
+  /** Downloadable, its file carries an MTP head, and the fake router crashes
+   * loading it with MTP on (a model file named "Crashy") — the way llama.cpp
+   * b11342 crashes loading Qwen3.8-Flash-Next with unsloth's head. */
+  mtpCrashy: string;
 }
 
 export interface MockHf {
@@ -74,6 +97,8 @@ export interface MockHf {
   repos: MockHfRepos;
   /** The downloadable quant, and the one that is cancelled mid-download. */
   quants: { download: string; cancel: string; mightFit: string; wontFit: string };
+  /** The sidecar repo's heads, by role. */
+  mtpHeads: { good: string; shared: string; otherArch: string };
   stop: () => Promise<void>;
 }
 
@@ -108,6 +133,9 @@ export async function startMockHf(): Promise<MockHf> {
     tiny: `e2e-org/Tiny-${run}-GGUF`,
     huge: `e2e-org/Huge-${run}-GGUF`,
     vision: `pixel-lab/Vision-${run}-GGUF`,
+    mtpEmbedded: `e2e-org/Drafty-${run}-GGUF`,
+    mtpSidecar: `e2e-org/Sidecar-${run}-GGUF`,
+    mtpCrashy: `e2e-org/Crashy-${run}-GGUF`,
   };
   const sha = createHash('sha1').update(run).digest('hex');
   // 12 MB served at ~1.5 MB/s: about eight seconds, long enough to see
@@ -116,6 +144,20 @@ export async function startMockHf(): Promise<MockHf> {
   const tinySha = createHash('sha256').update(tinyBody).digest('hex');
   const cancelBody = buildGguf(24 * 1024 * 1024);
   const cancelSha = createHash('sha256').update(cancelBody).digest('hex');
+
+  const hash = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+  const draftyBody = buildGguf(2 * 1024 * 1024, { mtp: true });
+  const sidecarBody = buildGguf(2 * 1024 * 1024);
+  // ~9 MB at ~1.5 MB/s: six seconds of a head downloading beside a model
+  // that is already usable.
+  const headBody = buildGguf(9 * 1024 * 1024, { mtp: true });
+  const otherArchHead = buildGguf(256 * 1024, { mtp: true, arch: 'qwen35' });
+  const crashyBody = buildGguf(2 * 1024 * 1024, { mtp: true, arch: 'qwen4exp' });
+  const mtpHeads = {
+    good: 'MTP/mtp-Sidecar-Q8_0.gguf',
+    shared: 'MTP/mtp-Sidecar-shared-Q8_0.gguf',
+    otherArch: 'MTP/mtp-Other-Q4_0.gguf',
+  };
 
   interface File { path: string; size: number; sha: string; body?: Buffer }
   const tree: Record<string, File[]> = {
@@ -133,6 +175,18 @@ export async function startMockHf(): Promise<MockHf> {
       { path: 'Vision-Q4_K_M.gguf', size: 3 * GiB, sha: 'f'.repeat(64) },
       { path: 'mmproj-F16.gguf', size: 600 * 1024 * 1024, sha: 'a'.repeat(64) },
     ],
+    [repos.mtpEmbedded]: [{ path: 'Drafty-Q4_K_M.gguf', size: draftyBody.length, sha: hash(draftyBody), body: draftyBody }],
+    [repos.mtpSidecar]: [
+      { path: 'Sidecar-Q4_K_M.gguf', size: sidecarBody.length, sha: hash(sidecarBody), body: sidecarBody },
+      // A split quant beside the heads: `MTP/mtp-…-Q8_0.gguf` once joined it
+      // as quant "Q8_0" and made it vanish from the list.
+      { path: 'Q8_0/Sidecar-Q8_0-00001-of-00002.gguf', size: 2 * GiB, sha: 'b'.repeat(64) },
+      { path: 'Q8_0/Sidecar-Q8_0-00002-of-00002.gguf', size: GiB, sha: 'b'.repeat(64) },
+      { path: mtpHeads.good, size: headBody.length, sha: hash(headBody), body: headBody },
+      { path: mtpHeads.shared, size: 3 * 1024 * 1024, sha: 'c'.repeat(64) },
+      { path: mtpHeads.otherArch, size: otherArchHead.length, sha: hash(otherArchHead), body: otherArchHead },
+    ],
+    [repos.mtpCrashy]: [{ path: 'Crashy-Q4_K_M.gguf', size: crashyBody.length, sha: hash(crashyBody), body: crashyBody }],
   };
   const summaries = [
     {
@@ -150,9 +204,26 @@ export async function startMockHf(): Promise<MockHf> {
       id: repos.vision, author: 'pixel-lab', downloads: 800, likes: 9, pipeline_tag: 'image-text-to-text',
       cardData: { license: 'mit' }, gguf: { total: 4_000_000_000, architecture: 'gemma3', context_length: 131072 },
     },
+    {
+      id: repos.mtpEmbedded, author: 'e2e-org', downloads: 300, likes: 1, pipeline_tag: 'text-generation',
+      cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'llama', context_length: 32768 },
+    },
+    {
+      id: repos.mtpSidecar, author: 'e2e-org', downloads: 200, likes: 1, pipeline_tag: 'text-generation',
+      cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'llama', context_length: 32768 },
+    },
+    {
+      id: repos.mtpCrashy, author: 'e2e-org', downloads: 100, likes: 1, pipeline_tag: 'text-generation',
+      cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'qwen4exp', context_length: 32768 },
+    },
     // Not a chat model: the server must drop it from results.
     { id: `e2e-org/Image-${run}-GGUF`, author: 'e2e-org', pipeline_tag: 'text-to-image' },
   ];
+
+  // Repos whose file list answers 503, switched by a spec
+  // (`POST /__e2e/unreachable?repo=…&on=1`): how the settings sheet is shown
+  // a repository it could not ask, rather than one with no MTP head.
+  const unreachable = new Set<string>();
 
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
@@ -160,6 +231,13 @@ export async function startMockHf(): Promise<MockHf> {
       res.writeHead(code, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
     };
+    if (url.pathname === '/__e2e/unreachable' && req.method === 'POST') {
+      const repo = url.searchParams.get('repo') ?? '';
+      if (url.searchParams.get('on') === '1') unreachable.add(repo);
+      else unreachable.delete(repo);
+      send(200, { ok: true });
+      return;
+    }
     if (url.pathname === '/api/models') {
       const q = (url.searchParams.get('search') ?? '').toLowerCase();
       const author = url.searchParams.get('author');
@@ -184,6 +262,10 @@ export async function startMockHf(): Promise<MockHf> {
     }
     const treeMatch = /^\/api\/models\/([^/]+\/[^/]+)\/tree\/([0-9a-f]+)$/.exec(url.pathname);
     if (treeMatch) {
+      if (unreachable.has(treeMatch[1])) {
+        send(503, { error: 'Service Unavailable' });
+        return;
+      }
       const files = tree[treeMatch[1]] ?? [];
       send(
         200,
@@ -239,6 +321,7 @@ export async function startMockHf(): Promise<MockHf> {
     url: `http://127.0.0.1:${String(port)}`,
     repos,
     quants: { download: 'UD-Q4_K_XL', cancel: 'Q5_K_M', mightFit: 'Q8_0', wontFit: 'F16' },
+    mtpHeads,
     stop: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();

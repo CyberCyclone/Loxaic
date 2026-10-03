@@ -10,6 +10,7 @@ import { Icon } from '@/components/ui/icon';
 import { Switch } from '@/components/ui/switch';
 import { FitBadge } from './FitBadge';
 import { etaSeconds, formatBytes, formatEta, progressPercent } from '@/lib/localModels';
+import { mtpBadge } from '@/lib/mtp';
 import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
@@ -60,6 +61,7 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
   const loading = model.runtimeStatus === 'loading';
   const pinned = model.pinned === true;
   const reachable = useServerReachable();
+  const badge = mtpBadge(model);
 
   return (
     <Box testID={`localModels.row.${model.id}`} className="rounded-md border border-border bg-card p-3">
@@ -98,6 +100,15 @@ export function InstalledRow({ model, onToggle, onPin, onPause, onResume, onCanc
             {model.enabled
               ? `In everyone’s picker${loaded ? ' · loaded' : loading ? ' · loading' : ''}`
               : 'Not offered to users'}
+          </Text>
+        )}
+        {!inProgress && badge && (
+          <Text
+            testID={`localModels.mtpBadge.${model.id}`}
+            size="2xs"
+            className={`rounded-full px-2 py-0.5 ${badge.problem ? 'bg-destructive/15 text-destructive' : 'bg-primary/15 text-primary'}`}
+          >
+            {badge.text}
           </Text>
         )}
         {!inProgress && pinned && (

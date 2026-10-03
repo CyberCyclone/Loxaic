@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import Fastify from "fastify";
@@ -88,6 +89,9 @@ describe("admin local models", () => {
         app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, enabled: true } }),
         app.inject({ method: "PATCH", url: "/v1/admin/local-models/settings", payload: { backend: "cpu" } }),
         app.inject({ method: "DELETE", url: `/v1/admin/local-models/model?id=${encodeURIComponent(ready)}` }),
+        app.inject({ method: "POST", url: "/v1/admin/local-models/model/mtp-head", payload: { id: ready, path: "MTP/mtp-x.gguf" } }),
+        app.inject({ method: "DELETE", url: `/v1/admin/local-models/model/mtp-head?id=${encodeURIComponent(ready)}` }),
+        app.inject({ method: "GET", url: "/v1/admin/local-models/hf/mtp-heads?repo=a/b" }),
       ];
       for (const res of await Promise.all(calls)) expect(res.statusCode).toBe(403);
     } finally {
@@ -147,6 +151,83 @@ describe("admin local models", () => {
     });
     expect(good.statusCode).toBe(200);
     expect(good.json<{ loadSettings: unknown }>().loadSettings).toEqual({ ctxSize: 8192, gpuLayers: "all", flashAttention: "on" });
+  });
+
+  it("offers MTP only to a model with a head, and prices the head when it is on", async () => {
+    const refused = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { mtp: true } } });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json<{ error: string }>().error).toMatch(/no multi-token-prediction head/);
+    const lonely = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { mtpDraftMax: 2 } } });
+    expect(lonely.statusCode).toBe(400);
+    // A head that was refused is kept to say why, and drafts nothing.
+    const refusedHead = { path: "MTP/mtp-x.gguf", size: 1, sha256: "a".repeat(64), revision: "0".repeat(40), status: "failed", bytesDone: 0, error: "no", layers: null };
+    await db.update(localModels).set({ mtpHead: refusedHead }).where(eq(localModels.id, ready));
+    const onRefused = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { mtp: true } } });
+    expect(onRefused.statusCode).toBe(400);
+    // While one is still downloading, MTP may be switched on ahead of it.
+    await db.update(localModels).set({ mtpHead: { ...refusedHead, status: "downloading", error: null } }).where(eq(localModels.id, ready));
+    const ahead = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { mtp: true } } });
+    expect(ahead.statusCode).toBe(200);
+    expect(ahead.json<{ mtpSource: string }>().mtpSource).toBe("head-pending");
+    await db.update(localModels).set({ mtpHead: null, loadSettings: {} }).where(eq(localModels.id, ready));
+
+    await db.update(localModels).set({ meta: { nLayers: 28, nCtxTrain: 40960, mtp: { layers: 1 } } }).where(eq(localModels.id, ready));
+    const on = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: { mtp: true, mtpDraftMax: 2 } } });
+    expect(on.statusCode).toBe(200);
+    expect(on.json<{ mtpSource: string; mtpHead: unknown }>()).toMatchObject({ mtpSource: "embedded", mtpHead: null });
+    const estimate = async (loadSettings: Record<string, unknown>) =>
+      (await app.inject({ method: "POST", url: "/v1/admin/local-models/estimate", payload: { id: ready, loadSettings } })).json<{ fit: { requiredBytes: number } }>().fit
+        .requiredBytes;
+    expect(await estimate({ ctxSize: 8192, mtp: true })).toBeGreaterThan(await estimate({ ctxSize: 8192 }));
+    // A model that carries its own head is never sent to download another.
+    const head = await app.inject({ method: "POST", url: "/v1/admin/local-models/model/mtp-head", payload: { id: ready, path: "MTP/mtp-x.gguf" } });
+    expect(head.statusCode).toBe(409);
+    // Removing a head the model does not have changes nothing it carries itself.
+    const removed = await app.inject({ method: "DELETE", url: `/v1/admin/local-models/model/mtp-head?id=${encodeURIComponent(ready)}` });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json<{ loadSettings: unknown }>().loadSettings).toEqual({ mtp: true, mtpDraftMax: 2 });
+    await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: {} } });
+    await db.update(localModels).set({ meta: { nLayers: 28, nCtxTrain: 40960 } }).where(eq(localModels.id, ready));
+  });
+
+  it("lists a repository's MTP heads from its file list alone — no model card, no fit labels", async () => {
+    // The settings sheet reads only the heads; the details route behind the
+    // Discover sheet asks HuggingFace four times, the model card included.
+    const requests: string[] = [];
+    const sha = "a".repeat(40);
+    const hf: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://x");
+      requests.push(url.pathname);
+      res.writeHead(url.pathname.startsWith("/api/models/") ? 200 : 404, { "content-type": "application/json" });
+      if (url.pathname === "/api/models/test/heads") res.end(JSON.stringify({ id: "test/heads", sha }));
+      else if (url.pathname === `/api/models/test/heads/tree/${sha}`) {
+        res.end(
+          JSON.stringify([
+            { type: "file", path: "Heads-Q4_K_M.gguf", size: 100, lfs: { oid: "1".repeat(64), size: 100 } },
+            { type: "file", path: "MTP/mtp-Heads-Q8_0.gguf", size: 50, lfs: { oid: "2".repeat(64), size: 50 } },
+          ]),
+        );
+      } else res.end("{}");
+    });
+    await new Promise<void>((r) => hf.listen(0, "127.0.0.1", r));
+    const addr = hf.address();
+    vi.stubEnv("HF_ENDPOINT", `http://127.0.0.1:${String(typeof addr === "object" && addr ? addr.port : 0)}`);
+    try {
+      const res = await app.inject({ method: "GET", url: "/v1/admin/local-models/hf/mtp-heads?repo=test/heads" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ revision: sha, mtpHeads: [{ path: "MTP/mtp-Heads-Q8_0.gguf", size: 50, sha256: "2".repeat(64), shared: false }] });
+      expect(requests).toEqual(["/api/models/test/heads", `/api/models/test/heads/tree/${sha}`]);
+      expect((await app.inject({ method: "GET", url: "/v1/admin/local-models/hf/mtp-heads?repo=../x" })).statusCode).toBe(400);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.stubEnv("LOXAIC_INSTANCE_ID", host);
+      vi.stubEnv("LLAMA_MODE", "attach");
+      vi.stubEnv("LLAMA_ROUTER_URL", "http://127.0.0.1:1");
+      vi.stubEnv("LLAMA_DIR", dir);
+      vi.stubEnv("MOCK_INFERENCE", "false");
+      hf.closeAllConnections();
+      await new Promise<void>((r) => hf.close(() => { r(); }));
+    }
   });
 
   it("estimates unsaved settings", async () => {

@@ -176,6 +176,9 @@ export default function LocalModelsScreen() {
       />
       <ModelSettingsModal
         model={editing}
+        live={editing ? (lm.view?.models.find((m) => m.id === editing.id) ?? null) : null}
+        onDownloadHead={(id, path) => { void lm.downloadHead(id, path); }}
+        onRemoveHead={(id) => { void lm.removeHead(id); }}
         specs={lm.view?.settingSpecs ?? []}
         onClose={() => { setEditing(null); }}
         onSave={(id, patch) => lm.update(id, patch)}

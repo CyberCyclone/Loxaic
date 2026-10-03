@@ -8,6 +8,7 @@ type Value =
   | { type: "str"; v: string }
   | { type: "strs"; v: string[] }
   | { type: "f32"; v: number }
+  | { type: "bool"; v: boolean }
   | { type: "u32s"; v: number[] }
   | { type: "bools"; v: boolean[] };
 
@@ -26,8 +27,10 @@ function str(s: string): Buffer {
   return Buffer.concat([u64(bytes.length), bytes]);
 }
 
-export function buildGguf(kvs: [string, Value][], padTo = 0): Buffer {
-  const parts: Buffer[] = [Buffer.from("GGUF", "ascii"), u32(3), u64(0), u64(kvs.length)];
+/** `tensors` are tensor-info names, written after the keys as one-dimension
+ * entries with no data behind them — enough for the reader's MTP check. */
+export function buildGguf(kvs: [string, Value][], padTo = 0, tensors: string[] = []): Buffer {
+  const parts: Buffer[] = [Buffer.from("GGUF", "ascii"), u32(3), u64(tensors.length), u64(kvs.length)];
   for (const [key, value] of kvs) {
     parts.push(str(key));
     switch (value.type) {
@@ -40,6 +43,9 @@ export function buildGguf(kvs: [string, Value][], padTo = 0): Buffer {
         parts.push(u32(6), b);
         break;
       }
+      case "bool":
+        parts.push(u32(7), Buffer.from([value.v ? 1 : 0]));
+        break;
       case "str":
         parts.push(u32(8), str(value.v));
         break;
@@ -56,6 +62,7 @@ export function buildGguf(kvs: [string, Value][], padTo = 0): Buffer {
         break;
     }
   }
+  for (const name of tensors) parts.push(str(name), u32(1), u64(1), u32(0), u64(0));
   const out = Buffer.concat(parts);
   return padTo > out.length ? Buffer.concat([out, Buffer.alloc(padTo - out.length)]) : out;
 }

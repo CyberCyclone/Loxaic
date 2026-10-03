@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { estimateFit } from "../fit.ts";
-import { shapeCost, shapeFromKeys } from "../shape.ts";
+import { estimateFit, kvCacheBytes } from "../fit.ts";
+import { mtpCost, shapeCost, shapeFromKeys } from "../shape.ts";
 
 /**
  * The figures below are llama.cpp b11149's own allocation log for real files,
@@ -30,6 +30,24 @@ const QWEN35_9B = {
   "ssm.group_count": 16,
   "ssm.inner_size": 4096,
   full_attention_interval: 4,
+};
+
+/** Qwen3.5-0.8B (unsloth/Qwen3.5-0.8B-MTP-GGUF), whose file carries an MTP
+ * head — measured on b11342. */
+const QWEN35_08B = {
+  block_count: 25,
+  context_length: 262144,
+  embedding_length: 1024,
+  "attention.head_count": 8,
+  "attention.head_count_kv": 2,
+  "attention.key_length": 256,
+  "attention.value_length": 256,
+  "ssm.conv_kernel": 4,
+  "ssm.state_size": 128,
+  "ssm.group_count": 16,
+  "ssm.inner_size": 2048,
+  full_attention_interval: 4,
+  nextn_predict_layers: 1,
 };
 
 /** The beta box's model: same layout, larger, plus a multi-token-prediction layer. */
@@ -162,4 +180,75 @@ describe("model shape against llama.cpp's own allocations", () => {
     const shape = shapeOf({ ...QWEN35_9B, full_attention_interval: undefined, "ssm.state_size": undefined, "attention.head_count_kv": [4, 0, 4, 0] , block_count: 4 });
     expect(shapeCost(shape, { ...defaults, ctx: 1024 }).kvBytes).toBe(1024 * 2 * 4 * 512 * 2);
   });
+
+  it("prices multi-token prediction as llama.cpp b11342 allocates it", () => {
+    // `--spec-type draft-mtp`, 32k cells: the draft context's
+    // `llama_kv_cache: size = 64.00 MiB (32768 cells, 1 layers)` beside the
+    // main 384 MiB (6 layers), a draft compute buffer equal to the main one,
+    // and `llama_memory_recurrent` growing 19.27 → 57.80 MiB at n-max 2 (one
+    // slot) and to 308.25 MiB at n-max 3 with four slots.
+    const small = shapeOf(QWEN35_08B);
+    const input = { ...defaults, ctx: 32768, slots: 1 };
+    const main = shapeCost(small, input);
+    expect(main.kvBytes).toBe(384 * MiB);
+    within(main.recurrentBytes, 19.27 * MiB, 0.01);
+    const extra = mtpCost(small, 1, 2, input);
+    within(extra - main.computeBytes, 64 * MiB + (57.8 - 19.27) * MiB, 0.01);
+    const four = { ...input, slots: 4, ctx: 32768 };
+    within(mtpCost(small, 1, 3, four) - shapeCost(small, four).computeBytes - 64 * MiB, (308.25 - 77.06) * MiB, 0.01);
+  });
+
+  it("adds a separate head's weights and its draft context to the fit, and nothing when MTP is off", () => {
+    const small = shapeOf(QWEN35_08B);
+    const base = { weightBytes: 500 * MiB, shape: small, settings: { ctxSize: 32768, parallel: 1 }, memoryBytes: null, cpu: false };
+    const off = estimateFit(base).requiredBytes;
+    const on = estimateFit({ ...base, settings: { ...base.settings, mtp: true }, mtp: { layers: 1, headBytes: 100 * MiB } }).requiredBytes;
+    const draftOnly = mtpCost(small, 1, 3, { ...defaults, ctx: 32768, slots: 1 });
+    within(on - off, 100 * MiB + draftOnly, 0.001);
+  });
+
+  it("prices the draft cache in f16 on the rough path too, whatever the model's cache type", () => {
+    // A model whose file described no attention: the rough figures, but the
+    // same rule as the measured path — the draft context's own f16 cache.
+    const base = { weightBytes: 4096 * MiB, shape: null, nLayers: 32, memoryBytes: null, cpu: false };
+    const head = { layers: 1, headBytes: 0 };
+    const extra = (cache: string) => {
+      const settings = { ctxSize: 65536, cacheTypeK: cache, cacheTypeV: cache };
+      return estimateFit({ ...base, settings: { ...settings, mtp: true }, mtp: head }).requiredBytes - estimateFit({ ...base, settings }).requiredBytes;
+    };
+    expect(extra("q4_0")).toBe(extra("f16"));
+    expect(extra("q8_0")).toBe(extra("f16"));
+  });
+
+  it("keeps the draft cache off the GPU with the model's when cache offload is off", () => {
+    // b11342 builds the draft context from a copy of the model's own params
+    // (common_base_params_to_speculative: only the cache type is the draft's),
+    // so --no-kv-offload moves the head's cache to host memory as well.
+    const small = shapeOf(QWEN35_08B);
+    const base = { weightBytes: 500 * MiB, shape: small, settings: { ctxSize: 32768, parallel: 1, mtp: true }, mtp: { layers: 1, headBytes: 0 }, memoryBytes: null, cpu: false };
+    const onGpu = estimateFit(base).requiredBytes;
+    const offloaded = estimateFit({ ...base, settings: { ...base.settings, kvOffload: false } }).requiredBytes;
+    // The main 384 MiB and the head's 64 MiB (see the measurement above).
+    within(onGpu - offloaded, 384 * MiB + 64 * MiB, 0.001);
+    // Rough path, the same.
+    const rough = { ...base, shape: null, nLayers: 32 };
+    const roughOn = estimateFit(rough).requiredBytes;
+    const roughOff = estimateFit({ ...rough, settings: { ...rough.settings, kvOffload: false } }).requiredBytes;
+    expect(roughOn - roughOff).toBe(kvCacheBytes(32768, 32) + kvCacheBytes(32768, 1));
+  });
+
+  it("prices the draft cache in f16 even when the model's cache is q8_0 (Qwen3.8-27B on Pheonix, b11342)", () => {
+    // Vulkan, 65,536 cells, q8_0: `llama_kv_cache: size = 2176.00 MiB (16
+    // layers)` for the model and `256.00 MiB (1 layers) K (f16)` for the head;
+    // recurrent 149.62 MiB → 448.88 at n-max 2 → 598.50 at n-max 3.
+    const big = shapeOf(QWEN38_27B);
+    const input = { ...defaults, ctx: 65536, slots: 1, cacheTypeK: "q8_0", cacheTypeV: "q8_0" };
+    const main = shapeCost(big, input);
+    expect(main.kvBytes).toBe(2176 * MiB);
+    for (const [n, recurrent] of [[2, 448.88], [3, 598.5]] as const) {
+      const extra = mtpCost(big, 1, n, input) - main.computeBytes;
+      within(extra, 256 * MiB + (recurrent - 149.62) * MiB, 0.02);
+    }
+  });
 });
+

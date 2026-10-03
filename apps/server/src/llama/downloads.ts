@@ -13,15 +13,17 @@ import {
   rowFiles,
   rowMeta,
   rowMmproj,
+  rowMtpHead,
   updateLocalModelRow,
   type LocalModelMeta,
   type LocalModelRow,
   type ModelFile,
+  type MtpHead,
 } from "./catalog.ts";
 import { estimateFit, type FitEstimate } from "./fit.ts";
 import { readGgufFacts } from "./gguf.ts";
 import { thinkingFromTemplate } from "../inference/thinking.ts";
-import { downloadErrorMessage, hfHeaders, isRepoId, repoFiles, resolveUrl, type QuantFile } from "./hf.ts";
+import { downloadErrorMessage, hfHeaders, isRepoId, repoFiles, resolveUrl, type MtpHeadFile, type QuantFile } from "./hf.ts";
 import { llamaDir, modelFilePath, repoDir } from "./paths.ts";
 import { availableMemory, refreshMemory } from "./memory.ts";
 
@@ -91,6 +93,9 @@ export interface QueueInput {
   quant?: unknown;
   /** Path of a vision projector to download with it, or null/absent for none. */
   mmproj?: unknown;
+  /** Path of a multi-token-prediction head to download after it, or
+   * null/absent for none. */
+  mtpHead?: unknown;
   /** Required to queue a model estimated not to fit. */
   force?: unknown;
 }
@@ -111,6 +116,7 @@ export function fitFor(
   meta: LocalModelMeta,
   settings: Record<string, unknown> = {},
   forId?: string,
+  mtp: { layers: number; headBytes: number } | null = null,
 ): FitEstimate {
   const mem = availableMemory(forId);
   return {
@@ -121,6 +127,7 @@ export function fitFor(
       settings: settings as never,
       memoryBytes: mem.bytes,
       cpu: mem.cpu,
+      mtp,
     }),
     breakdown: mem.breakdown,
   };
@@ -148,6 +155,7 @@ export async function queueDownload(input: QueueInput, userId: string): Promise<
     mmproj = files.mmproj.find((m) => m.path === input.mmproj) ?? null;
     if (!mmproj) throw new DownloadError("That vision projector is not in this repository");
   }
+  const head = input.mtpHead !== undefined && input.mtpHead !== null ? pickMtpHead(files.mtpHeads, input.mtpHead) : null;
   const id = `${repo}:${option.quant}`;
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/.test(id)) {
     throw new DownloadError("This model's name cannot be used as a model id");
@@ -167,16 +175,7 @@ export async function queueDownload(input: QueueInput, userId: string): Promise<
       422,
     );
   }
-  const free = await freeDiskBytes();
-  const already = (await listLocalModelRows())
-    .filter((r) => r.status === "queued" || r.status === "downloading" || r.status === "paused")
-    .reduce((n, r) => n + r.sizeBytes - r.bytesDone, 0);
-  if (free !== null && free - already - sizeBytes < DISK_MARGIN_BYTES) {
-    throw new DownloadError(
-      `Not enough disk space: this needs ${gib(sizeBytes)}, and ${gib(Math.max(0, free - already))} is free after the downloads already queued.`,
-      507,
-    );
-  }
+  await checkDiskFor(sizeBytes + (head?.size ?? 0));
 
   const row = {
     id,
@@ -185,6 +184,7 @@ export async function queueDownload(input: QueueInput, userId: string): Promise<
     quant: option.quant,
     files: option.files satisfies ModelFile[],
     mmproj: mmproj satisfies ModelFile | null,
+    mtpHead: head ? queuedHead(head, files.revision) : null,
     sizeBytes,
     status: "queued" as const,
     bytesDone: 0,
@@ -200,6 +200,137 @@ export async function queueDownload(input: QueueInput, userId: string): Promise<
   if (!saved) throw new DownloadError("The download could not be recorded", 500);
   pump();
   return saved;
+}
+
+/** Refuse a download the disk cannot take, counting what is already queued:
+ * the remaining bytes of models still downloading and of heads not yet done. */
+async function checkDiskFor(bytes: number): Promise<void> {
+  const free = await freeDiskBytes();
+  if (free === null) return;
+  const rows = await listLocalModelRows();
+  const already =
+    rows
+      .filter((r) => r.status === "queued" || r.status === "downloading" || r.status === "paused")
+      .reduce((n, r) => n + r.sizeBytes - r.bytesDone, 0) +
+    rows.reduce((n, r) => {
+      const h = rowMtpHead(r);
+      // A failed model's bytes are not counted, and its queued head waits
+      // with it: neither moves until the model is retried.
+      if (r.status === "failed") return n;
+      return h && (h.status === "queued" || h.status === "downloading") ? n + h.size - (liveBytes.get(headKey(r.id)) ?? h.bytesDone) : n;
+    }, 0);
+  if (free - already - bytes < DISK_MARGIN_BYTES) {
+    throw new DownloadError(
+      `Not enough disk space: this needs ${gib(bytes)}, and ${gib(Math.max(0, free - already))} is free after the downloads already queued.`,
+      507,
+    );
+  }
+}
+
+/** A head picked from a repo's list, refusing one the runtime cannot load. */
+function pickMtpHead(heads: MtpHeadFile[], input: unknown): MtpHeadFile {
+  const head = heads.find((h) => h.path === input);
+  if (!head) throw new DownloadError("That MTP head is not in this repository");
+  if (head.shared) throw new DownloadError(SHARED_HEAD_REFUSAL);
+  return head;
+}
+
+const SHARED_HEAD_REFUSAL =
+  "That head borrows the main model's tensors (a \"shared\" head), which this llama.cpp build cannot load. Choose one without \"shared\" in its name.";
+
+function queuedHead(file: QuantFile, revision: string): MtpHead {
+  return { path: file.path, size: file.size, sha256: file.sha256, revision, status: "queued", bytesDone: 0, error: null, layers: null };
+}
+
+/** The `active`/`liveBytes` key of a model's head job — beside its own. */
+function headKey(id: string): string {
+  return `${id}#mtp`;
+}
+
+export function liveHeadBytesDone(row: LocalModelRow): number | null {
+  const head = rowMtpHead(row);
+  if (!head) return null;
+  return head.status === "ready" ? head.size : (liveBytes.get(headKey(row.id)) ?? head.bytesDone);
+}
+
+let headSettled: () => void = () => undefined;
+/** Called when a head finishes (or fails): the preset changes once a head is
+ * ready, since MTP may already be on, waiting for it. Registered by the admin
+ * routes, which own "anything that changes how models are served". */
+export function onMtpHeadSettled(fn: () => void): void {
+  headSettled = fn;
+}
+
+/**
+ * Queue a head for a model already in the list — usually an installed one,
+ * which is the point: Flash-Next's head is a 4 GB sidecar, and nobody should
+ * download 50 GB of model again to get it. Resolved at the repo's *current*
+ * revision, since the model may predate the repo's MTP folder; the head keeps
+ * its own revision and directory.
+ */
+export async function queueMtpHead(id: string, headPath: unknown): Promise<LocalModelRow> {
+  const row = await getLocalModelRow(id);
+  if (!row) throw new DownloadError("No such model", 404);
+  if (rowMeta(row).mtp) throw new DownloadError("This model carries its own MTP head; it needs no other", 409);
+  // A head downloads only for a ready model (see pump). Queued on a failed
+  // one it would wait for ever, its bytes reserved on the disk.
+  if (row.status === "failed") throw new DownloadError("This model's own download failed. Retry it first, then add a head.", 409);
+  const existing = rowMtpHead(row);
+  if (existing && existing.status !== "failed") {
+    throw new DownloadError("This model already has an MTP head. Remove it first to choose another.", 409);
+  }
+  const files = await repoFiles(row.repo);
+  const head = pickMtpHead(files.mtpHeads, headPath);
+  await checkDiskFor(head.size);
+  if (existing) await removeHeadFile(row, existing);
+  const saved = await updateLocalModelRow(id, { mtpHead: queuedHead(head, files.revision) });
+  if (!saved) throw new DownloadError("No such model", 404);
+  pump();
+  return saved;
+}
+
+/** Remove a model's head — stopping its download if one is running — and
+ * turn MTP off when nothing is left to draft with. */
+export async function removeMtpHead(id: string): Promise<LocalModelRow | null> {
+  const a = active.get(headKey(id));
+  if (a) {
+    a.intent = "cancel";
+    a.controller.abort();
+    await a.done;
+  }
+  const row = await getLocalModelRow(id);
+  if (!row) return null;
+  const head = rowMtpHead(row);
+  if (head) await removeHeadFile(row, head);
+  liveBytes.delete(headKey(id));
+  return updateLocalModelRow(id, { mtpHead: null, loadSettings: settingsWithoutHead(row) });
+}
+
+/** A model's settings once its head is gone or failed: MTP off, unless the
+ * model's own file carries a head. `checkMtpSetting` refuses `mtp: true` with
+ * nothing to draft with, and the settings sheet saves every field each time,
+ * so a stored `mtp: true` would fail every later save of the model. */
+function settingsWithoutHead(row: LocalModelRow): Record<string, unknown> {
+  const settings = { ...(row.loadSettings as Record<string, unknown>) };
+  if (!rowMeta(row).mtp) {
+    delete settings.mtp;
+    delete settings.mtpDraftMax;
+  }
+  return settings;
+}
+
+/** Delete a head's file and its `.part`, unless another row uses the same
+ * file (two quants of one repo sharing a head). */
+async function removeHeadFile(row: LocalModelRow, head: MtpHead): Promise<void> {
+  const others = (await listLocalModelRows()).filter((r) => r.id !== row.id && r.repo === row.repo);
+  const shared = others.some((r) => {
+    const h = rowMtpHead(r);
+    return h !== null && h.path === head.path && h.revision === head.revision;
+  });
+  if (shared) return;
+  const full = modelFilePath(row.repo, head.revision, head.path);
+  await rm(full, { force: true });
+  await rm(`${full}.part`, { force: true });
 }
 
 function gib(bytes: number): string {
@@ -248,6 +379,15 @@ export async function cancelDownload(id: string): Promise<boolean> {
 
 /** Remove a model's files. Other rows sharing the repo directory keep theirs. */
 export async function removeFiles(row: LocalModelRow): Promise<void> {
+  const headJob = active.get(headKey(row.id));
+  if (headJob) {
+    headJob.intent = "cancel";
+    headJob.controller.abort();
+    await headJob.done;
+  }
+  const head = rowMtpHead(row);
+  if (head) await removeHeadFile(row, head);
+  liveBytes.delete(headKey(row.id));
   const others = (await listLocalModelRows()).filter((r) => r.id !== row.id && r.repo === row.repo);
   const shared = new Set(
     others.filter((r) => r.revision === row.revision).flatMap((r) => [...rowFiles(r).map((f) => f.path), rowMmproj(r)?.path].filter(Boolean)),
@@ -270,8 +410,12 @@ function pump(): void {
     const rows = await listLocalModelRows().catch(() => [] as LocalModelRow[]);
     for (const row of rows) {
       if (active.size >= CONCURRENCY) break;
-      if (row.status !== "queued" || active.has(row.id)) continue;
-      start(row);
+      if (row.status === "queued" && !active.has(row.id)) {
+        start(row);
+        continue;
+      }
+      // A head waits for its model: it is only of use to a model that loads.
+      if (row.status === "ready" && rowMtpHead(row)?.status === "queued" && !active.has(headKey(row.id))) startHead(row);
     }
   })();
 }
@@ -299,6 +443,119 @@ function start(row: LocalModelRow): void {
     });
 }
 
+function startHead(row: LocalModelRow): void {
+  const key = headKey(row.id);
+  const controller = new AbortController();
+  const entry: Active = { controller, intent: null, done: Promise.resolve() };
+  active.set(key, entry);
+  entry.done = runHead(row, entry)
+    .catch(async (err: unknown) => {
+      if (entry.intent === "cancel") return;
+      const now = (await getLocalModelRow(row.id)) ?? row;
+      const head = rowMtpHead(now);
+      if (!head) return;
+      // Shutting down leaves it queued: the next boot picks it up and resumes
+      // from its `.part`.
+      const status = entry.intent === "shutdown" || entry.intent === "pause" ? "queued" : "failed";
+      const message = err instanceof Error ? err.message : String(err);
+      if (status === "failed") log(`Download of ${row.id}'s MTP head failed: ${message}`);
+      await updateLocalModelRow(row.id, {
+        mtpHead: { ...head, status, error: status === "failed" ? message : null, bytesDone: liveBytes.get(key) ?? head.bytesDone },
+        ...(status === "failed" ? { loadSettings: settingsWithoutHead(now) } : {}),
+      }).catch(() => undefined);
+      if (status === "failed") headSettled();
+    })
+    .finally(() => {
+      active.delete(key);
+      // A thrown failure leaves its live count behind otherwise, and a retry
+      // would start out reporting — and reserving disk as if — those bytes.
+      liveBytes.delete(key);
+      pump();
+    });
+}
+
+/**
+ * Download a model's separate MTP head, then read its header and refuse one
+ * llama.cpp would refuse at load time — a refused head would otherwise sit in
+ * the preset and fail every load of a model that worked before:
+ * - no head in it at all (no `nextn_predict_layers`, or no nextn tensors);
+ * - a head for another architecture (b11342 rejects the pairing);
+ * - a `shared` head, which borrows tensors b11342 has no way to lend.
+ * The model row stays `ready` throughout, and serving, on its own.
+ */
+async function runHead(row: LocalModelRow, entry: Active): Promise<void> {
+  const key = headKey(row.id);
+  const head = rowMtpHead(row);
+  if (!head) return;
+  if (!head.sha256) throw new Error(`HuggingFace published no checksum for ${path.basename(head.path)}, so it cannot be verified.`);
+  await updateLocalModelRow(row.id, { mtpHead: { ...head, status: "downloading", error: null } });
+  const target = modelFilePath(row.repo, head.revision, head.path);
+  liveBytes.set(key, 0);
+  const other = inflightTargets.get(target);
+  if (other) await other.catch(() => undefined);
+  const present = await stat(target).catch(() => null);
+  if (present?.size !== head.size) {
+    if (present) await rm(target, { force: true });
+    await mkdir(path.dirname(target), { recursive: true });
+    let lastFlush = Date.now();
+    // Progress writes are chained and awaited before this job ends: one still
+    // in flight when the head is removed would otherwise write the head back
+    // onto the row after `removeMtpHead` cleared it, with nothing to run it.
+    let flushing: Promise<void> = Promise.resolve();
+    const job = downloadFile(row.repo, head.revision, head, target, entry.controller.signal, (bytes) => {
+      liveBytes.set(key, bytes);
+      if (Date.now() - lastFlush > FLUSH_MS) {
+        lastFlush = Date.now();
+        flushing = flushing
+          .then(async () => {
+            if (entry.controller.signal.aborted) return;
+            const now = rowMtpHead((await getLocalModelRow(row.id)) ?? row);
+            if (now?.status === "downloading") await updateLocalModelRow(row.id, { mtpHead: { ...now, bytesDone: bytes } });
+          })
+          .catch(() => undefined);
+      }
+    });
+    inflightTargets.set(target, job);
+    try {
+      await job;
+    } finally {
+      inflightTargets.delete(target);
+      await flushing;
+    }
+  }
+
+  const facts = await readGgufFacts(target).catch(() => null);
+  const modelArch = rowMeta(row).architecture ?? null;
+  const refusal = !facts
+    ? "The head's header could not be read."
+    : !facts.mtp
+      ? `${path.basename(head.path)} carries no MTP head.`
+      : facts.mtp.sharedTarget
+        ? SHARED_HEAD_REFUSAL
+        : modelArch && facts.architecture !== modelArch
+          ? `${path.basename(head.path)} is a head for ${facts.architecture ?? "another model"}, not ${modelArch}.`
+          : null;
+  const latest = (await getLocalModelRow(row.id)) ?? row;
+  const current = rowMtpHead(latest) ?? head;
+  if (refusal) {
+    await removeHeadFile(row, head);
+    await updateLocalModelRow(row.id, {
+      mtpHead: { ...current, status: "failed", error: refusal, bytesDone: 0 },
+      loadSettings: settingsWithoutHead(latest),
+    });
+    liveBytes.delete(key);
+    log(`Refused ${row.id}'s MTP head: ${refusal}`);
+    headSettled();
+    return;
+  }
+  await updateLocalModelRow(row.id, {
+    mtpHead: { ...current, status: "ready", error: null, bytesDone: head.size, layers: facts?.mtp?.layers ?? null },
+  });
+  liveBytes.delete(key);
+  log(`Downloaded ${row.id}'s MTP head`);
+  headSettled();
+}
+
 async function run(row: LocalModelRow, entry: Active): Promise<void> {
   await updateLocalModelRow(row.id, { status: "downloading", error: null });
   const all = [...rowFiles(row), rowMmproj(row)].filter((x): x is ModelFile => x !== null);
@@ -323,7 +580,7 @@ async function run(row: LocalModelRow, entry: Active): Promise<void> {
     }
     if (present) await rm(target, { force: true });
     await mkdir(path.dirname(target), { recursive: true });
-    const job = downloadFile(row, file, target, entry.controller.signal, (fileBytes) => {
+    const job = downloadFile(row.repo, row.revision, file, target, entry.controller.signal, (fileBytes) => {
       liveBytes.set(row.id, doneBefore + fileBytes);
       if (Date.now() - lastFlush > FLUSH_MS) {
         lastFlush = Date.now();
@@ -355,7 +612,8 @@ async function hashExisting(file: string, hash: ReturnType<typeof createHash>): 
 }
 
 async function downloadFile(
-  row: LocalModelRow,
+  repo: string,
+  revision: string,
   file: ModelFile,
   target: string,
   signal: AbortSignal,
@@ -379,7 +637,7 @@ async function downloadFile(
   const combined = AbortSignal.any([signal, stall.signal]);
   let res: Response;
   try {
-    res = await fetch(resolveUrl(row.repo, row.revision, file.path), {
+    res = await fetch(resolveUrl(repo, revision, file.path), {
       signal: combined,
       headers: { ...hfHeaders(), ...(offset > 0 ? { Range: `bytes=${String(offset)}-` } : {}) },
     });
@@ -388,7 +646,7 @@ async function downloadFile(
     if (stall.signal.aborted) throw new Error(`${path.basename(file.path)} sent nothing for ${String(STALL_MS / 1000)} s. Resume to try again.`);
     throw err;
   }
-  if (!res.ok || !res.body) throw new Error(downloadErrorMessage(res.status, row.repo));
+  if (!res.ok || !res.body) throw new Error(downloadErrorMessage(res.status, repo));
   // A server that ignores Range answers 200 with the whole file: start over
   // rather than appending the beginning to the middle.
   if (offset > 0 && res.status !== 206) {
@@ -452,6 +710,9 @@ async function describeFile(row: LocalModelRow): Promise<LocalModelMeta | null> 
       expertCount: facts.expertCount,
       shape: facts.shape,
       thinking: thinkingFromTemplate(facts.chatTemplate),
+      // A shared head inside a model's own file would be nonsense; a head is
+      // only counted when the file can draft on its own.
+      mtp: facts.mtp && !facts.mtp.sharedTarget ? { layers: facts.mtp.layers } : null,
     };
   } catch (err) {
     log(`Could not read ${row.id}'s GGUF header: ${err instanceof Error ? err.message : String(err)}`);
@@ -473,13 +734,15 @@ export async function backfillHeaderFacts(rows: LocalModelRow[]): Promise<number
   let filled = 0;
   for (const row of rows) {
     const meta = rowMeta(row);
-    if (row.status !== "ready" || (meta.shape !== undefined && meta.thinking !== undefined)) continue;
+    if (row.status !== "ready" || (meta.shape !== undefined && meta.thinking !== undefined && meta.mtp !== undefined)) continue;
     const facts = await describeFile(row);
     if (!facts) {
       // A header that cannot be read is an answer too. Storing nothing, as this
       // once did, re-parsed an unreadable (or hostile) file on every boot for
       // ever, on the event loop, before the API was serving.
-      await updateLocalModelRow(row.id, { meta: { ...meta, shape: meta.shape ?? null, thinking: meta.thinking ?? null } }).catch(() => undefined);
+      await updateLocalModelRow(row.id, {
+        meta: { ...meta, shape: meta.shape ?? null, thinking: meta.thinking ?? null, mtp: meta.mtp ?? null },
+      }).catch(() => undefined);
       continue;
     }
     await updateLocalModelRow(row.id, { meta: { ...meta, ...facts } }).catch(() => undefined);
@@ -499,6 +762,10 @@ export function startDownloadQueue(logger: (m: string) => void): void {
     const rows = await listLocalModelRows().catch(() => [] as LocalModelRow[]);
     for (const r of rows) {
       if (r.status === "downloading") await updateLocalModelRow(r.id, { status: "paused" }).catch(() => undefined);
+      // A head has no pause: one cut off by a stop is simply queued again and
+      // resumes from its `.part`.
+      const head = rowMtpHead(r);
+      if (head?.status === "downloading") await updateLocalModelRow(r.id, { mtpHead: { ...head, status: "queued" } }).catch(() => undefined);
     }
     pump();
     const filled = await backfillHeaderFacts(rows).catch(() => 0);

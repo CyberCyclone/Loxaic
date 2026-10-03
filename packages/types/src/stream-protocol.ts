@@ -413,6 +413,11 @@ export interface TurnUsage {
    * present on every backend; null only when there was no previous request.
    * Evidence about our own prompt, not proof the backend reused it. */
   reusable_tokens?: number | null;
+  /** Speculative decoding (an MTP head): tokens the head drafted, and how
+   * many the model accepted. Absent when the request was not speculated —
+   * which is not the same as every guess being wrong. */
+  draft_tokens?: number;
+  draft_accepted_tokens?: number;
   /**
    * Attachments this turn's prompt left out because their class's budget was
    * full. Absent when nothing was dropped — and absence must be read as "this

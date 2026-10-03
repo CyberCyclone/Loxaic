@@ -1,6 +1,6 @@
 import type { LoadSettings } from "./load-settings.ts";
 import type { MemoryBreakdown } from "./memory.ts";
-import { CACHE_BYTES, DEFAULT_SLOTS, DEFAULT_UBATCH, shapeCost, type ModelShape } from "./shape.ts";
+import { CACHE_BYTES, DEFAULT_DRAFT_MAX, DEFAULT_SLOTS, DEFAULT_UBATCH, mtpCost, mtpKvBytes, shapeCost, type ModelShape } from "./shape.ts";
 
 /**
  * Will a model fit? The label every screen shows beside a download, computed
@@ -48,6 +48,10 @@ export interface FitInput {
    * backend is CPU. Null when unknown. */
   memoryBytes: number | null;
   cpu: boolean;
+  /** The MTP head the load drafts with, when MTP is on and the model has
+   * one: its layer count and, for a separate head file, that file's size (a
+   * head inside the model's own file is already in `weightBytes`). */
+  mtp?: { layers: number; headBytes: number } | null;
 }
 
 /** When no context length is set, llama.cpp's `--fit` shrinks the context down
@@ -75,35 +79,53 @@ export function estimateFit(input: FitInput): FitEstimate {
   let contextBytes: number;
   let kv: number;
   let basis: "shape" | "rough";
+  const mtp = input.mtp ?? null;
+  const draftMax = typeof settings.mtpDraftMax === "number" ? settings.mtpDraftMax : DEFAULT_DRAFT_MAX;
   if (input.shape) {
-    const cost = shapeCost(input.shape, {
+    const costInput = {
       ctx,
       slots: typeof settings.parallel === "number" ? settings.parallel : DEFAULT_SLOTS,
       ubatch: typeof settings.ubatchSize === "number" ? settings.ubatchSize : DEFAULT_UBATCH,
       cacheTypeK: String(settings.cacheTypeK ?? "f16"),
       cacheTypeV: String(settings.cacheTypeV ?? "f16"),
       flashAttention: settings.flashAttention !== "off",
-    });
+    };
+    const cost = shapeCost(input.shape, costInput);
     kv = cost.kvBytes;
     contextBytes = cost.recurrentBytes + cost.computeBytes;
+    if (mtp) {
+      // The head's cache is a KV cache like the model's, and goes where the
+      // model's does; the rest of its draft context stays on the GPU.
+      const headKv = mtpKvBytes(input.shape, mtp.layers, ctx);
+      kv += headKv;
+      contextBytes += mtpCost(input.shape, mtp.layers, draftMax, costInput) - headKv;
+    }
     basis = "shape";
   } else {
     kv = kvCacheBytes(ctx, nLayers, settings);
     // Compute buffers: a few hundred MB plus a slice proportional to the model.
     contextBytes = 300 * 1024 * 1024 + input.weightBytes * 0.05;
+    if (mtp) {
+      // The head's own cache and a second compute buffer, as roughly. The
+      // cache is f16 whatever the model's is, as on the measured path.
+      kv += kvCacheBytes(ctx, mtp.layers);
+      contextBytes += 300 * 1024 * 1024;
+    }
     basis = "rough";
   }
+  // A separate head's weights go wherever the model's do.
+  const headBytes = mtp?.headBytes ?? 0;
 
   let required: number;
   if (input.cpu) {
-    required = input.weightBytes + kv + contextBytes;
+    required = input.weightBytes + headBytes + kv + contextBytes;
   } else {
     // A partial offload only needs its share of the weights on the GPU. The
     // KV cache follows it unless offloading the cache was switched off.
     const layers = settings.gpuLayers;
     const share = typeof layers === "number" ? Math.min(1, layers / (nLayers + 1)) : 1;
     const kvOnGpu = settings.kvOffload === false ? 0 : kv;
-    required = input.weightBytes * share + kvOnGpu + contextBytes;
+    required = (input.weightBytes + headBytes) * share + kvOnGpu + contextBytes;
   }
   required = Math.round(required);
 

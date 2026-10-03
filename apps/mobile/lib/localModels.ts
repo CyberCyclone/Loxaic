@@ -136,7 +136,15 @@ export function cpuWarning(rt: LocalRuntimeView): { title: string; message: stri
 export function pollIntervalMs(view: LocalModelsView | null): number {
   if (!view) return 1000;
   const busyRuntime = ['not-installed', 'installing', 'starting'].includes(view.runtime.state);
-  const busyModel = view.models.some((m) => m.status === 'queued' || m.status === 'downloading');
+  // A queued head starts once its model is ready (the server's pump): behind
+  // a failed model it waits for a retry, and there is nothing to watch.
+  const busyModel = view.models.some(
+    (m) =>
+      m.status === 'queued' ||
+      m.status === 'downloading' ||
+      m.mtpHead?.status === 'downloading' ||
+      (m.mtpHead?.status === 'queued' && m.status === 'ready'),
+  );
   return busyRuntime || busyModel ? 1000 : 15_000;
 }
 
@@ -225,11 +233,12 @@ export const GROUP_TITLES: Record<LoadSettingSpec['group'], string> = {
   context: 'Context',
   offload: 'GPU offload',
   performance: 'Performance',
+  speculative: 'Multi-token prediction',
   sampling: 'Sampling defaults',
   other: 'Other',
 };
 
-export const GROUP_ORDER: LoadSettingSpec['group'][] = ['context', 'offload', 'performance', 'sampling', 'other'];
+export const GROUP_ORDER: LoadSettingSpec['group'][] = ['context', 'offload', 'performance', 'speculative', 'sampling', 'other'];
 
 // ── Extended context (YaRN stages) ──────────────────────────────────────────
 
