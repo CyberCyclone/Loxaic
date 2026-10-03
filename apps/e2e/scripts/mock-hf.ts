@@ -220,12 +220,24 @@ export async function startMockHf(): Promise<MockHf> {
     { id: `e2e-org/Image-${run}-GGUF`, author: 'e2e-org', pipeline_tag: 'text-to-image' },
   ];
 
+  // Repos whose file list answers 503, switched by a spec
+  // (`POST /__e2e/unreachable?repo=…&on=1`): how the settings sheet is shown
+  // a repository it could not ask, rather than one with no MTP head.
+  const unreachable = new Set<string>();
+
   const server: Server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
     const send = (code: number, body: unknown) => {
       res.writeHead(code, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
     };
+    if (url.pathname === '/__e2e/unreachable' && req.method === 'POST') {
+      const repo = url.searchParams.get('repo') ?? '';
+      if (url.searchParams.get('on') === '1') unreachable.add(repo);
+      else unreachable.delete(repo);
+      send(200, { ok: true });
+      return;
+    }
     if (url.pathname === '/api/models') {
       const q = (url.searchParams.get('search') ?? '').toLowerCase();
       const author = url.searchParams.get('author');
@@ -250,6 +262,10 @@ export async function startMockHf(): Promise<MockHf> {
     }
     const treeMatch = /^\/api\/models\/([^/]+\/[^/]+)\/tree\/([0-9a-f]+)$/.exec(url.pathname);
     if (treeMatch) {
+      if (unreachable.has(treeMatch[1])) {
+        send(503, { error: 'Service Unavailable' });
+        return;
+      }
       const files = tree[treeMatch[1]] ?? [];
       send(
         200,

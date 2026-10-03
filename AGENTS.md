@@ -1473,11 +1473,19 @@ replies.
   from the preset and unload it mid-use. Once on disk, a head is refused (`failed`, with the reason,
   file deleted) if it carries no head, is for another architecture, or is shared. Otherwise it is
   `ready` and `onMtpHeadSettled` re-syncs the preset, since MTP may already be on, waiting for it.
+  - **A head is refused (409) for a model whose own download failed.** It would never start, and
+    the screen kept polling every second for it. A head queued *before* its model failed waits for
+    the retry: neither the poll nor the disk check counts it while the model is `failed`.
+  - **Progress writes are awaited before a head job ends**, and a thrown failure drops its live byte
+    count. A write in flight when the head was removed could put the head back on the row with
+    nothing to run it; a stale count made a retry report, and reserve disk for, bytes it did not have.
 - **MTP can be on while its head is pending, and then writes nothing.** `presetLines` renders the
   MTP lines itself, and only once a head is ready. `checkMtpSetting` (refused when there is no
   source at all) runs where an admin writes, never inside `normalizeLoadSettings`. That function also
   re-validates stored rows on their way to the preset, and its fallback for an invalid row drops
-  *every* setting. Removing a head turns MTP off.
+  *every* setting. Removing a head turns MTP off, **and so does a head that is refused or fails**
+  (`settingsWithoutHead`). The sheet saves every field each time, so a stored `mtp: true` with no
+  head made every later save fail on a field the admin had not touched. Found in review.
 - **The quant grouping bug this exposed:** `quantOf("MTP/mtp-…-Q8_0.gguf")` is `Q8_0`. It joined
   the real split `Q8_0/` quant, failed "all parts and nothing else", and that quant vanished from
   Discover. `isMtpHeadFile` is llama.cpp's own rule (`mtp-` in the file name), case-sensitive at a
@@ -1490,7 +1498,12 @@ replies.
   - **The head's cache is f16 whatever the model's cache type is**: llama.cpp gives the draft
     context its own `--spec-draft-type-k/v`, default f16. On Pheonix the 27B with a q8_0 cache
     drafted from a 256 MiB f16 cache at 65K. The first estimate priced it at q8_0, because the Metal
-    measurement ran with an f16 main cache and could not tell the two apart.
+    measurement ran with an f16 main cache and could not tell the two apart. The rough path (a
+    model with no shape) does the same; it once read the model's cache type. Found in review.
+  - **The head's cache follows `kv-offload`** (`mtpKvBytes`, counted with the model's KV): b11342
+    builds the draft context from a copy of the model's params (`common_base_params_to_speculative`
+    swaps in only the cache type), so `--no-kv-offload` keeps it in host memory too. Read from the
+    source, not measured.
   - The embedded head's weights load only with MTP on (+335 MiB on one device for the 27B).
 - **Measured on Pheonix** (three V620s, Vulkan, b11342, one conversation at a time, 512 tokens,
   thinking off). Qwen3.8-27B UD-Q5_K_XL with its embedded head:
@@ -1513,6 +1526,10 @@ replies.
     the model load in b11342 and b11351, with `GGML_ASSERT(buffer)` in
     `llama_kv_cache::set_input_k_idxs`. That is ggml-org/llama.cpp#29811, where ggml-org's own head
     GGUF is reported to work.
+  - **Only the router's exact words count** (`isLoadFailure`: `model name=<name> failed to load`).
+    b11342 also answers "Failed to load image or audio file" for an attachment it cannot decode,
+    from a loaded model; the first matcher, any "failed to load", called that a failed load and
+    blamed the model's settings. Found in review.
   - **Where the cause comes from:** the router answers only `model name=… failed to load`.
     `explainModelLoadFailure` (router.ts) finds the newest
     `spawning server instance with name=<model> on port <P>` in the router's output and reads that
@@ -1526,6 +1543,13 @@ replies.
     drafted. A head still downloading writes nothing, so it is not blamed.
   - **The fake router** fails a load with MTP on for a model file named "Crashy". It prints the
     same spawn line and crash lines and returns the router's own words.
+- **The settings sheet asks for a repository's heads through `/hf/mtp-heads`**, two HuggingFace
+  requests (revision, file list), never the Discover details route, which also fetches the model
+  card and prices every quant. It says "Checking…" while it asks and "Couldn't check… Retry" when
+  HuggingFace does not answer (`mtpPanel`'s `checking` / `unreachable`); only a known-empty list
+  hides the group, so "could not ask" is never shown as "no head". The answer is kept with the
+  model id it is for, since the sheet stays mounted between models. The mock HuggingFace's
+  `POST /__e2e/unreachable?repo=…&on=1` makes a repo's file list answer 503 for that case.
 - **Concurrency is a warning, never a refusal** (`mtpParallelWarning`). Unsloth measured 0.81–0.87×
   at eight concurrent requests, and llama.cpp runs four slots when `parallel` is unset.
 - **Acceptance is null when nothing was drafted, never 0** (`usage_records.draft_tokens` /
@@ -1645,8 +1669,11 @@ replies.
   write to every component holding the same key; each had its own copy, so a default saved in
   Settings did not reach an open chat until it remounted. It resolves an update from a ref, not
   inside a state updater, which must stay pure.
-- **`gguf.ts` reads the template wherever it is**, and only a tokenizer key that comes *after*
-  the architecture ends the reading of model keys (GGUF does not fix key order). Tokenizer
+- **`gguf.ts` reads every key wherever it is** (GGUF does not fix key order), to the end of the
+  key section: a model key after the tokenizer's is still read, and the read does not stop at the
+  template. It used to stop at both, so a file with `nextn_predict_layers` after its tokenizer
+  lost its MTP head — for good, since the boot backfill skips a row whose facts are stored, null
+  included. Found in review. Tokenizer
   string arrays are skipped by `skipStrings`, which awaits only when its buffer runs low:
   ~10× faster across a 500k-string vocabulary.
 - **The native `+` sheet picks its page with `plusMenuPage`**, which falls back to the main page.

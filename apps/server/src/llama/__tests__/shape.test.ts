@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateFit } from "../fit.ts";
+import { estimateFit, kvCacheBytes } from "../fit.ts";
 import { mtpCost, shapeCost, shapeFromKeys } from "../shape.ts";
 
 /**
@@ -205,6 +205,36 @@ describe("model shape against llama.cpp's own allocations", () => {
     const on = estimateFit({ ...base, settings: { ...base.settings, mtp: true }, mtp: { layers: 1, headBytes: 100 * MiB } }).requiredBytes;
     const draftOnly = mtpCost(small, 1, 3, { ...defaults, ctx: 32768, slots: 1 });
     within(on - off, 100 * MiB + draftOnly, 0.001);
+  });
+
+  it("prices the draft cache in f16 on the rough path too, whatever the model's cache type", () => {
+    // A model whose file described no attention: the rough figures, but the
+    // same rule as the measured path — the draft context's own f16 cache.
+    const base = { weightBytes: 4096 * MiB, shape: null, nLayers: 32, memoryBytes: null, cpu: false };
+    const head = { layers: 1, headBytes: 0 };
+    const extra = (cache: string) => {
+      const settings = { ctxSize: 65536, cacheTypeK: cache, cacheTypeV: cache };
+      return estimateFit({ ...base, settings: { ...settings, mtp: true }, mtp: head }).requiredBytes - estimateFit({ ...base, settings }).requiredBytes;
+    };
+    expect(extra("q4_0")).toBe(extra("f16"));
+    expect(extra("q8_0")).toBe(extra("f16"));
+  });
+
+  it("keeps the draft cache off the GPU with the model's when cache offload is off", () => {
+    // b11342 builds the draft context from a copy of the model's own params
+    // (common_base_params_to_speculative: only the cache type is the draft's),
+    // so --no-kv-offload moves the head's cache to host memory as well.
+    const small = shapeOf(QWEN35_08B);
+    const base = { weightBytes: 500 * MiB, shape: small, settings: { ctxSize: 32768, parallel: 1, mtp: true }, mtp: { layers: 1, headBytes: 0 }, memoryBytes: null, cpu: false };
+    const onGpu = estimateFit(base).requiredBytes;
+    const offloaded = estimateFit({ ...base, settings: { ...base.settings, kvOffload: false } }).requiredBytes;
+    // The main 384 MiB and the head's 64 MiB (see the measurement above).
+    within(onGpu - offloaded, 384 * MiB + 64 * MiB, 0.001);
+    // Rough path, the same.
+    const rough = { ...base, shape: null, nLayers: 32 };
+    const roughOn = estimateFit(rough).requiredBytes;
+    const roughOff = estimateFit({ ...rough, settings: { ...rough.settings, kvOffload: false } }).requiredBytes;
+    expect(roughOn - roughOff).toBe(kvCacheBytes(32768, 32) + kvCacheBytes(32768, 1));
   });
 
   it("prices the draft cache in f16 even when the model's cache is q8_0 (Qwen3.8-27B on Pheonix, b11342)", () => {

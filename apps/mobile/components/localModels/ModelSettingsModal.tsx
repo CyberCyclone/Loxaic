@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   estimateLocalModel,
-  getHfRepoDetails,
+  getHfMtpHeads,
   type ContextStagesConfig,
   type FitEstimate,
   type HfMtpHead,
@@ -92,19 +92,27 @@ export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDown
   const estimateSeq = useRef(0);
   // The repository's MTP heads, for a model with none of its own: null while
   // asking, 'error' when HuggingFace could not be asked.
-  const [repoHeads, setRepoHeads] = useState<HfMtpHead[] | null | 'error'>(null);
+  // Kept with the model it answers for: the sheet stays mounted between
+  // models, and another model's answer must not show for a frame as this one's.
+  const [headsAnswer, setHeadsAnswer] = useState<{ id: string; heads: HfMtpHead[] | 'error' } | null>(null);
+  // Bumped by Retry, after the repository could not be asked.
+  const [headsAsk, setHeadsAsk] = useState(0);
   const current = live && live.id === model?.id ? live : model;
   const needsHeads = current ? wantsRepoHeads(current) : false;
+  const repoHeads = headsAnswer && headsAnswer.id === model?.id ? headsAnswer.heads : null;
 
   useEffect(() => {
+    // Closing forgets the answer too, so reopening asks afresh from the first
+    // frame rather than showing the last answer while the new one comes.
+    if (!model) setHeadsAnswer(null);
     if (!model || !needsHeads) return;
     let cancelled = false;
-    setRepoHeads(null);
-    getHfRepoDetails(model.repo)
-      .then((d) => { if (!cancelled) setRepoHeads(d.files.mtpHeads ?? []); })
-      .catch(() => { if (!cancelled) setRepoHeads('error'); });
+    setHeadsAnswer(null);
+    getHfMtpHeads(model.repo)
+      .then((d) => { if (!cancelled) setHeadsAnswer({ id: model.id, heads: d.mtpHeads }); })
+      .catch(() => { if (!cancelled) setHeadsAnswer({ id: model.id, heads: 'error' }); });
     return () => { cancelled = true; };
-  }, [model, needsHeads]);
+  }, [model, needsHeads, headsAsk]);
 
   useEffect(() => {
     if (!model) return;
@@ -268,6 +276,7 @@ export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDown
                           }
                         }}
                         onDownloadHead={(path) => { onDownloadHead?.(model.id, path); }}
+                        onRetryHeads={() => { setHeadsAsk((n) => n + 1); }}
                         onRemoveHead={() => {
                           // The server turns MTP off with the head; the draft follows.
                           if (!current.meta.mtp) setDraftState((d) => withMtp(d, false));

@@ -1,6 +1,6 @@
 import type { LoadSettings } from "./load-settings.ts";
 import type { MemoryBreakdown } from "./memory.ts";
-import { CACHE_BYTES, DEFAULT_DRAFT_MAX, DEFAULT_SLOTS, DEFAULT_UBATCH, mtpCost, shapeCost, type ModelShape } from "./shape.ts";
+import { CACHE_BYTES, DEFAULT_DRAFT_MAX, DEFAULT_SLOTS, DEFAULT_UBATCH, mtpCost, mtpKvBytes, shapeCost, type ModelShape } from "./shape.ts";
 
 /**
  * Will a model fit? The label every screen shows beside a download, computed
@@ -92,14 +92,25 @@ export function estimateFit(input: FitInput): FitEstimate {
     };
     const cost = shapeCost(input.shape, costInput);
     kv = cost.kvBytes;
-    contextBytes = cost.recurrentBytes + cost.computeBytes + (mtp ? mtpCost(input.shape, mtp.layers, draftMax, costInput) : 0);
+    contextBytes = cost.recurrentBytes + cost.computeBytes;
+    if (mtp) {
+      // The head's cache is a KV cache like the model's, and goes where the
+      // model's does; the rest of its draft context stays on the GPU.
+      const headKv = mtpKvBytes(input.shape, mtp.layers, ctx);
+      kv += headKv;
+      contextBytes += mtpCost(input.shape, mtp.layers, draftMax, costInput) - headKv;
+    }
     basis = "shape";
   } else {
     kv = kvCacheBytes(ctx, nLayers, settings);
     // Compute buffers: a few hundred MB plus a slice proportional to the model.
     contextBytes = 300 * 1024 * 1024 + input.weightBytes * 0.05;
-    // The head's own cache and a second compute buffer, as roughly.
-    if (mtp) contextBytes += kvCacheBytes(ctx, mtp.layers, settings) + 300 * 1024 * 1024;
+    if (mtp) {
+      // The head's own cache and a second compute buffer, as roughly. The
+      // cache is f16 whatever the model's is, as on the measured path.
+      kv += kvCacheBytes(ctx, mtp.layers);
+      contextBytes += 300 * 1024 * 1024;
+    }
     basis = "rough";
   }
   // A separate head's weights go wherever the model's do.

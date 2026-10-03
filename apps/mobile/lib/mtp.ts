@@ -7,6 +7,8 @@ import { formatBytes } from './localModels';
  * it. A model either carries its own head (Qwen3.8-27B), has a separate one
  * downloaded or on its way (Flash-Next's `MTP/` folder), or can be given one
  * from its repository, or has none at all, and then the sheet shows nothing.
+ * While the repository is being asked, or when it could not be, the sheet
+ * says that instead: "could not ask" is never shown as "none".
  */
 
 export type MtpPanel =
@@ -15,8 +17,10 @@ export type MtpPanel =
   | { kind: 'head-downloading'; name: string; percent: number; queued: boolean }
   | { kind: 'head-failed'; name: string; error: string }
   | { kind: 'choose'; heads: MtpHeadChoice[] }
-  /** The repository's heads have not been listed yet (or could not be). */
-  | { kind: 'unknown' }
+  /** The repository's heads are being listed. */
+  | { kind: 'checking' }
+  /** They could not be: HuggingFace did not answer. Never read as "none". */
+  | { kind: 'unreachable' }
   | { kind: 'none' };
 
 export interface MtpHeadChoice {
@@ -48,7 +52,8 @@ export function mtpPanel(model: Pick<LocalModel, 'mtpSource' | 'mtpHead' | 'meta
     const percent = head.size > 0 ? Math.max(0, Math.min(100, Math.floor((head.bytesDone / head.size) * 100))) : 0;
     return { kind: 'head-downloading', name, percent, queued: head.status === 'queued' };
   }
-  if (repoHeads === null || repoHeads === 'error') return { kind: 'unknown' };
+  if (repoHeads === null) return { kind: 'checking' };
+  if (repoHeads === 'error') return { kind: 'unreachable' };
   if (repoHeads.length === 0) return { kind: 'none' };
   return { kind: 'choose', heads: headChoices(repoHeads) };
 }
@@ -78,9 +83,11 @@ export function defaultMtpHead(heads: HfMtpHead[] | undefined): HfMtpHead | null
   return usable.find((h) => /q8_0/i.test(headName(h.path))) ?? usable.at(0) ?? null;
 }
 
-/** Whether the sheet shows the MTP group at all. */
+/** Whether the sheet shows the MTP group at all: hidden only once the
+ * repository is known to publish no head. Checking and could-not-check are
+ * said, since "no head" is a claim neither can make. */
 export function showsMtp(panel: MtpPanel): boolean {
-  return panel.kind !== 'none' && panel.kind !== 'unknown';
+  return panel.kind !== 'none';
 }
 
 /** MTP can be switched on once a head exists or is on its way; it starts

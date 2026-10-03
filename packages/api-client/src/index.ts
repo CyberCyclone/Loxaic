@@ -682,6 +682,12 @@ export async function searchHfModels(query: {
   return adminFetch(`/v1/admin/local-models/hf/search?${params.toString()}`);
 }
 
+/** A repository's MTP heads alone, at its current revision — what the
+ * settings sheet needs, without the model card the details route fetches. */
+export async function getHfMtpHeads(repo: string): Promise<{ revision: string; mtpHeads: HfMtpHead[] }> {
+  return adminFetch(`/v1/admin/local-models/hf/mtp-heads?repo=${encodeURIComponent(repo)}`);
+}
+
 export async function getHfRepoDetails(repo: string): Promise<HfRepoDetails> {
   return adminFetch(`/v1/admin/local-models/hf/details?repo=${encodeURIComponent(repo)}`);
 }

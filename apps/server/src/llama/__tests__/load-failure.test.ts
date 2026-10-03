@@ -80,7 +80,12 @@ describe("why a model failed to load", () => {
       expect(text).toContain("An admin can check its load settings");
     }
     expect(isLoadFailure("model name=a/b@Q4 failed to load")).toBe(true);
+    expect(isLoadFailure('Model server error 500: {"error":{"code":500,"message":"model name=a/b@Q4 failed to load"}}')).toBe(true);
     expect(isLoadFailure("Could not reach the model server")).toBe(false);
+    // b11342's other "failed to load": a request's image or audio it could not
+    // decode, from a model that is loaded and fine. Calling that a failed load
+    // would blame the model's settings for a bad attachment.
+    expect(isLoadFailure('Model server error 500: {"error":{"code":500,"message":"Failed to load image or audio file"}}')).toBe(false);
   });
 });
 

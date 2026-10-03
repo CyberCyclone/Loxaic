@@ -328,7 +328,7 @@ describe("GGUF header", () => {
     });
   });
 
-  it("reads the chat template past the vocabulary arrays, and nothing else after the tokenizer", async () => {
+  it("reads the chat template past the vocabulary arrays, and model keys wherever they come", async () => {
     const file = path.join(dir, "template.gguf");
     const template = "{%- if enable_thinking is defined and enable_thinking is false %}<think></think>{%- endif %}";
     writeFileSync(
@@ -338,8 +338,8 @@ describe("GGUF header", () => {
         ["qwen35.block_count", { type: "u32", v: 32 }],
         ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`) }],
         ["tokenizer.ggml.token_type", { type: "u32s", v: Array.from({ length: 5000 }, () => 1) }],
-        // A real file never puts an architecture key here; one that does is
-        // not believed.
+        // GGUF fixes no key order: a model key after the tokenizer's is
+        // still the model's.
         ["qwen35.context_length", { type: "u32", v: 999 }],
         ["tokenizer.chat_template", { type: "str", v: template }],
       ]),
@@ -347,10 +347,10 @@ describe("GGUF header", () => {
     const facts = await readGgufFacts(file);
     expect(facts.chatTemplate).toBe(template);
     expect(facts.nLayers).toBe(32);
-    expect(facts.nCtxTrain).toBeNull();
+    expect(facts.nCtxTrain).toBe(999);
   });
 
-  it("reads the attention layout, per-layer arrays included, and stops at the tokenizer", async () => {
+  it("reads the attention layout, per-layer arrays included, before and after the tokenizer", async () => {
     const file = path.join(dir, "shape.gguf");
     writeFileSync(
       file,
@@ -366,7 +366,7 @@ describe("GGUF header", () => {
         ["gemma4.attention.sliding_window_pattern", { type: "bools", v: [true, true, true, true, true, false] }],
         ["gemma4.rope.scaling.factor", { type: "f32", v: 4 }],
         ["tokenizer.ggml.tokens", { type: "strs", v: Array.from({ length: 5000 }, (_, i) => `tok${String(i)}`) }],
-        // Past the tokenizer: never read.
+        // Past the tokenizer, and read all the same.
         ["gemma4.attention.shared_kv_layers", { type: "u32", v: 3 }],
       ]),
     );
@@ -376,7 +376,7 @@ describe("GGUF header", () => {
       nHeadKv: [2, 2, 2, 2, 2, 4],
       slidingWindow: 512,
       swaLayers: [true, true, true, true, true, false],
-      sharedKvLayers: 0,
+      sharedKvLayers: 3,
       ropeScaling: { factor: 4 },
     });
   });
@@ -482,6 +482,29 @@ describe("GGUF header", () => {
       const file = path.join(dir, "mtp-shared.gguf");
       writeFileSync(file, model({ nextn: 1, tensors: true, shared: true }));
       await expect(readGgufFacts(file)).resolves.toMatchObject({ mtp: { layers: 1, sharedTarget: true } });
+    });
+
+    it("reads model keys written after the tokenizer's, the head and the layer count included", async () => {
+      // GGUF does not fix key order. A file that puts its tokenizer between
+      // the architecture and the rest of its model keys must not lose them —
+      // and a lost head would stay lost, since the boot backfill skips a row
+      // whose facts are stored, null included.
+      const file = path.join(dir, "mtp-late-keys.gguf");
+      writeFileSync(
+        file,
+        buildGguf(
+          [
+            ["general.architecture", { type: "str", v: "qwen35" }],
+            ["tokenizer.ggml.tokens", { type: "strs", v: tokens }],
+            ["tokenizer.chat_template", { type: "str", v: "{{ x }}" }],
+            ["qwen35.block_count", { type: "u32", v: 65 }],
+            ["qwen35.nextn_predict_layers", { type: "u32", v: 1 }],
+          ],
+          0,
+          tensorNames(64, true),
+        ),
+      );
+      await expect(readGgufFacts(file)).resolves.toMatchObject({ nLayers: 65, chatTemplate: "{{ x }}", mtp: { layers: 1, sharedTarget: false } });
     });
 
     it("keeps every other fact when the tensor list is malformed or claims too many tensors", async () => {

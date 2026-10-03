@@ -131,10 +131,36 @@ describe('multi-token prediction', () => {
 
   it('offers no MTP setting for a model with no head anywhere', async () => {
     await openModelSheet(plain);
-    // The repository is asked for heads as the sheet opens; give it the time.
-    await browser.pause(1500);
+    // The repository is asked for heads as the sheet opens, and the sheet
+    // says so from its first frame: once that line is gone the answer is in,
+    // so the absences below mean "no head", not "not asked yet".
+    await waitForAbsent('localModels.mtp.checking', 20_000);
+    expect(await isVisible('localModels.mtp.unreachable')).toBe(false);
     expect(await isVisible('localModels.setting.mtp.on')).toBe(false);
     expect(await isVisible('localModels.mtp.source')).toBe(false);
+    await tap('localModels.settingsSheet.close');
+    await waitForAbsent('localModels.setting.displayName', 20_000);
+  });
+
+  it("says when it could not ask the repository for heads, and asks again on Retry", async () => {
+    const unreachable = (on: boolean) =>
+      fetch(`${hf.url}/__e2e/unreachable?repo=${encodeURIComponent(hf.repos.tiny)}&on=${on ? '1' : '0'}`, { method: 'POST' });
+    await unreachable(true);
+    try {
+      await openModelSheet(plain);
+      await scrollTo('localModels.mtp.unreachable');
+      await waitForTextIn('localModels.mtp.unreachable', "Couldn't check");
+      // Nothing to switch on while it does not know.
+      expect(await isVisible('localModels.setting.mtp.on')).toBe(false);
+      await shot('mtp-heads-unreachable');
+      await unreachable(false);
+      await tap('localModels.mtp.retry');
+      await waitForAbsent('localModels.mtp.unreachable', 20_000);
+      await waitForAbsent('localModels.mtp.checking', 20_000);
+      expect(await isVisible('localModels.setting.mtp.on')).toBe(false);
+    } finally {
+      await unreachable(false);
+    }
     await tap('localModels.settingsSheet.close');
     await waitForAbsent('localModels.setting.displayName', 20_000);
   });

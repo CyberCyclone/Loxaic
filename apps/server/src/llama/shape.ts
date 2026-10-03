@@ -229,16 +229,24 @@ export const DEFAULT_DRAFT_MAX = 3;
  * (hybrid models only) kept `draftMax` more times per slot.
  */
 export function mtpCost(shape: ModelShape, layers: number, draftMax: number, input: ShapeCostInput): number {
+  const main = shapeCost(shape, input);
+  return Math.round(mtpKvBytes(shape, layers, input.ctx) + main.computeBytes + shape.recurrentBytesPerSeq * input.slots * draftMax);
+}
+
+/** The head's own KV cache, the part of `mtpCost` that follows the model's
+ * cache offloading: b11342 builds the draft context from a copy of the
+ * model's params, so `--no-kv-offload` keeps it in host memory as well. */
+export function mtpKvBytes(shape: ModelShape, layers: number, ctx: number): number {
   // f16, not the model's cache type: llama.cpp gives the draft context its own
   // (`--spec-draft-type-k/v`, default f16), which Loxaic does not set.
   const k = 2;
   const v = 2;
   // The head sits after the main layers; a per-layer array that covers it says
-  // its width, otherwise the widest layer's stands in.
+  // its width, otherwise the widest layer's stands in. `||`, not `??`: the head
+  // is a full-attention layer, so a 0 there cannot be its width — and reading
+  // it as one would price the head's cache at nothing.
   const heads = Array.isArray(shape.nHeadKv)
     ? (shape.nHeadKv[shape.nLayers] || Math.max(0, ...shape.nHeadKv.slice(0, 4096)))
     : shape.nHeadKv;
-  const kv = layers * input.ctx * heads * (shape.keyLength * k + shape.valueLength * v);
-  const main = shapeCost(shape, input);
-  return Math.round(kv + main.computeBytes + shape.recurrentBytesPerSeq * input.slots * draftMax);
+  return layers * ctx * heads * (shape.keyLength * k + shape.valueLength * v);
 }

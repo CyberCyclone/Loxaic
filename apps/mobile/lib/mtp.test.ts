@@ -67,9 +67,19 @@ describe('the MTP panel', () => {
     expect(choose.heads.slice(1).every((h) => h.disabledReason === null)).toBe(true);
     expect(mtpCanTurnOn(choose)).toBe(false);
     expect(showsMtp(mtpPanel(model(), []))).toBe(false);
-    // Not yet asked, or could not ask: say nothing rather than "no head".
-    expect(showsMtp(mtpPanel(model(), null))).toBe(false);
-    expect(showsMtp(mtpPanel(model(), 'error'))).toBe(false);
+  });
+
+  it('says it is checking the repository, and says so when it could not, never "no head"', () => {
+    // Asking, and could not ask, are both shown — and neither can turn MTP
+    // on. "None" is the only state that hides the group.
+    const checking = mtpPanel(model(), null);
+    expect(checking.kind).toBe('checking');
+    expect(showsMtp(checking)).toBe(true);
+    expect(mtpCanTurnOn(checking)).toBe(false);
+    const unreachable = mtpPanel(model(), 'error');
+    expect(unreachable.kind).toBe('unreachable');
+    expect(showsMtp(unreachable)).toBe(true);
+    expect(mtpCanTurnOn(unreachable)).toBe(false);
   });
 
   it('defaults the download dialog to the smallest self-contained Q8_0, never a shared head', () => {
@@ -101,11 +111,15 @@ describe('MTP settings', () => {
     expect(describeMtpAcceptance(undefined, undefined)).toBeNull();
   });
 
-  it('polls quickly while a head downloads', () => {
-    const view = (h: ReturnType<typeof head> | null) =>
-      ({ runtime: { state: 'running' }, models: [{ status: 'ready', mtpHead: h }] }) as never;
+  it('polls quickly while a head downloads, or waits on a ready model to start', () => {
+    const view = (h: ReturnType<typeof head> | null, status = 'ready') =>
+      ({ runtime: { state: 'running' }, models: [{ status, mtpHead: h }] }) as never;
     expect(pollIntervalMs(view(head('downloading')))).toBe(1000);
+    expect(pollIntervalMs(view(head('queued')))).toBe(1000);
     expect(pollIntervalMs(view(head('ready')))).toBe(15_000);
+    // A head waits for its model: queued behind a failed one it does not move
+    // until someone retries the model, so there is nothing to watch.
+    expect(pollIntervalMs(view(head('queued'), 'failed'))).toBe(15_000);
   });
 });
 

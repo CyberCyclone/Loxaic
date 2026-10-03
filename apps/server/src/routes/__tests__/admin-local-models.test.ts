@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import Fastify from "fastify";
@@ -90,6 +91,7 @@ describe("admin local models", () => {
         app.inject({ method: "DELETE", url: `/v1/admin/local-models/model?id=${encodeURIComponent(ready)}` }),
         app.inject({ method: "POST", url: "/v1/admin/local-models/model/mtp-head", payload: { id: ready, path: "MTP/mtp-x.gguf" } }),
         app.inject({ method: "DELETE", url: `/v1/admin/local-models/model/mtp-head?id=${encodeURIComponent(ready)}` }),
+        app.inject({ method: "GET", url: "/v1/admin/local-models/hf/mtp-heads?repo=a/b" }),
       ];
       for (const res of await Promise.all(calls)) expect(res.statusCode).toBe(403);
     } finally {
@@ -186,6 +188,46 @@ describe("admin local models", () => {
     expect(removed.json<{ loadSettings: unknown }>().loadSettings).toEqual({ mtp: true, mtpDraftMax: 2 });
     await app.inject({ method: "PATCH", url: "/v1/admin/local-models/model", payload: { id: ready, loadSettings: {} } });
     await db.update(localModels).set({ meta: { nLayers: 28, nCtxTrain: 40960 } }).where(eq(localModels.id, ready));
+  });
+
+  it("lists a repository's MTP heads from its file list alone — no model card, no fit labels", async () => {
+    // The settings sheet reads only the heads; the details route behind the
+    // Discover sheet asks HuggingFace four times, the model card included.
+    const requests: string[] = [];
+    const sha = "a".repeat(40);
+    const hf: Server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://x");
+      requests.push(url.pathname);
+      res.writeHead(url.pathname.startsWith("/api/models/") ? 200 : 404, { "content-type": "application/json" });
+      if (url.pathname === "/api/models/test/heads") res.end(JSON.stringify({ id: "test/heads", sha }));
+      else if (url.pathname === `/api/models/test/heads/tree/${sha}`) {
+        res.end(
+          JSON.stringify([
+            { type: "file", path: "Heads-Q4_K_M.gguf", size: 100, lfs: { oid: "1".repeat(64), size: 100 } },
+            { type: "file", path: "MTP/mtp-Heads-Q8_0.gguf", size: 50, lfs: { oid: "2".repeat(64), size: 50 } },
+          ]),
+        );
+      } else res.end("{}");
+    });
+    await new Promise<void>((r) => hf.listen(0, "127.0.0.1", r));
+    const addr = hf.address();
+    vi.stubEnv("HF_ENDPOINT", `http://127.0.0.1:${String(typeof addr === "object" && addr ? addr.port : 0)}`);
+    try {
+      const res = await app.inject({ method: "GET", url: "/v1/admin/local-models/hf/mtp-heads?repo=test/heads" });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ revision: sha, mtpHeads: [{ path: "MTP/mtp-Heads-Q8_0.gguf", size: 50, sha256: "2".repeat(64), shared: false }] });
+      expect(requests).toEqual(["/api/models/test/heads", `/api/models/test/heads/tree/${sha}`]);
+      expect((await app.inject({ method: "GET", url: "/v1/admin/local-models/hf/mtp-heads?repo=../x" })).statusCode).toBe(400);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.stubEnv("LOXAIC_INSTANCE_ID", host);
+      vi.stubEnv("LLAMA_MODE", "attach");
+      vi.stubEnv("LLAMA_ROUTER_URL", "http://127.0.0.1:1");
+      vi.stubEnv("LLAMA_DIR", dir);
+      vi.stubEnv("MOCK_INFERENCE", "false");
+      hf.closeAllConnections();
+      await new Promise<void>((r) => hf.close(() => { r(); }));
+    }
   });
 
   it("estimates unsaved settings", async () => {

@@ -14,8 +14,9 @@ import { shapeFromKeys, type ModelShape } from "./shape.ts";
  * Reads the metadata key/value section sequentially through a small buffer.
  * The tokenizer's arrays (hundreds of thousands of strings) are skipped, never
  * held: the one tokenizer key wanted is the chat template, which is what says
- * whether the model takes a thinking level (inference/thinking.ts), and it
- * usually comes after them. The read stops as soon as it has it.
+ * whether the model takes a thinking level (inference/thinking.ts). Every key
+ * is read to the end of the section: GGUF does not fix their order, so a
+ * model key may come after the tokenizer's, and few come after the template.
  */
 
 export interface GgufFacts {
@@ -242,7 +243,6 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
     const kvCount = Math.min(declaredKv, MAX_KV);
     const allKeysRead = declaredKv <= MAX_KV;
     const keys: Record<string, number | boolean | string | number[] | boolean[]> = {};
-    let pastTokenizer = false;
     for (let i = 0; i < kvCount; i++) {
       const key = await r.str();
       const type = await r.u32();
@@ -250,19 +250,9 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
         const len = Number(await r.u64());
         if (len <= MAX_TEMPLATE) facts.chatTemplate = (await r.take(len)).toString("utf8");
         else r.skip(len);
-        // Nothing past the template is wanted once the architecture is known —
-        // unless the file claims an MTP head, whose tensors have to be found
-        // in the tensor list after the last key.
-        if (facts.architecture && !(Number(keys.nextn_predict_layers) > 0)) break;
-        continue;
-      }
-      // Architecture keys come before the tokenizer's in every file seen, but
-      // GGUF does not require it: only a tokenizer key that follows the
-      // architecture ends the reading of model keys, so one that comes first
-      // cannot hide `general.architecture` and everything keyed under it.
-      if (key.startsWith("tokenizer.") && facts.architecture) pastTokenizer = true;
-      if (pastTokenizer) {
-        await skipValue(r, type);
+        // No stopping here: a model key may still follow (GGUF fixes no
+        // order), `nextn_predict_layers` among them, and an MTP head's tensors
+        // are only found in the tensor list after the last key.
         continue;
       }
       if (key === "general.architecture" && type === 8) {
@@ -284,8 +274,7 @@ export async function readGgufFacts(file: string): Promise<GgufFacts> {
       if (value !== null) keys[name] = value;
     }
     if (Number(keys.nextn_predict_layers) > 0 && allKeysRead) {
-      // Every key has been read (the template break above is skipped for
-      // exactly this case), so the tensor infos start here. A list that does
+      // Every key has been read, so the tensor infos start here. A list that does
       // not parse costs only this fact, never the others.
       const found = await hasNextnTensor(r, tensorCount).catch(() => false);
       if (found) {

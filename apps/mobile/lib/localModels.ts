@@ -136,8 +136,14 @@ export function cpuWarning(rt: LocalRuntimeView): { title: string; message: stri
 export function pollIntervalMs(view: LocalModelsView | null): number {
   if (!view) return 1000;
   const busyRuntime = ['not-installed', 'installing', 'starting'].includes(view.runtime.state);
+  // A queued head starts once its model is ready (the server's pump): behind
+  // a failed model it waits for a retry, and there is nothing to watch.
   const busyModel = view.models.some(
-    (m) => m.status === 'queued' || m.status === 'downloading' || m.mtpHead?.status === 'queued' || m.mtpHead?.status === 'downloading',
+    (m) =>
+      m.status === 'queued' ||
+      m.status === 'downloading' ||
+      m.mtpHead?.status === 'downloading' ||
+      (m.mtpHead?.status === 'queued' && m.status === 'ready'),
   );
   return busyRuntime || busyModel ? 1000 : 15_000;
 }

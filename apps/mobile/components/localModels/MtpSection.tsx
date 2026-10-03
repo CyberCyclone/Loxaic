@@ -13,6 +13,8 @@ interface MtpSectionProps {
   onToggle: (on: boolean) => void;
   onDownloadHead: (path: string) => void;
   onRemoveHead: () => void;
+  /** Ask the repository for its heads again, after it could not be asked. */
+  onRetryHeads: () => void;
   /** The server can be asked (the connection monitor). */
   reachable: boolean;
   help: string;
@@ -27,8 +29,13 @@ interface MtpSectionProps {
  * Head downloads and removal are immediate actions, not part of the draft:
  * they change files on the server, which Save and Reset do not undo.
  */
-export function MtpSection({ panel, on, onToggle, onDownloadHead, onRemoveHead, reachable, help }: MtpSectionProps) {
+export function MtpSection({ panel, on, onToggle, onDownloadHead, onRemoveHead, onRetryHeads, reachable, help }: MtpSectionProps) {
   const canTurnOn = mtpCanTurnOn(panel);
+  // Until the repository has answered there is nothing to switch on: the
+  // group says what it is waiting for, and no more.
+  if ((panel.kind === 'checking' || panel.kind === 'unreachable') && !on) {
+    return <HeadState panel={panel} on={on} onDownloadHead={onDownloadHead} onRemoveHead={onRemoveHead} onRetryHeads={onRetryHeads} reachable={reachable} />;
+  }
   return (
     // The group's own title ("Multi-token prediction") labels the switch.
     <VStack space="sm">
@@ -45,7 +52,7 @@ export function MtpSection({ panel, on, onToggle, onDownloadHead, onRemoveHead, 
       <Text size="2xs" className="text-muted-foreground">
         {help}
       </Text>
-      <HeadState panel={panel} on={on} onDownloadHead={onDownloadHead} onRemoveHead={onRemoveHead} reachable={reachable} />
+      <HeadState panel={panel} on={on} onDownloadHead={onDownloadHead} onRemoveHead={onRemoveHead} onRetryHeads={onRetryHeads} reachable={reachable} />
     </VStack>
   );
 }
@@ -55,9 +62,27 @@ function HeadState({
   on,
   onDownloadHead,
   onRemoveHead,
+  onRetryHeads,
   reachable,
-}: Pick<MtpSectionProps, 'panel' | 'on' | 'onDownloadHead' | 'onRemoveHead' | 'reachable'>) {
+}: Pick<MtpSectionProps, 'panel' | 'on' | 'onDownloadHead' | 'onRemoveHead' | 'onRetryHeads' | 'reachable'>) {
   switch (panel.kind) {
+    case 'checking':
+      return (
+        <Text testID="localModels.mtp.checking" size="xs" className="text-muted-foreground">
+          Checking this model's repository for an MTP head…
+        </Text>
+      );
+    case 'unreachable':
+      return (
+        <HStack space="sm" className="items-center rounded-md bg-muted/50 p-2">
+          <Text testID="localModels.mtp.unreachable" size="xs" className="min-w-0 flex-1 text-muted-foreground">
+            Couldn't check this model's repository for an MTP head: HuggingFace didn't answer.
+          </Text>
+          <Button testID="localModels.mtp.retry" size="sm" variant="outline" isDisabled={!reachable} onPress={onRetryHeads}>
+            <ButtonText>Retry</ButtonText>
+          </Button>
+        </HStack>
+      );
     case 'embedded':
       return (
         <Text testID="localModels.mtp.source" size="xs" className="text-muted-foreground">

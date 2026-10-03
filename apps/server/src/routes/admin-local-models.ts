@@ -38,7 +38,7 @@ import {
   settingsForStage,
 } from "../llama/context-stages.ts";
 import { bestFit, type FitLabel } from "../llama/fit.ts";
-import { HfError, repoDetails, searchModels, type HfSort } from "../llama/hf.ts";
+import { HfError, repoDetails, repoFiles, searchModels, type HfSort } from "../llama/hf.ts";
 import { checkMtpSetting, LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
 import { refreshMemory } from "../llama/memory.ts";
 import { pinErrorFor } from "../llama/room.ts";
@@ -225,6 +225,20 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
           downloaded: rows.filter((m) => m.repo === r.repo).map((m) => m.quant),
         })),
       };
+    } catch (err) {
+      return fail(reply, err);
+    }
+  });
+
+  // A repository's MTP heads and nothing else, for the settings sheet: two
+  // HuggingFace requests (the revision and its file list) where the details
+  // route above makes four, the model card among them, and prices every quant.
+  app.get("/v1/admin/local-models/hf/mtp-heads", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const { repo } = request.query as { repo?: string };
+    try {
+      const files = await repoFiles(repo ?? "");
+      return { revision: files.revision, mtpHeads: files.mtpHeads };
     } catch (err) {
       return fail(reply, err);
     }

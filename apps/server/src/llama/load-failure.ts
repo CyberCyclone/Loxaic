@@ -16,8 +16,12 @@ import { modelLoadFailureReason } from "./router.ts";
  * time; a load that fails says why, and what to change.
  */
 
+/** The router's own words for a model it could not load
+ * (`server-models.cpp`: `"model name=" + name + " failed to load"`), and only
+ * those: b11342 also says "Failed to load image or audio file" about a
+ * request's attachment, from a model that loaded fine. */
 export function isLoadFailure(message: string): boolean {
-  return /failed to load/i.test(message);
+  return /\bmodel name=\S+ failed to load\b/.test(message);
 }
 
 /** Pure, for the sentence's tests: `reason` is the line from the model's own

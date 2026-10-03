@@ -214,6 +214,9 @@ async function checkDiskFor(bytes: number): Promise<void> {
       .reduce((n, r) => n + r.sizeBytes - r.bytesDone, 0) +
     rows.reduce((n, r) => {
       const h = rowMtpHead(r);
+      // A failed model's bytes are not counted, and its queued head waits
+      // with it: neither moves until the model is retried.
+      if (r.status === "failed") return n;
       return h && (h.status === "queued" || h.status === "downloading") ? n + h.size - (liveBytes.get(headKey(r.id)) ?? h.bytesDone) : n;
     }, 0);
   if (free - already - bytes < DISK_MARGIN_BYTES) {
@@ -269,6 +272,9 @@ export async function queueMtpHead(id: string, headPath: unknown): Promise<Local
   const row = await getLocalModelRow(id);
   if (!row) throw new DownloadError("No such model", 404);
   if (rowMeta(row).mtp) throw new DownloadError("This model carries its own MTP head; it needs no other", 409);
+  // A head downloads only for a ready model (see pump). Queued on a failed
+  // one it would wait for ever, its bytes reserved on the disk.
+  if (row.status === "failed") throw new DownloadError("This model's own download failed. Retry it first, then add a head.", 409);
   const existing = rowMtpHead(row);
   if (existing && existing.status !== "failed") {
     throw new DownloadError("This model already has an MTP head. Remove it first to choose another.", 409);
@@ -297,12 +303,20 @@ export async function removeMtpHead(id: string): Promise<LocalModelRow | null> {
   const head = rowMtpHead(row);
   if (head) await removeHeadFile(row, head);
   liveBytes.delete(headKey(id));
+  return updateLocalModelRow(id, { mtpHead: null, loadSettings: settingsWithoutHead(row) });
+}
+
+/** A model's settings once its head is gone or failed: MTP off, unless the
+ * model's own file carries a head. `checkMtpSetting` refuses `mtp: true` with
+ * nothing to draft with, and the settings sheet saves every field each time,
+ * so a stored `mtp: true` would fail every later save of the model. */
+function settingsWithoutHead(row: LocalModelRow): Record<string, unknown> {
   const settings = { ...(row.loadSettings as Record<string, unknown>) };
   if (!rowMeta(row).mtp) {
     delete settings.mtp;
     delete settings.mtpDraftMax;
   }
-  return updateLocalModelRow(id, { mtpHead: null, loadSettings: settings });
+  return settings;
 }
 
 /** Delete a head's file and its `.part`, unless another row uses the same
@@ -437,7 +451,8 @@ function startHead(row: LocalModelRow): void {
   entry.done = runHead(row, entry)
     .catch(async (err: unknown) => {
       if (entry.intent === "cancel") return;
-      const head = rowMtpHead((await getLocalModelRow(row.id)) ?? row);
+      const now = (await getLocalModelRow(row.id)) ?? row;
+      const head = rowMtpHead(now);
       if (!head) return;
       // Shutting down leaves it queued: the next boot picks it up and resumes
       // from its `.part`.
@@ -446,11 +461,15 @@ function startHead(row: LocalModelRow): void {
       if (status === "failed") log(`Download of ${row.id}'s MTP head failed: ${message}`);
       await updateLocalModelRow(row.id, {
         mtpHead: { ...head, status, error: status === "failed" ? message : null, bytesDone: liveBytes.get(key) ?? head.bytesDone },
+        ...(status === "failed" ? { loadSettings: settingsWithoutHead(now) } : {}),
       }).catch(() => undefined);
       if (status === "failed") headSettled();
     })
     .finally(() => {
       active.delete(key);
+      // A thrown failure leaves its live count behind otherwise, and a retry
+      // would start out reporting — and reserving disk as if — those bytes.
+      liveBytes.delete(key);
       pump();
     });
 }
@@ -479,14 +498,21 @@ async function runHead(row: LocalModelRow, entry: Active): Promise<void> {
     if (present) await rm(target, { force: true });
     await mkdir(path.dirname(target), { recursive: true });
     let lastFlush = Date.now();
+    // Progress writes are chained and awaited before this job ends: one still
+    // in flight when the head is removed would otherwise write the head back
+    // onto the row after `removeMtpHead` cleared it, with nothing to run it.
+    let flushing: Promise<void> = Promise.resolve();
     const job = downloadFile(row.repo, head.revision, head, target, entry.controller.signal, (bytes) => {
       liveBytes.set(key, bytes);
       if (Date.now() - lastFlush > FLUSH_MS) {
         lastFlush = Date.now();
-        void (async () => {
-          const now = rowMtpHead((await getLocalModelRow(row.id)) ?? row);
-          if (now?.status === "downloading") await updateLocalModelRow(row.id, { mtpHead: { ...now, bytesDone: bytes } });
-        })().catch(() => undefined);
+        flushing = flushing
+          .then(async () => {
+            if (entry.controller.signal.aborted) return;
+            const now = rowMtpHead((await getLocalModelRow(row.id)) ?? row);
+            if (now?.status === "downloading") await updateLocalModelRow(row.id, { mtpHead: { ...now, bytesDone: bytes } });
+          })
+          .catch(() => undefined);
       }
     });
     inflightTargets.set(target, job);
@@ -494,6 +520,7 @@ async function runHead(row: LocalModelRow, entry: Active): Promise<void> {
       await job;
     } finally {
       inflightTargets.delete(target);
+      await flushing;
     }
   }
 
@@ -508,10 +535,14 @@ async function runHead(row: LocalModelRow, entry: Active): Promise<void> {
         : modelArch && facts.architecture !== modelArch
           ? `${path.basename(head.path)} is a head for ${facts.architecture ?? "another model"}, not ${modelArch}.`
           : null;
-  const current = rowMtpHead((await getLocalModelRow(row.id)) ?? row) ?? head;
+  const latest = (await getLocalModelRow(row.id)) ?? row;
+  const current = rowMtpHead(latest) ?? head;
   if (refusal) {
     await removeHeadFile(row, head);
-    await updateLocalModelRow(row.id, { mtpHead: { ...current, status: "failed", error: refusal, bytesDone: 0 } });
+    await updateLocalModelRow(row.id, {
+      mtpHead: { ...current, status: "failed", error: refusal, bytesDone: 0 },
+      loadSettings: settingsWithoutHead(latest),
+    });
     liveBytes.delete(key);
     log(`Refused ${row.id}'s MTP head: ${refusal}`);
     headSettled();

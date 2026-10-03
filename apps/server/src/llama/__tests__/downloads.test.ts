@@ -12,6 +12,7 @@ import {
   backfillHeaderFacts,
   cancelDownload,
   DownloadError,
+  liveHeadBytesDone,
   onMtpHeadSettled,
   pauseDownload,
   queueDownload,
@@ -94,6 +95,8 @@ const repos: Partial<Record<string, Partial<Record<string, FileSpec>>>> = {
     "MTP/mtp-Heady-shared-Q8_0.gguf": { body: sharedHead, sha: sha256(sharedHead) },
     "MTP/mtp-Other-Q4_0.gguf": { body: otherArchHead, sha: sha256(otherArchHead) },
     "MTP/mtp-Empty-Q4_0.gguf": { body: notAHead, sha: sha256(notAHead) },
+    // Served whole, then fails its checksum: a download that throws.
+    "MTP/mtp-Bad-Q4_0.gguf": { body: head, sha: "c".repeat(64) },
   },
   [repo]: {
     "Mini-Q4_K_M.gguf": { body: good, sha: goodSha },
@@ -449,6 +452,66 @@ describe("MTP heads", () => {
     await queueMtpHead(id, "MTP/mtp-Empty-Q4_0.gguf");
     expect((await headUntil((s) => s === "failed"))?.error).toMatch(/carries no MTP head/);
     expect((await read()).status).toBe("ready");
+  });
+
+  it("turns MTP off when its head is refused or fails, so a later save is not refused for it", async () => {
+    // MTP may be switched on while a head is on its way. If the head never
+    // arrives, a stored `mtp: true` would make every later save of the
+    // model's settings fail on a field the admin did not touch.
+    const withMtp = async () => {
+      await db.update(localModels).set({ loadSettings: { mtp: true, mtpDraftMax: 2, ctxSize: 4096 } }).where(eq(localModels.id, id));
+      invalidateLocalModelCache();
+    };
+    await withMtp();
+    await queueMtpHead(id, "MTP/mtp-Other-Q4_0.gguf");
+    await headUntil((s) => s === "failed");
+    expect((await read()).loadSettings).toEqual({ ctxSize: 4096 });
+
+    await withMtp();
+    await queueMtpHead(id, "MTP/mtp-Bad-Q4_0.gguf");
+    expect((await headUntil((s) => s === "failed"))?.error).toMatch(/checksum/);
+    const row = await read();
+    expect(row.loadSettings).toEqual({ ctxSize: 4096 });
+    // Its bytes are not still counted live: a retry starts from nothing, in
+    // the progress shown and in the disk space reserved for it.
+    const retry = { ...row, mtpHead: { ...(row.mtpHead as object), status: "queued", bytesDone: 0 } };
+    expect(liveHeadBytesDone(retry)).toBe(0);
+  });
+
+  it("refuses a head for a model whose own download failed", async () => {
+    // A head only downloads for a ready model: queued on a failed one, it
+    // would wait for ever, keeping the screen polling and its bytes reserved.
+    await db.update(localModels).set({ status: "failed" }).where(eq(localModels.id, id));
+    invalidateLocalModelCache();
+    try {
+      await expect(queueMtpHead(id, "MTP/mtp-Heady-Q8_0.gguf")).rejects.toMatchObject({ status: 409 });
+    } finally {
+      await db.update(localModels).set({ status: "ready" }).where(eq(localModels.id, id));
+      invalidateLocalModelCache();
+    }
+  });
+
+  it("leaves nothing behind when a head is cancelled mid-download, or its model deleted", async () => {
+    const file = modelFilePath(mtpRepo, REV, "MTP/mtp-Heady-Q8_0.gguf");
+    const midway = async () => {
+      await headUntil((s) => s === "downloading");
+      for (const end = Date.now() + 10_000; !(existsSync(`${file}.part`) && statSync(`${file}.part`).size > 128 * 1024); ) {
+        if (Date.now() > end) throw new Error("no progress");
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    await removeMtpHead(id);
+    await queueMtpHead(id, "MTP/mtp-Heady-Q8_0.gguf");
+    await midway();
+    expect((await removeMtpHead(id))?.mtpHead).toBeNull();
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await headOf()).toBeNull();
+    expect(existsSync(file) || existsSync(`${file}.part`)).toBe(false);
+
+    await queueMtpHead(id, "MTP/mtp-Heady-Q8_0.gguf");
+    await midway();
+    await removeFiles(await read());
+    expect(existsSync(file) || existsSync(`${file}.part`)).toBe(false);
   });
 
   it("keeps a head another quant still uses when one of them is deleted", async () => {
