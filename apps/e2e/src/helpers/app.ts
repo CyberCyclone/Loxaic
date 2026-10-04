@@ -504,7 +504,7 @@ export async function getToolResults(
 // ── Sub-agents ────────────────────────────────────────────
 
 /** One sub-agent call in one assistant message: a child whose two requests
- * each take the mock's eight seconds, with a tool call between them — so it is
+ * each take the mock's eight seconds, seven of them with a tool call between (a scenario of its own, matched on the child's task) — so it is
  * still running, with a measured context and speed, long enough to look at. */
 export const SLOW_SUBAGENT_PROMPT = 'Please delegate the slow investigation.';
 export const SLOW_SUBAGENT_NAME = 'Investigate slowly';

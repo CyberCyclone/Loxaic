@@ -23,7 +23,7 @@
 import { browser } from '@wdio/globals';
 import { apiToken, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { platform, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { isVisible, platform, scrollTo, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   APPROVAL_SUBAGENT_PROMPT,
   LONG_SUBAGENT_NAME,
@@ -83,9 +83,23 @@ describe('sub-agents', () => {
 
   before(async () => {
     await signUp(creds);
+    // UiAutomator2 waits for the UI to go idle before every query, and a
+    // running sub-agent's card never lets it: its elapsed counter ticks ten
+    // times a second. Each lookup then takes ~10 s — longer than the things
+    // being looked for last. Same setting, for the same reason, as
+    // compaction-live.spec.ts.
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
+  });
+
+  afterEach(async () => {
+    // A case that failed with a sheet open must not take the rest with it.
+    for (const close of ['subagent.close', 'subagent.list.close']) {
+      if (await isVisible(close)) await tap(close);
+    }
   });
 
   after(async () => {
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
     await patchPrefs(creds, { subagentModelMode: 'choose', subagentModel: null }).catch(() => undefined);
   });
 
@@ -123,7 +137,7 @@ describe('sub-agents', () => {
     await waitForVisible('subagent.panel');
     await waitForTextIn('subagent.panel.status', 'Running');
     // The task it was handed, and the tool call it has made since.
-    await waitForTextIn('subagent.panel.messageList', 'take your time and make a todo plan');
+    await waitForTextIn('subagent.panel.messageList', 'take your time and survey in passes');
     // Marked as the agent's: nobody typed a sub-agent's task.
     await waitForVisible('chat.message.fromAgent');
     await waitForTextIn('subagent.panel.messageList', 'todo_write', 20_000);
@@ -149,7 +163,7 @@ describe('sub-agents', () => {
     // None of the child's transcript is in the parent's thread.
     if (platform() === 'web' || platform() === 'electron') {
       const parent = await browser.$('[data-testid="chat.messageList"]').getText();
-      expect(parent).not.toContain('take your time and make a todo plan');
+      expect(parent).not.toContain('take your time and survey in passes');
     }
     await shot('subagent-card-stopped');
   });
@@ -321,7 +335,9 @@ describe('sub-agents', () => {
     await waitForTextIn('chat.approval.dialog', 'fs_write');
     await shot('subagent-approval-routine');
     await tap('chat.approval.reject');
-    await waitForAbsent('chat.approval.dialog');
+    // A control inside it, not the dialog: on Android a closed modal's root
+    // goes on reporting `displayed`.
+    await waitForAbsent('chat.approval.reject');
 
     await waitForRunDone(creds, run.conversationId, 60_000);
     const [denied] = await getToolResults(creds, child.conversation_id);
@@ -335,6 +351,10 @@ describe('sub-agents', () => {
     await shot('subagent-list-routine');
     await tap('subagent.list.close');
     await waitForAbsent(`subagent.list.${child.conversation_id}`);
+    // Back to the routines list: on a phone this screen has Back where the
+    // sidebar's menu button is, and the next case starts from the sidebar.
+    await tap('routineChat.back');
+    await waitForVisible('routines.new');
   });
 
   it('lets the model for sub-agents be chosen in settings, and a sub-agent then runs on it', async function () {
@@ -343,8 +363,15 @@ describe('sub-agents', () => {
     this.timeout(3 * 60_000);
 
     await openSettings();
+    // Both the settings row and the Sub-agents section are below the fold on
+    // a phone; on a desktop these scrolls find them already in view.
+    const native = platform() === 'ios' || platform() === 'android';
+    if (native) await scrollTo('settings.nav.checkins');
     await tap('settings.nav.checkins');
-    await waitForVisible('checkins.subagents');
+    await waitForVisible('checkins.scroll');
+    if (native) await scrollTo('checkins.subagentModel.fixed');
+    await waitForVisible('checkins.subagentModel.fixed');
+    if (native) await scrollTo('checkins.subagentModel.help');
     await waitForTextIn('checkins.subagentModel.help', 'unless the agent picks another');
 
     await tap('checkins.subagentModel.parent');

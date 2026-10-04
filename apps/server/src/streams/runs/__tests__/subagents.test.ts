@@ -553,6 +553,35 @@ describe("sub-agents", () => {
     expect(after?.subagent).toMatchObject({ status: "error", error: SUBAGENT_LOST_ERROR });
   });
 
+  it("erases a child that is still running when its thread is deleted, and stops it", async () => {
+    const convId = await newConversation();
+    process.env.DELETE_RUN_UNWIND_TIMEOUT_MS = "20000";
+    try {
+      useScenario("delete while delegating", [sub("Slow", "take your time and then say done")]);
+      const streamId = await agentRun(convId, "delete while delegating");
+      let child: Awaited<ReturnType<typeof childrenOf>>[number] | undefined;
+      await waitFor("the child to start", async () => (child = (await childrenOf(convId)).at(0)) !== undefined);
+      const childId = child?.id ?? "";
+      const info = child?.subagent as SubAgentInfo;
+      await waitFor("the child's request to be out", () => getRun(info.streamId) !== undefined);
+
+      await purgeConversation(convId, { warn: () => undefined });
+      // Deleting stops the parent's run, and the child's with it.
+      await waitFor("both runs to end", () => getRun(streamId) === undefined && getRun(info.streamId) === undefined);
+      // The cleanup's second pass runs once the runs have unwound: whatever
+      // either wrote on its way out — a cancelled reply, a "stopped" result —
+      // references a conversation that is gone, and must not be left behind
+      // holding its content.
+      await waitFor("the rows the unwinding runs wrote to be collected", async () =>
+        (await rowsOf(childId)).length === 0 && (await rowsOf(convId)).length === 0,
+      );
+      expect(await db.query.conversations.findFirst({ where: eq(conversations.id, childId) })).toBeUndefined();
+      expect(await db.query.conversations.findFirst({ where: eq(conversations.id, convId) })).toBeUndefined();
+    } finally {
+      Reflect.deleteProperty(process.env, "DELETE_RUN_UNWIND_TIMEOUT_MS");
+    }
+  }, 40_000);
+
   it("erases a thread's children with it", async () => {
     const convId = await newConversation();
     await agentRun(convId, "Use a sub-agent: say hi before the delete");

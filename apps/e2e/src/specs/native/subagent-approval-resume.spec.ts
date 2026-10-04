@@ -72,7 +72,14 @@ describe('a sub-agent’s approval and the phone leaving the app', () => {
     const p = platform();
     if (p !== 'ios' && p !== 'android') this.skip();
     await signUp(creds);
+    // A waiting sub-agent's card counts its elapsed time ten times a second,
+    // which UiAutomator2 never sees as idle — see subagents.spec.ts.
+    if (p === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
     await goToSurface('agent');
+  });
+
+  after(async () => {
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
   });
 
   afterEach(async () => {
