@@ -11,6 +11,7 @@ import { redactUrl } from "./logging";
 import { runMigrations } from "./db/migrate";
 import { initStreamBroker } from "./streams/index";
 import { recoverOrphanedStreams } from "./streams/recovery";
+import { reconcileOrphanedSubagents } from "./streams/runs/subagentRun";
 import { authRoutes } from "./routes/auth";
 import { conversationRoutes } from "./routes/conversations";
 import { adminConversationRoutes, shareRoutes } from "./routes/shares";
@@ -118,6 +119,11 @@ if (registeredHostId) app.log.info(`Registered host ${registeredHostId}`);
 await initStreamBroker();
 app.log.info(`Stream backend: ${process.env.STREAM_BACKEND ?? "memory"}`);
 await recoverOrphanedStreams();
+// A sub-agent the previous process was running has nothing left to finish it;
+// say so on its row, or its card reads "running" for good.
+await reconcileOrphanedSubagents().catch((err: unknown) => {
+  app.log.warn({ err }, "sub-agent reconcile failed");
+});
 
 await app.register(cors, { origin: true, credentials: true });
 await app.register(websocket);

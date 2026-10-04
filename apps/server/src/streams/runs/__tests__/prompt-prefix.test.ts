@@ -89,6 +89,15 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // A sub-agent's conversation is found by its parent, and is owned by this
+  // suite's user — left behind, it blocks deleting that user.
+  for (const parentId of [...convIds]) {
+    const children = await db
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.parentConversationId, parentId));
+    convIds.push(...children.map((c) => c.id));
+  }
   for (const id of convIds) {
     await db.delete(messages).where(eq(messages.conversationId, id));
     await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
@@ -150,11 +159,11 @@ async function turn(content: string, conversationId?: string, thinkingLevel?: Th
  * `toEqual` would accept a reordered object, which is precisely the bug the
  * jsonb round-trip produced.
  */
-function expectEachRequestExtendsTheLast(): void {
-  expect(requests.length).toBeGreaterThan(1);
-  for (let n = 1; n < requests.length; n++) {
-    const previous = requests[n - 1];
-    const current = requests[n];
+function expectEachRequestExtendsTheLast(chain: string[][] = requests): void {
+  expect(chain.length).toBeGreaterThan(1);
+  for (let n = 1; n < chain.length; n++) {
+    const previous = chain[n - 1];
+    const current = chain[n];
     expect(current.length).toBeGreaterThanOrEqual(previous.length);
     for (let i = 0; i < previous.length; i++) {
       // Named in the failure so a regression says *which* message diverged.
@@ -917,4 +926,69 @@ describe("a compaction extends the prompt it compacts", () => {
     // the one the backend has cached, and re-read the whole conversation.
     expect(requestOptions.at(-1)?.thinking).toBe(JSON.stringify({ reasoning_effort: "high" }));
   });
+});
+
+describe("a sub-agent leaves its parent's prefix alone", () => {
+  /**
+   * A child is a run of its own, started in the middle of its parent's turn,
+   * on the same backend. Two things could cost the parent its cached prefix
+   * here and neither would show as an error: the child's rows or requests
+   * leaking into the parent's replay, and the tool's `model` list — which
+   * rides in the tools array, the very front of the prompt — following the
+   * sender's recently-used models as they reorder from one send to the next.
+   */
+  it("holds across a turn that spawned one and the turn after, with the offered models frozen", async () => {
+    const { startAgentRun } = await import("../agentRun.ts");
+    const agentTurn = async (content: string, conversationId?: string): Promise<string> => {
+      const result = await startAgentRun({
+        userId,
+        content,
+        model: "llama-3.1-8b-instruct",
+        mode: "auto",
+        ...(conversationId === undefined ? {} : { conversationId }),
+      });
+      if (!convIds.includes(result.conversationId)) convIds.push(result.conversationId);
+      await waitForRun(result.conversationId);
+      return result.conversationId;
+    };
+    const setRecents = async (recentModels: string[]) => {
+      await db
+        .insert(userPrefs)
+        .values({ userId, recentModels })
+        .onConflictDoUpdate({ target: userPrefs.userId, set: { recentModels } });
+    };
+
+    // Another model in the sender's recents, so the tool offers a choice.
+    await setRecents(["zzz-first-other-model"]);
+    const convId = await agentTurn("Use a sub-agent: say hello to the parent");
+    // Between the turns the recents change, as they do on any send elsewhere.
+    await setRecents(["aaa-newer-model", "zzz-first-other-model"]);
+    await agentTurn("Thanks, that is all.", convId);
+
+    const isChild = (request: string[]) => request[0].includes("You are a Loxaic sub-agent");
+    const childIndexes = requests.flatMap((r, i) => (isChild(r) ? [i] : []));
+    const parentIndexes = requests.flatMap((r, i) => (isChild(r) ? [] : [i]));
+    // The child really did make a request of its own, in the middle.
+    expect(childIndexes.length).toBeGreaterThan(0);
+    expect(parentIndexes.length).toBe(3);
+    expect(childIndexes[0]).toBeGreaterThan(parentIndexes[0]);
+    expect(childIndexes[0]).toBeLessThan(parentIndexes[1]);
+
+    // The parent's requests extend each other as if the child had not run.
+    expectEachRequestExtendsTheLast(parentIndexes.map((i) => requests[i]));
+    // Nothing of the child's transcript is in the parent's prompt — only its
+    // report, as the tool result.
+    const last = requests[parentIndexes[2]].join("\n");
+    expect(last).toContain("subagent-result");
+    expect(last).not.toContain("You are a Loxaic sub-agent");
+
+    // The tools array is the same bytes on every parent request: the model
+    // list was frozen on the first, and the newer model is not in it.
+    const parentTools = parentIndexes.map((i) => requestOptions[i].tools);
+    expect(new Set(parentTools).size).toBe(1);
+    expect(parentTools[0]).toContain("zzz-first-other-model");
+    expect(parentTools[0]).not.toContain("aaa-newer-model");
+    // And the child was never offered the tool itself.
+    for (const i of childIndexes) expect(requestOptions[i].tools).not.toContain('"name":"subagent"');
+  }, 60_000);
 });

@@ -26,7 +26,8 @@ function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T
   const { instructions, ...rest } = row;
   return { ...rest, instructions: summarizeInstructions(instructions) };
 }
-import { getRunByConversation } from "../streams/registry.ts";
+import { getRun, getRunByConversation } from "../streams/registry.ts";
+import { listSubagents } from "../streams/runs/subagentRun.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
 
 export function conversationRoutes(app: FastifyInstance) {
@@ -42,6 +43,11 @@ export function conversationRoutes(app: FastifyInstance) {
    * hooks have always dropped them client-side — but this query is capped at
    * 50 rows, and an hourly routine now makes 24 real conversations a day, so
    * leaving them in would push a user's actual chats out of their own list.
+   *
+   * Sub-agent conversations are excluded for the same reason and a stronger
+   * one: they are owned by their parent's owner, so every one would otherwise
+   * appear here as a thread of its own. They are listed by their parent
+   * (`GET /v1/conversations/:id/subagents`).
    */
   app.get("/v1/conversations", async (request, reply) => {
     const userId = await authenticate(request, reply);
@@ -60,6 +66,7 @@ export function conversationRoutes(app: FastifyInstance) {
         and(
           isNull(conversations.deletedAt),
           ne(conversations.kind, "routine"),
+          ne(conversations.kind, "subagent"),
           shared.length
             ? or(eq(conversations.ownerId, userId), inArray(conversations.id, [...sharedRoles.keys()]))
             : eq(conversations.ownerId, userId),
@@ -219,6 +226,30 @@ export function conversationRoutes(app: FastifyInstance) {
       await deleteConversation(request.params.id, request.log);
     }
     return { ok: true };
+  });
+
+  /**
+   * The sub-agents this conversation's runs have spawned, newest first.
+   *
+   * What the thread's cards and its Sub-agents list are drawn from after a
+   * reload, or once the stream log that carried them live has expired. Viewer
+   * is enough, as for reading the thread: a child's transcript is part of what
+   * the thread did. Each row carries the child's conversation id, whose
+   * messages are read through the ordinary messages route.
+   *
+   * `running` is the registry's word, not the row's: a child the row still
+   * calls running but no run is driving is reported as lost.
+   */
+  app.get<{ Params: { id: string } }>("/v1/conversations/:id/subagents", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const grant = await resolveAccess(userId, request.params.id);
+    // A sub-agent has no sub-agents of its own, and answering `[]` for one
+    // would say its id is a thread's.
+    if (!grant || grant.kind === "subagent") {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return { subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined) };
   });
 
   // Get messages for conversation

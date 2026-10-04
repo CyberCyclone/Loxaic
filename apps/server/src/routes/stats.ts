@@ -88,7 +88,17 @@ export function statsRoutes(app: FastifyInstance) {
     };
 
     const baseFilters = [eq(usageRecords.userId, userId)];
-    if (conversation_id) baseFilters.push(eq(usageRecords.conversationId, conversation_id));
+    // A thread's usage includes its sub-agents': their requests are recorded
+    // against their own conversations (so the parent's context meter and
+    // compaction figures stay its own), and "what did this thread cost" means
+    // all of them.
+    if (conversation_id) {
+      baseFilters.push(
+        sql`(${usageRecords.conversationId} = ${conversation_id} OR ${usageRecords.conversationId} IN (
+          SELECT ${conversations.id} FROM ${conversations} WHERE ${conversations.parentConversationId} = ${conversation_id}
+        ))`,
+      );
+    }
     if (model) baseFilters.push(eq(usageRecords.model, model));
 
     // An explicit from/to is a custom window with no natural "previous
@@ -276,9 +286,14 @@ export function statsRoutes(app: FastifyInstance) {
     const { since } = rangeToWindow(range);
     const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
 
+    // Grouped by the thread a person would recognise: a sub-agent's requests
+    // count under the conversation that spawned it. Its own conversation is
+    // listed nowhere, so a row for it here would be a title nobody chose
+    // opening onto nothing.
+    const threadId = sql<string | null>`COALESCE(${conversations.parentConversationId}, ${usageRecords.conversationId})`;
     const rows = await db
       .select({
-        conversationId: usageRecords.conversationId,
+        conversationId: threadId,
         model: sql<string>`(array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC))[1]`,
         inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
         cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
@@ -288,8 +303,9 @@ export function statsRoutes(app: FastifyInstance) {
         lastUsedAt: sql<string>`MAX(${usageRecords.createdAt})`,
       })
       .from(usageRecords)
+      .leftJoin(conversations, eq(conversations.id, usageRecords.conversationId))
       .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
-      .groupBy(usageRecords.conversationId)
+      .groupBy(threadId)
       .orderBy(sql`MAX(${usageRecords.createdAt}) DESC`)
       .limit(take);
 

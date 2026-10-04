@@ -8,7 +8,8 @@ export type ToolName =
   | "web_fetch"
   | "todo_write"
   | "propose_plan"
-  | "ask_questions";
+  | "ask_questions"
+  | "subagent";
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
@@ -235,6 +236,62 @@ export const QUESTIONS_TOOL: ToolDef = {
   requiresApproval: false,
 };
 
+/** The wire name of the sub-agent tool (the shared copy clients match on is
+ * `SUBAGENT_TOOL_NAME` in packages/types). */
+export const SUBAGENT_TOOL_NAME = "subagent";
+
+/**
+ * The tool a run spawns a sub-agent with: a child agent run with its own
+ * conversation and context window, working in the same workspace under the
+ * same permission mode, whose final reply comes back as this call's result
+ * (apps/server/src/streams/runs/subagentRun.ts).
+ *
+ * Kept out of `TOOLS`, like the plan tools, so it is offered only where the
+ * toolset asks for it — the agent surface and routines, never plain chat, and
+ * never to a sub-agent itself — and `isToolName` keeps it off the "Allow
+ * always" list. It never asks for approval and is not a write tool: starting a
+ * child changes nothing, and everything the child then does asks (or not) by
+ * the parent's own mode.
+ *
+ * `models` is what the `model` argument may name, when the user lets the
+ * parent choose and there is more than one to choose from; absent, the tool
+ * has no such argument and a child runs on the model the server picks. A
+ * function rather than a constant because that list is per conversation.
+ */
+export function subagentTool(models?: readonly string[]): ToolDef {
+  const choice = models && models.length > 1 ? models : null;
+  return {
+    name: SUBAGENT_TOOL_NAME,
+    description:
+      "Hand a self-contained task to a sub-agent: a separate agent with its own context window, working in the " +
+      "same workspace with the same tools and permissions as you, which reports back once. Use it for work that " +
+      "would otherwise fill your own context — searching a large codebase, investigating one question in depth — " +
+      "and to run independent tasks side by side: several calls in one message run together (at most 4). " +
+      "The sub-agent sees nothing of this conversation, so `prompt` must carry everything it needs: the goal, " +
+      "what you already know, and exactly what to report back. Its final reply is returned to you as this call's " +
+      "result; the user does not see that reply unless you tell them. Sub-agents running together share the " +
+      "workspace, so give them work that does not overlap.",
+    parameters: {
+      type: "object",
+      properties: {
+        description: { type: "string", description: "The task in 3-7 words, shown to the user while it runs" },
+        prompt: { type: "string", description: "The complete task for the sub-agent, with all the context it needs" },
+        ...(choice
+          ? {
+              model: {
+                type: "string",
+                enum: [...choice],
+                description: "The model to run it on. Omit to use the model you are running on.",
+              },
+            }
+          : {}),
+      },
+      required: ["description", "prompt"],
+    },
+    requiresApproval: false,
+  };
+}
+
 /** The tools that hand the turn to the user: a successful call to either ends
  * the turn with no further model request. */
 export const HANDOVER_TOOL_NAMES: ReadonlySet<string> = new Set([PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME]);
@@ -300,8 +357,23 @@ export interface ResolvedTool {
 /** Every builtin a run in `mode` may be offered — `PLAN_TOOL` and
  * `QUESTIONS_TOOL` in planning mode only. Write tools are still included here; hiding them from a planning run
  * is the toolset's job, since it has MCP tools to judge the same way. */
-export function resolveBuiltinTools(mode?: PermissionMode): ResolvedTool[] {
-  return (mode === "planning" ? [...TOOLS, PLAN_TOOL, QUESTIONS_TOOL] : TOOLS).map((t) => ({
+export function resolveBuiltinTools(
+  mode?: PermissionMode,
+  opts?: {
+    /** False for a run that has nobody to hand a plan or questions to — a
+     * sub-agent, whose only reader is the run that spawned it. */
+    handover?: boolean;
+    /** Present to offer the sub-agent tool; `models` is what its `model`
+     * argument may name (see `subagentTool`). */
+    subagents?: { models?: readonly string[] | null };
+  },
+): ResolvedTool[] {
+  const defs = [
+    ...TOOLS,
+    ...(mode === "planning" && opts?.handover !== false ? [PLAN_TOOL, QUESTIONS_TOOL] : []),
+    ...(opts?.subagents ? [subagentTool(opts.subagents.models ?? undefined)] : []),
+  ];
+  return defs.map((t) => ({
     name: t.name,
     description: t.description,
     parameters: t.parameters,

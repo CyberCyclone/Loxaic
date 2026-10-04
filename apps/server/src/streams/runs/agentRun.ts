@@ -269,6 +269,9 @@ export async function startAgentRun(input: {
     // The same gate agentSystemPrompt applies to the root file: a scratch
     // workspace has no project, only what the model wrote.
     nestedInstructions: workspace.kind !== "scratch",
+    // The agent may hand tasks to sub-agents (subagentRun.ts). Someone is at
+    // this conversation, so the model may be offered a choice of model.
+    subagents: { routine: false },
     abort,
     producer,
   });

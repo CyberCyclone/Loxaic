@@ -118,4 +118,46 @@ describe("a finished stream's snapshot", () => {
     const ended = await syncFor(streamId);
     expect(ended?.snapshot.pending_approval).toBeUndefined();
   });
+
+  it("ends a sub-agent a finished run's log still calls running, and keeps a queue position through a child's events", async () => {
+    // A run waits for its children before it ends, so one still marked running
+    // in a finished run's log is one whose end was never written (a crash).
+    // Shown as running it would offer a Stop, and an approval, that reach
+    // nothing — the same trap as the two cases above.
+    const broker = getStreamBroker();
+    const streamId = uuid();
+    const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface: "agent" });
+    const child = {
+      message_id: uuid(),
+      call_id: "call_0",
+      conversation_id: uuid(),
+      stream_id: uuid(),
+      description: "Left running",
+      model: "m",
+      started_at: Date.now(),
+    };
+    producer.emit({ kind: "subagent.started", ...child });
+    producer.emit({
+      kind: "subagent.progress",
+      conversation_id: child.conversation_id,
+      state: "awaiting_approval",
+      pending_approval: { stream_id: child.stream_id, call_id: "c9", tool: "bash", args: {} },
+    });
+    // The parent re-queues, and a late report from its child must not clear
+    // the place it holds: the child's events are not about this run.
+    producer.emit({ kind: "run.queued", position: 2 });
+    producer.emit({ kind: "subagent.progress", conversation_id: child.conversation_id, tokens_out: 5 });
+
+    const live = await syncFor(streamId);
+    expect(live?.snapshot.queued).toEqual({ position: 2 });
+    expect(live?.snapshot.subagents?.[0]).toMatchObject({ status: "running", state: "awaiting_approval", tokens_out: 5 });
+    expect(live?.snapshot.subagents?.[0].pending_approval).toBeDefined();
+
+    await producer.end("error");
+    const ended = await syncFor(streamId);
+    expect(ended?.snapshot.subagents).toHaveLength(1);
+    expect(ended?.snapshot.subagents?.[0]).toMatchObject({ status: "error", description: "Left running" });
+    expect(ended?.snapshot.subagents?.[0].pending_approval).toBeUndefined();
+    expect(ended?.snapshot.subagents?.[0].state).toBeUndefined();
+  });
 });

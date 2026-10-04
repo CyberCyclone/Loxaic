@@ -253,6 +253,13 @@
       "when": 1790943700935,
       "tag": "0035_local_model_mtp",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1791097781756,
+      "tag": "0036_subagents",
+      "breakpoints": true
     }
   ]
 }

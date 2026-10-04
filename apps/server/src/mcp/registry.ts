@@ -67,10 +67,17 @@ export async function buildToolset(
      * iteration ceiling, and two statements against the same key back to back
      * is just waste. */
     allowlist?: ReadonlySet<string>;
+    /** Offer the sub-agent tool. Only the agent surface and routines ask for
+     * it; a sub-agent's own toolset never does, which is what keeps them one
+     * level deep. `models` is what its `model` argument may name. */
+    subagents?: { models?: readonly string[] | null };
+    /** False to leave out the plan and questions tools in planning mode — a
+     * sub-agent has no user to hand either to. */
+    handover?: boolean;
   },
 ): Promise<Toolset> {
   const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
-  const resolved = resolveBuiltinTools(opts.mode).map((t) =>
+  const resolved = resolveBuiltinTools(opts.mode, { handover: opts.handover, subagents: opts.subagents }).map((t) =>
     allowlist.has(t.name) ? { ...t, requiresApproval: false } : t,
   );
   const mcpEntries = new Map<string, McpToolEntry>();
@@ -258,6 +265,11 @@ async function conversationMcpState(
       where: eq(conversations.id, conversationId),
       columns: { kind: true, mcpOverrides: true },
     });
+    // A sub-agent's toolset is built against its *parent's* conversation
+    // (engine.ts passes that id), so `subagent` is not a kind this ever reads.
+    // Were one to arrive anyway it gets no MCP servers rather than chat's
+    // defaults: none of the three per-kind switches was set with it in mind.
+    if (conv?.kind === "subagent") return null;
     return { kind: conv?.kind ?? fallbackKind, overrides: normalizeMcpOverrides(conv?.mcpOverrides) };
   } catch {
     return null;

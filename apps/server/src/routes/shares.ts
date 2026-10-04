@@ -202,6 +202,10 @@ export function adminConversationRoutes(app: FastifyInstance) {
       // path because of this.
       .from(conversations)
       .innerJoin(user, eq(user.id, conversations.ownerId))
+      // A sub-agent's conversation is part of its parent, not a thread of its
+      // own: it follows the parent's retention, hold and shares, and listing
+      // each one would fill this page's 200 rows with children.
+      .where(ne(conversations.kind, "subagent"))
       .orderBy(desc(conversations.updatedAt))
       .limit(200);
 
@@ -370,9 +374,11 @@ export function adminConversationRoutes(app: FastifyInstance) {
       }
       const conv = await db.query.conversations.findFirst({
         where: eq(conversations.id, request.params.id),
-        columns: { id: true, ownerId: true },
+        columns: { id: true, ownerId: true, kind: true },
       });
-      if (!conv) {
+      // A sub-agent's conversation has no shares of its own — whoever can see
+      // its parent can see it. A row here would be read by nothing.
+      if (!conv || conv.kind === "subagent") {
         reply.code(404);
         return { error: "Not found" };
       }

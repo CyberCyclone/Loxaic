@@ -1,5 +1,13 @@
 import { EventEmitter } from "node:events";
-import type { StreamEventKind, StreamSnapshot, StreamSnapshotMessage, StreamErrorCode, TurnUsage } from "@loxaic/types";
+import {
+  foldSubAgentEvent,
+  type StreamEventKind,
+  type StreamSnapshot,
+  type StreamSnapshotMessage,
+  type StreamErrorCode,
+  type SubAgentLive,
+  type TurnUsage,
+} from "@loxaic/types";
 import type { StreamLogDriver, StreamMeta, StreamRecord } from "./types.ts";
 
 export type StreamProducerMeta = Omit<StreamMeta, "lastSeq" | "status" | "updatedAt" | "createdAt">;
@@ -126,6 +134,7 @@ export class StreamBroker {
     let pendingApproval: StreamSnapshot["pending_approval"];
     let pendingCheckin: StreamSnapshot["pending_checkin"];
     let promptStats: StreamSnapshot["prompt_stats"];
+    let subagents: SubAgentLive[] = [];
 
     const ensure = (id: string): StreamSnapshotMessage => {
       let m = messages.get(id);
@@ -152,8 +161,21 @@ export class StreamBroker {
       // client catching up mid-summary was shown a queue position the run had
       // long left. (The same held for an agent run re-queued after an
       // approval, between its tool calls and its next iteration.)
-      if (event.kind !== "run.queued") queued = undefined;
+      //
+      // A sub-agent's events say nothing about where *this* run is: they are
+      // written by its children, on their own schedule, and must not clear a
+      // position this run holds.
+      const aboutChild =
+        event.kind === "subagent.started" || event.kind === "subagent.progress" || event.kind === "subagent.ended";
+      if (event.kind !== "run.queued" && !aboutChild) queued = undefined;
       switch (event.kind) {
+        case "subagent.started":
+        case "subagent.progress":
+        case "subagent.ended":
+          // The same fold the client applies to the live events, so a
+          // reconnect and a live view describe a child identically.
+          subagents = foldSubAgentEvent(subagents, event);
+          break;
         case "message.start": {
           const m = ensure(event.message_id);
           m.author_type = event.author_type;
@@ -292,6 +314,7 @@ export class StreamBroker {
       ...(pendingApproval ? { pending_approval: pendingApproval } : {}),
       ...(pendingCheckin ? { pending_checkin: pendingCheckin } : {}),
       ...(promptStats ? { prompt_stats: promptStats } : {}),
+      ...(subagents.length ? { subagents } : {}),
     };
   }
 }

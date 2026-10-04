@@ -11,7 +11,12 @@ import {
   MIN_WAIT_TIMEOUT_MS,
   isLoopSensitivity,
   type LoopSensitivity,
+  DEFAULT_SUBAGENT_MODEL_MODE,
+  SUBAGENT_MODEL_MODES,
+  isSubAgentModelMode,
+  type SubAgentModelMode,
 } from "@loxaic/types";
+import { assertModelResolvable } from "../inference/providers.ts";
 import { authenticate } from "../auth/middleware";
 import { normalizeRecentModels } from "../inference/recent-models.ts";
 import {
@@ -34,6 +39,8 @@ function toApi(row: {
   adaptiveTimeout?: boolean;
   checkinAutoContinues?: number;
   loopSensitivity?: string;
+  subagentModelMode?: string;
+  subagentModel?: string | null;
 }) {
   const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist.filter(isToolName) : [];
   // Default true, matching the column: a user who has never had a prefs row
@@ -63,6 +70,12 @@ function toApi(row: {
     adaptiveTimeout: row.adaptiveTimeout ?? true,
     checkinAutoContinues: clampAutoContinues(row.checkinAutoContinues) ?? DEFAULT_CHECKIN_AUTO_CONTINUES,
     loopSensitivity: isLoopSensitivity(row.loopSensitivity) ? row.loopSensitivity : DEFAULT_LOOP_SENSITIVITY,
+    // Which model a sub-agent runs on (streams/runs/subagent-policy.ts). The
+    // model is sent even when the mode is not `fixed`: it is what the screen
+    // offers back if the person returns to that choice, and null — not an
+    // absent key — when none was ever picked.
+    subagentModelMode: isSubAgentModelMode(row.subagentModelMode) ? row.subagentModelMode : DEFAULT_SUBAGENT_MODEL_MODE,
+    subagentModel: row.subagentModel ?? null,
     // What "server default" currently means, so the settings screen can label
     // that choice with a real number. Read-only and live: it is the operator's
     // APPROVAL_TIMEOUT_MS if set, and moves with it.
@@ -120,6 +133,8 @@ export function prefsRoutes(app: FastifyInstance) {
       checkinAutoContinues?: unknown;
       loopSensitivity?: unknown;
       serverDefaults?: unknown;
+      subagentModelMode?: unknown;
+      subagentModel?: unknown;
     };
 
     // Named rather than ignored: silently dropping it would leave a client
@@ -142,6 +157,8 @@ export function prefsRoutes(app: FastifyInstance) {
       adaptiveTimeout?: boolean;
       checkinAutoContinues?: number;
       loopSensitivity?: LoopSensitivity;
+      subagentModelMode?: SubAgentModelMode;
+      subagentModel?: string | null;
     } = {};
     if (body.toolAllowlist !== undefined) {
       if (!Array.isArray(body.toolAllowlist) || !body.toolAllowlist.every(isToolName)) {
@@ -213,6 +230,46 @@ export function prefsRoutes(app: FastifyInstance) {
         return { error: `loopSensitivity must be one of ${LOOP_SENSITIVITIES.join(", ")}` };
       }
       patch.loopSensitivity = body.loopSensitivity;
+    }
+    if (body.subagentModel !== undefined) {
+      if (body.subagentModel !== null) {
+        // The check a routine's model gets when it is saved: whether this
+        // server can serve it at all. What happens to be loaded right now is
+        // beside the point for a saved choice.
+        if (typeof body.subagentModel !== "string" || !body.subagentModel || body.subagentModel === "default") {
+          reply.code(400);
+          return { error: "subagentModel must be a model reference, or null" };
+        }
+        try {
+          await assertModelResolvable(body.subagentModel);
+        } catch (err) {
+          reply.code(400);
+          return { error: (err as Error).message };
+        }
+      }
+      patch.subagentModel = body.subagentModel;
+    }
+    if (body.subagentModelMode !== undefined) {
+      if (!isSubAgentModelMode(body.subagentModelMode)) {
+        reply.code(400);
+        return { error: `subagentModelMode must be one of ${SUBAGENT_MODEL_MODES.join(", ")}` };
+      }
+      patch.subagentModelMode = body.subagentModelMode;
+    }
+    // "A fixed model" with no model is not a setting, it is a sub-agent that
+    // silently runs on something else. Judged on what the row will hold after
+    // this patch — the model may be arriving with it, or already be there.
+    if (patch.subagentModelMode === "fixed" || patch.subagentModel === null) {
+      const current = await db.query.userPrefs.findFirst({
+        where: eq(userPrefs.userId, userId),
+        columns: { subagentModelMode: true, subagentModel: true },
+      });
+      const mode = patch.subagentModelMode ?? current?.subagentModelMode;
+      const model = patch.subagentModel !== undefined ? patch.subagentModel : (current?.subagentModel ?? null);
+      if (mode === "fixed" && !model) {
+        reply.code(400);
+        return { error: "Choose the model sub-agents should use (subagentModel) to use a fixed one" };
+      }
     }
     if (Object.keys(patch).length === 0) {
       reply.code(400);
