@@ -133,3 +133,34 @@ const NOFOLLOW = (constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0;
 
 /** The longest unfinished line held back for the next chunk. */
 const MAX_PARTIAL = 64 * 1024;
+
+/** The longest unfinished line kept between chunks. */
+const MAX_LINE_CARRY = 64 * 1024;
+
+/**
+ * Whole lines from a stream that arrives in arbitrary pieces: a line cut
+ * across two chunks is carried to the next. One per stream — stdout and
+ * stderr are read independently, and a carry-over shared between them joins
+ * the end of one stream's chunk to the start of the other's.
+ */
+export function lineSplitter(): (chunk: string) => string[] {
+  let carry = "";
+  return (chunk) => {
+    const lines = (carry + chunk).split("\n");
+    carry = (lines.pop() ?? "").slice(-MAX_LINE_CARRY);
+    return lines;
+  };
+}
+
+/**
+ * A llama.cpp debug line that carries a request's content: the HTTP logger's
+ * `request:`/`response:` bodies, an endpoint's `converted request:`, and a
+ * slot's `prompt token` dump. None prints at the verbosity Loxaic asks for
+ * (4: debug is 5 in b11342, and the HTTP logger is not even installed), but a
+ * later build may move one, and a prompt — an agent's whole system prompt,
+ * a repository's AGENTS.md included — must not reach the router's log, the
+ * tail admins read, or a load-failure sentence shown in a chat.
+ */
+export function carriesPrompt(line: string): boolean {
+  return /\bsrv\s+\S+: (?:request|response|converted request):\s/.test(line) || /\bprompt token\s+\d+:/.test(line);
+}

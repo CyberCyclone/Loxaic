@@ -245,11 +245,19 @@ describe("changing a model that is answering someone", () => {
     } finally {
       slot.release();
     }
-    // The deferred reload fires once the built-in provider is idle.
-    await waitForAsync(async () => (await routerModelStatuses()).get(servable)?.value === "unloaded", 10_000);
-    await collect(servable);
-    const loads = readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { event: string; model: string; section: Record<string, string> });
-    expect(loads.filter((l) => l.event === "load" && l.model === routerModelName(servable)).at(-1)?.section["ctx-size"]).toBe("3072");
+    // The deferred reload fires once the built-in provider is idle, and the
+    // model — loaded when the admin saved — comes back with the new settings
+    // by itself, not on whoever's request happens next.
+    const events = () =>
+      readFileSync(loadLog, "utf8").trim().split("\n").map((l) => JSON.parse(l) as { event: string; model: string; section: Record<string, string> });
+    await waitForAsync(
+      async () =>
+        events().filter((l) => l.event === "load" && l.model === routerModelName(servable)).at(-1)?.section["ctx-size"] === "3072" &&
+        (await routerModelStatuses()).get(servable)?.value === "loaded",
+      10_000,
+    );
+    const mine = events().filter((l) => l.model === routerModelName(servable));
+    expect(mine.at(-2)?.event).toBe("unload");
   });
 });
 

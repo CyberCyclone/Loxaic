@@ -460,6 +460,38 @@ export interface LocalRuntimeView {
   gpuAvailable: boolean;
   cpuActive: boolean;
   recentErrors: string[];
+  /** A restart under way, until its pinned models are back; null when none.
+   * Absent from an older server. */
+  restart?: LocalRuntimeRestart | null;
+  /** This host's RAM. Absent from an older server. */
+  hostMemory?: { totalBytes: number; freeBytes: number };
+}
+
+/** `gpu` is a device's own memory (unified memory on Apple Silicon), `ram`
+ * the host's, `ssd` the model file read on demand. */
+export type PlacementTier = "gpu" | "ram" | "ssd";
+
+export interface ModelPlacement {
+  parts: {
+    part: "weights" | "table" | "kv" | "recurrent" | "compute" | "output";
+    tier: PlacementTier;
+    /** The GPU, or null for host memory and the file. */
+    device: string | null;
+    bytes: number;
+  }[];
+  offloaded: { done: number; total: number } | null;
+  /** How many pieces llama.cpp cut the model's graph into. */
+  splits: number | null;
+  gpuCount: number;
+  /** The process's own GPU memory, where the platform reports it (Linux). */
+  measured: { vramBytes: number; gttBytes: number; spillBytes: number } | null;
+}
+
+export interface LocalRuntimeRestart {
+  phase: "stopping" | "starting" | "loading-pinned";
+  /** An admin asked for it, or the router stopped on its own. */
+  cause: "requested" | "crashed";
+  startedAt: string;
 }
 
 export interface LocalModelsSettings {
@@ -537,6 +569,9 @@ export interface LocalModel {
     /** A multi-token-prediction head in the model's own file. Absent until
      * the server has read it; null when there is none. */
     mtp?: { layers: number } | null;
+    /** A per-layer token-embedding table (Qwen3.8-Flash-Next's is 27.5 GiB)
+     * and its size; null when the model has none. */
+    lookupTable?: { tensor: string; bytes: number } | null;
   };
   hasVision: boolean;
   /** Where an MTP head would come from: the model's own file (`embedded`), a
@@ -558,9 +593,21 @@ export interface LocalModel {
   /** The stage the model loads at now; 0 is standard. */
   activeStage?: number;
   createdAt: string;
+  /** Why a load an admin asked for, or a reload after a settings change,
+   * did not happen. Absent from an older server. */
+  loadError?: string | null;
+  /** Saved settings are waiting for a reply to end; the model then reloads
+   * with them. */
+  reloadPending?: boolean;
+  /** Where its memory is while loaded, from llama.cpp's own allocation log;
+   * null when not loaded (or the server cannot see the log). */
+  placement?: ModelPlacement | null;
   /** Present on a PATCH answer: the model is answering someone and picks the
-   * change up on its next load. */
+   * change up once that reply ends. */
   appliesOnNextLoad?: boolean;
+  /** Present on a PATCH answer: the model was loaded and is being loaded
+   * again with the new settings. */
+  reloading?: boolean;
 }
 
 export type MtpSource = "embedded" | "head" | "head-pending" | null;
@@ -750,6 +797,18 @@ export async function downloadMtpHead(id: string, path: string): Promise<LocalMo
  * unless the model carries its own head. */
 export async function removeMtpHead(id: string): Promise<LocalModel> {
   return adminFetch(`/v1/admin/local-models/model/mtp-head?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Load a host model now. Answers at once with the model loading; a refusal
+ * (pinned models leave no room) is an error with the reason. */
+export async function loadLocalModel(id: string): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/model/load", { method: "POST", ...json({ id }) });
+}
+
+/** Unload a host model now. Refused while it is kept loaded, loading, or
+ * answering someone. */
+export async function unloadLocalModel(id: string): Promise<LocalModel> {
+  return adminFetch("/v1/admin/local-models/model/unload", { method: "POST", ...json({ id }) });
 }
 
 export async function deleteLocalModel(id: string): Promise<void> {

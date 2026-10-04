@@ -99,6 +99,63 @@ export function runtimeHeadline(rt: LocalRuntimeView): string {
   }
 }
 
+/**
+ * What the runtime card says during a restart, or null when there is none.
+ * The phases are the server's (`RuntimeView.restart`); the pinned models'
+ * progress comes from the list, which already carries each one's status.
+ */
+export function restartHeadline(
+  rt: LocalRuntimeView,
+  models: Pick<LocalModel, 'displayName' | 'pinned' | 'enabled' | 'runtimeStatus'>[],
+  nowMs: number,
+): string | null {
+  const r = rt.restart;
+  if (!r) return null;
+  const secs = Math.max(0, Math.floor((nowMs - Date.parse(r.startedAt)) / 1000));
+  const elapsed = Number.isFinite(secs) ? ` · ${formatElapsed(secs)}` : '';
+  const lead = r.cause === 'crashed' ? 'llama.cpp stopped, starting it again' : 'Restarting llama.cpp';
+  if (r.phase === 'stopping') return `${lead} · stopping models${elapsed}`;
+  if (r.phase === 'starting') return `${lead} · starting${elapsed}`;
+  const pinned = models.filter((m) => m.pinned && m.enabled);
+  const done = pinned.filter((m) => m.runtimeStatus === 'loaded').length;
+  const next = pinned.find((m) => m.runtimeStatus !== 'loaded');
+  if (!next) return `${lead} · loading kept-loaded models${elapsed}`;
+  return `${lead} · loading ${next.displayName} (${String(done + 1)} of ${String(pinned.length)})${elapsed}`;
+}
+
+function formatElapsed(secs: number): string {
+  return secs < 60 ? `${String(secs)} s` : `${String(Math.floor(secs / 60))} min ${String(secs % 60)} s`;
+}
+
+export type ModelLoadState = 'loaded' | 'loading' | 'unloaded' | 'unknown';
+
+/** Whether a host model is in memory now, from the router's answer. */
+export function modelLoadState(m: Pick<LocalModel, 'runtimeStatus'>): ModelLoadState {
+  if (m.runtimeStatus === 'loaded') return 'loaded';
+  if (m.runtimeStatus === 'loading') return 'loading';
+  if (m.runtimeStatus === 'unloaded' || m.runtimeStatus === 'sleeping') return 'unloaded';
+  return 'unknown';
+}
+
+export const LOAD_STATE_TEXT: Record<ModelLoadState, string> = {
+  loaded: 'Loaded',
+  loading: 'Loading…',
+  unloaded: 'Not loaded',
+  // The router could not be asked: absence of an answer is not "Not loaded".
+  unknown: 'Status unknown',
+};
+
+/** Why Unload is unavailable for a loaded model, or null when it is not. */
+export function unloadBlockedReason(m: Pick<LocalModel, 'pinned'>): string | null {
+  return m.pinned ? 'Kept loaded — turn off Keep loaded to unload it' : null;
+}
+
+/** Loaded models first, then the rest, each group in its existing order. */
+export function loadedFirst<T extends Pick<LocalModel, 'runtimeStatus'>>(models: T[]): T[] {
+  const rank = (m: T) => (modelLoadState(m) === 'loaded' ? 0 : modelLoadState(m) === 'loading' ? 1 : 2);
+  return models.map((m, i) => ({ m, i })).sort((a, b) => rank(a.m) - rank(b.m) || a.i - b.i).map(({ m }) => m);
+}
+
 export function gpuSummary(rt: LocalRuntimeView): string {
   const active = rt.activeDevices === 'none' ? [] : rt.activeDevices;
   const devices = rt.devices.filter((d) => active.includes(d.name));
@@ -145,7 +202,10 @@ export function pollIntervalMs(view: LocalModelsView | null): number {
       m.mtpHead?.status === 'downloading' ||
       (m.mtpHead?.status === 'queued' && m.status === 'ready'),
   );
-  return busyRuntime || busyModel ? 1000 : 15_000;
+  // A restart, a load, or a reload waiting on a reply all end within seconds
+  // to minutes, and the screen is watched while they do.
+  const moving = Boolean(view.runtime.restart) || view.models.some((m) => m.runtimeStatus === 'loading' || m.reloadPending === true);
+  return busyRuntime || busyModel || moving ? 1000 : 15_000;
 }
 
 export function progressPercent(m: Pick<LocalModel, 'bytesDone' | 'sizeBytes'>): number {

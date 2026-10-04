@@ -26,6 +26,7 @@ import {
   expectTextAbsent,
   isVisible,
   platform,
+  scrollTo,
   tap,
   testIdSelector,
   typeInto,
@@ -435,6 +436,11 @@ describe('local models', () => {
     await waitForTextIn('localModels.runtime.reason', 'No GPU was found');
     await waitForVisible('localModels.runtime.useCpu');
     await shot('local-models-no-gpu');
+    // Nothing is running, so there is no router to ask: the row says it does
+    // not know, never that the model is out of memory.
+    await scrollTo(`localModels.state.${downloadId}`);
+    await waitForFreshText(`localModels.state.${downloadId}`, 'Status unknown');
+    await scrollTo('localModels.runtime.useCpu');
 
     await tap('localModels.runtime.useCpu');
     await waitForVisible('localModels.cpuConfirm.dialog');
@@ -606,7 +612,9 @@ describe('local models', () => {
     const loaded = lastIndex('load', secondRouterName);
     expect(unloaded).toBeGreaterThanOrEqual(0);
     expect(unloaded).toBeLessThan(loaded);
-    expect(events.some((e) => e.event === 'load-failed')).toBe(false);
+    // These two models only: the router log is the whole run's, and another
+    // spec (mtp.spec.ts) fails a load on purpose.
+    expect(events.some((e) => e.event === 'load-failed' && (e.model === routerName || e.model === secondRouterName))).toBe(false);
 
     // The picker's badge moved with it.
     await tap('composer.model');
@@ -622,7 +630,7 @@ describe('local models', () => {
     await waitForVisible(`localModels.pinned.${downloadId}`);
     await waitForRuntimeStatus(downloadId, 'loaded');
     await waitForRuntimeStatus(secondId, 'unloaded');
-    await waitForFreshText(`localModels.status.${downloadId}`, 'loaded');
+    await waitForFreshText(`localModels.state.${downloadId}`, 'Loaded');
     await shot('local-models-pinned-loaded');
 
     // Its quant in the HuggingFace sheet counts its own memory as its own:

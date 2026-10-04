@@ -117,6 +117,9 @@ const PRESET_KEYS = new Set([
   // Multi-token prediction, confirmed against b11342 (a Qwen3.5-0.8B with
   // its own head drafted and reported `draft_n`/`draft_n_accepted`).
   "spec-type", "spec-draft-model", "spec-draft-n-max",
+  // Where a model's memory goes (placement.ts), confirmed against b11342 on
+  // Metal and on Pheonix's V620s.
+  "log-verbosity", "lazy-mode",
 ]);
 
 /** Parse the INI into { globals, sections: Map<id, Record<string,string>> }. */
@@ -180,6 +183,8 @@ function unload(id) {
   if (status.get(id) !== "loaded") return;
   status.set(id, "unloaded");
   loadedArgs.delete(id);
+  // As the real router, which the placement tracker reads.
+  process.stderr.write(`0.00.000.300 I srv        unload: stopping model instance name=${id}\n`);
   logEvent({ event: "unload", model: id });
   writeVram();
 }
@@ -229,6 +234,7 @@ function load(id) {
     return "oom";
   }
   failed.delete(id);
+  if (Number(spec["log-verbosity"] ?? 3) >= 4) process.stderr.write(allocationLines(spec, childPort));
   status.set(id, "loaded");
   loadedArgs.set(id, JSON.stringify(merged(id)));
   logEvent({ event: "load", model: id, section: merged(id) });
@@ -236,8 +242,46 @@ function load(id) {
   return true;
 }
 
+/**
+ * The allocation lines a real child prints at verbosity 4, in the real
+ * format (placement.ts), for the devices the preset names. A model file named
+ * "Table" carries a per-layer lookup table of TABLE_MIB, read from the file on
+ * demand unless `lazy-mode = off` (copied into RAM with `load-mode = none`).
+ * A file named "Splitty" left on automatic GPU layers splits its graph 17
+ * ways, as llama.cpp's --fit did to Qwen3.8-Flash-Next on Pheonix (#263).
+ */
+const TABLE_MIB = 2;
+function allocationLines(spec, port) {
+  const p = `[${String(port).padStart(5, " ")}] 0.01.085.178 I`;
+  const devices = (spec.device ?? "FAKE0").split(",").filter((d) => d && d !== "none");
+  const file = spec.model ?? "";
+  const weightsMib = Math.max(MODEL_MIB, 300);
+  const out = [`${p} load_tensors: offloaded 23/23 layers to GPU`, `${p} load_tensors:   CPU_Mapped model buffer size =    12.00 MiB`];
+  for (const d of devices) out.push(`${p} load_tensors: ${d.padStart(12, " ")} model buffer size = ${(weightsMib / devices.length).toFixed(2)} MiB`);
+  if (/table/i.test(file)) {
+    const lazy = spec["lazy-mode"] !== "off";
+    if (lazy) {
+      out.splice(1, 0, `${p} add: tensor per_layer_token_embd.weight (size = ${String(TABLE_MIB)} MiB) lazy read enabled`);
+      out.push(`${p} load_tensors:   CPU_Mapped model buffer size = ${TABLE_MIB.toFixed(2)} MiB`);
+    } else {
+      const buffer = spec["load-mode"] === "none" ? "CPU" : "CPU_Mapped";
+      out.push(`${p} load_tensors: ${buffer.padStart(12, " ")} model buffer size = ${TABLE_MIB.toFixed(2)} MiB`);
+    }
+  }
+  for (const d of devices) out.push(`${p} llama_kv_cache: ${d.padStart(10, " ")} KV buffer size =    16.00 MiB`);
+  for (const d of devices) out.push(`${p} sched_reserve: ${d.padStart(10, " ")} compute buffer size =    40.00 MiB`);
+  out.push(`${p} sched_reserve: Vulkan_Host compute buffer size =     4.00 MiB`);
+  const splits = /splitty/i.test(file) && (spec["n-gpu-layers"] ?? "auto") === "auto" ? 17 : devices.length + 1;
+  out.push(`${p} sched_reserve: graph: nodes = 1863, splits = ${String(splits)}, input objects = 5, input tensors = 10`);
+  return out.join("\n") + "\n";
+}
+
 function reload() {
   // An unrecognised key on a live reload keeps the old list (the caller answers 500).
+  // `LOXAIC_FAKE_RELOAD_FAIL` names a file whose presence refuses every reload
+  // that way, read on each one, so a test can make the router refuse at will.
+  const failFile = process.env.LOXAIC_FAKE_RELOAD_FAIL;
+  if (failFile && existsSync(failFile)) throw new Error("option 'not-a-key' not recognized in preset");
   const next = readPreset();
   for (const [id] of status) {
     const now = next.sections.get(id);
@@ -248,6 +292,8 @@ function reload() {
     } else if (was && JSON.stringify({ ...next.globals, ...now }) !== was) {
       status.set(id, "unloaded");
       loadedArgs.delete(id);
+      process.stderr.write(`0.00.000.300 I srv        unload: stopping model instance name=${id}\n`);
+      logEvent({ event: "unload", model: id, reason: "reload" });
     }
   }
   preset = next;

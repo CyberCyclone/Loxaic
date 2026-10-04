@@ -29,6 +29,8 @@ import { PresetChips } from '@/components/settings/PresetChips';
 import { FitBadge } from './FitBadge';
 import { ContextStagesEditor } from './ContextStagesEditor';
 import { MtpSection } from './MtpSection';
+import { LookupTableSection } from './LookupTableSection';
+import { PlacementBar } from './PlacementBar';
 import { mtpPanel, mtpParallelWarning, showsMtp, wantsRepoHeads, withMtp } from '@/lib/mtp';
 import {
   EMPTY_STAGES,
@@ -57,6 +59,8 @@ interface ModelSettingsModalProps {
   onDownloadHead?: (id: string, path: string) => void;
   onRemoveHead?: (id: string) => void;
   specs: LoadSettingSpec[];
+  /** This host's RAM, for settings that put part of a model there. */
+  hostMemory?: { totalBytes: number; freeBytes: number };
   onClose: () => void;
   onSave: (
     id: string,
@@ -75,7 +79,7 @@ const ESTIMATE_DEBOUNCE_MS = 400;
  * "llama.cpp's default". A live estimate at the top says whether the model will
  * still fit with what has been chosen.
  */
-export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDownloadHead, onRemoveHead }: ModelSettingsModalProps) {
+export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, onSave, onDownloadHead, onRemoveHead }: ModelSettingsModalProps) {
   const [draft, setDraftState] = useState<LoadSettings>({});
   const [text, setText] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -161,6 +165,7 @@ export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDown
     if (s.key === 'vision') return model.hasVision;
     if (s.key === 'mtp') return showsMtp(panel);
     if (s.key === 'mtpDraftMax') return showsMtp(panel) && draft.mtp === true;
+    if (s.key === 'tablePlacement') return Boolean(model.meta.lookupTable);
     return true;
   });
   const mtpWarning = mtpParallelWarning(draft);
@@ -202,7 +207,7 @@ export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDown
       });
       if (!updated) return;
       if (updated.appliesOnNextLoad) {
-        setNotice('Saved. This model is answering someone right now, so the new settings apply the next time it loads.');
+        setNotice('Saved. It is answering someone right now, and reloads with the new settings as soon as that reply ends.');
       } else onClose();
     } finally {
       setSaving(false);
@@ -238,6 +243,15 @@ export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDown
                 {fit ? describeFit(fit) : 'Estimating…'}
               </Text>
             </HStack>
+
+            {current.runtimeStatus === 'loaded' && current.placement && (
+              <VStack space="xs">
+                <Text size="sm" className="font-medium text-foreground">
+                  Where it is now
+                </Text>
+                <PlacementBar placement={current.placement} testID="localModels.settingsSheet.placement" detailed />
+              </VStack>
+            )}
 
             <VStack space="xs">
               <Text size="xs" className="text-muted-foreground">
@@ -282,6 +296,15 @@ export function ModelSettingsModal({ model, live, specs, onClose, onSave, onDown
                           if (!current.meta.mtp) setDraftState((d) => withMtp(d, false));
                           onRemoveHead?.(model.id);
                         }}
+                      />
+                    ) : spec.key === 'tablePlacement' && model.meta.lookupTable ? (
+                      <LookupTableSection
+                        key={spec.key}
+                        value={draft.tablePlacement}
+                        tableBytes={model.meta.lookupTable.bytes}
+                        help={spec.help}
+                        host={hostMemory}
+                        onChoose={(v) => { choose('tablePlacement', v); }}
                       />
                     ) : (
                     <SettingControl

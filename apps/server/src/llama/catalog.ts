@@ -37,6 +37,10 @@ export interface LocalModelMeta {
    * carries one). Absent on rows downloaded before it was read (the boot
    * backfill fills it); null when the file carries none. */
   mtp?: { layers: number } | null;
+  /** A per-layer token-embedding table (gguf.ts `LOOKUP_TABLE_TENSOR`) and its
+   * size, read from whichever part of the file holds it. Absent means not
+   * read yet, null means the model has none. */
+  lookupTable?: { tensor: string; bytes: number } | null;
 }
 
 export type MtpHeadStatus = "queued" | "downloading" | "ready" | "failed";

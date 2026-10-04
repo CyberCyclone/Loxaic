@@ -231,12 +231,15 @@ export async function* streamCompletion(
     yield* liveStream(provider, upstreamModel, messages, options);
     return;
   }
-  // Make room first — unpinned models are unloaded until this one fits, or
-  // NoRoomError says pinned ones are in the way (llama/room.ts) — and hold it
-  // as in flight until the stream ends, so nothing unloads it mid-answer.
-  await ensureRoom(upstreamModel, options.signal);
+  // Held as in flight from before room is made until the stream ends, so
+  // nothing unloads it under the request: counted only after `ensureRoom`, an
+  // admin's Unload could land in between (`ensureRoom` checks the router
+  // first, over HTTP, and returns without the lock for a loaded model). Then
+  // make room — unpinned models are unloaded until this one fits, or
+  // NoRoomError says pinned ones are in the way (llama/room.ts).
   const release = trackRequest(upstreamModel);
   try {
+    await ensureRoom(upstreamModel, options.signal);
     yield* liveStream(provider, routerModelName(upstreamModel), messages, options);
   } catch (err) {
     // The router says only "model name=… failed to load"; say why, and what

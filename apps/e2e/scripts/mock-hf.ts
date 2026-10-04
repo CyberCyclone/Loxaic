@@ -37,7 +37,7 @@ const CHAT_TEMPLATE = [
  * `mtp` writes a multi-token-prediction head's key and tensor infos (with no
  * data behind them), which is what the server's reader looks for; `shared`
  * marks a head that borrows the main model's tensors. */
-function buildGguf(padTo: number, opts: { arch?: string; mtp?: boolean; shared?: boolean } = {}): Buffer {
+function buildGguf(padTo: number, opts: { arch?: string; mtp?: boolean; shared?: boolean; table?: boolean } = {}): Buffer {
   const arch = opts.arch ?? 'llama';
   const u32 = (n: number) => {
     const b = Buffer.alloc(4);
@@ -61,15 +61,23 @@ function buildGguf(padTo: number, opts: { arch?: string; mtp?: boolean; shared?:
     ...(opts.shared ? [kv(`${arch}.nextn_shared_target_tensors`, 7, Buffer.from([1]))] : []),
     kv('tokenizer.chat_template', 8, str(CHAT_TEMPLATE)),
   ];
-  const tensors = opts.mtp ? ['token_embd.weight', 'blk.22.nextn.eh_proj.weight', 'blk.22.nextn.enorm.weight'] : [];
+  // A per-layer lookup table (Qwen3.8-Flash-Next's layout, 2 MiB here): the
+  // server sizes it from the gap to the next tensor's data, so it sits between
+  // two others with that much padding behind it.
+  const TABLE = 2 * 1024 * 1024;
+  const tensors: [string, number][] = opts.mtp
+    ? [['token_embd.weight', 0], ['blk.22.nextn.eh_proj.weight', 0], ['blk.22.nextn.enorm.weight', 0]]
+    : opts.table
+      ? [['token_embd.weight', 0], ['per_layer_token_embd.weight', 4096], ['output.weight', 4096 + TABLE]]
+      : [];
   const out = Buffer.concat([
     Buffer.from('GGUF', 'ascii'),
     u32(3),
     u64(tensors.length),
     u64(kvs.length),
     ...kvs,
-    // Tensor infos: name, one dimension of 1, type f32, offset 0.
-    ...tensors.map((name) => Buffer.concat([str(name), u32(1), u64(1), u32(0), u64(0)])),
+    // Tensor infos: name, one dimension of 1, type f32, an offset into the data.
+    ...tensors.map(([name, offset]) => Buffer.concat([str(name), u32(1), u64(1), u32(0), u64(offset)])),
   ]);
   return Buffer.concat([out, Buffer.alloc(Math.max(0, padTo - out.length))]);
 }
@@ -90,6 +98,10 @@ export interface MockHfRepos {
    * loading it with MTP on (a model file named "Crashy") — the way llama.cpp
    * b11342 crashes loading Qwen3.8-Flash-Next with unsloth's head. */
   mtpCrashy: string;
+  /** Downloadable; its file carries a 2 MiB per-layer lookup table, and the
+   * fake router splits its graph 17 ways while GPU layers are automatic (a
+   * model file named "Table…Splitty") — Qwen3.8-Flash-Next on Pheonix. */
+  table: string;
 }
 
 export interface MockHf {
@@ -136,6 +148,7 @@ export async function startMockHf(): Promise<MockHf> {
     mtpEmbedded: `e2e-org/Drafty-${run}-GGUF`,
     mtpSidecar: `e2e-org/Sidecar-${run}-GGUF`,
     mtpCrashy: `e2e-org/Crashy-${run}-GGUF`,
+    table: `e2e-org/Tabled-${run}-GGUF`,
   };
   const sha = createHash('sha1').update(run).digest('hex');
   // 12 MB served at ~1.5 MB/s: about eight seconds, long enough to see
@@ -153,6 +166,7 @@ export async function startMockHf(): Promise<MockHf> {
   const headBody = buildGguf(9 * 1024 * 1024, { mtp: true });
   const otherArchHead = buildGguf(256 * 1024, { mtp: true, arch: 'qwen35' });
   const crashyBody = buildGguf(2 * 1024 * 1024, { mtp: true, arch: 'qwen4exp' });
+  const tableBody = buildGguf(3 * 1024 * 1024, { table: true, arch: 'qwen4exp' });
   const mtpHeads = {
     good: 'MTP/mtp-Sidecar-Q8_0.gguf',
     shared: 'MTP/mtp-Sidecar-shared-Q8_0.gguf',
@@ -187,6 +201,7 @@ export async function startMockHf(): Promise<MockHf> {
       { path: mtpHeads.otherArch, size: otherArchHead.length, sha: hash(otherArchHead), body: otherArchHead },
     ],
     [repos.mtpCrashy]: [{ path: 'Crashy-Q4_K_M.gguf', size: crashyBody.length, sha: hash(crashyBody), body: crashyBody }],
+    [repos.table]: [{ path: 'Table-Splitty-Q4_K_M.gguf', size: tableBody.length, sha: hash(tableBody), body: tableBody }],
   };
   const summaries = [
     {
@@ -214,6 +229,10 @@ export async function startMockHf(): Promise<MockHf> {
     },
     {
       id: repos.mtpCrashy, author: 'e2e-org', downloads: 100, likes: 1, pipeline_tag: 'text-generation',
+      cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'qwen4exp', context_length: 32768 },
+    },
+    {
+      id: repos.table, author: 'e2e-org', downloads: 90, likes: 1, pipeline_tag: 'text-generation',
       cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'qwen4exp', context_length: 32768 },
     },
     // Not a chat model: the server must drop it from results.

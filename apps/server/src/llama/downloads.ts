@@ -21,7 +21,7 @@ import {
   type MtpHead,
 } from "./catalog.ts";
 import { estimateFit, type FitEstimate } from "./fit.ts";
-import { readGgufFacts } from "./gguf.ts";
+import { findTensor, LOOKUP_TABLE_TENSOR, readGgufFacts } from "./gguf.ts";
 import { thinkingFromTemplate } from "../inference/thinking.ts";
 import { downloadErrorMessage, hfHeaders, isRepoId, repoFiles, resolveUrl, type MtpHeadFile, type QuantFile } from "./hf.ts";
 import { llamaDir, modelFilePath, repoDir } from "./paths.ts";
@@ -713,11 +713,23 @@ async function describeFile(row: LocalModelRow): Promise<LocalModelMeta | null> 
       // A shared head inside a model's own file would be nonsense; a head is
       // only counted when the file can draft on its own.
       mtp: facts.mtp && !facts.mtp.sharedTarget ? { layers: facts.mtp.layers } : null,
+      lookupTable: await findLookupTable(row),
     };
   } catch (err) {
     log(`Could not read ${row.id}'s GGUF header: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
+}
+
+/** The model's per-layer lookup table, from whichever part holds it — a split
+ * model's tensors are spread over its parts. A part that cannot be read is
+ * passed over: this fact only offers a setting and names a buffer. */
+async function findLookupTable(row: LocalModelRow): Promise<{ tensor: string; bytes: number } | null> {
+  for (const file of rowFiles(row)) {
+    const span = await findTensor(modelFilePath(row.repo, row.revision, file.path), LOOKUP_TABLE_TENSOR).catch(() => null);
+    if (span) return { tensor: span.name, bytes: span.bytes };
+  }
+  return null;
 }
 
 /**
@@ -734,14 +746,14 @@ export async function backfillHeaderFacts(rows: LocalModelRow[]): Promise<number
   let filled = 0;
   for (const row of rows) {
     const meta = rowMeta(row);
-    if (row.status !== "ready" || (meta.shape !== undefined && meta.thinking !== undefined && meta.mtp !== undefined)) continue;
+    if (row.status !== "ready" || (meta.shape !== undefined && meta.thinking !== undefined && meta.mtp !== undefined && meta.lookupTable !== undefined)) continue;
     const facts = await describeFile(row);
     if (!facts) {
       // A header that cannot be read is an answer too. Storing nothing, as this
       // once did, re-parsed an unreadable (or hostile) file on every boot for
       // ever, on the event loop, before the API was serving.
       await updateLocalModelRow(row.id, {
-        meta: { ...meta, shape: meta.shape ?? null, thinking: meta.thinking ?? null, mtp: meta.mtp ?? null },
+        meta: { ...meta, shape: meta.shape ?? null, thinking: meta.thinking ?? null, mtp: meta.mtp ?? null, lookupTable: meta.lookupTable ?? null },
       }).catch(() => undefined);
       continue;
     }

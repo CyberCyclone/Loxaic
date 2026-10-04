@@ -385,9 +385,119 @@ async function loadPinnedOnce(): Promise<void> {
   }
 }
 
+// ── Loading and unloading on request ────────────────────────────────────────
+
+/** Why a load an admin asked for (or a reload after a settings change) did
+ * not happen, by id. Cleared when the model is asked for again, unloaded, or
+ * seen loaded (`loadErrorFor`). */
+const loadErrors = new Map<string, string>();
+/** Loads this module started and has not finished, so the list can say
+ * "loading" from the moment Load is pressed rather than once the router has
+ * been asked — which waits for the room lock. */
+const loadsRequested = new Set<string>();
+
+/**
+ * The failure to show for `id`, given what the router says of it now. A model
+ * seen loaded has none any more: a chat loads a model through the router,
+ * never through this module, so this is where that load is noticed — and it
+ * is forgotten then, not hidden, or it would come back on the next unload.
+ */
+export function loadErrorFor(id: string, routerStatus: string | null): string | null {
+  if (routerStatus === "loaded") loadErrors.delete(id);
+  return loadErrors.get(id) ?? null;
+}
+
+export function loadRequested(id: string): boolean {
+  return loadsRequested.has(id);
+}
+
+const REQUESTED_LOAD_WAIT_MS = 10 * 60_000;
+
+/** A refusal an admin can read: why this model cannot be unloaded now. */
+export class UnloadRefusedError extends Error {}
+
+/**
+ * Load `id` now, making room the way a request would. Refuses up front, with
+ * `NoRoomError`, only when pinned models are in the way (`checkRoom`); the
+ * load itself runs in the background — it can take minutes, and nothing that
+ * asked for it should wait on it. A failure is kept for `loadErrorFor`.
+ */
+export async function requestLoad(id: string): Promise<void> {
+  if (!routerEndpoint()) throw new Error("llama.cpp is not running");
+  const row = await servableRow(id);
+  if (!row) throw new Error("Only a model that is enabled for everyone can be loaded");
+  if (await isLoaded(id)) return;
+  await checkRoom(id);
+  startLoad(row);
+}
+
+function startLoad(row: LocalModelRow): void {
+  if (loadsRequested.has(row.id)) return;
+  loadsRequested.add(row.id);
+  loadErrors.delete(row.id);
+  void withRoomLock(async () => {
+    try {
+      if (await isLoaded(row.id)) return;
+      await ensureRoomLocked(row);
+      if (await isLoaded(row.id)) return;
+      console.log(`[llama] loading ${row.id}`);
+      await loadModel(row.id);
+      const status = await waitForModelStatus(row.id, "loaded", REQUESTED_LOAD_WAIT_MS);
+      if (status?.value !== "loaded") {
+        const why = status?.failed ? loadFailureMessage(row, modelLoadFailureReason(row.id)) : null;
+        loadErrors.set(row.id, why ?? `${row.displayName} did not finish loading.`);
+      }
+    } catch (err) {
+      loadErrors.set(
+        row.id,
+        err instanceof NoRoomError ? err.message : `${row.displayName} could not be loaded: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }).finally(() => { loadsRequested.delete(row.id); });
+}
+
+/**
+ * Load again the models a preset reload just unloaded because an admin
+ * changed them. Pinned ones are left to `loadPinnedModels`; one that is no
+ * longer servable (disabled since) stays unloaded.
+ */
+export function restoreModels(ids: string[]): void {
+  void (async () => {
+    const rows = await listServableModels();
+    for (const id of ids) {
+      const row = rows.find((r) => r.id === id);
+      if (row && !row.pinned) startLoad(row);
+    }
+  })().catch((e: unknown) => {
+    console.error(`[llama] could not reload models: ${e instanceof Error ? e.message : String(e)}`);
+  });
+}
+
+/**
+ * Unload `id` now. Refused for a pinned model (it would only be loaded again)
+ * and for one answering someone or still loading — an admin's tidy-up must
+ * not cut a reply off.
+ */
+export async function requestUnload(id: string, pinned: boolean): Promise<void> {
+  if (!routerEndpoint()) return;
+  if (pinned) throw new UnloadRefusedError("It is kept loaded. Turn off Keep loaded to unload it.");
+  await withRoomLock(async () => {
+    const status = (await routerModelStatuses()).get(id)?.value;
+    if (status === "loading" || loadsRequested.has(id)) throw new UnloadRefusedError("It is still loading. Unload it once it has finished.");
+    if ((inFlight.get(id) ?? 0) > 0) throw new UnloadRefusedError("It is answering someone right now. Unload it once the reply ends.");
+    if (status !== "loaded") return;
+    console.log(`[llama] unloading ${id} (asked by an admin)`);
+    await unloadModel(id);
+    await waitForModelStatus(id, "unloaded", UNLOAD_WAIT_MS);
+  });
+  loadErrors.delete(id);
+}
+
 /** Test seam: forget use tracking and pin errors. */
 export function __resetRoomForTest(): void {
   inFlight.clear();
   lastUsed.clear();
   pinErrors.clear();
+  loadErrors.clear();
+  loadsRequested.clear();
 }
