@@ -23,7 +23,7 @@
 import { browser } from '@wdio/globals';
 import { apiToken, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, platform, scrollTo, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, isVisible, platform, scrollTo, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   APPROVAL_SUBAGENT_PROMPT,
   LONG_SUBAGENT_NAME,
@@ -52,18 +52,55 @@ import { BASE_URL } from '../../scripts/standup.ts';
 const MODEL_A = 'llama-3.1-8b-instruct';
 const MODEL_B = 'qwen2.5-14b-instruct';
 
-/** The run the last send opened: the newest agent conversation. */
-async function newestRun(creds: Credentials): Promise<string> {
+/**
+ * Sends `prompt` and returns the run it opened.
+ *
+ * By difference, not "the newest": the list is read over the API, and asked a
+ * moment too early its newest row is still the *previous* case's run — which
+ * then has none of the sub-agents the case goes on to wait for.
+ */
+async function sendInNewRun(creds: Credentials, prompt: string): Promise<string> {
+  const before = new Set((await listConversations(creds)).map((c) => c.id));
+  await sendMessage(prompt);
   let id = '';
   await browser.waitUntil(
     async () => {
-      const first = (await listConversations(creds)).find((c) => c.kind === 'agent');
-      id = first ? first.id : '';
+      const made = (await listConversations(creds)).find((c) => c.kind === 'agent' && !before.has(c.id));
+      id = made ? made.id : '';
       return id !== '';
     },
     { timeout: 20_000, timeoutMsg: 'the agent run never appeared in the conversation list' },
   );
+  // On an iPhone the keyboard stays up after a send and leaves the thread a
+  // sliver above it, with the sub-agent's card scrolled out of it — and
+  // XCUITest reports an off-screen element as not displayed. A tap on the
+  // list closes the keyboard (the list does not keep it open for taps).
+  if (platform() === 'ios' && (await browser.isKeyboardShown().catch(() => false))) {
+    const list = byTestId('chat.messageList');
+    // Best effort. With an approval bar up as well the list has no room at
+    // all and is not there to tap — and the bar itself is above the keyboard.
+    const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
+    if (there) await list.click().catch(() => undefined);
+  }
   return id;
+}
+
+/**
+ * Opens the Sub-agents list from the agent screen's ⋮ menu.
+ *
+ * Tried twice. On an iPhone with the keyboard up, presenting the menu is what
+ * dismisses the keyboard, and a tap on the item made while that is still
+ * animating lands nowhere — the menu stays open with nothing chosen.
+ */
+async function openSubAgentsList(): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!(await isVisible('agent.header.subAgents').catch(() => false))) await tap('agent.header.menu');
+    await browser.pause(platform() === 'ios' ? 1_000 : 0);
+    await tap('agent.header.subAgents');
+    const open = await byTestId('subagent.list.panel').waitForDisplayed({ timeout: 5_000 }).then(() => true, () => false);
+    if (open) return;
+  }
+  await waitForVisible('subagent.list.panel');
 }
 
 async function waitForStatus(creds: Credentials, convId: string, child: E2ESubAgent, status: E2ESubAgent['status']) {
@@ -80,6 +117,8 @@ async function prefs(creds: Credentials): Promise<Record<string, unknown>> {
 
 describe('sub-agents', () => {
   const creds = uniqueCreds();
+  /** The two-sub-agent run, which the reload case looks at again. */
+  let twoRun = '';
 
   before(async () => {
     await signUp(creds);
@@ -111,42 +150,42 @@ describe('sub-agents', () => {
     // The model list has loaded: a send before it names no model, and the
     // sub-agent's card would then have none to show.
     await waitForTextIn('composer.model', MODEL_A, 30_000);
-    await sendMessage(SLOW_SUBAGENT_PROMPT);
-    const convId = await newestRun(creds);
+    const convId = await sendInNewRun(creds, SLOW_SUBAGENT_PROMPT);
     const [child] = await waitForSubAgents(creds, convId, 1);
     const card = `subagent.card.${child.call_id}`;
 
     // Running, named, and on a model — at once, before it has measured anything.
-    await waitForVisible(card);
-    await waitForTextIn(`${card}.status`, 'Running');
-    await waitForTextIn(card, SLOW_SUBAGENT_NAME);
-    await waitForTextIn(`${card}.model`, MODEL_A);
-    await waitForVisible(`${card}.elapsed`);
+    await waitForFreshText(`${card}.status`, 'Running');
+    await waitForFreshText(`${card}.name`, SLOW_SUBAGENT_NAME);
+    await waitForFreshText(`${card}.model`, MODEL_A);
+    await waitForFreshText(`${card}.elapsed`, 's');
 
     // Its context and speed, once its first request has finished (the mock's
     // eight seconds). Both are the child's own figures, mirrored onto the
     // parent's stream: the parent is doing nothing but waiting.
-    await waitForTextIn(`${card}.context`, '% context', 40_000);
-    await waitForTextIn(`${card}.speed`, 'tok/s', 10_000);
+    await waitForFreshText(`${card}.context`, '% context', 40_000);
+    await waitForFreshText(`${card}.speed`, 'tok/s', 10_000);
     // The parent is still running: its own header says so.
     await waitForTextIn('agent.run.status', 'Running');
     await shot('subagent-card-running');
 
     // The panel: the child's own transcript, in the same message list.
-    await tap(`${card}.open`);
+    // By its chevron, a leaf control: XCUITest does not expose the card's main
+    // press target, whose children are the texts it is made of.
+    await tap(`${card}.chevron`);
     await waitForVisible('subagent.panel');
-    await waitForTextIn('subagent.panel.status', 'Running');
+    await waitForFreshText('subagent.panel.status', 'Running');
     // The task it was handed, and the tool call it has made since.
     await waitForTextIn('subagent.panel.messageList', 'take your time and survey in passes');
     // Marked as the agent's: nobody typed a sub-agent's task.
     await waitForVisible('chat.message.fromAgent');
     await waitForTextIn('subagent.panel.messageList', 'todo_write', 20_000);
-    await waitForTextIn('subagent.panel.context', '% context');
+    await waitForFreshText('subagent.panel.context', '% context');
     await shot('subagent-panel-running');
 
     // Stop, from the panel. The child ends; the parent is told and carries on.
     await tap('subagent.panel.stop');
-    await waitForTextIn('subagent.panel.status', 'Stopped', 30_000);
+    await waitForFreshText('subagent.panel.status', 'Stopped', 30_000);
     await shot('subagent-panel-stopped');
     await waitForStatus(creds, convId, child, 'cancelled');
     await tap('subagent.close');
@@ -154,7 +193,7 @@ describe('sub-agents', () => {
 
     await waitForRunDone(creds, convId, 60_000);
     await waitForTextIn('agent.run.status', 'Done', 30_000);
-    await waitForTextIn(`${card}.status`, 'Stopped');
+    await waitForFreshText(`${card}.status`, 'Stopped');
     // The parent was told its sub-agent was stopped, and answered anyway.
     const [result] = await getToolResults(creds, convId);
     expect(result.ok).toBe(false);
@@ -173,8 +212,8 @@ describe('sub-agents', () => {
 
     await startNewAgentRun();
     await tap('agent.mode.auto');
-    await sendMessage(TWO_SUBAGENTS_PROMPT);
-    const convId = await newestRun(creds);
+    const convId = await sendInNewRun(creds, TWO_SUBAGENTS_PROMPT);
+    twoRun = convId;
     const [quick, long] = await waitForSubAgents(creds, convId, 2);
     expect(quick.description).toBe(QUICK_SUBAGENT_NAME);
     expect(long.description).toBe(LONG_SUBAGENT_NAME);
@@ -182,15 +221,17 @@ describe('sub-agents', () => {
     // inference slot they run one after the other, in whichever order the
     // queue admits them — either way there is a moment with one of each.
     await waitForStatus(creds, convId, quick, 'complete');
-    await waitForTextIn(`subagent.card.${quick.call_id}.status`, 'Finished');
-    await waitForTextIn(`subagent.card.${long.call_id}.status`, 'Running', 30_000);
+    await waitForFreshText(`subagent.card.${quick.call_id}.status`, 'Finished');
+    await waitForFreshText(`subagent.card.${long.call_id}.status`, 'Running', 30_000);
 
     await tap('agent.header.menu');
-    await waitForTextIn('agent.header.subAgents', '1 running');
+    // The count beside the item. Not on iOS, where XCUITest can tap a menu
+    // item but does not report one as displayed.
+    if (platform() !== 'ios') await waitForTextIn('agent.header.subAgents', '1 running');
     await tap('agent.header.subAgents');
     await waitForVisible('subagent.list.panel');
-    await waitForTextIn(`subagent.list.${long.conversation_id}.status`, 'Running');
-    await waitForTextIn(`subagent.list.${quick.conversation_id}.status`, 'Finished');
+    await waitForFreshText(`subagent.list.${long.conversation_id}.status`, 'Running');
+    await waitForFreshText(`subagent.list.${quick.conversation_id}.status`, 'Finished');
     if (platform() !== 'ios') {
       // Running first, then finished. (XCUITest does not expose a plain
       // container view's testID, so the sections are checked off iOS.)
@@ -203,7 +244,7 @@ describe('sub-agents', () => {
     // its whole transcript, read back from what is stored.
     await tap(`subagent.list.${quick.conversation_id}`);
     await waitForVisible('subagent.panel');
-    await waitForTextIn('subagent.panel.status', 'Finished');
+    await waitForFreshText('subagent.panel.status', 'Finished');
     await waitForTextIn('subagent.panel.messageList', '[Mock] Echo: say the quick lookup is done');
     // A finished sub-agent offers no Stop.
     await waitForAbsent('subagent.panel.stop');
@@ -213,7 +254,7 @@ describe('sub-agents', () => {
 
     // Stop, from the card this time.
     await tap(`subagent.card.${long.call_id}.stop`);
-    await waitForTextIn(`subagent.card.${long.call_id}.status`, 'Stopped', 30_000);
+    await waitForFreshText(`subagent.card.${long.call_id}.status`, 'Stopped', 30_000);
     await waitForRunDone(creds, convId, 60_000);
     await waitForTextIn('chat.messageList', '[Mock] Both sub-agents have reported back.');
     const results = await getToolResults(creds, convId);
@@ -228,17 +269,16 @@ describe('sub-agents', () => {
     if (platform() !== 'web' && platform() !== 'electron') this.skip();
     this.timeout(2 * 60_000);
 
-    const convId = await newestRun(creds);
-    const [quick, long] = await waitForSubAgents(creds, convId, 2);
+    const [quick, long] = await waitForSubAgents(creds, twoRun, 2);
     await browser.refresh();
     await waitForVisible('composer.input', 30_000);
     await goToSurface('agent');
     // Nothing is streaming any more: this is the stored record alone.
-    await waitForTextIn(`subagent.card.${quick.call_id}.status`, 'Finished', 30_000);
-    await waitForTextIn(`subagent.card.${long.call_id}.status`, 'Stopped');
-    await waitForTextIn(`subagent.card.${quick.call_id}.model`, MODEL_A);
-    await waitForTextIn(`subagent.card.${quick.call_id}.context`, '% context');
-    await waitForVisible(`subagent.card.${quick.call_id}.elapsed`);
+    await waitForFreshText(`subagent.card.${quick.call_id}.status`, 'Finished', 30_000);
+    await waitForFreshText(`subagent.card.${long.call_id}.status`, 'Stopped');
+    await waitForFreshText(`subagent.card.${quick.call_id}.model`, MODEL_A);
+    await waitForFreshText(`subagent.card.${quick.call_id}.context`, '% context');
+    await waitForFreshText(`subagent.card.${quick.call_id}.elapsed`, 's');
     await tap('agent.header.menu');
     // None running now, so the item says nothing about a count.
     await waitForTextIn('agent.header.subAgents', 'Sub-agents');
@@ -255,22 +295,31 @@ describe('sub-agents', () => {
 
     await startNewAgentRun();
     await tap('agent.mode.manual');
-    await sendMessage(APPROVAL_SUBAGENT_PROMPT);
-    const convId = await newestRun(creds);
+    const convId = await sendInNewRun(creds, APPROVAL_SUBAGENT_PROMPT);
     const [child] = await waitForSubAgents(creds, convId, 1);
     const card = `subagent.card.${child.call_id}`;
 
     // The same bar the run's own approval uses, saying who is asking.
     await waitForVisible('agent.permission.bar');
-    await waitForTextIn('agent.permission.source', MOCK_SUBAGENT_NAME);
+    await waitForFreshText('agent.permission.source', MOCK_SUBAGENT_NAME);
     await waitForTextIn('agent.permission.bar', 'fs_write');
     await waitForTextIn('agent.permission.deadline', "this call won't run");
-    await waitForTextIn(`${card}.status`, 'Waiting for approval');
     await shot('subagent-approval-on-parent');
 
     // In its panel the question is in the footer, and the thread behind it
     // does not show the same question a second time.
-    await tap(`${card}.open`);
+    if (platform() === 'ios') {
+      // An iPhone's keyboard is still up from the send, and with the approval
+      // bar above it the thread has no room left: the card is not on screen
+      // (WebDriverAgent cannot close this keyboard, and there is no list to
+      // tap). The ⋮ menu's list is the other way to the same panel.
+      await openSubAgentsList();
+      await waitForFreshText(`subagent.list.${child.conversation_id}.status`, 'Waiting for approval');
+      await tap(`subagent.list.${child.conversation_id}`);
+    } else {
+      await waitForFreshText(`${card}.status`, 'Waiting for approval');
+      await tap(`${card}.chevron`);
+    }
     await waitForVisible('subagent.permission.bar');
     await waitForTextIn('subagent.permission.bar', 'fs_write');
     await waitForAbsent('agent.permission.bar');
@@ -285,7 +334,7 @@ describe('sub-agents', () => {
     const [denied] = await getToolResults(creds, child.conversation_id);
     expect(denied).toMatchObject({ ok: false, output: 'User denied this tool call.' });
     await waitForAbsent('agent.permission.bar');
-    await waitForTextIn(`${card}.status`, 'Finished');
+    await waitForFreshText(`${card}.status`, 'Finished');
   });
 
   it('allows a sub-agent’s tool from the parent’s bar, and the tool runs', async function () {
@@ -293,11 +342,10 @@ describe('sub-agents', () => {
 
     await startNewAgentRun();
     await tap('agent.mode.manual');
-    await sendMessage(APPROVAL_SUBAGENT_PROMPT);
-    const convId = await newestRun(creds);
+    const convId = await sendInNewRun(creds, APPROVAL_SUBAGENT_PROMPT);
     const [child] = await waitForSubAgents(creds, convId, 1);
 
-    await waitForTextIn('agent.permission.source', MOCK_SUBAGENT_NAME);
+    await waitForFreshText('agent.permission.source', MOCK_SUBAGENT_NAME);
     await tap('agent.permission.allow');
     // The bar goes once the answer is on the wire.
     await waitForAbsent('agent.permission.bar');
@@ -305,7 +353,7 @@ describe('sub-agents', () => {
     // The child's write ran — in the parent's own workspace.
     const [written] = await getToolResults(creds, child.conversation_id);
     expect(written.ok).toBe(true);
-    await waitForTextIn(`subagent.card.${child.call_id}.status`, 'Finished');
+    await waitForFreshText(`subagent.card.${child.call_id}.status`, 'Finished');
     await shot('subagent-approval-allowed');
   });
 
@@ -326,12 +374,11 @@ describe('sub-agents', () => {
     await goToSurface('routines');
     await waitForVisible(`routines.open.${routine.id}`);
     await tap(`routines.open.${routine.id}`);
-    await waitForVisible('routineChat.back');
 
     // This screen did not start the run: it learns of the sub-agent, and of
     // what it is waiting on, from the snapshot it gets on opening the chat.
     await waitForVisible('chat.approval.dialog', 30_000);
-    await waitForTextIn('chat.approval.source', MOCK_SUBAGENT_NAME);
+    await waitForFreshText('chat.approval.source', MOCK_SUBAGENT_NAME);
     await waitForTextIn('chat.approval.dialog', 'fs_write');
     await shot('subagent-approval-routine');
     await tap('chat.approval.reject');
@@ -342,12 +389,12 @@ describe('sub-agents', () => {
     await waitForRunDone(creds, run.conversationId, 60_000);
     const [denied] = await getToolResults(creds, child.conversation_id);
     expect(denied).toMatchObject({ ok: false, output: 'User denied this tool call.' });
-    await waitForTextIn(`subagent.card.${child.call_id}.status`, 'Finished', 30_000);
+    await waitForFreshText(`subagent.card.${child.call_id}.status`, 'Finished', 30_000);
 
     // The routine's chat has the ⋮ item too.
     await tap('routineChat.header.menu');
     await tap('routineChat.header.subAgents');
-    await waitForTextIn(`subagent.list.${child.conversation_id}.status`, 'Finished');
+    await waitForFreshText(`subagent.list.${child.conversation_id}.status`, 'Finished');
     await shot('subagent-list-routine');
     await tap('subagent.list.close');
     await waitForAbsent(`subagent.list.${child.conversation_id}`);
@@ -404,11 +451,10 @@ describe('sub-agents', () => {
     await goToSurface('agent');
     await startNewAgentRun();
     await tap('agent.mode.auto');
-    await sendMessage('Use a sub-agent: say which model you are');
-    const convId = await newestRun(creds);
+    const convId = await sendInNewRun(creds, 'Use a sub-agent: say which model you are');
     const [child] = await waitForSubAgents(creds, convId, 1);
     expect(child.model).toBe(MODEL_B);
-    await waitForTextIn(`subagent.card.${child.call_id}.model`, MODEL_B);
+    await waitForFreshText(`subagent.card.${child.call_id}.model`, MODEL_B);
     await waitForRunDone(creds, convId, 60_000);
   });
 });

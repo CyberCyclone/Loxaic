@@ -85,9 +85,7 @@ export function SubAgentStats({ view, stopping, testIDBase }: SubAgentStatsProps
         </HStack>
       )}
       {running ? (
-        <Box testID={`${testIDBase}.elapsed`} className="shrink-0">
-          <LiveElapsed since={view.startedLocal} />
-        </Box>
+        <LiveElapsed testID={`${testIDBase}.elapsed`} since={view.startedLocal} />
       ) : duration !== null ? (
         <Text testID={`${testIDBase}.elapsed`} size="2xs" className="shrink-0 text-muted-foreground">
           {formatDuration(duration)}

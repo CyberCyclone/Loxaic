@@ -71,7 +71,9 @@ export function SubAgentCard({ tool, ui }: { tool: ToolCall; ui: SubAgentsUi }) 
               <Icon as={Bot} size="sm" className="text-primary" />
             </Box>
             <VStack space="xs" className="min-w-0 flex-1">
-              <Text size="sm" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+              {/* The name's own testID: an assertion anchor on the Text, since
+                  XCUITest does not expose the card's container view. */}
+              <Text testID={`${base}.name`} size="sm" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
                 {description}
               </Text>
               <SubAgentStats view={view} stopping={stopping} testIDBase={base} />
