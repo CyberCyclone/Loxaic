@@ -185,7 +185,20 @@ async function instructionsFor(snapshot: unknown, model: string, parentConvId: s
  * Called from inside the parent's `slot.yieldWhile`, so everything it emits on
  * the parent's stream is out before the parent re-enters the queue.
  */
-export async function runSubagent(parent: SubagentParent, call: SubagentCall): Promise<SubagentOutcome> {
+export async function runSubagent(
+  parent: SubagentParent,
+  call: SubagentCall,
+  hooks?: {
+    /**
+     * Called once, when the child has its place: it holds an inference slot,
+     * or is waiting in line for one. Never called for a child that ends before
+     * that — its returned promise settling is the signal then. What lets the
+     * caller start a message's children one after another, so they queue in
+     * the order they were called.
+     */
+    onInLine?: () => void;
+  },
+): Promise<SubagentOutcome> {
   const failed = (reason: string): SubagentOutcome => ({ output: `Could not start the sub-agent: ${reason}`, ok: false });
   if (parent.signal.aborted) return { output: "Stopped by the user before this tool call ran.", ok: false };
 
@@ -331,7 +344,7 @@ export async function runSubagent(parent: SubagentParent, call: SubagentCall): P
       nestedInstructions: parent.surface === "agent" && workspace.kind !== "scratch",
       role: { kind: "subagent", parentConvId: parent.convId },
       abort,
-      producer: mirrorProgress(producer, parent.producer, childId, streamId),
+      producer: mirrorProgress(producer, parent.producer, childId, streamId, hooks?.onInLine),
     });
   } catch (err) {
     // `runToolLoop` rethrows anything that is not a cancellation. Awaited here
@@ -393,18 +406,29 @@ function mirrorProgress(
   parent: StreamProducer,
   childConvId: string,
   childStreamId: string,
+  onInLine?: () => void,
 ): StreamProducer {
   let tokensOut = 0;
   let pendingCallId: string | null = null;
+  let inLine = false;
+  // The first sign the child has reached the scheduler: a place in the queue,
+  // or — when a slot was free — its first iteration.
+  const reachedLine = () => {
+    if (inLine) return;
+    inLine = true;
+    onInLine?.();
+  };
   const report = (fields: Omit<SubAgentProgress, "conversation_id">) => {
     parent.emit({ kind: "subagent.progress", conversation_id: childConvId, ...fields });
   };
   const observe = (event: StreamEventKind) => {
     switch (event.kind) {
       case "run.queued":
+        reachedLine();
         report({ state: "queued", queue_position: event.position });
         break;
       case "iteration":
+        reachedLine();
         report({ state: "running", iteration: event.n });
         break;
       case "message.usage": {

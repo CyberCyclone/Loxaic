@@ -27,6 +27,11 @@ import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { useMcpSwitches } from '@/hooks/useMcpSwitches';
+import { useSubAgents } from '@/hooks/useSubAgents';
+import { ConversationMenu } from '@/components/chat/ConversationMenu';
+import { SubAgentContext } from '@/components/subagents/SubAgentContext';
+import { SubAgentPanel } from '@/components/subagents/SubAgentPanel';
+import { SubAgentsList } from '@/components/subagents/SubAgentsList';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { humanizeCron } from '@/lib/fixtures/routines';
 import { runStatusIsError, runStatusLabel, runTimeLabel } from '@/lib/routineRuns';
@@ -154,11 +159,40 @@ export default function RoutineChatScreen() {
     handleDeny,
     handleSteps,
     handleAllowAlways,
+    rememberAlwaysAllow,
     handleDelete,
     history,
     noRoom,
     dismissNoRoom,
+    subAgents: subAgentState,
   } = useChatSession(token, undefined, scope);
+  // A routine's run may hand work to sub-agents, like the agent's — see
+  // agent.tsx. A routine's chats belong to their owner alone, so whoever is
+  // looking at one may stop its sub-agents and answer them.
+  const subAgents = useSubAgents(subAgentState, activeConv?.id ?? null, activeConv !== null);
+  const childApproval = pendingApproval ? null : subAgents.approvalChild;
+  // The approval here is a dialog, and nothing in this app puts a dialog over
+  // a sheet (iOS will not present one while the other is up, or still
+  // leaving). So a sheet gives way to the run's own approval, and the dialog
+  // waits until the sheet has gone.
+  const sheetOpen = subAgents.listOpen || subAgents.panel.view !== null;
+  const [sheetGone, setSheetGone] = useState(true);
+  const closeSubAgentPanel = subAgents.panel.close;
+  const closeSubAgentList = subAgents.closeList;
+  useEffect(() => {
+    if (pendingApproval && sheetOpen) {
+      closeSubAgentPanel();
+      closeSubAgentList();
+    }
+  }, [pendingApproval, sheetOpen, closeSubAgentPanel, closeSubAgentList]);
+  useEffect(() => {
+    if (sheetOpen) {
+      setSheetGone(false);
+      return;
+    }
+    const timer = setTimeout(() => { setSheetGone(true); }, 300);
+    return () => { clearTimeout(timer); };
+  }, [sheetOpen]);
   // A routine's chats exist only because a run made them, so there is never
   // a first send to carry choices on: every switch here is a PATCH.
   const mcp = useMcpSwitches(token, activeConv?.id ?? null, 'routine');
@@ -325,15 +359,25 @@ export default function RoutineChatScreen() {
           }}
           backTestID="routineChat.back"
           right={
-            breakpoint !== 'wide' ? (
-              <Pressable
-                testID="routineChat.threadList.toggle"
-                onPress={() => { setThreadListOpen(true); }}
-                className="rounded-sm p-1.5 web:hover:bg-muted/50"
-              >
-                <Icon as={MessagesSquare} size="sm" className="text-foreground" />
-              </Pressable>
-            ) : undefined
+            <HStack space="xs" className="items-center">
+              {breakpoint !== 'wide' && (
+                <Pressable
+                  testID="routineChat.threadList.toggle"
+                  onPress={() => { setThreadListOpen(true); }}
+                  className="rounded-sm p-1.5 web:hover:bg-muted/50"
+                >
+                  <Icon as={MessagesSquare} size="sm" className="text-foreground" />
+                </Pressable>
+              )}
+              {/* The ⋮ here holds one thing: this chat's sub-agents. Deleting
+                  a routine's chat stays where it was, in its history list. */}
+              {activeConv && (
+                <ConversationMenu
+                  area="routineChat"
+                  subAgents={{ open: subAgents.openList, running: subAgents.running }}
+                />
+              )}
+            </HStack>
           }
         />
         <KeyboardAvoidingView
@@ -342,15 +386,17 @@ export default function RoutineChatScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
         >
           {activeConv ? (
-            <MessageList
-              conversation={activeConv}
-              responseStartedAt={responseStartedAt}
-              loadingModel={loadingModel}
-              promptStats={promptStats}
-              queuePosition={queuePosition}
-              model={model ? modelName : undefined}
-              history={history}
-            />
+            <SubAgentContext.Provider value={subAgents.ui}>
+              <MessageList
+                conversation={activeConv}
+                responseStartedAt={responseStartedAt}
+                loadingModel={loadingModel}
+                promptStats={promptStats}
+                queuePosition={queuePosition}
+                model={model ? modelName : undefined}
+                history={history}
+              />
+            </SubAgentContext.Provider>
           ) : !listLoaded ? (
             <Box className="flex-1 items-center justify-center">
               <Spinner />
@@ -424,7 +470,25 @@ export default function RoutineChatScreen() {
         </>
       )}
 
-      {pendingApproval && (
+      <SubAgentsList
+        open={subAgents.listOpen}
+        subAgents={subAgents.listed}
+        isStopping={subAgents.isStopping}
+        onOpen={subAgents.openFromList}
+        onClose={subAgents.closeList}
+      />
+      <SubAgentPanel
+        view={subAgents.panel.view}
+        transcript={subAgents.panel.transcript}
+        stopping={subAgents.panel.stopping}
+        canAct={subAgents.ui.canAct}
+        onStop={subAgents.panel.stop}
+        onAllow={subAgents.panel.allow}
+        onDeny={subAgents.panel.deny}
+        onClose={subAgents.panel.close}
+      />
+
+      {pendingApproval && sheetGone && (
         <ToolApprovalDialog
           tool={pendingApproval.tool}
           args={pendingApproval.args}
@@ -433,6 +497,25 @@ export default function RoutineChatScreen() {
           onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
           onAllowAlways={() => { void handleAllowAlways(pendingApproval.callId, pendingApproval.tool); }}
           onReject={() => { handleDeny(pendingApproval.callId); }}
+        />
+      )}
+      {/* A sub-agent's request, in the same dialog the run's own uses, saying
+          which sub-agent is asking. Not while its panel is open — the question
+          is in the panel's footer then — and not over the list. */}
+      {childApproval?.approval && sheetGone && !sheetOpen && (
+        <ToolApprovalDialog
+          tool={childApproval.approval.tool}
+          args={childApproval.approval.args}
+          deadline={childApproval.approval.deadline}
+          source={childApproval.description}
+          reason={`Sub-agent task: ${childApproval.description}`}
+          onAllowOnce={() => { subAgents.answer(childApproval.conversation_id, true); }}
+          onAllowAlways={() => {
+            const tool = childApproval.approval?.tool;
+            if (!tool) return;
+            void rememberAlwaysAllow(tool).then(() => { subAgents.answer(childApproval.conversation_id, true); });
+          }}
+          onReject={() => { subAgents.answer(childApproval.conversation_id, false); }}
         />
       )}
     </HStack>

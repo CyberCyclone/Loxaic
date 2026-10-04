@@ -132,6 +132,16 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
           </Text>
         </Box>
       )}
+      {/* A sub-agent's task. It is a user turn to the model, but no person
+          typed it — the agent that started the sub-agent did — and drawn as
+          the reader's own message it would say they had. */}
+      {isUser && msg.fromAgent && (
+        <Box className="px-4 pt-2">
+          <Text testID="chat.message.fromAgent" size="xs" className="text-center italic text-muted-foreground">
+            The task the agent gave this sub-agent
+          </Text>
+        </Box>
+      )}
       <Box
         testID={`chat.message.${msg.role}`}
         className={`px-4 py-2 ${isUser ? 'bg-primary/5' : ''}`}
@@ -143,7 +153,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
             }`}
           >
             <Text size="xs" className={isUser ? 'text-primary-foreground' : 'text-foreground'}>
-              {isUser ? 'U' : 'S'}
+              {isUser ? (msg.fromAgent ? 'A' : 'U') : 'S'}
             </Text>
           </Box>
           <VStack className="flex-1 pl-0" space="xs">

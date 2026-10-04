@@ -114,6 +114,10 @@ export interface DiffLine {
 export interface Message {
   id?: string
   role: 'user' | 'assistant' | 'summary'
+  /** Set on a sub-agent's user messages when its transcript is shown: the
+   * agent that started it wrote them, not the person reading. Display only —
+   * never stored or sent. */
+  fromAgent?: boolean
   /** The row's place in the engine's replay order, from history, a snapshot
    * or `message.start` alike. Absent on an optimistic bubble and from an older
    * server. Used to place a snapshot's messages in a thread loaded a page at a

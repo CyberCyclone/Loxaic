@@ -44,6 +44,10 @@ import { PlanPanel } from '@/components/agent/PlanPanel';
 import { PlanReviewBar } from '@/components/agent/PlanReviewBar';
 import { QuestionsPanel } from '@/components/agent/QuestionsPanel';
 import { useReview } from '@/hooks/useReview';
+import { useSubAgents } from '@/hooks/useSubAgents';
+import { SubAgentContext } from '@/components/subagents/SubAgentContext';
+import { SubAgentPanel } from '@/components/subagents/SubAgentPanel';
+import { SubAgentsList } from '@/components/subagents/SubAgentsList';
 import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode, formatAnswers, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
@@ -110,7 +114,16 @@ export default function AgentScreen() {
     returnedText,
     promotion,
     stageCard,
+    subAgents: subAgentState,
   } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef);
+  // This run's sub-agents: their cards, the list behind the ⋮ item, the open
+  // panel, and the approval to show when the run itself is not asking.
+  // Stopping one and answering it are editor actions, as they are on the run.
+  const subAgents = useSubAgents(subAgentState, activeId, Boolean(activeRun && canEdit(activeRun)));
+  // One approval at a time, the run's own first: it is the one the composer's
+  // Stop and the header are already about. A sub-agent's follows, named.
+  const childApproval = pendingApproval ? null : subAgents.approvalChild;
+  const shownApproval = pendingApproval ?? childApproval?.approval ?? null;
   const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, defaultModel, getName, getWindow, isKnown } =
     useModels(token);
   const { recentModels, refreshRecentModels, bumpRecentModel } = useRecentModels(token);
@@ -392,6 +405,7 @@ export default function AgentScreen() {
                 <ConversationMenu
                   area="agent"
                   onDelete={isOwner(activeRun) ? () => { setDeletingId(activeRun.id); } : undefined}
+                  subAgents={{ open: subAgents.openList, running: subAgents.running }}
                   review={
                     planReview.latest
                       ? {
@@ -466,25 +480,35 @@ export default function AgentScreen() {
           <HStack className="flex-1 overflow-hidden">
             <VStack className="flex-1">
               <PlanReviewContext.Provider value={planContext}>
-                <AgentStream
-                  run={activeRun}
-                  state={runState}
-                  mode={mode}
-                  iteration={iteration}
-                  loadingModel={loadingModel}
-                  promptStats={promptStats}
-                  queuePosition={queuePosition}
-                  responseStartedAt={responseStartedAt}
-                  pendingApproval={pendingApproval}
-                  pendingCheckin={pendingCheckin}
-                  history={history}
-                  stageCard={stageCard}
-                  onAllow={() => { if (pendingApproval) handleApprove(pendingApproval.callId); }}
-                  onDeny={() => { if (pendingApproval) handleDeny(pendingApproval.callId); }}
-                  onCheckinContinue={() => { handleSteps('continue'); }}
-                  onCheckinAnswer={() => { handleSteps('answer'); }}
-                  onCheckinStop={handleStop}
-                />
+                <SubAgentContext.Provider value={subAgents.ui}>
+                  <AgentStream
+                    run={activeRun}
+                    state={runState}
+                    mode={mode}
+                    iteration={iteration}
+                    loadingModel={loadingModel}
+                    promptStats={promptStats}
+                    queuePosition={queuePosition}
+                    responseStartedAt={responseStartedAt}
+                    pendingApproval={shownApproval}
+                    // Who is asking, when it is a sub-agent rather than the run.
+                    approvalSource={childApproval?.description}
+                    pendingCheckin={pendingCheckin}
+                    history={history}
+                    stageCard={stageCard}
+                    onAllow={() => {
+                      if (pendingApproval) handleApprove(pendingApproval.callId);
+                      else if (childApproval) subAgents.answer(childApproval.conversation_id, true);
+                    }}
+                    onDeny={() => {
+                      if (pendingApproval) handleDeny(pendingApproval.callId);
+                      else if (childApproval) subAgents.answer(childApproval.conversation_id, false);
+                    }}
+                    onCheckinContinue={() => { handleSteps('continue'); }}
+                    onCheckinAnswer={() => { handleSteps('answer'); }}
+                    onCheckinStop={handleStop}
+                  />
+                </SubAgentContext.Provider>
               </PlanReviewContext.Provider>
               <TerminalPanel
                 conversationId={activeRun?.id ?? null}
@@ -641,6 +665,23 @@ export default function AgentScreen() {
         onSuggest={(text) => { decidePlan(text, 'planning', selectedModel); }}
         onReject={() => { decidePlan(PLAN_REJECTED_MESSAGE, 'planning', selectedModel); }}
         onClose={planReview.close}
+      />
+      <SubAgentsList
+        open={subAgents.listOpen}
+        subAgents={subAgents.listed}
+        isStopping={subAgents.isStopping}
+        onOpen={subAgents.openFromList}
+        onClose={subAgents.closeList}
+      />
+      <SubAgentPanel
+        view={subAgents.panel.view}
+        transcript={subAgents.panel.transcript}
+        stopping={subAgents.panel.stopping}
+        canAct={subAgents.ui.canAct}
+        onStop={subAgents.panel.stop}
+        onAllow={subAgents.panel.allow}
+        onDeny={subAgents.panel.deny}
+        onClose={subAgents.panel.close}
       />
       <QuestionsPanel
         questions={openQuestions?.questions ?? null}

@@ -185,5 +185,42 @@
       }
     ],
     "finalText": "[Mock] Read the sub package.\n"
+  },
+  {
+    "match": "delegate the slow investigation",
+    "steps": [
+      {
+        "tool": "subagent",
+        "args": {
+          "description": "Investigate slowly",
+          "prompt": "take your time and make a todo plan"
+        }
+      }
+    ],
+    "finalText": "[Mock] The sub-agent has reported back.\n"
+  },
+  {
+    "match": "delegate two tasks at once",
+    "steps": [
+      {
+        "calls": [
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Quick lookup",
+              "prompt": "say the quick lookup is done"
+            }
+          },
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Long survey",
+              "prompt": "take your time and make a todo plan"
+            }
+          }
+        ]
+      }
+    ],
+    "finalText": "[Mock] Both sub-agents have reported back.\n"
   }
 ]

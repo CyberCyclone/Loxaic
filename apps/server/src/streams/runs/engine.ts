@@ -1634,9 +1634,9 @@ const SUBAGENT_NOT_RUN = "This sub-agent was not started.";
  * does at an approval, and takes it again at the front of the queue. The
  * children queue like any other run: side by side where the backend has the
  * slots, one after another where it does not, and behind whatever was already
- * waiting. One yield for the group rather than one per child, because each
- * re-entry can cost the parent a full prompt re-evaluation and there is no
- * reason to pay it between children.
+ * waiting, in the order they were called. One yield for the group rather than
+ * one per child, because each re-entry can cost the parent a full prompt
+ * re-evaluation and there is no reason to pay it between children.
  *
  * Returns an outcome for **every** call it was given, by call index — a
  * refusal for one past the cap or with unusable arguments, the child's report
@@ -1687,8 +1687,23 @@ async function runSubagentGroup(input: {
 
   try {
     await input.slot.yieldWhile(async () => {
+      // Started one after another, each once the one before has its place in
+      // line (or has ended): children then queue in the order they were
+      // called. Started all at once, their order in the queue was whichever
+      // finished its own setup first — on one slot, the difference between
+      // "the first task ran first" and a coin toss. They still run side by
+      // side wherever the backend has the slots: a child with a slot is "in
+      // line" the moment it takes it.
+      const running: Promise<SubagentOutcome>[] = [];
+      for (const s of starting) {
+        let reached: () => void = () => undefined;
+        const inLine = new Promise<void>((resolve) => { reached = resolve; });
+        const run = runSubagent(input.parent, s.spec, { onInLine: reached });
+        running.push(run);
+        await Promise.race([inLine, run]);
+      }
       // `runSubagent` never rejects, so `all` cannot abandon a sibling.
-      const settled = await Promise.all(starting.map((s) => runSubagent(input.parent, s.spec)));
+      const settled = await Promise.all(running);
       settled.forEach((outcome, i) => outcomes.set(starting[i].index, outcome));
     });
   } catch (err) {

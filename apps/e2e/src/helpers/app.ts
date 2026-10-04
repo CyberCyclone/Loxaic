@@ -501,6 +501,70 @@ export async function getToolResults(
   );
 }
 
+// ── Sub-agents ────────────────────────────────────────────
+
+/** One sub-agent call in one assistant message: a child whose two requests
+ * each take the mock's eight seconds, with a tool call between them — so it is
+ * still running, with a measured context and speed, long enough to look at. */
+export const SLOW_SUBAGENT_PROMPT = 'Please delegate the slow investigation.';
+export const SLOW_SUBAGENT_NAME = 'Investigate slowly';
+/** Two sub-agent calls in one message: one that answers at once, and the slow
+ * one above. What the Sub-agents list needs to show both of its sections. */
+export const TWO_SUBAGENTS_PROMPT = 'Please delegate two tasks at once.';
+export const QUICK_SUBAGENT_NAME = 'Quick lookup';
+export const LONG_SUBAGENT_NAME = 'Long survey';
+/** A sub-agent whose task makes it write a file — which asks first in manual
+ * mode. The mock's own trigger: the text after the colon is the child's task. */
+export const APPROVAL_SUBAGENT_PROMPT = 'Use a sub-agent: write a file called notes';
+export const MOCK_SUBAGENT_NAME = 'Mock sub-task';
+
+export interface E2ESubAgent {
+  conversation_id: string;
+  stream_id: string;
+  call_id: string;
+  description: string;
+  model: string;
+  status: 'running' | 'complete' | 'error' | 'cancelled';
+}
+
+/**
+ * A thread's sub-agents, from the API.
+ *
+ * A card's testID carries the call id that started it, which the model chose
+ * and a spec cannot know in advance — so it is read from here, the same record
+ * the app itself reads after a reload.
+ */
+export async function listSubAgents(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<E2ESubAgent[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/subagents`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing sub-agents failed (${String(res.status)})`);
+  return ((await res.json()) as { subagents: E2ESubAgent[] }).subagents;
+}
+
+/** Waits until the thread has `count` sub-agents and returns them, oldest
+ * first — the order their calls were made in. */
+export async function waitForSubAgents(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+  count: number,
+  timeoutMs = 30_000,
+): Promise<E2ESubAgent[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const list = await listSubAgents(creds, conversationId);
+    if (list.length >= count) return [...list].reverse();
+    if (Date.now() > deadline) {
+      throw new Error(`[e2e] ${conversationId} had ${String(list.length)} sub-agent(s), wanted ${String(count)}`);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and
  * non-admin sessions alike — the screen itself branches on role. */
 export async function openSandboxSettings(): Promise<void> {

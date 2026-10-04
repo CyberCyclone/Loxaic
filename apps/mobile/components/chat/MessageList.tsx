@@ -33,6 +33,10 @@ interface MessageListProps {
   history?: MessageHistory | null;
   /** The latest step of a context-stage switch in this thread. */
   stageCard?: StageCard | null;
+  /** The list's own testID. `chat.messageList` unless a screen shows a second
+   * list at once — a sub-agent's panel over its parent's thread — where two
+   * with one id would make every selector on it ambiguous. */
+  testID?: string;
 }
 
 /** What the session hooks expose for the open thread's scroll-back. */
@@ -57,7 +61,7 @@ export interface MessageHistory {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, testID = 'chat.messageList' }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
   const reachable = useServerReachable();
@@ -201,7 +205,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
 
   return (
     <FlatList
-      testID="chat.messageList"
+      testID={testID}
       ref={listRef}
       className="flex-1"
       inverted

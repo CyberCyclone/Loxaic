@@ -21,6 +21,9 @@ interface AgentStreamProps {
   queuePosition?: number | null;
   responseStartedAt?: number | null;
   pendingApproval: PendingApproval | null;
+  /** Set when the approval shown is a sub-agent's rather than the run's own:
+   * its description, so the bar says who is asking. */
+  approvalSource?: string;
   pendingCheckin: PendingCheckin | null;
   /** Scroll-back through older history — see MessageList. */
   history?: MessageHistory | null;
@@ -43,6 +46,7 @@ export function AgentStream({
   queuePosition,
   responseStartedAt,
   pendingApproval,
+  approvalSource,
   pendingCheckin,
   history,
   stageCard,
@@ -88,6 +92,7 @@ export function AgentStream({
           tool={pendingApproval.tool}
           args={pendingApproval.args}
           deadline={pendingApproval.deadline}
+          source={approvalSource}
           onAllow={onAllow}
           onDeny={onDeny}
         />

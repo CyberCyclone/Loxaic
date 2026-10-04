@@ -314,6 +314,27 @@ describe("sub-agents", () => {
     expect(await childrenOf(convId)).toHaveLength(MAX_SUBAGENTS_PER_MESSAGE);
   }, 60_000);
 
+  it("runs children in the order they were called, when there is one slot", async () => {
+    const convId = await newConversation();
+    // The first is the slow one: started all at once, the quick children's
+    // setup would beat it into the queue most of the time.
+    useScenario("in call order", [
+      { calls: [sub("First", "take your time and then say first"), sub("Second", "say second"), sub("Third", "say third")] },
+    ]);
+    await agentRun(convId, "in call order");
+    await waitFor("the parent to end", ended(convId), 40_000);
+    const byName = new Map((await childrenOf(convId)).map((k) => [(k.subagent as SubAgentInfo).description, k.subagent as SubAgentInfo]));
+    const first = byName.get("First");
+    const second = byName.get("Second");
+    const third = byName.get("Third");
+    // One slot (the default here): each ran only once the one called before
+    // it had finished.
+    expect(first?.endedAt).toBeLessThanOrEqual(second?.endedAt ?? 0);
+    expect(second?.endedAt).toBeLessThanOrEqual(third?.endedAt ?? 0);
+    // And the slow first one really did hold the others up.
+    expect((second?.endedAt ?? 0) - (first?.startedAt ?? 0)).toBeGreaterThanOrEqual(7_000);
+  }, 50_000);
+
   it("refuses a call with no task rather than starting a child on nothing", async () => {
     const convId = await newConversation();
     useScenario("empty task", [{ tool: SUBAGENT_TOOL_NAME, args: { description: "Nothing" } }]);
