@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LocalRuntimeView, ModelPlacement } from '@loxaic/api-client';
-import { loadedFirst, modelLoadState, pollIntervalMs, restartHeadline, unloadBlockedReason } from './localModels';
+import { LOAD_STATE_TEXT, loadedFirst, modelLoadState, pollIntervalMs, restartHeadline, unloadBlockedReason } from './localModels';
 import {
   placementLines,
   placementSegments,
@@ -100,6 +100,11 @@ describe('loaded or not', () => {
     expect(modelLoadState({ runtimeStatus: 'loading' })).toBe('loading');
     expect(modelLoadState({ runtimeStatus: 'sleeping' })).toBe('unloaded');
     expect(modelLoadState({ runtimeStatus: null })).toBe('unknown');
+  });
+
+  it('says it does not know when the router could not be asked, never "Not loaded"', () => {
+    expect(LOAD_STATE_TEXT.unknown).toBe('Status unknown');
+    expect(LOAD_STATE_TEXT.unknown).not.toBe(LOAD_STATE_TEXT.unloaded);
   });
 
   it('lists loaded models first, keeping the order within each group', () => {

@@ -6,7 +6,7 @@ import { findTensor, LOOKUP_TABLE_TENSOR } from "../gguf.ts";
 import { checkTableSetting, LoadSettingsError, presetLines } from "../load-settings.ts";
 import { describePlacement, foldPlacementLine, measuredFrom, newPlacementTracker } from "../placement.ts";
 import { renderPreset } from "../preset.ts";
-import { sumDrmFdinfo } from "../residency.ts";
+import { parentPidFromStat, sumDrmFdinfo } from "../residency.ts";
 import { buildGguf } from "./gguf-fixture.ts";
 
 /**
@@ -176,6 +176,14 @@ describe("the kernel's per-process GPU counters", () => {
     ]);
     expect(usage).toEqual({ vramBytes: 3072 * 1024, gttBytes: 30 * 1024, clients: 2 });
     expect(sumDrmFdinfo(["pos:\t0\n"])).toBeNull();
+  });
+
+  it("reads a process's parent from its stat line, whatever its name holds", () => {
+    // How a cached model pid is checked again before its memory is read: the
+    // port's model changes, and a pid is reused.
+    expect(parentPidFromStat("41234 (llama-server) S 41000 41234 41000 0 -1 4194560")).toBe(41000);
+    expect(parentPidFromStat("41234 (a (weird) name) R 41000 41234")).toBe(41000);
+    expect(parentPidFromStat("")).toBeNull();
   });
 });
 

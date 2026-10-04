@@ -1091,6 +1091,9 @@ replies.
   - diff `common/arg.cpp`, `common/preset.*` and `tools/server/` for preset keys, `/models`,
     `/props` and `prompt_progress`;
   - boot the new build with a preset that uses every whitelisted key;
+  - confirm `log-verbosity = 4` still prints no request or response bodies and no prompt tokens
+    (in b11342 those are `SRV_DBG`/`SLT_DBG`, level 5, and the HTTP body logger is not even
+    installed). `carriesPrompt` drops the known forms anyway; a new one would reach the log;
   - benchmark the model the beta serves, with the beta idle (the model fills ~88 of its 90 GB).
 - **In `managed` mode, the router's output goes to `LLAMA_DIR/logs/router.log` as well**
   (`llama/router-log.ts`). In `attach` mode nothing writes it: the Compose sidecar's output stays
@@ -1589,11 +1592,20 @@ replies.
   - **Load** answers 202 at once. It refuses up front with `NoRoomError`'s sentence only when
     pinned models are in the way, and the load runs in the background under the room lock. A
     failure is kept for `loadError`, in the same words a chat gets (`loadFailureMessage`).
+    **It is forgotten once the model is seen loaded** (`loadErrorFor` takes the router's
+    status): a chat loads a model through the router, never through room.ts, and the error from
+    an earlier admin Load otherwise sat in red under a Loaded badge. Found in review.
   - **The list says `loading` from the press** (`loadRequested`), because the router is only
     asked once the lock is free.
   - **Unload is refused (409) while the model is pinned**, since it would only be loaded again.
     Turning Keep loaded off is the way, and the row says so. It is also refused while the model
     is loading or answering someone (`trackRequest`'s count).
+  - **A send is counted before room is made** (`trackRequest` ahead of `ensureRoom` in
+    provider.ts). Counted after, an admin's Unload could land in between — `ensureRoom` asks the
+    router over HTTP and returns without the lock for a loaded model — and the router would load
+    it again for the request. Found in review.
+  - **The row says "Status unknown" when the router could not be asked** (`runtimeStatus` null),
+    never "Not loaded". Load stays enabled: trying it is reasonable, and the route answers.
 - **Saving a loaded model's settings reloads it** (`syncPreset({ restoreLoaded: true })`).
   - **How:** the router's `?reload=1` unloads a loaded model whose section changed. The ids it
     is about to unload are kept, and `reloadNow` loads them back (`restoreModels`, unpinned only;
@@ -1601,6 +1613,12 @@ replies.
   - **Before:** an unpinned model just sat unloaded until someone happened to ask it, which read
     as "my settings did nothing".
   - **The deferred path keeps the set** until its reload runs, and `reloadPending` tells the row.
+    The flag, its timer and the set end together (`endDeferredReload`), on a restart and a stop.
+  - **A reload the router refuses clears the set.** The router keeps its old list then, so
+    nothing was unloaded and nothing is owed; kept, the set was drained by the next, unrelated
+    reload, which loaded a model an admin may have unloaded meanwhile. The PATCH answers
+    `reloading: false`. Found in review; the fake refuses reloads while `LOXAIC_FAKE_RELOAD_FAIL`
+    names a file that exists.
   - **A model disabled by the same write is not restored:** only ids still in the preset are
     kept.
   - **Only an admin's write asks for this.** A context-stage switch loads for itself under its
@@ -1608,19 +1626,26 @@ replies.
 - **Where a model's memory went comes from llama.cpp's own allocation log** (placement.ts), not
   from our estimates.
   - **Where the lines come from:** the router forwards each child's lines as `[port] …`, and
-    `foldPlacementLine` folds them as they arrive (`recordLog` now carries a partial line across
-    chunks). The lines are `<buffer> model buffer size`, `KV`/`RS`/`compute`/`output buffer
+    `foldPlacementLine` folds them as they arrive. `recordLog` carries a partial line across
+    chunks, **one carry-over per stream** (`lineSplitter`): stdout and stderr are read apart, and
+    one shared buffer stitched the end of one stream's chunk onto the other's line — in the tail,
+    the placement and `router.log` alike. Found in review. The lines are `<buffer> model buffer size`, `KV`/`RS`/`compute`/`output buffer
     size`, `tensor … lazy read enabled`, `offloaded N/M layers`, and `graph: … splits = N`.
   - **It needs `log-verbosity = 4`:** at the default these libllama info lines are not printed
     at all (checked on b11342). The preset's globals ask for it in managed mode only
     (`placementLog`).
   - **The cost:** about 280 lines a load (the metadata dump) and about 40 a request, never a
-    prompt's text (checked by grepping a test prompt). `LOG_LINES` is 2000 so a load failure's
+    prompt's text (checked by grepping a test prompt, and in b11342's source: every body or
+    prompt-token line is debug, level 5, above the threshold). Lines that would carry one are
+    dropped before anything keeps them (`carriesPrompt`), in case a later build moves one down. `LOG_LINES` is 2000 so a load failure's
     cause survives.
   - **Placement is never read back from the tail:** one busy model scrolls past another's load.
 - **On Linux the process is measured too** (residency.ts).
   - **What:** `/proc/<child>/fdinfo`'s `drm-memory-vram` and `drm-memory-gtt`, once per DRM
     client (keyed by pdev and client id), for the router child started with `--port <P>`.
+    **A cached child pid is checked again before it is read** (parent and `--port`): a port's
+    model changes and a pid is reused, and the cache would otherwise report another process's
+    memory as this model's. Found in review.
   - **Spill:** GTT beyond the load's own `*_Host` buffers (plus 256 MiB slack; about 20 MiB is
     normal) is memory the driver evicted from VRAM. That is the cause of Pheonix's 8.5 tok/s with
     two quants loaded, and the row says to unload others and reload this one.

@@ -278,6 +278,10 @@ function allocationLines(spec, port) {
 
 function reload() {
   // An unrecognised key on a live reload keeps the old list (the caller answers 500).
+  // `LOXAIC_FAKE_RELOAD_FAIL` names a file whose presence refuses every reload
+  // that way, read on each one, so a test can make the router refuse at will.
+  const failFile = process.env.LOXAIC_FAKE_RELOAD_FAIL;
+  if (failFile && existsSync(failFile)) throw new Error("option 'not-a-key' not recognized in preset");
   const next = readPreset();
   for (const [id] of status) {
     const now = next.sections.get(id);

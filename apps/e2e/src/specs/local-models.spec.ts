@@ -26,6 +26,7 @@ import {
   expectTextAbsent,
   isVisible,
   platform,
+  scrollTo,
   tap,
   testIdSelector,
   typeInto,
@@ -435,6 +436,11 @@ describe('local models', () => {
     await waitForTextIn('localModels.runtime.reason', 'No GPU was found');
     await waitForVisible('localModels.runtime.useCpu');
     await shot('local-models-no-gpu');
+    // Nothing is running, so there is no router to ask: the row says it does
+    // not know, never that the model is out of memory.
+    await scrollTo(`localModels.state.${downloadId}`);
+    await waitForFreshText(`localModels.state.${downloadId}`, 'Status unknown');
+    await scrollTo('localModels.runtime.useCpu');
 
     await tap('localModels.runtime.useCpu');
     await waitForVisible('localModels.cpuConfirm.dialog');

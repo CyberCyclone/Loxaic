@@ -10,7 +10,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, renameSync: vi.fn(actual.renameSync) };
 });
 
-const { openRouterLog } = await import("../router-log.ts");
+const { carriesPrompt, lineSplitter, openRouterLog } = await import("../router-log.ts");
 
 const dir = mkdtempSync(path.join(os.tmpdir(), "loxaic-router-log-"));
 afterAll(() => { rmSync(dir, { recursive: true, force: true }); });
@@ -117,5 +117,30 @@ describe("the router's log on disk", () => {
     const log = openRouterLog(path.join(blocker, "nested", "router.log"));
     expect(() => { log.write("lost, harmlessly\n"); }).not.toThrow();
     expect(existsSync(path.join(blocker, "nested"))).toBe(false);
+  });
+});
+
+describe("reading the router's output as lines", () => {
+  it("keeps each stream's unfinished line to itself", () => {
+    // stdout and stderr arrive in pieces, interleaved: a carry-over shared
+    // between them stitched "…model buffer" from one onto the other's line.
+    const out = lineSplitter();
+    const err = lineSplitter();
+    expect(out("[40001] load_tensors:      Vulkan0 model buffer")).toEqual([]);
+    expect(err("[40001] E failed to allocate\n[40001] W retrying")).toEqual(["[40001] E failed to allocate"]);
+    expect(out(" size = 23500.00 MiB\n")).toEqual(["[40001] load_tensors:      Vulkan0 model buffer size = 23500.00 MiB"]);
+    expect(err(" once\n")).toEqual(["[40001] W retrying once"]);
+  });
+
+  it("drops llama.cpp's debug lines that carry a request's content, and nothing else", () => {
+    // b11342's own wording (server-http.cpp, server-context.cpp); none prints
+    // at verbosity 4, which is why they are only dropped, never relied on.
+    expect(carriesPrompt('[40001] 0.12.345.678 D srv  log_server_r: request:  {"messages":[{"role":"user","content":"secret"}]}')).toBe(true);
+    expect(carriesPrompt("[40001] srv  log_server_r: response: {\"choices\":[]}")).toBe(true);
+    expect(carriesPrompt('[40001] srv  operator(): converted request: {"messages":[]}')).toBe(true);
+    expect(carriesPrompt("[40001] slot update_slots: id  0 | task 3 | prompt token   0: 151644 '<|im_start|>'")).toBe(true);
+    expect(carriesPrompt("[40001] srv  log_server_r: done request: POST /v1/chat/completions 127.0.0.1 200")).toBe(false);
+    expect(carriesPrompt("[40001] load_tensors:      Vulkan0 model buffer size = 23500.00 MiB")).toBe(false);
+    expect(carriesPrompt("[40001] slot launch_slot_: id  0 | task 3 | processing task, prompt tokens = 512")).toBe(false);
   });
 });

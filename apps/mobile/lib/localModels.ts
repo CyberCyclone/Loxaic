@@ -141,7 +141,8 @@ export const LOAD_STATE_TEXT: Record<ModelLoadState, string> = {
   loaded: 'Loaded',
   loading: 'Loading…',
   unloaded: 'Not loaded',
-  unknown: 'Not loaded',
+  // The router could not be asked: absence of an answer is not "Not loaded".
+  unknown: 'Status unknown',
 };
 
 /** Why Unload is unavailable for a loaded model, or null when it is not. */

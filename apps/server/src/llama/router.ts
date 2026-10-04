@@ -17,7 +17,7 @@ import {
 } from "./hardware.ts";
 import { presetPath, routerLogPath } from "./paths.ts";
 import { foldPlacementLine, newPlacementTracker, type RawPlacement } from "./placement.ts";
-import { openRouterLog, type RouterLog } from "./router-log.ts";
+import { carriesPrompt, lineSplitter, openRouterLog, type RouterLog } from "./router-log.ts";
 import {
   modelIdFromRouterName,
   renderPreset,
@@ -191,15 +191,20 @@ let routerLog: RouterLog | null = null;
 /** Where each loaded model's memory went, folded from the log as it arrives
  * (placement.ts). */
 const placements = newPlacementTracker();
-/** The end of the last chunk when it stopped mid-line: a pipe hands output
- * over in arbitrary pieces, and a buffer line cut in two parses as neither. */
-let partialLine = "";
+/** One line splitter per output stream (`lineSplitter`): stdout and stderr
+ * are read independently, so one shared carry-over could join the end of a
+ * stderr chunk to the start of a stdout one, making a line that is neither. */
+const splitters = new Map<string, (chunk: string) => string[]>();
 
-function recordLog(chunk: string): void {
-  routerLog?.write(chunk);
-  const lines = (partialLine + chunk).split("\n");
-  partialLine = (lines.pop() ?? "").slice(-64 * 1024);
-  for (const line of lines) {
+function recordLog(chunk: string, stream = "stderr"): void {
+  let split = splitters.get(stream);
+  if (!split) {
+    split = lineSplitter();
+    splitters.set(stream, split);
+  }
+  const kept = split(chunk).filter((line) => !carriesPrompt(line));
+  if (kept.length > 0) routerLog?.write(`${kept.join("\n")}\n`);
+  for (const line of kept) {
     if (!line.trim()) continue;
     logTail.push(line);
     if (logTail.length > LOG_LINES) logTail.shift();
@@ -463,6 +468,16 @@ export function reloadPendingFor(id: string): boolean {
   return reloadPending && restoreAfterReload.has(id);
 }
 
+/** Forget a deferred reload: the flag, its timer and the models held for it
+ * go together, so the row never says "reload pending" with nothing left to
+ * act on it, and no timer outlives the reload it was waiting to run. */
+function endDeferredReload(): void {
+  reloadPending = false;
+  if (reloadTimer) clearInterval(reloadTimer);
+  reloadTimer = null;
+  restoreAfterReload.clear();
+}
+
 function presetGlobals(): PresetGlobals {
   return {
     devices: st.activeDevices === "none" ? "none" : st.activeDevices.length > 0 ? st.activeDevices : null,
@@ -480,21 +495,27 @@ async function builtinRunsActive(): Promise<number> {
   return s.exclusive ? 0 : s.running;
 }
 
-async function reloadNow(): Promise<void> {
+/** Have the router re-read the preset. False when it did not: a refused
+ * reload keeps the router's old list, so nothing was unloaded and the models
+ * held to be loaded again are owed nothing — kept, a later, unrelated reload
+ * would load them, maybe after an admin had unloaded one. */
+async function reloadNow(): Promise<boolean> {
   try {
     const res = await routerFetch("/models?reload=1", {}, 10_000);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       lastReloadError = `llama.cpp refused the model list (HTTP ${String(res.status)}): ${text.slice(0, 300)}`;
       console.error(`[llama] ${lastReloadError}`);
-      return;
+      restoreAfterReload.clear();
+      return false;
     }
     lastReloadError = null;
   } catch (err) {
-    // No router yet: it reads the file when it starts.
+    // No router yet: it reads the file when it starts, with nothing loaded.
     lastReloadError = null;
     void err;
-    return;
+    restoreAfterReload.clear();
+    return false;
   }
   // A reload unloads every loaded model whose section changed, a pinned one
   // included, and a newly pinned model has only just been written into the
@@ -510,6 +531,7 @@ async function reloadNow(): Promise<void> {
       .then((m) => { m.restoreModels(ids); })
       .catch((e: unknown) => { console.error(`[llama] could not reload models: ${e instanceof Error ? e.message : String(e)}`); });
   }
+  return true;
 }
 
 /** Load every pinned model that is not loaded. Imported lazily: room.ts
@@ -526,7 +548,12 @@ function scheduleDeferredReload(): void {
   if (reloadTimer) return;
   reloadTimer = setInterval(() => {
     void (async () => {
-      if (!reloadPending) return;
+      if (!reloadPending) {
+        // Ended elsewhere (a restart): nothing left for this timer to do.
+        if (reloadTimer) clearInterval(reloadTimer);
+        reloadTimer = null;
+        return;
+      }
       if ((await builtinRunsActive()) > 0) return;
       reloadPending = false;
       if (reloadTimer) clearInterval(reloadTimer);
@@ -608,8 +635,9 @@ async function syncPresetNow(opts: SyncOptions): Promise<SyncResult> {
       return { deferred: true, reloading };
     }
   }
-  await reloadNow();
-  return { deferred: false, reloading };
+  // A refused reload unloaded nothing, so nothing is being loaded again.
+  const reloaded = await reloadNow();
+  return { deferred: false, reloading: reloaded ? reloading : [] };
 }
 
 // ── Process management (managed mode) ───────────────────────────────────────
@@ -652,6 +680,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_MODEL_MIB) env.LOXAIC_FAKE_MODEL_MIB = process.env.LOXAIC_FAKE_MODEL_MIB;
   if (process.env.LOXAIC_FAKE_LOAD_MS) env.LOXAIC_FAKE_LOAD_MS = process.env.LOXAIC_FAKE_LOAD_MS;
   if (process.env.LOXAIC_FAKE_VRAM_STATE) env.LOXAIC_FAKE_VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
+  if (process.env.LOXAIC_FAKE_RELOAD_FAIL) env.LOXAIC_FAKE_RELOAD_FAIL = process.env.LOXAIC_FAKE_RELOAD_FAIL;
   return env;
 }
 
@@ -832,8 +861,8 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   installExitHook();
   live.add(child);
   if (child.pid) void writeFile(pidFile(), String(child.pid)).catch(() => undefined);
-  child.stdout.setEncoding("utf8").on("data", recordLog);
-  child.stderr.setEncoding("utf8").on("data", recordLog);
+  child.stdout.setEncoding("utf8").on("data", (c: string) => { recordLog(c, "stdout"); });
+  child.stderr.setEncoding("utf8").on("data", (c: string) => { recordLog(c, "stderr"); });
   const startedAt = Date.now();
   st.child = child;
   st.port = port;
@@ -874,7 +903,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     restartTimer.unref();
   });
   child.once("error", (err) => {
-    recordLog(`E spawn: ${err.message}`);
+    recordLog(`E spawn: ${err.message}\n`);
   });
 
   if (await waitForHealth(port, child)) {
@@ -1048,8 +1077,7 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   // A fresh router has nothing loaded to restore; only pinned models come
   // back after a restart (a restart is often how an admin gets out of a bad
   // load).
-  restoreAfterReload.clear();
-  reloadPending = false;
+  endDeferredReload();
   await syncPreset();
   await reapStaleRouter();
   await spawnRouter(runtime);
@@ -1122,8 +1150,7 @@ async function refreshAttachHealth(): Promise<void> {
 export async function stopLocalRuntime(): Promise<void> {
   if (attachTimer) clearInterval(attachTimer);
   attachTimer = null;
-  if (reloadTimer) clearInterval(reloadTimer);
-  reloadTimer = null;
+  endDeferredReload();
   await stopChild();
 }
 
@@ -1230,7 +1257,11 @@ export async function __resetRouterForTest(): Promise<void> {
     stopping: false,
   } satisfies State);
   lastSections = new Map();
-  reloadPending = false;
+  endDeferredReload();
+  restart = null;
+  placements.ports.clear();
+  placements.byName.clear();
+  splitters.clear();
   queuedRestart = null;
   lastReloadError = null;
   attachHealthy = null;

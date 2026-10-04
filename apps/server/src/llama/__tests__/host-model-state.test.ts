@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import Fastify from "fastify";
 import os from "node:os";
 import path from "node:path";
@@ -10,7 +10,8 @@ import { localModels } from "@loxaic/db/schema";
 import { invalidateLocalModelCache } from "../catalog.ts";
 import { routerModelName } from "../preset.ts";
 import { __resetRoomForTest, trackRequest } from "../room.ts";
-import { __resetRouterForTest, __setHardwareForTest, ensureRuntime, routerModelStatuses, runtimeView } from "../router.ts";
+import { __resetRouterForTest, __setHardwareForTest, ensureRuntime, loadModel, routerModelStatuses, runtimeView } from "../router.ts";
+import { acquireRunSlot } from "../../inference/scheduler.ts";
 import { __resetModelCachesForTest } from "../../inference/models.ts";
 
 vi.mock("../../auth/middleware", () => ({
@@ -38,7 +39,10 @@ const host = `test-host-state-${uuid()}`;
 const a = `test/a-${uuid().slice(0, 8)}:Q4_K_M`;
 const b = `test/b-${uuid().slice(0, 8)}:Q4_K_M`;
 const table = `test/table-${uuid().slice(0, 8)}:Q4_K_M`;
+const crashy = `test/crashy-${uuid().slice(0, 8)}:Q4_K_M`;
 const loadLog = path.join(dir, "loads.jsonl");
+/** Present, the fake router refuses every reload of the preset. */
+const reloadFail = path.join(dir, "reload-fail");
 const MiB = 1024 ** 2;
 
 const HW_GPU = { platform: "linux" as const, arch: "x64", gpus: [], flavour: "vulkan" as const, reason: null, ramBytes: 16 * 1024 ** 3 };
@@ -89,6 +93,7 @@ interface ModelView {
   loadError: string | null;
   reloading?: boolean;
   appliesOnNextLoad?: boolean;
+  reloadPending?: boolean;
   placement: {
     parts: { part: string; tier: string; device: string | null; bytes: number }[];
     splits: number | null;
@@ -120,6 +125,7 @@ beforeAll(async () => {
   vi.stubEnv("LLAMA_DIR", dir);
   vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", FAKE);
   vi.stubEnv("LOXAIC_FAKE_ROUTER_LOG", loadLog);
+  vi.stubEnv("LOXAIC_FAKE_RELOAD_FAIL", reloadFail);
   vi.stubEnv("LOXAIC_FAKE_DEVICES", "FAKE0: Fake GPU (24576 MiB, 24000 MiB free)");
   vi.stubEnv("LOXAIC_FAKE_MODEL_MIB", "23500");
   vi.stubEnv("LOXAIC_FAKE_VRAM_STATE", path.join(dir, "vram.json"));
@@ -131,6 +137,8 @@ beforeAll(async () => {
     // A model the fake gives a 2 MiB per-layer table, and a graph llama.cpp's
     // automatic GPU layers split 17 ways.
     row(table, "Table Model", "Table-Splitty.gguf", new Date(3_000), { lookupTable: { tensor: "per_layer_token_embd.weight", bytes: 2 * MiB } }),
+    // The fake fails to load a "Crashy" model with MTP on.
+    { ...row(crashy, "Crashy Model", "Crashy.gguf", new Date(4_000), { mtp: { layers: 1 } }), loadSettings: { mtp: true } },
   ]);
   invalidateLocalModelCache();
   await __resetRouterForTest();
@@ -208,6 +216,22 @@ describe("loading and unloading from the list", () => {
   });
 });
 
+describe("a load that failed", () => {
+  it("stops saying why once the model loads, however it was loaded", async () => {
+    // A chat loads a model through the router, never through room.ts: the
+    // error from an admin's earlier Load must not sit under a Loaded badge.
+    expect((await post("load", crashy)).status).toBe(202);
+    await waitFor(async () => (await modelOf(crashy)).loadError !== null, "the load to fail");
+    expect((await patchModel({ id: crashy, loadSettings: {} })).status).toBe(200);
+    await loadModel(crashy);
+    await waitFor(async () => (await statusOf(crashy)) === "loaded", "Crashy to load without MTP");
+    expect((await modelOf(crashy)).loadError).toBeNull();
+    await post("unload", crashy);
+    // Unloaded again, the old failure does not come back either.
+    expect((await modelOf(crashy)).loadError).toBeNull();
+  });
+});
+
 describe("saving a loaded model's settings", () => {
   it("reloads it with them, without waiting for anyone to ask it", async () => {
     await post("load", a);
@@ -233,6 +257,49 @@ describe("saving a loaded model's settings", () => {
     await new Promise((r) => setTimeout(r, 500));
     expect(events().slice(before).some((e) => e.event === "load" && e.model === routerModelName(a))).toBe(false);
     expect((await patchModel({ id: a, enabled: true })).status).toBe(200);
+  });
+
+  it("says a reload is pending while someone is answered, and reloads once they are done", async () => {
+    await post("load", a);
+    await waitFor(async () => (await statusOf(a)) === "loaded", "A to load");
+    const holder = new AbortController();
+    const slot = await acquireRunSlot({ signal: holder.signal, onQueued: () => undefined });
+    if (!slot) throw new Error("no run slot");
+    try {
+      const res = await patchModel({ id: a, loadSettings: { ctxSize: 4096 } });
+      expect(res.body.appliesOnNextLoad).toBe(true);
+      expect((await modelOf(a)).reloadPending).toBe(true);
+    } finally {
+      slot.release();
+    }
+    await waitFor(
+      async () =>
+        events().filter((e) => e.event === "load" && e.model === routerModelName(a)).at(-1)?.section?.["ctx-size"] === "4096" &&
+        (await statusOf(a)) === "loaded",
+      "A to come back at 4096",
+    );
+    expect((await modelOf(a)).reloadPending).toBe(false);
+  });
+
+  it("does not come back later for a reload the router refused", async () => {
+    // The router keeps its old list when it refuses a reload, so nothing was
+    // unloaded and nothing is owed: a later, unrelated reload must not load A
+    // after an admin has unloaded it.
+    expect(await statusOf(a)).toBe("loaded");
+    writeFileSync(reloadFail, "");
+    try {
+      const res = await patchModel({ id: a, loadSettings: { ctxSize: 2048 } });
+      expect(res.status).toBe(200);
+      expect(res.body.reloading).toBe(false);
+    } finally {
+      unlinkSync(reloadFail);
+    }
+    expect((await post("unload", a)).status).toBe(200);
+    const before = events().length;
+    expect((await patchModel({ id: b, loadSettings: { ctxSize: 3072 } })).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(events().slice(before).some((e) => e.event === "load" && e.model === routerModelName(a))).toBe(false);
+    expect(await statusOf(a)).toBe("unloaded");
   });
 
   it("does not load a model that was not loaded", async () => {

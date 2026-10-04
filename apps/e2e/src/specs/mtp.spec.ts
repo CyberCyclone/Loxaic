@@ -233,7 +233,9 @@ describe('multi-token prediction', () => {
     // "Downloading …" or, on a slow lane, already "Drafts with …": either names it.
     await waitForTextIn('localModels.mtp.head.status', 'mtp-Sidecar-Q8_0.gguf');
     // MTP can be switched on while the head comes, and saved; nothing is
-    // written until the head is here.
+    // written until the head is here. Scrolled to first: the head list just
+    // collapsed into one line, which can leave the switch above the fold.
+    await scrollTo('localModels.setting.mtp.on');
     await tap('localModels.setting.mtp.on');
     await shot('mtp-sidecar-downloading');
     await saveSheet();

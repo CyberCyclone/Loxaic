@@ -388,14 +388,22 @@ async function loadPinnedOnce(): Promise<void> {
 // ── Loading and unloading on request ────────────────────────────────────────
 
 /** Why a load an admin asked for (or a reload after a settings change) did
- * not happen, by id. Cleared when the model loads, or is asked for again. */
+ * not happen, by id. Cleared when the model is asked for again, unloaded, or
+ * seen loaded (`loadErrorFor`). */
 const loadErrors = new Map<string, string>();
 /** Loads this module started and has not finished, so the list can say
  * "loading" from the moment Load is pressed rather than once the router has
  * been asked — which waits for the room lock. */
 const loadsRequested = new Set<string>();
 
-export function loadErrorFor(id: string): string | null {
+/**
+ * The failure to show for `id`, given what the router says of it now. A model
+ * seen loaded has none any more: a chat loads a model through the router,
+ * never through this module, so this is where that load is noticed — and it
+ * is forgotten then, not hidden, or it would come back on the next unload.
+ */
+export function loadErrorFor(id: string, routerStatus: string | null): string | null {
+  if (routerStatus === "loaded") loadErrors.delete(id);
   return loadErrors.get(id) ?? null;
 }
 

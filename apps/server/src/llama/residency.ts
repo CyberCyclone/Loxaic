@@ -46,6 +46,26 @@ function kib(v: string | undefined): number {
   return v ? Number(v) * 1024 : 0;
 }
 
+/** The parent pid in a `/proc/<pid>/stat` line. Pure. The command name is in
+ * parentheses and may hold spaces and parentheses itself: the fields after
+ * its last closing parenthesis are state, then the parent pid. */
+export function parentPidFromStat(stat: string): number | null {
+  const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+  return Number.isInteger(ppid) && ppid > 0 ? ppid : null;
+}
+
+/** Whether `pid` is still `parentPid`'s child serving `port`. */
+async function isChildOnPort(pid: number, parentPid: number, port: number): Promise<boolean> {
+  try {
+    if (parentPidFromStat(await readFile(`/proc/${String(pid)}/stat`, "utf8")) !== parentPid) return false;
+    const args = (await readFile(`/proc/${String(pid)}/cmdline`, "utf8")).split("\0");
+    const i = args.indexOf("--port");
+    return i >= 0 && Number(args[i + 1]) === port;
+  } catch {
+    return false; // gone, or not ours to read
+  }
+}
+
 /** The pid of `parentPid`'s child started with `--port <port>`, or null. */
 export async function childOnPort(parentPid: number, port: number): Promise<number | null> {
   let entries: string[];
@@ -55,19 +75,7 @@ export async function childOnPort(parentPid: number, port: number): Promise<numb
     return null;
   }
   for (const e of entries) {
-    if (!/^\d+$/.test(e)) continue;
-    try {
-      const stat = await readFile(`/proc/${e}/stat`, "utf8");
-      // The command name is in parentheses and may hold spaces: the fields
-      // after its closing parenthesis are state, then the parent pid.
-      const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
-      if (ppid !== parentPid) continue;
-      const args = (await readFile(`/proc/${e}/cmdline`, "utf8")).split("\0");
-      const i = args.indexOf("--port");
-      if (i >= 0 && Number(args[i + 1]) === port) return Number(e);
-    } catch {
-      // gone, or not ours to read
-    }
+    if (/^\d+$/.test(e) && (await isChildOnPort(Number(e), parentPid, port))) return Number(e);
   }
   return null;
 }
@@ -103,10 +111,16 @@ export async function measuredForPort(routerPid: number | null, port: number): P
   const key = `${String(routerPid)}:${String(port)}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.value;
+  // A cached pid is checked again before it is read: the model on a port
+  // changes, and a pid is reused — on a router that runs for weeks the cache
+  // would otherwise report another process's memory as this model's (the
+  // reason `reapStaleRouter` checks `ps` before it kills).
   let pid: number | null | undefined = pids.get(key);
+  if (pid !== undefined && !(await isChildOnPort(pid, routerPid, port))) pid = undefined;
   if (pid === undefined) {
     pid = await childOnPort(routerPid, port);
     if (pid) pids.set(key, pid);
+    else pids.delete(key);
   }
   const value = pid ? await drmUsage(pid) : null;
   if (!value) pids.delete(key);

@@ -139,7 +139,7 @@ function modelView(
     loadFailed: status?.failed ?? false,
     /** Why a load an admin asked for, or a reload after a settings change,
      * did not happen — the same sentence a chat would get. */
-    loadError: loadErrorFor(row.id),
+    loadError: loadErrorFor(row.id, status?.value ?? null),
     /** Saved settings waiting for a reply to end before the model reloads
      * with them. */
     reloadPending: reloadPendingFor(row.id),
