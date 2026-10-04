@@ -2097,6 +2097,152 @@ replies.
 - **A client without this update shows a plan as a plain tool card**, and the model no longer
   restates the plan as prose — the over-the-air update is what brings the panel.
 
+### Sub-agents
+
+- **A run can hand a task to a sub-agent: a child run with its own conversation, stream and
+  inference slot, whose final reply comes back as the parent's tool result.** The tool is
+  `subagent` (`subagentTool` in `packages/agent`, `{description, prompt, model?}`); the child is
+  started and awaited by `streams/runs/subagentRun.ts`. Offered on the **agent surface and in
+  routines**, never to plain chat and never to a child, so they go one level deep. Kept out of
+  `TOOLS` like the plan tools: not allowlistable, never asks, not a write tool. Everything the
+  child then does asks (or not) by the parent's mode, which it inherits.
+- **A child is its own conversation row (`kind: "subagent"`), not more rows in the parent's.**
+  Everything that makes a run correct is keyed by conversation:
+  - `loadHistory` would replay the child's messages into the parent's next prompt;
+  - the prompt-reuse trace and the request shape would be overwritten by the child's requests;
+  - registered under the parent's id, the child would take the parent's run lock, and release
+    it — with the parent still running — when it finished.
+
+  Migration 0036 adds `parent_conversation_id`, `parent_message_id`, `parent_call_id` and
+  `subagent` (a `SubAgentInfo`) to `conversations`. No foreign key, like `messages`.
+- **What a child shares with its parent is narrow and deliberate** (`role` on `runToolLoop`):
+  - the **workspace**: its tools run in the parent's sandbox (`workspaceConvId`), and it has no
+    workspace of its own — a copy would be a second place a checkout could be created from;
+  - the **MCP state**: its toolset is built against the parent's conversation, so it follows the
+    parent's kind and switches (a `subagent` kind reaching `conversationMcpState` gets none);
+  - the **sender**: the run's `userId` is the parent run's sender, not the owner, since the
+    allowlist, MCP servers and wait settings are the sender's;
+  - the **stop**: its `AbortController` aborts with the parent's signal.
+- **A child has nobody to hand over to and nobody to ask.**
+  - It is not offered `propose_plan`/`ask_questions` and is not nudged to plan. Its system
+    prompt is its own (`subagentSystemPrompt`), with a read-only variant for a planning parent —
+    never `planningSystemPrompt`, which demands tools it does not have.
+  - A step check-in is not asked: it wraps up ("answer now") at once. Its parent is parked
+    waiting on it and the person is looking at the parent, so a question would sit unseen for the
+    whole window and the ladder would then grant an unwatched child more whole windows.
+  - It records no request shape, drops its prompt trace when it ends, and starts no compaction
+    or context extension: it is one run long, and those are for the run after.
+- **Its conversation grants nobody more than `viewer`, whoever asks** (`resolveAccess`), and
+  that is what closes every editor- and owner-gated path on it by construction: sends,
+  compaction, rename, delete, shares, a second sandbox, git, the terminal, context stages. The
+  two things a person may do to a child — stop it, answer its approvals — are decided by their
+  role on the **parent** (`actingRole`, `ws/run-actions.ts`). Access follows the parent: seen by
+  whoever can see it, gone when it is deleted or a share is revoked.
+- **Every sub-agent call in one assistant message starts together, inside one yield of the
+  parent's slot** (`runSubagentGroup` in `engine.ts`).
+  - **Why a yield:** a child needs a slot of its own. Started while the parent held its slot, a
+    child on the same backend at concurrency 1 queues behind a parent that is waiting for it — a
+    deadlock only a Stop could end. So the parent hands its slot back for the whole wait, as at
+    an approval, and re-enters at the front. `subagents.test.ts` times out on exactly this when
+    the yield is removed.
+  - **One yield for the group**, not one per child: each re-entry can cost the parent a full
+    prompt re-evaluation.
+  - **Children queue in the order they were called.** Each is started once the one before has
+    its place in line (`onInLine`: its first `run.queued` or `iteration`). Started all at once,
+    their queue order was whichever finished its own setup first; on one slot that made "the
+    first task ran first" a coin toss, and the first e2e run failed on it two cases in three.
+    They still run side by side where the backend has the slots.
+  - **Results stay in call order.** The group runs at the first `subagent` call; later ones are
+    recorded from the stored outcome when the loop reaches them (`ranAlready`), so
+    `[subagent, bash, subagent]` persists three results in that order. At most 4 per message
+    (`MAX_SUBAGENTS_PER_MESSAGE`); a call past the cap is answered with a refusal, never dropped.
+  - **A stop keeps a finished child's report.** `yieldWhile` re-enters the queue after its work
+    and throws for an aborted run. By then every child has ended, so the group catches that
+    throw and the caller records what each child really did. `ranAlready` is checked *before*
+    the per-call abort check for the same reason: without it a child that had finished was
+    recorded as "stopped before this tool call ran".
+- **`runToolLoop` still returns nothing.** The child's status comes from `broker.onEnd`, its
+  report from its last assistant row ordered by `(lamport, created_at)`. `runSubagent` never
+  rejects: every failure is an `ok: false` result the parent's model reads.
+- **What the parent is told is deterministic** (`subagentResultText`): the report, cut once at
+  16 KB on a character boundary, in `<subagent-result description="…">` markers whose closing
+  tag inside the report is broken with a zero-width space. It is persisted and replayed on every
+  later turn, so the same outcome must be the same bytes.
+- **Which model a child runs on is a per-user setting** (`user_prefs.subagent_model_mode`,
+  `streams/runs/subagent-policy.ts`): `choose` (the parent's, unless the parent names another it
+  is offered), `parent`, or `fixed` (`subagent_model`).
+  - **The models offered are frozen on the parent conversation** (`conversations.
+    subagent_models`) the first time the tool is offered. The list rides in the tools array, the
+    front of every prompt; built per run from the sender's recents it moved whenever they sent
+    with another model anywhere, or another editor sent. `prompt-prefix.test.ts` changes the
+    recents between two turns and asserts the tools are the same bytes. The cost: a model added
+    later is not offered to that conversation's sub-agents.
+  - **An unknown `model` is an error the parent reads, never a fallback.** Before a child is
+    created its model goes through `assertModelUsable`, room check included.
+  - **In a routine, `choose` behaves as `parent`**: nobody is watching, and a model its owner
+    did not pick is what a routine's own rule forbids. `fixed` still applies there.
+  - **A failed read of the setting answers `parent`**, the outcome that spends nothing new.
+  - `PATCH /v1/prefs` refuses `fixed` with no model, and refuses clearing the model while fixed.
+- **A child's state is mirrored onto the parent's stream** as `subagent.started`,
+  `subagent.progress` and `subagent.ended`, folded into `StreamSnapshot.subagents` by the one
+  fold both sides use (`foldSubAgentEvent` in `packages/types`).
+  - **Why the parent's stream:** a thread's cards, its Sub-agents list and a child's approval
+    then need no subscription to the child. Subscribing to every running child would put several
+    streams of text deltas on one socket for a view that shows none of them.
+  - **Emitted on change, with no timer:** every structural event is kept for the stream TTL.
+    Elapsed time is the client's to count from `started_at`.
+  - **These events do not clear a queue position**, in `foldSnapshot` or in either hook: they
+    say nothing about where the parent run is.
+  - **A finished parent's snapshot ends any child still marked running**
+    (`endStaleSubAgents` in `delivery.ts`), for the reason it strips a pending approval.
+- **A model's call ids repeat, so an approval answer names its run.** `agent.approve`/`deny`
+  take an optional `stream_id` on both sockets; a named run that holds no such approval is a
+  no-op and does **not** fall back to the plural lookup, since the parent may hold the same
+  `call_0`. A card is found by `(message id, call id)` for the same reason.
+- **Deleting a thread erases its children** in the same transaction (`eraseRows`), and their
+  stream logs after it. A retained (soft-deleted) parent's children are **not** stamped: a date
+  of their own would have the sweep erase a child out from under a held parent. Listings and the
+  admin list exclude the kind; `/v1/stats/conversations` groups a child's usage under its
+  parent. A boot reconcile (`reconcileOrphanedSubagents`, bounded by this process's start) ends
+  children a dead process left `running`.
+- **drizzle renders a column of a single-table select without its table.** In
+  `listSubagents`, `u.conversation_id = ${conversations.id}` inside a subquery became
+  `u.conversation_id = "id"` — `usage_records.id` — and every figure came back null. The outer
+  table is named literally there. Found by the test, not by reading.
+- **Client: a child's own stream is routed before anything else in both session hooks.** It
+  arrives on the same socket under a conversation id that is not a thread's. Applied as one, it
+  would clear the parent's pending send, toast a child's error on the parent's screen and
+  refetch the model list per child. `useSubAgentState` (inside `useAgentSession`, and
+  `useChatSession` for a routine's chats) takes those messages first, and the parent's
+  `subagent.*` events before the hooks' own queue and prompt-line handling.
+  - **A transcript is subscribed only while its panel is open.** There is no unsubscribe, so
+    "known child" outlives "open panel" and its later messages are still taken.
+  - **A snapshot never brings back to running a child this device has seen end**, and the
+    stored listing (`GET /v1/conversations/:id/subagents`) only adds, ends, or fills in missing
+    figures (`lib/subAgents.ts`). A start time and an approval's deadline are converted to this
+    device's clock once and kept, or the elapsed counter jumps on every report.
+  - **A figure that is not known is left out, never shown as 0**: context needs both the used
+    and the window figure, a speed is the backend's own for the last finished request, and a
+    send made before the model list loaded (no model named) shows no model.
+- **UI.** The card (`SubAgentCard`) replaces the tool card through `SubAgentContext`, like the
+  plan card; inside a panel there is no such context, so nothing nests.
+  - **The panel is `ReviewSheet` with `scroll={false}`**: the transcript is the thread's own
+    `MessageList` (a virtualised FlatList, which cannot sit in a ScrollView), with its own
+    `testID` so two lists on screen are not one selector.
+  - **A child's approval is shown by the component the run's own uses on that surface**: the
+    inline `PermissionBar` on Agent, `ToolApprovalDialog` on a routine, each with a `source` line
+    naming the sub-agent. The run's own approval wins; one at a time.
+  - **In the panel the question is in the footer**, an inline bar, and the screen behind stops
+    showing it. On a routine the dialog waits until any sheet has gone (`sheetGone`), and a sheet
+    gives way to the run's own approval: nothing here puts a dialog over a sheet.
+  - **A sub-agent's user turns are marked `fromAgent`** when shown: nobody typed its task.
+- **e2e:** `subagents.spec.ts`, and `native/subagent-approval-resume.spec.ts` for a lock and a
+  switch-away while a child waits on an approval. The mock's trigger is "sub-agent"/"delegate",
+  and **the text after the first colon is the child's task**, so one prompt chooses what the
+  child does through the ordinary triggers. A scenario's `match` is tested against the child's
+  prompt too; keep child tasks clear of every scenario regex. A card's testID carries the call
+  id, which the model chose, so a spec reads it from the listing route (`listSubAgents`).
+
 ### Automatic compaction
 
 - **The server compacts on its own** once a finished turn's `prompt + completion` crosses
