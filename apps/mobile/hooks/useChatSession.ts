@@ -42,6 +42,8 @@ import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCar
 import type { Promotion } from '@/lib/mcpSwitches';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
+import { isSubAgentEvent } from '@/lib/subAgents';
+import { useSubAgentState } from './useSubAgentState';
 
 export type { PendingApproval };
 
@@ -312,6 +314,21 @@ export function useChatSession(
    */
   const cursorsRef = useRef<Partial<Record<string, number>>>({});
 
+  // A thread's sub-agents — see useAgentSession. Plain chat never spawns one
+  // (the server does not offer it the tool), but a routine's run does, and its
+  // chats are this hook's too.
+  const subAgents = useSubAgentState({ wsRef, cursorsRef, showToast });
+  const {
+    isChild: isSubAgentConv,
+    onParentEvent: onSubAgentEvent,
+    onParentSync: onSubAgentSync,
+    onChildSync: onSubAgentStreamSync,
+    onChildEvent: onSubAgentStreamEvent,
+    onChildEnd: onSubAgentStreamEnd,
+    loadFor: loadSubAgents,
+    resubscribe: resubscribeSubAgents,
+  } = subAgents;
+
   const setStreamingByConv = useCallback(
     (
       updater: (
@@ -366,6 +383,9 @@ export function useChatSession(
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
     if (!id || !isServerConvId(id)) return;
+    // What a routine's runs spawned before this session. Not asked for a
+    // plain chat, which has none to list.
+    if (scopeRef.current.kind === 'routine') loadSubAgents(id);
     // Watch the conversation, so a run this client did not start reaches it:
     // a routine firing on a schedule, an automatic compaction after a turn,
     // another device's send. Sent *after* the history fetch settles, because a
@@ -412,7 +432,7 @@ export function useChatSession(
         // request already reported what it learned (lib/connectionMonitor.ts).
         watchConversation(id);
       });
-  }, [recordPaging, watchConversation]);
+  }, [recordPaging, watchConversation, loadSubAgents]);
 
   /** Renames the pending optimistic user bubble (if any) to its real
    * server-assigned id, in place — call this before any id-based upsert of
@@ -622,6 +642,8 @@ export function useChatSession(
           tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined,
         );
       }
+      // The open sub-agent panel's own stream — see useAgentSession.
+      resubscribeSubAgents();
     };
 
     const onEvent = (event: ServerMessage) => {
@@ -655,6 +677,12 @@ export function useChatSession(
         }
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
+        // A sub-agent's own stream — see useAgentSession.
+        if (isSubAgentConv(convId)) {
+          onSubAgentStreamSync(event);
+          return;
+        }
+        onSubAgentSync(convId, event.snapshot, event.server_now);
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         setConversations((prev) =>
@@ -760,6 +788,16 @@ export function useChatSession(
         }
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
+        if (isSubAgentConv(convId)) {
+          onSubAgentStreamEvent(event);
+          return;
+        }
+        // A child's start, progress or end on this run's stream: nothing
+        // about this run itself — see useAgentSession.
+        if (isSubAgentEvent(event.event)) {
+          onSubAgentEvent(convId, event.event);
+          return;
+        }
         setStreamingByConv((prev) =>
           prev[convId]?.streamId === event.stream_id
             ? {
@@ -828,6 +866,12 @@ export function useChatSession(
           lastMessageErrorRef.current.set(event.stream_id, inner.error);
         }
       } else if (event.type === 'stream.end') {
+        // A sub-agent's stream ending is not this thread's — see
+        // useAgentSession.
+        if (isSubAgentConv(event.conversation_id)) {
+          onSubAgentStreamEnd(event);
+          return;
+        }
         // The message's own final state (text/usage/status) already landed
         // via its `message.end` stream.event, which is guaranteed to have
         // arrived first — WS delivery is ordered, and the server only sends
@@ -962,7 +1006,7 @@ export function useChatSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
+  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {
@@ -1145,8 +1189,8 @@ export function useChatSession(
    * user's global tool_allowlist (PATCH /v1/prefs). If the persist fails,
    * this call is still approved — the user's "allow" click is honored now,
    * they just weren't spared the next prompt too. */
-  const handleAllowAlways = useCallback(
-    async (callId: string, tool: string) => {
+  const rememberAlwaysAllow = useCallback(
+    async (tool: string) => {
       try {
         const mcp = splitMcpTool(tool);
         if (mcp) {
@@ -1162,9 +1206,16 @@ export function useChatSession(
       } catch {
         showToast('Could not save "always allow" — approved just this once');
       }
+    },
+    [showToast],
+  );
+
+  const handleAllowAlways = useCallback(
+    async (callId: string, tool: string) => {
+      await rememberAlwaysAllow(tool);
       handleApprove(callId);
     },
-    [handleApprove, showToast],
+    [handleApprove, rememberAlwaysAllow],
   );
 
   /** Runs a built-in slash command (currently just "compact") against the
@@ -1297,6 +1348,11 @@ export function useChatSession(
     handleDeny,
     handleSteps,
     handleAllowAlways,
+    /** The persisting half of "Allow always", for an approval answered some
+     * other way than `handleApprove` — a sub-agent's, which names its run. */
+    rememberAlwaysAllow,
+    /** Every thread's sub-agents, and the open panel's transcript. */
+    subAgents,
     handleFork,
     handleDelete,
     handleRename,

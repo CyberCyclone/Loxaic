@@ -1386,6 +1386,21 @@ export interface MessagePage {
   before?: string | null;
 }
 
+/**
+ * The sub-agents a thread's runs have spawned, newest first — what its cards
+ * and its Sub-agents list are drawn from after a reload, when the stream that
+ * carried them live is no longer being replayed. A server that predates
+ * sub-agents answers 404, which the caller reads as "none it can tell us of".
+ */
+export async function getSubAgents(conversationId: string): Promise<SubAgentLive[]> {
+  const token = await getAuthToken();
+  const res = await serverFetch(`${BASE_URL}/v1/conversations/${conversationId}/subagents`, {
+    headers: { Authorization: `Bearer ${String(token)}` },
+  });
+  if (!res.ok) throw new ApiError(`Sub-agents failed: ${String(res.status)}`, res.status);
+  return ((await res.json()) as { subagents: SubAgentLive[] }).subagents;
+}
+
 export async function getMessages(
   conversationId: string,
   opts: { before?: string } = {},
@@ -1978,6 +1993,13 @@ export interface UserPrefs {
   /** **Read-only** — the window a null setting resolves to on this server.
    * PATCH refuses it. */
   serverDefaults?: { checkinTimeoutMs: number; approvalTimeoutMs: number };
+  /** Which model a sub-agent runs on: the parent's unless the agent picks
+   * another it is offered (`choose`), always the parent's (`parent`), or one
+   * fixed model (`fixed`). Optional — see `autoCompact`. */
+  subagentModelMode?: import("@loxaic/types").SubAgentModelMode;
+  /** The model `fixed` uses. Null when none was ever picked; kept when the
+   * mode moves away from `fixed`. */
+  subagentModel?: string | null;
 }
 
 export async function getPrefs(): Promise<UserPrefs> {
@@ -2071,7 +2093,7 @@ export async function getModelStats(range?: StatsRange): Promise<ModelStats[]> {
 export interface ConversationStats {
   conversationId: string;
   title: string;
-  kind: "chat" | "agent" | "routine";
+  kind: "chat" | "agent" | "routine" | "subagent";
   model: string;
   tokens: number;
   cachePct: number | null;
@@ -2119,8 +2141,14 @@ export type {
   CommandKind,
   CommandSurface,
   SlashCommand,
+  SubAgentLive,
+  SubAgentEvent,
+  SubAgentApproval,
+  SubAgentStatus,
+  SubAgentState,
+  SubAgentModelMode,
 } from "@loxaic/types";
-import type { ServerMessage, StepsDecision } from "@loxaic/types";
+import type { ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
 export {
   BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
@@ -2130,6 +2158,8 @@ export {
   DEFAULT_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS,
   MAX_CHECKIN_AUTO_CONTINUES, DEFAULT_CHECKIN_AUTO_CONTINUES,
   LOOP_SENSITIVITIES, DEFAULT_LOOP_SENSITIVITY,
+  SUBAGENT_TOOL_NAME, SUBAGENT_MODEL_MODES, DEFAULT_SUBAGENT_MODEL_MODE,
+  foldSubAgentEvent, endStaleSubAgents, sortSubAgents,
 } from "@loxaic/types";
 
 /** True if the send was actually written to the socket — false (never
@@ -2328,12 +2358,20 @@ export function setAgentMode(ws: WebSocket, mode: import("@loxaic/types").Permis
   return trySend(ws, { type: "agent.mode", mode });
 }
 
-export function approveTool(ws: WebSocket, callId: string): boolean {
-  return trySend(ws, { type: "agent.approve", call_id: callId });
+/**
+ * `streamId` names the run being answered. A model's call ids repeat
+ * (`call_0`), and a thread can have its own run and its sub-agents each
+ * waiting on one, so an answer for a sub-agent always says which. Absent, the
+ * server answers whichever run the caller may act on that holds the call id —
+ * what every client did before sub-agents, and what an older server does with
+ * the field regardless.
+ */
+export function approveTool(ws: WebSocket, callId: string, streamId?: string): boolean {
+  return trySend(ws, { type: "agent.approve", call_id: callId, ...(streamId ? { stream_id: streamId } : {}) });
 }
 
-export function denyTool(ws: WebSocket, callId: string): boolean {
-  return trySend(ws, { type: "agent.deny", call_id: callId });
+export function denyTool(ws: WebSocket, callId: string, streamId?: string): boolean {
+  return trySend(ws, { type: "agent.deny", call_id: callId, ...(streamId ? { stream_id: streamId } : {}) });
 }
 
 /** Answers a `steps.checkin` — "keep going" or "answer with what you have".

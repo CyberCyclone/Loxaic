@@ -39,6 +39,8 @@ import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
+import { isSubAgentEvent } from '@/lib/subAgents';
+import { useSubAgentState } from './useSubAgentState';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
@@ -211,6 +213,21 @@ export function useAgentSession(
    */
   const cursorsRef = useRef<Partial<Record<string, number>>>({});
 
+  // This thread's sub-agents, and the transcript of whichever one's panel is
+  // open. A child's own stream arrives on this socket under a conversation id
+  // that is not a run's, so the handler below asks this first — see the hook.
+  const subAgents = useSubAgentState({ wsRef, cursorsRef, showToast });
+  const {
+    isChild: isSubAgentConv,
+    onParentEvent: onSubAgentEvent,
+    onParentSync: onSubAgentSync,
+    onChildSync: onSubAgentStreamSync,
+    onChildEvent: onSubAgentStreamEvent,
+    onChildEnd: onSubAgentStreamEnd,
+    loadFor: loadSubAgents,
+    resubscribe: resubscribeSubAgents,
+  } = subAgents;
+
   const setStreamingByConv = useCallback(
     (
       updater: (
@@ -267,6 +284,8 @@ export function useAgentSession(
     // heard of them, and the id gets swapped for the real one as soon as
     // turn.started arrives, no fetch required.
     if (!id || !isServerConvId(id)) return;
+    // What its runs spawned before this session — once per thread.
+    loadSubAgents(id);
     // Watched only after the history fetch settles: a snapshot landing first
     // would be followed by the page, which is applied in front of it anyway,
     // but the chat hook's order is kept so the two cannot drift.
@@ -286,7 +305,7 @@ export function useAgentSession(
       })
       .catch(() => undefined)
       .finally(() => { watchConversation(id); });
-  }, [recordPaging, watchConversation]);
+  }, [recordPaging, watchConversation, loadSubAgents]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
     setRuns((prev) => prev.map((r) => (r.id === convId ? { ...r, msgs: updater(r.msgs) } : r)));
@@ -406,6 +425,9 @@ export function useAgentSession(
           tracked ? { [tracked.streamId]: cursorsRef.current[tracked.streamId] ?? 0 } : undefined,
         );
       }
+      // The open sub-agent panel's own stream, which this socket has not
+      // subscribed to yet either.
+      resubscribeSubAgents();
     };
 
     const applyRunLevelState = (
@@ -483,6 +505,13 @@ export function useAgentSession(
         }
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
+        // A sub-agent's own stream: its transcript, not a run's. Before
+        // anything below, all of which is about a thread.
+        if (isSubAgentConv(convId)) {
+          onSubAgentStreamSync(event);
+          return;
+        }
+        onSubAgentSync(convId, event.snapshot, event.server_now);
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         updateRunMsgs(convId, (msgs) =>
@@ -538,6 +567,17 @@ export function useAgentSession(
         }
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
+        if (isSubAgentConv(convId)) {
+          onSubAgentStreamEvent(event);
+          return;
+        }
+        // A child's start, progress or end, on this run's stream. It says
+        // nothing about where this run is — it must not end "Queued", clear a
+        // prompt line or touch the thread's messages — so it stops here.
+        if (isSubAgentEvent(event.event)) {
+          onSubAgentEvent(convId, event.event);
+          return;
+        }
         if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
           promotePendingUserMsg(convId, event.event.message_id);
         }
@@ -625,6 +665,12 @@ export function useAgentSession(
           if (isActive) setLiveTodos(inner.todos);
         }
       } else if (event.type === 'stream.end') {
+        // A sub-agent's stream ending is not this thread's run ending: no
+        // error toast here, no model refetch, and the run state stays put.
+        if (isSubAgentConv(event.conversation_id)) {
+          onSubAgentStreamEnd(event);
+          return;
+        }
         // A switch whose run ended before it applied or failed — withdrawn
         // ("Cancel switch") or stopped — leaves nothing to say: its pill would
         // otherwise read "waiting" for ever.
@@ -728,7 +774,7 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents]);
 
   /** The selector moves only if the server heard it: a chip that switched
    * on screen while the frame went nowhere left the run in the old mode with
@@ -1074,6 +1120,8 @@ export function useAgentSession(
     noRoom,
     dismissNoRoom,
     returnedText,
+    /** Every thread's sub-agents, and the open panel's transcript. */
+    subAgents,
     /** Scroll-back for the open run; see useOlderMessages. */
     history: activeId
       ? {

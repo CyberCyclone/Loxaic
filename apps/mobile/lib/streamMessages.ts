@@ -4,11 +4,12 @@ import type {
   StreamSnapshotMessage,
   ApiMessage,
 } from '@loxaic/api-client';
-import { CHECKIN_ANSWER_NUDGE, type CompactionStats, type ContentBlock, type FileDiff } from '@loxaic/types';
+import { CHECKIN_ANSWER_NUDGE, SUBAGENT_TOOL_NAME, type CompactionStats, type ContentBlock, type FileDiff } from '@loxaic/types';
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 import { PLAN_TOOL, QUESTIONS_TOOL, planOf, planTitle, questionsOf, type Question } from '@/lib/plan';
+import { subAgentDescriptionOf } from '@/lib/subAgents';
 
 /** Every conversation id the server hands out is a Postgres row id, and so a
  * real UUID. The client's own optimistic placeholders
@@ -85,6 +86,8 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
       const n = questionsOf(tool, args)?.length ?? 0;
       return `${String(n)} question${n === 1 ? '' : 's'}`;
     }
+    case SUBAGENT_TOOL_NAME:
+      return subAgentDescriptionOf(tool, args) ?? 'Sub-agent';
     case 'todo_write': {
       const todos = args.todos;
       const n = Array.isArray(todos) ? todos.length : 0;
@@ -97,11 +100,19 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
 
 /** Spread into a ToolCall: `{ plan }` for a plan call, nothing otherwise, so
  * no other card grows an explicit `plan: undefined`. */
-function withPlan(tool: string, args: Record<string, unknown>): { plan?: string; questions?: Question[] } {
+function withPlan(
+  tool: string,
+  args: Record<string, unknown>,
+  messageId?: string,
+): { plan?: string; questions?: Question[]; subagent?: ToolCall['subagent'] } {
   const plan = planOf(tool, args);
   if (plan !== undefined) return { plan };
   const questions = questionsOf(tool, args);
-  return questions === undefined ? {} : { questions };
+  if (questions !== undefined) return { questions };
+  // A sub-agent call carries the message it belongs to: with the call id,
+  // that is what names the child it started.
+  const description = subAgentDescriptionOf(tool, args);
+  return description === undefined ? {} : { subagent: { description, ...(messageId ? { messageId } : {}) } };
 }
 
 export function diffLinesFor(diff: FileDiff[] | undefined): ToolCall['diff'] {
@@ -177,7 +188,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           summary: toolSummary(b.tool, args),
           result: '',
           callId,
-          ...withPlan(b.tool, args),
+          ...withPlan(b.tool, args, row.id),
         });
         callToMsgId.set(callId, row.id);
       }
@@ -243,7 +254,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
-            ...withPlan(tc.tool, tc.args),
+            ...withPlan(tc.tool, tc.args, sm.message_id),
           }))
         : undefined,
     usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
@@ -381,7 +392,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
                   summary: toolSummary(event.tool, event.args),
                   result: '',
                   callId: event.call_id,
-                  ...withPlan(event.tool, event.args),
+                  ...withPlan(event.tool, event.args, event.message_id),
                 },
               ],
             }
