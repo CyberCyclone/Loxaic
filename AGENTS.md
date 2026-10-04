@@ -2242,6 +2242,22 @@ replies.
   child does through the ordinary triggers. A scenario's `match` is tested against the child's
   prompt too; keep child tasks clear of every scenario regex. A card's testID carries the call
   id, which the model chose, so a spec reads it from the listing route (`listSubAgents`).
+  What the native lanes taught:
+  - **Android never sees a running card as idle** (its elapsed counter ticks ten times a
+    second), so the specs set `waitForIdleTimeout: 0`, as `compaction-live.spec.ts` does.
+  - **The slow child is seven requests long** (the `survey in passes` scenario, matched on the
+    child's own task). At two requests, the emulator had not opened the panel before it finished.
+  - **XCUITest exposes neither the card's container nor its main press target**, whose children
+    are the texts it is made of. The card's name, status and elapsed time carry their own
+    testIDs on the `Text`, and a spec opens the panel by the chevron, a leaf control.
+  - **Under a sheet, match text by the element's own id** (`waitForFreshText`). The native
+    `waitForTextIn` takes the first element anywhere containing the text, which is the card
+    behind the sheet, and that one is not displayed.
+  - **An iPhone's keyboard stays up after a send** and leaves the thread a sliver; WebDriverAgent
+    cannot close it. A tap on the message list does. With an approval bar up as well there is no
+    list to tap, so that case reaches the panel through the ⋮ list instead.
+  - **"The newest run" is a race.** Read a moment early, the newest conversation is the previous
+    case's; `sendInNewRun` takes the one that was not there before the send.
 
 ### Automatic compaction
 

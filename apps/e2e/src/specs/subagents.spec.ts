@@ -133,7 +133,9 @@ describe('sub-agents', () => {
   afterEach(async () => {
     // A case that failed with a sheet open must not take the rest with it.
     for (const close of ['subagent.close', 'subagent.list.close']) {
-      if (await isVisible(close)) await tap(close);
+      // Tolerant: a sheet that is already on its way out is still "visible"
+      // for a frame, and gone by the time the tap arrives.
+      if (await isVisible(close).catch(() => false)) await byTestId(close).click().catch(() => undefined);
     }
   });
 
