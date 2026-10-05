@@ -205,7 +205,9 @@ export function pollIntervalMs(view: LocalModelsView | null): number {
   // A restart, a load, or a reload waiting on a reply all end within seconds
   // to minutes, and the screen is watched while they do.
   const moving = Boolean(view.runtime.restart) || view.models.some((m) => m.runtimeStatus === 'loading' || m.reloadPending === true);
-  return busyRuntime || busyModel || moving ? 1000 : 15_000;
+  // A llama.cpp version being downloaded from the picker.
+  const fetching = (view.runtime.versionDownloads ?? []).some((d) => d.active);
+  return busyRuntime || busyModel || moving || fetching ? 1000 : 15_000;
 }
 
 export function progressPercent(m: Pick<LocalModel, 'bytesDone' | 'sizeBytes'>): number {

@@ -8,6 +8,14 @@ import {
   loadLocalModel,
   pauseLocalModel,
   restartLocalRuntime,
+  addCustomRuntime,
+  deleteCustomRuntime,
+  deleteRuntimeVersion,
+  downloadRuntimeVersion,
+  retryCustomRuntime,
+  revertRuntimeVersion,
+  selectRuntimeVersion,
+  type RuntimeSelection,
   removeMtpHead,
   resumeLocalModel,
   unloadLocalModel,
@@ -110,6 +118,52 @@ export function useLocalModels(token: string | null) {
     if (next) accept(next);
   }, [act, accept]);
 
+  // ── Which llama.cpp runs ────────────────────────────────
+
+  /** A switch restarts the runtime, so it shows as a restart from the press. */
+  const restartingNow = useCallback(() => {
+    seq.current++;
+    setView((v) =>
+      v ? { ...v, runtime: { ...v.runtime, restart: { phase: 'stopping', cause: 'requested', startedAt: new Date().toISOString() } } } : v,
+    );
+  }, []);
+
+  const applied = useCallback(
+    async (fn: () => Promise<LocalModelsView>, done?: string): Promise<boolean> => {
+      const next = await act(fn, done);
+      if (next) accept(next);
+      return next !== null;
+    },
+    [act, accept],
+  );
+
+  const downloadVersion = useCallback((tag: string) => applied(() => downloadRuntimeVersion(tag)), [applied]);
+  const deleteVersion = useCallback((tag: string) => applied(() => deleteRuntimeVersion(tag), `llama.cpp ${tag} removed`), [applied]);
+  const addCustom = useCallback(
+    (build: Parameters<typeof addCustomRuntime>[0]) => applied(() => addCustomRuntime(build), 'Build added. Downloading…'),
+    [applied],
+  );
+  const retryCustom = useCallback((id: string) => applied(() => retryCustomRuntime(id)), [applied]);
+  const deleteCustom = useCallback((id: string) => applied(() => deleteCustomRuntime(id), 'Build removed'), [applied]);
+  const selectVersion = useCallback(
+    async (selection: RuntimeSelection) => {
+      const before = viewRef.current?.runtime.restart ?? null;
+      restartingNow();
+      const ok = await applied(() => selectRuntimeVersion(selection));
+      // Refused: nothing is restarting, and the card must not go on saying so.
+      if (!ok) setView((v) => (v ? { ...v, runtime: { ...v.runtime, restart: before } } : v));
+      return ok;
+    },
+    [applied, restartingNow],
+  );
+  const revertVersion = useCallback(async () => {
+    const before = viewRef.current?.runtime.restart ?? null;
+    restartingNow();
+    const ok = await applied(() => revertRuntimeVersion());
+    if (!ok) setView((v) => (v ? { ...v, runtime: { ...v.runtime, restart: before } } : v));
+    return ok;
+  }, [applied, restartingNow]);
+
   const load = useCallback(
     async (id: string) => {
       optimistic(id, { runtimeStatus: 'loading', loadError: null });
@@ -202,5 +256,28 @@ export function useLocalModels(token: string | null) {
     [act, showToast],
   );
 
-  return { view, error, refresh, restart, load, unload, updateSettings, download, pause, resume, cancel, remove, update, downloadHead, removeHead };
+  return {
+    view,
+    error,
+    refresh,
+    restart,
+    load,
+    unload,
+    updateSettings,
+    download,
+    pause,
+    resume,
+    cancel,
+    remove,
+    update,
+    downloadHead,
+    removeHead,
+    downloadVersion,
+    deleteVersion,
+    addCustom,
+    retryCustom,
+    deleteCustom,
+    selectVersion,
+    revertVersion,
+  };
 }
