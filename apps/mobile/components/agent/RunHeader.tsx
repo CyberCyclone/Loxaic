@@ -1,7 +1,7 @@
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { Text } from '@/components/ui/text';
-import { Badge, BadgeText } from '@/components/ui/badge';
+import { ModeSwitch } from './ModeSwitch';
 import type { AgentMode } from '@/lib/types';
 import type { RunState } from '@/hooks/useAgentSession';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -37,12 +37,15 @@ interface RunHeaderProps {
   title: string;
   state: RunState;
   mode: AgentMode;
+  /** Choosing a mode from the header (#266) — the row above the composer used
+   * to be the only control, and it is gone now. */
+  onModeChange: (mode: AgentMode) => void;
   iteration: { n: number; max: number } | null;
   /** Place in the inference queue, when this run is waiting for one. */
   queuePosition?: number | null;
 }
 
-export function RunHeader({ title, state, mode, iteration, queuePosition }: RunHeaderProps) {
+export function RunHeader({ title, state, mode, onModeChange, iteration, queuePosition }: RunHeaderProps) {
   return (
     <HStack space="sm" className="items-center border-b border-border px-4 py-2.5">
       {/* Same pair as MainHeader: the title may shrink and truncate, the two
@@ -67,9 +70,10 @@ export function RunHeader({ title, state, mode, iteration, queuePosition }: RunH
           {state === 'queued' && queuePosition ? ` · #${String(queuePosition)}` : ''}
         </Text>
       </HStack>
-      <Badge variant="outline" className="shrink-0 border-border">
-        <BadgeText className="text-2xs normal-case">{mode}</BadgeText>
-      </Badge>
+      {/* The read-only mode Badge is the mode control now (#266): the mode is
+          changed from where it was already being read. A segmented switch,
+          so choosing is one tap and every option is on screen. */}
+      <ModeSwitch mode={mode} onChange={onModeChange} />
     </HStack>
   );
 }

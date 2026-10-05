@@ -7,6 +7,13 @@ import type { StepsDecision } from "@loxaic/types";
  * nature: the AbortController driving this process's inference request, and
  * pending approval resolvers for this process's tool loop.
  */
+/**
+ * Settles a pending approval. `answer` says who answered and whether they
+ * asked for the tool to stop asking ("Allow always"); the engine decides
+ * whether that person may grant it.
+ */
+export type ApprovalResolver = (approved: boolean, answer?: { userId: string; always: boolean }) => void;
+
 export interface RunHandle {
   streamId: string;
   conversationId: string;
@@ -18,7 +25,7 @@ export interface RunHandle {
   model?: string;
   /** call_id -> resolver. Approvals are run-scoped, not connection-scoped: a
    * different device/socket than the one that started the run can approve. */
-  approvals: Map<string, (approved: boolean) => void>;
+  approvals: Map<string, ApprovalResolver>;
   /**
    * Set only while the run is parked at a step check-in, cleared the moment it
    * is answered. Run-scoped like `approvals`, for the same reason — whoever

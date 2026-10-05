@@ -118,6 +118,7 @@ export function useSubAgents(controller: SubAgentController, parentConvId: strin
       stopping: panelView ? stopping.has(panelView.conversation_id) : false,
       stop: useCallback(() => { if (openId) stop(openId); }, [openId, stop]),
       allow: useCallback(() => { if (openId) answer(openId, true); }, [answer, openId]),
+      allowAlways: useCallback(() => { if (openId) answer(openId, true, true); }, [answer, openId]),
       deny: useCallback(() => { if (openId) answer(openId, false); }, [answer, openId]),
       close,
     },

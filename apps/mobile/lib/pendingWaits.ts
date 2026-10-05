@@ -1,4 +1,4 @@
-import type { CheckinReason, StepsDecision, TimeoutBasis, WaitDeadlineFields } from '@loxaic/api-client';
+import type { CheckinReason, PermissionMode, StepsDecision, TimeoutBasis, WaitDeadlineFields } from '@loxaic/api-client';
 
 /**
  * When a parked run stops waiting, on *this device's* clock.
@@ -33,6 +33,10 @@ export interface PendingApproval {
   tool: string;
   args: Record<string, unknown>;
   deadline?: WaitDeadline;
+  /** The asking run's mode, and the one user whose "Allow always" the server
+   * records. Both absent from a server that predates them. */
+  mode?: PermissionMode;
+  granterUserId?: string;
   /** The run that asked. The answer has to name it — see `approvalStreamId`. */
   streamId?: string;
 }
@@ -72,7 +76,13 @@ export function toPendingCheckin(
 }
 
 export function toPendingApproval(
-  src: WaitDeadlineFields & { call_id: string; tool: string; args: Record<string, unknown> },
+  src: WaitDeadlineFields & {
+    call_id: string;
+    tool: string;
+    args: Record<string, unknown>;
+    mode?: PermissionMode;
+    granter_user_id?: string;
+  },
   now: number,
   serverNow?: number,
   streamId?: string,
@@ -83,6 +93,8 @@ export function toPendingApproval(
     tool: src.tool,
     args: src.args,
     ...(deadline ? { deadline } : {}),
+    ...(src.mode ? { mode: src.mode } : {}),
+    ...(src.granter_user_id ? { granterUserId: src.granter_user_id } : {}),
     ...(streamId ? { streamId } : {}),
   };
 }

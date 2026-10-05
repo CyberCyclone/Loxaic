@@ -25,6 +25,8 @@ interface SubAgentPanelProps {
   canAct: boolean;
   onStop: () => void;
   onAllow: () => void;
+  /** "Allow always" for the sub-agent's tool, where the screen offers it. */
+  onAllowAlways?: () => void;
   onDeny: () => void;
   onClose: () => void;
 }
@@ -46,7 +48,7 @@ interface SubAgentPanelProps {
  * There is no composer: nobody talks to a sub-agent but the agent that started
  * it. What a person can do here is watch, stop it, and answer what it asks.
  */
-export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAllow, onDeny, onClose }: SubAgentPanelProps) {
+export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAllow, onAllowAlways, onDeny, onClose }: SubAgentPanelProps) {
   const reachable = useServerReachable();
   // The message list takes a conversation; a child is one, with no title or
   // model of its own worth showing beyond what the header already says.
@@ -109,7 +111,10 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
               tool={approval.tool}
               args={approval.args}
               deadline={approval.deadline}
+              mode={approval.mode}
+              granterUserId={approval.granterUserId}
               onAllow={onAllow}
+              onAllowAlways={onAllowAlways}
               onDeny={onDeny}
             />
           </Box>

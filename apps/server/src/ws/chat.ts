@@ -199,7 +199,13 @@ export function chatWsHandler(app: FastifyInstance) {
         } else if (msg.type === "agent.approve" || msg.type === "agent.deny") {
           // See answerApproval: run-scoped, and a named stream is the only run
           // answered.
-          await answerApproval(userId, msg.call_id, msg.type === "agent.approve", msg.stream_id);
+          await answerApproval(
+            userId,
+            msg.call_id,
+            msg.type === "agent.approve",
+            msg.stream_id,
+            msg.type === "agent.approve" && msg.always === true,
+          );
         } else if (msg.type === "agent.steps") {
           // Answering a step check-in. Keyed by stream_id rather than a
           // model-supplied id, so unlike approve/deny there is exactly one run

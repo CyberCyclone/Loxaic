@@ -993,6 +993,19 @@ export function useAgentSession(
     setPendingApproval(null);
   }, [approvalStream, showToast]);
 
+  /** "Allow always" (#266): the same answer as Allow, with the request that
+   * the tool stop asking. The server records it, for this run and later ones,
+   * and only from the person the tools belong to, which is why the bar offers
+   * it to nobody else. One frame, so nothing is awaited between the tap and
+   * the answer, and there is no saved-but-not-approved state to explain. */
+  const handleAllowAlways = useCallback((callId: string) => {
+    if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId, approvalStream(callId), true)) {
+      showToast(NOT_SENT_RECONNECTING, 4000);
+      return;
+    }
+    setPendingApproval(null);
+  }, [approvalStream, showToast]);
+
   /** Answers a step check-in. Stop is not one of these — the banner's Stop
    * goes to `handleStop`, which works on any run whether parked or not. */
   const handleSteps = useCallback((decision: StepsDecision) => {
@@ -1120,6 +1133,7 @@ export function useAgentSession(
     handleNewRun,
     handleModeChange,
     handleApprove,
+    handleAllowAlways,
     handleDeny,
     handleSteps,
     handleFork,

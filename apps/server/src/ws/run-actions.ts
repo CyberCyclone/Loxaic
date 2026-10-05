@@ -47,6 +47,9 @@ export async function answerApproval(
   callId: unknown,
   approved: boolean,
   streamId?: unknown,
+  /** "Allow always". Passed on with who answered; the engine decides whether
+   * that person may grant it. */
+  always = false,
 ): Promise<void> {
   if (typeof callId !== "string") return;
   let candidates: RunHandle[];
@@ -61,7 +64,7 @@ export async function answerApproval(
     const resolve = run.approvals.get(callId);
     if (resolve) {
       run.approvals.delete(callId);
-      resolve(approved);
+      resolve(approved, { userId, always: approved && always });
     }
     break;
   }

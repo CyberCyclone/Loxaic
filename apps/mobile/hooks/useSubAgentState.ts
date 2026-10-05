@@ -272,13 +272,19 @@ export function useSubAgentState(opts: {
    * Answers a child's approval. The prompt closes only once the answer is on
    * the wire — the rule the parent's own approval follows (#231) — and the
    * answer names the child's run, since the parent may hold the same call id.
+   * `always` is "Allow always", as for the thread's own approval.
    */
-  const answer = useCallback((childId: string, approved: boolean): boolean => {
+  const answer = useCallback((childId: string, approved: boolean, always = false): boolean => {
     const view = findSubAgent(byParentRef.current, childId);
     const approval = view?.approval;
     const ws = wsRef.current;
     if (!approval) return false;
-    const sent = !isOffline() && !!ws && (approved ? approveTool : denyTool)(ws, approval.callId, approval.streamId);
+    const sent =
+      !isOffline() &&
+      !!ws &&
+      (approved
+        ? approveTool(ws, approval.callId, approval.streamId, always)
+        : denyTool(ws, approval.callId, approval.streamId));
     if (!sent) {
       showToastRef.current(NOT_SENT_RECONNECTING, 4000);
       return false;

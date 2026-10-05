@@ -1,4 +1,4 @@
-import type { WaitDeadlineFields } from "./stream-protocol";
+import type { ApprovalContext, WaitDeadlineFields } from "./stream-protocol";
 
 /**
  * Sub-agents: a run handing a self-contained task to a child agent, which has
@@ -62,7 +62,8 @@ export type SubAgentApproval = {
   call_id: string;
   tool: string;
   args: Record<string, unknown>;
-} & WaitDeadlineFields;
+} & ApprovalContext &
+  WaitDeadlineFields;
 
 /**
  * One sub-agent as a parent's thread knows it: who it is, how it is going, and

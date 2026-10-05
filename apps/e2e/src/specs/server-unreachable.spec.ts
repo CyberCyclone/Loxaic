@@ -179,6 +179,10 @@ describe('the server becoming unreachable', () => {
     await shot('unreachable-agent-plan');
     await tap('agent.plan.close');
     await waitForGone('agent.plan.panel');
+    // Unchanged by #266 except in *where* it lives: the mode control is the
+    // run header's segmented switch now, but every segment keeps the chips'
+    // `agent.mode.<mode>` id and still reports itself disabled rather than
+    // disappearing, so the header keeps saying which mode the run is in.
     for (const mode of ['planning', 'manual', 'auto']) {
       if (!(await isDisabled(`agent.mode.${mode}`))) throw new Error(`agent.mode.${mode} was pressable while unreachable`);
     }

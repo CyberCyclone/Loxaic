@@ -5,6 +5,7 @@ import { Box } from '@/components/ui/box';
 import type { StageCard } from '@/lib/stageCard';
 import { MessageList, type MessageHistory } from '@/components/chat/MessageList';
 import { RunHeader } from './RunHeader';
+import { ModeSwitch } from './ModeSwitch';
 import { PlanningBanner } from './PlanningBanner';
 import { PermissionBar } from './PermissionBar';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
@@ -15,6 +16,9 @@ interface AgentStreamProps {
   run: Conversation | null;
   state: RunState;
   mode: AgentMode;
+  /** Choosing the mode (#266) — the control moved from the composer's chip
+   * row into the header (and this screen's empty state). */
+  onModeChange: (mode: AgentMode) => void;
   iteration: { n: number; max: number } | null;
   loadingModel?: boolean;
   promptStats?: PromptStats | null;
@@ -30,6 +34,8 @@ interface AgentStreamProps {
   /** The latest step of a context-stage switch in this run. */
   stageCard?: StageCard | null;
   onAllow: () => void;
+  /** "Allow always" on the bar (#266) — see PermissionBar. */
+  onAllowAlways: () => void;
   onDeny: () => void;
   onCheckinContinue: () => void;
   onCheckinAnswer: () => void;
@@ -40,6 +46,7 @@ export function AgentStream({
   run,
   state,
   mode,
+  onModeChange,
   iteration,
   loadingModel,
   promptStats,
@@ -51,6 +58,7 @@ export function AgentStream({
   history,
   stageCard,
   onAllow,
+  onAllowAlways,
   onDeny,
   onCheckinContinue,
   onCheckinAnswer,
@@ -62,6 +70,13 @@ export function AgentStream({
         <Text className="text-center text-muted-foreground">
           Start a new agent run — describe what you want done, and it'll work in an isolated sandbox.
         </Text>
+        {/* The mode of the *first* message has to be choosable before any run
+            exists, and RunHeader — where the control lives now — only renders
+            for one. Without this the chip row's removal would leave no way to
+            start a run in Planning or Auto at all. */}
+        <Box className="mt-4">
+          <ModeSwitch mode={mode} onChange={onModeChange} />
+        </Box>
       </VStack>
     );
   }
@@ -72,6 +87,7 @@ export function AgentStream({
         title={run.title}
         state={state}
         mode={mode}
+        onModeChange={onModeChange}
         iteration={iteration}
         queuePosition={queuePosition}
       />
@@ -93,7 +109,10 @@ export function AgentStream({
           args={pendingApproval.args}
           deadline={pendingApproval.deadline}
           source={approvalSource}
+          mode={pendingApproval.mode}
+          granterUserId={pendingApproval.granterUserId}
           onAllow={onAllow}
+          onAllowAlways={onAllowAlways}
           onDeny={onDeny}
         />
       )}

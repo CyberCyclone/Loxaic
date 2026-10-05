@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { Keyboard, Platform } from 'react-native';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
@@ -6,6 +8,9 @@ import { DeadlineCountdown } from '@/components/chat/DeadlineCountdown';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { useServerReachable } from '@/lib/connection';
 import type { WaitDeadline } from '@/lib/pendingWaits';
+import { permissionBarView } from '@/lib/permissionBar';
+import { useSession } from '@/lib/session';
+import type { PermissionMode } from '@loxaic/api-client';
 
 function summarizeArgs(tool: string, args: Record<string, unknown>): string {
   if (typeof args.path === 'string') return args.path;
@@ -16,18 +21,18 @@ function summarizeArgs(tool: string, args: Record<string, unknown>): string {
   return json === '{}' ? tool : json.slice(0, 120);
 }
 
-/** MCP tools arrive namespaced as `server__tool`; builtins never contain `__`. */
-function splitMcpTool(name: string): { server: string; tool: string } | null {
-  const idx = name.indexOf('__');
-  if (idx <= 0) return null;
-  return { server: name.slice(0, idx), tool: name.slice(idx + 2) };
-}
-
 interface PermissionBarProps {
   tool: string;
   args: Record<string, unknown>;
   deadline?: WaitDeadline;
+  /** The asking run's mode and the user whose "Allow always" the server
+   * records, both from the approval itself — see `permissionBarView`. */
+  mode?: PermissionMode;
+  granterUserId?: string;
   onAllow: () => void;
+  /** Approves this call and stops the tool asking (#266). Offered only when
+   * given, and only to the person it would be recorded for. */
+  onAllowAlways?: () => void;
   onDeny: () => void;
   /**
    * Who is asking, when it is not the run on screen: a sub-agent's
@@ -40,8 +45,31 @@ interface PermissionBarProps {
   testIDBase?: string;
 }
 
-export function PermissionBar({ tool, args, deadline, onAllow, onDeny, source, testIDBase = 'agent.permission' }: PermissionBarProps) {
-  const mcp = splitMcpTool(tool);
+export function PermissionBar({
+  tool,
+  args,
+  deadline,
+  mode,
+  granterUserId,
+  onAllow,
+  onAllowAlways,
+  onDeny,
+  source,
+  testIDBase = 'agent.permission',
+}: PermissionBarProps) {
+  const { user } = useSession();
+  const view = permissionBarView({ tool, mode, granterUserId }, user?.id);
+  const { mcp } = view;
+  const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
+  const alwaysFirst = offerAlways && view.primary === 'always';
+  // On a phone the keyboard leaves about a hundred points between the header
+  // and the composer, and the bar's buttons were cut off below it: a run
+  // parked on a question nobody could reach the answer to. The prompt is what
+  // needs attention, so the keyboard goes; whatever was typed stays. Not on the
+  // web, where this would take focus from someone typing ahead at a desk.
+  useEffect(() => {
+    if (Platform.OS !== 'web') Keyboard.dismiss();
+  }, []);
   // See ToolApprovalDialog: an answer needs an open socket (#231).
   const disconnected = !useServerReachable();
   return (
@@ -69,15 +97,40 @@ export function PermissionBar({ tool, args, deadline, onAllow, onDeny, source, t
           <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
         </Text>
       )}
+      {offerAlways && view.note ? (
+        <Text testID={`${testIDBase}.alwaysNote`} size="2xs" className="text-muted-foreground">
+          {view.note}
+        </Text>
+      ) : null}
       <DeadlineCountdown kind="approval" deadline={deadline} testID={`${testIDBase}.deadline`} />
       <DisconnectedNote testID={`${testIDBase}.reconnecting`} />
       <HStack space="sm" className="justify-end">
         <Button testID={`${testIDBase}.deny`} variant="outline" size="sm" onPress={onDeny} isDisabled={disconnected}>
           <ButtonText>Deny</ButtonText>
         </Button>
-        <Button testID={`${testIDBase}.allow`} size="sm" onPress={onAllow} isDisabled={disconnected}>
-          <ButtonText>Allow once</ButtonText>
-        </Button>
+        {/* The same two answers in every mode, under the same ids: only which
+            one is filled changes. The filled one is last, nearest the thumb. */}
+        {alwaysFirst ? (
+          <Button testID={`${testIDBase}.allow`} variant="outline" size="sm" onPress={onAllow} isDisabled={disconnected}>
+            <ButtonText>Allow once</ButtonText>
+          </Button>
+        ) : null}
+        {offerAlways ? (
+          <Button
+            testID={`${testIDBase}.allowAlways`}
+            variant={alwaysFirst ? 'default' : 'outline'}
+            size="sm"
+            onPress={onAllowAlways}
+            isDisabled={disconnected}
+          >
+            <ButtonText>Allow always</ButtonText>
+          </Button>
+        ) : null}
+        {alwaysFirst ? null : (
+          <Button testID={`${testIDBase}.allow`} size="sm" onPress={onAllow} isDisabled={disconnected}>
+            <ButtonText>Allow once</ButtonText>
+          </Button>
+        )}
       </HStack>
     </VStack>
   );

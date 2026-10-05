@@ -71,7 +71,15 @@ function approvalOf(live: SubAgentLive, now: number, serverNow?: number): ChildA
   const src = live.pending_approval;
   if (!src) return undefined;
   const deadline = localDeadline(src, now, serverNow);
-  return { streamId: src.stream_id, callId: src.call_id, tool: src.tool, args: src.args, ...(deadline ? { deadline } : {}) };
+  return {
+    streamId: src.stream_id,
+    callId: src.call_id,
+    tool: src.tool,
+    args: src.args,
+    ...(deadline ? { deadline } : {}),
+    ...(src.mode ? { mode: src.mode } : {}),
+    ...(src.granter_user_id ? { granterUserId: src.granter_user_id } : {}),
+  };
 }
 
 function toView(live: SubAgentLive, previous: SubAgentView | undefined, now: number, serverNow?: number): SubAgentView {
