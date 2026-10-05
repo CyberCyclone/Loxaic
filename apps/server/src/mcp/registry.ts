@@ -1,11 +1,11 @@
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
-import { resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
-import { and, db, eq } from "@loxaic/db";
+import { isToolName, resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
+import { and, db, eq, sql } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
 import { mcpServerActive, normalizeMcpOverrides, type McpConversationKind, type McpOverrides } from "@loxaic/types";
 import { catalogDefaultPolicy, GITHUB_BUILTIN_KEY } from "./catalog.ts";
-import { reconcileTools, type ToolPolicy } from "./change-detection.ts";
+import { DEFAULT_POLICY, reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, redactionsFor, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
 import {
@@ -31,6 +31,12 @@ export interface Toolset {
   systemPromptAddendum: string | null;
   /** Execute an MCP-sourced tool. Never rejects — failures become ok:false. */
   dispatchMcp(tool: ResolvedTool, args: Record<string, unknown>): Promise<{ ok: boolean; output: string }>;
+  /**
+   * "Allow always" (#266): this tool stops asking, in this run and every
+   * later one. Never rejects. The caller has established that the toolset's
+   * own user asked for it — see `runOneToolCall` in the engine.
+   */
+  grantTrust(tool: ResolvedTool): Promise<void>;
 }
 
 // MCP servers ship arbitrary JSON Schema; strict mode would reject harmless
@@ -114,18 +120,81 @@ export async function buildToolset(
     requiresApproval: toolsetRequiresApproval,
     systemPromptAddendum: addendum === "" ? null : addendum,
     dispatchMcp: (tool, args) => dispatchMcpTool(userId, tool, args, mcpEntries),
+    grantTrust: (tool) => grantTrust(userId, tool, mcpEntries),
   };
 }
 
 function toolsetRequiresApproval(tool: ResolvedTool, mode: PermissionMode): boolean {
   if (tool.source.kind === "mcp") {
-    // MCP tools ask in EVERY mode — auto included — unless the user
-    // explicitly allowlisted the tool (requiresApproval=false then).
+    // MCP tools ask in every mode, auto included, until the user allows the
+    // tool: the MCP tools sheet, or "Allow always" on an approval. The grant
+    // is for the exact tool: `reconcileTools` revokes it when the tool's
+    // description or schema changes.
     return tool.requiresApproval;
   }
   if (mode === "auto") return false;
   if (mode === "planning") return tool.isWrite;
   return tool.requiresApproval;
+}
+
+/**
+ * Records "Allow always" for one tool (#266), in the store that already
+ * decides whether it asks: an MCP tool's own policy on its server row (what
+ * the MCP tools sheet edits), a builtin's entry in the user's allowlist.
+ *
+ * The tool object is this run's own, so flipping it stops this run asking
+ * too. Without that the grant only helped the *next* run, and a run that
+ * writes five files asked four more times after "Allow always".
+ *
+ * Each write is one statement that changes one tool's entry in place. A read
+ * followed by a write of the whole map would put back whatever another
+ * device or run had changed in between.
+ *
+ * Never throws: the call was approved either way, and a grant that could not
+ * be saved only means the tool asks again next run.
+ */
+async function grantTrust(userId: string, tool: ResolvedTool, entries: Map<string, McpToolEntry>): Promise<void> {
+  tool.requiresApproval = false;
+  try {
+    if (tool.source.kind === "mcp") {
+      const entry = entries.get(tool.name);
+      if (!entry) return;
+      // `changed: false` because allowing the tool again is what acknowledges
+      // a change (as a save in the tools sheet does); `grantedFrom` lets that
+      // sheet say where an allow it did not make came from.
+      const patch = JSON.stringify({ approval: "allow", changed: false, grantedFrom: "prompt" });
+      await db
+        .update(mcpServers)
+        .set({
+          toolPolicies: sql`jsonb_set(
+            COALESCE(${mcpServers.toolPolicies}, '{}'::jsonb),
+            ARRAY[${entry.remoteName}]::text[],
+            COALESCE(${mcpServers.toolPolicies} -> ${entry.remoteName}, ${JSON.stringify(DEFAULT_POLICY)}::jsonb) || ${patch}::jsonb
+          )`,
+        })
+        .where(and(eq(mcpServers.id, entry.row.id), eq(mcpServers.ownerId, userId)));
+      return;
+    }
+    // The planning hand-over tools are builtins too, and are not ones a
+    // person can put on the list (`PATCH /v1/prefs` refuses them as well).
+    if (!isToolName(tool.name)) return;
+    const name = JSON.stringify(tool.name);
+    await db
+      .insert(userPrefs)
+      .values({ userId, toolAllowlist: [tool.name] })
+      .onConflictDoUpdate({
+        target: userPrefs.userId,
+        set: {
+          toolAllowlist: sql`CASE
+            WHEN jsonb_typeof(${userPrefs.toolAllowlist}) <> 'array' THEN jsonb_build_array(${name}::jsonb)
+            WHEN ${userPrefs.toolAllowlist} @> ${name}::jsonb THEN ${userPrefs.toolAllowlist}
+            ELSE ${userPrefs.toolAllowlist} || ${name}::jsonb
+          END`,
+        },
+      });
+  } catch (err) {
+    console.warn(`could not save "allow always" for ${tool.name}: ${(err as Error).message}`);
+  }
 }
 
 async function resolveMcpTools(
@@ -309,4 +378,3 @@ async function dispatchMcpTool(
     };
   }
 }
-

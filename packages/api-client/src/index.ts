@@ -1661,6 +1661,8 @@ export interface McpToolPolicy {
   readOnly: boolean;
   changed?: boolean;
   missing?: boolean;
+  /** The allow came from "Allow always" on an approval prompt. */
+  grantedFrom?: "prompt";
 }
 
 export interface McpServer {
@@ -2380,9 +2382,17 @@ export function setAgentMode(ws: WebSocket, mode: import("@loxaic/types").Permis
  * server answers whichever run the caller may act on that holds the call id —
  * what every client did before sub-agents, and what an older server does with
  * the field regardless.
+ *
+ * `always` is "Allow always": approve this call and stop asking for the tool.
+ * The server records it only from the approval's `granter_user_id`.
  */
-export function approveTool(ws: WebSocket, callId: string, streamId?: string): boolean {
-  return trySend(ws, { type: "agent.approve", call_id: callId, ...(streamId ? { stream_id: streamId } : {}) });
+export function approveTool(ws: WebSocket, callId: string, streamId?: string, always = false): boolean {
+  return trySend(ws, {
+    type: "agent.approve",
+    call_id: callId,
+    ...(streamId ? { stream_id: streamId } : {}),
+    ...(always ? { always: true } : {}),
+  });
 }
 
 export function denyTool(ws: WebSocket, callId: string, streamId?: string): boolean {

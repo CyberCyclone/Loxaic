@@ -9,6 +9,24 @@ import type { SubAgentEvent, SubAgentLive } from "./subagents";
  * agent-loop *logic* (toolRequiresApproval etc.), this is only the wire shape. */
 export type PermissionMode = "planning" | "manual" | "auto";
 
+/**
+ * What a client needs to say truthfully what an approval's buttons do (#266).
+ * Both are facts about the run that is asking, fixed when it started. A
+ * client's own mode selector says only what its *next* message will use, and
+ * resets on every reload.
+ *
+ * Absent from a server that predates them, which also ignores `always` on
+ * `agent.approve`: a client offers no standing grant then.
+ */
+export interface ApprovalContext {
+  /** The asking run's permission mode. */
+  mode?: PermissionMode;
+  /** The one user whose "Allow always" is recorded: whoever sent the run,
+   * since the tools and the policies are theirs. Anyone else who may answer
+   * (an editor on a shared conversation) approves the one call. */
+  granter_user_id?: string;
+}
+
 export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
 
 /** Why a run stopped to ask whether to keep going: it reached the end of its
@@ -573,7 +591,8 @@ export type StreamEventKind =
    * of `CheckinDecisionNote`. */
   | ({ kind: "steps.decision" } & CheckinDecisionNote)
   | { kind: "tool.call"; message_id: string; call_id: string; tool: string; args: Record<string, unknown> }
-  | ({ kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> } & WaitDeadlineFields)
+  | ({ kind: "approval.request"; call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
+      WaitDeadlineFields)
   | {
       kind: "tool.result";
       message_id: string;
@@ -733,7 +752,8 @@ export interface StreamSnapshot {
   // agent-only:
   iteration?: { n: number; max: number };
   todos?: Todo[];
-  pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & WaitDeadlineFields;
+  pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
+    WaitDeadlineFields;
   /** Present from just before a model request until its first output — so a
    * client reconnecting fifteen minutes into prompt evaluation is told what
    * is being evaluated, not just that something is. */
@@ -878,8 +898,12 @@ export type ClientMessage =
    * repeat (`call_0`), and a thread can now have a parent and its sub-agents
    * each waiting on one — so a client that knows the stream says so, and that
    * run alone is answered. Absent (an older client) means any run the caller
-   * may act on that holds the call id, as before. */
-  | { type: "agent.approve"; call_id: string; stream_id?: string }
+   * may act on that holds the call id, as before.
+   *
+   * `always` asks for the tool to stop asking from now on, as well as
+   * approving this call. Honoured only from the approval's `granter_user_id`;
+   * from anyone else it approves the one call. */
+  | { type: "agent.approve"; call_id: string; stream_id?: string; always?: boolean }
   | { type: "agent.deny"; call_id: string; stream_id?: string }
   /** Answer a `steps.checkin`. Keyed by `stream_id`, not by a model-supplied
    * id like approve/deny — a run has at most one check-in outstanding, and

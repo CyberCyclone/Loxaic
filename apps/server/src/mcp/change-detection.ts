@@ -17,6 +17,10 @@ export interface ToolPolicy {
   changed?: boolean;
   /** Set when the tool disappeared from the server's listing. */
   missing?: boolean;
+  /** Set when `approval: "allow"` came from "Allow always" on an approval
+   * prompt rather than from the tools sheet or a built-in default, so the
+   * sheet can say so. Cleared by any later save or revocation. */
+  grantedFrom?: "prompt";
 }
 
 // Partial: a lookup by tool name misses for any tool not yet seen, which is
@@ -58,7 +62,9 @@ export function reconcileTools(
     } else if (prevHash !== undefined && prevHash !== hash) {
       // The tool the user allowlisted no longer exists in that form — any
       // standing "allow" or read-only grant is revoked until re-confirmed.
-      policies[tool.name] = { ...prevPolicy, approval: "ask", readOnly: false, changed: true, missing: false };
+      const { grantedFrom: _revoked, ...kept } = prevPolicy;
+      void _revoked;
+      policies[tool.name] = { ...kept, approval: "ask", readOnly: false, changed: true, missing: false };
       changedTools.push(tool.name);
     } else if (prevPolicy.missing) {
       policies[tool.name] = { ...prevPolicy, missing: false };

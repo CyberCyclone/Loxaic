@@ -1782,6 +1782,8 @@ async function runOneToolCall(
     return { output, ok: false };
   }
 
+  let always = false;
+  let answeredBy: string | null = null;
   if (toolset.requiresApproval(resolved, mode)) {
     const deadline = ctx.approvalDeadline();
     producer.emit({
@@ -1789,6 +1791,11 @@ async function runOneToolCall(
       call_id: call.id,
       tool: toolName,
       args,
+      // What the buttons will do, as facts about this run (#266): its mode,
+      // and the one person whose "Allow always" is recorded. A client's mode
+      // selector says neither — it is the next message's mode.
+      mode,
+      granter_user_id: userId,
       timeout_ms: deadline.ms,
       expires_at: deadline.expiresAt,
       timeout_basis: deadline.basis,
@@ -1798,7 +1805,12 @@ async function runOneToolCall(
     // through it would stall every other conversation on the deployment for
     // exactly as long as the user takes to click. Re-taken at the front of the
     // queue afterwards, so approving does not cost the user their place.
-    const outcome = await ctx.slot.yieldWhile(() => waitForApproval(ctx.streamId, call.id, ctx.signal, deadline.ms));
+    const answer = await ctx.slot.yieldWhile(() =>
+      waitForApproval(ctx.streamId, call.id, ctx.signal, deadline.ms),
+    );
+    const outcome = answer.outcome;
+    always = answer.always;
+    answeredBy = answer.answeredBy;
     if (outcome !== "approved") {
       const output = approvalRefusalText(outcome);
       producer.emit({
@@ -1812,6 +1824,14 @@ async function runOneToolCall(
       return { output, ok: false };
     }
   }
+
+  // "Allow always" (#266), recorded only for the person the tools belong to.
+  // Anyone who can edit the conversation may answer an approval, and the
+  // toolset is the sender's: an editor's tap must not become standing trust
+  // on someone else's credentialled server, so theirs approves this call and
+  // nothing more. Reaching here with no gate above (already allowed) never
+  // grants, since `always` is only ever set by an answer.
+  if (always && answeredBy === userId) await toolset.grantTrust(resolved);
 
   if (resolved.source.kind === "mcp") {
     // No sandbox involvement: MCP dispatch validates args, calls the server,
@@ -1896,6 +1916,14 @@ async function runOneToolCall(
  * they had never been shown a prompt at all.
  */
 type ApprovalOutcome = "approved" | "denied" | "timeout" | "aborted" | "gone";
+
+/** How an approval wait ended, and — for an approval — whether the person
+ * also asked for the tool to stop asking, and who they were. */
+interface ApprovalAnswer {
+  outcome: ApprovalOutcome;
+  always: boolean;
+  answeredBy: string | null;
+}
 
 /**
  * What the model and the transcript are told when a tool call did not run.
@@ -2021,36 +2049,35 @@ function waitForApproval(
   callId: string,
   signal: AbortSignal,
   timeoutMs: number,
-): Promise<ApprovalOutcome> {
-  return new Promise<ApprovalOutcome>((resolve) => {
+): Promise<ApprovalAnswer> {
+  return new Promise<ApprovalAnswer>((resolve) => {
     if (signal.aborted) {
-      resolve("aborted");
+      resolve({ outcome: "aborted", always: false, answeredBy: null });
       return;
     }
     const run = getRun(streamId);
     if (!run) {
-      resolve("gone");
+      resolve({ outcome: "gone", always: false, answeredBy: null });
       return;
     }
     // Every path below goes through `settle`, so the timer and the abort
     // listener are always torn down — a listener left on a long-lived signal
     // is a leak, and a stray timer would delete a *later* call's approval.
     let done = false;
-    const settle = (outcome: ApprovalOutcome) => {
+    const settle = (outcome: ApprovalOutcome, by?: { userId: string; always: boolean }) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
       run.approvals.delete(callId);
-      resolve(outcome);
+      resolve({ outcome, always: outcome === "approved" && by?.always === true, answeredBy: by?.userId ?? null });
     };
     const onAbort = () => { settle("aborted"); };
     const timer = setTimeout(() => { settle("timeout"); }, timeoutMs);
-    // The registry's resolver stays `(approved: boolean) => void`, so the two
-    // WebSocket handlers that answer an approval need no change: only this
-    // function knows the difference between a person saying no and nobody
-    // answering at all.
-    run.approvals.set(callId, (approved: boolean) => { settle(approved ? "approved" : "denied"); });
+    // Only this function knows the difference between a person saying no and
+    // nobody answering at all; the two WebSocket handlers just pass on what
+    // was answered and by whom.
+    run.approvals.set(callId, (approved, by) => { settle(approved ? "approved" : "denied", by); });
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }

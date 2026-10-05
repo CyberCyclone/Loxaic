@@ -51,6 +51,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await db.delete(conversations).where(eq(conversations.ownerId, userId));
   await db.delete(mcpServers).where(eq(mcpServers.ownerId, userId));
+  await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
 });
 
@@ -184,6 +185,99 @@ describe("buildToolset with the fixture server", () => {
       await db.delete(mcpServers).where(eq(mcpServers.id, dead.id));
     }
   }, 20_000);
+});
+
+/**
+ * "Allow always" on an approval (#266). The engine calls `grantTrust` when the
+ * run's own sender answers with it; these pin what it writes and what it
+ * leaves alone. Dispatching never grants: an approval is for one call unless
+ * the person said otherwise.
+ */
+describe("grantTrust (#266)", () => {
+  async function setPolicies(toolPolicies: Record<string, Record<string, unknown>>) {
+    await db.update(mcpServers).set({ toolPolicies }).where(eq(mcpServers.id, serverId));
+  }
+  async function policies(): Promise<Record<string, Record<string, unknown> | undefined>> {
+    const row = await db.query.mcpServers.findFirst({
+      where: eq(mcpServers.id, serverId),
+      columns: { toolPolicies: true },
+    });
+    return (row?.toolPolicies ?? {}) as Record<string, Record<string, unknown>>;
+  }
+  async function allowlist(): Promise<unknown> {
+    const row = await db.query.userPrefs.findFirst({ where: eq(userPrefs.userId, userId) });
+    return row?.toolAllowlist ?? [];
+  }
+
+  it("dispatching an MCP tool grants nothing, in auto mode or any other", async () => {
+    await setPolicies({ echo: { enabled: true, approval: "ask", readOnly: false } });
+    for (const mode of ["auto", "manual"] as const) {
+      const ts = await buildToolset(userId, { mode });
+      const echo = mustGet(ts, "mockmcp__echo");
+      expect((await ts.dispatchMcp(echo, { text: "once" })).ok).toBe(true);
+      expect(ts.requiresApproval(echo, mode)).toBe(true);
+      expect((await policies()).echo?.approval).toBe("ask");
+    }
+  }, 30_000);
+
+  it("allows an MCP tool for the rest of the run and for every later one", async () => {
+    // `changed` as a revoked grant leaves it: allowing again acknowledges it.
+    await setPolicies({ echo: { enabled: true, approval: "ask", readOnly: true, changed: true } });
+    const ts = await buildToolset(userId, { mode: "manual" });
+    const echo = mustGet(ts, "mockmcp__echo");
+    expect(ts.requiresApproval(echo, "manual")).toBe(true);
+
+    // Another device edits a different tool while this run is going. The
+    // grant must change its own tool's entry and nothing else.
+    await setPolicies({
+      echo: { enabled: true, approval: "ask", readOnly: true, changed: true },
+      slow: { enabled: false, approval: "ask", readOnly: false },
+    });
+    await ts.grantTrust(echo);
+
+    expect(ts.requiresApproval(echo, "manual")).toBe(false);
+    const stored = await policies();
+    expect(stored.echo).toEqual({
+      enabled: true,
+      approval: "allow",
+      readOnly: true,
+      changed: false,
+      grantedFrom: "prompt",
+    });
+    expect(stored.slow?.enabled).toBe(false);
+
+    for (const mode of ["manual", "auto"] as const) {
+      const next = await buildToolset(userId, { mode });
+      expect(next.requiresApproval(mustGet(next, "mockmcp__echo"), mode)).toBe(false);
+    }
+    await setPolicies({});
+  }, 30_000);
+
+  it("allows a builtin for the rest of the run and for every later one, once", async () => {
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+    const ts = await buildToolset(userId, { mode: "manual" });
+    const write = mustGet(ts, "fs_write");
+    expect(ts.requiresApproval(write, "manual")).toBe(true);
+
+    await ts.grantTrust(write);
+    await ts.grantTrust(write);
+    await ts.grantTrust(mustGet(ts, "bash"));
+
+    expect(ts.requiresApproval(write, "manual")).toBe(false);
+    expect(await allowlist()).toEqual(["fs_write", "bash"]);
+    const next = await buildToolset(userId, { mode: "manual" });
+    expect(next.requiresApproval(mustGet(next, "fs_write"), "manual")).toBe(false);
+    // One run's grant is not another run's: tool objects are per toolset.
+    expect(next.requiresApproval(mustGet(next, "fs_edit"), "manual")).toBe(true);
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+  }, 30_000);
+
+  it("keeps the planning hand-over tools off the allowlist", async () => {
+    await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
+    const ts = await buildToolset(userId, { mode: "planning" });
+    await ts.grantTrust(mustGet(ts, "propose_plan"));
+    expect(await allowlist()).toEqual([]);
+  }, 30_000);
 });
 
 describe("compileValidator", () => {

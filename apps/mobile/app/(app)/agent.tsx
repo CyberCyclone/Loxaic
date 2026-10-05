@@ -17,7 +17,6 @@ import { useShell } from '@/components/shell/AppShell';
 import { ThreadList } from '@/components/chat/ThreadList';
 import { AgentStream } from '@/components/agent/AgentStream';
 import { Inspector } from '@/components/agent/Inspector';
-import { ModeSelector } from '@/components/agent/ModeSelector';
 import { WorkspaceChooser } from '@/components/agent/WorkspaceChooser';
 import { WorkspacePill } from '@/components/agent/WorkspacePill';
 import { TerminalPanel } from '@/components/agent/TerminalPanel';
@@ -102,6 +101,7 @@ export default function AgentScreen() {
     handleNewRun,
     handleModeChange,
     handleApprove,
+    handleAllowAlways,
     handleDeny,
     handleSteps,
     handleFork,
@@ -486,6 +486,7 @@ export default function AgentScreen() {
                     run={activeRun}
                     state={runState}
                     mode={mode}
+                    onModeChange={handleModeChange}
                     iteration={iteration}
                     loadingModel={loadingModel}
                     promptStats={promptStats}
@@ -500,6 +501,10 @@ export default function AgentScreen() {
                     onAllow={() => {
                       if (pendingApproval) handleApprove(pendingApproval.callId);
                       else if (childApproval) subAgents.answer(childApproval.conversation_id, true);
+                    }}
+                    onAllowAlways={() => {
+                      if (pendingApproval) handleAllowAlways(pendingApproval.callId);
+                      else if (childApproval) subAgents.answer(childApproval.conversation_id, true, true);
                     }}
                     onDeny={() => {
                       if (pendingApproval) handleDeny(pendingApproval.callId);
@@ -525,8 +530,9 @@ export default function AgentScreen() {
                   onOpen={() => { if (planReview.latest) planReview.openItem(planReview.latest.callId); }}
                 />
               )}
-              <HStack className="items-center justify-between pr-3">
-                <ModeSelector mode={mode} onChange={handleModeChange} />
+              {/* The mode chips that used to sit here moved into the run
+                  header's badge (#266); the pill keeps its corner. */}
+              <HStack className="items-center justify-end pr-3">
                 <WorkspacePill
                   workspace={currentWorkspace}
                   editable={!activeRun}
@@ -683,6 +689,7 @@ export default function AgentScreen() {
         canAct={subAgents.ui.canAct}
         onStop={subAgents.panel.stop}
         onAllow={subAgents.panel.allow}
+        onAllowAlways={subAgents.panel.allowAlways}
         onDeny={subAgents.panel.deny}
         onClose={subAgents.panel.close}
       />

@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
 import { conversations, mcpServers, messages, sandboxes, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import type { ContentBlock, ContextBreakdown, McpOverrides } from "@loxaic/types";
+import type { ContentBlock, ContextBreakdown, McpOverrides, StreamSnapshot } from "@loxaic/types";
 import { getStreamBroker, initStreamBroker } from "../../streams/index.ts";
 import { getRun } from "../../streams/registry.ts";
 import { startAgentRun } from "../../streams/runs/agentRun.ts";
@@ -67,7 +67,13 @@ async function runTurn(
   content: string,
   mode: PermissionMode,
   approve: boolean | null,
-  opts: { surface?: Surface; conversationId?: string; mcpOverrides?: McpOverrides } = {},
+  opts: {
+    surface?: Surface;
+    conversationId?: string;
+    mcpOverrides?: McpOverrides;
+    /** Who answered, and whether with "Allow always". */
+    answer?: { userId: string; always: boolean };
+  } = {},
 ) {
   const surface = opts.surface ?? "agent";
   const common = { userId, content, model: "mock", conversationId: opts.conversationId, mcpOverrides: opts.mcpOverrides };
@@ -76,14 +82,17 @@ async function runTurn(
   if (!convIds.includes(conversationId)) convIds.push(conversationId);
 
   let sawApproval = false;
+  let pendingApproval: StreamSnapshot["pending_approval"];
   if (approve !== null) {
-    await waitFor(() => {
+    await waitFor(async () => {
       const run = getRun(streamId);
       if (!run) return true; // finished without asking
       const entry = run.approvals.entries().next();
       if (!entry.done) {
         sawApproval = true;
-        entry.value[1](approve);
+        const broker = getStreamBroker();
+        pendingApproval = broker.foldSnapshot(await broker.readFrom(streamId, 0)).pending_approval;
+        entry.value[1](approve, opts.answer);
         return true;
       }
       return null;
@@ -102,6 +111,7 @@ async function runTurn(
     streamId,
     conversationId,
     sawApproval,
+    pendingApproval,
     toolCalls: blocks.filter((b): b is Extract<ContentBlock, { kind: "tool_call" }> => b.kind === "tool_call"),
     toolResults: blocks.filter((b): b is Extract<ContentBlock, { kind: "tool_result" }> => b.kind === "tool_result"),
   };
@@ -243,6 +253,69 @@ describe("MCP end-to-end through the agent loop", () => {
     // Exactly one genuine closing tag: the wrapper's own.
     expect(output.split("</mcp-tool-result").length).toBe(2);
     expect(output).toContain("unrestricted mode"); // payload preserved as inert text
+  }, 30_000);
+});
+
+/**
+ * "Allow always" answered on an approval (#266): an approval is for one call
+ * unless the run's own sender says otherwise, in every mode.
+ */
+describe("Allow always through the agent loop", () => {
+  async function echoPolicy() {
+    const row = await db.query.mcpServers.findFirst({ where: eq(mcpServers.id, serverId) });
+    return (row?.toolPolicies as Record<string, { approval?: string; grantedFrom?: string }> | null)?.echo;
+  }
+  async function reset() {
+    await db.update(mcpServers).set({ toolPolicies: {}, knownTools: {} }).where(eq(mcpServers.id, serverId));
+  }
+
+  it("tells the client the asking run's mode and whose grant it would be", async () => {
+    await reset();
+    const turn = await runTurn("please use mcp echo", "auto", true);
+    expect(turn.pendingApproval?.mode).toBe("auto");
+    expect(turn.pendingApproval?.granter_user_id).toBe(userId);
+  }, 30_000);
+
+  it("an approval in an auto run is for that call: the next run asks again", async () => {
+    await reset();
+    const first = await runTurn("please use mcp echo", "auto", true, { answer: { userId, always: false } });
+    expect(first.sawApproval).toBe(true);
+    expect(first.toolResults[0].output).toContain("echo: hello from mcp");
+    expect((await echoPolicy())?.approval).toBe("ask");
+    const second = await runTurn("please use mcp echo", "auto", true);
+    expect(second.sawApproval).toBe(true);
+  }, 60_000);
+
+  it.each(["auto", "manual"] as const)("Allow always in a %s run stops every later run asking", async (mode) => {
+    await reset();
+    const first = await runTurn("please use mcp echo", mode, true, { answer: { userId, always: true } });
+    expect(first.sawApproval).toBe(true);
+    expect(first.toolResults[0].output).toContain("echo: hello from mcp");
+    expect(await echoPolicy()).toMatchObject({ approval: "allow", grantedFrom: "prompt" });
+    for (const next of ["auto", "manual"] as const) {
+      const turn = await runTurn("please use mcp echo", next, null);
+      expect(turn.sawApproval).toBe(false);
+      expect(turn.toolResults[0].output).toContain("echo: hello from mcp");
+    }
+    await reset();
+  }, 60_000);
+
+  it("someone else's Allow always approves the call and grants nothing", async () => {
+    await reset();
+    // Anyone who can edit a shared conversation may answer; the server row
+    // and its credentials are the sender's.
+    const turn = await runTurn("please use mcp echo", "auto", true, {
+      answer: { userId: "an-editor-on-a-shared-thread", always: true },
+    });
+    expect(turn.toolResults[0].output).toContain("echo: hello from mcp");
+    expect((await echoPolicy())?.approval).toBe("ask");
+    expect((await runTurn("please use mcp echo", "auto", true)).sawApproval).toBe(true);
+  }, 60_000);
+
+  it("a denial with the flag set grants nothing", async () => {
+    await reset();
+    await runTurn("please use mcp echo", "auto", false, { answer: { userId, always: true } });
+    expect((await echoPolicy())?.approval).toBe("ask");
   }, 30_000);
 });
 

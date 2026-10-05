@@ -706,10 +706,12 @@ replies.
   server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
   policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below). The wire
   event union lives in `packages/types` (`StreamEventKind`), not here.
-- **"Allow always"**: an MCP tool patches its server's own per-tool policy
-  (`PATCH /v1/mcp/servers/:id`, same allowlist the `/mcp` screen manages); a builtin patches
-  the user's global allowlist instead — the `user_prefs.tool_allowlist` column, read by
-  `buildToolset` (`apps/server/src/mcp/registry.ts`) and exposed via `GET`/`PATCH /v1/prefs`.
+- **"Allow always"**: an MCP tool's grant is its server's own per-tool policy (the allowlist
+  the `/mcp` screen manages); a builtin's is the user's global allowlist — the
+  `user_prefs.tool_allowlist` column, read by `buildToolset` (`apps/server/src/mcp/registry.ts`)
+  and exposed via `GET`/`PATCH /v1/prefs`. Chat's dialog writes them over REST; the agent's
+  bar sends it with the answer — see "The mode control and "Allow always" on the agent
+  surface" below.
   This is global and mode-independent (it clears `requiresApproval`, not the `isWrite` gate),
   so it also silently benefits agent's manual mode — planning mode is unaffected since it
   filters on `isWrite` regardless of approval policy.
@@ -2096,6 +2098,62 @@ replies.
   showed Auto.
 - **A client without this update shows a plan as a plain tool card**, and the model no longer
   restates the plan as prose — the over-the-air update is what brings the panel.
+
+### The mode control and "Allow always" on the agent surface (#266)
+
+- **The mode control is the run header's segmented `ModeSwitch`**; the chip row above the
+  composer is gone. The segments keep the chips' `agent.mode.<mode>` ids and `aria-selected`,
+  and disable with the server. The no-run placeholder has its own switch, because the header
+  exists only once a run does and the first message's mode still has to be choosable.
+- **The selector is the next message's mode, never the running run's.** A run's mode is fixed
+  at send. `agent.mode` is a UI echo, the selector resets to Manual on every mount, and it can
+  be tapped while a run is parked. So nothing about a waiting approval may be read from it.
+- **An approval says what its buttons will do, itself.** `approval.request` (and so the
+  snapshot's `pending_approval`, and a sub-agent's mirrored one) carries `mode`, the asking
+  run's, and `granter_user_id`, the one user whose "Allow always" is recorded.
+  `lib/permissionBar.ts` decides the bar from those and from who is signed in.
+  - **Why:** the first version read the selector. An auto run reloaded, or with the selector
+    tapped to Manual, showed "Allow once" on a button that granted for good; a manual run with
+    the selector on Auto promised a grant the server never made. Both reproduced in review.
+- **A standing grant is an explicit answer, in every mode: `agent.approve {always: true}`.**
+  An approval without it is for one call, in auto too. The first version granted as a side
+  effect of dispatching a gated MCP tool in an auto run, which left auto with no way to allow
+  a `merge_pull_request` once without trusting it in every later run, chat and routine.
+- **Only the run's sender can grant** (`runOneToolCall`: `always && answeredBy === userId`).
+  Anyone who can edit a shared conversation may answer an approval, and the toolset, the
+  server row and its credentials are the sender's. An editor's "always" approves the call and
+  records nothing; the bar does not offer it to them.
+- **`Toolset.grantTrust` flips the run's own tool object as well as writing the store.** A
+  toolset is built once per run, so a grant that was only saved helped the next run, and a run
+  writing five files asked four more times after "Allow always". Each write changes one tool's
+  entry in one statement (`jsonb_set` for an MCP policy, an upsert for the allowlist); a read
+  followed by a write of the whole map puts back what another device changed in between. It
+  sets `changed: false`, as a save in the tools sheet does, or a re-allowed tool kept its
+  "changed" badge for good.
+- **Auto mode still asks before an MCP tool's first use.** That is the rule under "MCP
+  servers", unchanged: an MCP result is untrusted input, and a write tool it can trigger
+  unasked needs someone to have said so. What changed is that the prompt now says why it is
+  there and makes "Allow always" the filled button, so one tap per tool ends it.
+- **`ToolPolicy.grantedFrom: "prompt"`** marks an allow that came from a prompt. The tools
+  sheet's note is shown only for those: GitHub's read-only tools start allowed
+  (`catalogDefaultPolicy`), and a note on every `allow` told people they had allowed twenty
+  tools they had never touched. A save in the sheet or a revocation clears it.
+- **An older server sends neither field and ignores `always`**, so the bar offers no standing
+  grant against one. Chat's dialog still writes its grant over REST, so in chat "Allow always"
+  takes effect from the next run, not the rest of this one.
+- **The bar dismisses a phone's keyboard when it appears.** With the keyboard up there are
+  about a hundred points between the header and the composer, and the bar's buttons were cut
+  off below it once it carried a note. Native only: on the web it would take focus from
+  someone typing ahead. A run that never asks leaves the keyboard up, and XCUITest does not
+  report the reply above it, so the spec checks those runs from the server
+  (`runsWithoutAsking`).
+- **`McpToolsSheet` gives its list a height up front on native.** The sheet is placed from the
+  height it has when it opens, and it opens on a spinner, so on both phones it showed the
+  first tool's name and nothing to scroll: the place this feature sends people to take a grant
+  back. Found by the native lanes; web keeps its `max-h` class, which works.
+- **Not fixed here:** tapping a thread in the agent's list clears a waiting prompt until the
+  socket reconnects (`selectRun` resets run-level state, and a conversation is subscribed once
+  per socket). `agent-allow-always.spec.ts` avoids `selectThread` for that reason.
 
 ### Sub-agents
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Platform, useWindowDimensions, View } from 'react-native';
 import {
   Actionsheet,
   ActionsheetBackdrop,
@@ -32,7 +33,10 @@ interface McpToolsSheetProps {
 }
 
 /** Discovered-tool list with per-tool policy controls. Fetches on open via
- * test-connection so the listing is always live, not a stale snapshot. */
+ * test-connection so the listing is always live, not a stale snapshot.
+ *
+ * It is also where "Allow always" on an approval prompt (#266) is taken back:
+ * that stores `approval: "allow"` here, and the row says so. */
 export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetProps) {
   const [tools, setTools] = useState<McpDiscoveredTool[]>([]);
   const [loading, setLoading] = useState(false);
@@ -72,6 +76,14 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
     [server, update, showToast],
   );
 
+  // On a phone the sheet is placed from the height it has when it opens, and
+  // it opens on a spinner: the tool list then arrived below the screen's edge,
+  // leaving a sliver showing the first tool's name and nothing to scroll. So
+  // the list gets its height up front there (the ReviewSheet lesson). The web
+  // keeps the class, which works.
+  const { height: windowHeight } = useWindowDimensions();
+  const listStyle = Platform.OS === 'web' ? undefined : { height: Math.round(windowHeight * 0.7), width: '100%' as const };
+
   return (
     <Actionsheet isOpen={!!server} onClose={onClose}>
       <ActionsheetBackdrop />
@@ -79,6 +91,7 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
         <ActionsheetDragIndicatorWrapper>
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
+        <View style={listStyle}>
         <ActionsheetScrollView>
           <VStack space="sm" className="w-full p-3">
             <Text className="font-semibold text-foreground">{server?.name} — Tools</Text>
@@ -173,11 +186,20 @@ export function McpToolsSheet({ server, onClose, test, update }: McpToolsSheetPr
                     Read-only allows use in planning mode. You assert this — the server's own claims are never
                     trusted.
                   </Text>
+                  {tool.policy.approval === 'allow' && tool.policy.grantedFrom === 'prompt' && (
+                    // An allow nobody set on this screen (#266). Said only for
+                    // one that came from a prompt: GitHub's read-only tools
+                    // start allowed, and nobody did anything to cause that.
+                    <Text testID={`mcp.toolTrustNote.${tool.name}`} size="2xs" className="text-muted-foreground">
+                      Allowed with “Allow always” when a run asked to use it. Tap “Ask first” to take that back.
+                    </Text>
+                  )}
                 </VStack>
               ))
             )}
           </VStack>
         </ActionsheetScrollView>
+        </View>
       </ActionsheetContent>
     </Actionsheet>
   );

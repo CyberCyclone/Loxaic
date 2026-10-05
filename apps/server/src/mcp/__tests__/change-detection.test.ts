@@ -74,4 +74,17 @@ describe("mcp change detection", () => {
     );
     expect(policyFor(back.toolPolicies, "a").missing).toBe(false);
   });
+
+  it("forgets that an allow came from a prompt when it revokes it", () => {
+    const before = reconcileTools({ toolPolicies: {}, knownTools: {} }, [tool("a")]);
+    const granted = {
+      toolPolicies: { a: { enabled: true, approval: "allow" as const, readOnly: false, grantedFrom: "prompt" as const } },
+      knownTools: before.knownTools,
+    };
+    const kept = reconcileTools(granted, [tool("a")]);
+    expect(policyFor(kept.toolPolicies, "a").grantedFrom).toBe("prompt");
+    const after = reconcileTools(granted, [tool("a", "now does something else")]);
+    expect(policyFor(after.toolPolicies, "a").approval).toBe("ask");
+    expect(policyFor(after.toolPolicies, "a").grantedFrom).toBeUndefined();
+  });
 });

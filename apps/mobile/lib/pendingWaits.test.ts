@@ -39,6 +39,12 @@ describe('toPending*', () => {
   it('keeps an older server\'s approval exactly as it was', () => {
     expect(toPendingApproval({ call_id: 'c', tool: 'bash', args: {} }, 0)).toEqual({ callId: 'c', tool: 'bash', args: {} });
   });
+
+  it('carries the asking run\'s mode and whose grant it would be', () => {
+    expect(
+      toPendingApproval({ call_id: 'c', tool: 'bash', args: {}, mode: 'auto', granter_user_id: 'u1' }, 0),
+    ).toEqual({ callId: 'c', tool: 'bash', args: {}, mode: 'auto', granterUserId: 'u1' });
+  });
 });
 
 describe('which run an approval answer names', () => {
