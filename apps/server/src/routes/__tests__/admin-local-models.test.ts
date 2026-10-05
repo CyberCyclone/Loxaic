@@ -282,4 +282,37 @@ describe("admin local models", () => {
     expect(res.statusCode).toBe(200);
     await expect(resolveModelRef(ready)).rejects.toMatchObject({ code: "local_model_unavailable" });
   });
+
+  it("has no version to choose where it does not run llama.cpp itself", async () => {
+    // Attached: the version is the sidecar's image, which the operator sets
+    // in Compose. Every picker route says so rather than pretending.
+    const calls = [
+      app.inject({ method: "GET", url: "/v1/admin/local-models/runtime/versions" }),
+      app.inject({ method: "POST", url: "/v1/admin/local-models/runtime/versions/download", payload: { tag: "b1" } }),
+      app.inject({ method: "DELETE", url: "/v1/admin/local-models/runtime/versions?tag=b1" }),
+      app.inject({ method: "POST", url: "/v1/admin/local-models/runtime/custom", payload: { name: "x", url: "https://example.com/x.tar.gz", backend: "vulkan" } }),
+      app.inject({ method: "POST", url: "/v1/admin/local-models/runtime/custom/000000000000/download" }),
+      app.inject({ method: "DELETE", url: "/v1/admin/local-models/runtime/custom/000000000000" }),
+      app.inject({ method: "POST", url: "/v1/admin/local-models/runtime/select", payload: { kind: "bundled" } }),
+      app.inject({ method: "POST", url: "/v1/admin/local-models/runtime/revert" }),
+    ];
+    for (const res of await Promise.all(calls)) {
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json<{ error: string }>().error).toMatch(/container's image/);
+    }
+    const view = (await app.inject({ method: "GET", url: "/v1/admin/local-models" })).json<{ runtime: { version: { kind: string; canRevert: boolean } } }>();
+    expect(view.runtime.version).toMatchObject({ kind: "external", canRevert: false });
+
+    // And they are admin-only like every other verb here.
+    const saved = currentUser.id;
+    currentUser.id = "plain-user";
+    try {
+      const res = await app.inject({ method: "GET", url: "/v1/admin/local-models/runtime/versions" });
+      expect(res.statusCode).toBe(403);
+      const add = await app.inject({ method: "POST", url: "/v1/admin/local-models/runtime/custom", payload: {} });
+      expect(add.statusCode).toBe(403);
+    } finally {
+      currentUser.id = saved;
+    }
+  });
 });

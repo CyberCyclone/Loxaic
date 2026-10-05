@@ -29,14 +29,29 @@ import {
 import {
   anyRuntimeInstalled,
   binOverride,
-  installedRuntime,
-  installRuntime,
   pruneRuntimes,
+  recordRuntimeVersion,
   RUNTIME_MANIFEST,
   type InstalledRuntime,
   type InstallProgress,
 } from "./runtime.ts";
-import { getLlamaMode, getLocalModelsSettings, type LlamaBackend, type LlamaMode } from "./settings.ts";
+import {
+  customFlavour,
+  findCustomBuild,
+  installedForSelection,
+  installSelection,
+  olderTag,
+  versionDownloads,
+  type VersionDownload,
+} from "./runtime-versions.ts";
+import {
+  getLlamaMode,
+  getLocalModelsSettings,
+  getRuntimeSelection,
+  type LlamaBackend,
+  type LlamaMode,
+  type RuntimeSelection,
+} from "./settings.ts";
 
 /**
  * The llama.cpp router the built-in provider talks to.
@@ -69,8 +84,13 @@ export interface RuntimeView {
   /** Why the state is what it is, in a sentence an admin can act on. */
   reason: string | null;
   installProgress: InstallProgress | null;
-  /** The pinned upstream build, e.g. `b11149`. */
+  /** The build this host runs, or is set to run: a release tag such as
+   * `b11149`, or a third-party build's name. */
   tag: string;
+  /** Which llama.cpp was chosen, and how it relates to the bundled one. */
+  version: RuntimeVersionView;
+  /** Versions being downloaded from the picker, and downloads that failed. */
+  versionDownloads: VersionDownload[];
   backend: LlamaBackend;
   /** What the backend resolved to on this machine, or null when nothing fits. */
   flavour: BuildFlavour | null;
@@ -92,6 +112,29 @@ export interface RuntimeView {
   restart: RestartView | null;
   /** This host's RAM, for settings that put part of a model there. */
   hostMemory: { totalBytes: number; freeBytes: number };
+}
+
+export interface RuntimeVersionView {
+  /** `external` in attach mode: the version is the sidecar's image, which
+   * this server neither chose nor can read. */
+  kind: RuntimeSelection["kind"] | "external";
+  /** The release tag, for a bundled or official build. */
+  tag: string | null;
+  /** A third-party build's name. */
+  name: string | null;
+  /** What the running binary's `--version` printed, when it has been asked. */
+  reported: string | null;
+  /** The release this version of Loxaic pins and was tested with. */
+  bundledTag: string;
+  /** An official release was chosen and Loxaic's own is newer than it. */
+  bundledNewer: boolean;
+  /** Something other than the bundled build is chosen, and the admin may
+   * switch back. What the card offers when that build will not start. */
+  canRevert: boolean;
+  /** `LLAMA_RUNTIME_TAG` decides the version. */
+  envPinned: boolean;
+  /** Third-party builds may be added (not `LLAMA_CUSTOM_RUNTIMES=off`). */
+  customAllowed: boolean;
 }
 
 export type RestartPhase = "stopping" | "starting" | "loading-pinned";
@@ -481,8 +524,21 @@ function endDeferredReload(): void {
 function presetGlobals(): PresetGlobals {
   return {
     devices: st.activeDevices === "none" ? "none" : st.activeDevices.length > 0 ? st.activeDevices : null,
-    placementLog: getLlamaMode() === "managed",
+    placementLog: getLlamaMode() === "managed" && verifiedLogs(),
   };
+}
+
+/**
+ * Whether the build being run is the one whose log was checked. Placement
+ * needs `log-verbosity = 4`, and at that level only the bundled release is
+ * known to print no prompt text (AGENTS.md, "Host model state"). Another
+ * release or a fork may print a request's body at a level we would be asking
+ * for, straight into `router.log` — so a chosen build runs at llama.cpp's
+ * default verbosity and shows no placement detail.
+ */
+function verifiedLogs(): boolean {
+  const { selected } = getRuntimeSelection();
+  return selected.kind === "bundled" || (selected.kind === "official" && selected.tag === RUNTIME_MANIFEST.tag);
 }
 
 /** How busy the built-in provider is. Imported lazily: the scheduler reaches
@@ -684,14 +740,67 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * What a build says its version is, or why it could not be run at all.
+ *
+ * Asked once per installed build, before anything else is asked of it: a
+ * binary for another architecture, or one missing a library, fails here with
+ * the system's own words. `--list-devices` swallows that and reports an empty
+ * list, which reads as "no GPU" — the wrong problem to send an admin after.
+ * llama.cpp prints the version while parsing arguments, before any backend is
+ * loaded, so this costs a process start.
+ */
+function reportedVersion(bin: string): Promise<{ version: string | null; failure: string | null }> {
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        bin,
+        ["--version"],
+        { timeout: 5000, windowsHide: true, env: childEnv(bin, "unused") },
+        (err, stdout, stderr) => {
+          const out = `${stdout}\n${stderr}`;
+          const m = /^version:\s*(.+)$/m.exec(out);
+          if (m) {
+            resolve({ version: m[1].trim().slice(0, 80), failure: null });
+            return;
+          }
+          if (!err) {
+            resolve({ version: null, failure: null });
+            return;
+          }
+          const said = stderr.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+          resolve({ version: null, failure: (said ?? err.message).slice(0, 300) });
+        },
+      );
+    } catch (err) {
+      // A file that is not a program at all (ENOEXEC) is thrown by the spawn
+      // itself rather than handed to the callback.
+      resolve({ version: null, failure: notRunnable(err) });
+    }
+  });
+}
+
+/** Why the system would not start a binary, without the path it lives at. */
+function notRunnable(err: unknown): string {
+  const code = (err as { code?: string }).code;
+  if (code === "ENOEXEC") return "it is not a program this system can run (it may be built for another kind of machine).";
+  if (code === "EACCES") return "the system refused to run it (permission denied).";
+  return code ? `the system could not start it (${code}).` : "the system could not start it.";
+}
+
 function listDevices(bin: string): Promise<RuntimeDevice[]> {
   return new Promise((resolve) => {
-    execFile(
-      bin,
-      ["--list-devices"],
-      { timeout: 30_000, windowsHide: true, env: childEnv(bin, "unused") },
-      (_err, stdout, stderr) => { resolve(parseDeviceList(`${stdout}\n${stderr}`)); },
-    );
+    try {
+      execFile(
+        bin,
+        ["--list-devices"],
+        { timeout: 30_000, windowsHide: true, env: childEnv(bin, "unused") },
+        (_err, stdout, stderr) => { resolve(parseDeviceList(`${stdout}\n${stderr}`)); },
+      );
+    } catch {
+      // Not a program at all: nothing to list. `reportedVersion` is what says so.
+      resolve([]);
+    }
   });
 }
 
@@ -864,6 +973,10 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   child.stdout.setEncoding("utf8").on("data", (c: string) => { recordLog(c, "stdout"); });
   child.stderr.setEncoding("utf8").on("data", (c: string) => { recordLog(c, "stderr"); });
   const startedAt = Date.now();
+  // Whether this start is of a build an admin chose over the bundled one,
+  // and whether it ever answered: see the exit handler.
+  const chosen = getRuntimeSelection().selected.kind !== "bundled";
+  let cameUp = false;
   st.child = child;
   st.port = port;
   st.apiKey = apiKey;
@@ -880,6 +993,18 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
     if (st.stopping) return;
     const why = explainRouterExit(logTail.slice(-40), code, signal);
     console.error(`[llama] router stopped: ${why}`);
+    if (chosen && !cameUp) {
+      // A build the admin chose that never answered is not retried. The
+      // retries below are for a router that was working and stopped; this one
+      // most likely refuses something Loxaic asks of it (a setting it does
+      // not know ends llama.cpp at boot), which trying again cannot change.
+      // It stays failed, with the reason, until the admin picks another
+      // version or switches back to the bundled one — never by itself.
+      restart = null;
+      st.state = "error";
+      st.reason = why;
+      return;
+    }
     fastFails = Date.now() - startedAt < FAST_FAIL_MS ? fastFails + 1 : 1;
     if (fastFails >= MAX_FAST_FAILS) {
       restart = null;
@@ -907,6 +1032,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
   });
 
   if (await waitForHealth(port, child)) {
+    cameUp = true;
     if (st.child === child) {
       st.state = "running";
       st.reason = null;
@@ -916,7 +1042,7 @@ async function spawnRouter(runtime: InstalledRuntime): Promise<void> {
         if (restart === pass) restart = null;
       });
       // Only now is it safe to delete older builds: this one demonstrably runs.
-      if (!binOverride()) void pruneRuntimes(runtime).catch(() => undefined);
+      if (runtime.key !== "override") void pruneRuntimes(runtime).catch(() => undefined);
     }
   } else if (st.child === child && child.exitCode === null) {
     // Up but never healthy: treat as a failure the exit handler reports.
@@ -1013,10 +1139,24 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   }
   const settings = getLocalModelsSettings();
   st.hardware ??= await detectHardware();
-  const override = binOverride();
+  const { selected } = getRuntimeSelection();
 
-  let flavour: BuildFlavour | null = resolveFlavour(settings.backend, st.hardware);
-  if (settings.backend === "cpu" && !settings.cpuAcknowledged) flavour = null;
+  let flavour: BuildFlavour | null;
+  if (selected.kind === "custom") {
+    // A third-party build runs on the backend it was made for, which the
+    // admin named when adding it. Choosing a CPU build was acknowledged then.
+    const build = findCustomBuild(selected.id);
+    if (!build) {
+      st.runtime = null;
+      st.state = "error";
+      st.reason = "The third-party llama.cpp build that was chosen is no longer in the list.";
+      return;
+    }
+    flavour = customFlavour(build.backend);
+  } else {
+    flavour = resolveFlavour(settings.backend, st.hardware);
+    if (settings.backend === "cpu" && !settings.cpuAcknowledged) flavour = null;
+  }
   st.flavour = flavour;
   if (flavour === null) {
     // Nothing runs, so nothing was listed: drop the previous run's devices,
@@ -1030,17 +1170,33 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
     return;
   }
 
+  // The test seam stands in for the bundled build only, so the same harness
+  // can install and run a chosen one.
+  const override = selected.kind === "bundled" ? binOverride() : null;
   let runtime: InstalledRuntime | null;
   if (override) {
-    runtime = { key: "override", tag: "override", flavour, dir: path.dirname(override), bin: override };
+    runtime = {
+      key: "override",
+      tag: RUNTIME_MANIFEST.tag,
+      flavour,
+      dir: path.dirname(override),
+      bin: override,
+      source: "bundled",
+      pinned: false,
+      sha256: null,
+      version: null,
+    };
   } else {
-    runtime = await installedRuntime(flavour);
+    runtime = await installedForSelection(selected, flavour);
     if (!runtime) {
+      // Not on disk for this backend: the first install, an upgrade of the
+      // bundled build, or a chosen release whose other backend is now wanted.
+      st.runtime = null;
       st.state = "installing";
       st.reason = null;
       st.installProgress = { doneBytes: 0, totalBytes: 0 };
       try {
-        runtime = await installRuntime(flavour, (p) => { st.installProgress = p; });
+        runtime = await installSelection(selected, flavour, (p) => { st.installProgress = p; });
       } catch (err) {
         st.state = "error";
         st.reason = err instanceof Error ? err.message : String(err);
@@ -1048,6 +1204,20 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
       } finally {
         st.installProgress = null;
       }
+    }
+    if (runtime.version === undefined) {
+      const { version, failure } = await reportedVersion(runtime.bin);
+      if (failure !== null && selected.kind !== "bundled") {
+        // Not recorded: the next start asks again, after whatever was missing
+        // has been installed.
+        st.runtime = null;
+        st.devices = [];
+        st.activeDevices = [];
+        st.state = "error";
+        st.reason = `This build of llama.cpp could not be run on this machine: ${failure}`;
+        return;
+      }
+      await recordRuntimeVersion(runtime, version);
     }
   }
   st.runtime = runtime;
@@ -1111,7 +1281,7 @@ export async function bootLocalRuntime(log: (m: string) => void): Promise<void> 
   if (process.env.MOCK_INFERENCE === "true" && !binOverride()) return;
   if (binOverride() || (await anyRuntimeInstalled())) {
     await ensureRuntime();
-    if (st.state === "running") log(`llama.cpp ${RUNTIME_MANIFEST.tag} (${String(st.flavour)}) is running`);
+    if (st.state === "running") log(`llama.cpp ${st.runtime?.tag ?? RUNTIME_MANIFEST.tag} (${String(st.flavour)}) is running`);
     else if (st.reason) log(`llama.cpp is not running: ${st.reason}`);
   }
 }
@@ -1172,12 +1342,31 @@ export function runtimeView(): RuntimeView {
         "The llama.cpp container cannot see a GPU, so models run on the CPU. Start it with the Compose override for your GPU (docker-compose.vulkan.yml, .cuda.yml or .rocm.yml).";
     }
   }
+  const chosen = getRuntimeSelection();
+  const sel = chosen.selected;
+  const custom = sel.kind === "custom" ? findCustomBuild(sel.id) : null;
+  const tag = sel.kind === "official" ? sel.tag : sel.kind === "bundled" ? RUNTIME_MANIFEST.tag : null;
+  const version: RuntimeVersionView = {
+    kind: mode === "attach" ? "external" : sel.kind,
+    tag: mode === "attach" ? null : tag,
+    name: custom?.name ?? null,
+    reported: mode === "managed" ? (st.runtime?.version ?? null) : null,
+    bundledTag: RUNTIME_MANIFEST.tag,
+    bundledNewer: mode === "managed" && sel.kind === "official" && olderTag(sel.tag, RUNTIME_MANIFEST.tag),
+    canRevert: mode === "managed" && sel.kind !== "bundled" && !chosen.envPinned,
+    envPinned: chosen.envPinned,
+    customAllowed: chosen.customAllowed,
+  };
   return {
     mode,
     state,
     reason: reason ?? lastReloadError,
     installProgress: st.installProgress,
-    tag: RUNTIME_MANIFEST.tag,
+    // Kept for clients from before `version`: what the card names after
+    // "llama.cpp".
+    tag: tag ?? custom?.name ?? RUNTIME_MANIFEST.tag,
+    version,
+    versionDownloads: mode === "managed" ? versionDownloads() : [],
     backend: settings.backend,
     flavour: st.flavour,
     hardware: st.hardware,
@@ -1226,6 +1415,23 @@ export async function modelBusy(id: string): Promise<boolean> {
   const status = (await routerModelStatuses()).get(id)?.value;
   if (status !== "loaded" && status !== "loading") return false;
   return (await builtinRunsActive()) > 0;
+}
+
+/**
+ * The flavour an official build would run as on this machine: the admin's
+ * backend against the hardware. Not `st.flavour`, which while a third-party
+ * build is chosen is that build's own.
+ */
+export async function officialFlavour(): Promise<BuildFlavour | null> {
+  st.hardware ??= await detectHardware();
+  const settings = getLocalModelsSettings();
+  if (settings.backend === "cpu" && !settings.cpuAcknowledged) return null;
+  return resolveFlavour(settings.backend, st.hardware);
+}
+
+/** The build the router is running, or was last started with. */
+export function runningRuntime(): InstalledRuntime | null {
+  return st.child ? st.runtime : null;
 }
 
 /** Hardware detection runs once per process; this lets the admin screen show
