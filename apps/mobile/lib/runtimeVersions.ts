@@ -207,7 +207,9 @@ export function shortHash(sha256: string | null | undefined): string | null {
 export function customBuildProblem(form: { name: string; url: string; sha256: string }): string | null {
   if (!form.name.trim()) return 'Give the build a name.';
   if (form.name.trim().length > 60) return 'The name can be at most 60 characters.';
-  if (!/^https:\/\/\S+$/i.test(form.url.trim())) return 'The download address must start with https://';
+  // The server decides what it will fetch from (https; it says so when it
+  // refuses). This only catches what is plainly not a link.
+  if (!/^https?:\/\/\S+$/i.test(form.url.trim())) return 'Enter the https:// link to the build\'s archive.';
   const sha = form.sha256.trim().toLowerCase().replace(/^sha256:/, '');
   if (sha && !/^[0-9a-f]{64}$/.test(sha)) return 'The SHA-256 must be 64 hexadecimal characters, or left empty.';
   return null;

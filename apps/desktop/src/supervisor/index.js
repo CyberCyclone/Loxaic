@@ -25,12 +25,19 @@ const PASSTHROUGH_ENV = [
   "LLAMA_API_KEY",
   "LLAMA_BACKEND",
   "LLAMA_MODELS_MAX",
+  // Which llama.cpp runs, and whether third-party builds may be added (#270).
+  // Absent from this list, an operator's `LLAMA_CUSTOM_RUNTIMES=off` would be
+  // dropped and the feature would be on.
+  "LLAMA_RUNTIME_TAG",
+  "LLAMA_CUSTOM_RUNTIMES",
   "HF_TOKEN",
   // Test-only seams (see apps/server/src/llama): the Electron e2e runs a fake
   // llama.cpp on machines with no GPU. Each is inert without the others.
   "LOXAIC_LLAMA_SERVER_BIN",
   "LOXAIC_FAKE_HARDWARE",
   "HF_ENDPOINT",
+  "LLAMA_RELEASES_API_URL",
+  "LLAMA_RELEASES_URL",
   "CONTAINER_SOCKET",
   "SANDBOX_MODE",
   "SANDBOX_HOST_ROOT",

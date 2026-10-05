@@ -360,6 +360,38 @@ difference: the build is **pinned** (`apps/server/src/llama/runtime-manifest.ts`
 rather than "whatever is newest", because it is a binary the server executes.
 Updating llama.cpp is a reviewed change to that file.
 
+### Running another version of llama.cpp
+
+**Change version** on the runtime card lists every official llama.cpp release,
+newest first, with pre-releases labelled. Download one, then switch to it:
+switching restarts the runtime and unloads every model. A chosen version stays
+until you change it, across Loxaic updates; only the bundled version follows
+Loxaic's own pin.
+
+Loxaic is tested with the bundled version. Another one may not start, may ignore
+some model settings, and shows no memory placement detail. If it will not
+start, the card says why and offers **Switch back to the bundled version**;
+nothing falls back on its own.
+
+- **Official releases** are checked against the SHA-256 GitHub publishes for
+  the file. A release with no published checksum is listed but cannot be
+  installed.
+- **Third-party builds** (a fork, or your own build) are added by a direct
+  https link to an archive containing `llama-server`: `.tar.gz` or `.tar.xz`,
+  and `.zip` on macOS and Windows. You may give its SHA-256; a download that
+  does not match is discarded. Either way the hash of what was downloaded is
+  shown. The server runs whatever the link serves, so add only builds from a
+  source you trust. A Windows CUDA build must include its CUDA runtime DLLs.
+
+| Variable | Effect |
+|---|---|
+| `LLAMA_RUNTIME_TAG` | `bundled` or a release tag such as `b11342`. Pins the version; the screen shows it read-only. |
+| `LLAMA_CUSTOM_RUNTIMES` | `off` removes third-party builds: none can be added or run. |
+
+With Docker Compose the server does not run llama.cpp itself, so there is no
+version to choose on the screen: the version is the `inference` service's image
+tag in the Compose file.
+
 | Machine | Build chosen automatically |
 |---|---|
 | **macOS (Apple Silicon)** | Metal |

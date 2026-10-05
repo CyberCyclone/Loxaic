@@ -261,7 +261,7 @@ describe('a third-party build form', () => {
   it('says what is wrong otherwise', () => {
     expect(customBuildProblem({ ...ok, name: '  ' })).toMatch(/name/);
     expect(customBuildProblem({ ...ok, name: 'x'.repeat(61) })).toMatch(/60/);
-    expect(customBuildProblem({ ...ok, url: 'http://example.com/llama.tar.gz' })).toMatch(/https/);
+    expect(customBuildProblem({ ...ok, url: 'ftp://example.com/llama.tar.gz' })).toMatch(/https/);
     expect(customBuildProblem({ ...ok, url: 'example.com' })).toMatch(/https/);
     expect(customBuildProblem({ ...ok, sha256: 'abc' })).toMatch(/SHA-256/);
   });
