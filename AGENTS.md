@@ -2307,7 +2307,11 @@ replies.
   child waits on an approval. **Only the cold start proves the snapshot carries the approval**:
   after a lock or a switch-away the bar is still held in React state, so those two cases passed
   with the fold removed. An elapsed label is parsed (`elapsedSeconds`) and compared with the
-  stored start; "contains an s" passed for a counter stuck at 0.0s. The mock's trigger is "sub-agent"/"delegate",
+  stored start; "contains an s" passed for a counter stuck at 0.0s.
+  The admin screen is two scrolling panes side by side, so on a phone `scrollTo`'s drag down the
+  middle lands on the line between them: pass `across` (0.75) to drag the detail pane. Its
+  transcript is asserted through `admin.transcript.newest`, a `Text`, since XCUITest does not see
+  the container. The mock's trigger is "sub-agent"/"delegate",
   and **the text after the first colon is the child's task**, so one prompt chooses what the
   child does through the ordinary triggers. A scenario's `match` is tested against the child's
   prompt too; keep child tasks clear of every scenario regex. A card's testID carries the call

@@ -444,7 +444,7 @@ export default function AdminScreen() {
                           viewingSubAgent?.conversation_id === s.conversation_id ? 'border-primary bg-accent' : 'border-border bg-card'
                         }`}
                       >
-                        <Text size="xs" style={TRUNCATE_TEXT} className="text-foreground">
+                        <Text testID={`admin.subagent.${s.conversation_id}.name`} size="xs" style={TRUNCATE_TEXT} className="text-foreground">
                           {s.description}
                         </Text>
                         <Text size="2xs" className="text-muted-foreground">
@@ -458,8 +458,11 @@ export default function AdminScreen() {
               )}
 
               {viewingSubAgent ? (
-                <HStack space="sm" className="items-center">
-                  <Text testID="admin.transcript.subagent" size="xs" style={TRUNCATE_TEXT} className="min-w-0 flex-1 text-muted-foreground">
+                // Stacked, not side by side: on a phone this pane is half the
+                // screen, and beside the button the label was squeezed to a
+                // column three letters wide.
+                <VStack space="xs">
+                  <Text testID="admin.transcript.subagent" size="xs" className="text-muted-foreground">
                     Sub-agent transcript: {viewingSubAgent.description}
                   </Text>
                   <Button
@@ -468,12 +471,13 @@ export default function AdminScreen() {
                     size="sm"
                     isDisabled={!reachable}
                     onPress={() => { void showTranscript(selected.id, null); }}
+                    className="self-start"
                   >
                     <ButtonText>Back to conversation</ButtonText>
                   </Button>
-                </HStack>
+                </VStack>
               ) : (
-                <Text size="xs" className="text-muted-foreground">
+                <Text testID="admin.transcript.heading" size="xs" className="text-muted-foreground">
                   Transcript
                 </Text>
               )}

@@ -11,7 +11,7 @@
 import { browser } from '@wdio/globals';
 import { provisionAdmin, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { platform, scrollTo, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { expectTextAbsent, platform, scrollTo, tap, waitForAbsent, waitForFreshText } from '../helpers/selectors.ts';
 import {
   MOCK_SUBAGENT_NAME,
   goToSurface,
@@ -22,6 +22,13 @@ import {
   waitForRunDone,
   waitForSubAgents,
 } from '../helpers/app.ts';
+
+/** Something only the parent's own transcript says. */
+const PARENT_ONLY = '[Mock] Done. The tool returned';
+
+/** Scrolls the detail pane, the right-hand half of the screen on a phone: a
+ * drag down the middle lands on the line between it and the list. */
+const inDetail = (id: string) => scrollTo(id, 20_000, 0.75);
 
 describe('Admin: a conversation’s sub-agents', () => {
   const user = uniqueCreds();
@@ -53,23 +60,28 @@ describe('Admin: a conversation’s sub-agents', () => {
     await signIn(admin);
     await goToSurface('admin');
     await tap(`admin.conversation.${convId}`);
-    // The conversation's own transcript first, as always…
-    await waitForTextIn('admin.transcript', 'Use a sub-agent: say the audit trail works');
-    // …and now its sub-agents, which nothing else on this screen lists.
-    await scrollTo(`admin.subagent.${childId}`);
-    await waitForTextIn(`admin.subagent.${childId}`, MOCK_SUBAGENT_NAME);
+    // The conversation's own transcript first, as always: it ends in the
+    // parent's own last words.
+    await inDetail('admin.transcript.newest');
+    await waitForFreshText('admin.transcript.newest', PARENT_ONLY);
+    // …and its sub-agents, which nothing else on this screen lists.
+    await inDetail(`admin.subagent.${childId}.name`);
+    await waitForFreshText(`admin.subagent.${childId}.name`, MOCK_SUBAGENT_NAME);
     await shot('admin-subagents-listed');
 
-    await tap(`admin.subagent.${childId}`);
-    await waitForTextIn('admin.transcript.subagent', MOCK_SUBAGENT_NAME);
-    // The child's own messages: the task it was handed and what it replied.
-    await waitForTextIn('admin.transcript', '[Mock] Echo: say the audit trail works', 20_000);
+    await tap(`admin.subagent.${childId}.name`);
+    await waitForFreshText('admin.transcript.subagent', MOCK_SUBAGENT_NAME);
+    // The child's own messages, in place of the conversation's: it ends in
+    // the child's reply, and the parent's words are nowhere on the screen.
+    await inDetail('admin.transcript.newest');
+    await waitForFreshText('admin.transcript.newest', '[Mock] Echo: say the audit trail works');
+    await expectTextAbsent(PARENT_ONLY);
     await shot('admin-subagent-transcript');
 
-    await scrollTo('admin.transcript.backToConversation');
+    await inDetail('admin.transcript.backToConversation');
     await tap('admin.transcript.backToConversation');
     await waitForAbsent('admin.transcript.subagent');
-    await waitForTextIn('admin.transcript', 'Use a sub-agent: say the audit trail works', 20_000);
-    await waitForVisible(`admin.subagent.${childId}`);
+    await inDetail('admin.transcript.newest');
+    await waitForFreshText('admin.transcript.newest', PARENT_ONLY);
   });
 });
