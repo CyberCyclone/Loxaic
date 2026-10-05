@@ -34,6 +34,7 @@ import {
   canDeleteRelease,
   customAction,
   customBuildProblem,
+  prereleaseLabelling,
   downloadForCustom,
   downloadForTag,
   releaseAction,
@@ -208,6 +209,7 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
   );
   const rows = view ? releaseRows(view, found ?? loaded, found !== null) : [];
   const stale = view ? staleNote(view.official.stale) : null;
+  const prerelease = prereleaseLabelling(rows);
   const restarting = Boolean(runtime.restart);
   const locked = !reachable || busy !== null || restarting;
 
@@ -349,7 +351,7 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
               <Text size="sm" className="text-foreground">
                 {r.tag}
               </Text>
-              {r.prerelease && <Pill label="Pre-release" tone="warning" testID={`${base}.prerelease`} />}
+              {r.prerelease && prerelease.perRow && <Pill label="Pre-release" tone="warning" testID={`${base}.prerelease`} />}
               {r.downloaded && !r.inUse && <Pill label="Downloaded" tone="success" testID={`${base}.downloaded`} />}
             </HStack>
             <Text size="2xs" className="text-muted-foreground">
@@ -457,7 +459,11 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody scrollEnabled keyboardShouldPersistTaps="handled" className="mb-0 mt-3">
+        {/* Dragging the list puts the keyboard away: on a phone it covers the
+            lower half of this sheet, the third-party form's later fields and
+            its button included, and iOS's URL keyboard has no key that
+            closes it. */}
+        <ModalBody scrollEnabled keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" className="mb-0 mt-3">
           <VStack space="md">
             <HStack testID="localModels.versions.caveat" space="xs" className="items-start rounded-md bg-warning/15 p-2">
               <Icon as={TriangleAlert} size="xs" className="mt-0.5 text-warning" />
@@ -562,6 +568,11 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
                   {stale && (
                     <Text testID="localModels.versions.stale" size="xs" className="text-muted-foreground">
                       {stale}
+                    </Text>
+                  )}
+                  {prerelease.note && (
+                    <Text testID="localModels.versions.allPrerelease" size="xs" className="text-muted-foreground">
+                      {prerelease.note}
                     </Text>
                   )}
                   {rows.map(releaseRow)}

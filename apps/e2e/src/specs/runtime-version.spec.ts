@@ -258,7 +258,9 @@ describe('choosing the llama.cpp version', () => {
     await openPicker();
     await scrollTo('localModels.versions.custom.name');
     await typeInto('localModels.versions.custom.name', 'E2E Wrong Hash');
+    await scrollTo('localModels.versions.custom.url');
     await typeInto('localModels.versions.custom.url', mock.fork.url);
+    await scrollTo('localModels.versions.custom.sha256');
     await typeInto('localModels.versions.custom.sha256', '0'.repeat(64));
     if (platform() === 'android') await browser.hideKeyboard().catch(() => undefined);
     await scrollTo('localModels.versions.custom.backend.vulkan');
@@ -285,7 +287,9 @@ describe('choosing the llama.cpp version', () => {
     await openPicker();
     await scrollTo('localModels.versions.custom.name');
     await typeInto('localModels.versions.custom.name', 'E2E Fork');
+    await scrollTo('localModels.versions.custom.url');
     await typeInto('localModels.versions.custom.url', mock.fork.url);
+    await scrollTo('localModels.versions.custom.sha256');
     await typeInto('localModels.versions.custom.sha256', mock.fork.sha256);
     if (platform() === 'android') await browser.hideKeyboard().catch(() => undefined);
     await scrollTo('localModels.versions.custom.backend.vulkan');

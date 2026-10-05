@@ -15,6 +15,7 @@ import {
   customAction,
   customBuildProblem,
   offersRevert,
+  prereleaseLabelling,
   releaseAction,
   releaseRows,
   shortHash,
@@ -225,6 +226,18 @@ describe('the release list', () => {
     const v = view({ official: { releases: [], hasMore: false, stale: null, unavailable: null, downloadedTags: ['b8000'] } });
     expect(releaseRows(v, [row()], true).map((r) => r.tag)).toEqual(['b9001']);
     expect(releaseRows(v, [], true)).toEqual([]);
+  });
+
+  it('labels pre-releases per row only when that tells some rows from others', () => {
+    expect(prereleaseLabelling([row(), row()])).toEqual({ perRow: false, note: null });
+    expect(prereleaseLabelling([row({ prerelease: true }), row()])).toEqual({ perRow: true, note: null });
+    // llama.cpp flags every build: said once, not on every row.
+    const all = prereleaseLabelling([row({ prerelease: true }), row({ prerelease: true })]);
+    expect(all.perRow).toBe(false);
+    expect(all.note).toMatch(/every one of these builds marked as a pre-release/);
+    // One row found by its tag is labelled as itself.
+    expect(prereleaseLabelling([row({ prerelease: true })])).toEqual({ perRow: true, note: null });
+    expect(prereleaseLabelling([])).toEqual({ perRow: false, note: null });
   });
 
   it('says a list GitHub would not refresh may be out of date', () => {

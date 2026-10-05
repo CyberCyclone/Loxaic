@@ -159,6 +159,24 @@ export function releaseRows(view: RuntimeVersionsView, loaded: readonly RuntimeR
   return [...extra, ...rows];
 }
 
+/**
+ * Whether "Pre-release" is said per row or once for the list.
+ *
+ * GitHub's flag is the only thing that says a release is a preview, and
+ * llama.cpp sets it on every build it publishes (all thirty of the newest
+ * page, checked against the real list). A pill on every row marks nothing, so
+ * when every listed release carries the flag it is said once above the list;
+ * when only some do, those rows are the ones labelled.
+ */
+export function prereleaseLabelling(rows: readonly Pick<RuntimeReleaseRow, 'prerelease'>[]): { perRow: boolean; note: string | null } {
+  const flagged = rows.filter((r) => r.prerelease).length;
+  if (flagged === 0) return { perRow: false, note: null };
+  if (flagged === rows.length && rows.length > 1) {
+    return { perRow: false, note: 'llama.cpp publishes every one of these builds marked as a pre-release.' };
+  }
+  return { perRow: true, note: null };
+}
+
 /** What to say about a list GitHub would not refresh. */
 export function staleNote(stale: RuntimeVersionsView['official']['stale']): string | null {
   if (!stale) return null;

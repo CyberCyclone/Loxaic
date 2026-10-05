@@ -1757,6 +1757,26 @@ replies.
 - **Attach mode has no version to choose.** The version is the sidecar's image. Every picker
   route answers 409 saying so, `version.kind` is `external`, and the card shows the sentence in
   place of the button.
+- **Checked against the real GitHub** (2026-10-05, this Mac, Metal): the newest page listed 30
+  releases, all installable; b11402 downloaded, matched GitHub's digest, unpacked and answered
+  `--version` (`0.5.0-dev (build 11402, …)`). Not checked for real: a model answering on a
+  chosen build, Windows CUDA's `cudart` pairing, and Linux.
+- **llama.cpp marks every build it publishes as a pre-release** (30 of 30 on that page), and
+  GitHub's flag is the only signal there is. A pill on every row marks nothing, so when every
+  listed release carries the flag the picker says it once above the list
+  (`prereleaseLabelling`); when only some do, those rows are labelled.
+- **The switch confirmation is drawn under the row it is about.** At the top of the sheet it was
+  out of view for a row further down. A browser test passed regardless, since the element
+  exists; the Android lane could not find it, and a person on a phone would not have either.
+- **The picker's body dismisses the keyboard on drag** (`keyboardDismissMode="on-drag"`), like the
+  model settings sheet. On an iPhone the keyboard covered the third-party form's later fields and
+  its button, and iOS's URL keyboard has no key that closes it. Found by the iOS lane.
+- **A native lookup of a `Pressable` has no text.** The revert button's label carries its own
+  testID (`localModels.runtime.revert.label`); the spec asserts on that and taps the button.
+- **An emulator whose WebView updated itself hangs every request.** The Android lane sat on the
+  sign-in spinner: React Native's cookie handler loads WebView, and the app could not load the
+  package (`MissingWebViewPackageException` in logcat) although `dumpsys webviewupdate` listed it
+  as installed. `adb reboot` fixed it. Nothing about it points at the network.
 - **e2e** (`runtime-version.spec.ts`, `scripts/mock-llama-releases.ts`): each mock release is an
   archive whose `llama-server` is a wrapper around the fake router that says which release it is,
   so assertions read `runtime.version.reported`, not the label. One release sets
