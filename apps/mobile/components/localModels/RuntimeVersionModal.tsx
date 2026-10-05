@@ -145,7 +145,10 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
         setFound(next.official.releases);
       } else {
         setFound(null);
-        setPages((p) => (opts.page === 1 ? { 1: next.official.releases } : { ...p, [opts.page]: next.official.releases }));
+        // Page one is asked for again whenever something changes; the older
+        // pages already loaded stay, and take what is downloaded and in use
+        // from this newest answer (`releaseRows`).
+        setPages((p) => ({ ...p, [opts.page]: next.official.releases }));
         setHasMore(next.official.hasMore);
       }
     } catch (err) {
@@ -212,6 +215,9 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
     setBusy(key);
     try {
       await fn();
+      // Removing a version changes nothing the polled runtime carries, so
+      // nothing else would ask the list again.
+      void load({ page: 1, q: searched });
     } finally {
       setBusy(null);
     }
