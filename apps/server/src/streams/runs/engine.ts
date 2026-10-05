@@ -21,6 +21,7 @@ import {
   type TimeoutBasis,
   type TurnUsage,
   DEFAULT_THINKING_LEVEL,
+  MAX_SUBAGENTS_PER_MESSAGE,
   type ThinkingLevel,
 } from "@loxaic/types";
 import {
@@ -51,7 +52,17 @@ import {
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ToolName } from "@loxaic/agent";
-import { HANDOVER_TOOL_NAMES } from "@loxaic/agent";
+import { HANDOVER_TOOL_NAMES, SUBAGENT_TOOL_NAME } from "@loxaic/agent";
+import {
+  SUBAGENT_SYSTEM_ADDENDUM,
+  loadSubagentPolicy,
+  offeredSubagentModels,
+  offersModelChoice,
+  subagentModelFor,
+  tooManySubagentsText,
+  type SubagentModelPolicy,
+} from "./subagent-policy.ts";
+import type { SubagentCall, SubagentOutcome, SubagentParent } from "./subagentRun.ts";
 import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
@@ -458,8 +469,15 @@ export function assembleSystemPrompt(
   basePrompt: string | null,
   toolAddendum: string | null,
   hasDocuments: boolean,
+  /** Whether this run is offered the `subagent` tool. */
+  hasSubagents = false,
 ): string | null {
-  const parts = [basePrompt, toolAddendum, hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null].filter(
+  const parts = [
+    basePrompt,
+    toolAddendum,
+    hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null,
+    hasSubagents ? SUBAGENT_SYSTEM_ADDENDUM : null,
+  ].filter(
     (p): p is string => typeof p === "string" && p.length > 0,
   );
   return parts.length ? parts.join("\n\n") : null;
@@ -509,10 +527,32 @@ export async function runToolLoop(ctx: {
   /** How hard to think, from the send. Absent (an older client, a routine)
    * means `DEFAULT_THINKING_LEVEL`; ignored for a model that takes none. */
   thinkingLevel?: ThinkingLevel;
+  /**
+   * Offer the `subagent` tool, so this run can hand tasks to child runs
+   * (subagentRun.ts). The agent surface and routines set it; plain chat does
+   * not. `routine` is whether nobody is watching — which decides whether the
+   * model may choose a child's model (subagent-policy.ts).
+   */
+  subagents?: { routine: boolean };
+  /**
+   * Set when this run *is* a sub-agent. It changes what a run with no user of
+   * its own must not do:
+   * - its tools run in `parentConvId`'s sandbox, and its MCP servers follow
+   *   that conversation's kind and switches, not its own row's;
+   * - it is never offered the sub-agent tool (one level deep) or the plan and
+   *   questions tools, and a planning one is not nudged to hand over;
+   * - a step check-in is not asked: it wraps up, since there is nobody to ask
+   *   and its parent is parked waiting on it;
+   * - it leaves no request shape and starts no compaction or context
+   *   extension — it is one run long, and those are for the run after.
+   */
+  role?: { kind: "subagent"; parentConvId: string };
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
+  // Whose workspace the tools run in, and whose MCP choices apply.
+  const workspaceConvId = ctx.role?.parentConvId ?? convId;
 
   // Decided inside the loop, acted on outside it: startCompactRun takes the
   // per-conversation lock this run is still holding until `finally` releases
@@ -537,7 +577,30 @@ export async function runToolLoop(ctx: {
     // deliberately not folded in — it is deferred until the compaction
     // threshold is actually crossed, so most turns never pay for it.)
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
-    const toolset = await buildToolset(userId, { mode, conversationId: convId, surface: ctx.surface, allowlist });
+    // Decided once, like the toolset it shapes: which model a child may run
+    // on is part of the tool's schema, and so of the prompt's front.
+    let subagents: { policy: SubagentModelPolicy; offered: string[] | null; routine: boolean } | null = null;
+    if (ctx.subagents && !ctx.role) {
+      const policy = await loadSubagentPolicy(userId);
+      const routine = ctx.subagents.routine;
+      const offered = offersModelChoice(policy, routine)
+        ? await offeredSubagentModels({ conversationId: convId, userId, parentModel: model }).catch((err: unknown) => {
+            // Unable to say what may be chosen: offer no choice, and children
+            // run on this run's model.
+            console.warn(`could not read the sub-agent models of ${convId}: ${(err as Error).message}`);
+            return null;
+          })
+        : null;
+      subagents = { policy, offered, routine };
+    }
+    const toolset = await buildToolset(userId, {
+      mode,
+      conversationId: workspaceConvId,
+      surface: ctx.surface,
+      allowlist,
+      ...(subagents ? { subagents: { models: subagents.offered } } : {}),
+      ...(ctx.role ? { handover: false } : {}),
+    });
     const tools = toolset.openAiTools;
     // Fixed for the run, like the toolset: which source each schema came from,
     // so the context breakdown can say what each MCP server costs. Emit-only —
@@ -557,7 +620,11 @@ export async function runToolLoop(ctx: {
       (m) => m.role === "user" && countDocumentParts(m.content) > 0,
     );
     const basePrompt = typeof ctx.basePrompt === "function" ? await ctx.basePrompt() : ctx.basePrompt;
-    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments);
+    // Offered, not merely enabled: planning mode and a child run are the
+    // toolset's to decide, and the addendum explains a marker only a run with
+    // the tool can ever be handed.
+    const hasSubagents = tools.some((t) => t.function.name === SUBAGENT_TOOL_NAME);
+    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments, hasSubagents);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
@@ -570,7 +637,10 @@ export async function runToolLoop(ctx: {
     const thinkingInfo = await modelRunInfo(model).catch(() => null);
     const thinkingLevel = ctx.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
     const thinkingBody = thinkingFields(thinkingInfo?.thinking, thinkingLevel);
-    recordRequestShape(convId, { model, system: systemPrompt, tools, thinking: thinkingBody });
+    // Not for a sub-agent: nothing ever compacts its conversation, and its
+    // entry would only push a conversation someone is still in out of the
+    // bounded map.
+    if (!ctx.role) recordRequestShape(convId, { model, system: systemPrompt, tools, thinking: thinkingBody });
     // Recorded on the conversation for a run nobody sends: a compaction after
     // a restart has no request shape to copy the level from. Best-effort.
     await db
@@ -1026,7 +1096,9 @@ export async function runToolLoop(ctx: {
         // A planning turn that answered in prose is asked, once, to finish
         // with a plan or questions (#199). Never after "answer now" — that is
         // the user asking for exactly this prose.
-        if (mode === "planning" && !answerNow && !planNudged) {
+        // Nor for a sub-agent, which has nobody to plan for: its prose *is*
+        // its report.
+        if (mode === "planning" && !answerNow && !planNudged && !ctx.role) {
           planNudged = true;
           requireTool = true;
           producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
@@ -1122,7 +1194,29 @@ export async function runToolLoop(ctx: {
       // Set once a plan or questions have been handed over in this message —
       // see the end of the turn below.
       let handedOver = false;
-      for (const call of toolCalls) {
+      // The outcomes of this message's sub-agent calls, by call index. Filled
+      // in one go at the first of them — see `runSubagentGroup`.
+      let subagentOutcomes: Map<number, SubagentOutcome> | null = null;
+      for (const [callIndex, call] of toolCalls.entries()) {
+        // A sub-agent call whose child has already run is recorded with what
+        // the child did, ahead of the two skips below: it ran (with the rest
+        // of its group, at the first such call), so "not run" would be false —
+        // and a stop pressed while the group was running must not throw away
+        // the report of a child that had finished.
+        const ranAlready = subagentOutcomes?.get(callIndex);
+        if (ranAlready) {
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output: ranAlready.output,
+            ok: ranAlready.ok,
+          });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: ranAlready.output, ok: ranAlready.ok });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, ranAlready.output));
+          continue;
+        }
         // Nothing runs after a plan or questions in the same message. The turn
         // ends on them, so the user is looking at them; a write queued behind it would
         // otherwise put an approval in front of them for work nobody has
@@ -1164,12 +1258,54 @@ export async function runToolLoop(ctx: {
           chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, output));
           continue;
         }
+        // ── Sub-agents ───────────────────────────────────────
+        //
+        // Every sub-agent call in this message starts here, together, at the
+        // first of them; the later ones are recorded from `ranAlready` above
+        // when the loop reaches them, so results stay in call order — the
+        // order the replay reproduces. Only when the tool was offered: a
+        // sub-agent (or a chat run) that names it anyway falls through to the
+        // unknown-tool answer below.
+        if (subagents && call.function.name === SUBAGENT_TOOL_NAME && toolset.get(SUBAGENT_TOOL_NAME)) {
+          subagentOutcomes = await runSubagentGroup({
+            calls: [...toolCalls.entries()]
+              .filter(([, c]) => c.function.name === SUBAGENT_TOOL_NAME)
+              .map(([index, c]) => ({ index, call: c })),
+            subagents,
+            parentModel: model,
+            slot,
+            parent: {
+              convId,
+              streamId,
+              userId,
+              mode,
+              surface: ctx.surface,
+              assistantMsgId,
+              producer,
+              signal: abort.signal,
+              thinkingLevel: ctx.thinkingLevel,
+            },
+          });
+          const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
+          producer.emit({
+            kind: "tool.result",
+            message_id: assistantMsgId,
+            call_id: call.id,
+            tool: call.function.name,
+            output: mine.output,
+            ok: mine.ok,
+          });
+          resultBlocks.push({ kind: "tool_result", call_id: call.id, output: mine.output, ok: mine.ok });
+          chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, mine.output));
+          continue;
+        }
         let outcome: Awaited<ReturnType<typeof runOneToolCall>>;
         try {
           outcome = await runOneToolCall(
             {
               streamId,
               convId,
+              workspaceConvId,
               userId,
               mode,
               toolset,
@@ -1296,11 +1432,19 @@ export async function runToolLoop(ctx: {
       const reason: CheckinReason | null = hit ? "loop" : iteration >= budgetEnd ? "budget" : null;
       if (!reason) continue;
 
+      // A sub-agent asks nobody. Its parent is parked waiting on it and the
+      // person is looking at the parent's thread, so a question here would sit
+      // unseen for the whole wait window, and the ladder's "keep going" would
+      // then grant an unwatched child more whole windows of work. It wraps up
+      // with what it has instead — the same "answer now" a person would press —
+      // and its parent decides what to do with a partial report.
+      const asksNobody = ctx.role !== undefined;
+
       // One deadline, used for both the event and the timer, so the countdown a
       // person sees is exactly when the run gives up waiting.
       const deadline = waitDeadline(waits.checkinTimeoutMs, waits.adaptive, slowestTurnMs);
       const onTimeout = unattendedDecision(unattended, waits.autoContinues, "timeout");
-      producer.emit({
+      if (!asksNobody) producer.emit({
         kind: "steps.checkin",
         n: iteration,
         max: budgetEnd,
@@ -1316,7 +1460,7 @@ export async function runToolLoop(ctx: {
 
       let outcome: { decision: StepsDecision; byUserId: string | null };
       try {
-        outcome = await slot.yieldWhile(async () => {
+        outcome = asksNobody ? { decision: "answer", byUserId: null } : await slot.yieldWhile(async () => {
           const answered = await waitForStepsDecision(streamId, abort.signal, deadline.ms);
           const byPerson = answered.kind === "continue" || answered.kind === "answer";
           // The ladder: nobody answered, so this is decided by how many in a
@@ -1429,6 +1573,9 @@ export async function runToolLoop(ctx: {
     unregisterRun(streamId);
   }
 
+  // A sub-agent's conversation has no next turn to make room for.
+  if (ctx.role) return;
+
   // Past the `finally`, so the lock is free. Deliberately not reached by the
   // error and cancel paths above, which `return` — a run that failed has not
   // established what the prompt costs, and compacting after a user pressed
@@ -1483,11 +1630,114 @@ export async function runToolLoop(ctx: {
   }
 }
 
+/** Recorded for a sub-agent call that has no outcome — which `runSubagentGroup`
+ * never leaves, so this is the answer to a bug rather than to a user. */
+const SUBAGENT_NOT_RUN = "This sub-agent was not started.";
+
+/**
+ * Starts every sub-agent one assistant message asked for, together, and waits
+ * for all of them.
+ *
+ * **Together, inside one yield of the parent's slot.** A child is a whole run
+ * that needs an inference slot of its own. Started while the parent still held
+ * its slot, a child on the same backend at concurrency 1 — the common case —
+ * would queue behind a parent that is waiting for it: a deadlock nothing but a
+ * Stop could end. So the parent hands its slot back for the whole wait, as it
+ * does at an approval, and takes it again at the front of the queue. The
+ * children queue like any other run: side by side where the backend has the
+ * slots, one after another where it does not, and behind whatever was already
+ * waiting, in the order they were called. One yield for the group rather than
+ * one per child, because each re-entry can cost the parent a full prompt
+ * re-evaluation and there is no reason to pay it between children.
+ *
+ * Returns an outcome for **every** call it was given, by call index — a
+ * refusal for one past the cap or with unusable arguments, the child's report
+ * for one that ran. Never throws for a stop: `yieldWhile` re-enters the queue
+ * after its work and throws for an aborted run, but by then every child has
+ * ended and its outcome is in hand, so the throw is caught here and the caller
+ * records what really happened. (The slot is not held after that throw, which
+ * is the state the abort branch after the batch expects — the same one a stop
+ * at an approval leaves.)
+ */
+async function runSubagentGroup(input: {
+  calls: { index: number; call: ToolCall }[];
+  subagents: { policy: SubagentModelPolicy; offered: string[] | null; routine: boolean };
+  parentModel: string;
+  slot: RunSlot;
+  parent: SubagentParent;
+}): Promise<Map<number, SubagentOutcome>> {
+  const { parseSubagentArgs, runSubagent } = await import("./subagentRun.ts");
+  const outcomes = new Map<number, SubagentOutcome>();
+  const starting: { index: number; spec: SubagentCall }[] = [];
+  for (const { index, call } of input.calls) {
+    if (starting.length >= MAX_SUBAGENTS_PER_MESSAGE) {
+      outcomes.set(index, { output: tooManySubagentsText(MAX_SUBAGENTS_PER_MESSAGE), ok: false });
+      continue;
+    }
+    const parsed = parseSubagentArgs(safeParseArgs(call.function.arguments));
+    if ("error" in parsed) {
+      outcomes.set(index, { output: parsed.error, ok: false });
+      continue;
+    }
+    const chosen = subagentModelFor({
+      policy: input.subagents.policy,
+      parentModel: input.parentModel,
+      requested: parsed.model,
+      offered: input.subagents.offered,
+      routine: input.subagents.routine,
+    });
+    if ("error" in chosen) {
+      outcomes.set(index, { output: chosen.error, ok: false });
+      continue;
+    }
+    starting.push({
+      index,
+      spec: { callId: call.id, description: parsed.description, prompt: parsed.prompt, model: chosen.model },
+    });
+  }
+  if (starting.length === 0) return outcomes;
+
+  try {
+    await input.slot.yieldWhile(async () => {
+      // Started one after another, each once the one before has its place in
+      // line (or has ended): children then queue in the order they were
+      // called. That serialises each child's whole setup, not only its queue
+      // entry — its model check, its rows, its instructions and its toolset
+      // (every enabled MCP server's connect) all happen before it reaches the
+      // scheduler — so one unreachable MCP server costs its connect timeout
+      // once per child rather than once. Accepted for now: it also bounds how
+      // much setup one message can start at once, and ordering only the queue
+      // entry needs a gate inside `runToolLoop`. Started all at once, their order in the queue was whichever
+      // finished its own setup first — on one slot, the difference between
+      // "the first task ran first" and a coin toss. They still run side by
+      // side wherever the backend has the slots: a child with a slot is "in
+      // line" the moment it takes it.
+      const running: Promise<SubagentOutcome>[] = [];
+      for (const s of starting) {
+        let reached: () => void = () => undefined;
+        const inLine = new Promise<void>((resolve) => { reached = resolve; });
+        const run = runSubagent(input.parent, s.spec, { onInLine: reached });
+        running.push(run);
+        await Promise.race([inLine, run]);
+      }
+      // `runSubagent` never rejects, so `all` cannot abandon a sibling.
+      const settled = await Promise.all(running);
+      settled.forEach((outcome, i) => outcomes.set(starting[i].index, outcome));
+    });
+  } catch (err) {
+    if (!(err instanceof RunSlotAbortedError)) throw err;
+  }
+  return outcomes;
+}
+
 /** Approval gate + execution for a single model-requested tool call. */
 async function runOneToolCall(
   ctx: {
     streamId: string;
     convId: string;
+    /** The conversation whose sandbox the tools run in: this one, or for a
+     * sub-agent its parent's. */
+    workspaceConvId: string;
     userId: string;
     mode: PermissionMode;
     toolset: Toolset;
@@ -1514,7 +1764,7 @@ async function runOneToolCall(
   ok: boolean;
   diff?: { path: string; oldContent: string | null; newContent: string | null }[];
 }> {
-  const { convId, userId, mode, toolset, producer, assistantMsgId } = ctx;
+  const { userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
   const args = safeParseArgs(call.function.arguments);
 
@@ -1585,7 +1835,7 @@ async function runOneToolCall(
   let handle = null;
   if (toolNeedsSandbox(builtinName)) {
     try {
-      handle = await getConversationSandbox(userId, convId);
+      handle = await getConversationSandbox(userId, ctx.workspaceConvId);
     } catch (err) {
       // The underlying error usually already names what was tried and how to
       // fix it — see container-provider.ts's requireDocker(). A GitHub

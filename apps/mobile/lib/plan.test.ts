@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  shouldAutoOpen,
   PLAN_ACCEPTED_MESSAGE,
   PLAN_REJECTED_MESSAGE,
   acceptMode,
@@ -193,5 +194,26 @@ describe('questions', () => {
     expect(isAnswered({ selected: [], other: '  ' })).toBe(false);
     expect(isAnswered({ selected: [1], other: '' })).toBe(true);
     expect(isAnswered({ selected: [], other: 'x' })).toBe(true);
+  });
+});
+
+describe('opening the panel by itself', () => {
+  const base = { latestId: 'call_0', latestStatus: 'pending' as const, busy: false, canDecide: true, blocked: false, seen: new Set<string>() };
+
+  it('opens the newest pending item, once', () => {
+    expect(shouldAutoOpen(base)).toBe(true);
+    expect(shouldAutoOpen({ ...base, seen: new Set(['call_0']) })).toBe(false);
+    expect(shouldAutoOpen({ ...base, latestId: null })).toBe(false);
+    expect(shouldAutoOpen({ ...base, latestStatus: 'accepted' })).toBe(false);
+    expect(shouldAutoOpen({ ...base, busy: true })).toBe(false);
+    expect(shouldAutoOpen({ ...base, canDecide: false })).toBe(false);
+  });
+
+  it('waits while another sheet is on screen, and opens once it has gone', () => {
+    // A sub-agent's panel or the Sub-agents list: a second native sheet over
+    // it is what stranded sheets on iOS. Held back, not skipped — the caller
+    // marks an item seen only when this says to open it.
+    expect(shouldAutoOpen({ ...base, blocked: true })).toBe(false);
+    expect(shouldAutoOpen({ ...base, blocked: false })).toBe(true);
   });
 });

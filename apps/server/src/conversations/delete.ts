@@ -16,7 +16,7 @@
  *
  * The ordering below is the load-bearing part, and it is not the obvious one.
  */
-import { db, and, eq } from "@loxaic/db";
+import { db, and, eq, inArray } from "@loxaic/db";
 import { conversations, messages, routineRuns, sandboxes, usageRecords } from "@loxaic/db/schema";
 import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
 import { getConversationSettings } from "../settings.ts";
@@ -83,6 +83,12 @@ export async function deleteConversation(id: string, log: DeleteLogger): Promise
     return "erased";
   }
 
+  // Its sub-agents' conversations are not stamped. Whether a child can be
+  // reached is decided by its parent (`resolveAccess`), so the parent's
+  // `deletedAt` hides them, a restore brings them back, and a hold covers
+  // them — where a date of their own would have the sweep erase a child out
+  // from under a held parent.
+  const childIds = await childConversationIds(id);
   await db.update(conversations).set({ deletedAt: new Date() }).where(eq(conversations.id, id));
   // The run stops on this path too. `resolveAccess` refuses a deleted row, so
   // nothing *new* can start — but a run already in flight holds its own
@@ -90,13 +96,35 @@ export async function deleteConversation(id: string, log: DeleteLogger): Promise
   // is gone, and the cleanup below is about to destroy the sandbox its tool
   // calls are using. Leaving it running would make "deleted" mean two
   // different things depending on a setting the user cannot see.
-  getRunByConversation(id)?.abort.abort();
+  abortRuns(id, childIds);
   // A retained conversation is still one the user is finished with, and its
   // sandbox is not retained by anything: nothing can reach the conversation to
   // resume it, and the admin audit view reads rows, not containers. So the
   // live resources go either way — only the record is kept.
-  detachedCleanup(id, log);
+  detachedCleanup(id, log, { childIds });
   return "retained";
+}
+
+/**
+ * The conversations of the sub-agents `id` spawned. Found by the parent's id
+ * alone, so it still answers after the parent's row is gone — which is what
+ * lets the second erase pass collect a child created by a run that was already
+ * past authorization when the first pass committed.
+ */
+async function childConversationIds(id: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: conversations.id })
+    .from(conversations)
+    .where(eq(conversations.parentConversationId, id));
+  return rows.map((r) => r.id);
+}
+
+/** Stops the conversation's run and its sub-agents'. A child's run aborts with
+ * its parent's anyway (they share the signal); naming them covers a child
+ * whose parent run is already gone from the registry. */
+function abortRuns(id: string, childIds: readonly string[]): void {
+  getRunByConversation(id)?.abort.abort();
+  for (const childId of childIds) getRunByConversation(childId)?.abort.abort();
 }
 
 /**
@@ -115,14 +143,17 @@ export async function purgeConversation(id: string, log: DeleteLogger): Promise<
   // nothing new can start a run, send a message, or read the thread. Deleting
   // the messages first and the row second would leave a window in which the
   // conversation still exists and is empty, which a live socket can write into.
+  // Its sub-agents' ids are read before the rows go: their stream logs are
+  // keyed by them, and after the erase nothing else remembers what they were.
+  const childIds = await childConversationIds(id);
   await eraseRows(id);
 
   // Only now stop the run. Anything it writes from here on is an orphan by
   // construction (its conversation is gone), which is what the second pass
   // below collects; doing this first would just widen the window above.
-  getRunByConversation(id)?.abort.abort();
+  abortRuns(id, childIds);
 
-  detachedCleanup(id, log, { purge: true });
+  detachedCleanup(id, log, { purge: true, childIds });
 }
 
 /**
@@ -133,12 +164,24 @@ export async function purgeConversation(id: string, log: DeleteLogger): Promise<
  * concerned. Deliberately fire-and-forget, with its own catch, exactly like
  * the sandbox destruction it replaces.
  */
-function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean }): void {
+function detachedCleanup(
+  id: string,
+  log: DeleteLogger,
+  opts?: { purge?: boolean; childIds?: readonly string[] },
+): void {
   void (async () => {
     // Wait for the aborted run to actually finish before cleaning up: it is
     // still writing message rows, and its tool calls still hold the sandbox we
     // are about to destroy.
     const ended = await waitForRunEnd(id, unwindTimeoutMs());
+    // Sub-agents the run spawned after the first pass read them are found
+    // again here — after the wait, never before it: an unwinding run can
+    // still be starting a child, and one read too early kept its stream log
+    // (the task its parent's model wrote) until the TTL. Before the second
+    // pass, which erases their rows and with them the only record of their
+    // ids.
+    const childIds = new Set(opts?.childIds ?? []);
+    for (const childId of await childConversationIds(id).catch(() => [])) childIds.add(childId);
     if (!ended) {
       log.warn(
         { conversationId: id },
@@ -163,9 +206,11 @@ function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean
     // day. Best-effort: the broker is not initialized in every process that
     // can reach this code (route tests mount routes without a broker), and a
     // TTL will collect them regardless.
-    await deleteStreamLogs(id).catch((err: unknown) => {
-      log.warn({ err, conversationId: id }, "failed to delete stream logs for a deleted conversation");
-    });
+    for (const convId of [id, ...childIds]) {
+      await deleteStreamLogs(convId).catch((err: unknown) => {
+        log.warn({ err, conversationId: convId }, "failed to delete stream logs for a deleted conversation");
+      });
+    }
 
     // A sandbox now persists across idle periods rather than being cleaned up
     // by a short timer, so without this a deleted conversation leaves a
@@ -220,6 +265,24 @@ function detachedCleanup(id: string, log: DeleteLogger, opts?: { purge?: boolean
  */
 async function eraseRows(id: string): Promise<void> {
   await db.transaction(async (tx) => {
+    // Its sub-agents go with it, in the same transaction: their conversations
+    // carry no foreign key to this one (and a cascade could not reach their
+    // messages, which have none either), so nothing but this erases them — and
+    // a child left behind is a transcript of the erased conversation's work
+    // that no surface lists and no sweep collects.
+    const children = await tx
+      .select({ id: conversations.id })
+      .from(conversations)
+      .where(eq(conversations.parentConversationId, id));
+    if (children.length > 0) {
+      const childIds = children.map((c) => c.id);
+      await tx.delete(messages).where(inArray(messages.conversationId, childIds));
+      await tx
+        .update(usageRecords)
+        .set({ conversationId: null, messageId: null })
+        .where(inArray(usageRecords.conversationId, childIds));
+      await tx.delete(conversations).where(inArray(conversations.id, childIds));
+    }
     await tx.delete(messages).where(eq(messages.conversationId, id));
     // A routine's run points at its conversation with no foreign key, so
     // erasing the conversation without this leaves a row claiming a run whose

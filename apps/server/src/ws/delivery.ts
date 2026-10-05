@@ -1,4 +1,4 @@
-import type { ServerMessage, StreamSnapshot, StreamStatus } from "@loxaic/types";
+import { endStaleSubAgents, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
 import { assertConversationAccess } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
@@ -132,10 +132,18 @@ export function createDelivery(
     // the question, and the next resync put the banner back on a run that had
     // already ended. An approval survives this by accident, because its abort
     // path records a `tool.result` that the fold clears on.
+    //
+    // The same holds for its sub-agents. A run waits for its children before
+    // it ends and stopping it stops them, so one still marked running in a
+    // finished run's log is one whose end was never written — and shown as
+    // running it would offer a Stop, and an approval, that reach nothing.
     const snapshot: StreamSnapshot =
       status === "active"
         ? folded
-        : (({ pending_approval: _a, pending_checkin: _c, ...rest }) => rest)(folded);
+        : (({ pending_approval: _a, pending_checkin: _c, subagents, ...rest }) => ({
+            ...rest,
+            ...(subagents ? { subagents: endStaleSubAgents(subagents, meta?.updatedAt ?? Date.now()) } : {}),
+          }))(folded);
 
     if (currentSeq > cursor || forceSync) {
       send({

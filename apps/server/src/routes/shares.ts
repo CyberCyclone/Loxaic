@@ -6,6 +6,8 @@ import { purgeConversation, restoreConversation } from "../conversations/delete.
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
 import { conversationPurgeAt } from "../settings.ts";
 import { resolveAccess } from "../streams/authz";
+import { getRun } from "../streams/registry.ts";
+import { listSubagents } from "../streams/runs/subagentRun.ts";
 
 /**
  * Whether this conversation is one the audit routes may act on.
@@ -202,6 +204,10 @@ export function adminConversationRoutes(app: FastifyInstance) {
       // path because of this.
       .from(conversations)
       .innerJoin(user, eq(user.id, conversations.ownerId))
+      // A sub-agent's conversation is part of its parent, not a thread of its
+      // own: it follows the parent's retention, hold and shares, and listing
+      // each one would fill this page's 200 rows with children.
+      .where(ne(conversations.kind, "subagent"))
       .orderBy(desc(conversations.updatedAt))
       .limit(200);
 
@@ -270,6 +276,37 @@ export function adminConversationRoutes(app: FastifyInstance) {
         createdAt: m.createdAt,
       }));
       return { messages: rows, hasMore: page.hasMore, before: page.before };
+    },
+  );
+
+  /**
+   * A conversation's sub-agents, for the admin screen.
+   *
+   * The admin list leaves children out and the owner's own listing 404s for a
+   * deleted parent, so without this nothing told an admin a retained
+   * conversation had sub-agents at all — while their transcripts, which hold
+   * most of what an agent run actually did, sat readable through the route
+   * above by ids nobody could learn. Same door as that route: admin-gated,
+   * read-only, and answering for a live conversation too.
+   */
+  app.get<{ Params: { id: string } }>(
+    "/v1/admin/conversations/:id/subagents",
+    async (request, reply) => {
+      await requireAdmin(request, reply);
+      const conv = await db.query.conversations.findFirst({
+        where: eq(conversations.id, request.params.id),
+        columns: { id: true },
+      });
+      if (!conv) {
+        reply.code(404);
+        return { error: "Not found" };
+      }
+      // `server_now` is what lets a device time a child that is still running
+      // from its real start: `started_at` is on this clock, not the device's.
+      return {
+        subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined),
+        server_now: Date.now(),
+      };
     },
   );
 
@@ -370,9 +407,11 @@ export function adminConversationRoutes(app: FastifyInstance) {
       }
       const conv = await db.query.conversations.findFirst({
         where: eq(conversations.id, request.params.id),
-        columns: { id: true, ownerId: true },
+        columns: { id: true, ownerId: true, kind: true },
       });
-      if (!conv) {
+      // A sub-agent's conversation has no shares of its own — whoever can see
+      // its parent can see it. A row here would be read by nothing.
+      if (!conv || conv.kind === "subagent") {
         reply.code(404);
         return { error: "Not found" };
       }

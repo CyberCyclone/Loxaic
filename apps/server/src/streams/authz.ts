@@ -1,6 +1,6 @@
 import { and, db, eq, inArray } from "@loxaic/db";
 import { attachments, conversationShares, conversations, messages, user } from "@loxaic/db/schema";
-import type { AttachmentRef } from "@loxaic/types";
+import type { AttachmentRef, ConversationKind } from "@loxaic/types";
 import { MAX_ATTACHMENTS } from "@loxaic/types";
 import { isValidRef } from "../files/storage.ts";
 
@@ -44,7 +44,29 @@ export interface AccessGrant {
    * access lookup already reads the row — a caller that needs it (the send
    * path, which serves a routine conversation on its routine's model) would
    * otherwise pay a second query on every send. */
-  kind: "chat" | "agent" | "routine";
+  kind: ConversationKind;
+  /**
+   * Set only for a sub-agent's conversation (`kind: "subagent"`): the thread
+   * that spawned it, and the caller's role *there*.
+   *
+   * A child's own `role` is never more than `viewer`, whoever asks. That is
+   * what keeps every existing editor- and owner-gated path closed on it by
+   * construction rather than by a list someone has to keep complete: nobody
+   * sends into a child, compacts it, renames or deletes it, shares it, opens a
+   * terminal or a second sandbox under its id, or pushes from it. The two
+   * things a person *may* do to a child — stop its run and answer its
+   * approvals — are decided by their role on the parent, through `actingRole`.
+   */
+  parent?: { conversationId: string; role: ConversationRole };
+}
+
+/**
+ * The role that decides whether someone may act on a *run* in this
+ * conversation (stop it, answer its approvals): their role on the parent for a
+ * sub-agent, their role on the conversation itself otherwise.
+ */
+export function actingRole(grant: AccessGrant): ConversationRole {
+  return grant.parent?.role ?? grant.role;
 }
 
 /**
@@ -100,6 +122,8 @@ const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 export async function resolveAccess(
   userId: string,
   conversationId: string,
+  /** Internal: how many parent links have been followed. */
+  depth = 0,
 ): Promise<AccessGrant | null> {
   // An id arrives off a socket or a URL, so it is a claim. One that is not a
   // uuid names no conversation; asking Postgres anyway turned it into
@@ -108,8 +132,24 @@ export async function resolveAccess(
   if (!CONVERSATION_ID_RE.test(conversationId)) return null;
   const row = await db.query.conversations.findFirst({
     where: eq(conversations.id, conversationId),
-    columns: { id: true, ownerId: true, deletedAt: true, kind: true },
+    columns: { id: true, ownerId: true, deletedAt: true, kind: true, parentConversationId: true },
   });
+  // A sub-agent's conversation is its parent's, as far as access goes: seen by
+  // whoever can see the parent, gone when the parent is deleted or a share is
+  // revoked, and never listed in `conversation_shares` itself. One level only —
+  // a child whose parent is itself a child names nothing we ever create.
+  if (row?.kind === "subagent") {
+    if (row.deletedAt || !row.parentConversationId || depth > 0) return null;
+    const parent = await resolveAccess(userId, row.parentConversationId, depth + 1);
+    if (!parent || parent.kind === "subagent") return null;
+    return {
+      conversationId,
+      role: "viewer",
+      viaAdmin: parent.viaAdmin,
+      kind: "subagent",
+      parent: { conversationId: row.parentConversationId, role: parent.role },
+    };
+  }
   // A soft-deleted conversation is absent for access purposes. The list
   // endpoint already hides it, but share rows outlive the delete, so without
   // this a guest who kept the id could still read the thread, stream it, pull

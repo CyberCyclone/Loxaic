@@ -2,6 +2,7 @@ import type { FileDiff } from "./index";
 import type { TimeoutBasis } from "./waits";
 import type { McpOverrides } from "./mcp-state";
 import type { ThinkingLevel } from "./thinking";
+import type { SubAgentEvent, SubAgentLive } from "./subagents";
 
 /** Duplicated (structurally, not nominally) from @loxaic/agent so this
  * package stays dependency-free — packages/agent is the authority for
@@ -591,7 +592,11 @@ export type StreamEventKind =
   /** Emitted once by a compact run, before its message.end — the stats the
    * card renders, attached to the summary message. */
   | ({ kind: "compaction"; message_id: string } & CompactionStats)
-  | ({ kind: "prompt.stats" } & PromptStats);
+  | ({ kind: "prompt.stats" } & PromptStats)
+  /** A sub-agent this run spawned: its start, what changed about it, its end.
+   * On the *parent's* stream, so a thread's cards, its Sub-agents list and a
+   * child's approval need no subscription to the child — see ./subagents. */
+  | SubAgentEvent;
 
 export interface StreamSnapshotMessage {
   message_id: string;
@@ -744,6 +749,9 @@ export interface StreamSnapshot {
     unattended?: number;
     auto_continues?: number;
   } & WaitDeadlineFields;
+  /** The sub-agents this run spawned, folded from its `subagent.*` events.
+   * Absent when it spawned none. */
+  subagents?: SubAgentLive[];
 }
 
 export type ServerMessage =
@@ -866,8 +874,13 @@ export type ClientMessage =
   | { type: "send.status"; client_ref: string }
   | { type: "stream.stop"; stream_id: string }
   | { type: "agent.mode"; mode: PermissionMode }
-  | { type: "agent.approve"; call_id: string }
-  | { type: "agent.deny"; call_id: string }
+  /** `stream_id` names the run being answered. Call ids are the model's own and
+   * repeat (`call_0`), and a thread can now have a parent and its sub-agents
+   * each waiting on one — so a client that knows the stream says so, and that
+   * run alone is answered. Absent (an older client) means any run the caller
+   * may act on that holds the call id, as before. */
+  | { type: "agent.approve"; call_id: string; stream_id?: string }
+  | { type: "agent.deny"; call_id: string; stream_id?: string }
   /** Answer a `steps.checkin`. Keyed by `stream_id`, not by a model-supplied
    * id like approve/deny — a run has at most one check-in outstanding, and
    * stream ids are ours and unique, so no plural lookup is needed. */

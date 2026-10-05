@@ -391,6 +391,21 @@ const MOCK_TOOL_TRIGGERS: {
   // the default policy applied (no approval asked) and that the connection's
   // token reached the server.
   { match: /\bgithub who am i\b/i, name: "github__get_me", args: {} },
+  // A sub-agent (streams/runs/subagentRun.ts). Only the agent surface and
+  // routines offer the tool, and a sub-agent itself never is, so the child's
+  // own prompt cannot start another. What follows the first colon is the
+  // child's task, so one prompt chooses what the child does through these
+  // same triggers: "Use a sub-agent: write a file called notes" has the child
+  // write a file, and ask first in manual mode. Before the builtins below,
+  // which that task text would otherwise fire in the *parent*.
+  {
+    match: /\bsub-?agents?\b|\bdelegate\b/i,
+    name: "subagent",
+    args: (prompt) => {
+      const task = prompt.includes(":") ? prompt.slice(prompt.indexOf(":") + 1).trim() : "";
+      return { description: "Mock sub-task", prompt: task || "Say hello." };
+    },
+  },
   // Planning mode's hand-off. Before the `plan` trigger below, which would
   // otherwise take the same prompt for todo_write; only planning mode offers
   // propose_plan, so everywhere else this falls through to that one. Neither

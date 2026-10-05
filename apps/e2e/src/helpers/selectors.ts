@@ -200,7 +200,7 @@ export async function typeInto(id: string, text: string): Promise<void> {
  * browser. On the web the element exists either way; it is scrolled into
  * view so a screenshot shows it.
  */
-export async function scrollTo(id: string, timeout = 20_000): Promise<void> {
+export async function scrollTo(id: string, timeout = 20_000, across = 0.5): Promise<void> {
   const p = platform();
   if (p === 'web' || p === 'electron') {
     await byTestId(id).waitForExist({ timeout });
@@ -210,7 +210,9 @@ export async function scrollTo(id: string, timeout = 20_000): Promise<void> {
     return;
   }
   // A drag through the middle of the screen moves whatever is there — an open
-  // sheet's body, or the screen itself. XCUITest's own `mobile: scroll` with a
+  // sheet's body, or the screen itself. `across` moves the drag sideways for a
+  // screen with two scrolling panes side by side (the admin screen), where
+  // the middle is the line between them. XCUITest's own `mobile: scroll` with a
   // predicate gave up after one page inside a modal; UiScrollable picks the
   // first scrollable, which can be the screen behind the sheet.
   // A keyboard left up by the last field covers the bottom of the screen. On
@@ -223,10 +225,10 @@ export async function scrollTo(id: string, timeout = 20_000): Promise<void> {
   const drag = async (fromY: number, toY: number) => {
     await browser
       .action('pointer', { parameters: { pointerType: 'touch' } })
-      .move({ x: Math.round(width / 2), y: Math.round(height * fromY) })
+      .move({ x: Math.round(width * across), y: Math.round(height * fromY) })
       .down()
       .pause(100)
-      .move({ duration: 400, x: Math.round(width / 2), y: Math.round(height * toY) })
+      .move({ duration: 400, x: Math.round(width * across), y: Math.round(height * toY) })
       .up()
       .perform();
     await browser.pause(300);

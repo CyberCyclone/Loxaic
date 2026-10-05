@@ -26,10 +26,14 @@ import { getSandboxMode } from "../../sandbox/provider.ts";
  */
 /** Built at call time (not a module-load const): SANDBOX_MODE shapes what's
  * true to tell the model about where its tools actually run. */
-function chatSystemPrompt(): string {
-  const workspace = getSandboxMode() === "host"
+export function chatWorkspaceDescription(): string {
+  return getSandboxMode() === "host"
     ? "a scratch working directory on the host machine"
     : "an isolated Linux sandbox (working directory /home/loxaic/repo — an empty scratch workspace, not a checked-out project)";
+}
+
+function chatSystemPrompt(): string {
+  const workspace = chatWorkspaceDescription();
   return [
     "You are Loxaic, a helpful AI assistant. Answer directly from your own knowledge when that is all a question needs.",
     `You also have tools: ${workspace} for running commands and working with files, and possibly external tools from the`,
@@ -94,6 +98,11 @@ export async function startChatRun(input: {
 
   let convId = input.conversationId;
   let model = input.model;
+  // Whether this is a routine's conversation. A routine's runs may use
+  // sub-agents; a plain chat's may not — chat is a conversation, and the
+  // sub-agent tool's schema would cost every chat turn its tokens for
+  // something a chat rarely needs.
+  let routine = false;
 
   if (convId) {
     // Sending is an editor action: a viewer may watch this conversation
@@ -106,6 +115,7 @@ export async function startChatRun(input: {
     // is chosen. A routine with no model (one that predates the column) has
     // nothing to enforce, so a person continuing it by hand keeps their pick.
     if (grant.kind === "routine") {
+      routine = true;
       model = (await routineModelFor(convId)) ?? model;
     }
     if (input.parentId) {
@@ -210,6 +220,7 @@ export async function startChatRun(input: {
     surface: "chat",
     newConversation: opening ? { chosenStage: input.contextStage } : undefined,
     thinkingLevel: input.thinkingLevel,
+    ...(routine ? { subagents: { routine: true } } : {}),
     abort,
     producer,
   }).then(

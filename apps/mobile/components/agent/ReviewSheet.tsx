@@ -31,7 +31,14 @@ interface ReviewSheetProps {
   headerActions?: ReactNode;
   /** Scrolls; the footer does not. */
   children: ReactNode;
-  footer: ReactNode;
+  /** Fixed under the body. Null or absent leaves no footer bar at all. */
+  footer?: ReactNode;
+  /**
+   * False when the body scrolls for itself — a message list, which is a
+   * virtualised FlatList and cannot sit inside a ScrollView. The body is then
+   * a plain flex view, `<id>.body` still, and its content fills it.
+   */
+  scroll?: boolean;
 }
 
 /**
@@ -62,6 +69,7 @@ export function ReviewSheet({
   headerActions,
   children,
   footer,
+  scroll = true,
 }: ReviewSheetProps) {
   const { height: windowHeight } = useWindowDimensions();
   const insets = useSafeAreaInsets();
@@ -115,16 +123,22 @@ export function ReviewSheet({
               on every Box lets a flex column compress its children into each
               other instead of overflowing, so the body has to be the thing
               that scrolls — and the footer stays outside it. */}
-          <ScrollView
-            testID={`${testIDBase}.body`}
-            style={{ flex: 1, minHeight: 0, width: '100%' }}
-            contentContainerStyle={{ padding: 16 }}
-            keyboardShouldPersistTaps="handled"
-          >
-            {children}
-          </ScrollView>
+          {scroll ? (
+            <ScrollView
+              testID={`${testIDBase}.body`}
+              style={{ flex: 1, minHeight: 0, width: '100%' }}
+              contentContainerStyle={{ padding: 16 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {children}
+            </ScrollView>
+          ) : (
+            <View testID={`${testIDBase}.body`} style={{ flex: 1, minHeight: 0, width: '100%' }}>
+              {children}
+            </View>
+          )}
 
-          <Box className="border-t border-border px-4 pb-4 pt-3">{footer}</Box>
+          {footer ? <Box className="border-t border-border px-4 pb-4 pt-3">{footer}</Box> : null}
         </View>
       </ActionsheetContent>
     </Actionsheet>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { localDeadline, toPendingApproval, toPendingCheckin } from './pendingWaits';
+import { approvalStreamId, localDeadline, toPendingApproval, toPendingCheckin } from './pendingWaits';
 
 describe('localDeadline', () => {
   it('counts a live event from now', () => {
@@ -38,5 +38,30 @@ describe('toPending*', () => {
 
   it('keeps an older server\'s approval exactly as it was', () => {
     expect(toPendingApproval({ call_id: 'c', tool: 'bash', args: {} }, 0)).toEqual({ callId: 'c', tool: 'bash', args: {} });
+  });
+});
+
+describe('which run an approval answer names', () => {
+  it('records the stream a prompt arrived on', () => {
+    expect(toPendingApproval({ call_id: 'c', tool: 'bash', args: {} }, 0, undefined, 'stream-1')).toEqual({
+      callId: 'c',
+      tool: 'bash',
+      args: {},
+      streamId: 'stream-1',
+    });
+  });
+
+  it('names the run that asked, so another thread\'s run holding the same call id is not answered', () => {
+    const pending = toPendingApproval({ call_id: 'call_0', tool: 'fs_write', args: {} }, 0, undefined, 'stream-b');
+    expect(approvalStreamId(pending, 'call_0', 'stream-tracked')).toBe('stream-b');
+  });
+
+  it('falls back to the conversation\'s tracked run, and names none only when neither is known', () => {
+    const noStream = toPendingApproval({ call_id: 'call_0', tool: 'fs_write', args: {} }, 0);
+    expect(approvalStreamId(noStream, 'call_0', 'stream-tracked')).toBe('stream-tracked');
+    // A prompt for a different call is not this answer's.
+    const other = toPendingApproval({ call_id: 'call_9', tool: 'bash', args: {} }, 0, undefined, 'stream-x');
+    expect(approvalStreamId(other, 'call_0', 'stream-tracked')).toBe('stream-tracked');
+    expect(approvalStreamId(null, 'call_0', undefined)).toBeUndefined();
   });
 });

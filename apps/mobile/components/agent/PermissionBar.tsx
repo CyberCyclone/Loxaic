@@ -29,18 +29,32 @@ interface PermissionBarProps {
   deadline?: WaitDeadline;
   onAllow: () => void;
   onDeny: () => void;
+  /**
+   * Who is asking, when it is not the run on screen: a sub-agent's
+   * description. Shown above the request, so a prompt that appears under the
+   * parent's thread says which agent wants to run the tool.
+   */
+  source?: string;
+  /** `agent.permission` unless a second bar can be on screen with it — the
+   * one inside a sub-agent's panel. */
+  testIDBase?: string;
 }
 
-export function PermissionBar({ tool, args, deadline, onAllow, onDeny }: PermissionBarProps) {
+export function PermissionBar({ tool, args, deadline, onAllow, onDeny, source, testIDBase = 'agent.permission' }: PermissionBarProps) {
   const mcp = splitMcpTool(tool);
   // See ToolApprovalDialog: an answer needs an open socket (#231).
   const disconnected = !useServerReachable();
   return (
     <VStack
-      testID="agent.permission.bar"
+      testID={`${testIDBase}.bar`}
       space="xs"
       className="border-t border-warning/30 bg-warning/10 px-4 py-3"
     >
+      {source ? (
+        <Text testID={`${testIDBase}.source`} size="xs" className="font-medium text-warning">
+          Sub-agent · {source}
+        </Text>
+      ) : null}
       {mcp ? (
         <Text size="sm" className="text-foreground">
           MCP server <Text size="sm" className="font-mono text-warning">{mcp.server}</Text> wants to run{' '}
@@ -50,18 +64,18 @@ export function PermissionBar({ tool, args, deadline, onAllow, onDeny }: Permiss
         </Text>
       ) : (
         <Text size="sm" className="text-foreground">
-          Agent wants to run <Text size="sm" className="font-mono text-warning">{tool}</Text>
+          {source ? 'It wants' : 'Agent wants'} to run <Text size="sm" className="font-mono text-warning">{tool}</Text>
           {' — '}
           <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
         </Text>
       )}
-      <DeadlineCountdown kind="approval" deadline={deadline} testID="agent.permission.deadline" />
-      <DisconnectedNote testID="agent.permission.reconnecting" />
+      <DeadlineCountdown kind="approval" deadline={deadline} testID={`${testIDBase}.deadline`} />
+      <DisconnectedNote testID={`${testIDBase}.reconnecting`} />
       <HStack space="sm" className="justify-end">
-        <Button testID="agent.permission.deny" variant="outline" size="sm" onPress={onDeny} isDisabled={disconnected}>
+        <Button testID={`${testIDBase}.deny`} variant="outline" size="sm" onPress={onDeny} isDisabled={disconnected}>
           <ButtonText>Deny</ButtonText>
         </Button>
-        <Button testID="agent.permission.allow" size="sm" onPress={onAllow} isDisabled={disconnected}>
+        <Button testID={`${testIDBase}.allow`} size="sm" onPress={onAllow} isDisabled={disconnected}>
           <ButtonText>Allow once</ButtonText>
         </Button>
       </HStack>

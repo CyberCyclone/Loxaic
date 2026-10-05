@@ -54,7 +54,56 @@ export function neededByOthers(uses: ConversationUse[], windows: (number | null)
   return uses.reduce((need, u) => Math.max(need, smallestStageFor(u.tokens, windows)), 0);
 }
 
-/** Each other conversation's newest use of `model` in the window. */
+/**
+ * One row of `recentUses`' query: a conversation's newest use of the model,
+ * and what it is to the thread that spawned it, if it is a sub-agent.
+ */
+export interface UseRow {
+  conversationId: string | null;
+  tokens: number;
+  at: Date;
+  parentConversationId: string | null;
+}
+
+/**
+ * Folds sub-agents into the threads they belong to.
+ *
+ * A sub-agent records usage under its own conversation, which nobody would
+ * call "another conversation": it is listed nowhere and is part of its
+ * parent's turn. Counted on its own, each child of the person asking read as
+ * someone else's conversation in the Extend modal, and a child of another
+ * thread made that one thread count twice. So a use is reported under the
+ * thread a person would recognise, once, with the largest window any part of
+ * it still needs.
+ *
+ * Pure, so the grouping is tested without a database.
+ */
+export function usesByThread(rows: readonly UseRow[]): ConversationUse[] {
+  const byThread = new Map<string, ConversationUse>();
+  for (const r of rows) {
+    const thread = r.parentConversationId ?? r.conversationId;
+    if (!thread) continue;
+    const have = byThread.get(thread);
+    byThread.set(thread, {
+      conversationId: thread,
+      tokens: Math.max(have?.tokens ?? 0, r.tokens),
+      at: have && have.at > r.at ? have.at : r.at,
+    });
+  }
+  return [...byThread.values()];
+}
+
+/**
+ * Each other conversation's newest use of `model` in the window.
+ *
+ * A sub-agent counts only while it is running, and never when it is
+ * `exceptConversationId`'s own. A child is one run: once it has ended nothing
+ * will ever send from its conversation again, so its last request's size is
+ * not a window anybody still needs — yet it used to hold the model's
+ * step-down for the full two hours, for everyone, the thread that spawned it
+ * included. One still running does need its window, and is reported under its
+ * parent's thread (`usesByThread`).
+ */
 export async function recentUses(model: string, exceptConversationId?: string | null): Promise<ConversationUse[]> {
   const since = new Date(Date.now() - OTHERS_WINDOW_MS);
   const rows = await db
@@ -62,6 +111,7 @@ export async function recentUses(model: string, exceptConversationId?: string | 
       conversationId: usageRecords.conversationId,
       tokens: sql<number>`(${usageRecords.inputTokens} + ${usageRecords.outputTokens})::float8`,
       at: usageRecords.createdAt,
+      parentConversationId: conversations.parentConversationId,
     })
     .from(usageRecords)
     // A deleted conversation is nobody's to protect; an erased one has no row.
@@ -72,10 +122,17 @@ export async function recentUses(model: string, exceptConversationId?: string | 
         gt(usageRecords.createdAt, since),
         isNotNull(usageRecords.conversationId),
         exceptConversationId ? ne(usageRecords.conversationId, exceptConversationId) : undefined,
+        // IS DISTINCT FROM throughout: a plain `<>` against a null answers
+        // null, and a null condition drops the row — every ordinary
+        // conversation's, here, since none of them has a parent.
+        sql`(${conversations.kind} IS DISTINCT FROM 'subagent' OR ${conversations.subagent}->>'status' = 'running')`,
+        exceptConversationId
+          ? sql`${conversations.parentConversationId} IS DISTINCT FROM ${exceptConversationId}`
+          : undefined,
       ),
     )
     .orderBy(usageRecords.conversationId, desc(usageRecords.createdAt));
-  return rows.flatMap((r) => (r.conversationId ? [{ conversationId: r.conversationId, tokens: r.tokens, at: r.at }] : []));
+  return usesByThread(rows);
 }
 
 /** This conversation's last prompt plus reply — what its next turn starts from. */

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ScrollView } from 'react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -10,6 +11,11 @@ import { WaitTimeout } from '@/components/settings/WaitTimeout';
 import { AdaptiveTimeoutToggle } from '@/components/settings/AdaptiveTimeoutToggle';
 import { UnattendedCheckins } from '@/components/settings/UnattendedCheckins';
 import { LoopSensitivity } from '@/components/settings/LoopSensitivity';
+import { SubAgentModel } from '@/components/settings/SubAgentModel';
+import { ModelModal } from '@/components/settings/ModelModal';
+import { useModels } from '@/hooks/useModels';
+import { useRecentModels } from '@/hooks/useRecentModels';
+import { useSession } from '@/lib/session';
 import { useServerReachable } from '@/lib/connection';
 import { usePrefs } from '@/hooks/usePrefs';
 
@@ -28,6 +34,11 @@ export default function CheckinsScreen() {
   // Every row saves on the server.
   const reachable = useServerReachable();
   const locked = busy || !reachable;
+  // For the sub-agent model: the list to pick a fixed one from.
+  const { token } = useSession();
+  const { models, loading: modelsLoading, error: modelsError, refresh: refreshModels, getName, isKnown } = useModels(token);
+  const { recentModels, refreshRecentModels } = useRecentModels(token);
+  const [pickingModel, setPickingModel] = useState(false);
 
   const body = () => {
     if (loading) {
@@ -110,6 +121,29 @@ export default function CheckinsScreen() {
             disabled={locked}
           />
         )}
+
+        {/* Hidden against a server that predates sub-agents, like every row
+            above against one that predates its field. */}
+        {prefs.subagentModelMode !== undefined && (
+          <VStack testID="checkins.subagents" space="sm" className="border-t border-border pt-4">
+            <Text size="sm" className="font-medium text-foreground">
+              Sub-agents
+            </Text>
+            <Text size="xs" className="text-muted-foreground">
+              The agent can hand part of its work to a sub-agent: a separate agent with its own context that
+              works in the same workspace and reports back. A sub-agent asks before it runs a tool exactly as
+              the agent does, and you can open or stop one from its card or from the ⋮ menu.
+            </Text>
+            <SubAgentModel
+              mode={prefs.subagentModelMode}
+              model={prefs.subagentModel ?? null}
+              modelName={prefs.subagentModel && isKnown(prefs.subagentModel) ? getName(prefs.subagentModel) : null}
+              onChooseMode={(mode) => { save({ subagentModelMode: mode }); }}
+              onPickModel={() => { setPickingModel(true); }}
+              disabled={locked}
+            />
+          </VStack>
+        )}
       </VStack>
     );
   };
@@ -120,6 +154,29 @@ export default function CheckinsScreen() {
       <ScrollView testID="checkins.scroll" className="flex-1">
         {body()}
       </ScrollView>
+      <ModelModal
+        open={pickingModel}
+        onClose={() => { setPickingModel(false); }}
+        models={models}
+        loading={modelsLoading}
+        error={modelsError}
+        onRefresh={() => {
+          void refreshModels();
+          void refreshRecentModels();
+        }}
+        selectedModel={prefs?.subagentModel ?? ''}
+        recentModels={recentModels}
+        onSelect={(id) => {
+          // Both at once: the server refuses `fixed` without a model, and a
+          // model saved without the mode would change nothing a person can see.
+          save({ subagentModelMode: 'fixed', subagentModel: id });
+          setPickingModel(false);
+        }}
+        onOpenSettings={() => {
+          setPickingModel(false);
+          shell.openSettings();
+        }}
+      />
     </VStack>
   );
 }

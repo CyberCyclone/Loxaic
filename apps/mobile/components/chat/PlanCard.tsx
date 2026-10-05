@@ -10,6 +10,9 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { PLAN_TOOL, QUESTIONS_TOOL, planTitle, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import type { ToolCall } from '@/lib/types';
 import { ToolCallCard } from './ToolCallCard';
+import { SUBAGENT_TOOL_NAME } from '@loxaic/types';
+import { SubAgentContext } from '@/components/subagents/SubAgentContext';
+import { SubAgentCard } from '@/components/subagents/SubAgentCard';
 
 /**
  * How a plan in the transcript reaches the panel that shows it (#199). A
@@ -44,6 +47,12 @@ const STATUS_TINT: Record<PlanStatus, string> = {
  * can show, the ordinary card otherwise. */
 export function ToolOrPlanCard({ tool }: { tool: ToolCall }) {
   const review = useContext(PlanReviewContext);
+  const subAgents = useContext(SubAgentContext);
+  // A sub-agent's card, where a screen that can show sub-agents provides the
+  // context; the ordinary tool card everywhere else.
+  if (subAgents && tool.tool === SUBAGENT_TOOL_NAME) {
+    return <SubAgentCard tool={tool} ui={subAgents} />;
+  }
   if (review && tool.tool === PLAN_TOOL && tool.plan && tool.callId && tool.ok === true) {
     return <PlanCard callId={tool.callId} plan={tool.plan} review={review} />;
   }

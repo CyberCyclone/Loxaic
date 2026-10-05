@@ -33,6 +33,8 @@ interface PrefsBody {
   adaptiveTimeout: boolean;
   checkinAutoContinues: number;
   loopSensitivity: string;
+  subagentModelMode: string;
+  subagentModel: string | null;
   serverDefaults: { checkinTimeoutMs: number; approvalTimeoutMs: number };
 }
 
@@ -84,6 +86,8 @@ describe("GET /v1/prefs", () => {
       adaptiveTimeout: true,
       checkinAutoContinues: 2,
       loopSensitivity: "normal",
+      subagentModelMode: "choose",
+      subagentModel: null,
     });
   });
 
@@ -216,5 +220,89 @@ describe("PATCH /v1/prefs", () => {
   it("clamps a stored value that arrived some other way", async () => {
     await db.update(userPrefs).set({ checkinTimeoutMs: 1, checkinAutoContinues: 99, loopSensitivity: "bogus" }).where(eq(userPrefs.userId, userId));
     expect(await get()).toMatchObject({ checkinTimeoutMs: 5_000, checkinAutoContinues: 3, loopSensitivity: "normal" });
+  });
+});
+
+describe("the sub-agent model setting", () => {
+  /**
+   * Which model a sub-agent runs on is a spending decision as much as a
+   * preference: `fixed` sends every child of every conversation to one model.
+   * So a fixed model is checked the way a routine's is when saved, and "fixed"
+   * with nothing to fix it to is refused rather than left to fall back.
+   */
+  const withMock = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const previous = process.env.MOCK_INFERENCE;
+    // Under the mock any bare reference resolves, which stands in for a model
+    // this server can serve.
+    process.env.MOCK_INFERENCE = "true";
+    try {
+      return await fn();
+    } finally {
+      if (previous === undefined) delete process.env.MOCK_INFERENCE;
+      else process.env.MOCK_INFERENCE = previous;
+    }
+  };
+
+  it("refuses a mode it does not know", async () => {
+    for (const bad of ["always", "", null, 1, true]) {
+      expect((await patch({ subagentModelMode: bad })).statusCode).toBe(400);
+    }
+  });
+
+  it("refuses a fixed model this server cannot serve, naming why", async () => {
+    const res = await patch({ subagentModelMode: "fixed", subagentModel: "no-such-provider::some-model" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/provider/i);
+    for (const bad of ["", "default", 1, true]) {
+      expect((await patch({ subagentModel: bad })).statusCode).toBe(400);
+    }
+    // Nothing was written by any of those.
+    expect(await get()).toMatchObject({ subagentModelMode: "choose", subagentModel: null });
+  });
+
+  it("refuses 'fixed' when the model saved for it can no longer be served", async () => {
+    // Saved while its provider existed; the provider has since been deleted.
+    // The patch names only the mode, so the model is the stored one.
+    await db
+      .insert(userPrefs)
+      .values({ userId, subagentModelMode: "parent", subagentModel: "deleted-provider::some-model" })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { subagentModelMode: "parent", subagentModel: "deleted-provider::some-model" } });
+    try {
+      const res = await patch({ subagentModelMode: "fixed" });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/provider/i);
+      expect((await get()).subagentModelMode).toBe("parent");
+    } finally {
+      await db.update(userPrefs).set({ subagentModelMode: "choose", subagentModel: null }).where(eq(userPrefs.userId, userId));
+    }
+  });
+
+  it("refuses 'fixed' with no model to fix it to", async () => {
+    expect((await patch({ subagentModelMode: "fixed" })).statusCode).toBe(400);
+    expect((await get()).subagentModelMode).toBe("choose");
+  });
+
+  it("saves a fixed model, keeps it across a change of mode, and will not clear it while fixed", async () => {
+    await withMock(async () => {
+      const res = await patch({ subagentModelMode: "fixed", subagentModel: "llama-3.1-8b-instruct" });
+      expect(res.statusCode).toBe(200);
+      expect(await get()).toMatchObject({ subagentModelMode: "fixed", subagentModel: "llama-3.1-8b-instruct" });
+      // Clearing the model out from under `fixed` would leave the setting
+      // saying one thing while children ran on another.
+      expect((await patch({ subagentModel: null })).statusCode).toBe(400);
+      // Moving off `fixed` keeps the model, so going back offers it again —
+      // and now it may be cleared.
+      expect((await patch({ subagentModelMode: "parent" })).statusCode).toBe(200);
+      expect(await get()).toMatchObject({ subagentModelMode: "parent", subagentModel: "llama-3.1-8b-instruct" });
+      expect((await patch({ subagentModelMode: "fixed" })).statusCode).toBe(200);
+      expect((await patch({ subagentModelMode: "choose", subagentModel: null })).statusCode).toBe(200);
+      expect(await get()).toMatchObject({ subagentModelMode: "choose", subagentModel: null });
+    });
+  });
+
+  it("leaves every other setting alone", async () => {
+    await patch({ maxIterations: 42 });
+    await patch({ subagentModelMode: "parent" });
+    expect(await get()).toMatchObject({ maxIterations: 42, subagentModelMode: "parent" });
   });
 });

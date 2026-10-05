@@ -164,6 +164,15 @@ export function recordPrompt(
   traces.set(conversationId, { ...fingerprint, promptTokens });
 }
 
+/**
+ * Drops a conversation's trace. For a conversation that will never send
+ * again — a sub-agent's, which is one run long — so its entry does not sit in
+ * the bounded map pushing out a conversation someone is still in.
+ */
+export function forgetPromptTrace(conversationId: string): void {
+  traces.delete(conversationId);
+}
+
 /** Test seam. */
 export function resetPromptTraces(): void {
   traces.clear();

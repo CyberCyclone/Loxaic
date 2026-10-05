@@ -22,6 +22,9 @@ interface ToolApprovalDialogProps {
   onAllowOnce: () => void;
   onAllowAlways: () => void;
   onReject: () => void;
+  /** Who is asking, when it is not the run on screen: a sub-agent's
+   * description — see PermissionBar's `source`. */
+  source?: string;
 }
 
 /** A tool-call approval, blocking until the user decides — unlike the
@@ -30,7 +33,7 @@ interface ToolApprovalDialogProps {
  * tool patches its server's policy; a builtin patches the user's global
  * allowlist — see useChatSession's handleAllowAlways). No backdrop-dismiss:
  * a pending tool call needs an explicit decision, not an accidental tap-away. */
-export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, onAllowAlways, onReject }: ToolApprovalDialogProps) {
+export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, onAllowAlways, onReject, source }: ToolApprovalDialogProps) {
   const mcp = splitMcpTool(tool);
   const pretty = JSON.stringify(args, null, 2);
   // Explicit length check rather than `??`: a reason that trims to empty must
@@ -52,6 +55,11 @@ export function ToolApprovalDialog({ tool, args, reason, deadline, onAllowOnce, 
             pushes the countdown below a fold nothing can scroll to. */}
         <ModalBody scrollEnabled>
           <VStack space="md">
+            {source ? (
+              <Text testID="chat.approval.source" size="xs" className="font-medium text-warning">
+                Sub-agent · {source}
+              </Text>
+            ) : null}
             <HStack space="xs" className="flex-wrap items-baseline">
               {mcp ? (
                 <>

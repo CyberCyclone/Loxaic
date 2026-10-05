@@ -3,7 +3,7 @@ export type SurfaceId = 'chat' | 'agent' | 'routines' | 'mcp' | 'stats' | 'launc
 
 export type ModelLocation = 'server' | 'device' | 'remote'
 
-export type ConversationKind = 'chat' | 'agent' | 'routine'
+export type ConversationKind = 'chat' | 'agent' | 'routine' | 'subagent'
 
 export type MessageLocation = 'server' | 'device'
 
@@ -99,6 +99,11 @@ export interface ToolCall {
   /** An `ask_questions` call's questions — same three construction sites as
    * `plan`. See lib/plan.ts. */
   questions?: import('./plan').Question[]
+  /** A `subagent` call: the task it handed off, and the assistant message the
+   * call belongs to — which with `callId` names the sub-agent it started (a
+   * model's call ids repeat across messages). Same three construction sites
+   * as `plan`. See lib/subAgents.ts. */
+  subagent?: { description: string; messageId?: string }
 }
 
 export interface DiffLine {
@@ -109,6 +114,10 @@ export interface DiffLine {
 export interface Message {
   id?: string
   role: 'user' | 'assistant' | 'summary'
+  /** Set on a sub-agent's user messages when its transcript is shown: the
+   * agent that started it wrote them, not the person reading. Display only —
+   * never stored or sent. */
+  fromAgent?: boolean
   /** The row's place in the engine's replay order, from history, a snapshot
    * or `message.start` alike. Absent on an optimistic bubble and from an older
    * server. Used to place a snapshot's messages in a thread loaded a page at a

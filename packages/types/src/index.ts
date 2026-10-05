@@ -9,7 +9,9 @@ export type Id = string;
 
 export type Origin = "server" | "device";
 
-export type ConversationKind = "chat" | "agent" | "routine";
+/** `subagent` is a child agent's own conversation (see ./subagents): listed
+ * nowhere, and reached only through the thread that spawned it. */
+export type ConversationKind = "chat" | "agent" | "routine" | "subagent";
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
@@ -335,6 +337,7 @@ export * from "./waits";
 export * from "./commands";
 export * from "./mcp-state";
 export * from "./thinking";
+export * from "./subagents";
 
 export interface UsageRecord {
   id: string;

@@ -501,6 +501,119 @@ export async function getToolResults(
   );
 }
 
+// ── Sub-agents ────────────────────────────────────────────
+
+/** One sub-agent call in one assistant message: a child whose two requests
+ * each take the mock's eight seconds, seven of them with a tool call between (a scenario of its own, matched on the child's task) — so it is
+ * still running, with a measured context and speed, long enough to look at. */
+export const SLOW_SUBAGENT_PROMPT = 'Please delegate the slow investigation.';
+export const SLOW_SUBAGENT_NAME = 'Investigate slowly';
+/** Two sub-agent calls in one message: one that answers at once, and the slow
+ * one above. What the Sub-agents list needs to show both of its sections. */
+export const TWO_SUBAGENTS_PROMPT = 'Please delegate two tasks at once.';
+export const QUICK_SUBAGENT_NAME = 'Quick lookup';
+export const LONG_SUBAGENT_NAME = 'Long survey';
+/** A sub-agent whose task makes it write a file — which asks first in manual
+ * mode. The mock's own trigger: the text after the colon is the child's task. */
+export const APPROVAL_SUBAGENT_PROMPT = 'Use a sub-agent: write a file called notes';
+export const MOCK_SUBAGENT_NAME = 'Mock sub-task';
+
+export interface E2ESubAgent {
+  conversation_id: string;
+  stream_id: string;
+  call_id: string;
+  description: string;
+  model: string;
+  status: 'running' | 'complete' | 'error' | 'cancelled';
+  /** On the server's clock. */
+  started_at: number;
+  ended_at?: number;
+}
+
+/**
+ * Sends `prompt` from the agent screen and returns the run it opened.
+ *
+ * By difference, not "the newest": the list is read over the API, and asked a
+ * moment too early its newest row is still the *previous* case's run — which
+ * then has none of the sub-agents the case goes on to wait for, or (worse)
+ * already holds the very result the case is about to assert on.
+ */
+export async function sendInNewRun(creds: Pick<Credentials, 'email' | 'password'>, prompt: string): Promise<string> {
+  const before = new Set((await listConversations(creds)).map((c) => c.id));
+  await sendMessage(prompt);
+  let id = '';
+  await browser.waitUntil(
+    async () => {
+      const made = (await listConversations(creds)).find((c) => c.kind === 'agent' && !before.has(c.id));
+      id = made ? made.id : '';
+      return id !== '';
+    },
+    { timeout: 20_000, timeoutMsg: 'the agent run never appeared in the conversation list' },
+  );
+  // On an iPhone the keyboard stays up after a send and leaves the thread a
+  // sliver above it, with the sub-agent's card scrolled out of it — and
+  // XCUITest reports an off-screen element as not displayed. A tap on the
+  // list closes the keyboard (the list does not keep it open for taps).
+  if (platform() === 'ios' && (await browser.isKeyboardShown().catch(() => false))) {
+    const list = byTestId('chat.messageList');
+    // Best effort. With an approval bar up as well the list has no room at
+    // all and is not there to tap — and the bar itself is above the keyboard.
+    const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
+    if (there) await list.click().catch(() => undefined);
+  }
+  return id;
+}
+
+/**
+ * The seconds an elapsed label shows: "12.3s" or "4m 05s". NaN for anything
+ * else, so a comparison against it fails rather than passing on a label that
+ * merely contains an "s".
+ */
+export function elapsedSeconds(label: string): number {
+  const match = /^\s*(?:(\d+)m\s*)?(\d+(?:\.\d+)?)s\s*$/.exec(label);
+  if (!match) return Number.NaN;
+  const minutes = (match[1] as string | undefined) ? Number(match[1]) : 0;
+  return minutes * 60 + Number(match[2]);
+}
+
+/**
+ * A thread's sub-agents, from the API.
+ *
+ * A card's testID carries the call id that started it, which the model chose
+ * and a spec cannot know in advance — so it is read from here, the same record
+ * the app itself reads after a reload.
+ */
+export async function listSubAgents(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<E2ESubAgent[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/subagents`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] listing sub-agents failed (${String(res.status)})`);
+  return ((await res.json()) as { subagents: E2ESubAgent[] }).subagents;
+}
+
+/** Waits until the thread has `count` sub-agents and returns them, oldest
+ * first — the order their calls were made in. */
+export async function waitForSubAgents(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+  count: number,
+  timeoutMs = 30_000,
+): Promise<E2ESubAgent[]> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const list = await listSubAgents(creds, conversationId);
+    if (list.length >= count) return [...list].reverse();
+    if (Date.now() > deadline) {
+      throw new Error(`[e2e] ${conversationId} had ${String(list.length)} sub-agent(s), wanted ${String(count)}`);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
+
 /** Opens Settings and navigates to the Agent Sandbox screen, for admin and
  * non-admin sessions alike — the screen itself branches on role. */
 export async function openSandboxSettings(): Promise<void> {

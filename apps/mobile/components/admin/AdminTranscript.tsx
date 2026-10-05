@@ -82,7 +82,7 @@ export function AdminTranscript({ messages, loading, hasOlder, loadingOlder = fa
           <ButtonText>{loadingOlder ? 'Loading…' : 'Load older messages'}</ButtonText>
         </Button>
       )}
-      {messages.map((m) => (
+      {messages.map((m, i) => (
         <Box key={m.id} className="rounded-md border border-border bg-card px-2.5 py-2">
           <HStack space="xs" className="items-center">
             <Text size="2xs" className="font-medium text-foreground">
@@ -93,7 +93,10 @@ export function AdminTranscript({ messages, loading, hasOlder, loadingOlder = fa
               {m.model ? ` · ${m.model}` : ''}
             </Text>
           </HStack>
-          <Text size="xs" className="text-foreground">
+          {/* The newest message carries an id of its own: a transcript is
+              told apart by how it ends, and a container's id is not something
+              every platform's test driver can see. */}
+          <Text testID={i === messages.length - 1 ? 'admin.transcript.newest' : undefined} size="xs" className="text-foreground">
             {describe(m.content)}
           </Text>
         </Box>

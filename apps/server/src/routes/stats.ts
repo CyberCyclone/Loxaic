@@ -88,7 +88,17 @@ export function statsRoutes(app: FastifyInstance) {
     };
 
     const baseFilters = [eq(usageRecords.userId, userId)];
-    if (conversation_id) baseFilters.push(eq(usageRecords.conversationId, conversation_id));
+    // A thread's usage includes its sub-agents': their requests are recorded
+    // against their own conversations (so the parent's context meter and
+    // compaction figures stay its own), and "what did this thread cost" means
+    // all of them.
+    if (conversation_id) {
+      baseFilters.push(
+        sql`(${usageRecords.conversationId} = ${conversation_id} OR ${usageRecords.conversationId} IN (
+          SELECT ${conversations.id} FROM ${conversations} WHERE ${conversations.parentConversationId} = ${conversation_id}
+        ))`,
+      );
+    }
     if (model) baseFilters.push(eq(usageRecords.model, model));
 
     // An explicit from/to is a custom window with no natural "previous
@@ -276,20 +286,40 @@ export function statsRoutes(app: FastifyInstance) {
     const { since } = rangeToWindow(range);
     const take = Math.min(Math.max(Number(limit) || 20, 1), 100);
 
+    // Grouped by the thread a person would recognise: a sub-agent's requests
+    // count under the conversation that spawned it. Its own conversation is
+    // listed nowhere, so a row for it here would be a title nobody chose
+    // opening onto nothing.
+    const threadId = sql<string | null>`COALESCE(${conversations.parentConversationId}, ${usageRecords.conversationId})`;
     const rows = await db
       .select({
-        conversationId: usageRecords.conversationId,
-        model: sql<string>`(array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC))[1]`,
+        conversationId: threadId,
+        // The thread's own newest request names its model, not whichever
+        // request in the group finished last: a sub-agent may run on another
+        // model, and a thread run entirely on a local one would otherwise be
+        // labelled with the hosted model one child used. Falls back to the
+        // group's newest for a thread whose own rows fell out of the range.
+        model: sql<string>`COALESCE(
+          (array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC) FILTER (WHERE ${conversations.parentConversationId} IS NULL))[1],
+          (array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC))[1]
+        )`,
         inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
         cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
         measuredInputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
         outputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
-        avgTtftMs: sql<number>`AVG(${usageRecords.ttftMs})::float8`,
+        // The thread's own requests only, for the same reason: a child on
+        // another model has another model's prefill behaviour, and an average
+        // across both describes neither.
+        avgTtftMs: sql<number>`COALESCE(
+          AVG(${usageRecords.ttftMs}) FILTER (WHERE ${conversations.parentConversationId} IS NULL),
+          AVG(${usageRecords.ttftMs})
+        )::float8`,
         lastUsedAt: sql<string>`MAX(${usageRecords.createdAt})`,
       })
       .from(usageRecords)
+      .leftJoin(conversations, eq(conversations.id, usageRecords.conversationId))
       .where(and(eq(usageRecords.userId, userId), gte(usageRecords.createdAt, since)))
-      .groupBy(usageRecords.conversationId)
+      .groupBy(threadId)
       .orderBy(sql`MAX(${usageRecords.createdAt}) DESC`)
       .limit(take);
 

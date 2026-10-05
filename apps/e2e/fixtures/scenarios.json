@@ -185,5 +185,270 @@
       }
     ],
     "finalText": "[Mock] Read the sub package.\n"
+  },
+  {
+    "match": "delegate the slow investigation",
+    "steps": [
+      {
+        "tool": "subagent",
+        "args": {
+          "description": "Investigate slowly",
+          "prompt": "take your time and survey in passes"
+        }
+      }
+    ],
+    "finalText": "[Mock] The sub-agent has reported back.\n"
+  },
+  {
+    "match": "delegate two tasks at once",
+    "steps": [
+      {
+        "calls": [
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Quick lookup",
+              "prompt": "say the quick lookup is done"
+            }
+          },
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Long survey",
+              "prompt": "take your time and survey in passes"
+            }
+          }
+        ]
+      }
+    ],
+    "finalText": "[Mock] Both sub-agents have reported back.\n"
+  },
+  {
+    "match": "survey in passes",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Pass 1",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Pass 2",
+              "status": "pending"
+            },
+            {
+              "id": "3",
+              "text": "Pass 3",
+              "status": "pending"
+            },
+            {
+              "id": "4",
+              "text": "Pass 4",
+              "status": "pending"
+            },
+            {
+              "id": "5",
+              "text": "Pass 5",
+              "status": "pending"
+            },
+            {
+              "id": "6",
+              "text": "Pass 6",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Pass 1",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Pass 2",
+              "status": "completed"
+            },
+            {
+              "id": "3",
+              "text": "Pass 3",
+              "status": "pending"
+            },
+            {
+              "id": "4",
+              "text": "Pass 4",
+              "status": "pending"
+            },
+            {
+              "id": "5",
+              "text": "Pass 5",
+              "status": "pending"
+            },
+            {
+              "id": "6",
+              "text": "Pass 6",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Pass 1",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Pass 2",
+              "status": "completed"
+            },
+            {
+              "id": "3",
+              "text": "Pass 3",
+              "status": "completed"
+            },
+            {
+              "id": "4",
+              "text": "Pass 4",
+              "status": "pending"
+            },
+            {
+              "id": "5",
+              "text": "Pass 5",
+              "status": "pending"
+            },
+            {
+              "id": "6",
+              "text": "Pass 6",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Pass 1",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Pass 2",
+              "status": "completed"
+            },
+            {
+              "id": "3",
+              "text": "Pass 3",
+              "status": "completed"
+            },
+            {
+              "id": "4",
+              "text": "Pass 4",
+              "status": "completed"
+            },
+            {
+              "id": "5",
+              "text": "Pass 5",
+              "status": "pending"
+            },
+            {
+              "id": "6",
+              "text": "Pass 6",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Pass 1",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Pass 2",
+              "status": "completed"
+            },
+            {
+              "id": "3",
+              "text": "Pass 3",
+              "status": "completed"
+            },
+            {
+              "id": "4",
+              "text": "Pass 4",
+              "status": "completed"
+            },
+            {
+              "id": "5",
+              "text": "Pass 5",
+              "status": "completed"
+            },
+            {
+              "id": "6",
+              "text": "Pass 6",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Pass 1",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Pass 2",
+              "status": "completed"
+            },
+            {
+              "id": "3",
+              "text": "Pass 3",
+              "status": "completed"
+            },
+            {
+              "id": "4",
+              "text": "Pass 4",
+              "status": "completed"
+            },
+            {
+              "id": "5",
+              "text": "Pass 5",
+              "status": "completed"
+            },
+            {
+              "id": "6",
+              "text": "Pass 6",
+              "status": "completed"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] Surveyed in six passes.\n"
   }
 ]

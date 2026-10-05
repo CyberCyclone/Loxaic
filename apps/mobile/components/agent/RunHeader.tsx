@@ -18,7 +18,9 @@ const STATE_LABEL: Record<RunState, string> = {
   error: 'Error',
 };
 
-const STATE_DOT: Record<RunState, string> = {
+/** The dot's colour per state. Exported for a sub-agent's card and panel, so
+ * a child's state is drawn in its parent's vocabulary. */
+export const STATE_DOT: Record<RunState, string> = {
   // Amber, like awaiting_approval: both mean "this run exists but is not
   // doing anything", which is the distinction a status dot is for.
   queued: 'bg-warning',

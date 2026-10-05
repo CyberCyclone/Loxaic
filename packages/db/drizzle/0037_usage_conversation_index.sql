@@ -1,0 +1,1 @@
+CREATE INDEX "usage_records_conversation_created_idx" ON "usage_records" USING btree ("conversation_id","created_at");

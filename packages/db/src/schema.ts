@@ -76,7 +76,10 @@ export const conversations = pgTable("conversations", {
   id: uuid("id").primaryKey().defaultRandom(),
   ownerId: text("owner_id").notNull().references(() => user.id),
   title: text("title").notNull().default("New conversation"),
-  kind: text("kind", { enum: ["chat", "agent", "routine"] }).notNull().default("chat"),
+  /** `subagent` is a conversation a parent run spawned (streams/runs/
+   * subagentRun.ts): it holds one child agent's transcript, is listed nowhere,
+   * and is reached only through its parent — see the `parent*` columns. */
+  kind: text("kind", { enum: ["chat", "agent", "routine", "subagent"] }).notNull().default("chat"),
   activeLeafId: uuid("active_leaf_id"),
   modelPref: jsonb("model_pref"),
   /** Per-conversation MCP choices, `McpOverrides` in packages/types:
@@ -97,6 +100,32 @@ export const conversations = pgTable("conversations", {
    * compaction after a restart, which has no in-memory request shape — rather
    * than the default. Null until a run names one. */
   thinkingLevel: text("thinking_level"),
+  /**
+   * Set only on a `subagent` conversation: the conversation whose run spawned
+   * it. No foreign key, like `messages.conversation_id` — erasing a parent
+   * erases its children by hand, in `conversations/delete.ts`, where their
+   * messages (which no cascade could reach) go in the same transaction.
+   * Everything about who may see or act on a child is answered by its parent
+   * (`resolveAccess`).
+   */
+  parentConversationId: uuid("parent_conversation_id"),
+  /** The parent's assistant message whose `subagent` tool call spawned this
+   * child, and that call's id. Both, because a model's call ids repeat across
+   * messages (`call_0`); together they name one card in the parent's thread. */
+  parentMessageId: uuid("parent_message_id"),
+  parentCallId: text("parent_call_id"),
+  /** A `SubAgentInfo` (packages/types): what the child was asked to do, on
+   * which model, and how it ended. Null on every other kind. */
+  subagent: jsonb("subagent"),
+  /**
+   * The model references this conversation's `subagent` tool offers as its
+   * `model` argument, frozen the first time the tool is offered. Recomputed
+   * per run it would follow the sender's recently-used list, which reorders on
+   * every send and differs between editors — and the tools array is the front
+   * of every prompt. Null until then, and on a conversation that never offers
+   * the choice.
+   */
+  subagentModels: jsonb("subagent_models"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   /**
@@ -121,7 +150,11 @@ export const conversations = pgTable("conversations", {
    * deciding for them halfway through.
    */
   deletedHold: boolean("deleted_hold").notNull().default(false),
-});
+}, (t) => [
+  // "This thread's sub-agents" — asked by the ⋮ list, by every access check on
+  // a child, and by a delete.
+  index("conversations_parent_idx").on(t.parentConversationId),
+]);
 
 /**
  * Who besides the owner may see a conversation, and what they may do in it.
@@ -286,6 +319,10 @@ export const usageRecords = pgTable("usage_records", {
   // change (llama/context-stage-policy.ts). Without it that question is a scan
   // of the fastest-growing table in the database.
   index("usage_records_model_created_idx").on(t.model, t.createdAt),
+  // "This conversation's requests, newest first": a thread's sub-agent listing
+  // asks it twice per child (their figures come from here), as do the context
+  // meter's fallback and a stage change's size check.
+  index("usage_records_conversation_created_idx").on(t.conversationId, t.createdAt),
 ]);
 
 // ── Workspaces ──
@@ -678,6 +715,16 @@ export const userPrefs = pgTable("user_prefs", {
    * what the user actually ran rather than what they browsed past.
    */
   recentModels: jsonb("recent_models").notNull().default([]),
+  /**
+   * Which model a sub-agent runs on: `choose` (the parent's, unless the parent
+   * names another it is offered), `parent` (always the parent's), or `fixed`
+   * (`subagentModel`, whatever the parent is on). See `subagentModelFor` in
+   * streams/runs/subagent-policy.ts.
+   */
+  subagentModelMode: text("subagent_model_mode").notNull().default("choose"),
+  /** The model reference `fixed` uses. Kept when the mode moves away from
+   * `fixed`, so going back offers it again; null until one is picked. */
+  subagentModel: text("subagent_model"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
