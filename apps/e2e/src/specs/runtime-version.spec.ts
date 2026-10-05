@@ -183,6 +183,7 @@ describe('choosing the llama.cpp version', () => {
     expect(await runtime()).toMatchObject({ state: 'running', version: { kind: 'bundled' } });
 
     await tap(`${row(tags.good)}.switch`);
+    await scrollTo('localModels.versions.confirm.ok');
     await waitForFreshText('localModels.versions.confirm.title', `Switch to llama.cpp ${tags.good}?`);
     await shot('llama-versions-switch-confirm');
     await tap('localModels.versions.confirm.ok');
@@ -212,7 +213,7 @@ describe('choosing the llama.cpp version', () => {
     await tap(`${row(tags.broken)}.download`);
     await waitForVisible(`${row(tags.broken)}.switch`, 30_000);
     await tap(`${row(tags.broken)}.switch`);
-    await waitForVisible('localModels.versions.confirm.ok');
+    await scrollTo('localModels.versions.confirm.ok');
     await tap('localModels.versions.confirm.ok');
     await waitForAbsent('localModels.versions.close', 20_000);
 
@@ -223,7 +224,8 @@ describe('choosing the llama.cpp version', () => {
     await scrollTo('localModels.runtime.reason');
     await waitForFreshText('localModels.runtime.reason', 'not recognized in preset');
     await scrollTo('localModels.runtime.revert');
-    await waitForFreshText('localModels.runtime.revert', `Switch back to the bundled version (${bundledTag})`);
+    // The label, not the button: a native lookup of a pressable has no text.
+    await waitForFreshText('localModels.runtime.revert.label', `Switch back to the bundled version (${bundledTag})`);
     await shot('llama-version-failed-to-start');
     // Nothing fell back by itself, however long it is left.
     await browser.pause(4000);
@@ -303,6 +305,7 @@ describe('choosing the llama.cpp version', () => {
     await shot('llama-versions-fork-downloaded');
 
     await tap(`${base}.switch`);
+    await scrollTo('localModels.versions.confirm.ok');
     await waitForFreshText('localModels.versions.confirm.title', 'Switch to E2E Fork?');
     await tap('localModels.versions.confirm.ok');
     await waitForAbsent('localModels.versions.close', 20_000);
@@ -317,6 +320,7 @@ describe('choosing the llama.cpp version', () => {
     await openPicker();
     await scrollTo('localModels.versions.bundled.switch');
     await tap('localModels.versions.bundled.switch');
+    await scrollTo('localModels.versions.confirm.ok');
     await waitForFreshText('localModels.versions.confirm.title', 'Switch back to the bundled version?');
     await tap('localModels.versions.confirm.ok');
     await waitForAbsent('localModels.versions.close', 20_000);

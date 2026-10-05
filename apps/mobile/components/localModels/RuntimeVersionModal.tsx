@@ -265,6 +265,42 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
     }
   };
 
+  /** Asked under the row it is about, so it is in view wherever in the list
+   * that row is — a box at the top of the sheet was off screen for a row
+   * near the bottom, on a phone most of all. */
+  const confirmBox = () =>
+    warning && (
+      <VStack testID="localModels.versions.confirm" space="xs" className="mt-2 rounded-md bg-destructive/10 p-3">
+        <Text testID="localModels.versions.confirm.title" size="sm" className="font-medium text-foreground">
+          {warning.title}
+        </Text>
+        <Text size="xs" className="text-foreground">
+          {warning.message}
+        </Text>
+        <HStack space="sm" className="justify-end">
+          <Pressable testID="localModels.versions.confirm.cancel" onPress={() => { setTarget(null); }} className="px-3 py-1.5">
+            <Text size="sm" className="text-muted-foreground">
+              Cancel
+            </Text>
+          </Pressable>
+          <Pressable
+            testID="localModels.versions.confirm.ok"
+            disabled={!reachable || busy !== null}
+            onPress={() => { void confirmSwitch(); }}
+            className="rounded-md bg-destructive px-3 py-1.5"
+          >
+            {busy === 'switch' ? (
+              <Spinner size="small" />
+            ) : (
+              <Text size="sm" className="text-destructive-foreground">
+                {warning.confirm}
+              </Text>
+            )}
+          </Pressable>
+        </HStack>
+      </VStack>
+    );
+
   const actionButton = (action: RowAction, ids: { base: string; onDownload: () => void; onSwitch: () => void }) => {
     if (action.kind === 'in-use') return <Pill label="In use" tone="primary" testID={`${ids.base}.inUse`} />;
     if (action.kind === 'unavailable') {
@@ -346,6 +382,7 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
             {failed}
           </Text>
         )}
+        {target?.kind === 'official' && target.tag === r.tag && confirmBox()}
       </VStack>
     );
   };
@@ -397,6 +434,7 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
             {failed}
           </Text>
         )}
+        {target?.kind === 'custom' && target.id === b.id && confirmBox()}
       </VStack>
     );
   };
@@ -430,38 +468,6 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
 
             <DisconnectedNote testID="localModels.versions.disconnected" what="change the version" />
 
-            {warning && (
-              <VStack testID="localModels.versions.confirm" space="xs" className="rounded-md bg-destructive/10 p-3">
-                <Text testID="localModels.versions.confirm.title" size="sm" className="font-medium text-foreground">
-                  {warning.title}
-                </Text>
-                <Text size="xs" className="text-foreground">
-                  {warning.message}
-                </Text>
-                <HStack space="sm" className="justify-end">
-                  <Pressable testID="localModels.versions.confirm.cancel" onPress={() => { setTarget(null); }} className="px-3 py-1.5">
-                    <Text size="sm" className="text-muted-foreground">
-                      Cancel
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    testID="localModels.versions.confirm.ok"
-                    disabled={!reachable || busy !== null}
-                    onPress={() => { void confirmSwitch(); }}
-                    className="rounded-md bg-destructive px-3 py-1.5"
-                  >
-                    {busy === 'switch' ? (
-                      <Spinner size="small" />
-                    ) : (
-                      <Text size="sm" className="text-destructive-foreground">
-                        {warning.confirm}
-                      </Text>
-                    )}
-                  </Pressable>
-                </HStack>
-              </VStack>
-            )}
-
             {!view && !error && (
               <Box className="items-center py-8">
                 <Spinner />
@@ -475,33 +481,36 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
 
             {view && (
               <>
-                <HStack testID="localModels.versions.bundled" className="items-center justify-between rounded-md border border-border px-3 py-2">
-                  <VStack className="min-w-0 shrink pr-2">
-                    <HStack space="xs" className="flex-wrap items-center">
-                      <Text size="sm" className="text-foreground">
-                        Bundled · {view.bundled.tag}
+                <VStack testID="localModels.versions.bundled" className="rounded-md border border-border px-3 py-2">
+                  <HStack className="items-center justify-between">
+                    <VStack className="min-w-0 shrink pr-2">
+                      <HStack space="xs" className="flex-wrap items-center">
+                        <Text size="sm" className="text-foreground">
+                          Bundled · {view.bundled.tag}
+                        </Text>
+                        <Pill label="Recommended" tone="muted" />
+                      </HStack>
+                      <Text size="2xs" className="text-muted-foreground">
+                        The version this Loxaic was tested with. It follows Loxaic&apos;s updates.
                       </Text>
-                      <Pill label="Recommended" tone="muted" />
-                    </HStack>
-                    <Text size="2xs" className="text-muted-foreground">
-                      The version this Loxaic was tested with. It follows Loxaic&apos;s updates.
-                    </Text>
-                  </VStack>
-                  {view.bundled.inUse ? (
-                    <Pill label="In use" tone="primary" testID="localModels.versions.bundled.inUse" />
-                  ) : (
-                    <Pressable
-                      testID="localModels.versions.bundled.switch"
-                      disabled={locked}
-                      onPress={() => { setTarget({ kind: 'bundled' }); }}
-                      className="shrink-0 rounded-md bg-primary px-3 py-1.5"
-                    >
-                      <Text size="xs" className="text-primary-foreground">
-                        Switch back
-                      </Text>
-                    </Pressable>
-                  )}
-                </HStack>
+                    </VStack>
+                    {view.bundled.inUse ? (
+                      <Pill label="In use" tone="primary" testID="localModels.versions.bundled.inUse" />
+                    ) : (
+                      <Pressable
+                        testID="localModels.versions.bundled.switch"
+                        disabled={locked}
+                        onPress={() => { setTarget({ kind: 'bundled' }); }}
+                        className="shrink-0 rounded-md bg-primary px-3 py-1.5"
+                      >
+                        <Text size="xs" className="text-primary-foreground">
+                          Switch back
+                        </Text>
+                      </Pressable>
+                    )}
+                  </HStack>
+                  {target?.kind === 'bundled' && confirmBox()}
+                </VStack>
 
                 <VStack space="xs">
                   <Text size="sm" className="font-medium text-foreground">

@@ -150,7 +150,7 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
           onPress={onRevertVersion}
           className="mt-2 self-start rounded-full bg-primary px-3 py-1.5"
         >
-          <Text size="sm" className="text-primary-foreground">
+          <Text testID="localModels.runtime.revert.label" size="sm" className="text-primary-foreground">
             Switch back to the bundled version ({runtime.version?.bundledTag})
           </Text>
         </Pressable>
