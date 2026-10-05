@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState, type RefObject } from 'react';
 import {
+  ApiError,
   approveTool,
   denyTool,
   getMessages,
@@ -105,6 +106,19 @@ export function useSubAgentState(opts: {
   const subscribedRef = useRef(new Set<string>());
   const historyAskedRef = useRef(new Set<string>());
   const listedRef = useRef(new Set<string>());
+  // Threads whose listing could not be asked for. Not "none": their cards and
+  // list say so, and they are asked again when there is reason to think the
+  // server will answer.
+  const [listFailed, setListFailed] = useState<ReadonlySet<string>>(() => new Set());
+  const listFailedRef = useRef<ReadonlySet<string>>(listFailed);
+  const markListFailed = useCallback((parentConvId: string, failed: boolean) => {
+    if (listFailedRef.current.has(parentConvId) === failed) return;
+    const next = new Set(listFailedRef.current);
+    if (failed) next.add(parentConvId);
+    else next.delete(parentConvId);
+    listFailedRef.current = next;
+    setListFailed(next);
+  }, []);
 
   const noteChildren = useCallback((state: SubAgentsByParent) => {
     for (const list of Object.values(state)) for (const s of list ?? []) knownChildrenRef.current.add(s.conversation_id);
@@ -144,22 +158,38 @@ export function useSubAgentState(opts: {
     });
   }, [noteChildren, setByParent]);
 
-  /** The stored listing, once per thread per session — what brings the cards
-   * and the list back after a reload. A failure (an older server answers 404)
-   * is "none it can tell us of", and is not asked again. */
+  /**
+   * The stored listing, once per thread per session — what brings the cards
+   * and the list back after a reload.
+   *
+   * Only an answer settles it. A 404 is one (an older server, or a thread that
+   * is gone): "none it can tell us of", not asked again. Anything else — the
+   * server unreachable, slow at launch, a 5xx — is "could not ask": the thread
+   * is forgotten so the next call asks again, and remembered as failed so the
+   * list can say so rather than "No sub-agents yet". Swallowed like a 404, a
+   * reload during a blip lost a thread's finished sub-agents for the session.
+   */
   const loadFor = useCallback((parentConvId: string) => {
     if (!isServerConvId(parentConvId) || listedRef.current.has(parentConvId)) return;
     listedRef.current.add(parentConvId);
     getSubAgents(parentConvId)
-      .then((rows) => {
+      .then(({ subagents, serverNow }) => {
+        markListFailed(parentConvId, false);
         setByParent((prev) => {
-          const next = mergeListedSubAgents(prev, parentConvId, rows, Date.now());
+          const next = mergeListedSubAgents(prev, parentConvId, subagents, Date.now(), serverNow);
           noteChildren(next);
           return next;
         });
       })
-      .catch(() => undefined);
-  }, [noteChildren, setByParent]);
+      .catch((err: unknown) => {
+        if (err instanceof ApiError && err.status === 404) {
+          markListFailed(parentConvId, false);
+          return;
+        }
+        listedRef.current.delete(parentConvId);
+        markListFailed(parentConvId, true);
+      });
+  }, [markListFailed, noteChildren, setByParent]);
 
   // ── A child's own stream ────────────────────────────────
 
@@ -189,11 +219,13 @@ export function useSubAgentState(opts: {
   }, [cursorsRef, wsRef]);
 
   /** A new socket: nothing is subscribed on it yet. Only the open panel's
-   * child is worth subscribing again. */
+   * child is worth subscribing again. A socket that opened is also the server
+   * answering, so the listings that could not be asked for are asked again. */
   const resubscribe = useCallback(() => {
     subscribedRef.current.clear();
     if (openIdRef.current) subscribe(openIdRef.current);
-  }, [subscribe]);
+    for (const parentConvId of listFailedRef.current) loadFor(parentConvId);
+  }, [loadFor, subscribe]);
 
   // ── What a person does ──────────────────────────────────
 
@@ -211,7 +243,10 @@ export function useSubAgentState(opts: {
     getMessages(childId)
       .then((page) => { updateTranscript(childId, (t) => withChildHistory(t, reconstructMessages(page.messages))); })
       .catch(() => { updateTranscript(childId, historyAsked); })
-      .finally(() => { subscribe(childId); });
+      // Only while its panel is still the open one. There is no unsubscribe,
+      // so a child subscribed after its sheet closed streamed every text
+      // delta onto this socket for the rest of the session, for nobody.
+      .finally(() => { if (openIdRef.current === childId) subscribe(childId); });
   }, [subscribe, updateTranscript]);
 
   const close = useCallback(() => {
@@ -268,6 +303,7 @@ export function useSubAgentState(opts: {
       transcripts,
       openId,
       stopping,
+      listFailed,
       isChild,
       onParentEvent,
       onParentSync,
@@ -281,7 +317,7 @@ export function useSubAgentState(opts: {
       stop,
       answer,
     }),
-    [answer, byParent, close, isChild, loadFor, onChildEnd, onChildEvent, onChildSync, onParentEvent, onParentSync, open, openId, resubscribe, stop, stopping, transcripts],
+    [answer, byParent, close, isChild, listFailed, loadFor, onChildEnd, onChildEvent, onChildSync, onParentEvent, onParentSync, open, openId, resubscribe, stop, stopping, transcripts],
   );
 }
 

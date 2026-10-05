@@ -14,6 +14,7 @@ import type {
 } from "@loxaic/types";
 import { SUBAGENT_LOST_ERROR } from "@loxaic/types";
 import type { PermissionMode } from "@loxaic/agent";
+import type { SubagentOutcome } from "./subagent-policy.ts";
 import { stripControl } from "../../mcp/sanitize.ts";
 import { combinedText, renderRootInstructions, resolveDecision } from "../../agent/instructions.ts";
 import { describeWorkspace, effectiveWorkspace } from "../../agent/workspace.ts";
@@ -28,7 +29,7 @@ import { registerRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import { chatWorkspaceDescription } from "./chatRun.ts";
 import { runToolLoop } from "./engine.ts";
-import { subagentResultText } from "./subagent-policy.ts";
+import { subagentOutcome } from "./subagent-policy.ts";
 
 /**
  * Sub-agents: one run handing a self-contained task to a child run.
@@ -77,11 +78,7 @@ export interface SubagentCall {
   model: string;
 }
 
-export interface SubagentOutcome {
-  /** The tool result the parent's model reads, and that is persisted. */
-  output: string;
-  ok: boolean;
-}
+export type { SubagentOutcome };
 
 /** Read through a call: the type checker narrows `signal.aborted` to false
  * after the first check and cannot see that the awaits in between change it. */
@@ -89,7 +86,8 @@ function hasFired(signal: AbortSignal): boolean {
   return signal.aborted;
 }
 
-/** The longest a description is kept. It is a label on a card, not prose. */
+/** The longest a description is kept, in characters (code points). It is a
+ * label on a card, not prose. */
 const MAX_DESCRIPTION_CHARS = 80;
 
 /**
@@ -106,7 +104,11 @@ export function parseSubagentArgs(
   // A missing label is not worth refusing the call over; the task itself is
   // what matters, and its first words name it well enough.
   const label = raw || prompt.replace(/\s+/g, " ");
-  const description = label.length > MAX_DESCRIPTION_CHARS ? `${label.slice(0, MAX_DESCRIPTION_CHARS - 1)}…` : label;
+  // Cut by code point, never by UTF-16 unit: `slice` can leave half an emoji,
+  // and Postgres refuses a lone surrogate in the jsonb this is stored in — the
+  // child's insert fails and a valid task is answered "something went wrong".
+  const points = Array.from(label);
+  const description = points.length > MAX_DESCRIPTION_CHARS ? `${points.slice(0, MAX_DESCRIPTION_CHARS - 1).join("")}…` : label;
   return { description, prompt, model: args.model };
 }
 
@@ -175,6 +177,22 @@ async function instructionsFor(snapshot: unknown, model: string, parentConvId: s
 }
 
 /**
+ * Children whose row is written and whose run is not registered yet, by
+ * stream id. The row has to exist before the run can (the stream is opened for
+ * its conversation), so for that moment a child is `running` in the database
+ * and unknown to the registry — exactly what `listSubagents` reads as a child
+ * a dead process left behind. A listing read in that gap ended the card as
+ * "lost", after which the client ignored its progress and never showed its
+ * approval until it finished.
+ */
+const starting = new Set<string>();
+
+/** Whether a child's run is between its row and its registration. */
+export function isSubagentStarting(streamId: string): boolean {
+  return starting.has(streamId);
+}
+
+/**
  * Runs one sub-agent to its end and returns what the parent is told.
  *
  * Never rejects: every failure — the model cannot be served, a row cannot be
@@ -232,14 +250,17 @@ export async function runSubagent(
   try {
     const parentRow = await db.query.conversations.findFirst({
       where: eq(conversations.id, parent.convId),
-      columns: { ownerId: true, workspace: true, instructions: true },
+      columns: { ownerId: true, workspace: true, instructions: true, deletedAt: true },
     });
-    // Gone means deleted mid-run. The parent's run is being stopped; a child
-    // must not be created under a conversation that no longer exists.
-    if (!parentRow) return failed("the conversation no longer exists.");
+    // Gone means deleted mid-run — erased, or kept for an audit and stamped.
+    // The parent's run is being stopped either way; a child must not be
+    // created under a conversation nobody can reach any more, where its
+    // stream log would hold the task until the TTL.
+    if (!parentRow || parentRow.deletedAt) return failed("the conversation no longer exists.");
     workspace = effectiveWorkspace(parentRow.workspace);
     instructions = parent.surface === "agent" ? await instructionsFor(parentRow.instructions, call.model, parent.convId) : null;
 
+    starting.add(streamId);
     await db.transaction(async (tx) => {
       await tx.insert(conversations).values({
         id: childId,
@@ -279,6 +300,7 @@ export async function runSubagent(
       surface: parent.surface,
     });
   } catch (err) {
+    starting.delete(streamId);
     console.error(`starting a sub-agent for ${parent.convId} failed:`, err);
     await markEnded(childId, info, "error", "The sub-agent could not be started.").catch(() => undefined);
     return failed("something went wrong on the server.");
@@ -307,7 +329,16 @@ export async function runSubagent(
   // Under its own conversation id: reachable by `getRun(streamId)` for Stop
   // and approvals, without ever touching the parent's entry in the
   // one-run-per-conversation map.
-  registerRun({ streamId, conversationId: childId, userId: parent.userId, abort, approvals: new Map(), model: call.model });
+  registerRun({
+    streamId,
+    conversationId: childId,
+    userId: parent.userId,
+    abort,
+    approvals: new Map(),
+    model: call.model,
+    parentConversationId: parent.convId,
+  });
+  starting.delete(streamId);
   announceNewRun(childId, streamId);
 
   parent.producer.emit({
@@ -367,9 +398,13 @@ export async function runSubagent(
   }
   const end = ending.end ?? { status: "error" as const, error: "The run ended without a result." };
 
+  // A failed read is not an empty reply. Returned as "", a child that ended
+  // `complete` told its parent `ok: true` and "finished without a final
+  // reply" — stored as the tool result and replayed on every later turn, with
+  // the real report sitting unread in the child's conversation.
   const text = await finalText(childId).catch((err: unknown) => {
     console.warn(`could not read sub-agent ${childId}'s reply: ${(err as Error).message}`);
-    return "";
+    return null;
   });
   await markEnded(childId, info, end.status, end.error).catch((err: unknown) => {
     console.warn(`could not record how sub-agent ${childId} ended: ${(err as Error).message}`);
@@ -382,10 +417,7 @@ export async function runSubagent(
     ...(end.error === undefined ? {} : { error: end.error }),
   });
 
-  return {
-    output: subagentResultText({ description: call.description, status: end.status, text, error: end.error }),
-    ok: end.status === "complete",
-  };
+  return subagentOutcome({ description: call.description, status: end.status, text, error: end.error });
 }
 
 /**
@@ -542,7 +574,8 @@ export async function reconcileOrphanedSubagents(ownerId?: string): Promise<numb
  * stream log's TTL has passed. The figures come from `usage_records`: the
  * newest request's rates and context, and the reply tokens over all of them.
  * A child this process is not running cannot be `running`, whatever its row
- * says — the caller passes what the registry knows.
+ * says — the caller passes what the registry knows — unless it is one this
+ * process is in the middle of starting (`starting`).
  */
 export async function listSubagents(
   parentConvId: string,
@@ -591,7 +624,7 @@ export async function listSubagents(
   for (const row of rows) {
     const info = row.subagent as SubAgentInfo | null;
     if (!info || !row.parentMessageId || !row.parentCallId) continue;
-    const lost = info.status === "running" && !isRunning(info.streamId);
+    const lost = info.status === "running" && !isRunning(info.streamId) && !starting.has(info.streamId);
     const status: SubAgentStatus = lost ? "error" : info.status;
     const used = row.last ? (row.last.used ?? (row.last.input ?? 0) + (row.last.output ?? 0)) : null;
     out.push({

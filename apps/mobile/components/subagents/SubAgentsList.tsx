@@ -1,6 +1,8 @@
 import { Bot, ChevronRight } from 'lucide-react-native';
 import { ReviewSheet } from '@/components/agent/ReviewSheet';
 import { Box } from '@/components/ui/box';
+import { Button, ButtonText } from '@/components/ui/button';
+import { useServerReachable } from '@/lib/connection';
 import { HStack } from '@/components/ui/hstack';
 import { Icon } from '@/components/ui/icon';
 import { Pressable } from '@/components/ui/pressable';
@@ -14,6 +16,10 @@ interface SubAgentsListProps {
   open: boolean;
   /** Running first, then finished — `listedSubAgents`. */
   subAgents: SubAgentView[];
+  /** The stored listing could not be fetched, so what is shown may be missing
+   * the sub-agents of earlier runs. */
+  unavailable?: boolean;
+  onRetry?: () => void;
   isStopping: (childConvId: string) => boolean;
   onOpen: (childConvId: string) => void;
   onClose: () => void;
@@ -26,7 +32,8 @@ interface SubAgentsListProps {
  * Finished ones are listed too, on purpose: a sub-agent's card scrolls away
  * with the conversation, and this is the other way back to what it did.
  */
-export function SubAgentsList({ open, subAgents, isStopping, onOpen, onClose }: SubAgentsListProps) {
+export function SubAgentsList({ open, subAgents, unavailable = false, onRetry, isStopping, onOpen, onClose }: SubAgentsListProps) {
+  const reachable = useServerReachable();
   const running = subAgents.filter((s) => s.status === 'running');
   const finished = subAgents.filter((s) => s.status !== 'running');
   return (
@@ -38,7 +45,30 @@ export function SubAgentsList({ open, subAgents, isStopping, onOpen, onClose }: 
       eyebrow="This thread"
       title="Sub-agents"
     >
+      {unavailable && (
+        // "Could not ask" is not "none": said in the list's own place, with
+        // the way to ask again.
+        <VStack space="xs" className="mb-3 rounded-md border border-border bg-card px-3 py-2.5">
+          <Text testID="subagent.list.unavailable" size="sm" className="text-foreground">
+            Couldn't load this thread's earlier sub-agents
+          </Text>
+          <Text size="xs" className="text-muted-foreground">
+            Your server didn't answer. Any that ran before you opened this thread are missing from this list.
+          </Text>
+          <Button
+            testID="subagent.list.retry"
+            variant="outline"
+            size="sm"
+            isDisabled={!reachable}
+            onPress={onRetry}
+            className="mt-1 self-start"
+          >
+            <ButtonText>Try again</ButtonText>
+          </Button>
+        </VStack>
+      )}
       {subAgents.length === 0 ? (
+        unavailable ? null : (
         <VStack space="xs" className="items-center py-10">
           <Text testID="subagent.list.empty" size="sm" className="text-center text-foreground">
             No sub-agents yet
@@ -47,6 +77,7 @@ export function SubAgentsList({ open, subAgents, isStopping, onOpen, onClose }: 
             When the agent hands part of its work to a sub-agent, it appears here while it runs and after it finishes.
           </Text>
         </VStack>
+        )
       ) : (
         <VStack space="lg">
           <Section title="Running" testID="subagent.list.running" items={running} empty="None running right now." isStopping={isStopping} onOpen={onOpen} />

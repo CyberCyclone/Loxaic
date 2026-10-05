@@ -260,6 +260,13 @@
       "when": 1791097781756,
       "tag": "0036_subagents",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1791194716121,
+      "tag": "0037_usage_conversation_index",
+      "breakpoints": true
     }
   ]
 }

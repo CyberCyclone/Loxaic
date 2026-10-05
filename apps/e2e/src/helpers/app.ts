@@ -525,6 +525,55 @@ export interface E2ESubAgent {
   description: string;
   model: string;
   status: 'running' | 'complete' | 'error' | 'cancelled';
+  /** On the server's clock. */
+  started_at: number;
+  ended_at?: number;
+}
+
+/**
+ * Sends `prompt` from the agent screen and returns the run it opened.
+ *
+ * By difference, not "the newest": the list is read over the API, and asked a
+ * moment too early its newest row is still the *previous* case's run — which
+ * then has none of the sub-agents the case goes on to wait for, or (worse)
+ * already holds the very result the case is about to assert on.
+ */
+export async function sendInNewRun(creds: Pick<Credentials, 'email' | 'password'>, prompt: string): Promise<string> {
+  const before = new Set((await listConversations(creds)).map((c) => c.id));
+  await sendMessage(prompt);
+  let id = '';
+  await browser.waitUntil(
+    async () => {
+      const made = (await listConversations(creds)).find((c) => c.kind === 'agent' && !before.has(c.id));
+      id = made ? made.id : '';
+      return id !== '';
+    },
+    { timeout: 20_000, timeoutMsg: 'the agent run never appeared in the conversation list' },
+  );
+  // On an iPhone the keyboard stays up after a send and leaves the thread a
+  // sliver above it, with the sub-agent's card scrolled out of it — and
+  // XCUITest reports an off-screen element as not displayed. A tap on the
+  // list closes the keyboard (the list does not keep it open for taps).
+  if (platform() === 'ios' && (await browser.isKeyboardShown().catch(() => false))) {
+    const list = byTestId('chat.messageList');
+    // Best effort. With an approval bar up as well the list has no room at
+    // all and is not there to tap — and the bar itself is above the keyboard.
+    const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
+    if (there) await list.click().catch(() => undefined);
+  }
+  return id;
+}
+
+/**
+ * The seconds an elapsed label shows: "12.3s" or "4m 05s". NaN for anything
+ * else, so a comparison against it fails rather than passing on a label that
+ * merely contains an "s".
+ */
+export function elapsedSeconds(label: string): number {
+  const match = /^\s*(?:(\d+)m\s*)?(\d+(?:\.\d+)?)s\s*$/.exec(label);
+  if (!match) return Number.NaN;
+  const minutes = (match[1] as string | undefined) ? Number(match[1]) : 0;
+  return minutes * 60 + Number(match[2]);
 }
 
 /**

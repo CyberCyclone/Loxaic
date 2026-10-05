@@ -259,3 +259,20 @@ export function formatAnswers(questions: readonly Question[], answers: readonly 
   })
   return [QUESTIONS_ANSWERED_PREFIX, '', ...lines].join('\n')
 }
+
+/**
+ * Whether the newest item's panel opens by itself now. Pure, so each reason
+ * it must not is tested without a renderer.
+ */
+export function shouldAutoOpen(input: {
+  latestId: string | null;
+  latestStatus: PlanStatus | QuestionsStatus | null;
+  busy: boolean;
+  canDecide: boolean;
+  blocked: boolean;
+  seen: ReadonlySet<string>;
+}): boolean {
+  const { latestId, latestStatus, busy, canDecide, blocked, seen } = input;
+  if (!latestId) return false;
+  return latestStatus === 'pending' && !busy && canDecide && !blocked && !seen.has(latestId);
+}

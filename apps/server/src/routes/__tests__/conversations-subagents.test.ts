@@ -93,16 +93,28 @@ describe("a sub-agent's conversation over REST", () => {
       { id: childMessage, conversationId: childId, authorType: "assistant", origin: "server", lamport: 2, content: [{ kind: "text", text: "the report" }], status: "complete" },
     ]);
     await db.insert(usageRecords).values([
-      { id: uuid(), userId: owner, conversationId: parentId, model: "llama-3.1-8b-instruct", inputTokens: 100, outputTokens: 10 },
+      // The thread's own request is the older one, on its own model, with its
+      // own time to first token.
+      {
+        id: uuid(),
+        userId: owner,
+        conversationId: parentId,
+        model: "llama-3.1-8b-instruct",
+        inputTokens: 100,
+        outputTokens: 10,
+        ttftMs: 200,
+        createdAt: new Date(Date.now() - 60_000),
+      },
       {
         id: uuid(),
         userId: owner,
         conversationId: childId,
         messageId: childMessage,
         runId: childStream,
-        model: "llama-3.1-8b-instruct",
+        model: "hosted::child-model",
         inputTokens: 700,
         outputTokens: 70,
+        ttftMs: 9_000,
         predictedTps: 42,
         contextBreakdown: { used_tokens: 770, window_tokens: 8192, parts: [] },
       },
@@ -155,6 +167,38 @@ describe("a sub-agent's conversation over REST", () => {
     expect((await app.inject({ method: "GET", url: `/v1/conversations/${childId}/subagents` })).statusCode).toBe(404);
   });
 
+  it("carries the server's clock, so a running child can be timed from its real start", async () => {
+    as(owner);
+    const before = Date.now();
+    const body = (await app.inject({ method: "GET", url: `/v1/conversations/${parentId}/subagents` })).json<{ server_now: number }>();
+    expect(body.server_now).toBeGreaterThanOrEqual(before);
+    expect(body.server_now).toBeLessThanOrEqual(Date.now());
+  });
+
+  it("is listed to an admin for a conversation kept after deletion, and readable from there", async () => {
+    await db.update(conversations).set({ deletedAt: new Date() }).where(eq(conversations.id, parentId));
+    try {
+      // The owner's own listing is gone with the conversation…
+      as(owner);
+      expect((await app.inject({ method: "GET", url: `/v1/conversations/${parentId}/subagents` })).statusCode).toBe(404);
+      // …and only an admin has the other door.
+      const url = `/v1/admin/conversations/${parentId}/subagents`;
+      expect((await app.inject({ method: "GET", url })).statusCode).toBe(403);
+      as(admin);
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(200);
+      const [row] = res.json<{ subagents: SubAgentLive[] }>().subagents;
+      expect(row).toMatchObject({ conversation_id: childId, description: "Read the docs", status: "complete" });
+      // The id it gives is what the admin transcript route reads.
+      const transcript = await app.inject({ method: "GET", url: `/v1/admin/conversations/${row.conversation_id}/messages` });
+      expect(transcript.statusCode).toBe(200);
+      expect(JSON.stringify(transcript.json())).toContain("the report");
+      expect((await app.inject({ method: "GET", url: `/v1/admin/conversations/${uuid()}/subagents` })).statusCode).toBe(404);
+    } finally {
+      await db.update(conversations).set({ deletedAt: null }).where(eq(conversations.id, parentId));
+    }
+  });
+
   it("can be read by whoever can read the parent, and by nobody else", async () => {
     for (const id of [owner, viewer]) {
       as(id);
@@ -199,12 +243,16 @@ describe("a sub-agent's conversation over REST", () => {
   it("counts its usage under the thread that spawned it", async () => {
     as(owner);
     const recent = (await app.inject({ method: "GET", url: "/v1/stats/conversations?range=today" })).json<
-      { conversationId: string; title: string; tokens: number }[]
+      { conversationId: string; title: string; tokens: number; model: string; avgTtftMs: number }[]
     >();
     // One row, the parent's, carrying both conversations' tokens — and none
     // for the child, whose title nobody chose and whose id opens nothing.
     expect(recent.map((r) => r.conversationId)).not.toContain(childId);
     expect(recent.find((r) => r.conversationId === parentId)).toMatchObject({ title: "Parent thread", tokens: 880 });
+    // The totals fold the child in; what names the thread does not. The newest
+    // request in the group is the child's, on another model — the thread is
+    // still labelled with its own, and timed by its own requests.
+    expect(recent.find((r) => r.conversationId === parentId)).toMatchObject({ model: "llama-3.1-8b-instruct", avgTtftMs: 200 });
 
     const usage = (await app.inject({ method: "GET", url: `/v1/stats/usage?conversation_id=${parentId}&range=today` })).json<{
       inputTokens: number;

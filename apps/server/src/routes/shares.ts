@@ -6,6 +6,8 @@ import { purgeConversation, restoreConversation } from "../conversations/delete.
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
 import { conversationPurgeAt } from "../settings.ts";
 import { resolveAccess } from "../streams/authz";
+import { getRun } from "../streams/registry.ts";
+import { listSubagents } from "../streams/runs/subagentRun.ts";
 
 /**
  * Whether this conversation is one the audit routes may act on.
@@ -274,6 +276,37 @@ export function adminConversationRoutes(app: FastifyInstance) {
         createdAt: m.createdAt,
       }));
       return { messages: rows, hasMore: page.hasMore, before: page.before };
+    },
+  );
+
+  /**
+   * A conversation's sub-agents, for the admin screen.
+   *
+   * The admin list leaves children out and the owner's own listing 404s for a
+   * deleted parent, so without this nothing told an admin a retained
+   * conversation had sub-agents at all — while their transcripts, which hold
+   * most of what an agent run actually did, sat readable through the route
+   * above by ids nobody could learn. Same door as that route: admin-gated,
+   * read-only, and answering for a live conversation too.
+   */
+  app.get<{ Params: { id: string } }>(
+    "/v1/admin/conversations/:id/subagents",
+    async (request, reply) => {
+      await requireAdmin(request, reply);
+      const conv = await db.query.conversations.findFirst({
+        where: eq(conversations.id, request.params.id),
+        columns: { id: true },
+      });
+      if (!conv) {
+        reply.code(404);
+        return { error: "Not found" };
+      }
+      // `server_now` is what lets a device time a child that is still running
+      // from its real start: `started_at` is on this clock, not the device's.
+      return {
+        subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined),
+        server_now: Date.now(),
+      };
     },
   );
 

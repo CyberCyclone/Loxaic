@@ -319,6 +319,10 @@ export const usageRecords = pgTable("usage_records", {
   // change (llama/context-stage-policy.ts). Without it that question is a scan
   // of the fastest-growing table in the database.
   index("usage_records_model_created_idx").on(t.model, t.createdAt),
+  // "This conversation's requests, newest first": a thread's sub-agent listing
+  // asks it twice per child (their figures come from here), as do the context
+  // meter's fallback and a stage change's size check.
+  index("usage_records_conversation_created_idx").on(t.conversationId, t.createdAt),
 ]);
 
 // ── Workspaces ──

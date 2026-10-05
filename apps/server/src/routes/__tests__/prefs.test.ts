@@ -260,6 +260,23 @@ describe("the sub-agent model setting", () => {
     expect(await get()).toMatchObject({ subagentModelMode: "choose", subagentModel: null });
   });
 
+  it("refuses 'fixed' when the model saved for it can no longer be served", async () => {
+    // Saved while its provider existed; the provider has since been deleted.
+    // The patch names only the mode, so the model is the stored one.
+    await db
+      .insert(userPrefs)
+      .values({ userId, subagentModelMode: "parent", subagentModel: "deleted-provider::some-model" })
+      .onConflictDoUpdate({ target: userPrefs.userId, set: { subagentModelMode: "parent", subagentModel: "deleted-provider::some-model" } });
+    try {
+      const res = await patch({ subagentModelMode: "fixed" });
+      expect(res.statusCode).toBe(400);
+      expect(res.json<{ error: string }>().error).toMatch(/provider/i);
+      expect((await get()).subagentModelMode).toBe("parent");
+    } finally {
+      await db.update(userPrefs).set({ subagentModelMode: "choose", subagentModel: null }).where(eq(userPrefs.userId, userId));
+    }
+  });
+
   it("refuses 'fixed' with no model to fix it to", async () => {
     expect((await patch({ subagentModelMode: "fixed" })).statusCode).toBe(400);
     expect((await get()).subagentModelMode).toBe("choose");

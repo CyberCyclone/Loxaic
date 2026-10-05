@@ -294,12 +294,26 @@ export function statsRoutes(app: FastifyInstance) {
     const rows = await db
       .select({
         conversationId: threadId,
-        model: sql<string>`(array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC))[1]`,
+        // The thread's own newest request names its model, not whichever
+        // request in the group finished last: a sub-agent may run on another
+        // model, and a thread run entirely on a local one would otherwise be
+        // labelled with the hosted model one child used. Falls back to the
+        // group's newest for a thread whose own rows fell out of the range.
+        model: sql<string>`COALESCE(
+          (array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC) FILTER (WHERE ${conversations.parentConversationId} IS NULL))[1],
+          (array_agg(${usageRecords.model} ORDER BY ${usageRecords.createdAt} DESC))[1]
+        )`,
         inputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}), 0)::float8`,
         cachedTokens: sql<number>`COALESCE(SUM(${usageRecords.reusableTokens}), 0)::float8`,
         measuredInputTokens: sql<number>`COALESCE(SUM(${usageRecords.inputTokens}) FILTER (WHERE ${usageRecords.reusableTokens} IS NOT NULL), 0)::float8`,
         outputTokens: sql<number>`COALESCE(SUM(${usageRecords.outputTokens}), 0)::float8`,
-        avgTtftMs: sql<number>`AVG(${usageRecords.ttftMs})::float8`,
+        // The thread's own requests only, for the same reason: a child on
+        // another model has another model's prefill behaviour, and an average
+        // across both describes neither.
+        avgTtftMs: sql<number>`COALESCE(
+          AVG(${usageRecords.ttftMs}) FILTER (WHERE ${conversations.parentConversationId} IS NULL),
+          AVG(${usageRecords.ttftMs})
+        )::float8`,
         lastUsedAt: sql<string>`MAX(${usageRecords.createdAt})`,
       })
       .from(usageRecords)

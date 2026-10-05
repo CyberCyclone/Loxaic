@@ -473,6 +473,8 @@ export default function RoutineChatScreen() {
       <SubAgentsList
         open={subAgents.listOpen}
         subAgents={subAgents.listed}
+        unavailable={subAgents.listUnavailable}
+        onRetry={subAgents.retryList}
         isStopping={subAgents.isStopping}
         onOpen={subAgents.openFromList}
         onClose={subAgents.closeList}

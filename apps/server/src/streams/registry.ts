@@ -32,6 +32,9 @@ export interface RunHandle {
    * `byUserId` is null when nobody answered and the timeout decided.
    */
   stepsDecision?: (decision: StepsDecision, byUserId: string | null) => void;
+  /** A sub-agent's run names the conversation that spawned it, so a question
+   * about "other conversations" can tell a thread's own children from them. */
+  parentConversationId?: string;
 }
 
 const runsByStreamId = new Map<string, RunHandle>();
@@ -105,9 +108,15 @@ export function waitForRunEnd(conversationId: string, timeoutMs: number): Promis
   });
 }
 
-/** Runs in flight on `model`, other than in `exceptConversationId`. */
+/** Runs in flight on `model`, other than `exceptConversationId`'s own and
+ * its sub-agents' — a thread's children are part of it, not other people. */
 export function runsUsingModel(model: string, exceptConversationId?: string): RunHandle[] {
-  return [...runsByStreamId.values()].filter((r) => r.model === model && r.conversationId !== exceptConversationId);
+  return [...runsByStreamId.values()].filter(
+    (r) =>
+      r.model === model &&
+      r.conversationId !== exceptConversationId &&
+      (exceptConversationId === undefined || r.parentConversationId !== exceptConversationId),
+  );
 }
 
 export function getRun(streamId: string): RunHandle | undefined {

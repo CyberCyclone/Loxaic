@@ -31,7 +31,7 @@ import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
-import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
@@ -126,6 +126,9 @@ export function useAgentSession(
   const [mode, setModeState] = useState<PermissionMode>('manual');
   const [runState, setRunState] = useState<RunState>('done');
   const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  // Read by Allow and Deny, which have to name the run that asked.
+  const pendingApprovalRef = useRef<PendingApproval | null>(null);
+  pendingApprovalRef.current = pendingApproval;
   const [pendingCheckin, setPendingCheckin] = useState<PendingCheckin | null>(null);
   // The latest step of a context-stage switch, per run — see useChatSession.
   const [stageCardByConv, setStageCardByConv] = useState<Partial<Record<string, StageCard>>>({});
@@ -453,7 +456,7 @@ export function useAgentSession(
       // which only errs long. Substituting `now` would instead read the
       // server's `expires_at` straight off this device's clock, skew and all.
       const now = Date.now();
-      setPendingApproval(snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow) : null);
+      setPendingApproval(snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow, streamId) : null);
       setPendingCheckin(snapshot.pending_checkin ? toPendingCheckin(snapshot.pending_checkin, now, serverNow) : null);
       setQueuePosition(snapshot.queued?.position ?? null);
       if (status === 'active') {
@@ -639,7 +642,7 @@ export function useAgentSession(
         } else if (inner.kind === 'approval.request') {
           if (isActive) {
             setRunState('awaiting_approval');
-            setPendingApproval(toPendingApproval(inner, Date.now()));
+            setPendingApproval(toPendingApproval(inner, Date.now(), undefined, event.stream_id));
           }
         } else if (inner.kind === 'tool.result') {
           if (isActive) {
@@ -966,22 +969,29 @@ export function useAgentSession(
     if (!sendCommand(wsRef.current, name, id, model, args || undefined)) showToast(NOT_SENT_RECONNECTING, 4000);
   }, [showToast]);
 
+  // The run an answer is for — see `approvalStreamId`. Without it the server
+  // gives the answer to whichever of this person's runs holds that call id.
+  const approvalStream = useCallback((callId: string): string | undefined => {
+    const id = activeIdRef.current;
+    return approvalStreamId(pendingApprovalRef.current, callId, id ? streamingByConvRef.current[id]?.streamId : undefined);
+  }, []);
+
   // Closes only once the answer is on the wire — see useChatSession (#231).
   const handleApprove = useCallback((callId: string) => {
-    if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId)) {
+    if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId, approvalStream(callId))) {
       showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setPendingApproval(null);
-  }, [showToast]);
+  }, [approvalStream, showToast]);
 
   const handleDeny = useCallback((callId: string) => {
-    if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId)) {
+    if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId, approvalStream(callId))) {
       showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
     setPendingApproval(null);
-  }, [showToast]);
+  }, [approvalStream, showToast]);
 
   /** Answers a step check-in. Stop is not one of these — the banner's Stop
    * goes to `handleStop`, which works on any run whether parked or not. */

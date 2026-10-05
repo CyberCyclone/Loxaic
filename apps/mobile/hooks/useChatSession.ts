@@ -35,7 +35,7 @@ import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyP
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { useToastHelper } from './useToastHelper';
-import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
@@ -239,6 +239,9 @@ export function useChatSession(
   // never show its dialog over whatever conversation the user has switched
   // to, and switching back to it should find the dialog still there.
   const [pendingApprovalByConv, setPendingApprovalByConv] = useState<Partial<Record<string, PendingApproval>>>({});
+  // Read by Allow and Deny, which have to name the run that asked.
+  const pendingApprovalByConvRef = useRef<Partial<Record<string, PendingApproval>>>({});
+  pendingApprovalByConvRef.current = pendingApprovalByConv;
   /** Keyed for the same reason as the approvals above: a check-in belongs to
    * its conversation, not to whatever is on screen when it arrives. */
   const [pendingCheckinByConv, setPendingCheckinByConv] = useState<Partial<Record<string, PendingCheckin>>>({});
@@ -703,7 +706,7 @@ export function useChatSession(
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now) };
+            return { ...prev, [convId]: toPendingApproval(pa, Date.now(), event.server_now, event.stream_id) };
           });
           setPendingCheckinByConv((prev) => {
             const pc = event.snapshot.pending_checkin;
@@ -843,7 +846,7 @@ export function useChatSession(
         if (inner.kind === 'approval.request') {
           setPendingApprovalByConv((prev) => ({
             ...prev,
-            [convId]: toPendingApproval(inner, Date.now()),
+            [convId]: toPendingApproval(inner, Date.now(), undefined, event.stream_id),
           }));
         } else if (inner.kind === 'tool.result') {
           setPendingApprovalByConv((prev) => {
@@ -1139,26 +1142,35 @@ export function useChatSession(
   // run is waiting on them taps in exactly that gap: the answer used to be
   // dropped and the dialog closed anyway, so it looked approved while the run
   // sat waiting for the timeout (#231).
+  // The run an answer is for — see `approvalStreamId`. Without it the server
+  // gives the answer to whichever of this person's runs holds that call id,
+  // which may be a sub-agent's in another thread.
+  const approvalStream = useCallback((callId: string): string | undefined => {
+    const id = activeIdRef.current;
+    if (!id) return undefined;
+    return approvalStreamId(pendingApprovalByConvRef.current[id], callId, streamingByConvRef.current[id]?.streamId);
+  }, []);
+
   const handleApprove = useCallback(
     (callId: string) => {
-      if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId)) {
+      if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId, approvalStream(callId))) {
         showToast(NOT_SENT_RECONNECTING, 4000);
         return;
       }
       if (activeIdRef.current) clearApproval(activeIdRef.current);
     },
-    [clearApproval, showToast],
+    [approvalStream, clearApproval, showToast],
   );
 
   const handleDeny = useCallback(
     (callId: string) => {
-      if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId)) {
+      if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId, approvalStream(callId))) {
         showToast(NOT_SENT_RECONNECTING, 4000);
         return;
       }
       if (activeIdRef.current) clearApproval(activeIdRef.current);
     },
-    [clearApproval, showToast],
+    [approvalStream, clearApproval, showToast],
   );
 
   /** Answers a step check-in — see useAgentSession.handleSteps. Chat and agent

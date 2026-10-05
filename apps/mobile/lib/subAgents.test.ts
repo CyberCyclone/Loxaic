@@ -139,6 +139,19 @@ describe('the stored listing after a reload', () => {
     expect(state[PARENT]?.[0]).toMatchObject({ conversation_id: 'a', status: 'complete', context_used: 700 });
   });
 
+  it('times a running child from its real start, not from when the listing arrived', () => {
+    // Started six minutes ago on the server's clock, which runs 40 s ahead of
+    // this device's. The listing lands before any snapshot does, and the
+    // start worked out here is the one the counter keeps.
+    const serverNow = 5_000_000;
+    const row = live('a', { started_at: serverNow - 360_000 });
+    const merged = mergeListedSubAgents({}, PARENT, [row], NOW, serverNow);
+    expect(merged[PARENT]?.[0].startedLocal).toBe(NOW - 360_000);
+    // A later snapshot does not move it.
+    const after = applySubAgentSnapshot(merged, PARENT, [row], NOW + 50, serverNow + 50);
+    expect(after[PARENT]?.[0].startedLocal).toBe(NOW - 360_000);
+  });
+
   it('ends a child whose end was missed, keeping what it measured live', () => {
     let state = fold([started('a')]);
     state = applySubAgentEvent(state, PARENT, { kind: 'subagent.progress', conversation_id: 'a', state: 'awaiting_approval', context_used: 999, pending_approval: { stream_id: 'stream-a', call_id: 'c', tool: 'bash', args: {} } }, NOW);
@@ -184,11 +197,27 @@ describe('finding a call\'s sub-agent', () => {
     expect(subAgentForCall(list, 'call_0', 'm2')?.conversation_id).toBe('b');
   });
 
+  it('never binds a known message\'s call to another message\'s child', () => {
+    // Turn 3 reuses `call_1`, which so far only message m2's child has. Its
+    // card has its message id in hand: it has no child yet (or never will,
+    // when the call was refused) — it is not child c.
+    expect(subAgentForCall(list, 'call_1', 'm3')).toBeUndefined();
+    expect(subAgentForCall(list, 'call_0', 'm3')).toBeUndefined();
+  });
+
   it('falls back to the call id only when it names one child', () => {
     expect(subAgentForCall(list, 'call_1', undefined)?.conversation_id).toBe('c');
     expect(subAgentForCall(list, 'call_0', undefined)).toBeUndefined();
     expect(subAgentForCall(list, undefined, 'm1')).toBeUndefined();
     expect(subAgentForCall(undefined, 'call_0', 'm1')).toBeUndefined();
+  });
+});
+
+describe('a call\'s label before its child is known', () => {
+  it('cuts an unlabelled task by character, as the server does', () => {
+    const label = subAgentDescriptionOf('subagent', { prompt: `${'x'.repeat(78)}😀 and then more` });
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(label ?? '')).toBe(false);
+    expect(label?.endsWith('😀…')).toBe(true);
   });
 });
 

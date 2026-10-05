@@ -55,7 +55,10 @@ export function subAgentDescriptionOf(tool: string, args: Record<string, unknown
   const description = typeof args.description === 'string' ? args.description.trim() : '';
   if (description) return description;
   const prompt = typeof args.prompt === 'string' ? args.prompt.replace(/\s+/g, ' ').trim() : '';
-  return prompt ? (prompt.length > 80 ? `${prompt.slice(0, 79)}…` : prompt) : 'Sub-agent';
+  if (!prompt) return 'Sub-agent';
+  // By code point, as the server cuts it: `slice` can leave half an emoji.
+  const points = Array.from(prompt);
+  return points.length > 80 ? `${points.slice(0, 79).join('')}…` : prompt;
 }
 
 export function isSubAgentEvent(event: { kind: string }): event is SubAgentEvent {
@@ -141,12 +144,18 @@ export function applySubAgentSnapshot(
  * client still holds as running (the end was missed while offline), but it
  * never overwrites a child's live figures and never brings an ended one back.
  * A finished child it already holds only takes the figures it is missing.
+ *
+ * `serverNow` is the server's clock when it answered. The listing usually
+ * lands before the snapshot that describes a running child, and the start time
+ * worked out here is kept from then on — so without it a child six minutes
+ * into its work counted up from 0.0s for the rest of its run.
  */
 export function mergeListedSubAgents(
   state: SubAgentsByParent,
   parentConvId: string,
   rows: readonly SubAgentLive[],
   now: number,
+  serverNow?: number,
 ): SubAgentsByParent {
   if (rows.length === 0) return state;
   const have = state[parentConvId] ?? [];
@@ -157,8 +166,9 @@ export function mergeListedSubAgents(
     const previous = byId.get(row.conversation_id);
     if (!previous) {
       // A finished child's elapsed time is its own start to its own end, both
-      // on the server's clock, so `startedLocal` only matters while running.
-      next.push(toView(row, undefined, now));
+      // on the server's clock; `startedLocal` is what a running one counts
+      // from, converted with the listing's own clock reading.
+      next.push(toView(row, undefined, now, serverNow));
       changed = true;
       continue;
     }
@@ -200,10 +210,11 @@ export function subAgentForCall(
 ): SubAgentView | undefined {
   if (!list || !callId) return undefined;
   const sameCall = list.filter((s) => s.call_id === callId);
-  if (messageId) {
-    const exact = sameCall.find((s) => s.message_id === messageId);
-    if (exact) return exact;
-  }
+  // A known message is matched exactly or not at all. Call ids are the
+  // model's and restart every message, so falling back here bound a new
+  // turn's card to an earlier turn's child — for good, when the new call was
+  // refused and never got a child of its own.
+  if (messageId) return sameCall.find((s) => s.message_id === messageId);
   return sameCall.length === 1 ? sameCall[0] : undefined;
 }
 

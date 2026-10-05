@@ -33,14 +33,14 @@ import {
   SLOW_SUBAGENT_PROMPT,
   TWO_SUBAGENTS_PROMPT,
   createRoutine,
+  elapsedSeconds,
   getToolResults,
   goToSurface,
-  listConversations,
   listSubAgents,
   openSettings,
   patchPrefs,
   runRoutine,
-  sendMessage,
+  sendInNewRun,
   signUp,
   startNewAgentRun,
   waitForRunDone,
@@ -53,36 +53,20 @@ const MODEL_A = 'llama-3.1-8b-instruct';
 const MODEL_B = 'qwen2.5-14b-instruct';
 
 /**
- * Sends `prompt` and returns the run it opened.
- *
- * By difference, not "the newest": the list is read over the API, and asked a
- * moment too early its newest row is still the *previous* case's run — which
- * then has none of the sub-agents the case goes on to wait for.
+ * What an elapsed label reads, in seconds, queried afresh each time: the
+ * running counter re-renders ten times a second, and a finished child's label
+ * replaces it.
  */
-async function sendInNewRun(creds: Credentials, prompt: string): Promise<string> {
-  const before = new Set((await listConversations(creds)).map((c) => c.id));
-  await sendMessage(prompt);
-  let id = '';
+async function readElapsed(id: string): Promise<number> {
+  let seconds = Number.NaN;
   await browser.waitUntil(
     async () => {
-      const made = (await listConversations(creds)).find((c) => c.kind === 'agent' && !before.has(c.id));
-      id = made ? made.id : '';
-      return id !== '';
+      seconds = elapsedSeconds(await byTestId(id).getText().catch(() => ''));
+      return !Number.isNaN(seconds);
     },
-    { timeout: 20_000, timeoutMsg: 'the agent run never appeared in the conversation list' },
+    { timeout: 15_000, timeoutMsg: `${id} never showed a duration` },
   );
-  // On an iPhone the keyboard stays up after a send and leaves the thread a
-  // sliver above it, with the sub-agent's card scrolled out of it — and
-  // XCUITest reports an off-screen element as not displayed. A tap on the
-  // list closes the keyboard (the list does not keep it open for taps).
-  if (platform() === 'ios' && (await browser.isKeyboardShown().catch(() => false))) {
-    const list = byTestId('chat.messageList');
-    // Best effort. With an approval bar up as well the list has no room at
-    // all and is not there to tap — and the bar itself is above the keyboard.
-    const there = await list.waitForExist({ timeout: 5_000 }).then(() => true, () => false);
-    if (there) await list.click().catch(() => undefined);
-  }
-  return id;
+  return seconds;
 }
 
 /**
@@ -167,6 +151,13 @@ describe('sub-agents', () => {
     // parent's stream: the parent is doing nothing but waiting.
     await waitForFreshText(`${card}.context`, '% context', 40_000);
     await waitForFreshText(`${card}.speed`, 'tok/s', 10_000);
+    // Counted from its real start: by the time its first request has
+    // finished it has been running for the mock's eight seconds. ("Contains
+    // an s" passed for a counter stuck at 0.0s.)
+    const sinceStart = (Date.now() - child.started_at) / 1000;
+    const shown = await readElapsed(`${card}.elapsed`);
+    expect(shown).toBeGreaterThanOrEqual(7);
+    expect(Math.abs(shown - sinceStart)).toBeLessThan(5);
     // The parent is still running: its own header says so.
     await waitForTextIn('agent.run.status', 'Running');
     await shot('subagent-card-running');
@@ -280,7 +271,9 @@ describe('sub-agents', () => {
     await waitForFreshText(`subagent.card.${long.call_id}.status`, 'Stopped');
     await waitForFreshText(`subagent.card.${quick.call_id}.model`, MODEL_A);
     await waitForFreshText(`subagent.card.${quick.call_id}.context`, '% context');
-    await waitForFreshText(`subagent.card.${quick.call_id}.elapsed`, 's');
+    // A finished sub-agent's time is its own start to its own end, as stored.
+    const stored = ((quick.ended_at ?? Number.NaN) - quick.started_at) / 1000;
+    expect(Math.abs((await readElapsed(`subagent.card.${quick.call_id}.elapsed`)) - stored)).toBeLessThan(0.2);
     await tap('agent.header.menu');
     // None running now, so the item says nothing about a count.
     await waitForTextIn('agent.header.subAgents', 'Sub-agents');
@@ -290,6 +283,145 @@ describe('sub-agents', () => {
     await shot('subagent-list-after-reload');
     await tap('subagent.list.close');
     await waitForAbsent('subagent.list.finished');
+  });
+
+  it('says when the earlier sub-agents could not be loaded, and loads them on Try again', async function () {
+    // Cutting one request from inside the page is a web thing (see
+    // server-unreachable.spec.ts); the rule itself is unit-tested.
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    this.timeout(2 * 60_000);
+
+    await browser.refresh();
+    await waitForVisible('composer.input', 30_000);
+    // The listing answers 503 — a server that is up and having a bad moment.
+    // Installed before the agent screen mounts, which is what asks for it.
+    await browser.execute(() => {
+      const w = window as unknown as { __failSubAgents?: boolean };
+      w.__failSubAgents = true;
+      const real = window.fetch.bind(window);
+      window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (w.__failSubAgents && /\/subagents(\?|$)/.test(url)) {
+          return Promise.resolve(new Response('{"error":"unavailable"}', { status: 503 }));
+        }
+        return real(input, init);
+      };
+    });
+    await goToSurface('agent');
+    await tap('agent.header.menu');
+    await tap('agent.header.subAgents');
+    // "Could not ask" — never "No sub-agents yet", which is a claim.
+    await waitForVisible('subagent.list.unavailable');
+    expect(await isVisible('subagent.list.empty')).toBe(false);
+    await shot('subagent-list-unavailable');
+
+    await browser.execute(() => {
+      (window as unknown as { __failSubAgents?: boolean }).__failSubAgents = false;
+    });
+    await tap('subagent.list.retry');
+    await waitForTextIn('subagent.list.finished', QUICK_SUBAGENT_NAME, 20_000);
+    await waitForAbsent('subagent.list.unavailable');
+    await tap('subagent.list.close');
+    await waitForAbsent('subagent.list.finished');
+  });
+
+  it('times a sub-agent that was already running at a reload from its real start', async function () {
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    this.timeout(3 * 60_000);
+
+    await startNewAgentRun();
+    await tap('agent.mode.auto');
+    const convId = await sendInNewRun(creds, SLOW_SUBAGENT_PROMPT);
+    const [child] = await waitForSubAgents(creds, convId, 1);
+    const card = `subagent.card.${child.call_id}`;
+    await waitForFreshText(`${card}.status`, 'Running');
+    // Long enough in that "counting from when the page loaded" and "counting
+    // from when it started" cannot be mistaken for each other.
+    await browser.pause(10_000);
+
+    await browser.refresh();
+    await waitForVisible('composer.input', 30_000);
+    await goToSurface('agent');
+    await waitForFreshText(`${card}.status`, 'Running', 30_000);
+    const shown = await readElapsed(`${card}.elapsed`);
+    const sinceStart = (Date.now() - child.started_at) / 1000;
+    // The stored listing reaches the page before any snapshot does, and the
+    // start it works out is the one the counter keeps: without the server's
+    // clock on that listing, this read a second or two.
+    expect(shown).toBeGreaterThanOrEqual(10);
+    expect(Math.abs(shown - sinceStart)).toBeLessThan(5);
+    await shot('subagent-card-running-after-reload');
+
+    await tap(`${card}.stop`);
+    await waitForFreshText(`${card}.status`, 'Stopped', 30_000);
+    await waitForRunDone(creds, convId, 60_000);
+  });
+
+  it('keeps the plan from opening over a sub-agent’s panel, and opens it when the panel closes', async function () {
+    this.timeout(3 * 60_000);
+
+    await startNewAgentRun();
+    await tap('agent.mode.planning');
+    // A planning run that hands off an investigation and then plans. The
+    // child takes the mock's eight seconds, which is the time to open it in.
+    const convId = await sendInNewRun(creds, 'Use a sub-agent: take your time and say the survey is done');
+    const [child] = await waitForSubAgents(creds, convId, 1);
+    if (platform() === 'ios') {
+      await openSubAgentsList();
+      await tap(`subagent.list.${child.conversation_id}`);
+    } else {
+      await tap(`subagent.card.${child.call_id}.chevron`);
+    }
+    await waitForVisible('subagent.panel');
+
+    // The parent finishes — in a plan, as planning always does — with the
+    // sub-agent's panel still open.
+    await waitForRunDone(creds, convId, 90_000);
+    await waitForFreshText('subagent.panel.status', 'Finished', 30_000);
+    // Long enough for the plan's sheet to have opened, had it been going to.
+    await browser.pause(2_000);
+    expect(await isVisible('agent.plan.panel').catch(() => false)).toBe(false);
+    await waitForVisible('subagent.panel');
+    await shot('subagent-panel-open-while-plan-waits');
+
+    // Held back, not skipped: it opens once the other sheet has gone.
+    await tap('subagent.close');
+    await waitForVisible('agent.plan.panel', 20_000);
+    await shot('plan-opens-after-subagent-panel');
+    await tap('agent.plan.close');
+    await waitForAbsent('agent.plan.panel');
+  });
+
+  it('names its own run when answering an approval, so no other run holding that call id is answered', async function () {
+    // What goes out on the socket can only be read from inside a page.
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    this.timeout(2 * 60_000);
+
+    await startNewAgentRun();
+    await tap('agent.mode.manual');
+    const convId = await sendInNewRun(creds, 'Please write a file called notes.txt');
+    await waitForVisible('agent.permission.bar');
+    await browser.execute(() => {
+      const w = window as unknown as { __sentFrames?: string[] };
+      w.__sentFrames = [];
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- re-bound with `call` below
+      const send = WebSocket.prototype.send;
+      WebSocket.prototype.send = function (data) {
+        if (typeof data === 'string') w.__sentFrames?.push(data);
+        send.call(this, data);
+      };
+    });
+    await tap('agent.permission.deny');
+    await waitForAbsent('agent.permission.bar');
+    await waitForRunDone(creds, convId, 60_000);
+    const frames = await browser.execute(() => (window as unknown as { __sentFrames?: string[] }).__sentFrames ?? []);
+    const answer = frames.map((f) => JSON.parse(f) as { type?: string; stream_id?: string }).find((f) => f.type === 'agent.deny');
+    // A call id is the model's and repeats; an answer with no run named is
+    // given to whichever of this person's runs holds that id — another
+    // thread's, or a sub-agent's nobody was shown.
+    expect(answer?.stream_id).toMatch(/^[0-9a-f-]{36}$/);
+    const [denied] = await getToolResults(creds, convId);
+    expect(denied).toMatchObject({ ok: false, output: 'User denied this tool call.' });
   });
 
   it('asks for a sub-agent’s approval where the parent’s would be, naming it; denying reaches the child', async function () {

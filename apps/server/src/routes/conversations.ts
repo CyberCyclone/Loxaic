@@ -249,7 +249,12 @@ export function conversationRoutes(app: FastifyInstance) {
       reply.code(404);
       return { error: "Not found" };
     }
-    return { subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined) };
+    // `server_now` is what lets a device time a child that is still running
+    // from its real start: `started_at` is on this clock, not the device's.
+    return {
+      subagents: await listSubagents(request.params.id, (streamId) => getRun(streamId) !== undefined),
+      server_now: Date.now(),
+    };
   });
 
   // Get messages for conversation

@@ -21,9 +21,11 @@ import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { useConversationRetention } from '@/hooks/useConversationRetention';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { describeRequestError, useServerReachable } from '@/lib/connection';
+import { subAgentStatusLabel } from '@/lib/subAgents';
 import {
   adminGetMessages,
   adminGetShares,
+  adminGetSubAgents,
   adminListConversations,
   adminPatchShare,
   adminPurgeConversation,
@@ -33,6 +35,7 @@ import {
   type AdminConversation,
   type AdminMessage,
   type ConversationShare,
+  type SubAgentLive,
   type DirectoryUser,
 } from '@loxaic/api-client';
 
@@ -75,6 +78,14 @@ export default function AdminScreen() {
   useEffect(() => {
     selectedIdRef.current = selected?.id ?? null;
   }, [selected]);
+  // The selected conversation's sub-agents, and the one whose transcript is
+  // showing in place of the conversation's own. A sub-agent's conversation is
+  // listed nowhere else, and most of what an agent run did is in them.
+  const [subAgents, setSubAgents] = useState<SubAgentLive[]>([]);
+  const [viewingSubAgent, setViewingSubAgent] = useState<SubAgentLive | null>(null);
+  // Whose messages the transcript pane holds: the conversation's or one of
+  // its sub-agents'. What a late response is checked against.
+  const transcriptIdRef = useRef<string | null>(null);
   const [purging, setPurging] = useState<AdminConversation | null>(null);
   const { settings: retention, update: updateRetention } = useConversationRetention(token);
 
@@ -89,7 +100,10 @@ export default function AdminScreen() {
     // Set here, not only by the effect below: the check after the await must
     // see this row even if the response wins the race with the render.
     selectedIdRef.current = row.id;
+    transcriptIdRef.current = row.id;
     setSelected(row);
+    setSubAgents([]);
+    setViewingSubAgent(null);
     setQuery('');
     setResults([]);
     setMessages([]);
@@ -98,9 +112,11 @@ export default function AdminScreen() {
     // Shares and transcript together: a deleted conversation still has its
     // shares (nothing cascaded — the row survived), and who could reach it is
     // part of what an audit is asking.
-    const [nextShares, nextMessages] = await Promise.all([
+    const [nextShares, nextMessages, nextSubAgents] = await Promise.all([
       adminGetShares(row.id).catch(() => []),
       adminGetMessages(row.id).catch(() => ({ messages: [], before: null })),
+      // An older server has no such route; no list is the right answer there.
+      adminGetSubAgents(row.id).catch(() => []),
     ]);
     // Another row may have been opened while these were in flight. Its own
     // request fills the pane; this one must change nothing — not the shares,
@@ -109,20 +125,42 @@ export default function AdminScreen() {
     // the spinner: the newer request is still loading.
     if (selectedIdRef.current !== row.id) return;
     setShares(nextShares);
+    setSubAgents(nextSubAgents);
+    // A sub-agent's transcript may have been opened while this was in flight;
+    // the pane is then that one's to fill.
+    if (transcriptIdRef.current !== row.id) return;
     setMessages(nextMessages.messages);
     setOlderCursor(nextMessages.before ?? null);
     setLoadingTranscript(false);
   }, []);
 
+  /** Shows one transcript in the pane: the selected conversation's own
+   * (`child` null) or one of its sub-agents'. */
+  const showTranscript = useCallback(async (parentId: string, child: SubAgentLive | null) => {
+    const id = child?.conversation_id ?? parentId;
+    transcriptIdRef.current = id;
+    setViewingSubAgent(child);
+    setMessages([]);
+    setOlderCursor(null);
+    setLoadingTranscript(true);
+    const page = await adminGetMessages(id).catch(() => ({ messages: [], before: null }));
+    // Same rule as openDetail: a response for a pane that has moved on
+    // changes nothing, the cursor least of all.
+    if (transcriptIdRef.current !== id) return;
+    setMessages(page.messages);
+    setOlderCursor(page.before ?? null);
+    setLoadingTranscript(false);
+  }, []);
+
   const loadOlderTranscript = useCallback(async () => {
-    if (!selected || !olderCursor) return;
-    const id = selected.id;
+    const id = transcriptIdRef.current;
+    if (!selected || !olderCursor || !id) return;
     setLoadingOlder(true);
     try {
       const page = await adminGetMessages(id, { before: olderCursor });
-      // A different conversation may have been opened while this was in
-      // flight; its transcript is not the one to prepend to.
-      if (selectedIdRef.current !== id) return;
+      // A different conversation (or sub-agent) may have been opened while
+      // this was in flight; its transcript is not the one to prepend to.
+      if (transcriptIdRef.current !== id) return;
       const older = new Set(page.messages.map((m) => m.id));
       setMessages((prev) => [...page.messages, ...prev.filter((m) => !older.has(m.id))]);
       setOlderCursor(page.before ?? null);
@@ -390,9 +428,55 @@ export default function AdminScreen() {
 
               <Box className="h-px bg-border" />
 
-              <Text size="xs" className="text-muted-foreground">
-                Transcript
-              </Text>
+              {subAgents.length > 0 && (
+                <>
+                  <Text size="xs" className="text-muted-foreground">
+                    Sub-agents ({subAgents.length})
+                  </Text>
+                  <VStack testID="admin.subagents" space="xs">
+                    {subAgents.map((s) => (
+                      <Pressable
+                        key={s.conversation_id}
+                        testID={`admin.subagent.${s.conversation_id}`}
+                        disabled={!reachable}
+                        onPress={() => { void showTranscript(selected.id, s); }}
+                        className={`rounded-md border px-2.5 py-2 ${
+                          viewingSubAgent?.conversation_id === s.conversation_id ? 'border-primary bg-accent' : 'border-border bg-card'
+                        }`}
+                      >
+                        <Text size="xs" style={TRUNCATE_TEXT} className="text-foreground">
+                          {s.description}
+                        </Text>
+                        <Text size="2xs" className="text-muted-foreground">
+                          {subAgentStatusLabel(s)} · {s.model} · {new Date(s.started_at).toLocaleString()}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </VStack>
+                  <Box className="h-px bg-border" />
+                </>
+              )}
+
+              {viewingSubAgent ? (
+                <HStack space="sm" className="items-center">
+                  <Text testID="admin.transcript.subagent" size="xs" style={TRUNCATE_TEXT} className="min-w-0 flex-1 text-muted-foreground">
+                    Sub-agent transcript: {viewingSubAgent.description}
+                  </Text>
+                  <Button
+                    testID="admin.transcript.backToConversation"
+                    variant="outline"
+                    size="sm"
+                    isDisabled={!reachable}
+                    onPress={() => { void showTranscript(selected.id, null); }}
+                  >
+                    <ButtonText>Back to conversation</ButtonText>
+                  </Button>
+                </HStack>
+              ) : (
+                <Text size="xs" className="text-muted-foreground">
+                  Transcript
+                </Text>
+              )}
               <AdminTranscript
                 messages={messages}
                 loading={loadingTranscript}

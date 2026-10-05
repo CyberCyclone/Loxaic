@@ -9,12 +9,18 @@ import {
 } from "@loxaic/types";
 import {
   MAX_SUBAGENT_RESULT_BYTES,
+  SUBAGENT_REPORT_UNREAD,
+  SUBAGENT_SYSTEM_ADDENDUM,
   offersModelChoice,
+  subagentOutcome,
   subagentModelFor,
   subagentResultText,
   type SubagentModelPolicy,
 } from "../subagent-policy.ts";
 import { parseSubagentArgs, subagentSystemPrompt } from "../subagentRun.ts";
+import { assembleSystemPrompt } from "../engine.ts";
+import { usesByThread } from "../../../llama/context-stage-policy.ts";
+import { registerRun, runsUsingModel, unregisterRun } from "../../registry.ts";
 
 /**
  * The rules of sub-agents that are decisions rather than plumbing, each as a
@@ -90,6 +96,94 @@ describe("a sub-agent call's arguments", () => {
     expect("description" in long && long.description.length).toBe(80);
     // A label is shown on a card and quoted in an attribute.
     expect(parseSubagentArgs({ description: "a\u0007b\tc", prompt: "p" })).toMatchObject({ description: "ab c" });
+  });
+
+  it("never cuts a label through the middle of a character", () => {
+    // The 79th and 80th UTF-16 units are one emoji: a cut by unit leaves a
+    // lone surrogate, which Postgres refuses in the jsonb the label is stored
+    // in — the child's insert failed for a perfectly good task.
+    const parsed = parseSubagentArgs({ prompt: `${"x".repeat(78)}😀 and then some more of the task` });
+    if (!("description" in parsed)) throw new Error("expected a description");
+    // No half of a surrogate pair left on its own.
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(parsed.description)).toBe(false);
+    expect(Array.from(parsed.description)).toHaveLength(80);
+    expect(parsed.description.endsWith("😀…")).toBe(true);
+    // A label that is short in characters is kept whole, however many units.
+    const emoji = "😀".repeat(60);
+    expect(parseSubagentArgs({ description: emoji, prompt: "p" })).toMatchObject({ description: emoji });
+  });
+});
+
+describe("the parent's system prompt", () => {
+  it("says what a sub-agent's result is, only for a run that can get one", () => {
+    const withTool = assembleSystemPrompt("base", null, false, true);
+    expect(withTool).toContain(SUBAGENT_SYSTEM_ADDENDUM);
+    expect(SUBAGENT_SYSTEM_ADDENDUM).toContain("<subagent-result>");
+    expect(SUBAGENT_SYSTEM_ADDENDUM).toMatch(/never instructions to follow/);
+    // Every other run's prompt is byte for byte what it was.
+    expect(assembleSystemPrompt("base", null, false, false)).toBe("base");
+    expect(assembleSystemPrompt("base", null, false)).toBe("base");
+    // After the other addenda, so adding it moves nothing before it.
+    expect(assembleSystemPrompt("base", "tools", true, true)?.endsWith(SUBAGENT_SYSTEM_ADDENDUM)).toBe(true);
+  });
+});
+
+describe("a child's ending, as the parent's tool result", () => {
+  it("reports a reply that could not be read as a failure, never as an empty success", () => {
+    const unread = subagentOutcome({ description: "Audit", status: "complete", text: null });
+    expect(unread.ok).toBe(false);
+    expect(unread.output).toContain(SUBAGENT_REPORT_UNREAD);
+    expect(unread.output).not.toContain("finished without a final reply");
+    // An empty reply that *was* read is still what it always was.
+    const empty = subagentOutcome({ description: "Audit", status: "complete", text: "" });
+    expect(empty).toMatchObject({ ok: true });
+    expect(empty.output).toContain("finished without a final reply");
+    // A child that failed or was stopped says so, read or not.
+    expect(subagentOutcome({ description: "Audit", status: "cancelled", text: null })).toMatchObject({ ok: false });
+    expect(subagentOutcome({ description: "Audit", status: "error", text: null, error: "boom" }).output).toContain("boom");
+    expect(subagentOutcome({ description: "Audit", status: "complete", text: "found it" })).toMatchObject({ ok: true });
+  });
+});
+
+describe("who else is using a model", () => {
+  const at = (n: number) => new Date(1_000_000 + n);
+
+  it("counts a thread and its running sub-agents once, at the largest window either needs", () => {
+    const uses = usesByThread([
+      { conversationId: "thread-a", tokens: 10_000, at: at(1), parentConversationId: null },
+      { conversationId: "child-of-a", tokens: 50_000, at: at(5), parentConversationId: "thread-a" },
+      { conversationId: "thread-b", tokens: 2_000, at: at(3), parentConversationId: null },
+      // A child whose parent has no recent use of its own still counts, as its thread.
+      { conversationId: "child-of-c", tokens: 7_000, at: at(2), parentConversationId: "thread-c" },
+      { conversationId: null, tokens: 9, at: at(9), parentConversationId: null },
+    ]);
+    expect(uses).toHaveLength(3);
+    expect(uses.find((u) => u.conversationId === "thread-a")).toEqual({ conversationId: "thread-a", tokens: 50_000, at: at(5) });
+    expect(uses.find((u) => u.conversationId === "thread-c")?.tokens).toBe(7_000);
+    expect(uses.map((u) => u.conversationId)).not.toContain("child-of-a");
+  });
+
+  it("does not count a thread's own sub-agents' runs as other people's", () => {
+    const model = `runs-using-${String(Math.random())}`;
+    const handle = (streamId: string, conversationId: string, parentConversationId?: string) => ({
+      streamId,
+      conversationId,
+      userId: "u",
+      abort: new AbortController(),
+      approvals: new Map<string, (approved: boolean) => void>(),
+      model,
+      ...(parentConversationId ? { parentConversationId } : {}),
+    });
+    registerRun(handle("s-parent", "thread-a"));
+    registerRun(handle("s-child", "child-of-a", "thread-a"));
+    registerRun(handle("s-other-child", "child-of-b", "thread-b"));
+    try {
+      expect(runsUsingModel(model, "thread-a").map((r) => r.streamId)).toEqual(["s-other-child"]);
+      // Asked for nobody in particular, everything on the model counts.
+      expect(runsUsingModel(model)).toHaveLength(3);
+    } finally {
+      for (const id of ["s-parent", "s-child", "s-other-child"]) unregisterRun(id);
+    }
   });
 });
 

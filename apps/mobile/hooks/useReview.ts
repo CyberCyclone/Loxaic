@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   isOpen,
+  shouldAutoOpen,
   reviewItemsIn,
   reviewStatuses,
   type PlanStatus,
@@ -29,14 +30,23 @@ export function isAwaiting(item: ReviewItem | null, status: ReviewStatus | null)
  * per item per session: closing it, or answering, is an answer to "show me",
  * and from then on the bar carries it. Viewers get the bar, never a sheet over
  * the thread they came to read.
+ *
+ * `blocked` holds it back while another sheet is on screen (a sub-agent's
+ * panel, the Sub-agents list): a planning run that hands research to
+ * sub-agents can call `propose_plan` while one of them is being watched, and
+ * a second native sheet over the first is what stranded sheets on iOS. Held
+ * back is not shown — the item is not marked seen, so it opens the moment the
+ * other sheet closes.
  */
 export function useReview(input: {
   convId: string | null;
   msgs: readonly Message[];
   busy: boolean;
   canDecide: boolean;
+  blocked?: boolean;
 }) {
   const { convId, msgs, busy, canDecide } = input;
+  const blocked = input.blocked ?? false;
   const [openCallId, setOpenCallId] = useState<string | null>(null);
   // Call ids this session has already shown or had dismissed. A ref: the
   // decision to auto-open is made in an effect, and must not wait on (or
@@ -61,10 +71,10 @@ export function useReview(input: {
 
   const latestId = latest?.callId ?? null;
   useEffect(() => {
-    if (!latestId || latestStatus !== 'pending' || busy || !canDecide || seen.current.has(latestId)) return;
+    if (!latestId || !shouldAutoOpen({ latestId, latestStatus, busy, canDecide, blocked, seen: seen.current })) return;
     seen.current.add(latestId);
     setOpenCallId(latestId);
-  }, [latestId, latestStatus, busy, canDecide]);
+  }, [latestId, latestStatus, busy, canDecide, blocked]);
 
   const openItem = useCallback((callId: string) => {
     seen.current.add(callId);

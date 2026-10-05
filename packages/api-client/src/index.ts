@@ -1159,6 +1159,16 @@ export async function adminGetMessages(
   return (await res.json()) as { messages: AdminMessage[]; hasMore?: boolean; before?: string | null };
 }
 
+/**
+ * A conversation's sub-agents, for the admin screen — the only way to learn
+ * the ids of a retained conversation's children, whose transcripts
+ * `adminGetMessages` then reads.
+ */
+export async function adminGetSubAgents(conversationId: string): Promise<SubAgentLive[]> {
+  const res = await authedFetch(`/v1/admin/conversations/${conversationId}/subagents`);
+  return ((await res.json()) as { subagents: SubAgentLive[] }).subagents;
+}
+
 /** Give a retained conversation back to its owner. Its shares come back with
  * it; its agent workspace does not, having been destroyed at delete time. */
 export async function adminRestoreConversation(conversationId: string): Promise<void> {
@@ -1390,15 +1400,20 @@ export interface MessagePage {
  * The sub-agents a thread's runs have spawned, newest first — what its cards
  * and its Sub-agents list are drawn from after a reload, when the stream that
  * carried them live is no longer being replayed. A server that predates
- * sub-agents answers 404, which the caller reads as "none it can tell us of".
+ * sub-agents answers 404, which the caller reads as "none it can tell us of"
+ * (an `ApiError` with that status); any other failure is "could not ask".
+ *
+ * `serverNow` is the server's clock when it answered, so a child still running
+ * can be timed from its real start (`started_at` is on that clock).
  */
-export async function getSubAgents(conversationId: string): Promise<SubAgentLive[]> {
+export async function getSubAgents(conversationId: string): Promise<{ subagents: SubAgentLive[]; serverNow?: number }> {
   const token = await getAuthToken();
   const res = await serverFetch(`${BASE_URL}/v1/conversations/${conversationId}/subagents`, {
     headers: { Authorization: `Bearer ${String(token)}` },
   });
   if (!res.ok) throw new ApiError(`Sub-agents failed: ${String(res.status)}`, res.status);
-  return ((await res.json()) as { subagents: SubAgentLive[] }).subagents;
+  const body = (await res.json()) as { subagents: SubAgentLive[]; server_now?: number };
+  return { subagents: body.subagents, ...(typeof body.server_now === "number" ? { serverNow: body.server_now } : {}) };
 }
 
 export async function getMessages(

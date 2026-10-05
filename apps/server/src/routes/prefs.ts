@@ -270,6 +270,19 @@ export function prefsRoutes(app: FastifyInstance) {
         reply.code(400);
         return { error: "Choose the model sub-agents should use (subagentModel) to use a fixed one" };
       }
+      // The stored model is judged the same way as one arriving with the
+      // patch: whether this server can still serve it. Its provider may have
+      // been deleted since it was saved, and "fixed" on a model that resolves
+      // nowhere is a setting that reports success and then fails every
+      // sub-agent call, with nothing pointing back here.
+      if (mode === "fixed" && model && patch.subagentModel === undefined) {
+        try {
+          await assertModelResolvable(model);
+        } catch (err) {
+          reply.code(400);
+          return { error: (err as Error).message };
+        }
+      }
     }
     if (Object.keys(patch).length === 0) {
       reply.code(400);

@@ -170,14 +170,18 @@ function detachedCleanup(
   opts?: { purge?: boolean; childIds?: readonly string[] },
 ): void {
   void (async () => {
-    // Sub-agents the run spawned after the first pass read them are found
-    // again here, before the second pass erases their rows.
-    const childIds = new Set(opts?.childIds ?? []);
-    for (const childId of await childConversationIds(id).catch(() => [])) childIds.add(childId);
     // Wait for the aborted run to actually finish before cleaning up: it is
     // still writing message rows, and its tool calls still hold the sandbox we
     // are about to destroy.
     const ended = await waitForRunEnd(id, unwindTimeoutMs());
+    // Sub-agents the run spawned after the first pass read them are found
+    // again here — after the wait, never before it: an unwinding run can
+    // still be starting a child, and one read too early kept its stream log
+    // (the task its parent's model wrote) until the TTL. Before the second
+    // pass, which erases their rows and with them the only record of their
+    // ids.
+    const childIds = new Set(opts?.childIds ?? []);
+    for (const childId of await childConversationIds(id).catch(() => [])) childIds.add(childId);
     if (!ended) {
       log.warn(
         { conversationId: id },

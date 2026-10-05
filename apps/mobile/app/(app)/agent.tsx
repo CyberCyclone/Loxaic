@@ -306,6 +306,7 @@ export default function AgentScreen() {
     msgs: activeRun?.msgs ?? NO_MESSAGES,
     busy,
     canDecide: Boolean(activeRun && canEdit(activeRun)) && connection === 'online',
+    blocked: subAgents.sheetOpen,
   });
   const planContext = useMemo<PlanReview>(
     () => ({ open: planReview.openItem, statusOf: planReview.statusOf }),
@@ -669,6 +670,8 @@ export default function AgentScreen() {
       <SubAgentsList
         open={subAgents.listOpen}
         subAgents={subAgents.listed}
+        unavailable={subAgents.listUnavailable}
+        onRetry={subAgents.retryList}
         isStopping={subAgents.isStopping}
         onOpen={subAgents.openFromList}
         onClose={subAgents.closeList}

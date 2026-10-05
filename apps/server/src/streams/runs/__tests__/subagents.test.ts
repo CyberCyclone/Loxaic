@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -18,8 +18,10 @@ import { NotFoundError, actingRole, assertConversationAccess, resolveAccess } fr
 import { getRun, getRunByConversation } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
 import { startChatRun } from "../chatRun.ts";
-import { listSubagents, reconcileOrphanedSubagents } from "../subagentRun.ts";
-import { tooManySubagentsText } from "../subagent-policy.ts";
+import { listSubagents, reconcileOrphanedSubagents, runSubagent } from "../subagentRun.ts";
+import { SUBAGENT_SYSTEM_ADDENDUM, tooManySubagentsText } from "../subagent-policy.ts";
+import { lastRequestShape } from "../request-shape.ts";
+import { recentUses } from "../../../llama/context-stage-policy.ts";
 import { buildToolset } from "../../../mcp/registry.ts";
 import { purgeConversation } from "../../../conversations/delete.ts";
 import { answerApproval, mayActOnRun } from "../../../ws/run-actions.ts";
@@ -226,6 +228,138 @@ describe("sub-agents", () => {
     expect(childUsage.length).toBeGreaterThan(0);
     expect(childUsage.every((u) => u.runId === info.streamId)).toBe(true);
   }, 30_000);
+
+  it("tells a run with the tool what a sub-agent's result is, and a run without it nothing", async () => {
+    const convId = await newConversation();
+    await agentRun(convId, "Use a sub-agent: report back");
+    await waitFor("the parent to end", ended(convId));
+    // What was actually sent: the marker the result arrives in is explained
+    // in the same prompt, as a document's and an MCP result's are.
+    expect(lastRequestShape(convId)?.system).toContain(SUBAGENT_SYSTEM_ADDENDUM);
+    // A plain chat is never offered the tool, so its prompt is what it was.
+    const chatId = await newConversation("chat");
+    await startChatRun({ userId, content: "hello there", model: MODEL, conversationId: chatId });
+    await waitFor("the chat to end", ended(chatId));
+    expect(lastRequestShape(chatId)?.system ?? "").not.toContain("<subagent-result>");
+  }, 30_000);
+
+  it("starts a child whose label had to be cut through an emoji", async () => {
+    const convId = await newConversation();
+    const task = `${"x".repeat(78)}😀 and then say done`;
+    useScenario("emoji label", [{ tool: SUBAGENT_TOOL_NAME, args: { prompt: task } }]);
+    await agentRun(convId, "emoji label");
+    await waitFor("the parent to end", ended(convId));
+    const [child] = await childrenOf(convId);
+    // Cut by UTF-16 unit the label ended in half an emoji, Postgres refused
+    // the row, and the parent was told the server had gone wrong.
+    expect((child.subagent as SubAgentInfo).status).toBe("complete");
+    expect(child.title.endsWith("😀…")).toBe(true);
+    expect((await resultsOf(convId))[0].ok).toBe(true);
+  }, 30_000);
+
+  it("never lists a child that is still starting as lost", async () => {
+    const convId = await newConversation();
+    const broker = getStreamBroker();
+    const open = broker.openProducer.bind(broker);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let held = false;
+    // The child's row is written before its stream is opened and its run
+    // registered. Hold it there: that is the moment a listing used to read
+    // "running in the database, unknown to the registry" as a dead process's.
+    const spy = vi.spyOn(broker, "openProducer").mockImplementation(async (opts) => {
+      if (opts.conversationId !== convId) {
+        held = true;
+        await gate;
+      }
+      return open(opts);
+    });
+    try {
+      await agentRun(convId, "Use a sub-agent: say hello");
+      await waitFor("the child to reach its stream", () => held);
+      const [child] = await childrenOf(convId);
+      const info = child.subagent as SubAgentInfo;
+      expect(getRun(info.streamId)).toBeUndefined();
+      const [listed] = await listSubagents(convId, (streamId) => getRun(streamId) !== undefined);
+      expect(listed).toMatchObject({ conversation_id: child.id, status: "running" });
+      expect(listed.error).toBeUndefined();
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+    await waitFor("the parent to end", ended(convId));
+    // Once it has ended it is no longer anyone's to call starting.
+    expect((await listSubagents(convId, () => false))[0].status).toBe("complete");
+  }, 30_000);
+
+  it("refuses to start a child under a conversation that was deleted and kept", async () => {
+    const convId = await newConversation();
+    await db.update(conversations).set({ deletedAt: new Date() }).where(eq(conversations.id, convId));
+    const events: unknown[] = [];
+    const outcome = await runSubagent(
+      {
+        convId,
+        streamId: uuid(),
+        userId,
+        mode: "auto",
+        surface: "agent",
+        assistantMsgId: uuid(),
+        producer: { emit: (e) => { events.push(e); }, end: () => Promise.resolve() },
+        signal: new AbortController().signal,
+      },
+      { callId: "call_0", description: "Too late", prompt: "say hello", model: MODEL },
+    );
+    expect(outcome).toMatchObject({ ok: false });
+    expect(outcome.output).toContain("no longer exists");
+    // Nothing was made: no row to hold the task, no stream to hold it either.
+    expect(await childrenOf(convId)).toHaveLength(0);
+    expect(events).toHaveLength(0);
+  });
+
+  it("stops counting a sub-agent against the model's context once it has ended", async () => {
+    // A model nothing else uses, so the answer is this test's rows alone.
+    const model = `stage-uses-${uuid()}`;
+    const parentId = await newConversation();
+    const otherId = await newConversation();
+    const child = async (parent: string, status: "running" | "complete") => {
+      const [row] = await db
+        .insert(conversations)
+        .values({
+          ownerId: userId,
+          title: "Counted?",
+          kind: "subagent",
+          parentConversationId: parent,
+          parentMessageId: uuid(),
+          parentCallId: "call_0",
+          subagent: { description: "Counted?", model, mode: "auto", streamId: uuid(), status, startedAt: Date.now() } satisfies SubAgentInfo,
+        })
+        .returning();
+      return row.id;
+    };
+    const finished = await child(parentId, "complete");
+    const ownRunning = await child(parentId, "running");
+    const othersRunning = await child(otherId, "running");
+    const use = (conversationId: string, inputTokens: number) => ({ id: uuid(), userId, conversationId, model, inputTokens, outputTokens: 0 });
+    await db.insert(usageRecords).values([
+      use(parentId, 1_000),
+      use(finished, 50_000),
+      use(ownRunning, 40_000),
+      use(otherId, 2_000),
+      use(othersRunning, 30_000),
+    ]);
+
+    // Asked by nobody in particular: two threads. The finished child's 50K is
+    // nobody's any more; a running one counts under the thread it works for.
+    const all = await recentUses(model);
+    expect(all.map((u) => u.conversationId).sort()).toEqual([parentId, otherId].sort());
+    expect(all.find((u) => u.conversationId === parentId)?.tokens).toBe(40_000);
+    expect(all.find((u) => u.conversationId === otherId)?.tokens).toBe(30_000);
+
+    // Asked from the parent: its own children are not "another conversation",
+    // running or not. The other thread and its running child still are.
+    const others = await recentUses(model, parentId);
+    expect(others).toEqual([expect.objectContaining({ conversationId: otherId, tokens: 30_000 })]);
+  });
 
   it("never offers a child the tool, so sub-agents go one level deep", async () => {
     const convId = await newConversation();

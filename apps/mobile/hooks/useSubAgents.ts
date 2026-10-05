@@ -23,9 +23,11 @@ const SHEET_EXIT_MS = 300;
  * thread's; this narrows it to the thread on screen.
  */
 export function useSubAgents(controller: SubAgentController, parentConvId: string | null, canAct: boolean) {
-  const { byParent, transcripts, openId, stopping, open, close, stop, answer } = controller;
+  const { byParent, transcripts, openId, stopping, listFailed, loadFor, open, close, stop, answer } = controller;
   const list = parentConvId ? byParent[parentConvId] : undefined;
   const [listOpen, setListOpen] = useState(false);
+  // True between the list closing and the panel it handed over to opening.
+  const [handingOver, setHandingOver] = useState(false);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // The panel and the list belong to the thread they were opened from.
@@ -34,6 +36,7 @@ export function useSubAgents(controller: SubAgentController, parentConvId: strin
   useEffect(() => {
     close();
     setListOpen(false);
+    setHandingOver(false);
     return () => {
       if (openTimer.current) clearTimeout(openTimer.current);
     };
@@ -59,12 +62,25 @@ export function useSubAgents(controller: SubAgentController, parentConvId: strin
 
   const openFromList = useCallback((childConvId: string) => {
     setListOpen(false);
+    setHandingOver(true);
     if (openTimer.current) clearTimeout(openTimer.current);
     openTimer.current = setTimeout(() => {
       openTimer.current = null;
+      setHandingOver(false);
       open(childConvId);
     }, SHEET_EXIT_MS);
   }, [open]);
+
+  const listUnavailable = parentConvId ? listFailed.has(parentConvId) : false;
+  // Opening the list is a person asking, so a listing that could not be
+  // fetched is asked for again rather than left for the next reconnect.
+  const openList = useCallback(() => {
+    if (parentConvId) loadFor(parentConvId);
+    setListOpen(true);
+  }, [loadFor, parentConvId]);
+  const retryList = useCallback(() => {
+    if (parentConvId) loadFor(parentConvId);
+  }, [loadFor, parentConvId]);
 
   // The child whose approval the thread's own screen shows. Not while its
   // panel is open, where the same question is already in the footer — and not
@@ -82,7 +98,17 @@ export function useSubAgents(controller: SubAgentController, parentConvId: strin
     listed: useMemo(() => listedSubAgents(list), [list]),
     running: runningCount(list),
     listOpen,
-    openList: useCallback(() => { setListOpen(true); }, []),
+    /** The stored listing could not be asked for: the list is "unknown", not
+     * "none". */
+    listUnavailable,
+    retryList,
+    /**
+     * One of this thread's sub-agent sheets is on screen, or about to be. No
+     * other sheet may open over it: a second native overlay on top of the
+     * first is what stranded sheets on iOS (AGENTS.md, "Plan review").
+     */
+    sheetOpen: listOpen || handingOver || openId !== null,
+    openList,
     closeList: useCallback(() => { setListOpen(false); }, []),
     openFromList,
     isStopping,

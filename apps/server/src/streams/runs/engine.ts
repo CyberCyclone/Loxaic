@@ -54,6 +54,7 @@ import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } 
 import type { PermissionMode, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES, SUBAGENT_TOOL_NAME } from "@loxaic/agent";
 import {
+  SUBAGENT_SYSTEM_ADDENDUM,
   loadSubagentPolicy,
   offeredSubagentModels,
   offersModelChoice,
@@ -468,8 +469,15 @@ export function assembleSystemPrompt(
   basePrompt: string | null,
   toolAddendum: string | null,
   hasDocuments: boolean,
+  /** Whether this run is offered the `subagent` tool. */
+  hasSubagents = false,
 ): string | null {
-  const parts = [basePrompt, toolAddendum, hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null].filter(
+  const parts = [
+    basePrompt,
+    toolAddendum,
+    hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null,
+    hasSubagents ? SUBAGENT_SYSTEM_ADDENDUM : null,
+  ].filter(
     (p): p is string => typeof p === "string" && p.length > 0,
   );
   return parts.length ? parts.join("\n\n") : null;
@@ -612,7 +620,11 @@ export async function runToolLoop(ctx: {
       (m) => m.role === "user" && countDocumentParts(m.content) > 0,
     );
     const basePrompt = typeof ctx.basePrompt === "function" ? await ctx.basePrompt() : ctx.basePrompt;
-    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments);
+    // Offered, not merely enabled: planning mode and a child run are the
+    // toolset's to decide, and the addendum explains a marker only a run with
+    // the tool can ever be handed.
+    const hasSubagents = tools.some((t) => t.function.name === SUBAGENT_TOOL_NAME);
+    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments, hasSubagents);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent.
@@ -1689,7 +1701,13 @@ async function runSubagentGroup(input: {
     await input.slot.yieldWhile(async () => {
       // Started one after another, each once the one before has its place in
       // line (or has ended): children then queue in the order they were
-      // called. Started all at once, their order in the queue was whichever
+      // called. That serialises each child's whole setup, not only its queue
+      // entry — its model check, its rows, its instructions and its toolset
+      // (every enabled MCP server's connect) all happen before it reaches the
+      // scheduler — so one unreachable MCP server costs its connect timeout
+      // once per child rather than once. Accepted for now: it also bounds how
+      // much setup one message can start at once, and ordering only the queue
+      // entry needs a gate inside `runToolLoop`. Started all at once, their order in the queue was whichever
       // finished its own setup first — on one slot, the difference between
       // "the first task ran first" and a coin toss. They still run side by
       // side wherever the backend has the slots: a child with a slot is "in

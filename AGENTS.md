@@ -2152,6 +2152,10 @@ replies.
     their queue order was whichever finished its own setup first; on one slot that made "the
     first task ran first" a coin toss, and the first e2e run failed on it two cases in three.
     They still run side by side where the backend has the slots.
+    **This serialises each child's whole setup, not only its queue entry** (model check, rows,
+    instructions, every enabled MCP server's connect), so an unreachable MCP server costs its
+    connect timeout once per child. Accepted for now; ordering only the queue entry needs a gate
+    inside `runToolLoop`. Found in review.
   - **Results stay in call order.** The group runs at the first `subagent` call; later ones are
     recorded from the stored outcome when the loop reaches them (`ranAlready`), so
     `[subagent, bash, subagent]` persists three results in that order. At most 4 per message
@@ -2168,6 +2172,19 @@ replies.
   16 KB on a character boundary, in `<subagent-result description="…">` markers whose closing
   tag inside the report is broken with a zero-width space. It is persisted and replayed on every
   later turn, so the same outcome must be the same bytes.
+  - **The marker is explained in the same prompt** (`SUBAGENT_SYSTEM_ADDENDUM`, appended by
+    `assembleSystemPrompt` for a run that is offered the tool). A child's report is the one tool
+    result written by another model, out of whatever it read — a fetched page, an MCP result, a
+    repository file — so without the sentence, instruction-shaped text could be quoted into the
+    parent's prompt and replayed every turn after. The wrapper shipped without it, exactly as
+    `DOCUMENT_SYSTEM_ADDENDUM` once did. Found in review.
+  - **A reply that could not be read is a failure, never an empty success**
+    (`subagentOutcome`): `text: null` on a `complete` child is `ok: false` with a sentence
+    saying the report could not be read. Returned as `""` it was stored as "finished without a
+    final reply", for good.
+  - **A label is cut by code point.** `slice` can leave half an emoji, Postgres refuses a lone
+    surrogate in jsonb, and the child's insert failed for a valid task ("something went wrong
+    on the server"). Checked against a real database, not reasoned.
 - **Which model a child runs on is a per-user setting** (`user_prefs.subagent_model_mode`,
   `streams/runs/subagent-policy.ts`): `choose` (the parent's, unless the parent names another it
   is offered), `parent`, or `fixed` (`subagent_model`).
@@ -2199,12 +2216,47 @@ replies.
   take an optional `stream_id` on both sockets; a named run that holds no such approval is a
   no-op and does **not** fall back to the plural lookup, since the parent may hold the same
   `call_0`. A card is found by `(message id, call id)` for the same reason.
+  - **Every answer names its run, the thread's own included.** A pending approval records the
+    stream it arrived on (`toPendingApproval`'s `streamId`), and both hooks send it
+    (`approvalStreamId`). The child path named its run from the start; the thread's own Allow and
+    Deny did not, and an unnamed answer goes to the first of the person's runs holding that call
+    id. So Allow on one thread could run a sub-agent's write waiting in another, which nobody had
+    been shown, while the thread on screen stayed parked. Found in review.
+    `subagents.spec.ts` reads the frame that goes out.
+  - **A known message's card is matched exactly or not at all** (`subAgentForCall`). The
+    call-id-only fallback is for a caller with no message id. Taken on a miss, it bound a new
+    turn's card to an earlier turn's child — permanently when the new call was refused and never
+    got a child. Found in review.
 - **Deleting a thread erases its children** in the same transaction (`eraseRows`), and their
   stream logs after it. A retained (soft-deleted) parent's children are **not** stamped: a date
   of their own would have the sweep erase a child out from under a held parent. Listings and the
   admin list exclude the kind; `/v1/stats/conversations` groups a child's usage under its
   parent. A boot reconcile (`reconcileOrphanedSubagents`, bounded by this process's start) ends
   children a dead process left `running`.
+  - **A child is not started under a deleted parent**, kept or erased (`runSubagent` reads
+    `deletedAt`), and the cleanup re-reads the children *after* the run has unwound, so one that
+    started late does not keep its stream log until the TTL.
+  - **An admin reaches a conversation's sub-agents through
+    `GET /v1/admin/conversations/:id/subagents`**, and reads one with the admin transcript route.
+    The admin list leaves children out and the owner's listing 404s for a deleted parent, so a
+    retained conversation's sub-agent transcripts could not be found at all. The admin screen
+    lists them above the transcript and shows one in its place.
+  - **In `/v1/stats/conversations`, the totals include children and the label does not**: `model`
+    and `avgTtftMs` come from the thread's own requests, since a child may run on another model.
+- **A child's row exists before its run does**, because the stream is opened for its
+  conversation. For that moment it is `running` in the database and unknown to the registry,
+  which is what `listSubagents` reads as lost. A listing read in the gap ended the card, the
+  client then ignored its progress, and its approval was never shown. `starting` (a set of stream
+  ids in `subagentRun.ts`) covers the gap. `subagents.test.ts` holds a child at `openProducer`.
+- **A finished sub-agent is nobody's "other conversation"** (`recentUses`, `usesByThread`,
+  `runsUsingModel`). A child records usage under its own id, so each one held the model's
+  context-stage step-down for two hours and counted as someone else's conversation in the Extend
+  modal. Now a child counts only while running, under its parent's thread, and never when it is
+  the asking thread's own. The SQL uses `IS DISTINCT FROM`: a plain `<>` against a null parent
+  answers null and drops every ordinary conversation. `RunHandle.parentConversationId` is how the
+  registry tells.
+- **`usage_records` is indexed on `(conversation_id, created_at)`** (migration 0037): the
+  listing asks it twice per child.
 - **drizzle renders a column of a single-table select without its table.** In
   `listSubagents`, `u.conversation_id = ${conversations.id}` inside a subquery became
   `u.conversation_id = "id"` — `usage_records.id` — and every figure came back null. The outer
@@ -2221,6 +2273,15 @@ replies.
     stored listing (`GET /v1/conversations/:id/subagents`) only adds, ends, or fills in missing
     figures (`lib/subAgents.ts`). A start time and an approval's deadline are converted to this
     device's clock once and kept, or the elapsed counter jumps on every report.
+  - **The listing carries `server_now`, because it lands first.** The start time is kept from
+    whichever feed describes a child first, and after a reload that is the listing, before any
+    snapshot. With no clock on it a child six minutes in counted up from 0.0s for the rest of
+    its run. Found in review.
+  - **A listing that could not be asked for is asked again** (`loadFor`): only a 404 settles it
+    as "none". Anything else forgets the thread, marks it `listFailed`, and retries on the next
+    socket and when the list is opened; the list says "Couldn't load…" with Try again, never
+    "No sub-agents yet". Found in review.
+  - **A transcript is subscribed only if its panel is still open when its history lands.**
   - **A figure that is not known is left out, never shown as 0**: context needs both the used
     and the window figure, a speed is the backend's own for the last finished request, and a
     send made before the model list loaded (no model named) shows no model.
@@ -2235,9 +2296,18 @@ replies.
   - **In the panel the question is in the footer**, an inline bar, and the screen behind stops
     showing it. On a routine the dialog waits until any sheet has gone (`sheetGone`), and a sheet
     gives way to the run's own approval: nothing here puts a dialog over a sheet.
+  - **The plan or questions panel waits for a sub-agent sheet to close** (`useReview`'s
+    `blocked`, fed by `useSubAgents().sheetOpen`, which covers the list, the panel and the 300 ms
+    hand-over between them). A planning run can call `propose_plan` while one of its sub-agents
+    is being watched. Held back, the item is not marked seen, so it opens when the sheet goes.
+    Found in review.
   - **A sub-agent's user turns are marked `fromAgent`** when shown: nobody typed its task.
-- **e2e:** `subagents.spec.ts`, and `native/subagent-approval-resume.spec.ts` for a lock and a
-  switch-away while a child waits on an approval. The mock's trigger is "sub-agent"/"delegate",
+- **e2e:** `subagents.spec.ts`, `admin-subagents.spec.ts`, and
+  `native/subagent-approval-resume.spec.ts` for a lock, a switch-away and a cold start while a
+  child waits on an approval. **Only the cold start proves the snapshot carries the approval**:
+  after a lock or a switch-away the bar is still held in React state, so those two cases passed
+  with the fold removed. An elapsed label is parsed (`elapsedSeconds`) and compared with the
+  stored start; "contains an s" passed for a counter stuck at 0.0s. The mock's trigger is "sub-agent"/"delegate",
   and **the text after the first colon is the child's task**, so one prompt chooses what the
   child does through the ordinary triggers. A scenario's `match` is tested against the child's
   prompt too; keep child tasks clear of every scenario regex. A card's testID carries the call

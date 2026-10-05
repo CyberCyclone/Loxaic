@@ -10,17 +10,22 @@
  * which the client knows only from that same snapshot.
  *
  * Both ways out of the app, since they are different OS events: a lock, and
- * switching away.
+ * switching away. Neither of those empties the app's memory, though: the bar,
+ * its source line and the child's stream id are all still held in React state
+ * when the socket is replaced, so those two cases show the answer still
+ * *reaches* the child on the new socket and would pass with nothing folded
+ * into the snapshot at all. The cold start is the case that starts from
+ * nothing — the question, who is asking it, and which run to answer can only
+ * have come from the server.
  */
 import { browser } from '@wdio/globals';
-import { uniqueCreds, type Credentials } from '../../helpers/auth.ts';
+import { uniqueCreds } from '../../helpers/auth.ts';
 import {
   APPROVAL_SUBAGENT_PROMPT,
   MOCK_SUBAGENT_NAME,
   getToolResults,
   goToSurface,
-  listConversations,
-  sendMessage,
+  sendInNewRun,
   signUp,
   startNewAgentRun,
   waitForRunDone,
@@ -51,19 +56,7 @@ async function leaveApp(): Promise<void> {
   });
 }
 const returnToApp = () => browser.execute('mobile: activateApp', appArg());
-
-async function newestRun(creds: Credentials): Promise<string> {
-  let id = '';
-  await browser.waitUntil(
-    async () => {
-      const first = (await listConversations(creds)).find((c) => c.kind === 'agent');
-      id = first ? first.id : '';
-      return id !== '';
-    },
-    { timeout: 20_000, timeoutMsg: 'the agent run never appeared' },
-  );
-  return id;
-}
+const quitApp = () => browser.execute('mobile: terminateApp', appArg());
 
 describe('a sub-agent’s approval and the phone leaving the app', () => {
   const creds = uniqueCreds();
@@ -91,8 +84,10 @@ describe('a sub-agent’s approval and the phone leaving the app', () => {
   async function parkOnChildApproval(): Promise<{ convId: string; childId: string }> {
     await startNewAgentRun();
     await tap('agent.mode.manual');
-    await sendMessage(APPROVAL_SUBAGENT_PROMPT);
-    const convId = await newestRun(creds);
+    // By difference from the runs that were there, never "the newest": asked a
+    // moment early that is the previous case's run, whose sub-agent already
+    // holds the very result this case goes on to assert.
+    const convId = await sendInNewRun(creds, APPROVAL_SUBAGENT_PROMPT);
     const [child] = await waitForSubAgents(creds, convId, 1);
     await waitForVisible('agent.permission.bar');
     await waitForTextIn('agent.permission.source', MOCK_SUBAGENT_NAME);
@@ -133,6 +128,23 @@ describe('a sub-agent’s approval and the phone leaving the app', () => {
     await waitForVisible('agent.permission.bar', 30_000);
     await waitForTextIn('agent.permission.source', MOCK_SUBAGENT_NAME);
     await shot('native-subagent-approval-after-return');
+    await denyAndExpectTheChildToHearIt(convId, childId);
+  });
+
+  it('asks again after the app was quit and opened from cold, and the answer reaches the sub-agent', async function () {
+    this.timeout(4 * 60_000);
+    const { convId, childId } = await parkOnChildApproval();
+
+    await quitApp();
+    await browser.pause(2_000);
+    await returnToApp();
+    // Nothing survives a quit but the session: the thread, its sub-agent and
+    // the question it is waiting on are all read back from the server.
+    await waitForVisible('composer.input', 60_000);
+    await goToSurface('agent');
+    await waitForVisible('agent.permission.bar', 60_000);
+    await waitForTextIn('agent.permission.source', MOCK_SUBAGENT_NAME);
+    await shot('native-subagent-approval-after-cold-start');
     await denyAndExpectTheChildToHearIt(convId, childId);
   });
 });
