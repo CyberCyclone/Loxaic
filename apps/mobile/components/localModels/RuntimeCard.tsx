@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Cpu, RotateCcw, TriangleAlert } from 'lucide-react-native';
-import type { LlamaBackend, LocalModel, LocalModelsSettings, LocalRuntimeView } from '@loxaic/api-client';
+import type { ExtraOption, LlamaBackend, LocalModel, LocalModelsSettings, LocalRuntimeView } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -12,6 +12,10 @@ import { Input, InputField } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
+import { Button, ButtonText } from '@/components/ui/button';
+import { ExtraOptionsEditor } from './ExtraOptionsEditor';
+import { useLlamaOptions } from '@/hooks/useLlamaOptions';
+import { rowProblems, rowsToSave, sameOptions, type OptionRow } from '@/lib/extraOptions';
 import { cpuWarning, formatBytes, restartHeadline, runtimeHeadline } from '@/lib/localModels';
 import { bundledNewerNote, changeVersionControl, offersRevert, versionLabel } from '@/lib/runtimeVersions';
 import { useServerReachable } from '@/lib/connection';
@@ -37,6 +41,7 @@ interface RuntimeCardProps {
     cpuAcknowledged?: boolean;
     devices?: string[] | null;
     hfToken?: string | null;
+    extraOptions?: ExtraOption[];
   }) => Promise<boolean>;
   /** Open the version picker. */
   onChangeVersion: () => void;
@@ -304,6 +309,8 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
               Needed only for gated models (Llama, Gemma and similar), after accepting their terms on huggingface.co.
             </Text>
           </VStack>
+
+          <RouterOptions runtime={runtime} reachable={reachable} onSave={(extraOptions) => onSettings({ extraOptions })} />
         </VStack>
       )}
 
@@ -320,5 +327,74 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
         }}
       />
     </Box>
+  );
+}
+
+/**
+ * Options passed to llama.cpp for every model, with their own draft and Save:
+ * the card's other controls apply as they are touched, but a half-typed row
+ * must not restart the runtime. Usable while the runtime is in error, since a
+ * value it cannot read is one way to get there.
+ */
+function RouterOptions({
+  runtime,
+  reachable,
+  onSave,
+}: {
+  runtime: LocalRuntimeView;
+  reachable: boolean;
+  onSave: (rows: ExtraOption[]) => Promise<boolean>;
+}) {
+  const saved = runtime.extraOptions ?? [];
+  const savedKey = JSON.stringify(saved);
+  const [rows, setRows] = useState<OptionRow[]>(saved);
+  const [saving, setSaving] = useState(false);
+  // Follows what the server says until the admin starts typing, so a poll
+  // never throws a half-typed row away.
+  const touched = useRef(false);
+  useEffect(() => {
+    if (!touched.current) setRows(JSON.parse(savedKey) as OptionRow[]);
+  }, [savedKey]);
+  const { options, unavailable } = useLlamaOptions(true, `${runtime.tag}:${runtime.version?.reported ?? ''}:${String(runtime.state === 'running')}`);
+  const problems = rowProblems(rows, options, saved);
+  const changed = !sameOptions(rows, saved);
+  const clearing = rowsToSave(rows).length === 0;
+
+  return (
+    <VStack space="sm">
+      <ExtraOptionsEditor
+        scope="router"
+        rows={rows}
+        onChange={(next) => {
+          touched.current = true;
+          setRows(next);
+        }}
+        options={options}
+        unavailable={unavailable}
+        problems={problems}
+        skipped={runtime.extraOptionsSkipped ?? []}
+        disabled={!reachable || saving}
+      />
+      {changed && (
+        <HStack>
+          <Button
+            testID="localModels.extraOptions.router.save"
+            size="sm"
+            className="bg-primary"
+            isDisabled={saving || !reachable || problems.some((p) => p !== null) || (options === null && !clearing)}
+            onPress={() => {
+              setSaving(true);
+              void onSave(rowsToSave(rows))
+                .then((ok) => {
+                  if (ok) touched.current = false;
+                })
+                .finally(() => { setSaving(false); });
+            }}
+          >
+            <ButtonText className="text-primary-foreground">{saving ? 'Saving…' : 'Save and restart'}</ButtonText>
+          </Button>
+        </HStack>
+      )}
+    </VStack>
   );
 }

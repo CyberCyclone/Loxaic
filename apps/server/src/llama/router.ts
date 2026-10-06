@@ -1,11 +1,12 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_PROVIDER_ID } from "@loxaic/types";
 import { listServableModels } from "./catalog.ts";
+import { extraOptionLines, parseHelp, type ExtraOption, type OptionList } from "./extra-options.ts";
 import {
   defaultDevices,
   detectHardware,
@@ -47,6 +48,7 @@ import {
 import {
   getLlamaMode,
   getLocalModelsSettings,
+  getRouterExtraOptions,
   getRuntimeSelection,
   type LlamaBackend,
   type LlamaMode,
@@ -112,6 +114,14 @@ export interface RuntimeView {
   restart: RestartView | null;
   /** This host's RAM, for settings that put part of a model there. */
   hostMemory: { totalBytes: number; freeBytes: number };
+  /** The admin's options for every model, as stored. */
+  extraOptions: ExtraOption[];
+  /** Keys among them the build running now does not accept, which the preset
+   * leaves out. */
+  extraOptionsSkipped: string[];
+  /** Why extra options cannot be checked (and so cannot be set) right now, or
+   * null when the build's option list is known. */
+  optionsUnavailable: string | null;
 }
 
 export interface RuntimeVersionView {
@@ -181,6 +191,16 @@ const st: State = {
  * mutated by a later restart, so a pass that finishes late clears only its
  * own. */
 let restart: { phase: RestartPhase; cause: RestartView["cause"]; startedAt: number } | null = null;
+
+/**
+ * The options the build being run lists in its `--help` (extra-options.ts):
+ * what an admin's extra options are checked against, on the way in and every
+ * time the preset is written. Kept per binary and modification time, so a
+ * version switch asks the new build. Null until a build has been asked, or
+ * when it could not be; `optionsError` says why.
+ */
+let options: { list: OptionList; bin: string; mtimeMs: number } | null = null;
+let optionsError: string | null = null;
 
 /** Attach mode's last health answer, refreshed on a timer and on demand. */
 let attachHealthy: boolean | null = null;
@@ -525,7 +545,31 @@ function presetGlobals(): PresetGlobals {
   return {
     devices: st.activeDevices === "none" ? "none" : st.activeDevices.length > 0 ? st.activeDevices : null,
     placementLog: getLlamaMode() === "managed" && verifiedLogs(),
+    options: currentOptions(),
+    extraOptions: getRouterExtraOptions(),
   };
+}
+
+/** The option list of the build that reads the preset, or null. */
+export function currentOptions(): OptionList | null {
+  return options?.list ?? null;
+}
+
+/** Why extra options cannot be checked right now, or null. */
+export function optionsUnavailableReason(): string | null {
+  if (options) return null;
+  const mode = getLlamaMode();
+  if (mode === "off") return "Local models are switched off on this server (LLAMA_MODE=off).";
+  if (mode === "attach") {
+    return "The llama.cpp container has not said which options it takes. Its entrypoint records them when it starts; restart it with the current image.";
+  }
+  return optionsError ?? "llama.cpp has not been started yet, so its options are not known. Start the runtime first.";
+}
+
+/** Keys a model's stored options carry that the build running now does not
+ * accept, and so are left out of its preset section. */
+export function skippedExtraOptions(rows: readonly ExtraOption[]): string[] {
+  return extraOptionLines(rows, currentOptions()).skipped;
 }
 
 /**
@@ -737,6 +781,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_LOAD_MS) env.LOXAIC_FAKE_LOAD_MS = process.env.LOXAIC_FAKE_LOAD_MS;
   if (process.env.LOXAIC_FAKE_VRAM_STATE) env.LOXAIC_FAKE_VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
   if (process.env.LOXAIC_FAKE_RELOAD_FAIL) env.LOXAIC_FAKE_RELOAD_FAIL = process.env.LOXAIC_FAKE_RELOAD_FAIL;
+  if (process.env.LOXAIC_FAKE_HELP_OMIT) env.LOXAIC_FAKE_HELP_OMIT = process.env.LOXAIC_FAKE_HELP_OMIT;
   return env;
 }
 
@@ -786,6 +831,42 @@ function notRunnable(err: unknown): string {
   if (code === "ENOEXEC") return "it is not a program this system can run (it may be built for another kind of machine).";
   if (code === "EACCES") return "the system refused to run it (permission denied).";
   return code ? `the system could not start it (${code}).` : "the system could not start it.";
+}
+
+/**
+ * Ask a build which options it takes (`--help`), for checking an admin's extra
+ * options. b11342 prints its usage to stdout and exits 0 without loading a
+ * backend, so this costs a process start, once per binary. A failure is kept
+ * as the reason and asked again at the next start; nothing else depends on it.
+ */
+async function refreshOptions(bin: string): Promise<void> {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = (await stat(bin)).mtimeMs;
+  } catch {
+    // Asked anyway: the run says what is wrong.
+  }
+  if (options?.bin === bin && options.mtimeMs === mtimeMs) return;
+  const text = await new Promise<string | null>((resolve) => {
+    try {
+      execFile(
+        bin,
+        ["--help"],
+        { timeout: 5000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: childEnv(bin, "unused") },
+        (_err, stdout, stderr) => { resolve(`${stdout}\n${stderr}`); },
+      );
+    } catch {
+      resolve(null);
+    }
+  });
+  const list = text === null ? null : parseHelp(text);
+  if (!list || list.groups.length === 0) {
+    options = null;
+    optionsError = "This llama.cpp build did not list its options (--help), so extra options cannot be checked against it and are not passed.";
+    return;
+  }
+  options = { list, bin, mtimeMs };
+  optionsError = null;
 }
 
 const LIST_DEVICES_TIMEOUT_MS = 30_000;
@@ -1248,6 +1329,7 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
     }
   }
   st.runtime = runtime;
+  await refreshOptions(runtime.bin);
 
   const listed = await listDevices(runtime.bin);
   st.devices = listed.devices;
@@ -1339,6 +1421,18 @@ async function refreshAttachHealth(): Promise<void> {
   } catch {
     attachDevicesKnown = false;
   }
+  const before = options;
+  try {
+    // Written by infra/docker/llama-router.sh from the sidecar's own build.
+    const text = await readFile(path.join(path.dirname(presetPath()), "router-help.txt"), "utf8");
+    const list = parseHelp(text);
+    options = list.groups.length > 0 ? { list, bin: "attach", mtimeMs: 0 } : null;
+  } catch {
+    options = null;
+  }
+  // The sidecar said what it takes after the preset was written without the
+  // extra options it could not check: write them now.
+  if (!before && options) void syncPreset().catch(() => undefined);
   const ep = routerEndpoint();
   if (!ep) {
     attachHealthy = false;
@@ -1414,6 +1508,9 @@ export function runtimeView(): RuntimeView {
     // page cache included, not just what is idle.
     hostMemory: { totalBytes: os.totalmem(), freeBytes: os.freemem() },
     restart: mode === "managed" && restart ? { phase: restart.phase, cause: restart.cause, startedAt: new Date(restart.startedAt).toISOString() } : null,
+    extraOptions: getRouterExtraOptions(),
+    extraOptionsSkipped: skippedExtraOptions(getRouterExtraOptions()),
+    optionsUnavailable: optionsUnavailableReason(),
   };
 }
 
@@ -1509,6 +1606,8 @@ export async function __resetRouterForTest(): Promise<void> {
   attachDevicesKnown = false;
   fastFails = 0;
   logTail.length = 0;
+  options = null;
+  optionsError = null;
 }
 
 /** Test seam: the live router's pid, to kill it from outside. */

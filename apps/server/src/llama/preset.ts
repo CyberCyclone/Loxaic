@@ -3,6 +3,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { mtpSource, rowFiles, rowMeta, rowMmproj, rowMtpHead, type LocalModelRow } from "./catalog.ts";
 import { activeStageIndex, settingsForStage, yarnLines } from "./context-stages.ts";
+import { coerceExtraOptions, extraOptionLines, type ExtraOption, type OptionList } from "./extra-options.ts";
 import { presetLines } from "./load-settings.ts";
 import { modelFilePath, presetPath } from "./paths.ts";
 
@@ -27,6 +28,12 @@ export interface PresetGlobals {
    * request, never a prompt's text. Off where nothing reads the log (attach
    * mode: the sidecar's output stays in Docker's). */
   placementLog?: boolean;
+  /** The options the build reading this file lists in its `--help`, or null
+   * when it could not be asked. Extra options are written only when known to
+   * it (extra-options.ts). */
+  options?: OptionList | null;
+  /** The admin's options for every model, written to `[*]`. */
+  extraOptions?: readonly ExtraOption[];
 }
 
 /** A value that can sit on the right of `key = value` without breaking the
@@ -92,6 +99,9 @@ export function modelSection(row: LocalModelRow, globals: PresetGlobals): string
       mtp: mtpDraft(row),
     }),
     ...yarnLines(row, stage),
+    // The admin's own options last, after everything Loxaic writes. A key here
+    // beats the same key in `[*]` (llama.cpp's own precedence).
+    ...extraOptionLines(coerceExtraOptions(row.extraOptions), globals.options ?? null).lines,
   );
   return lines;
 }
@@ -120,6 +130,7 @@ export function renderPreset(rows: LocalModelRow[], globals: PresetGlobals): str
   if (globals.placementLog) out.push("log-verbosity = 4");
   if (globals.devices === "none") out.push("device = none", "n-gpu-layers = 0");
   else if (globals.devices && globals.devices.length > 0) out.push(`device = ${globals.devices.join(",")}`);
+  out.push(...extraOptionLines(globals.extraOptions, globals.options ?? null).lines);
   for (const row of rows) {
     const section = modelSection(row, globals);
     if (section.length === 0) continue;

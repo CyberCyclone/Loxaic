@@ -267,6 +267,13 @@
       "when": 1791194716121,
       "tag": "0037_usage_conversation_index",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1791267427475,
+      "tag": "0038_local_model_extra_options",
+      "breakpoints": true
     }
   ]
 }

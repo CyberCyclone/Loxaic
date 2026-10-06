@@ -1168,7 +1168,9 @@ replies.
   given to `LOXAIC_FAKE_ROUTER_LOG`); `LOXAIC_FAKE_HARDWARE` replaces detection — `gpu`, `none`,
   or a **file** holding one of them, read at every detection, which is how one e2e server shows
   both machines (the spec rewrites it and presses Restart; the fake's `--list-devices` reads the
-  same file); `LOXAIC_FAKE_DEVICES` is what the fake lists. `HF_ENDPOINT`, `LLAMA_RELEASES_URL`, `LLAMA_RELEASES_FRESH_MS`
+  same file); `LOXAIC_FAKE_DEVICES` is what the fake lists; `LOXAIC_FAKE_HELP_OMIT` leaves one
+  option out of the fake's `--help` and its preset keys (an older build). `HF_ENDPOINT`,
+  `LLAMA_RELEASES_URL`, `LLAMA_RELEASES_FRESH_MS`
   and `LLAMA_DOWNLOAD_STALL_MS` are read at call time. The e2e lane wires all of them
   (`scripts/mock-hf.ts`), so no GPU is needed.
 - **Under `MOCK_INFERENCE`, an enabled local model with a router running goes to the router**
@@ -1839,6 +1841,79 @@ replies.
   realistic failure. The spec ends back on the bundled build with nothing downloaded.
   - **Not covered end to end:** the button's read-only state under `LLAMA_RUNTIME_TAG`, which
     needs a server started with it. The client rule and the server's 409 each have unit tests.
+
+### Extra llama.cpp options (free `key = value` rows)
+
+- **An admin can pass llama.cpp any option it lists, as rows.** They are set per model on its
+  settings sheet (written into its preset section, `local_models.extra_options`, migration 0038)
+  and for every model on the runtime card (written to `[*]`, `runtimeByHost[host].extraOptions`
+  in the settings row, so per host). A model's own row beats the same key in `[*]`: that is
+  llama.cpp's own precedence. All of it is in `llama/extra-options.ts`, and the preset is still
+  the only place admin input becomes process arguments.
+- **A key is checked against the running build's own `--help`, because one unknown key stops
+  the router from starting at all.** `router.ts` asks the binary once per path and mtime
+  (`refreshOptions`, at each start), and `parseHelp` reads llama.cpp's layout. That layout is:
+  - names at column 0, separated by ", ";
+  - then a placeholder;
+  - then two spaces and the description, or the description on the next line when the names are
+    long.
+  
+  A placeholder can contain commas and spaces of its own, but never ", ". The parse is one pass
+  with no backtracking pattern, since a third-party build's help text is a stranger's. In attach
+  mode `infra/docker/llama-router.sh` writes the sidecar's `--help` to `router-help.txt` beside
+  its device list. Without a list nothing can be set (409, saying why). Clearing rows, or sending
+  back exactly what is stored, needs no list: the sheet sends every field on each save.
+- **Measured against b11342 before any of this was written:**
+  - a preset key is an option's name without dashes, long or short (`n-gpu-layers`, `gpu-layers`
+    and `ngl` all work; `-ngl` and `LLAMA_ARG_*` do not);
+  - a switch takes `true`/`false`;
+  - a section overrides `[*]`, and a `[*]` key reaches each model's own process (`--metrics`
+    on its argv);
+  - **values are not checked until a model loads:** `keep = banana` boots and then fails that
+    load with `error while handling argument "--keep": stoi: no conversion`, which
+    `explainModelLoadFailure` already reports. `--help` cannot catch a bad value, so the row
+    stays editable and the reason is shown where any load failure is.
+- **The key is stored as typed (dashes trimmed), never swapped for another name of its option:**
+  `no-warmup = true` and `warmup = true` mean opposite things. Duplicates are caught by option,
+  so `cb` and `no-cont-batching` are one option set twice.
+- **Reserved options are refused by any of their names** (`reservedReason`):
+  - every `LOAD_SETTINGS` flag and every other key Loxaic writes (the reason names the control to
+    use);
+  - the router's wiring (`host`, `port`, `api-key`, `models-*`, `alias`, `api-prefix`);
+  - anything that downloads, serves files or writes them elsewhere (`hf-*`, `*-url`, `log-file`,
+    `slot-save-path`, `path`, `tools`, `agent`, `rpc`…, plus any option whose description says
+    "download");
+  - every `log-*` option and `verbose`: Loxaic reads the log and keeps prompts out of it;
+  - options that print and exit.
+  
+  File *reads* (`lora`, `chat-template-file`) are allowed: they are what people want this for.
+- **Rows are checked again every time the preset is written** (`extraOptionLines`). A stored row
+  the running build does not know (a version switched to later, a row that came another way) is
+  left out of the file and reported as `extraOptionsSkipped`, so switching versions never leaves
+  a router that will not start. With no option list, nothing is written. Such a row may stay
+  unchanged through a save (`kept`), on the server and in `rowProblems`; refusing it blocked
+  every other setting on the sheet, which the first e2e screenshot showed.
+- **A router-wide change restarts the runtime**, as a backend or device change does: `[*]`
+  touches every model. In attach mode it only rewrites the preset.
+- **Client:** `components/localModels/ExtraOptionsEditor.tsx` (rows, Remove, "Add option"),
+  checked as typed by `lib/extraOptions.ts` against `GET …/runtime/options`. The sheet saves the
+  rows with everything else. The runtime card has its own draft and "Save and restart", since its
+  other controls apply as they are touched and a half-typed row must not restart anything. The
+  runtime card's editor is in the managed-mode "Runtime settings" section only; attach mode can
+  set router-wide rows through the API alone.
+- **On an iPhone the keyboard covered the row being typed into**, since the options are the
+  last thing in the settings sheet: the value field was out of sight, which is what the first iOS
+  run failed on. The sheet's body and the Host models list now set
+  `automaticallyAdjustKeyboardInsets`, so the focused field scrolls above the keyboard. Save, in
+  the sheet's footer, is still under the keyboard until it is put away: Return does that (a
+  single-line field blurs on submit). WebDriverAgent's `hideKeyboard` does not close it, so the
+  spec presses Return the way a person would. On Android the row's error sits below the sheet's
+  fold, and the spec scrolls to it before reading it.
+- **The fake router prints a `--help`** (from `PRESET_KEYS` plus `keep`, `metrics` and
+  `cont-batching`, which it then also accepts), fails a load on a non-integer `keep`, and leaves
+  an option out of both under `LOXAIC_FAKE_HELP_OMIT`. The mock releases' older build sets that
+  for `keep`. `extra-options-routes.test.ts` and `extra-options.spec.ts` drive all of it;
+  `test-fixtures/llama-help-b11342.txt` is the real help the parser is held to.
 
 ### The picker's "recently used"
 

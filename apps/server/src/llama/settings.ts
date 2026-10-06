@@ -2,6 +2,7 @@ import { db, eq } from "@loxaic/db";
 import { serverSettings } from "@loxaic/db/schema";
 import { randomBytes } from "node:crypto";
 import { decryptApiKey, encryptApiKey } from "../inference/provider-secrets.ts";
+import { coerceExtraOptions, type ExtraOption } from "./extra-options.ts";
 import { allowedBuildUrl, OFFICIAL_TAG } from "./runtime-assets.ts";
 
 /**
@@ -78,6 +79,10 @@ export interface CustomBuild {
 interface HostRuntime {
   selected?: RuntimeSelection;
   customBuilds?: CustomBuild[];
+  /** Options passed to llama.cpp for every model on this host, in the
+   * preset's `[*]` (extra-options.ts). Per host, because whether a key is
+   * known depends on the build this host runs. */
+  extraOptions?: ExtraOption[];
 }
 
 export interface RuntimeSelectionView {
@@ -259,6 +264,8 @@ function coerce(raw: unknown): Persisted {
       const selected = coerceSelection(r.selected);
       if (selected) entry.selected = selected;
       if (Array.isArray(r.customBuilds)) entry.customBuilds = r.customBuilds.flatMap((b) => coerceCustomBuild(b) ?? []);
+      const extra = coerceExtraOptions(r.extraOptions);
+      if (extra.length > 0) entry.extraOptions = extra;
       hosts[host] = entry;
     }
     out.runtimeByHost = hosts;
@@ -419,7 +426,10 @@ async function changeHostRuntime(change: (host: HostRuntime) => HostRuntime): Pr
   const id = hostId();
   const hosts = { ...fresh.runtimeByHost };
   const next = change(hosts[id] ?? {});
-  const isDefault = (next.selected ?? { kind: "bundled" }).kind === "bundled" && (next.customBuilds ?? []).length === 0;
+  const isDefault =
+    (next.selected ?? { kind: "bundled" }).kind === "bundled" &&
+    (next.customBuilds ?? []).length === 0 &&
+    (next.extraOptions ?? []).length === 0;
   if (isDefault) Reflect.deleteProperty(hosts, id);
   else hosts[id] = next;
   await persist({ ...fresh, runtimeByHost: hosts });
@@ -514,6 +524,22 @@ export async function removeCustomBuild(id: string): Promise<void> {
     throw new LocalModelsSettingsError("This build is the one in use. Switch to another version first.", "invalid");
   }
   await changeHostRuntime((h) => ({ ...h, customBuilds: (h.customBuilds ?? []).filter((b) => b.id !== id) }));
+}
+
+/** The options this host passes to llama.cpp for every model. */
+export function getRouterExtraOptions(): ExtraOption[] {
+  return hostRuntime().extraOptions ?? [];
+}
+
+/** Store this host's options for every model. The caller has checked them
+ * against the build that will read them (`normalizeExtraOptions`). */
+export async function setRouterExtraOptions(rows: ExtraOption[]): Promise<void> {
+  await changeHostRuntime((h) => {
+    const next = { ...h };
+    if (rows.length > 0) next.extraOptions = rows;
+    else Reflect.deleteProperty(next, "extraOptions");
+    return next;
+  });
 }
 
 /** Record what a third-party build's archive hashed to, once it is unpacked. */

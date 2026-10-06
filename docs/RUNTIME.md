@@ -416,6 +416,23 @@ With Docker Compose the server does not run llama.cpp itself, so there is no
 version to choose on the screen: the version is the `inference` service's image
 tag in the Compose file.
 
+### Passing your own options to llama.cpp
+
+For an option the settings do not cover, add it as a row under **Extra
+llama.cpp options**: on a model's settings for that model, or under **Runtime
+settings** on the runtime card for every model. A name is an option from
+`llama-server --help` without its dashes (`keep`, `cache-reuse`, `ngl`); a switch
+takes `true` or `false`. A model's own row wins over the same option set for
+every model, and saving the runtime card's rows restarts the runtime.
+
+Each name is checked against the running build's own option list, because
+llama.cpp refuses to start at all on an option it does not know. Options Loxaic
+sets itself, the router's own address and key, and anything that downloads,
+serves files or changes the log are refused, with the reason. A value is not
+checked until a model loads: one llama.cpp cannot read makes that model fail to
+load, and its row shows llama.cpp's reason. After switching to a version that
+does not have an option, the row is kept but not passed, and the screen says so.
+
 ### Choosing a model
 
 Search by model name, by publisher, or both (`unsloth/qwen`). Every result and

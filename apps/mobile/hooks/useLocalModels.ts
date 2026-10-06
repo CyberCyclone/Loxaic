@@ -22,6 +22,7 @@ import {
   updateLocalModel,
   updateLocalModelsSettings,
   type ContextStagesConfig,
+  type ExtraOption,
   type LoadSettings,
   type LocalModel,
   type LocalModelsView,
@@ -212,6 +213,7 @@ export function useLocalModels(token: string | null) {
         displayName?: string;
         loadSettings?: LoadSettings;
         contextStages?: ContextStagesConfig | null;
+        extraOptions?: ExtraOption[] | null;
       },
     ): Promise<LocalModel | null> => {
       // Optimistic for the switches, which should not lag a poll behind the
