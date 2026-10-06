@@ -1852,7 +1852,10 @@ replies.
   the only place admin input becomes process arguments.
 - **A key is checked against the running build's own `--help`, because one unknown key stops
   the router from starting at all.** `router.ts` asks the binary once per path and mtime
-  (`refreshOptions`, at each start), and `parseHelp` reads llama.cpp's layout. That layout is:
+  (`refreshOptions`, at each start), and `parseHelp` reads llama.cpp's layout. A run killed at its
+  timeout or past its output cap is "options unknown", never a shorter list (`helpOutcome`, the
+  rule `listDevicesOutcome` follows; found in review), or options past the cut would read as
+  unknown to the build: left out of the preset, and refused when typed again. That layout is:
   - names at column 0, separated by ", ";
   - then a placeholder;
   - then two spaces and the description, or the description on the next line when the names are
@@ -1909,6 +1912,18 @@ replies.
   other controls apply as they are touched and a half-typed row must not restart anything. The
   runtime card's editor is in the managed-mode "Runtime settings" section only; attach mode can
   set router-wide rows through the API alone.
+  - **The card's draft is held by the card, not the section,** which unmounts when "Runtime
+    settings" is hidden: hiding it mid-edit used to throw the rows away. Whether a poll may
+    replace the draft is whether it is *edited* (`followSaved`: it would save differently from
+    the list it started from), never a sticky "has typed" flag. That flag left the card deaf to
+    the server after an edit was undone, and a later Save reverted another admin's change unseen.
+    An edit made while the saved list changed elsewhere says so (`changedElsewhere`).
+  - **The section is not offered by a server that predates this** (`runtime.extraOptions`
+    absent). That server ignores the field and answers 200, so the rows looked saved and vanished
+    at the next poll.
+  - **A server refusal marks the row it names.** The 400's `index` counts the rows sent, which
+    leave blank ones out, and `withServerProblem` maps it back onto the draft row until the rows
+    change. All three found in review.
 - **On an iPhone the keyboard covered the row being typed into**, since the options are the
   last thing in the settings sheet: the value field was out of sight, which is what the first iOS
   run failed on. The sheet's body and the Host models list now set
