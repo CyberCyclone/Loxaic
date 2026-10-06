@@ -93,7 +93,7 @@ interface ModelView {
   loadError: string | null;
 }
 interface View {
-  runtime: { state: string; extraOptions: { key: string; value: string }[]; extraOptionsSkipped: string[]; optionsUnavailable: string | null };
+  runtime: { state: string; restart: unknown; extraOptions: { key: string; value: string }[]; extraOptionsSkipped: string[]; optionsUnavailable: string | null };
   models: ModelView[];
 }
 
@@ -108,6 +108,20 @@ async function patchSettings(body: Record<string, unknown>) {
   const res = await app.inject({ method: "PATCH", url: "/v1/admin/local-models/settings", payload: body });
   return { status: res.statusCode, body: res.json<View & { error?: string; index?: number | null }>() };
 }
+/**
+ * The restart a router-wide change asked for has finished. Not `state` alone:
+ * the route answers 100 ms after asking, and until the old router is stopped
+ * the state still reads "running" from before the restart — which CI's slower
+ * runner showed by reading the preset before it was rewritten. `restart` is set
+ * the moment the restart is asked for and cleared once the router is back.
+ */
+async function restarted(): Promise<void> {
+  await waitFor(async () => {
+    const r = (await view()).runtime;
+    return r.restart === null && r.state === "running";
+  }, "the runtime to restart");
+}
+
 async function load(id: string) {
   const res = await app.inject({ method: "POST", url: "/v1/admin/local-models/model/load", payload: { id } });
   expect(res.statusCode).toBe(202);
@@ -225,7 +239,7 @@ describe("options for every model", () => {
     const res = await patchSettings({ extraOptions: [{ key: "metrics", value: "true" }, { key: "keep", value: "8" }] });
     expect(res.status).toBe(200);
     expect(res.body.runtime.extraOptions).toEqual([{ key: "metrics", value: "true" }, { key: "keep", value: "8" }]);
-    await waitFor(async () => (await view()).runtime.state === "running", "the runtime to come back");
+    await restarted();
     expect(section("*")).toEqual(expect.arrayContaining(["metrics = true", "keep = 8"]));
     await load(a);
     await waitFor(async () => (await statusOf(a))?.value === "loaded", "A to load");
@@ -242,7 +256,7 @@ describe("options for every model", () => {
 
   it("are cleared by an empty list", async () => {
     expect((await patchSettings({ extraOptions: [] })).status).toBe(200);
-    await waitFor(async () => (await view()).runtime.state === "running", "the runtime to come back");
+    await restarted();
     expect(section("*")).not.toContain("metrics = true");
   });
 });
