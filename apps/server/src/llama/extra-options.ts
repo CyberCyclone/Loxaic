@@ -155,6 +155,14 @@ const RESERVED: ReadonlyMap<string, string> = new Map<string, string>([
   ["model", "Loxaic sets the model's file itself."],
   ["mmproj", "Loxaic sets the vision projector itself. Use the model's Vision setting."],
   ["jinja", "Loxaic needs the model's own chat template for tool calls."],
+  // Replacing the template leaves `jinja` on and breaks what it is reserved
+  // for: tool calls, the thinking levels the template renders, and the levels
+  // read from the model's own template for the picker. The kwargs are how
+  // each request turns thinking on or off (found in review).
+  ...["chat-template", "chat-template-file", "chat-template-kwargs"].map((k): [string, string] => [
+    k,
+    "Loxaic relies on the model's own chat template for tool calls and thinking levels, and sets the template's arguments on each request.",
+  ]),
   ["device", 'Choose devices with "GPUs to use" on the runtime card.'],
   ["lazy-mode", "Loxaic sets this from the model's lookup-table setting."],
   ["load-mode", "Loxaic sets this from the model's memory-mapping setting."],
@@ -173,6 +181,9 @@ const RESERVED: ReadonlyMap<string, string> = new Map<string, string>([
     "log-file",
     "log-prompts-dir",
     "slot-save-path",
+    // Created and rewritten on every generation (found in review); the
+    // static cache beside it is only read.
+    "lookup-cache-dynamic",
     "path",
     "media-path",
     "ssl-key-file",
@@ -200,11 +211,15 @@ const RESERVED: ReadonlyMap<string, string> = new Map<string, string>([
 
 /** Why an option may not be set here, or null when it may. */
 export function reservedReason(group: OptionGroup): string | null {
+  // Every name of the group is asked, and llama.cpp lists an option's `no-`
+  // form in the same group as its positive one (`-cb, --cont-batching, -nocb,
+  // --no-cont-batching`), so a negation is already covered. A `no-` prefix is
+  // never stripped: `--no-host` is a backend memory option, not the router's
+  // `--host`, and stripping refused it for that reason (found in review).
   for (const name of group.names) {
-    const plain = name.startsWith("no-") ? name.slice(3) : name;
-    const reason = RESERVED.get(name) ?? RESERVED.get(plain);
+    const reason = RESERVED.get(name);
     if (reason) return reason;
-    if (plain.startsWith("log-")) return LOG;
+    if (name.startsWith("log-")) return LOG;
   }
   const d = group.description.toLowerCase();
   if (d.includes("download")) return NETWORK;

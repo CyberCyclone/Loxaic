@@ -1884,9 +1884,17 @@ replies.
     `slot-save-path`, `path`, `tools`, `agent`, `rpc`…, plus any option whose description says
     "download");
   - every `log-*` option and `verbose`: Loxaic reads the log and keeps prompts out of it;
-  - options that print and exit.
+  - options that print and exit;
+  - the chat template and its arguments (`chat-template`, `chat-template-file`,
+    `chat-template-kwargs`): replacing it leaves `jinja` on and quietly breaks tool calls and the
+    thinking levels the template renders, and the load succeeds, so nothing says so;
+  - `lookup-cache-dynamic`, which llama.cpp rewrites on every generation (the static one is only
+    read).
   
-  File *reads* (`lora`, `chat-template-file`) are allowed: they are what people want this for.
+  File *reads* (`lora`, `lookup-cache-static`) are allowed: they are what people want this for. A
+  `no-` prefix is never stripped to find a reserved name: llama.cpp lists a negation in its
+  positive option's group already, and `--no-host` is a memory option, not the router's `--host`.
+  The last two groups and the `no-` rule were found in review.
 - **Rows are checked again every time the preset is written** (`extraOptionLines`). A stored row
   the running build does not know (a version switched to later, a row that came another way) is
   left out of the file and reported as `extraOptionsSkipped`, so switching versions never leaves

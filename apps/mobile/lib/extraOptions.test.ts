@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LlamaOptionInfo } from '@loxaic/api-client';
-import { cleanKey, rowHint, rowProblems, rowsToSave, sameOptions } from './extraOptions';
+import { changedElsewhere, cleanKey, draftOf, followSaved, rowHint, rowProblems, rowsToSave, sameOptions, withServerProblem } from './extraOptions';
 
 const options: LlamaOptionInfo[] = [
   { names: ['keep'], takesValue: true, description: 'number of tokens to keep', reserved: null },
@@ -74,5 +74,42 @@ describe('rowHint', () => {
     expect(rowHint({ key: 'metrics', value: '' }, options)).toBe('enable metrics · a switch: true or false');
     expect(rowHint({ key: 'port', value: '' }, options)).toBeNull();
     expect(rowHint({ key: 'nope', value: '' }, options)).toBeNull();
+  });
+});
+
+describe('a draft that follows the server', () => {
+  const saved = [{ key: 'keep', value: '8' }];
+  const later = [{ key: 'keep', value: '8' }, { key: 'metrics', value: 'true' }];
+
+  it('takes what the server says while unedited, and keeps an edit', () => {
+    expect(followSaved(draftOf(saved), later)).toEqual(draftOf(later));
+    const edited = { rows: [...saved, { key: 'cache-reuse', value: '' }], base: saved };
+    expect(followSaved(edited, later)).toBe(edited);
+  });
+
+  it('follows the server again once an edit is undone by hand', () => {
+    const undone = { rows: [{ key: '--keep', value: '8 ' }, { key: '', value: '' }], base: saved };
+    expect(followSaved(undone, later)).toEqual(draftOf(later));
+  });
+
+  it('says when saving an edit would replace a change made elsewhere', () => {
+    const edited = { rows: [{ key: 'keep', value: '9' }], base: saved };
+    expect(changedElsewhere(edited, saved)).toBe(false);
+    expect(changedElsewhere(edited, later)).toBe(true);
+    expect(changedElsewhere(draftOf(saved), later)).toBe(false);
+  });
+});
+
+describe("a server refusal's row", () => {
+  const rows = [{ key: 'keep', value: '1' }, { key: '', value: '' }, { key: 'metrics', value: 'true' }];
+  const refusal = { index: 1, message: 'Refused by the server', sent: JSON.stringify(rowsToSave(rows)) };
+
+  it('lands on the draft row it was sent from, past blank rows', () => {
+    expect(withServerProblem([null, null, null], rows, refusal)).toEqual([null, null, 'Refused by the server']);
+  });
+
+  it("gives way to the client's own words, and goes once the rows change", () => {
+    expect(withServerProblem([null, null, 'Mine'], rows, refusal)).toEqual([null, null, 'Mine']);
+    expect(withServerProblem([null, null, null], [rows[0], rows[2], { key: 'x', value: '1' }], refusal)).toEqual([null, null, null]);
   });
 });

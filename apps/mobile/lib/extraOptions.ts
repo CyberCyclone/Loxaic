@@ -96,3 +96,51 @@ export function rowHint(row: OptionRow, options: LlamaOptionInfo[] | null): stri
   if (!option.takesValue) return what ? `${what} · a switch: true or false` : 'A switch: true or false';
   return what;
 }
+
+/**
+ * Rows being edited, and the saved list they started from. What decides
+ * whether a poll may replace them is whether they were edited (would save
+ * differently from `base`), not whether anyone ever typed: an edit undone by
+ * hand follows the server again (found in review).
+ */
+export interface OptionDraft {
+  rows: OptionRow[];
+  base: OptionRow[];
+}
+
+export function draftOf(saved: OptionRow[]): OptionDraft {
+  return { rows: saved, base: saved };
+}
+
+/** The draft once the server says `saved`: taken over when unedited, kept
+ * (with its base) when edited, so a poll never throws typing away. */
+export function followSaved(draft: OptionDraft, saved: OptionRow[]): OptionDraft {
+  return sameOptions(draft.rows, draft.base) ? draftOf(saved) : draft;
+}
+
+/** Edited here while the saved list changed elsewhere: saving would replace
+ * that change. */
+export function changedElsewhere(draft: OptionDraft, saved: OptionRow[]): boolean {
+  return !sameOptions(draft.rows, draft.base) && !sameOptions(draft.base, saved);
+}
+
+/**
+ * A server refusal that names a row (`index` into the list sent, which leaves
+ * blank rows out) as the draft row it came from, or null. Only while the rows
+ * are the ones that were sent: once they change, the client's own checking is
+ * what speaks.
+ */
+export interface ServerProblem {
+  index: number;
+  message: string;
+  /** `rowsToSave` of the rows that were sent. */
+  sent: string;
+}
+
+export function withServerProblem(problems: (string | null)[], rows: OptionRow[], refusal: ServerProblem | null): (string | null)[] {
+  if (refusal?.sent !== JSON.stringify(rowsToSave(rows))) return problems;
+  let n = -1;
+  const at = rows.findIndex((r) => !blank(r) && ++n === refusal.index);
+  if (at < 0) return problems;
+  return problems.map((p, i) => (i === at ? (p ?? refusal.message) : p));
+}

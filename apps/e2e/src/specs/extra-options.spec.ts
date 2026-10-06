@@ -113,6 +113,12 @@ async function rowSays(id: string, text: string): Promise<void> {
   await waitForFreshText(id, text);
 }
 
+/** What an input holds: its value on the web, its text on native. */
+async function valueIn(id: string): Promise<string> {
+  const field = byTestId(id);
+  return platform() === 'web' || platform() === 'electron' ? field.getValue() : field.getText();
+}
+
 describe('extra llama.cpp options', () => {
   let tiny = '';
 
@@ -169,6 +175,15 @@ describe('extra llama.cpp options', () => {
     await scrollTo('localModels.extraOptions.router.add');
     await tap('localModels.extraOptions.router.add');
     await typeRow('router', 0, 'keep', '8');
+    // Hiding the section to look at something else keeps what was typed
+    // (found in review: the draft lived in the section, which unmounts).
+    await scrollTo('localModels.runtime.advanced');
+    await tap('localModels.runtime.advanced');
+    await waitForAbsent('localModels.extraOptions.router.add');
+    await tap('localModels.runtime.advanced');
+    await scrollTo('localModels.extraOptions.router.0.key');
+    expect(await valueIn('localModels.extraOptions.router.0.key')).toBe('keep');
+    expect(await valueIn('localModels.extraOptions.router.0.value')).toBe('8');
     await scrollTo('localModels.extraOptions.router.add');
     await tap('localModels.extraOptions.router.add');
     await typeRow('router', 1, 'metrics', 'yes');

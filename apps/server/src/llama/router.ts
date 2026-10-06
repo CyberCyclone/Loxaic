@@ -847,26 +847,54 @@ async function refreshOptions(bin: string): Promise<void> {
     // Asked anyway: the run says what is wrong.
   }
   if (options?.bin === bin && options.mtimeMs === mtimeMs) return;
-  const text = await new Promise<string | null>((resolve) => {
+  const outcome = await new Promise<{ text: string | null; error: string | null }>((resolve) => {
     try {
       execFile(
         bin,
         ["--help"],
-        { timeout: 5000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: childEnv(bin, "unused") },
-        (_err, stdout, stderr) => { resolve(`${stdout}\n${stderr}`); },
+        { timeout: HELP_TIMEOUT_MS, maxBuffer: HELP_MAX_BUFFER, windowsHide: true, env: childEnv(bin, "unused") },
+        (err, stdout, stderr) => { resolve(helpOutcome(err, stdout, stderr)); },
       );
     } catch {
-      resolve(null);
+      resolve({ text: null, error: null });
     }
   });
-  const list = text === null ? null : parseHelp(text);
+  const list = outcome.text === null ? null : parseHelp(outcome.text);
   if (!list || list.groups.length === 0) {
     options = null;
-    optionsError = "This llama.cpp build did not list its options (--help), so extra options cannot be checked against it and are not passed.";
+    optionsError = `${outcome.error ?? "This llama.cpp build did not list its options (--help)."} Extra options cannot be checked against it, so none are passed.`;
     return;
   }
   options = { list, bin, mtimeMs };
   optionsError = null;
+}
+
+const HELP_TIMEOUT_MS = 5000;
+const HELP_MAX_BUFFER = 4 * 1024 * 1024;
+
+/**
+ * The help text a build printed, or why it cannot be trusted.
+ *
+ * As `listDevicesOutcome`: a run killed at its timeout, or past `maxBuffer`,
+ * still calls back with the output so far, and that parses as a *shorter*
+ * option list. Taken as the whole list, options past the cut would read as
+ * unknown to this build: stored rows silently left out of the preset, and the
+ * same keys refused when typed again, for as long as the cache held (found in
+ * review). A build that exits non-zero after printing its help is taken at its
+ * word.
+ */
+export function helpOutcome(
+  err: (Error & { code?: unknown; killed?: boolean }) | null,
+  stdout: string,
+  stderr: string,
+): { text: string | null; error: string | null } {
+  if (err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return { text: null, error: "llama.cpp printed too much while listing its options, so the list was cut off." };
+  }
+  if (err?.killed) {
+    return { text: null, error: `llama.cpp took longer than ${String(HELP_TIMEOUT_MS / 1000)} s to list its options, so the list is incomplete.` };
+  }
+  return { text: `${stdout}\n${stderr}`, error: null };
 }
 
 const LIST_DEVICES_TIMEOUT_MS = 30_000;

@@ -124,10 +124,27 @@ describe("what may not be set", () => {
   });
 
   it("leaves the options people add this for alone", () => {
-    for (const name of ["keep", "metrics", "lora", "chat-template-file", "cont-batching", "no-warmup", "mlock", "cache-reuse", "swa-full", "spec-draft-ngl"]) {
-      if (!real.byName.has(name)) continue;
+    for (const name of ["keep", "metrics", "lora", "cont-batching", "no-warmup", "cache-reuse", "swa-full", "spec-draft-ngl", "lookup-cache-static"]) {
       expect(reservedReason(group(real, name)), name).toBeNull();
     }
+  });
+
+  it("refuses the lookup cache that is written to, by either name, and not the one only read", () => {
+    expect(reservedReason(group(real, "lcd"))).toMatch(/outside/);
+    expect(reservedReason(group(real, "lookup-cache-dynamic"))).toMatch(/outside/);
+    expect(reservedReason(group(real, "lcs"))).toBeNull();
+  });
+
+  it("refuses replacing the chat template, or its arguments, which tool calls and thinking levels need", () => {
+    for (const name of ["chat-template", "chat-template-file", "chat-template-kwargs"]) {
+      expect(reservedReason(group(real, name)), name).toMatch(/chat template/);
+    }
+  });
+
+  it("does not read a no- option as the option without it", () => {
+    // `--no-host` is a backend buffer option, nothing to do with `--host`.
+    expect(group(real, "no-host").names).toEqual(["no-host"]);
+    expect(reservedReason(group(real, "no-host"))).toBeNull();
   });
 });
 

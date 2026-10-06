@@ -86,13 +86,16 @@ export function useLocalModels(token: string | null) {
 
   /** Run an action; on failure, say why in a toast and hand the error back. */
   const act = useCallback(
-    async <T,>(fn: () => Promise<T>, done?: string): Promise<T | null> => {
+    async <T,>(fn: () => Promise<T>, done?: string, onRefused?: (err: unknown) => void): Promise<T | null> => {
       try {
         const result = await fn();
         if (done) showToast(done);
         return result;
       } catch (err) {
         showToast(describeRequestError(err, 'Something went wrong'), 6000);
+        // The caller can mark what the refusal is about (an extra option's
+        // row), as well as the toast saying it.
+        onRefused?.(err);
         return null;
       } finally {
         void refresh();
@@ -184,8 +187,8 @@ export function useLocalModels(token: string | null) {
   );
 
   const updateSettings = useCallback(
-    async (patch: Parameters<typeof updateLocalModelsSettings>[0]) => {
-      const next = await act(() => updateLocalModelsSettings(patch));
+    async (patch: Parameters<typeof updateLocalModelsSettings>[0], onRefused?: (err: unknown) => void) => {
+      const next = await act(() => updateLocalModelsSettings(patch), undefined, onRefused);
       if (next) accept(next);
       return next !== null;
     },
@@ -215,6 +218,7 @@ export function useLocalModels(token: string | null) {
         contextStages?: ContextStagesConfig | null;
         extraOptions?: ExtraOption[] | null;
       },
+      onRefused?: (err: unknown) => void,
     ): Promise<LocalModel | null> => {
       // Optimistic for the switches, which should not lag a poll behind the
       // tap. Bumping `seq` is what makes that true: a poll already in flight
@@ -242,7 +246,7 @@ export function useLocalModels(token: string | null) {
             : v,
         );
       }
-      const result = await act(() => updateLocalModel(id, patch));
+      const result = await act(() => updateLocalModel(id, patch), undefined, onRefused);
       // Saving a loaded model's settings reloads it; say so, since the sheet
       // closes and the row only shows "Loading…".
       if (result?.reloading) showToast(`Saved. Reloading ${result.displayName} with the new settings.`);

@@ -203,7 +203,7 @@ export default function LocalModelsScreen() {
         hostMemory={lm.view?.runtime.hostMemory}
         runtimeVersion={lm.view ? `${lm.view.runtime.tag}:${lm.view.runtime.version?.reported ?? ''}:${String(lm.view.runtime.state === 'running')}` : null}
         onClose={() => { setEditing(null); }}
-        onSave={(id, patch) => lm.update(id, patch)}
+        onSave={(id, patch, onRefused) => lm.update(id, patch, onRefused)}
       />
       <WarningConfirmModal
         open={cancelling !== null}

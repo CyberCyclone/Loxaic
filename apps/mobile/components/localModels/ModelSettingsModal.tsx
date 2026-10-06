@@ -31,7 +31,8 @@ import { FitBadge } from './FitBadge';
 import { ContextStagesEditor } from './ContextStagesEditor';
 import { ExtraOptionsEditor } from './ExtraOptionsEditor';
 import { useLlamaOptions } from '@/hooks/useLlamaOptions';
-import { rowProblems, rowsToSave, type OptionRow } from '@/lib/extraOptions';
+import { rowProblems, rowsToSave, withServerProblem, type OptionRow, type ServerProblem } from '@/lib/extraOptions';
+import { AdminSettingsError } from '@loxaic/api-client';
 import { MtpSection } from './MtpSection';
 import { LookupTableSection } from './LookupTableSection';
 import { PlacementBar } from './PlacementBar';
@@ -75,6 +76,8 @@ interface ModelSettingsModalProps {
       /** Absent when the server predates extra options. */
       extraOptions?: ExtraOption[];
     },
+    /** Called with the error when the server refuses the save. */
+    onRefused?: (err: unknown) => void,
   ) => Promise<LocalModel | null>;
   /** Identifies the llama.cpp build running now, so its option list is asked
    * for again when it changes. */
@@ -102,6 +105,8 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
   const [stagesDraft, setStagesDraft] = useState<StagesDraft>(EMPTY_STAGES);
   const [stageFits, setStageFits] = useState<FitEstimate[]>([]);
   const [extraRows, setExtraRows] = useState<OptionRow[]>([]);
+  // The server's refusal of a row, shown on that row until the rows change.
+  const [extraRefusal, setExtraRefusal] = useState<ServerProblem | null>(null);
   const llamaOptions = useLlamaOptions(model !== null, runtimeVersion);
   const [name, setName] = useState('');
   const [fit, setFit] = useState<FitEstimate | null>(null);
@@ -142,6 +147,7 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
     setStagesDraft(draftFromConfig(model.contextStages));
     setStageFits([]);
     setExtraRows(model.extraOptions ?? []);
+    setExtraRefusal(null);
     setName(model.displayName);
     setFit(model.fit);
     setNotice(null);
@@ -213,7 +219,7 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
 
   // A server from before extra options sends none, and is sent none.
   const extraSupported = model.extraOptions !== undefined;
-  const extraProblems = rowProblems(extraRows, llamaOptions.options, model.extraOptions ?? []);
+  const extraProblems = withServerProblem(rowProblems(extraRows, llamaOptions.options, model.extraOptions ?? []), extraRows, extraRefusal);
   const extraToSave = rowsToSave(extraRows);
   // New rows need the build's list to be checked against; clearing does not.
   const extraBlocked =
@@ -224,12 +230,20 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
   const save = async () => {
     setSaving(true);
     try {
-      const updated = await onSave(model.id, {
-        loadSettings: draft,
-        displayName: name.trim() || model.displayName,
-        contextStages: configFromDraft(stagesDraft),
-        ...(extraSupported ? { extraOptions: extraToSave } : {}),
-      });
+      const updated = await onSave(
+        model.id,
+        {
+          loadSettings: draft,
+          displayName: name.trim() || model.displayName,
+          contextStages: configFromDraft(stagesDraft),
+          ...(extraSupported ? { extraOptions: extraToSave } : {}),
+        },
+        (err) => {
+          if (err instanceof AdminSettingsError && err.index !== null) {
+            setExtraRefusal({ index: err.index, message: err.message, sent: JSON.stringify(extraToSave) });
+          }
+        },
+      );
       if (!updated) return;
       if (updated.appliesOnNextLoad) {
         setNotice('Saved. It is answering someone right now, and reloads with the new settings as soon as that reply ends.');
