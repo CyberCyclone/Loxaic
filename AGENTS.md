@@ -1166,7 +1166,7 @@ replies.
   given to `LOXAIC_FAKE_ROUTER_LOG`); `LOXAIC_FAKE_HARDWARE` replaces detection — `gpu`, `none`,
   or a **file** holding one of them, read at every detection, which is how one e2e server shows
   both machines (the spec rewrites it and presses Restart; the fake's `--list-devices` reads the
-  same file); `LOXAIC_FAKE_DEVICES` is what the fake lists. `HF_ENDPOINT`, `LLAMA_RELEASES_URL`
+  same file); `LOXAIC_FAKE_DEVICES` is what the fake lists. `HF_ENDPOINT`, `LLAMA_RELEASES_URL`, `LLAMA_RELEASES_FRESH_MS`
   and `LLAMA_DOWNLOAD_STALL_MS` are read at call time. The e2e lane wires all of them
   (`scripts/mock-hf.ts`), so no GPU is needed.
 - **Under `MOCK_INFERENCE`, an enabled local model with a router running goes to the router**
@@ -1705,6 +1705,14 @@ replies.
   first bytes, never its name. `LLAMA_CUSTOM_RUNTIMES=off` removes the feature. Nobody but an
   admin could add one, and an admin can already choose host-mode sandboxing, so this is not a new
   level of trust.
+  - **The https rule is applied to the stored address, not only when it is added.**
+    `coerceCustomBuild` drops a row whose address `allowedBuildUrl` refuses, and `fetchArchive`
+    asks it of the first address as well as of each redirect. A row can reach the settings by
+    another route than the API: a restored backup, a hand edit. Found in review.
+  - **Plain http from loopback is `LOXAIC_TEST_HTTP_BUILDS=1`, a test-only flag of its own.** It
+    used to ride on `LOXAIC_LLAMA_SERVER_BIN`, which stopped meaning "nothing real is fetched"
+    once that variable replaced the bundled build only. The e2e standup and the two server suites
+    that serve fixture archives set it. Found in review.
 - **The address of a third-party build is never sent back.** A download link can carry a token,
   and the picker is read by every admin. The list answers with the host only, and a failed
   download names an error code, never the address.
@@ -1712,6 +1720,24 @@ replies.
   directories, and symlinks that stay inside. Upstream's own archives link `libllama.dylib` to
   its versioned name, so links are normal; one leading out is refused. `tar` is given
   `--no-same-owner --no-same-permissions`.
+  - **A link is judged by where the system resolves it** (`linkDestination`: one component at a
+    time through `realpath`), never by joining its text to its directory. The first version did
+    the latter, so `d/up -> ..` and then `x -> d/up/../../y` read as `root/y` while resolving two
+    levels above the root. A link to something missing is judged by where it would lead, since
+    writing through it creates the file there. Found in review, with a working escape.
+  - **The marker is removed and then written exclusively** (`flag: "wx"`). An archive can ship a
+    file or a link by the marker's name, and the default write follows a link.
+- **The directory decides which build a marker describes, not the marker** (`installedAt`). A
+  marker's `tag` and `flavour` must name its own directory (`<tag>-<flavour>`), a third-party
+  one's `customId` must (`custom-<id>`), and `bin`, which becomes a spawned process, must resolve
+  inside the build. Otherwise a marker in `b1-cpu/` claiming the bundled tag was reported as the
+  bundled build and kept by pruning forever. Found in review.
+- **An install keeps 2 GB of disk free, as model downloads do** (`watchDisk`). The archive is
+  capped and what it unpacks to is not: a 2 GB archive of zeros unpacks to about a thousand times
+  that, and `tar` wrote it until the disk was full, beside the desktop's embedded Postgres. The
+  install is refused up front when the download alone would cross the margin, the watch aborts the
+  download or kills `tar` once the disk is down to it, and it is asked again after each step for a
+  step quicker than the poll. `__setDiskFreeForTest` is the seam. Found in review.
 - **Asset names are matched by pattern, in one table** (`llama/runtime-assets.ts`), shared with
   the script that writes the manifest. The CUDA minor in the name has moved between releases, and
   Linux builds were zips before they were tarballs (GNU tar cannot read a zip, so those releases
@@ -1719,14 +1745,21 @@ replies.
   key must match exactly the asset the manifest pins.
 - **Which version runs is stored per host** (`runtimeByHost[LOXAIC_INSTANCE_ID]` in the
   `localModels` settings row), because the files are on one machine's disk.
-  - **Writes read the row first** (`changeHostRuntime`). Every other field in that row is written
-    from this process's copy, which would undo another machine's choice.
+  - **Writes read the row first** (`changeHostRuntime`), and so does `updateLocalModelsSettings`,
+    the row's other writer. It used to write from this process's copy, so saving the backend on one
+    server undid another server's choice of version and its third-party builds. Found in review.
   - **A host back on the defaults has its entry removed**, so test suites leave nothing behind.
   - `LLAMA_RUNTIME_TAG=bundled|b<number>` pins it (409 from the API).
 - **Downloading and switching are separate steps.** A download runs in the background and touches
   nothing. `POST …/runtime/select` is refused for a version not on disk, so Switch is only ever
   "restart onto this", never "restart, then find out the download fails". The bundled version is
   the exception.
+  - **A build is pinned only once the switch has been accepted.** Pinning first meant a switch
+    refused by `LLAMA_RUNTIME_TAG` still exempted the build from pruning, for good. Found in
+    review.
+  - **Failed downloads are kept for the picker, eight at most** (`MAX_FAILED_DOWNLOADS`). Any
+    `b<number>` can be asked for, and each failure used to stay for the life of the process, in
+    every answer of the one-second poll. Found in review.
 - **A chosen build that never answers is not retried, and nothing falls back.** The crash loop is
   for a router that was working and stopped. A chosen build that exits before its first health
   check most likely refuses a preset key (fatal at boot), which trying again cannot change. It
@@ -1738,6 +1771,11 @@ replies.
   - **`execFile` throws for a file that is not a program** (ENOEXEC) rather than calling back.
     The first version let that escape as an unhandled rejection; the test with a junk binary
     found it. Both calls catch it.
+  - **A device listing that was cut off is an error, not a shorter list** (`listDevicesOutcome`).
+    Killed at its timeout or past `maxBuffer` (8 MB), `execFile` still calls back with the output
+    so far, which parsed as fewer GPUs, and models then loaded onto some of them with nothing
+    saying why. At start the runtime goes to `error` with the reason; a re-measure keeps the last
+    figures. Found in review.
 - **Only the bundled release runs at `log-verbosity = 4`** (`verifiedLogs`). That level is checked
   to print no prompt text on the pinned build only. Any other build runs at llama.cpp's default,
   so it shows no placement detail, and the picker's caveat says so.
@@ -1764,7 +1802,22 @@ replies.
 - **llama.cpp marks every build it publishes as a pre-release** (30 of 30 on that page), and
   GitHub's flag is the only signal there is. A pill on every row marks nothing, so when every
   listed release carries the flag the picker says it once above the list
-  (`prereleaseLabelling`); when only some do, those rows are labelled.
+  (`prereleaseLabelling`); when only some do, those rows are labelled. **A release listed from
+  the disk alone has an unknown flag (`null`)**, and only known flags are counted: listed as
+  `false`, it put a pill back on every other row and none on itself. Found in review.
+- **The picker's list has two kinds of request** (`ListRequests`): the head (page one or a
+  search, asked again whenever a download starts or ends) and an older page. One counter for both
+  dropped a "Load older versions" answer whenever a download started or finished meanwhile. The
+  list's facts come from the newest answer of either kind, and rows are one per tag, since a
+  release published between two page loads moves the page boundary.
+- **Opening the picker forgets its last list, and rows wait while the list is behind the runtime.**
+  Reopened just after a switch, the old rows offered Switch on the build already running, which
+  restarts the runtime for nothing. The list is cleared as the picker opens, during render so no
+  frame of the old rows is drawn, and the rows' buttons are locked while the runtime has changed
+  since the list on screen was asked for. Found in review.
+  - **Not as it closes.** Clearing on close drew the empty list's spinner inside the closing
+    dialog, and on Android UiAutomator2 then reported the closed dialog's close button as still
+    on screen, failing two cases' absence checks. Found by the Android lane.
 - **The switch confirmation is drawn under the row it is about.** At the top of the sheet it was
   out of view for a row further down. A browser test passed regardless, since the element
   exists; the Android lane could not find it, and a person on a phone would not have either.

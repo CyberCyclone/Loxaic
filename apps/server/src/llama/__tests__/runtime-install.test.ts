@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  __setDiskFreeForTest,
   deleteRuntime,
   installedCustom,
   installedOfficial,
@@ -194,13 +195,65 @@ describe("more than one build", () => {
   });
 });
 
+describe("what a marker may say", () => {
+  const marker = (r: { dir: string }) => path.join(r.dir, ".loxaic-complete.json");
+  const edit = (r: { dir: string }, change: (m: Record<string, unknown>) => void) => {
+    const m = JSON.parse(readFileSync(marker(r), "utf8")) as Record<string, unknown>;
+    change(m);
+    writeFileSync(marker(r), JSON.stringify(m));
+  };
+
+  it("is not believed about which build it is, nor allowed to name a program outside it", async () => {
+    const build = { asset: { name: "llama-test.tar.gz", sha256: sha(), size: archive.length } };
+    const r = await installSource({ kind: "official", tag: "b7002", flavour: "vulkan", build });
+    const original = readFileSync(marker(r), "utf8");
+    // A build in b7002-vulkan claiming to be the bundled release.
+    edit(r, (m) => { m.tag = RUNTIME_MANIFEST.tag; });
+    expect(await installedOfficial("b7002", "vulkan")).toBeNull();
+    writeFileSync(marker(r), original);
+    edit(r, (m) => { m.flavour = "cuda12"; });
+    expect(await installedOfficial("b7002", "vulkan")).toBeNull();
+    writeFileSync(marker(r), original);
+    // A binary path that climbs out of the build.
+    edit(r, (m) => { m.bin = "../../../../../../../bin/sh"; });
+    expect(await installedOfficial("b7002", "vulkan")).toBeNull();
+    writeFileSync(marker(r), original);
+    expect(await installedOfficial("b7002", "vulkan")).toMatchObject({ tag: "b7002" });
+  });
+});
+
+describe("disk space", () => {
+  const official = () => ({ kind: "official", tag: "b7001", flavour: "cpu", build: { asset: { name: "llama-test.tar.gz", sha256: sha(), size: archive.length } } }) as const;
+  afterEach(() => { __setDiskFreeForTest(null); });
+
+  it("refuses to start when the download would not leave the margin free, before asking for anything", async () => {
+    __setDiskFreeForTest(() => 1024 ** 3);
+    const before = requests;
+    await expect(installSource(official())).rejects.toThrow(/Not enough disk space/);
+    expect(requests).toBe(before);
+    expect(await installedOfficial("b7001", "cpu")).toBeNull();
+  });
+
+  it("stops once the disk runs low partway, and removes what it wrote", async () => {
+    let free = 100 * 1024 ** 3;
+    __setDiskFreeForTest(() => free);
+    const progress = (p: { doneBytes: number; totalBytes: number }) => {
+      // What unpacking would do to a disk.
+      if (p.totalBytes > 0 && p.doneBytes >= p.totalBytes) free = 1024 ** 3;
+    };
+    await expect(installSource(official(), progress)).rejects.toThrow(/was stopped: it would have left less than/);
+    expect(await installedOfficial("b7001", "cpu")).toBeNull();
+    expect(readdirSync(path.join(dir, "llama", "runtime")).filter((n) => n.startsWith(".install-"))).toEqual([]);
+  });
+});
+
 describe("a third-party build", () => {
   const custom = (id: string, url: string, sha: string | null = null) =>
     ({ kind: "custom", id, name: "Fork", flavour: "vulkan", url, sha256: sha }) as const;
 
   beforeAll(() => {
     // What lets a loopback http address through; a real install needs https.
-    vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", "/tmp/fake-llama");
+    vi.stubEnv("LOXAIC_TEST_HTTP_BUILDS", "1");
   });
 
   it("is refused when it does not hash to what the admin said, and nothing is unpacked", async () => {
@@ -254,6 +307,50 @@ describe("a third-party build", () => {
     // A link that stays inside is what upstream's own archives contain.
     const ok = serve("/inside.tar.gz", tarball("inside", { [`b/${bin}`]: "#!/bin/sh\n", "b/libllama.so.0": "lib", "b/libllama.so": { link: "libllama.so.0" } }));
     await expect(installSource(custom("aaaaaaaaaab1", ok))).resolves.toMatchObject({ source: "custom" });
+  });
+
+  it.skipIf(process.platform === "win32")("judges a link by where it really leads, not by its text", async () => {
+    // `d/up` is the unpacked root itself, so `d/up/../../pwned` is two levels
+    // above it — while joined as text it reads as `root/pwned`.
+    const url = serve("/chain.tar.gz", tarball("chain", {
+      [`b/${bin}`]: "#!/bin/sh\n",
+      "d/up": { link: ".." },
+      ".loxaic-complete.json": { link: "d/up/../../pwned" },
+    }));
+    await expect(installSource(custom("aaaaaaaaaac3", url))).rejects.toThrow(/link that leads outside/);
+    expect(await installedCustom("aaaaaaaaaac3")).toBeNull();
+    // Nothing was written where the link pointed.
+    expect(existsSync(path.join(dir, "llama", "pwned"))).toBe(false);
+    expect(existsSync(path.join(dir, "llama", "runtime", "pwned"))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("judges a link to something missing by where it would lead", async () => {
+    // Writing through it would create the file wherever it names.
+    const out = serve("/dangling-out.tar.gz", tarball("dangling-out", { [`b/${bin}`]: "#!/bin/sh\n", "b/cache": { link: "../../not-there" } }));
+    await expect(installSource(custom("aaaaaaaaaac4", out))).rejects.toThrow(/link that leads outside/);
+    const inside = serve("/dangling-in.tar.gz", tarball("dangling-in", { [`b/${bin}`]: "#!/bin/sh\n", "b/libllama.so": { link: "libllama.so.9" } }));
+    await expect(installSource(custom("aaaaaaaaaac7", inside))).resolves.toMatchObject({ source: "custom" });
+  });
+
+  it.skipIf(process.platform === "win32")("writes its own marker over whatever the archive shipped by that name", async () => {
+    const url = serve("/marker.tar.gz", tarball("marker", {
+      [`b/${bin}`]: "#!/bin/sh\n",
+      "b/notes.txt": "upstream notes",
+      ".loxaic-complete.json": { link: "b/notes.txt" },
+    }));
+    const r = await installSource(custom("aaaaaaaaaac5", url));
+    expect(readFileSync(path.join(r.dir, "b", "notes.txt"), "utf8")).toBe("upstream notes");
+    expect(lstatSync(path.join(r.dir, ".loxaic-complete.json")).isSymbolicLink()).toBe(false);
+    expect(r).toMatchObject({ source: "custom", customId: "aaaaaaaaaac5" });
+  });
+
+  it("refuses a stored address that is not https before asking it for anything", async () => {
+    vi.stubEnv("LOXAIC_TEST_HTTP_BUILDS", "");
+    const before = requests;
+    const url = serve("/plain.tar.gz", archive);
+    await expect(installSource(custom("aaaaaaaaaac6", url))).rejects.toThrow(/not an https address/);
+    expect(requests).toBe(before);
+    vi.stubEnv("LOXAIC_TEST_HTTP_BUILDS", "1");
   });
 
   it("gives up on a download that goes quiet", async () => {

@@ -50,6 +50,20 @@ export interface VersionDownload {
 
 const downloads = new Map<string, VersionDownload>();
 
+/** Failed downloads kept so the picker can say why. Any `b<number>` can be
+ * asked for, so without a bound each failure stayed for the life of the
+ * process and rode every answer of the one-second poll (found in review). The
+ * oldest failures go first; running downloads are never dropped. */
+export const MAX_FAILED_DOWNLOADS = 8;
+
+function keepFailure(key: string, d: VersionDownload): void {
+  // Re-inserted so the map's order is the order of failure.
+  downloads.delete(key);
+  downloads.set(key, d);
+  const failed = [...downloads.entries()].filter(([, v]) => !v.active);
+  for (const [k] of failed.slice(0, Math.max(0, failed.length - MAX_FAILED_DOWNLOADS))) downloads.delete(k);
+}
+
 export function versionDownloads(): VersionDownload[] {
   return [...downloads.values()];
 }
@@ -139,6 +153,7 @@ export async function installSelection(
     if (d) {
       d.active = false;
       d.error = err instanceof Error ? err.message : String(err);
+      keepFailure(key, d);
     }
     throw err;
   }

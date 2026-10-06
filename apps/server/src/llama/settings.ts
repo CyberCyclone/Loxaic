@@ -285,6 +285,9 @@ function coerceCustomBuild(raw: unknown): CustomBuild | null {
   const v = raw as Record<string, unknown>;
   if (typeof v.id !== "string" || !CUSTOM_ID.test(v.id)) return null;
   if (typeof v.name !== "string" || typeof v.url !== "string") return null;
+  // The rule the API applies when a build is added, applied to whatever is
+  // stored: a row can arrive by another route (a restored backup, a hand edit).
+  if (!allowedBuildUrl(v.url)) return null;
   if (typeof v.backend !== "string" || !(CUSTOM_BACKENDS as readonly string[]).includes(v.backend)) return null;
   return {
     id: v.id,
@@ -325,7 +328,12 @@ export async function updateLocalModelsSettings(input: unknown): Promise<LocalMo
   }
   const body = input as Record<string, unknown>;
   const current = getLocalModelsSettings();
-  const next: Persisted = { ...persisted };
+  // From the row as it is now, not this process's copy: the row also holds
+  // each host's choice of llama.cpp version, which another server sharing the
+  // database writes, and a write from a stale copy would undo it (found in
+  // review). Untouched fields are whatever is stored.
+  const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, KEY) });
+  const next: Persisted = { ...coerce(row?.value) };
   let touched = false;
 
   if (body.backend !== undefined) {

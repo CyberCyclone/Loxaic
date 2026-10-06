@@ -25,8 +25,14 @@ const PAGE_SIZE = 30;
 /** A page of thirty releases, each with a few dozen assets, is about 1.5 MB. */
 const MAX_BYTES = 16 * 1024 * 1024;
 const TIMEOUT_MS = 15_000;
-/** Served without asking again inside this window. */
-const FRESH_MS = 10 * 60_000;
+/** Served without asking again inside this window. `LLAMA_RELEASES_FRESH_MS`
+ * shortens it, read at call time: the e2e lane publishes a release while the
+ * picker is open and needs the list asked for again to see it. */
+function freshMs(): number {
+  const raw = process.env.LLAMA_RELEASES_FRESH_MS;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isInteger(n) && n >= 0 ? n : 10 * 60_000;
+}
 
 export class ReleasesError extends Error {
   readonly status: number;
@@ -110,7 +116,7 @@ interface Fetched {
  * its status, never thrown: "no such release" is an answer. */
 async function apiGet(url: string): Promise<Fetched> {
   const had = cache.get(url);
-  if (had && Date.now() - had.at < FRESH_MS) return { body: had.body, stale: null, status: 200 };
+  if (had && Date.now() - had.at < freshMs()) return { body: had.body, stale: null, status: 200 };
   const staleAnswer = (retryAt: string | null): Fetched | null =>
     had ? { body: had.body, stale: { since: new Date(had.at).toISOString(), retryAt }, status: 200 } : null;
 

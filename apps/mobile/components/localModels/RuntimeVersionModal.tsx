@@ -37,12 +37,14 @@ import {
   prereleaseLabelling,
   downloadForCustom,
   downloadForTag,
+  ListRequests,
   releaseAction,
   releaseRows,
   shortHash,
   staleNote,
   switchWarning,
   VERSION_CAVEAT,
+  type ListedRelease,
   type RowAction,
 } from '@/lib/runtimeVersions';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -121,7 +123,10 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
   const [query, setQuery] = useState('');
   const [searched, setSearched] = useState('');
   const [error, setError] = useState<string | null>(null);
+  /** The head of the list (page one, or a search) is being asked for. */
   const [loading, setLoading] = useState(false);
+  /** An older page is. */
+  const [loadingMore, setLoadingMore] = useState(false);
   const [target, setTarget] = useState<SwitchTarget | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [form, setForm] = useState<{ name: string; url: string; sha256: string; backend: CustomRuntimeBackend }>({
@@ -131,16 +136,26 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
     backend: 'vulkan',
   });
   const [formTouched, setFormTouched] = useState(false);
-  // A slow answer for an earlier page or search must not land over a later one.
-  const request = useRef(0);
+  // A slow answer must not land over a later one of its kind (`ListRequests`).
+  const requests = useRef(new ListRequests());
+  // What the runtime looked like when the list on screen was asked for. Once
+  // it has moved on (a restart ended on another version), the rows describe
+  // the version before, and their buttons wait for the list to catch up.
+  const [viewSignature, setViewSignature] = useState<string | null>(null);
+  const signatureNow = useRef('');
 
   const load = useCallback(async (opts: { page: number; q: string }) => {
-    const mine = ++request.current;
-    setLoading(true);
+    const mine = requests.current.start(opts);
+    const head = mine.axis === 'head';
+    const asked = signatureNow.current;
+    (head ? setLoading : setLoadingMore)(true);
     try {
       const next = await getRuntimeVersions(opts.q ? { q: opts.q } : { page: opts.page });
-      if (mine !== request.current) return;
-      setView(next);
+      if (!requests.current.current(mine)) return;
+      if (requests.current.takeView(mine)) {
+        setView(next);
+        setViewSignature(asked);
+      }
       setError(null);
       if (opts.q) {
         setFound(next.official.releases);
@@ -153,11 +168,11 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
         setHasMore(next.official.hasMore);
       }
     } catch (err) {
-      if (mine !== request.current) return;
+      if (!requests.current.current(mine)) return;
       // "Could not ask" is not "there are none": the list stays as it was.
       setError(describeRequestError(err, 'Could not load the versions'));
     } finally {
-      if (mine === request.current) setLoading(false);
+      if (requests.current.current(mine)) (head ? setLoading : setLoadingMore)(false);
     }
   }, []);
 
@@ -174,10 +189,34 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
       ]),
     [runtime.version, runtime.versionDownloads],
   );
+  signatureNow.current = signature;
+
+  // Nothing from before is shown again: reopened, the list is asked for
+  // afresh rather than offering the old rows' buttons until it arrives —
+  // which, just after a switch, offered Switch on the build already running
+  // (found in review). Cleared as it opens, during render, so not even one
+  // frame of the old rows is drawn; and not as it closes, which put a spinner
+  // into the closing dialog, and UiAutomator2 then reported the closed
+  // dialog as still on screen.
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) {
+      setView(null);
+      setViewSignature(null);
+      setPages({});
+      setFound(null);
+      setHasMore(false);
+      setError(null);
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }
 
   useEffect(() => {
     if (!open) {
-      request.current++;
+      // Answers to what was asked before closing no longer count.
+      requests.current.reset();
       setTarget(null);
       return;
     }
@@ -211,7 +250,8 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
   const stale = view ? staleNote(view.official.stale) : null;
   const prerelease = prereleaseLabelling(rows);
   const restarting = Boolean(runtime.restart);
-  const locked = !reachable || busy !== null || restarting;
+  const behind = view !== null && viewSignature !== signature;
+  const locked = !reachable || busy !== null || restarting || behind;
 
   const run = async (key: string, fn: () => Promise<boolean>) => {
     setBusy(key);
@@ -340,7 +380,7 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
     );
   };
 
-  const releaseRow = (r: RuntimeReleaseRow) => {
+  const releaseRow = (r: ListedRelease) => {
     const base = `localModels.versions.row.${r.tag}`;
     const failed = downloadForTag(downloads, r.tag)?.error ?? null;
     return (
@@ -584,11 +624,11 @@ export function RuntimeVersionModal({ open, runtime, onClose, actions }: Runtime
                   {found === null && hasMore && (
                     <Pressable
                       testID="localModels.versions.loadMore"
-                      disabled={!reachable || loading}
+                      disabled={!reachable || loadingMore}
                       onPress={() => { void load({ page: Math.max(0, ...Object.keys(pages).map(Number)) + 1, q: '' }); }}
                       className="self-center px-3 py-2"
                     >
-                      {loading ? (
+                      {loadingMore ? (
                         <Spinner size="small" />
                       ) : (
                         <Text size="sm" className="text-primary">

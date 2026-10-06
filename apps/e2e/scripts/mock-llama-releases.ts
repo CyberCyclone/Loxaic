@@ -15,7 +15,12 @@
  *     older llama.cpp or a fork really fails: fatally, at boot, naming the key;
  *   - a release with no build for the test machine;
  *   - a release GitHub publishes no checksum for;
- * and, behind "Load older versions", one more good one.
+ * and, behind "Load older versions", one more good one. The release just
+ * before it is the last on page one, so a release published while the picker
+ * is open moves it onto page two, as GitHub's own paging does.
+ *
+ * `POST /__e2e/publish` publishes a newer release, `POST /__e2e/slow?ms=`
+ * makes page two that slow to answer, and `POST /__e2e/reset` undoes both.
  *
  * The test machine is the fixed `linux-x64-vulkan` one the server uses under
  * its fake hardware (apps/server/src/llama/releases.ts `assetKey`), whatever
@@ -36,7 +41,9 @@ export interface MockLlamaReleases {
   apiUrl: string;
   /** `LLAMA_RELEASES_URL`. */
   downloadUrl: string;
-  tags: { prerelease: string; good: string; broken: string; noBuild: string; noChecksum: string; older: string };
+  tags: { prerelease: string; good: string; broken: string; noBuild: string; noChecksum: string; edge: string; older: string; published: string };
+  /** Where `/__e2e/*` is. */
+  controlUrl: string;
   /** A third-party build: its address, what it hashes to, and what the fake
    * inside says its version is. */
   fork: { url: string; sha256: string; version: string };
@@ -69,7 +76,16 @@ function buildArchive(dir: string, name: string, extraEnv = ''): Archive {
 
 export async function startMockLlamaReleases(): Promise<MockLlamaReleases> {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'loxaic-e2e-llama-'));
-  const tags = { prerelease: 'b9104', good: 'b9103', broken: 'b9102', noBuild: 'b9101', noChecksum: 'b9100', older: 'b9050' };
+  const tags = {
+    prerelease: 'b9104',
+    good: 'b9103',
+    broken: 'b9102',
+    noBuild: 'b9101',
+    noChecksum: 'b9100',
+    edge: 'b9060',
+    older: 'b9050',
+    published: 'b9105',
+  };
   const vulkan = (tag: string) => `llama-${tag}-bin-ubuntu-vulkan-x64.tar.gz`;
   const archives = new Map<string, Archive>();
   for (const tag of [tags.prerelease, tags.good, tags.noChecksum, tags.older]) {
@@ -96,19 +112,25 @@ export async function startMockLlamaReleases(): Promise<MockLlamaReleases> {
       ],
     };
   };
-  // A full page of thirty, as GitHub sends when there are more: the five that
-  // matter and twenty-five the server does not list (not `b<number>` tags).
-  const filler = Array.from({ length: 25 }, (_, i) => ({ tag_name: `nightly-${String(i)}`, assets: [] }));
-  const pageOne = [
+  // Pages of thirty, as GitHub sends them: the releases that matter, and
+  // twenty-four the server does not list (not `b<number>` tags) so that the
+  // edge release is the last on page one.
+  const PAGE = 30;
+  const filler = Array.from({ length: 24 }, (_, i) => ({ tag_name: `nightly-${String(i)}`, assets: [] }));
+  const listed = [
     release(tags.prerelease, { prerelease: true }),
     release(tags.good),
     release(tags.broken),
     release(tags.noBuild, { macOnly: true }),
     release(tags.noChecksum, { digest: false }),
     ...filler,
+    release(tags.edge),
+    release(tags.older),
   ];
-  const pageTwo = [release(tags.older)];
-  const all = [...pageOne.slice(0, 5), ...pageTwo];
+  let published = false;
+  let pageTwoDelayMs = 0;
+  const releases = () => (published ? [release(tags.published), ...listed] : listed);
+  const page = (n: number) => releases().slice((n - 1) * PAGE, n * PAGE);
 
   /** An archive in pieces, so the picker has a download to show. */
   const sendSlowly = (res: import('node:http').ServerResponse, bytes: Buffer): void => {
@@ -135,14 +157,31 @@ export async function startMockLlamaReleases(): Promise<MockLlamaReleases> {
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
     };
+    if (req.method === 'POST' && url.pathname.startsWith('/__e2e/')) {
+      if (url.pathname === '/__e2e/publish') published = true;
+      else if (url.pathname === '/__e2e/slow') pageTwoDelayMs = Number(url.searchParams.get('ms') ?? '0');
+      else if (url.pathname === '/__e2e/reset') {
+        published = false;
+        pageTwoDelayMs = 0;
+      } else {
+        res.writeHead(404).end();
+        return;
+      }
+      json({ ok: true });
+      return;
+    }
     if (url.pathname === '/repo/releases') {
-      const page = url.searchParams.get('page') ?? '1';
-      json(page === '1' ? pageOne : page === '2' ? pageTwo : []);
+      const n = Number(url.searchParams.get('page') ?? '1');
+      // Paged when it is asked, not when it is answered: a slow page two is
+      // the page as it was.
+      const body = page(n);
+      if (n === 2 && pageTwoDelayMs > 0) setTimeout(() => { json(body); }, pageTwoDelayMs);
+      else json(body);
       return;
     }
     const byTag = /^\/repo\/releases\/tags\/([^/]+)$/.exec(url.pathname);
     if (byTag) {
-      const found = all.find((r) => r.tag_name === byTag[1]);
+      const found = releases().find((r) => r.tag_name === byTag[1]);
       if (found) json(found);
       else json({ message: 'Not Found' }, 404);
       return;
@@ -162,6 +201,7 @@ export async function startMockLlamaReleases(): Promise<MockLlamaReleases> {
 
   return {
     apiUrl: `${base}/repo`,
+    controlUrl: `${base}/__e2e`,
     downloadUrl: `${base}/dl`,
     tags,
     fork: { url: `${base}/fork/llama-fork.tar.gz`, sha256: fork.sha256, version: forkVersion },

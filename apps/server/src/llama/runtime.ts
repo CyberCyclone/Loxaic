@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -156,9 +156,17 @@ async function installedAt(name: string): Promise<InstalledRuntime | null> {
     const marker = JSON.parse(await readFile(path.join(dir, COMPLETE_MARKER), "utf8")) as Marker;
     if (typeof marker.bin !== "string" || typeof marker.tag !== "string") return null;
     if (typeof marker.flavour !== "string" || !FLAVOURS.includes(marker.flavour)) return null;
-    const bin = path.join(dir, marker.bin);
-    if (!existsSync(bin)) return null;
     const source: RuntimeSourceKind = marker.source === "official" || marker.source === "custom" ? marker.source : "bundled";
+    // The directory says which build this is, never the file inside it: the
+    // installer named the directory, and `tag` is what the picker reports as
+    // running and what pruning keeps. A third-party build's tag is the admin's
+    // name for it, so for those the id is what has to agree.
+    const named = source === "custom" ? `custom-${String(marker.customId)}` : `${marker.tag}-${marker.flavour}`;
+    if (name !== named) return null;
+    // `bin` becomes a spawned process, so it must be a file in this build.
+    const bin = path.join(dir, marker.bin);
+    if (!path.resolve(bin).startsWith(path.resolve(dir) + path.sep) || !existsSync(bin)) return null;
+    if (!(await inside(dir, bin))) return null;
     return {
       key: name,
       tag: marker.tag,
@@ -173,6 +181,17 @@ async function installedAt(name: string): Promise<InstalledRuntime | null> {
     };
   } catch {
     return null;
+  }
+}
+
+/** Whether `file`, with every link on the way resolved by the system, is
+ * inside `root`. False for a path that does not resolve. */
+async function inside(root: string, file: string): Promise<boolean> {
+  try {
+    const [r, f] = await Promise.all([realpath(root), realpath(file)]);
+    return f === r || f.startsWith(r + path.sep);
+  } catch {
+    return false;
   }
 }
 
@@ -264,9 +283,11 @@ interface FetchOptions {
   sha256: string | null;
   /** Bytes past this end the transfer. */
   maxBytes: number;
-  /** A third-party address: every hop must be allowed, so redirects are
-   * followed here rather than by `fetch`. */
+  /** A third-party address: it and every hop must be allowed, so redirects
+   * are followed here rather than by `fetch`. */
   checkRedirects: boolean;
+  /** The disk watch: aborting it ends the transfer. */
+  disk: DiskWatch;
   onBytes: (n: number) => void;
   onTotal?: (n: number) => void;
 }
@@ -287,8 +308,15 @@ async function fetchArchive(o: FetchOptions): Promise<string> {
     clearTimeout(timer);
     timer = setTimeout(onStall, idle);
   };
+  const onLowDisk = (): void => { controller.abort(); };
+  o.disk.signal.addEventListener("abort", onLowDisk);
   try {
     let url = o.url;
+    // Asked of the stored address too, not only when it was added: a row can
+    // reach the settings by another route than the API (found in review).
+    if (o.checkRedirects && !allowedBuildUrl(url)) {
+      throw new RuntimeInstallError(`${o.label} is not an https address, so it was not downloaded.`);
+    }
     let res: Response;
     for (let hop = 0; ; hop++) {
       try {
@@ -298,6 +326,7 @@ async function fetchArchive(o: FetchOptions): Promise<string> {
           redirect: o.checkRedirects ? "manual" : "follow",
         });
       } catch (err) {
+        if (o.disk.signal.aborted) throw o.disk.error();
         if (stall.hit) throw new RuntimeInstallError(`Downloading ${o.label} stalled: nothing arrived for ${String(Math.round(idle / 1000))} s.`);
         // The code only: the message can carry the address, which for a
         // third-party build may hold a token in its query.
@@ -352,6 +381,7 @@ async function fetchArchive(o: FetchOptions): Promise<string> {
     } catch (err) {
       await rm(o.dest, { force: true });
       if (err instanceof RuntimeInstallError) throw err;
+      if (o.disk.signal.aborted) throw o.disk.error();
       if (stall.hit) throw new RuntimeInstallError(`Downloading ${o.label} stalled: nothing arrived for ${String(Math.round(idle / 1000))} s.`);
       throw new RuntimeInstallError(`Downloading ${o.label} was cut off before it finished.`);
     }
@@ -365,7 +395,84 @@ async function fetchArchive(o: FetchOptions): Promise<string> {
     return actual;
   } finally {
     clearTimeout(timer);
+    o.disk.signal.removeEventListener("abort", onLowDisk);
   }
+}
+
+// ── Disk space ──────────────────────────────────────────────────────────────
+
+/** What an install leaves free, as model downloads do (`downloads.ts`). The
+ * runtime directory sits beside the models, and on the desktop beside the
+ * embedded Postgres, so a full disk takes the server down with it. */
+const DISK_MARGIN_BYTES = 2 * 1024 ** 3;
+const DISK_POLL_MS = 500;
+
+let freeOverride: (() => number | null) | null = null;
+
+/** Test seam: what the disk is said to have free. */
+export function __setDiskFreeForTest(fn: (() => number | null) | null): void {
+  freeOverride = fn;
+}
+
+async function freeBytes(dir: string): Promise<number | null> {
+  if (freeOverride) return freeOverride();
+  try {
+    const s = await statfs(dir);
+    return s.bavail * s.bsize;
+  } catch {
+    return null;
+  }
+}
+
+const gib = (n: number): string => `${(n / 1024 ** 3).toFixed(1)} GB`;
+
+/**
+ * Free space, watched for the length of an install. The archive is capped,
+ * but what it unpacks to is not: a 2 GB archive of zeros unpacks to about a
+ * thousand times that, and `tar` would write it until the disk was full. The
+ * watch aborts the download or kills `tar` once the disk is down to its
+ * margin, and is asked again after each step, which is what a step too quick
+ * for the poll meets. Found in review.
+ */
+interface DiskWatch {
+  signal: AbortSignal;
+  error: () => RuntimeInstallError;
+  /** Refuse to start when `bytes` would not leave the margin free. */
+  require: (bytes: number) => Promise<void>;
+  /** Measure now; throws when the disk is down to its margin. */
+  check: () => Promise<void>;
+  stop: () => void;
+}
+
+function watchDisk(dir: string): DiskWatch {
+  const controller = new AbortController();
+  const error = (): RuntimeInstallError =>
+    new RuntimeInstallError(
+      `Installing llama.cpp was stopped: it would have left less than ${gib(DISK_MARGIN_BYTES)} free on this machine's disk, so what it had written was removed.`,
+    );
+  const poll = async (): Promise<void> => {
+    const free = await freeBytes(dir);
+    if (free !== null && free < DISK_MARGIN_BYTES) controller.abort();
+  };
+  const timer = setInterval(() => { void poll(); }, DISK_POLL_MS);
+  timer.unref();
+  return {
+    signal: controller.signal,
+    error,
+    require: async (bytes) => {
+      const free = await freeBytes(dir);
+      if (free !== null && free - bytes < DISK_MARGIN_BYTES) {
+        throw new RuntimeInstallError(
+          `Not enough disk space for llama.cpp: ${gib(free)} is free, and ${gib(DISK_MARGIN_BYTES)} has to stay free after it.`,
+        );
+      }
+    },
+    check: async () => {
+      await poll();
+      if (controller.signal.aborted) throw error();
+    },
+    stop: () => { clearInterval(timer); },
+  };
 }
 
 /** Whether the file is an archive this platform's `tar` reads, by its first
@@ -387,14 +494,16 @@ async function isArchive(file: string): Promise<boolean> {
   }
 }
 
-function extract(archive: string, into: string): Promise<void> {
+function extract(archive: string, into: string, disk: DiskWatch): Promise<void> {
   return new Promise((resolve, reject) => {
     // Neither tar follows an absolute path or a `..` out of `-C` without `-P`.
     // Ownership and modes are ours, not the archive's: a setuid bit in a
     // stranger's tarball is not something to carry onto this disk.
     const args = ["-xf", archive, "-C", into, "--no-same-owner", "--no-same-permissions"];
-    execFile("tar", args, { timeout: 5 * 60_000, windowsHide: true }, (err, _out, stderr) => {
-      if (err) reject(new RuntimeInstallError(`Unpacking llama.cpp failed: ${stderr.trim().slice(0, 300) || err.message}`));
+    const opts = { timeout: 5 * 60_000, windowsHide: true, signal: disk.signal, killSignal: "SIGKILL" as const };
+    execFile("tar", args, opts, (err, _out, stderr) => {
+      if (disk.signal.aborted) reject(disk.error());
+      else if (err) reject(new RuntimeInstallError(`Unpacking llama.cpp failed: ${stderr.trim().slice(0, 300) || err.message}`));
       else resolve();
     });
   });
@@ -403,13 +512,45 @@ function extract(archive: string, into: string): Promise<void> {
 const MAX_ENTRIES = 50_000;
 
 /**
+ * Where a link leads, resolved the way the system would: one component at a
+ * time, each through `realpath`, so a link met on the way is followed before
+ * a `..` after it is applied. A destination that does not exist yet still
+ * leads somewhere — writing through the link would create it there — so the
+ * rest of the path is joined on from the first component that is missing.
+ */
+async function linkDestination(link: string): Promise<string> {
+  const text = await readlink(link);
+  let at = path.isAbsolute(text) ? path.parse(text).root : await realpath(path.dirname(link));
+  const parts = text.split(/[\\/]+/).filter((p) => p !== "" && p !== ".");
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] === "..") {
+      at = path.dirname(at);
+      continue;
+    }
+    const next = path.join(at, parts[i]);
+    try {
+      at = await realpath(next);
+    } catch {
+      return path.join(next, ...parts.slice(i + 1));
+    }
+  }
+  return at;
+}
+
+/**
  * Refuse an unpacked tree that holds anything but files, directories and
  * symlinks that stay inside it. The official macOS and Linux builds link
  * `libllama.dylib` to its versioned name, so links are normal; one pointing
  * at `/etc` or `../../models` is how an archive reaches outside the directory
  * it was unpacked into once something reads or deletes through it.
+ *
+ * A link is judged by where the system resolves it, never by joining its text
+ * to its directory. `d/up -> ..` then `x -> d/up/../../y` reads as `root/y`
+ * as text and resolves to two levels above the root, because `d/up` is a
+ * link. Found in review.
  */
 async function assertContained(root: string): Promise<void> {
+  const realRoot = await realpath(root);
   let seen = 0;
   const walk = async (dir: string): Promise<void> => {
     for (const name of await readdir(dir)) {
@@ -417,8 +558,8 @@ async function assertContained(root: string): Promise<void> {
       const full = path.join(dir, name);
       const s = await lstat(full);
       if (s.isSymbolicLink()) {
-        const target = path.resolve(dir, await readlink(full));
-        if (target !== root && !target.startsWith(root + path.sep)) {
+        const target = await linkDestination(full);
+        if (target !== realRoot && !target.startsWith(realRoot + path.sep)) {
           throw new RuntimeInstallError("The archive contains a link that leads outside it, so it was discarded and not run.");
         }
       } else if (s.isDirectory()) {
@@ -488,6 +629,7 @@ async function doInstall(
   const scratch = path.join(root, `.install-${randomBytes(6).toString("hex")}`);
   const staging = path.join(scratch, "unpacked");
   await mkdir(staging, { recursive: true });
+  const disk = watchDisk(root);
   try {
     let doneBytes = 0;
     let totalBytes = 0;
@@ -500,6 +642,7 @@ async function doInstall(
     if (spec.kind === "custom") {
       onProgress({ doneBytes, totalBytes });
       const file = path.join(scratch, "build.archive");
+      await disk.require(0);
       sha256 = await fetchArchive({
         url: spec.url,
         dest: file,
@@ -507,6 +650,7 @@ async function doInstall(
         sha256: spec.sha256,
         maxBytes: MAX_CUSTOM_BYTES,
         checkRedirects: true,
+        disk,
         onBytes,
         onTotal: (n) => { totalBytes = n; },
       });
@@ -517,14 +661,17 @@ async function doInstall(
             : `"${spec.name}" is not a .tar.gz, .tar.xz or .zip archive, so it was not unpacked.`,
         );
       }
-      await extract(file, staging);
+      await disk.check();
+      await extract(file, staging, disk);
       await rm(file, { force: true });
+      await disk.check();
     } else if (build) {
       const tag = spec.kind === "official" ? spec.tag : RUNTIME_MANIFEST.tag;
       const assets = [build.asset, ...(build.extra ? [build.extra] : [])];
       hasExtra = Boolean(build.extra);
       totalBytes = assets.reduce((n, a) => n + a.size, 0);
       onProgress({ doneBytes, totalBytes });
+      await disk.require(totalBytes);
       sha256 = build.asset.sha256;
       for (const asset of assets) {
         // The name comes from GitHub's listing for a chosen release; it is
@@ -537,10 +684,13 @@ async function doInstall(
           sha256: asset.sha256,
           maxBytes: asset.size,
           checkRedirects: false,
+          disk,
           onBytes,
         });
-        await extract(file, staging);
+        await disk.check();
+        await extract(file, staging, disk);
         await rm(file, { force: true });
+        await disk.check();
       }
     } else {
       throw new RuntimeInstallError("There is nothing to install.");
@@ -564,8 +714,12 @@ async function doInstall(
         if (e.toLowerCase().endsWith(".dll")) await rename(path.join(staging, e), path.join(binDir, e));
       }
     }
+    // The archive may ship a file (or a link) by the marker's name. Removed
+    // first and written exclusively, so nothing it shipped is written through.
+    const markerFile = path.join(staging, COMPLETE_MARKER);
+    await rm(markerFile, { force: true });
     await writeFile(
-      path.join(staging, COMPLETE_MARKER),
+      markerFile,
       JSON.stringify({
         tag: spec.kind === "custom" ? spec.name : spec.kind === "official" ? spec.tag : RUNTIME_MANIFEST.tag,
         flavour,
@@ -576,6 +730,7 @@ async function doInstall(
         sha256,
         ...(spec.kind === "custom" ? { customId: spec.id } : {}),
       }),
+      { flag: "wx" },
     );
     const target = path.join(root, name);
     await rm(target, { recursive: true, force: true });
@@ -584,6 +739,7 @@ async function doInstall(
     if (!installed) throw new RuntimeInstallError("llama.cpp was unpacked but could not be found afterwards.");
     return installed;
   } finally {
+    disk.stop();
     await rm(scratch, { recursive: true, force: true });
   }
 }

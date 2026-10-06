@@ -788,18 +788,44 @@ function notRunnable(err: unknown): string {
   return code ? `the system could not start it (${code}).` : "the system could not start it.";
 }
 
-function listDevices(bin: string): Promise<RuntimeDevice[]> {
+const LIST_DEVICES_TIMEOUT_MS = 30_000;
+const LIST_DEVICES_MAX_BUFFER = 8 * 1024 * 1024;
+
+/**
+ * The GPUs a build lists, or why the list cannot be trusted.
+ *
+ * A listing that was cut off — killed at its timeout, or past `maxBuffer` —
+ * still calls back with the output so far, which parses as a *shorter* list.
+ * Read as the whole list, that put models on a subset of the GPUs with nothing
+ * saying why (#263's symptom), from builds nobody here tested (found in review).
+ * A build that exits non-zero after listing is taken at its word.
+ */
+export function listDevicesOutcome(
+  err: (Error & { code?: unknown; killed?: boolean }) | null,
+  stdout: string,
+  stderr: string,
+): { devices: RuntimeDevice[]; error: string | null } {
+  if (err?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+    return { devices: [], error: "llama.cpp printed too much while listing its GPUs, so the list was cut off." };
+  }
+  if (err?.killed) {
+    return { devices: [], error: `llama.cpp took longer than ${String(LIST_DEVICES_TIMEOUT_MS / 1000)} s to list its GPUs, so the list is incomplete.` };
+  }
+  return { devices: parseDeviceList(`${stdout}\n${stderr}`), error: null };
+}
+
+function listDevices(bin: string): Promise<{ devices: RuntimeDevice[]; error: string | null }> {
   return new Promise((resolve) => {
     try {
       execFile(
         bin,
         ["--list-devices"],
-        { timeout: 30_000, windowsHide: true, env: childEnv(bin, "unused") },
-        (_err, stdout, stderr) => { resolve(parseDeviceList(`${stdout}\n${stderr}`)); },
+        { timeout: LIST_DEVICES_TIMEOUT_MS, maxBuffer: LIST_DEVICES_MAX_BUFFER, windowsHide: true, env: childEnv(bin, "unused") },
+        (err, stdout, stderr) => { resolve(listDevicesOutcome(err, stdout, stderr)); },
       );
     } catch {
       // Not a program at all: nothing to list. `reportedVersion` is what says so.
-      resolve([]);
+      resolve({ devices: [], error: null });
     }
   });
 }
@@ -852,9 +878,10 @@ async function doRemeasure(): Promise<void> {
   }
   const runtime = st.runtime;
   if (mode !== "managed" || !runtime || st.flavour === "cpu" || st.devices.length === 0) return;
-  const fresh = await listDevices(runtime.bin);
+  const { devices: fresh, error } = await listDevices(runtime.bin);
   measuredAt = Date.now();
-  if (fresh.length === 0) return;
+  // A cut-off listing keeps the last figures rather than half-updating them.
+  if (error !== null || fresh.length === 0) return;
   const byName = new Map(fresh.map((d) => [d.name, d]));
   st.devices = st.devices.map((d) => {
     const now = byName.get(d.name);
@@ -1222,11 +1249,19 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   }
   st.runtime = runtime;
 
-  st.devices = await listDevices(runtime.bin);
+  const listed = await listDevices(runtime.bin);
+  st.devices = listed.devices;
   measuredAt = Date.now();
   if (flavour === "cpu") {
     st.activeDevices = "none";
   } else {
+    if (listed.error !== null) {
+      // Starting on part of the list would load models onto some of the GPUs.
+      st.activeDevices = [];
+      st.state = "error";
+      st.reason = listed.error;
+      return;
+    }
     st.activeDevices = chosenDevices(st.devices);
     if (st.devices.length === 0) {
       // The build started but found no GPU of its kind — a missing driver, or

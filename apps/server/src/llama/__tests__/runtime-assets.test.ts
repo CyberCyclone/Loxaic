@@ -70,7 +70,10 @@ describe("where a third-party build may come from", () => {
   afterEach(() => { vi.unstubAllEnvs(); });
 
   it("is https, with no credentials in the address", () => {
-    vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", "");
+    vi.stubEnv("LOXAIC_TEST_HTTP_BUILDS", "");
+    // The fake runtime does not loosen it: a chosen build installs for real
+    // while it is set.
+    vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", "/tmp/fake");
     expect(allowedBuildUrl("https://example.com/llama.tar.gz")).toBe(true);
     expect(allowedBuildUrl("https://192.168.1.50/llama.tar.gz")).toBe(true);
     for (const bad of [
@@ -87,7 +90,7 @@ describe("where a third-party build may come from", () => {
   });
 
   it("lets the test harness alone fetch from loopback over http", () => {
-    vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", "/tmp/fake");
+    vi.stubEnv("LOXAIC_TEST_HTTP_BUILDS", "1");
     expect(allowedBuildUrl("http://127.0.0.1:8080/llama.tar.gz")).toBe(true);
     expect(allowedBuildUrl("http://example.com/llama.tar.gz")).toBe(false);
   });

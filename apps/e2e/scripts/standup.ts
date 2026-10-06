@@ -153,11 +153,11 @@ export function mockHf(): Pick<MockHf, 'url' | 'repos' | 'quants' | 'mtpHeads'> 
 const MOCK_LLAMA_RELEASES_FILE = path.join(RUN_DIR, 'mock-llama-releases.json');
 
 /** The mock llama.cpp releases this run's server lists and downloads from. */
-export function mockLlamaReleases(): Pick<MockLlamaReleases, 'tags' | 'fork'> {
+export function mockLlamaReleases(): Pick<MockLlamaReleases, 'tags' | 'fork' | 'controlUrl'> {
   if (!existsSync(MOCK_LLAMA_RELEASES_FILE)) {
     throw new Error(`[e2e] no mock llama.cpp releases recorded at ${MOCK_LLAMA_RELEASES_FILE} — was standup() run?`);
   }
-  return JSON.parse(readFileSync(MOCK_LLAMA_RELEASES_FILE, 'utf8')) as Pick<MockLlamaReleases, 'tags' | 'fork'>;
+  return JSON.parse(readFileSync(MOCK_LLAMA_RELEASES_FILE, 'utf8')) as Pick<MockLlamaReleases, 'tags' | 'fork' | 'controlUrl'>;
 }
 
 /** Where the server under test keeps its llama.cpp runtime and models, so a
@@ -404,7 +404,7 @@ async function ensureServer(): Promise<void> {
   writeFileSync(MOCK_HF_FILE, JSON.stringify({ url: hf.url, repos: hf.repos, quants: hf.quants, mtpHeads: hf.mtpHeads }), 'utf8');
   const llamaReleases = await startMockLlamaReleases();
   stopMockLlamaReleases = llamaReleases.stop;
-  writeFileSync(MOCK_LLAMA_RELEASES_FILE, JSON.stringify({ tags: llamaReleases.tags, fork: llamaReleases.fork }), 'utf8');
+  writeFileSync(MOCK_LLAMA_RELEASES_FILE, JSON.stringify({ tags: llamaReleases.tags, fork: llamaReleases.fork, controlUrl: llamaReleases.controlUrl }), 'utf8');
   rmSync(LLAMA_DIR, { recursive: true, force: true });
   writeFileSync(FAKE_HARDWARE_FILE, 'gpu', 'utf8');
   rmSync(FAKE_ROUTER_LOG, { force: true });
@@ -479,6 +479,8 @@ async function ensureServer(): Promise<void> {
       LLAMA_MODE: 'managed',
       LLAMA_DIR,
       LOXAIC_LLAMA_SERVER_BIN: path.join(REPO_ROOT, 'apps/server/test-fixtures/fake-llama-server.mjs'),
+      // The mock releases serve their archives from loopback over plain http.
+      LOXAIC_TEST_HTTP_BUILDS: '1',
       LOXAIC_FAKE_HARDWARE: FAKE_HARDWARE_FILE,
       LOXAIC_FAKE_ROUTER_LOG: FAKE_ROUTER_LOG,
       LOXAIC_FAKE_DEVICES: 'FAKE0: E2E Fake GPU (24576 MiB, 24000 MiB free)',
@@ -501,6 +503,8 @@ async function ensureServer(): Promise<void> {
       // stands in for the bundled build only, so a version chosen in the
       // picker is really downloaded and run.
       LLAMA_RELEASES_API_URL: llamaReleases.apiUrl,
+      // The spec publishes a release while the picker is open.
+      LLAMA_RELEASES_FRESH_MS: '0',
       LLAMA_RELEASES_URL: llamaReleases.downloadUrl,
     },
   });

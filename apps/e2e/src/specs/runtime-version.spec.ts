@@ -16,11 +16,11 @@
  * The server is shared with every other spec, so this one starts and ends on
  * the bundled build with nothing downloaded or added.
  */
-import { browser } from '@wdio/globals';
+import { $$, browser } from '@wdio/globals';
 import { adminCreds, provisionAdmin } from '../helpers/auth.ts';
 import { mockLlamaReleases } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForFreshText, waitForVisible } from '../helpers/selectors.ts';
+import { isVisible, platform, scrollTo, tap, testIdSelector, typeInto, waitForAbsent, waitForFreshText, waitForVisible } from '../helpers/selectors.ts';
 import { openSettings, signIn } from '../helpers/app.ts';
 import { adminApi } from '../helpers/hostModels.ts';
 
@@ -66,8 +66,15 @@ const settled = async (): Promise<RuntimeAnswer['runtime']> => {
   return runtime();
 };
 
+/** Ask the mock releases to publish a release, slow page two down, or undo both. */
+async function control(what: string): Promise<void> {
+  const res = await fetch(`${mockLlamaReleases().controlUrl}/${what}`, { method: 'POST' });
+  if (!res.ok) throw new Error(`[e2e] the mock releases refused ${what} (${String(res.status)})`);
+}
+
 /** Back on the bundled build, with nothing downloaded and nothing added. */
 async function reset(): Promise<void> {
+  await control('reset');
   if ((await versions()).selected.kind !== 'bundled') {
     const res = await adminApi('/v1/admin/local-models/runtime/revert', { method: 'POST' });
     if (!res.ok) throw new Error(`[e2e] could not switch back to the bundled build (${String(res.status)}): ${await res.text()}`);
@@ -107,8 +114,9 @@ async function closePicker(): Promise<void> {
   if (!(await isVisible('localModels.versions.close'))) return;
   await tap('localModels.versions.close');
   // An element inside a closed modal goes on reporting "displayed" under
-  // UiAutomator2; absence is asked afresh each time.
-  await waitForAbsent('localModels.versions.close');
+  // UiAutomator2; absence is asked afresh each time, and on Android each ask
+  // waits for the UI to go idle, so allow what the other closes here allow.
+  await waitForAbsent('localModels.versions.close', 20_000);
 }
 
 const row = (tag: string): string => `localModels.versions.row.${tag}`;
@@ -133,7 +141,46 @@ describe('choosing the llama.cpp version', () => {
   });
 
   afterEach(async () => {
+    // UiAutomator2's default, in case a case that lifted it failed partway.
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 }).catch(() => undefined);
     await closePicker().catch(() => undefined);
+  });
+
+  // First, so the picker is mounted fresh: an older build kept its pages
+  // across a close.
+  it('lists a release that moved pages once, and keeps an older page through a download starting', async function () {
+    this.timeout(2 * 60_000);
+    await openPicker();
+    await scrollTo(row(tags.edge));
+    // A release published while the picker is open moves the last one on page
+    // one onto page two, so page two starts with a release already listed.
+    await control('publish');
+    await scrollTo('localModels.versions.loadMore');
+    await tap('localModels.versions.loadMore');
+    await scrollTo(`${row(tags.older)}.download`);
+    // One row for it: two would share a testID.
+    expect(await $$(testIdSelector(row(tags.edge))).length).toBe(1);
+
+    // A download starting or ending asks for page one again. One request
+    // counter for both threw away an older page that was on its way, so the
+    // admin's "Load older versions" did nothing.
+    await closePicker();
+    await openPicker();
+    await control('slow?ms=8000');
+    // UiAutomator2 waits for the UI to go idle before each lookup, and the
+    // "Load older versions" spinner never lets it: each one would outlast the
+    // slow page (as in compaction-live.spec.ts).
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
+    await scrollTo('localModels.versions.loadMore');
+    await tap('localModels.versions.loadMore');
+    // The newly published release has nothing to download, so this download
+    // starts and fails at once: two changes, each asking for page one.
+    await scrollTo(`${row(tags.published)}.download`);
+    await tap(`${row(tags.published)}.download`);
+    await scrollTo(row(tags.older), 40_000);
+    await waitForVisible(`${row(tags.older)}.download`);
+    await shot('llama-versions-older-page');
+    await control('reset');
   });
 
   it('lists the official versions, with pre-releases and what cannot be installed here marked', async () => {

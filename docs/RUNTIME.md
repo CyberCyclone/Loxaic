@@ -360,6 +360,30 @@ difference: the build is **pinned** (`apps/server/src/llama/runtime-manifest.ts`
 rather than "whatever is newest", because it is a binary the server executes.
 Updating llama.cpp is a reviewed change to that file.
 
+| Machine | Build chosen automatically |
+|---|---|
+| **macOS (Apple Silicon)** | Metal |
+| **Linux / Windows with NVIDIA** | CUDA 13 (driver 580+) or CUDA 12 (525+); Vulkan with an older driver |
+| **Linux / Windows with AMD or Intel** | Vulkan — Linux needs the Vulkan loader (`libvulkan1`) |
+| **ROCm** | Not chosen automatically; pick it under Runtime settings |
+
+Runtime settings on the same screen override the backend and choose which GPUs
+to use. **By default only GPUs with at least 4 GB free are used**, so neither a
+small display card nor a card another program (LM Studio, a game) has already
+filled ends up with part of a model.
+
+**The CPU is never chosen automatically.** With no usable GPU, the screen says
+so and offers the CPU as an explicit choice, with a warning that only small
+models (a few billion parameters) reply at a usable speed. Choosing the CPU on a
+machine that *has* a GPU gives a stronger warning naming the GPU that would sit
+idle. `LLAMA_BACKEND=cpu` in the environment is the operator saying so directly.
+
+Downloaded models and the runtime live under `LLAMA_DIR` — `<data dir>/llama`
+in the desktop app, `./llama` beside a bare server (gitignored). Models are many
+gigabytes; the screen shows free disk space and refuses a download that would
+leave less than 2 GB. Installing a llama.cpp build keeps the same 2 GB free: it
+stops, and removes what it wrote, if downloading or unpacking would go past it.
+
 ### Running another version of llama.cpp
 
 **Change version** on the runtime card lists every official llama.cpp release,
@@ -391,29 +415,6 @@ nothing falls back on its own.
 With Docker Compose the server does not run llama.cpp itself, so there is no
 version to choose on the screen: the version is the `inference` service's image
 tag in the Compose file.
-
-| Machine | Build chosen automatically |
-|---|---|
-| **macOS (Apple Silicon)** | Metal |
-| **Linux / Windows with NVIDIA** | CUDA 13 (driver 580+) or CUDA 12 (525+); Vulkan with an older driver |
-| **Linux / Windows with AMD or Intel** | Vulkan — Linux needs the Vulkan loader (`libvulkan1`) |
-| **ROCm** | Not chosen automatically; pick it under Runtime settings |
-
-Runtime settings on the same screen override the backend and choose which GPUs
-to use. **By default only GPUs with at least 4 GB free are used**, so neither a
-small display card nor a card another program (LM Studio, a game) has already
-filled ends up with part of a model.
-
-**The CPU is never chosen automatically.** With no usable GPU, the screen says
-so and offers the CPU as an explicit choice, with a warning that only small
-models (a few billion parameters) reply at a usable speed. Choosing the CPU on a
-machine that *has* a GPU gives a stronger warning naming the GPU that would sit
-idle. `LLAMA_BACKEND=cpu` in the environment is the operator saying so directly.
-
-Downloaded models and the runtime live under `LLAMA_DIR` — `<data dir>/llama`
-in the desktop app, `./llama` beside a bare server (gitignored). Models are many
-gigabytes; the screen shows free disk space and refuses a download that would
-leave less than 2 GB.
 
 ### Choosing a model
 

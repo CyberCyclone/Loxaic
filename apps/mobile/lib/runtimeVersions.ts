@@ -105,7 +105,7 @@ const UNAVAILABLE: Record<Exclude<RuntimeReleaseRow['availability'], 'ok'>, stri
 
 /** What an official release's row offers. A live download wins over what the
  * list said, which may be a few seconds older. */
-export function releaseAction(row: RuntimeReleaseRow, downloads: readonly RuntimeVersionDownload[] | undefined): RowAction {
+export function releaseAction(row: ListedRelease, downloads: readonly RuntimeVersionDownload[] | undefined): RowAction {
   if (row.inUse) return { kind: 'in-use' };
   const d = downloadForTag(downloads, row.tag);
   if (d?.active) return { kind: 'downloading', percent: percent(d) };
@@ -119,37 +119,49 @@ export function customAction(build: CustomRuntimeBuild, downloads: readonly Runt
   const d = downloadForCustom(downloads, build.id);
   if (d?.active) return { kind: 'downloading', percent: percent(d) };
   if (build.downloaded) return { kind: 'switch' };
-  return { kind: 'download', retry: true };
+  return { kind: 'download', retry: Boolean(d?.error) };
 }
 
 /** May this row's files be removed? Not what is in use, and not the bundled
  * release, which is what switching back needs. */
-export function canDeleteRelease(row: RuntimeReleaseRow): boolean {
+export function canDeleteRelease(row: ListedRelease): boolean {
   return row.downloaded && !row.inUse && !row.bundled;
 }
+
+/** A release as the picker lists it. `prerelease` is null for a release known
+ * only from the disk: GitHub's flag is the only thing that says, and it was
+ * not asked. */
+export type ListedRelease = Omit<RuntimeReleaseRow, 'prerelease'> & { prerelease: boolean | null };
 
 /**
  * The releases to list: the page(s) loaded, plus any downloaded release not
  * among them — what can be switched to must be visible without paging to it.
  * Those are shown first, as bare rows: all that is known is that they are on
  * this machine.
+ *
+ * One row per tag. Page one is asked for again whenever a download starts or
+ * ends while older pages are kept, so a release published in between moves
+ * the page boundary and the same tag arrives on two pages (found in review).
  */
-export function releaseRows(view: RuntimeVersionsView, loaded: readonly RuntimeReleaseRow[], searching: boolean): RuntimeReleaseRow[] {
+export function releaseRows(view: RuntimeVersionsView, loaded: readonly RuntimeReleaseRow[], searching: boolean): ListedRelease[] {
   const selectedTag = view.selected.kind === 'official' ? view.selected.tag : null;
   // What is on disk and in use is from the newest answer, whichever page a
   // row first arrived on.
   const onDisk = new Set(view.official.downloadedTags);
-  const rows = loaded
-    .filter((r) => !r.bundled)
-    .map((r) => ({ ...r, downloaded: onDisk.has(r.tag), inUse: r.tag === selectedTag }));
+  const have = new Set<string>();
+  const rows: ListedRelease[] = [];
+  for (const r of loaded) {
+    if (r.bundled || have.has(r.tag)) continue;
+    have.add(r.tag);
+    rows.push({ ...r, downloaded: onDisk.has(r.tag), inUse: r.tag === selectedTag });
+  }
   if (searching) return rows;
-  const have = new Set(rows.map((r) => r.tag));
-  const extra: RuntimeReleaseRow[] = view.official.downloadedTags
+  const extra: ListedRelease[] = view.official.downloadedTags
     .filter((tag) => !have.has(tag) && tag !== view.bundled.tag)
     .map((tag) => ({
       tag,
       publishedAt: null,
-      prerelease: false,
+      prerelease: null,
       availability: 'ok' as const,
       sizeBytes: null,
       bundled: false,
@@ -166,12 +178,16 @@ export function releaseRows(view: RuntimeVersionsView, loaded: readonly RuntimeR
  * llama.cpp sets it on every build it publishes (all thirty of the newest
  * page, checked against the real list). A pill on every row marks nothing, so
  * when every listed release carries the flag it is said once above the list;
- * when only some do, those rows are the ones labelled.
+ * when only some do, those rows are the ones labelled. Only rows whose flag
+ * is known are counted: a downloaded release listed from the disk alone is
+ * neither, and counting it as "not a pre-release" put a pill back on every
+ * other row (found in review).
  */
-export function prereleaseLabelling(rows: readonly Pick<RuntimeReleaseRow, 'prerelease'>[]): { perRow: boolean; note: string | null } {
-  const flagged = rows.filter((r) => r.prerelease).length;
+export function prereleaseLabelling(rows: readonly Pick<ListedRelease, 'prerelease'>[]): { perRow: boolean; note: string | null } {
+  const known = rows.filter((r) => r.prerelease !== null);
+  const flagged = known.filter((r) => r.prerelease).length;
   if (flagged === 0) return { perRow: false, note: null };
-  if (flagged === rows.length && rows.length > 1) {
+  if (flagged === known.length && known.length > 1) {
     return { perRow: false, note: 'llama.cpp publishes every one of these builds marked as a pre-release.' };
   }
   return { perRow: true, note: null };
@@ -231,4 +247,51 @@ export function customBuildProblem(form: { name: string; url: string; sha256: st
   const sha = form.sha256.trim().toLowerCase().replace(/^sha256:/, '');
   if (sha && !/^[0-9a-f]{64}$/.test(sha)) return 'The SHA-256 must be 64 hexadecimal characters, or left empty.';
   return null;
+}
+
+/**
+ * Which answers to the picker's list requests still count.
+ *
+ * Two kinds of request run side by side: the head of the list (page one, or a
+ * search), asked again whenever a download starts or ends, and an older page
+ * the admin asked for. One counter for both threw away a "Load older versions"
+ * answer whenever a download started or finished meanwhile, with no error and
+ * nothing to retry (found in review). Each kind now has its own latest
+ * request, and the list's facts (what is downloaded and in use) are taken from
+ * the newest answer of either kind.
+ */
+export interface ListRequest {
+  readonly n: number;
+  readonly axis: string;
+}
+
+export class ListRequests {
+  private issued = 0;
+  private latest = new Map<string, number>();
+  private viewFrom = 0;
+
+  start(opts: { page: number; q: string }): ListRequest {
+    const axis = opts.q || opts.page === 1 ? 'head' : `page:${String(opts.page)}`;
+    const n = ++this.issued;
+    this.latest.set(axis, n);
+    return { n, axis };
+  }
+
+  /** Whether nothing newer of the same kind has been asked since. */
+  current(r: ListRequest): boolean {
+    return this.latest.get(r.axis) === r.n;
+  }
+
+  /** Whether this answer is the newest one to describe the list. */
+  takeView(r: ListRequest): boolean {
+    if (!this.current(r) || r.n < this.viewFrom) return false;
+    this.viewFrom = r.n;
+    return true;
+  }
+
+  /** Everything asked so far no longer counts (the picker closed). */
+  reset(): void {
+    this.latest.clear();
+    this.viewFrom = this.issued;
+  }
 }

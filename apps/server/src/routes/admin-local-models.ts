@@ -252,10 +252,17 @@ function hostOfUrl(url: string): string {
   }
 }
 
+/** A moment for work just started in the background (a restart, a download)
+ * to show in the answer as begun, rather than the answer describing the state
+ * before it. */
+function settleBriefly(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 100));
+}
+
 /** Start the version that is now chosen, the way Restart does. */
 async function restartOntoSelection() {
   void ensureRuntime({ restart: true });
-  await new Promise((r) => setTimeout(r, 100));
+  await settleBriefly();
   return fullView();
 }
 
@@ -288,8 +295,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
   app.post("/v1/admin/local-models/runtime/restart", async (request, reply) => {
     await requireAdmin(request, reply);
     void ensureRuntime({ restart: true });
-    // Give a quick start a moment to show up as starting rather than stale.
-    await new Promise((r) => setTimeout(r, 100));
+    await settleBriefly();
     return fullView();
   });
 
@@ -387,7 +393,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     const selected: RuntimeSelection = { kind: "official", tag };
     forgetVersionDownload(selectionKey(selected, flavour));
     startVersionDownload(selected, flavour);
-    await new Promise((r) => setTimeout(r, 100));
+    await settleBriefly();
     return fullView();
   });
 
@@ -429,7 +435,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     } catch (err) {
       return fail(reply, err);
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await settleBriefly();
     return reply.code(201).send(await fullView());
   });
 
@@ -442,7 +448,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     const selected: RuntimeSelection = { kind: "custom", id: build.id };
     forgetVersionDownload(selectionKey(selected, customFlavour(build.backend)));
     startVersionDownload(selected, customFlavour(build.backend));
-    await new Promise((r) => setTimeout(r, 100));
+    await settleBriefly();
     return fullView();
   });
 
@@ -495,10 +501,14 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
               : null;
         const installed = candidate ? await installedForSelection(candidate, flavour).catch(() => null) : null;
         if (candidate && !installed) return await reply.code(409).send({ error: "Download this version first, then switch to it." });
-        // Chosen by name: it stays on disk until an admin removes it.
+        await setRuntimeSelection(body);
+        // Chosen by name: it stays on disk until an admin removes it. Only
+        // once the choice has been accepted — a refused switch (an env pin)
+        // must not exempt the build from pruning for good (found in review).
         if (installed) await setRuntimePinned(installed, true).catch(() => undefined);
+      } else {
+        await setRuntimeSelection(body);
       }
-      await setRuntimeSelection(body);
     } catch (err) {
       return fail(reply, err);
     }
@@ -530,7 +540,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     // and a token change needs nothing.
     if (body.backend !== undefined || body.devices !== undefined) {
       void ensureRuntime({ restart: true });
-      await new Promise((r) => setTimeout(r, 100));
+      await settleBriefly();
     }
     return fullView();
   });

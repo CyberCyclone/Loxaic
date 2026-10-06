@@ -129,8 +129,24 @@ export function allowedBuildUrl(raw: string): boolean {
   }
   if (url.username || url.password) return false;
   if (url.protocol === "https:") return true;
-  // The e2e lane serves its fixture archives from loopback over plain http.
-  // Honoured only with the fake runtime, so it cannot loosen a real install.
   const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-  return url.protocol === "http:" && loopback && Boolean(process.env.LOXAIC_LLAMA_SERVER_BIN);
+  return url.protocol === "http:" && loopback && httpBuildsForTests();
+}
+
+let httpWarned = false;
+
+/**
+ * `LOXAIC_TEST_HTTP_BUILDS=1` lets a build come from loopback over plain http,
+ * which is how the e2e lane serves its fixture archives. **Test-only**, and a
+ * flag of its own: `LOXAIC_LLAMA_SERVER_BIN` used to stand in for it, but that
+ * now replaces the bundled build only while chosen builds install and run for
+ * real, so it no longer means "nothing real is fetched here". Found in review.
+ */
+function httpBuildsForTests(): boolean {
+  if (process.env.LOXAIC_TEST_HTTP_BUILDS !== "1") return false;
+  if (!httpWarned) {
+    httpWarned = true;
+    console.warn("[llama] LOXAIC_TEST_HTTP_BUILDS is set — llama.cpp builds may be fetched from loopback over plain http. Test use only.");
+  }
+  return true;
 }

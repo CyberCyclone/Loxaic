@@ -14,6 +14,7 @@ import {
   changeVersionControl,
   customAction,
   customBuildProblem,
+  ListRequests,
   offersRevert,
   prereleaseLabelling,
   releaseAction,
@@ -195,9 +196,10 @@ describe('what a third-party build row offers', () => {
     expect(customAction(build({ downloaded: true, inUse: true }), [])).toEqual({ kind: 'in-use' });
   });
 
-  it('offers another try when it is not on this machine', () => {
+  it('offers another try only after a download that failed', () => {
     expect(customAction(build(), [custom({ active: false, error: 'did not match' })])).toEqual({ kind: 'download', retry: true });
-    expect(customAction(build(), [])).toEqual({ kind: 'download', retry: true });
+    // Never tried: nothing to try again.
+    expect(customAction(build(), [])).toEqual({ kind: 'download', retry: false });
   });
 });
 
@@ -215,6 +217,22 @@ describe('the release list', () => {
     });
     const rows = releaseRows(v, [row({ tag: 'b9001', downloaded: false, inUse: false }), row({ tag: 'b9002', downloaded: true, inUse: true })], false);
     expect(rows).toMatchObject([{ tag: 'b9001', downloaded: true, inUse: true }, { tag: 'b9002', downloaded: false, inUse: false }]);
+  });
+
+  it('lists a tag once when it arrived on two pages', () => {
+    // A release published between page one's refresh and page two's load
+    // moves the boundary: page one's last row is page two's first.
+    const v = view({ official: { releases: [], hasMore: true, stale: null, unavailable: null, downloadedTags: [] } });
+    const rows = releaseRows(v, [row({ tag: 'b9003' }), row({ tag: 'b9002' }), row({ tag: 'b9002' }), row({ tag: 'b9001' })], false);
+    expect(rows.map((r) => r.tag)).toEqual(['b9003', 'b9002', 'b9001']);
+  });
+
+  it('does not claim a release known only from the disk is not a pre-release', () => {
+    const v = view({ official: { releases: [], hasMore: true, stale: null, unavailable: null, downloadedTags: ['b9050'] } });
+    const rows = releaseRows(v, [row({ tag: 'b9002', prerelease: true }), row({ tag: 'b9001', prerelease: true })], false);
+    expect(rows.map((r) => r.prerelease)).toEqual([null, true, true]);
+    // Said once for the list, as when the downloaded one was on the page.
+    expect(prereleaseLabelling(rows)).toMatchObject({ perRow: false, note: expect.stringMatching(/pre-release/) as unknown });
   });
 
   it('leaves the bundled release to its own row', () => {
@@ -238,6 +256,41 @@ describe('the release list', () => {
     // One row found by its tag is labelled as itself.
     expect(prereleaseLabelling([row({ prerelease: true })])).toEqual({ perRow: true, note: null });
     expect(prereleaseLabelling([])).toEqual({ perRow: false, note: null });
+  });
+
+  it('keeps an older page that was asked for while the head of the list is refreshed', () => {
+    const q = new ListRequests();
+    const page2 = q.start({ page: 2, q: '' });
+    // A download finishing asks for page one again meanwhile.
+    const refresh = q.start({ page: 1, q: '' });
+    expect(q.current(page2)).toBe(true);
+    expect(q.takeView(refresh)).toBe(true);
+    // Page two's answer is kept; its facts are older than page one's.
+    expect(q.current(page2)).toBe(true);
+    expect(q.takeView(page2)).toBe(false);
+  });
+
+  it('drops an answer something newer of its kind replaced', () => {
+    const q = new ListRequests();
+    const first = q.start({ page: 1, q: '' });
+    const search = q.start({ page: 1, q: 'b9001' });
+    expect(q.current(first)).toBe(false);
+    expect(q.takeView(first)).toBe(false);
+    expect(q.takeView(search)).toBe(true);
+    const older = q.start({ page: 2, q: '' });
+    const again = q.start({ page: 2, q: '' });
+    expect(q.current(older)).toBe(false);
+    expect(q.current(again)).toBe(true);
+  });
+
+  it('counts nothing asked before the picker closed', () => {
+    const q = new ListRequests();
+    const head = q.start({ page: 1, q: '' });
+    const page2 = q.start({ page: 2, q: '' });
+    q.reset();
+    expect(q.current(head)).toBe(false);
+    expect(q.current(page2)).toBe(false);
+    expect(q.takeView(q.start({ page: 1, q: '' }))).toBe(true);
   });
 
   it('says a list GitHub would not refresh may be out of date', () => {

@@ -12,8 +12,11 @@ import { presetPath, runtimeDir } from "../paths.ts";
 import { __resetReleasesForTest } from "../releases.ts";
 import { __resetRouterForTest, runtimeView, type RuntimeView } from "../router.ts";
 import { RUNTIME_MANIFEST } from "../runtime-manifest.ts";
-import { __resetVersionDownloadsForTest } from "../runtime-versions.ts";
-import { getRuntimeSelection } from "../settings.ts";
+import { installedOfficial, setRuntimePinned } from "../runtime.ts";
+import { __resetVersionDownloadsForTest, MAX_FAILED_DOWNLOADS } from "../runtime-versions.ts";
+import { getRuntimeSelection, loadLocalModelsSettings } from "../settings.ts";
+import { db, eq } from "@loxaic/db";
+import { serverSettings } from "@loxaic/db/schema";
 
 /**
  * Choosing which llama.cpp runs (#270), through the admin routes and the real
@@ -191,6 +194,7 @@ beforeAll(async () => {
   vi.stubEnv("LOXAIC_INSTANCE_ID", host);
   vi.stubEnv("LLAMA_DIR", path.join(dir, "llama"));
   vi.stubEnv("LOXAIC_LLAMA_SERVER_BIN", FAKE);
+  vi.stubEnv("LOXAIC_TEST_HTTP_BUILDS", "1");
   vi.stubEnv("LOXAIC_FAKE_HARDWARE", "gpu");
   vi.stubEnv("MOCK_INFERENCE", "false");
   vi.stubEnv("LLAMA_MODE", "managed");
@@ -337,15 +341,80 @@ describe.skipIf(!posix)("choosing a llama.cpp version", () => {
   });
 
   it("honours LLAMA_RUNTIME_TAG and refuses to change it from the API", async () => {
-    vi.stubEnv("LLAMA_RUNTIME_TAG", "b9001");
-    expect(runtimeView().version).toMatchObject({ kind: "official", tag: "b9001", envPinned: true, canRevert: false });
-    for (const res of [await inject("POST", "/runtime/select", { kind: "bundled" }), await inject("POST", "/runtime/revert")]) {
+    // A build that is not kept: a refused switch must not make it one.
+    const b9001 = await installedOfficial("b9001", "vulkan");
+    expect(b9001).not.toBeNull();
+    if (b9001) await setRuntimePinned(b9001, false);
+    vi.stubEnv("LLAMA_RUNTIME_TAG", "b9004");
+    expect(runtimeView().version).toMatchObject({ kind: "official", tag: "b9004", envPinned: true, canRevert: false });
+    for (const res of [
+      await inject("POST", "/runtime/select", { kind: "bundled" }),
+      await inject("POST", "/runtime/select", { kind: "official", tag: "b9001" }),
+      await inject("POST", "/runtime/revert"),
+    ]) {
       expect(res.statusCode).toBe(409);
       expect(res.json()).toMatchObject({ envOverride: true });
     }
+    expect((await installedOfficial("b9001", "vulkan"))?.pinned).toBe(false);
+    if (b9001) await setRuntimePinned({ ...b9001, pinned: false }, true);
     vi.stubEnv("LLAMA_RUNTIME_TAG", "nonsense");
     expect(runtimeView().version).toMatchObject({ kind: "bundled", envPinned: false });
     vi.stubEnv("LLAMA_RUNTIME_TAG", "");
+  });
+});
+
+describe.skipIf(!posix)("failed downloads", () => {
+  it("keeps only the newest few, since any tag can be asked for", async () => {
+    const tags = Array.from({ length: MAX_FAILED_DOWNLOADS + 4 }, (_, i) => `b8${String(100 + i)}`);
+    for (const tag of tags) expect((await inject("POST", "/runtime/versions/download", { tag })).statusCode).toBe(200);
+    await until("every download to fail", () => runtimeView().versionDownloads.every((d) => !d.active));
+    const failed = runtimeView().versionDownloads.filter((d) => d.tag?.startsWith("b8"));
+    expect(failed.map((d) => d.tag).sort()).toEqual(tags.slice(-MAX_FAILED_DOWNLOADS).sort());
+    __resetVersionDownloadsForTest();
+  });
+});
+
+describe.skipIf(!posix)("the settings row", () => {
+  const other = `test-versions-other-${uuid()}`;
+  type Row = { runtimeByHost?: Record<string, unknown> } & Record<string, unknown>;
+  const read = async (): Promise<Row> =>
+    ((await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, "localModels") }))?.value ?? {}) as Row;
+  const write = (value: Row) =>
+    db.insert(serverSettings).values({ key: "localModels", value, updatedAt: new Date() })
+      .onConflictDoUpdate({ target: serverSettings.key, set: { value, updatedAt: new Date() } });
+  /** Change one host's entry from the row as it is now, as another server would. */
+  const setEntry = async (id: string, entry: unknown) => {
+    const row = await read();
+    const hosts = { ...(row.runtimeByHost ?? {}) };
+    if (entry === undefined) Reflect.deleteProperty(hosts, id);
+    else hosts[id] = entry;
+    await write({ ...row, runtimeByHost: hosts });
+  };
+
+  afterAll(async () => {
+    await setEntry(other, undefined);
+    await setEntry(host, undefined);
+    await loadLocalModelsSettings();
+  });
+
+  it("keeps another server's choice of version when this one saves a setting", async () => {
+    // Written after this process last read the row: its own copy predates it.
+    await setEntry(other, { selected: { kind: "official", tag: "b9004" } });
+    const { settings } = (await inject("GET", "")).json<{ settings: { modelsMax: number } }>();
+    const res = await inject("PATCH", "/settings", { modelsMax: settings.modelsMax });
+    expect(res.statusCode, res.body).toBe(200);
+    expect((await read()).runtimeByHost?.[other]).toEqual({ selected: { kind: "official", tag: "b9004" } });
+  });
+
+  it("drops a stored third-party build whose address is not one the API would accept", async () => {
+    const build = (id: string, url: string) => ({ id, name: id, url, sha256Expected: null, backend: "vulkan", addedAt: new Date().toISOString() });
+    await setEntry(host, {
+      customBuilds: [build("aaaaaaaaaac1", "https://example.com/ok.tar.gz"), build("aaaaaaaaaac2", "http://example.com/plain.tar.gz")],
+    });
+    await loadLocalModelsSettings();
+    expect(getRuntimeSelection().customBuilds.map((b) => b.id)).toEqual(["aaaaaaaaaac1"]);
+    await setEntry(host, undefined);
+    await loadLocalModelsSettings();
   });
 });
 
