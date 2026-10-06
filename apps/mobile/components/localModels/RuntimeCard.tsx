@@ -13,6 +13,7 @@ import { Switch } from '@/components/ui/switch';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
 import { cpuWarning, formatBytes, restartHeadline, runtimeHeadline } from '@/lib/localModels';
+import { bundledNewerNote, changeVersionControl, offersRevert, versionLabel } from '@/lib/runtimeVersions';
 import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 
@@ -37,6 +38,10 @@ interface RuntimeCardProps {
     devices?: string[] | null;
     hfToken?: string | null;
   }) => Promise<boolean>;
+  /** Open the version picker. */
+  onChangeVersion: () => void;
+  /** Back to the bundled llama.cpp, when the chosen one will not start. */
+  onRevertVersion: () => void;
 }
 
 /**
@@ -49,7 +54,7 @@ interface RuntimeCardProps {
  * not. Nothing ever lands on the CPU without that confirmation, and a card
  * running on the CPU says so for as long as it does.
  */
-export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }: RuntimeCardProps) {
+export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, onChangeVersion, onRevertVersion }: RuntimeCardProps) {
   const [advanced, setAdvanced] = useState(false);
   const [confirmCpu, setConfirmCpu] = useState(false);
   const [token, setToken] = useState('');
@@ -71,6 +76,10 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }
   // Every control below saves on the server.
   const reachable = useServerReachable();
   const activeDevices = runtime.activeDevices === 'none' ? [] : runtime.activeDevices;
+  const versionControl = changeVersionControl(runtime, settings);
+  const newerNote = bundledNewerNote(runtime);
+  // A third-party build runs on the backend it was made for.
+  const customChosen = runtime.version?.kind === 'custom';
 
   const chooseBackend = (backend: LlamaBackend) => {
     if (backend === settings.backend) return;
@@ -95,8 +104,8 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }
             <Text testID="localModels.runtime.headline" className="font-medium text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
               {headline}
             </Text>
-            <Text size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
-              llama.cpp {runtime.tag}
+            <Text testID="localModels.runtime.version" size="2xs" className="text-muted-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+              llama.cpp {versionLabel(runtime)}
               {runtime.flavour ? ` · ${runtime.flavour}` : ''}
               {pct !== null ? ` · downloading ${String(pct)}% of ${formatBytes(progress?.totalBytes)}` : ''}
             </Text>
@@ -134,6 +143,25 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }
         </Text>
       )}
 
+      {offersRevert(runtime) && (
+        <Pressable
+          testID="localModels.runtime.revert"
+          disabled={!reachable}
+          onPress={onRevertVersion}
+          className="mt-2 self-start rounded-full bg-primary px-3 py-1.5"
+        >
+          <Text testID="localModels.runtime.revert.label" size="sm" className="text-primary-foreground">
+            Switch back to the bundled version ({runtime.version?.bundledTag})
+          </Text>
+        </Pressable>
+      )}
+
+      {newerNote && (
+        <Text testID="localModels.runtime.bundledNewer" size="xs" className="mt-2 text-muted-foreground">
+          {newerNote}
+        </Text>
+      )}
+
       {runtime.state === 'needs-gpu' && runtime.mode === 'managed' && !pinnedBackend && (
         <Pressable
           testID="localModels.runtime.useCpu"
@@ -148,11 +176,30 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }
       )}
 
       {runtime.mode === 'managed' && (
-        <Pressable testID="localModels.runtime.advanced" onPress={() => { setAdvanced((a) => !a); }} className="mt-2 self-start py-1">
-          <Text size="xs" className="text-primary">
-            {advanced ? 'Hide runtime settings' : 'Runtime settings'}
-          </Text>
-        </Pressable>
+        <HStack space="lg" className="mt-2 flex-wrap items-center">
+          <Pressable testID="localModels.runtime.advanced" onPress={() => { setAdvanced((a) => !a); }} className="py-1">
+            <Text size="xs" className="text-primary">
+              {advanced ? 'Hide runtime settings' : 'Runtime settings'}
+            </Text>
+          </Pressable>
+          {versionControl.show && (
+            <Pressable
+              testID="localModels.runtime.changeVersion"
+              disabled={versionControl.disabled}
+              onPress={onChangeVersion}
+              className="py-1"
+            >
+              <Text size="xs" className={versionControl.disabled ? 'text-muted-foreground' : 'text-primary'}>
+                Change version
+              </Text>
+            </Pressable>
+          )}
+        </HStack>
+      )}
+      {versionControl.note && (
+        <Text testID="localModels.runtime.versionNote" size="2xs" className="mt-1 text-muted-foreground">
+          {versionControl.note}
+        </Text>
       )}
 
       {advanced && (
@@ -161,6 +208,12 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings }
             <Text size="xs" className="text-muted-foreground">
               Backend{pinnedBackend ? ' (pinned by LLAMA_BACKEND)' : ''}
             </Text>
+            {customChosen && (
+              <Text testID="localModels.runtime.backendNote" size="2xs" className="text-muted-foreground">
+                The third-party build in use runs on the backend it was built for. This choice applies again once an
+                official version is chosen.
+              </Text>
+            )}
             <PresetChips
               chips={BACKENDS.map((b) => ({ value: b.value, label: b.label, key: b.value }))}
               value={settings.backend}

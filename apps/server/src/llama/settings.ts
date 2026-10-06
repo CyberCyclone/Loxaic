@@ -1,6 +1,8 @@
 import { db, eq } from "@loxaic/db";
 import { serverSettings } from "@loxaic/db/schema";
+import { randomBytes } from "node:crypto";
 import { decryptApiKey, encryptApiKey } from "../inference/provider-secrets.ts";
+import { allowedBuildUrl, OFFICIAL_TAG } from "./runtime-assets.ts";
 
 /**
  * Deployment-wide settings for the managed llama.cpp runtime.
@@ -44,12 +46,55 @@ export interface LocalModelsSettings {
   modelsMax: number;
 }
 
+/**
+ * Which llama.cpp this host runs. `bundled` is the build this version of
+ * Loxaic pins and was tested with, and follows that pin across updates.
+ * Anything else is an admin's own choice and stays until they change it.
+ */
+export type RuntimeSelection =
+  | { kind: "bundled" }
+  | { kind: "official"; tag: string }
+  | { kind: "custom"; id: string };
+
+/** The backend a third-party build was made for. Never `auto`: nothing about
+ * an arbitrary archive says what it runs on, so the admin does. */
+export type CustomBackend = Exclude<LlamaBackend, "auto">;
+const CUSTOM_BACKENDS: readonly CustomBackend[] = ["metal", "cuda", "vulkan", "rocm", "cpu"];
+
+/** A llama.cpp build from somewhere other than the official releases. */
+export interface CustomBuild {
+  id: string;
+  name: string;
+  url: string;
+  /** What the admin said the archive hashes to, or null when they gave none. */
+  sha256Expected: string | null;
+  /** What the archive that was downloaded and unpacked hashed to. */
+  sha256Actual: string | null;
+  backend: CustomBackend;
+  addedAt: string;
+  addedBy: string | null;
+}
+
+interface HostRuntime {
+  selected?: RuntimeSelection;
+  customBuilds?: CustomBuild[];
+}
+
+export interface RuntimeSelectionView {
+  selected: RuntimeSelection;
+  /** `LLAMA_RUNTIME_TAG` decides the version; the API refuses to change it. */
+  envPinned: boolean;
+  customBuilds: CustomBuild[];
+  /** False under `LLAMA_CUSTOM_RUNTIMES=off`. */
+  customAllowed: boolean;
+}
+
 export interface LocalModelsSettingsView extends LocalModelsSettings {
   mode: LlamaMode;
   /** Whether a HuggingFace token is configured. The token itself is never
    * returned, not even to an admin. */
   hasHfToken: boolean;
-  envOverrides: { mode: boolean; backend: boolean; modelsMax: boolean; hfToken: boolean };
+  envOverrides: { mode: boolean; backend: boolean; modelsMax: boolean; hfToken: boolean; runtime: boolean };
 }
 
 const KEY = "localModels";
@@ -58,6 +103,10 @@ const DEFAULTS: LocalModelsSettings = { backend: "auto", cpuAcknowledged: false,
 
 interface Persisted extends Partial<LocalModelsSettings> {
   encryptedHfToken?: string | null;
+  /** Keyed by `LOXAIC_INSTANCE_ID` ("" when unset), like `local_models`: a
+   * build is files on one machine's disk, so which one runs is that machine's
+   * setting even though the row is the deployment's. */
+  runtimeByHost?: Record<string, HostRuntime>;
 }
 
 let persisted: Persisted = {};
@@ -110,6 +159,42 @@ function envModelsMax(): number | null {
   return n;
 }
 
+/** `LLAMA_RUNTIME_TAG=bundled|b<number>`: the operator's choice of version,
+ * which the admin screen then shows read-only. */
+function envRuntime(): RuntimeSelection | null {
+  const value = envStr("LLAMA_RUNTIME_TAG");
+  if (value === undefined) return null;
+  if (value === "bundled") return { kind: "bundled" };
+  if (OFFICIAL_TAG.test(value)) return { kind: "official", tag: value };
+  warnOnce("LLAMA_RUNTIME_TAG", `[llama] ignoring LLAMA_RUNTIME_TAG="${value}" (expected "bundled" or a release tag like b11342)`);
+  return null;
+}
+
+/** Third-party builds are binaries from wherever an admin points; an operator
+ * who does not want that possible at all says so here. */
+export function customRuntimesAllowed(): boolean {
+  return envStr("LLAMA_CUSTOM_RUNTIMES") !== "off";
+}
+
+function hostId(): string {
+  return process.env.LOXAIC_INSTANCE_ID ?? "";
+}
+
+function hostRuntime(): HostRuntime {
+  return persisted.runtimeByHost?.[hostId()] ?? {};
+}
+
+export function getRuntimeSelection(): RuntimeSelectionView {
+  const env = envRuntime();
+  const host = hostRuntime();
+  const customAllowed = customRuntimesAllowed();
+  let selected = env ?? host.selected ?? { kind: "bundled" };
+  // Switched off after one was chosen: the choice is not honoured, and the
+  // bundled build runs. The row keeps it, so switching back on restores it.
+  if (selected.kind === "custom" && !customAllowed) selected = { kind: "bundled" };
+  return { selected, envPinned: env !== null, customBuilds: customAllowed ? (host.customBuilds ?? []) : [], customAllowed };
+}
+
 export function getLlamaMode(): LlamaMode {
   return envMode() ?? "managed";
 }
@@ -128,7 +213,13 @@ export function getLocalModelsSettings(): LocalModelsSettingsView {
     devices: persisted.devices ?? DEFAULTS.devices,
     modelsMax: modelsMax ?? persisted.modelsMax ?? DEFAULTS.modelsMax,
     hasHfToken: hfEnv !== undefined || Boolean(persisted.encryptedHfToken),
-    envOverrides: { mode: mode !== null, backend: backend !== null, modelsMax: modelsMax !== null, hfToken: hfEnv !== undefined },
+    envOverrides: {
+      mode: mode !== null,
+      backend: backend !== null,
+      modelsMax: modelsMax !== null,
+      hfToken: hfEnv !== undefined,
+      runtime: envRuntime() !== null,
+    },
   };
 }
 
@@ -159,7 +250,55 @@ function coerce(raw: unknown): Persisted {
   if (v.devices === null) out.devices = null;
   if (typeof v.modelsMax === "number" && Number.isInteger(v.modelsMax) && v.modelsMax >= 0) out.modelsMax = v.modelsMax;
   if (typeof v.encryptedHfToken === "string") out.encryptedHfToken = v.encryptedHfToken;
+  if (typeof v.runtimeByHost === "object" && v.runtimeByHost !== null && !Array.isArray(v.runtimeByHost)) {
+    const hosts: Record<string, HostRuntime> = {};
+    for (const [host, raw] of Object.entries(v.runtimeByHost as Record<string, unknown>)) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const r = raw as Record<string, unknown>;
+      const entry: HostRuntime = {};
+      const selected = coerceSelection(r.selected);
+      if (selected) entry.selected = selected;
+      if (Array.isArray(r.customBuilds)) entry.customBuilds = r.customBuilds.flatMap((b) => coerceCustomBuild(b) ?? []);
+      hosts[host] = entry;
+    }
+    out.runtimeByHost = hosts;
+  }
   return out;
+}
+
+const CUSTOM_ID = /^[0-9a-f]{12}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+
+function coerceSelection(raw: unknown): RuntimeSelection | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const v = raw as Record<string, unknown>;
+  if (v.kind === "bundled") return { kind: "bundled" };
+  if (v.kind === "official" && typeof v.tag === "string" && OFFICIAL_TAG.test(v.tag)) return { kind: "official", tag: v.tag };
+  if (v.kind === "custom" && typeof v.id === "string" && CUSTOM_ID.test(v.id)) return { kind: "custom", id: v.id };
+  return null;
+}
+
+/** A stored row is re-checked on the way in like anything else: its id names
+ * a directory and its URL is fetched. */
+function coerceCustomBuild(raw: unknown): CustomBuild | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const v = raw as Record<string, unknown>;
+  if (typeof v.id !== "string" || !CUSTOM_ID.test(v.id)) return null;
+  if (typeof v.name !== "string" || typeof v.url !== "string") return null;
+  // The rule the API applies when a build is added, applied to whatever is
+  // stored: a row can arrive by another route (a restored backup, a hand edit).
+  if (!allowedBuildUrl(v.url)) return null;
+  if (typeof v.backend !== "string" || !(CUSTOM_BACKENDS as readonly string[]).includes(v.backend)) return null;
+  return {
+    id: v.id,
+    name: v.name,
+    url: v.url,
+    sha256Expected: typeof v.sha256Expected === "string" && SHA256.test(v.sha256Expected) ? v.sha256Expected : null,
+    sha256Actual: typeof v.sha256Actual === "string" && SHA256.test(v.sha256Actual) ? v.sha256Actual : null,
+    backend: v.backend as CustomBackend,
+    addedAt: typeof v.addedAt === "string" ? v.addedAt : new Date(0).toISOString(),
+    addedBy: typeof v.addedBy === "string" ? v.addedBy : null,
+  };
 }
 
 export async function loadLocalModelsSettings(): Promise<void> {
@@ -189,7 +328,12 @@ export async function updateLocalModelsSettings(input: unknown): Promise<LocalMo
   }
   const body = input as Record<string, unknown>;
   const current = getLocalModelsSettings();
-  const next: Persisted = { ...persisted };
+  // From the row as it is now, not this process's copy: the row also holds
+  // each host's choice of llama.cpp version, which another server sharing the
+  // database writes, and a write from a stale copy would undo it (found in
+  // review). Untouched fields are whatever is stored.
+  const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, KEY) });
+  const next: Persisted = { ...coerce(row?.value) };
   let touched = false;
 
   if (body.backend !== undefined) {
@@ -249,12 +393,136 @@ export async function updateLocalModelsSettings(input: unknown): Promise<LocalMo
   }
   if (!touched) throw new LocalModelsSettingsError("nothing to update", "invalid");
 
+  await persist(next);
+  return getLocalModelsSettings();
+}
+
+async function persist(next: Persisted): Promise<void> {
   await db
     .insert(serverSettings)
     .values({ key: KEY, value: next, updatedAt: new Date() })
     .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
   persisted = next;
-  return getLocalModelsSettings();
+}
+
+/**
+ * Change this host's runtime entry, starting from the row as it is in the
+ * database now rather than from this process's copy of it. Every other
+ * setting in the row is deployment-wide and rarely written; this part is one
+ * entry per machine, so two servers sharing a database each write it, and a
+ * write from a stale copy would undo the other machine's choice of version.
+ * A host back on the defaults has its entry removed.
+ */
+async function changeHostRuntime(change: (host: HostRuntime) => HostRuntime): Promise<void> {
+  const row = await db.query.serverSettings.findFirst({ where: eq(serverSettings.key, KEY) });
+  const fresh = coerce(row?.value);
+  const id = hostId();
+  const hosts = { ...fresh.runtimeByHost };
+  const next = change(hosts[id] ?? {});
+  const isDefault = (next.selected ?? { kind: "bundled" }).kind === "bundled" && (next.customBuilds ?? []).length === 0;
+  if (isDefault) Reflect.deleteProperty(hosts, id);
+  else hosts[id] = next;
+  await persist({ ...fresh, runtimeByHost: hosts });
+}
+
+function refuseIfPinned(): void {
+  if (envRuntime() !== null) {
+    throw new LocalModelsSettingsError("The llama.cpp version is pinned by the LLAMA_RUNTIME_TAG environment variable", "envOverride");
+  }
+}
+
+function refuseIfCustomOff(): void {
+  if (!customRuntimesAllowed()) {
+    throw new LocalModelsSettingsError("Third-party llama.cpp builds are switched off on this server (LLAMA_CUSTOM_RUNTIMES=off)", "envOverride");
+  }
+}
+
+/** Choose the version this host runs. The caller has already made sure it is
+ * downloaded; this only checks that it names something that can exist. */
+export async function setRuntimeSelection(input: unknown): Promise<RuntimeSelection> {
+  refuseIfPinned();
+  const selected = coerceSelection(input);
+  if (!selected) {
+    throw new LocalModelsSettingsError('Choose { kind: "bundled" }, { kind: "official", tag } or { kind: "custom", id }', "invalid");
+  }
+  if (selected.kind === "custom") {
+    refuseIfCustomOff();
+    if (!(hostRuntime().customBuilds ?? []).some((b) => b.id === selected.id)) {
+      throw new LocalModelsSettingsError("No such third-party build", "invalid");
+    }
+  }
+  await changeHostRuntime((h) => ({ ...h, selected }));
+  return selected;
+}
+
+const MAX_CUSTOM_BUILDS = 16;
+
+export async function addCustomBuild(input: unknown, addedBy: string | null): Promise<CustomBuild> {
+  refuseIfCustomOff();
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new LocalModelsSettingsError("body must be an object", "invalid");
+  }
+  const body = input as Record<string, unknown>;
+  // Shown on the admin screen and written to the router's log: one line of
+  // printable text.
+  // eslint-disable-next-line no-control-regex
+  const name = typeof body.name === "string" ? body.name.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() : "";
+  if (!name || name.length > 60) throw new LocalModelsSettingsError("Give the build a name of up to 60 characters", "invalid");
+  if (typeof body.url !== "string" || body.url.length > 2000 || !allowedBuildUrl(body.url)) {
+    throw new LocalModelsSettingsError("The download address must be an https:// link to the build's archive, with no username or password in it", "invalid");
+  }
+  let sha256Expected: string | null = null;
+  if (body.sha256 !== undefined && body.sha256 !== null && body.sha256 !== "") {
+    const sha = typeof body.sha256 === "string" ? body.sha256.trim().toLowerCase().replace(/^sha256:/, "") : "";
+    if (!SHA256.test(sha)) throw new LocalModelsSettingsError("The SHA-256 must be 64 hexadecimal characters", "invalid");
+    sha256Expected = sha;
+  }
+  if (typeof body.backend !== "string" || !(CUSTOM_BACKENDS as readonly string[]).includes(body.backend)) {
+    throw new LocalModelsSettingsError(`backend must be one of ${CUSTOM_BACKENDS.join(", ")}`, "invalid");
+  }
+  if (body.backend === "cpu" && body.cpuAcknowledged !== true) {
+    throw new LocalModelsSettingsError(
+      "A CPU build needs cpuAcknowledged: true — it is much slower than a GPU, and only small models are usable.",
+      "invalid",
+    );
+  }
+  const have = hostRuntime().customBuilds ?? [];
+  if (have.length >= MAX_CUSTOM_BUILDS) {
+    throw new LocalModelsSettingsError(`At most ${String(MAX_CUSTOM_BUILDS)} third-party builds can be kept; remove one first`, "invalid");
+  }
+  const build: CustomBuild = {
+    id: randomBytes(6).toString("hex"),
+    name,
+    url: body.url,
+    sha256Expected,
+    sha256Actual: null,
+    backend: body.backend as CustomBackend,
+    addedAt: new Date().toISOString(),
+    addedBy,
+  };
+  await changeHostRuntime((h) => ({ ...h, customBuilds: [...(h.customBuilds ?? []), build] }));
+  return build;
+}
+
+/** Forget a third-party build. Refused while it is the one chosen: the caller
+ * removes its files, and a selection naming nothing is a runtime that cannot
+ * start. */
+export async function removeCustomBuild(id: string): Promise<void> {
+  const host = hostRuntime();
+  if (!(host.customBuilds ?? []).some((b) => b.id === id)) throw new LocalModelsSettingsError("No such third-party build", "invalid");
+  if (host.selected?.kind === "custom" && host.selected.id === id) {
+    throw new LocalModelsSettingsError("This build is the one in use. Switch to another version first.", "invalid");
+  }
+  await changeHostRuntime((h) => ({ ...h, customBuilds: (h.customBuilds ?? []).filter((b) => b.id !== id) }));
+}
+
+/** Record what a third-party build's archive hashed to, once it is unpacked. */
+export async function recordCustomBuildHash(id: string, sha256: string): Promise<void> {
+  if (!(hostRuntime().customBuilds ?? []).some((b) => b.id === id)) return;
+  await changeHostRuntime((h) => ({
+    ...h,
+    customBuilds: (h.customBuilds ?? []).map((b) => (b.id === id ? { ...b, sha256Actual: sha256 } : b)),
+  }));
 }
 
 /** Test seam. */

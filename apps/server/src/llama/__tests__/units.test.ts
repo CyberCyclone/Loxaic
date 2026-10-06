@@ -8,7 +8,7 @@ import { cudaFlavourForDriver, defaultDevices, parseDeviceList, resolveFlavour }
 import { groupQuants, isMtpHeadFile, isProjectorFile, isRepoId, quantOf } from "../hf.ts";
 import { checkMtpSetting, LoadSettingsError, normalizeLoadSettings, perRequestWindow, presetLines } from "../load-settings.ts";
 import { isSafeSectionName, modelIdFromRouterName, renderPreset, routerModelName } from "../preset.ts";
-import { explainRouterExit } from "../router.ts";
+import { explainRouterExit, listDevicesOutcome } from "../router.ts";
 import { buildGguf, denseModel } from "./gguf-fixture.ts";
 
 const GiB = 1024 ** 3;
@@ -158,6 +158,18 @@ describe("preset file", () => {
 });
 
 describe("hardware", () => {
+  it("never takes a listing that was cut off for the whole list", () => {
+    const partial = "  Vulkan0: AMD Radeon Pro V620 (30704 MiB, 30687 MiB free)\n";
+    const killed = Object.assign(new Error("Command failed"), { killed: true, code: null });
+    expect(listDevicesOutcome(killed, partial, "")).toEqual({ devices: [], error: expect.stringMatching(/took longer than 30 s/) as unknown });
+    const tooMuch = Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+    expect(listDevicesOutcome(tooMuch, partial, "")).toMatchObject({ devices: [], error: expect.stringMatching(/cut off/) as unknown });
+    // A build that exits non-zero after listing is taken at its word.
+    const exited = Object.assign(new Error("Command failed"), { killed: false, code: 1 });
+    expect(listDevicesOutcome(exited, partial, "")).toMatchObject({ devices: [{ name: "Vulkan0" }], error: null });
+    expect(listDevicesOutcome(null, partial, "")).toMatchObject({ devices: [{ name: "Vulkan0" }], error: null });
+  });
+
   it("parses --list-devices and drops entries with no memory", () => {
     const devices = parseDeviceList(
       "Available devices:\n  MTL0: Apple M3 Max (28753 MiB, 28753 MiB free)\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n",

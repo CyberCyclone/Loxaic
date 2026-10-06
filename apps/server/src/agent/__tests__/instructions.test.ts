@@ -66,13 +66,16 @@ describe("choosing whole or outline by the window", () => {
   });
 
   it("honours a configured share", () => {
+    // A window sized from the file, not a fixed one: this file grows with
+    // every PR, and at a fixed 200k it crossed the 0.5 share and failed CI.
+    const window = repoTokens * 3;
     process.env.AGENT_INSTRUCTIONS_WINDOW_SHARE = "0.5";
     try {
-      expect(chooseMode(repoTokens, 200_000)).toBe("full");
+      expect(chooseMode(repoTokens, window)).toBe("full");
     } finally {
       Reflect.deleteProperty(process.env, "AGENT_INSTRUCTIONS_WINDOW_SHARE");
     }
-    expect(chooseMode(repoTokens, 200_000)).toBe("outline");
+    expect(chooseMode(repoTokens, window)).toBe("outline");
   });
 });
 

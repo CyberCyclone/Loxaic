@@ -16,6 +16,7 @@ import { RuntimeCard } from '@/components/localModels/RuntimeCard';
 import { InstalledRow } from '@/components/localModels/InstalledRow';
 import { DiscoverPanel } from '@/components/localModels/DiscoverPanel';
 import { RepoDetailsModal } from '@/components/localModels/RepoDetailsModal';
+import { RuntimeVersionModal } from '@/components/localModels/RuntimeVersionModal';
 import { ModelSettingsModal } from '@/components/localModels/ModelSettingsModal';
 import { useLocalModels } from '@/hooks/useLocalModels';
 import { formatBytes, loadedFirst } from '@/lib/localModels';
@@ -42,6 +43,7 @@ export default function LocalModelsScreen() {
   const [editing, setEditing] = useState<LocalModel | null>(null);
   const [cancelling, setCancelling] = useState<LocalModel | null>(null);
   const [deleting, setDeleting] = useState<LocalModel | null>(null);
+  const [choosingVersion, setChoosingVersion] = useState(false);
 
   const body = () => {
     if (!isAdmin) {
@@ -78,6 +80,8 @@ export default function LocalModelsScreen() {
           models={view.models}
           onRestart={() => { void lm.restart(); }}
           onSettings={lm.updateSettings}
+          onChangeVersion={() => { setChoosingVersion(true); }}
+          onRevertVersion={() => { void lm.revertVersion(); }}
         />
         <HStack space="xs" className="items-center">
           {(['installed', 'discover'] as const).map((t) => (
@@ -166,6 +170,14 @@ export default function LocalModelsScreen() {
       <MainHeader title="Host Models" onOpenMenu={shell.overlaySidebar ? shell.openSidebar : undefined} />
       {body()}
 
+      {lm.view && (
+        <RuntimeVersionModal
+          open={choosingVersion}
+          runtime={lm.view.runtime}
+          onClose={() => { setChoosingVersion(false); }}
+          actions={lm}
+        />
+      )}
       <RepoDetailsModal
         repo={detailsRepo}
         onClose={() => { setDetailsRepo(null); }}

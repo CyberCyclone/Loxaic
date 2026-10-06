@@ -21,45 +21,23 @@ if (!tag || !/^b\d+$/.test(tag)) {
   process.exit(1);
 }
 
-// The asset each (platform, backend) pair resolves to. `{tag}` is substituted.
+// Which asset each (platform, backend) pair resolves to is decided by the same
+// table the version picker uses (src/llama/runtime-assets.ts), so the pinned
+// build and an admin-chosen one can never disagree about a release's assets.
 // Windows CUDA builds need the matching `cudart` archive unpacked beside them.
-const WANTED = {
-  "darwin-arm64-metal": { asset: "llama-{tag}-bin-macos-arm64.tar.gz" },
-  "darwin-arm64-cpu": { asset: "llama-{tag}-bin-macos-arm64.tar.gz" },
-  "linux-x64-vulkan": { asset: "llama-{tag}-bin-ubuntu-vulkan-x64.tar.gz" },
-  "linux-arm64-vulkan": { asset: "llama-{tag}-bin-ubuntu-vulkan-arm64.tar.gz" },
-  "linux-x64-cuda12": { asset: "llama-{tag}-bin-ubuntu-cuda-12.8-x64.tar.gz" },
-  "linux-x64-cuda13": { asset: "llama-{tag}-bin-ubuntu-cuda-13.4-x64.tar.gz" },
-  "linux-arm64-cuda13": { asset: "llama-{tag}-bin-ubuntu-cuda-13.4-arm64.tar.gz" },
-  "linux-x64-rocm": { asset: "llama-{tag}-bin-ubuntu-rocm-10.0-x64.tar.gz" },
-  "linux-x64-cpu": { asset: "llama-{tag}-bin-ubuntu-x64.tar.gz" },
-  "linux-arm64-cpu": { asset: "llama-{tag}-bin-ubuntu-arm64.tar.gz" },
-  "win32-x64-vulkan": { asset: "llama-{tag}-bin-win-vulkan-x64.zip" },
-  "win32-x64-cuda12": { asset: "llama-{tag}-bin-win-cuda-12.4-x64.zip", extra: "cudart-llama-bin-win-cuda-12.4-x64.zip" },
-  "win32-x64-cuda13": { asset: "llama-{tag}-bin-win-cuda-13.4-x64.zip", extra: "cudart-llama-bin-win-cuda-13.4-x64.zip" },
-  "win32-x64-rocm": { asset: "llama-{tag}-bin-win-rocm-10.0-x64.zip" },
-  "win32-x64-cpu": { asset: "llama-{tag}-bin-win-cpu-x64.zip" },
-};
+const { ASSET_SPECS, matchAssets } = await import("../src/llama/runtime-assets.ts");
 
 const release = JSON.parse(
   execFileSync("gh", ["api", `repos/ggml-org/llama.cpp/releases/tags/${tag}`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }),
 );
-const byName = new Map(release.assets.map((a) => [a.name, a]));
-
-function describe(name) {
-  const asset = byName.get(name);
-  if (!asset) throw new Error(`${tag} has no asset named ${name}`);
-  const digest = typeof asset.digest === "string" ? asset.digest : "";
-  if (!digest.startsWith("sha256:")) throw new Error(`${name} has no sha256 digest on GitHub`);
-  return { name, sha256: digest.slice("sha256:".length), size: asset.size };
-}
+const assets = release.assets.map((a) => ({ name: a.name, size: a.size, digest: typeof a.digest === "string" ? a.digest : null }));
 
 const builds = {};
-for (const [key, spec] of Object.entries(WANTED)) {
-  builds[key] = {
-    asset: describe(spec.asset.replace("{tag}", tag)),
-    ...(spec.extra ? { extra: describe(spec.extra) } : {}),
-  };
+for (const key of Object.keys(ASSET_SPECS)) {
+  const match = matchAssets(tag, assets, key);
+  if (match.status === "no-build") throw new Error(`${tag} has no asset for ${key}`);
+  if (match.status === "no-checksum") throw new Error(`${tag}'s asset for ${key} has no sha256 digest on GitHub`);
+  builds[key] = match.build;
 }
 
 const out = path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/llama/runtime-manifest.ts");

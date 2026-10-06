@@ -72,7 +72,11 @@ if (args.includes("--list-devices")) {
   process.exit(0);
 }
 if (args.includes("--version")) {
-  console.log("version: fake");
+  // `LOXAIC_FAKE_VERSION`: what a mock *release* of this fake says it is, set
+  // by the wrapper script inside the mock archive (the server builds the
+  // child's environment from scratch, so it cannot come from there). The real
+  // binary prints this line to stderr.
+  console.error(`version: ${process.env.LOXAIC_FAKE_VERSION ?? "fake"}`);
   process.exit(0);
 }
 
@@ -138,7 +142,12 @@ function readPreset() {
       continue;
     }
     const kv = /^([^=]+?)\s*=\s*(.*)$/.exec(line);
-    if (kv && !PRESET_KEYS.has(kv[1])) throw new Error(`option '${kv[1]}' not recognized in preset`);
+    // `LOXAIC_FAKE_REJECT_KEY` makes this fake a build that does not know one
+    // of the keys Loxaic writes — how an older release or a fork really
+    // fails: fatally, at boot, naming the key.
+    if (kv && (!PRESET_KEYS.has(kv[1]) || kv[1] === process.env.LOXAIC_FAKE_REJECT_KEY)) {
+      throw new Error(`option '${kv[1]}' not recognized in preset`);
+    }
     if (kv && current) current[kv[1]] = kv[2];
   }
   return { globals, sections };

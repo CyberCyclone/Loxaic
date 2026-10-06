@@ -44,9 +44,29 @@ import { refreshMemory } from "../llama/memory.ts";
 import { describePlacement, measuredFrom, type Placement } from "../llama/placement.ts";
 import { measuredForPort } from "../llama/residency.ts";
 import { loadErrorFor, loadRequested, NoRoomError, pinErrorFor, requestLoad, requestUnload, UnloadRefusedError } from "../llama/room.ts";
+import { findRelease, listReleases, ReleasesError, type ReleaseRow } from "../llama/releases.ts";
+import { OFFICIAL_TAG } from "../llama/runtime-assets.ts";
+import {
+  deleteRuntime,
+  installing,
+  listInstalledRuntimes,
+  RUNTIME_MANIFEST,
+  RuntimeInstallError,
+  setRuntimePinned,
+} from "../llama/runtime.ts";
+import {
+  customFlavour,
+  findCustomBuild,
+  forgetVersionDownload,
+  installedForSelection,
+  selectionKey,
+  startVersionDownload,
+} from "../llama/runtime-versions.ts";
 import {
   ensureHardwareDetected,
   ensureRuntime,
+  officialFlavour,
+  runningRuntime,
   modelBusy,
   rawPlacementFor,
   refreshRuntimeState,
@@ -57,7 +77,17 @@ import {
   syncPreset,
   unloadModel,
 } from "../llama/router.ts";
-import { getLocalModelsSettings, LocalModelsSettingsError, updateLocalModelsSettings } from "../llama/settings.ts";
+import {
+  addCustomBuild,
+  getLlamaMode,
+  getLocalModelsSettings,
+  getRuntimeSelection,
+  LocalModelsSettingsError,
+  removeCustomBuild,
+  setRuntimeSelection,
+  updateLocalModelsSettings,
+  type RuntimeSelection,
+} from "../llama/settings.ts";
 
 /**
  * The admin screen for local models: the llama.cpp runtime, HuggingFace
@@ -188,7 +218,52 @@ function fail(reply: FastifyReply, err: unknown) {
   if (err instanceof HfError) {
     return reply.code(err.status === 400 ? 400 : err.status === 404 ? 404 : 502).send({ error: err.message });
   }
+  if (err instanceof ReleasesError) {
+    return reply.code(err.status >= 400 && err.status < 500 ? err.status : 502).send({ error: err.message });
+  }
+  if (err instanceof RuntimeInstallError) return reply.code(400).send({ error: err.message });
   throw err;
+}
+
+/**
+ * Choosing a llama.cpp version only means something where this server
+ * installs and runs llama.cpp itself. In attach mode the version is the
+ * sidecar's image, which the operator changes in Compose.
+ */
+function versionsUnavailable(reply: FastifyReply): boolean {
+  const mode = getLlamaMode();
+  if (mode === "managed") return false;
+  void reply.code(409).send({
+    error:
+      mode === "attach"
+        ? "This server does not run llama.cpp itself: its version is the llama.cpp container's image, set in Compose."
+        : "Local models are switched off on this server (LLAMA_MODE=off).",
+  });
+  return true;
+}
+
+/** Where a third-party build comes from, as far as another admin needs to
+ * know. Never the address itself: a download link can carry a token. */
+function hostOfUrl(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+/** A moment for work just started in the background (a restart, a download)
+ * to show in the answer as begun, rather than the answer describing the state
+ * before it. */
+function settleBriefly(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 100));
+}
+
+/** Start the version that is now chosen, the way Restart does. */
+async function restartOntoSelection() {
+  void ensureRuntime({ restart: true });
+  await settleBriefly();
+  return fullView();
 }
 
 // A head finishing (or being refused) changes what the preset says for a model
@@ -220,9 +295,236 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
   app.post("/v1/admin/local-models/runtime/restart", async (request, reply) => {
     await requireAdmin(request, reply);
     void ensureRuntime({ restart: true });
-    // Give a quick start a moment to show up as starting rather than stale.
-    await new Promise((r) => setTimeout(r, 100));
+    await settleBriefly();
     return fullView();
+  });
+
+
+  // ── Which llama.cpp runs (#270) ─────────────────────────────────────────
+
+  /**
+   * The picker: official releases a page at a time (or one, by tag), the
+   * third-party builds that were added, and which of all of them are on this
+   * machine's disk. `official.unavailable` says why there is no release list
+   * when there is none to give; the rest of the answer still stands.
+   */
+  app.get("/v1/admin/local-models/runtime/versions", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    const { page, q } = request.query as { page?: string; q?: string };
+    const chosen = getRuntimeSelection();
+    const installed = await listInstalledRuntimes();
+    const flavour = await officialFlavour();
+
+    let releases: ReleaseRow[] = [];
+    let hasMore = false;
+    let stale: { since: string; retryAt: string | null } | null = null;
+    let unavailable: string | null = null;
+    const tagQuery = typeof q === "string" ? q.trim().toLowerCase() : "";
+    if (flavour === null) {
+      unavailable = "llama.cpp has no backend to run on here yet. Choose one under Runtime settings, then pick a version.";
+    } else {
+      try {
+        if (tagQuery) {
+          // A bare number is the tag without its "b".
+          const tag = /^\d+$/.test(tagQuery) ? `b${tagQuery}` : tagQuery;
+          const found = OFFICIAL_TAG.test(tag) ? await findRelease(tag, flavour) : { row: null, stale: null };
+          releases = found.row ? [found.row] : [];
+          stale = found.stale;
+        } else {
+          const got = await listReleases(Number(page) || 1, flavour);
+          releases = got.releases;
+          hasMore = got.hasMore;
+          stale = got.stale;
+        }
+      } catch (err) {
+        if (!(err instanceof ReleasesError)) throw err;
+        // The downloaded versions and third-party builds are still worth
+        // showing when GitHub is not: switching between them needs no network.
+        unavailable = err.message;
+      }
+    }
+    const onDisk = new Set(
+      installed.filter((r) => r.source !== "custom" && flavour !== null && r.flavour === flavour).map((r) => r.tag),
+    );
+    const selectedTag = chosen.selected.kind === "official" ? chosen.selected.tag : null;
+    return {
+      selected: chosen.selected,
+      envPinned: chosen.envPinned,
+      flavour,
+      bundled: {
+        tag: RUNTIME_MANIFEST.tag,
+        downloaded: onDisk.has(RUNTIME_MANIFEST.tag),
+        inUse: chosen.selected.kind === "bundled",
+      },
+      official: {
+        releases: releases.map((r) => ({ ...r, downloaded: onDisk.has(r.tag), inUse: r.tag === selectedTag })),
+        hasMore,
+        stale,
+        unavailable,
+        /** Every release on disk for this backend, on this page or not: what
+         * can be switched to right now. */
+        downloadedTags: [...onDisk].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1))),
+      },
+      customAllowed: chosen.customAllowed,
+      custom: chosen.customBuilds.map((b) => ({
+        id: b.id,
+        name: b.name,
+        host: hostOfUrl(b.url),
+        backend: b.backend,
+        sha256: b.sha256Actual,
+        sha256Expected: b.sha256Expected,
+        addedAt: b.addedAt,
+        downloaded: installed.some((r) => r.customId === b.id),
+        inUse: chosen.selected.kind === "custom" && chosen.selected.id === b.id,
+      })),
+    };
+  });
+
+  /** Download an official release for this machine's backend, in the
+   * background. Nothing running is touched. */
+  app.post("/v1/admin/local-models/runtime/versions/download", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    const tag = idFrom((request.body as { tag?: unknown } | null)?.tag);
+    if (!tag || !OFFICIAL_TAG.test(tag)) return reply.code(400).send({ error: "tag must be a llama.cpp release tag, such as b11342" });
+    const flavour = await officialFlavour();
+    if (flavour === null) return reply.code(409).send({ error: "Choose a backend under Runtime settings before downloading a version." });
+    const selected: RuntimeSelection = { kind: "official", tag };
+    forgetVersionDownload(selectionKey(selected, flavour));
+    startVersionDownload(selected, flavour);
+    await settleBriefly();
+    return fullView();
+  });
+
+  /** Remove a downloaded official release from this machine. */
+  app.delete("/v1/admin/local-models/runtime/versions", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    const tag = idFrom((request.query as { tag?: unknown }).tag);
+    if (!tag || !OFFICIAL_TAG.test(tag)) return reply.code(400).send({ error: "tag must be a llama.cpp release tag" });
+    // What "Switch back to the bundled version" starts, with no download in
+    // the way — and an upgrade would only fetch it again.
+    if (tag === RUNTIME_MANIFEST.tag) return reply.code(409).send({ error: "The bundled version is kept." });
+    const { selected } = getRuntimeSelection();
+    if (selected.kind === "official" && selected.tag === tag) {
+      return reply.code(409).send({ error: "This version is the one in use. Switch to another version first." });
+    }
+    const running = runningRuntime();
+    for (const r of await listInstalledRuntimes()) {
+      if (r.source === "custom" || r.tag !== tag) continue;
+      if (installing(r.key) || r.key === running?.key) {
+        return reply.code(409).send({ error: "This version is still in use. Try again in a moment." });
+      }
+      await deleteRuntime(r);
+      forgetVersionDownload(r.key);
+    }
+    return fullView();
+  });
+
+  /** Add a third-party build by its download address, and start fetching it. */
+  app.post("/v1/admin/local-models/runtime/custom", async (request, reply) => {
+    const userId = await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    try {
+      const build = await addCustomBuild(request.body, userId);
+      // This is a binary the server will run, from an address a person typed:
+      // who added it belongs in the log as well as the row.
+      console.log(`[llama] third-party build "${build.name}" (${hostOfUrl(build.url)}) added by ${userId}`);
+      startVersionDownload({ kind: "custom", id: build.id }, customFlavour(build.backend));
+    } catch (err) {
+      return fail(reply, err);
+    }
+    await settleBriefly();
+    return reply.code(201).send(await fullView());
+  });
+
+  /** Try a third-party build's download again. */
+  app.post("/v1/admin/local-models/runtime/custom/:id/download", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    const build = findCustomBuild((request.params as { id: string }).id);
+    if (!build) return reply.code(404).send({ error: "No such third-party build" });
+    const selected: RuntimeSelection = { kind: "custom", id: build.id };
+    forgetVersionDownload(selectionKey(selected, customFlavour(build.backend)));
+    startVersionDownload(selected, customFlavour(build.backend));
+    await settleBriefly();
+    return fullView();
+  });
+
+  /** Forget a third-party build and remove its files. */
+  app.delete("/v1/admin/local-models/runtime/custom/:id", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    const build = findCustomBuild((request.params as { id: string }).id);
+    if (!build) return reply.code(404).send({ error: "No such third-party build" });
+    const selected: RuntimeSelection = { kind: "custom", id: build.id };
+    const key = selectionKey(selected, customFlavour(build.backend));
+    if (installing(key) || runningRuntime()?.key === key) {
+      return reply.code(409).send({ error: "This build is still in use. Try again in a moment." });
+    }
+    try {
+      await removeCustomBuild(build.id);
+    } catch (err) {
+      return fail(reply, err);
+    }
+    const installed = await installedForSelection(selected, customFlavour(build.backend));
+    if (installed) await deleteRuntime(installed);
+    forgetVersionDownload(key);
+    return fullView();
+  });
+
+  /**
+   * Switch to a version. It must already be on this machine: downloading is
+   * its own step, so that pressing Switch is only ever "restart onto this",
+   * never "restart, and then find out the download fails". The bundled
+   * version is the exception — it is what an install always has or fetches.
+   */
+  app.post("/v1/admin/local-models/runtime/select", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    try {
+      let flavour = await officialFlavour();
+      if (body.kind === "custom" && typeof body.id === "string") {
+        const build = findCustomBuild(body.id);
+        if (!build) return await reply.code(404).send({ error: "No such third-party build" });
+        flavour = customFlavour(build.backend);
+      }
+      if (body.kind !== "bundled") {
+        if (flavour === null) return await reply.code(409).send({ error: "Choose a backend under Runtime settings first." });
+        const candidate =
+          body.kind === "official" && typeof body.tag === "string" && OFFICIAL_TAG.test(body.tag)
+            ? ({ kind: "official", tag: body.tag } as const)
+            : body.kind === "custom" && typeof body.id === "string"
+              ? ({ kind: "custom", id: body.id } as const)
+              : null;
+        const installed = candidate ? await installedForSelection(candidate, flavour).catch(() => null) : null;
+        if (candidate && !installed) return await reply.code(409).send({ error: "Download this version first, then switch to it." });
+        await setRuntimeSelection(body);
+        // Chosen by name: it stays on disk until an admin removes it. Only
+        // once the choice has been accepted — a refused switch (an env pin)
+        // must not exempt the build from pruning for good (found in review).
+        if (installed) await setRuntimePinned(installed, true).catch(() => undefined);
+      } else {
+        await setRuntimeSelection(body);
+      }
+    } catch (err) {
+      return fail(reply, err);
+    }
+    return restartOntoSelection();
+  });
+
+  /** Back to the build this version of Loxaic was tested with. */
+  app.post("/v1/admin/local-models/runtime/revert", async (request, reply) => {
+    await requireAdmin(request, reply);
+    if (versionsUnavailable(reply)) return reply;
+    try {
+      await setRuntimeSelection({ kind: "bundled" });
+    } catch (err) {
+      return fail(reply, err);
+    }
+    return restartOntoSelection();
   });
 
   app.patch("/v1/admin/local-models/settings", async (request, reply) => {
@@ -238,7 +540,7 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
     // and a token change needs nothing.
     if (body.backend !== undefined || body.devices !== undefined) {
       void ensureRuntime({ restart: true });
-      await new Promise((r) => setTimeout(r, 100));
+      await settleBriefly();
     }
     return fullView();
   });

@@ -465,6 +465,94 @@ export interface LocalRuntimeView {
   restart?: LocalRuntimeRestart | null;
   /** This host's RAM. Absent from an older server. */
   hostMemory?: { totalBytes: number; freeBytes: number };
+  /** Which llama.cpp is chosen. Absent from a server that predates choosing
+   * one, where `tag` is the only version there is. */
+  version?: LocalRuntimeVersion;
+  /** Versions being downloaded from the picker, and downloads that failed. */
+  versionDownloads?: RuntimeVersionDownload[];
+}
+
+export interface LocalRuntimeVersion {
+  /** `external`: the server does not run llama.cpp itself (a Compose
+   * sidecar), so its version is not this screen's to choose. */
+  kind: "bundled" | "official" | "custom" | "external";
+  tag: string | null;
+  /** A third-party build's name. */
+  name: string | null;
+  /** What the running binary says its version is. */
+  reported: string | null;
+  /** The release this version of Loxaic was tested with. */
+  bundledTag: string;
+  /** An official release is chosen and the bundled one is newer. */
+  bundledNewer: boolean;
+  /** Something other than the bundled build is chosen and may be undone. */
+  canRevert: boolean;
+  /** Pinned by `LLAMA_RUNTIME_TAG`. */
+  envPinned: boolean;
+  customAllowed: boolean;
+}
+
+export interface RuntimeVersionDownload {
+  key: string;
+  kind: "official" | "custom";
+  tag: string | null;
+  customId: string | null;
+  doneBytes: number;
+  totalBytes: number;
+  active: boolean;
+  error: string | null;
+}
+
+export type RuntimeSelection =
+  | { kind: "bundled" }
+  | { kind: "official"; tag: string }
+  | { kind: "custom"; id: string };
+
+export type ReleaseAvailability = "ok" | "no-build" | "no-checksum";
+
+export interface RuntimeReleaseRow {
+  tag: string;
+  publishedAt: string | null;
+  prerelease: boolean;
+  availability: ReleaseAvailability;
+  sizeBytes: number | null;
+  bundled: boolean;
+  downloaded: boolean;
+  inUse: boolean;
+}
+
+export type CustomRuntimeBackend = Exclude<LlamaBackend, "auto">;
+
+export interface CustomRuntimeBuild {
+  id: string;
+  name: string;
+  /** Where it was downloaded from — the host only, never the address. */
+  host: string;
+  backend: CustomRuntimeBackend;
+  /** What the downloaded archive hashed to, once it has been downloaded. */
+  sha256: string | null;
+  sha256Expected: string | null;
+  addedAt: string;
+  downloaded: boolean;
+  inUse: boolean;
+}
+
+export interface RuntimeVersionsView {
+  selected: RuntimeSelection;
+  envPinned: boolean;
+  flavour: string | null;
+  bundled: { tag: string; downloaded: boolean; inUse: boolean };
+  official: {
+    releases: RuntimeReleaseRow[];
+    hasMore: boolean;
+    /** Set when GitHub would not answer and this is an earlier list. */
+    stale: { since: string; retryAt: string | null } | null;
+    /** Why there is no release list, when there is none. */
+    unavailable: string | null;
+    downloadedTags: string[];
+  };
+  customAllowed: boolean;
+  custom: CustomRuntimeBuild[];
 }
 
 /** `gpu` is a device's own memory (unified memory on Apple Silicon), `ram`
@@ -501,7 +589,7 @@ export interface LocalModelsSettings {
   devices: string[] | null;
   modelsMax: number;
   hasHfToken: boolean;
-  envOverrides: { mode: boolean; backend: boolean; modelsMax: boolean; hfToken: boolean };
+  envOverrides: { mode: boolean; backend: boolean; modelsMax: boolean; hfToken: boolean; runtime?: boolean };
 }
 
 export type LoadSettingValue = number | string | boolean;
@@ -703,6 +791,50 @@ export async function getLocalModels(): Promise<LocalModelsView> {
 
 export async function restartLocalRuntime(): Promise<LocalModelsView> {
   return adminFetch("/v1/admin/local-models/runtime/restart", { method: "POST" });
+}
+
+export async function getRuntimeVersions(query: { page?: number; q?: string } = {}): Promise<RuntimeVersionsView> {
+  const params = new URLSearchParams();
+  if (query.page) params.set("page", String(query.page));
+  if (query.q) params.set("q", query.q);
+  const qs = params.toString();
+  return adminFetch(`/v1/admin/local-models/runtime/versions${qs ? `?${qs}` : ""}`);
+}
+
+export async function downloadRuntimeVersion(tag: string): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models/runtime/versions/download", { method: "POST", ...json({ tag }) });
+}
+
+export async function deleteRuntimeVersion(tag: string): Promise<LocalModelsView> {
+  return adminFetch(`/v1/admin/local-models/runtime/versions?tag=${encodeURIComponent(tag)}`, { method: "DELETE" });
+}
+
+export async function addCustomRuntime(build: {
+  name: string;
+  url: string;
+  sha256?: string | null;
+  backend: CustomRuntimeBackend;
+  cpuAcknowledged?: boolean;
+}): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models/runtime/custom", { method: "POST", ...json(build) });
+}
+
+export async function retryCustomRuntime(id: string): Promise<LocalModelsView> {
+  return adminFetch(`/v1/admin/local-models/runtime/custom/${encodeURIComponent(id)}/download`, { method: "POST" });
+}
+
+export async function deleteCustomRuntime(id: string): Promise<LocalModelsView> {
+  return adminFetch(`/v1/admin/local-models/runtime/custom/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** Switch to a downloaded version. Restarts the runtime. */
+export async function selectRuntimeVersion(selection: RuntimeSelection): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models/runtime/select", { method: "POST", ...json(selection) });
+}
+
+/** Back to the version this Loxaic was tested with. Restarts the runtime. */
+export async function revertRuntimeVersion(): Promise<LocalModelsView> {
+  return adminFetch("/v1/admin/local-models/runtime/revert", { method: "POST" });
 }
 
 export async function updateLocalModelsSettings(patch: {
