@@ -8,7 +8,7 @@ import { cudaFlavourForDriver, defaultDevices, parseDeviceList, resolveFlavour }
 import { groupQuants, isMtpHeadFile, isProjectorFile, isRepoId, quantOf } from "../hf.ts";
 import { checkMtpSetting, LoadSettingsError, normalizeLoadSettings, perRequestWindow, presetLines } from "../load-settings.ts";
 import { isSafeSectionName, modelIdFromRouterName, renderPreset, routerModelName } from "../preset.ts";
-import { explainRouterExit, listDevicesOutcome } from "../router.ts";
+import { explainRouterExit, helpOutcome, listDevicesOutcome } from "../router.ts";
 import { buildGguf, denseModel } from "./gguf-fixture.ts";
 
 const GiB = 1024 ** 3;
@@ -154,6 +154,20 @@ describe("preset file", () => {
     expect(isSafeSectionName("a/b:Q4")).toBe(true);
     expect(isSafeSectionName("a/b:Q4]\n[x")).toBe(false);
     expect(renderPreset([row({ id: "a/b]:x" })], { devices: null })).not.toContain("a/b]");
+  });
+});
+
+describe("a build's --help", () => {
+  it("never takes help that was cut off for the whole option list", () => {
+    const partial = "--keep N                                number of tokens to keep\n";
+    const killed = Object.assign(new Error("Command failed"), { killed: true, code: null });
+    expect(helpOutcome(killed, partial, "")).toEqual({ text: null, error: expect.stringMatching(/took longer than 5 s/) as unknown });
+    const tooMuch = Object.assign(new Error("stdout maxBuffer length exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+    expect(helpOutcome(tooMuch, partial, "")).toEqual({ text: null, error: expect.stringMatching(/cut off/) as unknown });
+    // A build that exits non-zero after printing its help is taken at its word.
+    const exited = Object.assign(new Error("Command failed"), { killed: false, code: 1 });
+    expect(helpOutcome(exited, partial, "")).toEqual({ text: `${partial}\n`, error: null });
+    expect(helpOutcome(null, partial, "")).toEqual({ text: `${partial}\n`, error: null });
   });
 });
 

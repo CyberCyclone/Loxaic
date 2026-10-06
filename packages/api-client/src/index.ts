@@ -253,10 +253,13 @@ export type SandboxSettingsPatch = Partial<
 export class AdminSettingsError extends Error {
   status: number;
   envOverride: boolean;
-  constructor(message: string, status: number, envOverride: boolean) {
+  /** For a refused list of rows (extra llama.cpp options), the row at fault. */
+  index: number | null;
+  constructor(message: string, status: number, envOverride: boolean, index: number | null = null) {
     super(message);
     this.status = status;
     this.envOverride = envOverride;
+    this.index = index;
   }
 }
 
@@ -266,11 +269,12 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
   headers.set("Authorization", `Bearer ${String(token)}`);
   const res = await serverFetch(`${BASE_URL}${path}`, { ...init, headers });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string; envOverride?: boolean };
+    const body = (await res.json().catch(() => ({}))) as { error?: string; envOverride?: boolean; index?: unknown };
     throw new AdminSettingsError(
       body.error ?? `${init?.method ?? "GET"} ${path} failed: ${String(res.status)}`,
       res.status,
       body.envOverride === true,
+      typeof body.index === "number" ? body.index : null,
     );
   }
   return res.json() as Promise<T>;
@@ -470,6 +474,32 @@ export interface LocalRuntimeView {
   version?: LocalRuntimeVersion;
   /** Versions being downloaded from the picker, and downloads that failed. */
   versionDownloads?: RuntimeVersionDownload[];
+  /** Options passed to llama.cpp for every model. Absent from an older
+   * server, which has none. */
+  extraOptions?: ExtraOption[];
+  /** Keys among them the build running now does not accept, and so are not
+   * passed. */
+  extraOptionsSkipped?: string[];
+  /** Why extra options cannot be set right now, or null. */
+  optionsUnavailable?: string | null;
+}
+
+/** One option passed to llama.cpp as an admin typed it: `key = value` in the
+ * preset, the key without its dashes. */
+export interface ExtraOption {
+  key: string;
+  value: string;
+}
+
+/** One option the running llama.cpp lists in its `--help`. */
+export interface LlamaOptionInfo {
+  /** Every name it answers to, without dashes. */
+  names: string[];
+  /** False for a switch, whose value is true or false. */
+  takesValue: boolean;
+  description: string;
+  /** Why it may not be set as an extra option, or null. */
+  reserved: string | null;
 }
 
 export interface LocalRuntimeVersion {
@@ -646,6 +676,10 @@ export interface LocalModel {
   error: string | null;
   enabled: boolean;
   loadSettings: LoadSettings;
+  /** Options passed to llama.cpp as typed. Absent from an older server. */
+  extraOptions?: ExtraOption[];
+  /** Keys among them the build running now does not accept. */
+  extraOptionsSkipped?: string[];
   meta: {
     nLayers?: number | null;
     nCtxTrain?: number | null;
@@ -843,8 +877,17 @@ export async function updateLocalModelsSettings(patch: {
   devices?: string[] | null;
   modelsMax?: number;
   hfToken?: string | null;
+  /** Options for every model, replaced whole; [] clears them. Restarts the
+   * runtime. */
+  extraOptions?: ExtraOption[];
 }): Promise<LocalModelsView> {
   return adminFetch("/v1/admin/local-models/settings", { method: "PATCH", ...json(patch) });
+}
+
+/** What the running llama.cpp says it takes (`--help`), or why that is not
+ * known. */
+export async function getLlamaOptions(): Promise<{ options: LlamaOptionInfo[] | null; unavailable: string | null }> {
+  return adminFetch("/v1/admin/local-models/runtime/options");
 }
 
 export async function searchHfModels(query: {
@@ -903,6 +946,8 @@ export async function updateLocalModel(
     loadSettings?: LoadSettings;
     /** null clears them. */
     contextStages?: ContextStagesConfig | null;
+    /** Replaced whole; null or [] clears them. */
+    extraOptions?: ExtraOption[] | null;
   },
 ): Promise<LocalModel> {
   return adminFetch("/v1/admin/local-models/model", { method: "PATCH", ...json({ id, ...patch }) });

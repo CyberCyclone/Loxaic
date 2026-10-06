@@ -3,6 +3,7 @@ import {
   estimateLocalModel,
   getHfMtpHeads,
   type ContextStagesConfig,
+  type ExtraOption,
   type FitEstimate,
   type HfMtpHead,
   type LoadSettingSpec,
@@ -28,6 +29,10 @@ import { Button, ButtonText } from '@/components/ui/button';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { FitBadge } from './FitBadge';
 import { ContextStagesEditor } from './ContextStagesEditor';
+import { ExtraOptionsEditor } from './ExtraOptionsEditor';
+import { useLlamaOptions } from '@/hooks/useLlamaOptions';
+import { rowProblems, rowsToSave, withServerProblem, type OptionRow, type ServerProblem } from '@/lib/extraOptions';
+import { AdminSettingsError } from '@loxaic/api-client';
 import { MtpSection } from './MtpSection';
 import { LookupTableSection } from './LookupTableSection';
 import { PlacementBar } from './PlacementBar';
@@ -64,8 +69,19 @@ interface ModelSettingsModalProps {
   onClose: () => void;
   onSave: (
     id: string,
-    patch: { loadSettings: LoadSettings; displayName: string; contextStages: ContextStagesConfig | null },
+    patch: {
+      loadSettings: LoadSettings;
+      displayName: string;
+      contextStages: ContextStagesConfig | null;
+      /** Absent when the server predates extra options. */
+      extraOptions?: ExtraOption[];
+    },
+    /** Called with the error when the server refuses the save. */
+    onRefused?: (err: unknown) => void,
   ) => Promise<LocalModel | null>;
+  /** Identifies the llama.cpp build running now, so its option list is asked
+   * for again when it changes. */
+  runtimeVersion?: string | null;
 }
 
 const ESTIMATE_DEBOUNCE_MS = 400;
@@ -79,7 +95,7 @@ const ESTIMATE_DEBOUNCE_MS = 400;
  * "llama.cpp's default". A live estimate at the top says whether the model will
  * still fit with what has been chosen.
  */
-export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, onSave, onDownloadHead, onRemoveHead }: ModelSettingsModalProps) {
+export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, onSave, onDownloadHead, onRemoveHead, runtimeVersion = null }: ModelSettingsModalProps) {
   const [draft, setDraftState] = useState<LoadSettings>({});
   const [text, setText] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -88,6 +104,10 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
   const [warnings, setWarnings] = useState<Record<string, string>>({});
   const [stagesDraft, setStagesDraft] = useState<StagesDraft>(EMPTY_STAGES);
   const [stageFits, setStageFits] = useState<FitEstimate[]>([]);
+  const [extraRows, setExtraRows] = useState<OptionRow[]>([]);
+  // The server's refusal of a row, shown on that row until the rows change.
+  const [extraRefusal, setExtraRefusal] = useState<ServerProblem | null>(null);
+  const llamaOptions = useLlamaOptions(model !== null, runtimeVersion);
   const [name, setName] = useState('');
   const [fit, setFit] = useState<FitEstimate | null>(null);
   const [saving, setSaving] = useState(false);
@@ -126,6 +146,8 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
     setWarnings({});
     setStagesDraft(draftFromConfig(model.contextStages));
     setStageFits([]);
+    setExtraRows(model.extraOptions ?? []);
+    setExtraRefusal(null);
     setName(model.displayName);
     setFit(model.fit);
     setNotice(null);
@@ -195,16 +217,33 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
     choose(spec.key, parsed.value);
   };
 
-  const hasErrors = Object.keys(errors).length > 0 || stagesInvalid;
+  // A server from before extra options sends none, and is sent none.
+  const extraSupported = model.extraOptions !== undefined;
+  const extraProblems = withServerProblem(rowProblems(extraRows, llamaOptions.options, model.extraOptions ?? []), extraRows, extraRefusal);
+  const extraToSave = rowsToSave(extraRows);
+  // New rows need the build's list to be checked against; clearing does not.
+  const extraBlocked =
+    extraProblems.some((p) => p !== null) ||
+    (llamaOptions.options === null && extraToSave.length > 0 && JSON.stringify(extraToSave) !== JSON.stringify(model.extraOptions ?? []));
+  const hasErrors = Object.keys(errors).length > 0 || stagesInvalid || (extraSupported && extraBlocked);
 
   const save = async () => {
     setSaving(true);
     try {
-      const updated = await onSave(model.id, {
-        loadSettings: draft,
-        displayName: name.trim() || model.displayName,
-        contextStages: configFromDraft(stagesDraft),
-      });
+      const updated = await onSave(
+        model.id,
+        {
+          loadSettings: draft,
+          displayName: name.trim() || model.displayName,
+          contextStages: configFromDraft(stagesDraft),
+          ...(extraSupported ? { extraOptions: extraToSave } : {}),
+        },
+        (err) => {
+          if (err instanceof AdminSettingsError && err.index !== null) {
+            setExtraRefusal({ index: err.index, message: err.message, sent: JSON.stringify(extraToSave) });
+          }
+        },
+      );
       if (!updated) return;
       if (updated.appliesOnNextLoad) {
         setNotice('Saved. It is answering someone right now, and reloads with the new settings as soon as that reply ends.');
@@ -234,8 +273,10 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
         </ModalHeader>
         {/* A drag on the sheet puts the keyboard away: the number fields open
             iOS's number pad, which has no key that does. Without it the pad
-            covered Save for good. */}
-        <ModalBody scrollEnabled keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
+            covered Save for good. And the body makes room for the keyboard
+            (iOS), or the extra options at the bottom were typed into blind:
+            the keyboard covered the row being typed. */}
+        <ModalBody scrollEnabled keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets>
           <VStack space="lg">
             <HStack testID="localModels.settingsSheet.estimate" space="sm" className="items-center rounded-md bg-muted/50 p-2">
               {fit && <FitBadge label={fit.label} testID="localModels.settingsSheet.fit" />}
@@ -338,6 +379,18 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
                 </VStack>
               );
             })}
+
+            {extraSupported && (
+              <ExtraOptionsEditor
+                scope="model"
+                rows={extraRows}
+                onChange={setExtraRows}
+                options={llamaOptions.options}
+                unavailable={llamaOptions.unavailable}
+                problems={extraProblems}
+                skipped={current.extraOptionsSkipped ?? []}
+              />
+            )}
           </VStack>
         </ModalBody>
         <ModalFooter className="flex-col items-stretch gap-2">
@@ -356,6 +409,7 @@ export function ModelSettingsModal({ model, live, specs, hostMemory, onClose, on
                 setDraftState({});
                 setText({});
                 setErrors({});
+                setExtraRows([]);
               }}
             >
               <ButtonText>Reset to defaults</ButtonText>

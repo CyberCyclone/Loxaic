@@ -15,7 +15,8 @@
  *     older llama.cpp or a fork really fails: fatally, at boot, naming the key;
  *   - a release with no build for the test machine;
  *   - a release GitHub publishes no checksum for;
- * and, behind "Load older versions", one more good one. The release just
+ * and, behind "Load older versions", one more good one, which does not have
+ * llama.cpp's `keep` option (an older build, for extra options). The release just
  * before it is the last on page one, so a release published while the picker
  * is open moves it onto page two, as GitHub's own paging does.
  *
@@ -88,9 +89,12 @@ export async function startMockLlamaReleases(): Promise<MockLlamaReleases> {
   };
   const vulkan = (tag: string) => `llama-${tag}-bin-ubuntu-vulkan-x64.tar.gz`;
   const archives = new Map<string, Archive>();
-  for (const tag of [tags.prerelease, tags.good, tags.noChecksum, tags.older]) {
+  for (const tag of [tags.prerelease, tags.good, tags.noChecksum]) {
     archives.set(`${tag}/${vulkan(tag)}`, buildArchive(dir, tag));
   }
+  // An older build that does not have the `keep` option: what an extra option
+  // set under a newer one meets after a switch (extra-options.spec.ts).
+  archives.set(`${tags.older}/${vulkan(tags.older)}`, buildArchive(dir, tags.older, 'export LOXAIC_FAKE_HELP_OMIT=keep'));
   archives.set(`${tags.broken}/${vulkan(tags.broken)}`, buildArchive(dir, tags.broken, 'export LOXAIC_FAKE_REJECT_KEY=jinja'));
   const forkVersion = 'e2e-fork-1.0';
   const fork = buildArchive(dir, forkVersion);

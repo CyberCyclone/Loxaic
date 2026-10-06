@@ -122,6 +122,11 @@ export default function LocalModelsScreen() {
     return (
       <FlatList
         testID="localModels.list"
+        // The runtime card's text fields (extra options, the HuggingFace
+        // token) sit low on a phone screen; without this the keyboard covers
+        // the one being typed into (iOS).
+        automaticallyAdjustKeyboardInsets
+        keyboardShouldPersistTaps="handled"
         data={loadedFirst(view.models)}
         keyExtractor={(m) => m.id}
         contentContainerStyle={{ padding: 12, gap: 8 }}
@@ -196,8 +201,9 @@ export default function LocalModelsScreen() {
         onRemoveHead={(id) => { void lm.removeHead(id); }}
         specs={lm.view?.settingSpecs ?? []}
         hostMemory={lm.view?.runtime.hostMemory}
+        runtimeVersion={lm.view ? `${lm.view.runtime.tag}:${lm.view.runtime.version?.reported ?? ''}:${String(lm.view.runtime.state === 'running')}` : null}
         onClose={() => { setEditing(null); }}
-        onSave={(id, patch) => lm.update(id, patch)}
+        onSave={(id, patch, onRefused) => lm.update(id, patch, onRefused)}
       />
       <WarningConfirmModal
         open={cancelling !== null}

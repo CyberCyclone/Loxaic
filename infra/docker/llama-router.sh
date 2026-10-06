@@ -9,7 +9,9 @@
 #
 # It also records what `--list-devices` finds, into the shared volume, so the
 # admin screen can say when this container sees no GPU at all — models would
-# then run on the CPU, and that must never happen without saying so.
+# then run on the CPU, and that must never happen without saying so. And what
+# `--help` lists, which is what an admin's extra llama.cpp options are checked
+# against: a key this build does not know would stop it from starting.
 set -eu
 
 DIR="${LLAMA_DIR:-/data/llama}"
@@ -18,6 +20,7 @@ KEYFILE="$DIR/router.key"
 BIN="${LLAMA_SERVER_BIN:-/app/llama-server}"
 
 "$BIN" --list-devices > "$DIR/router-devices.txt" 2>&1 || true
+"$BIN" --help > "$DIR/router-help.txt" 2>&1 || true
 
 # The router never runs unauthenticated: llama.cpp allows every CORS origin,
 # so without a key any page in the operator's browser could unload models or

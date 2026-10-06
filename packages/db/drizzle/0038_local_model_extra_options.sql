@@ -1,0 +1,1 @@
+ALTER TABLE "local_models" ADD COLUMN "extra_options" jsonb;

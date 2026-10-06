@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Cpu, RotateCcw, TriangleAlert } from 'lucide-react-native';
-import type { LlamaBackend, LocalModel, LocalModelsSettings, LocalRuntimeView } from '@loxaic/api-client';
+import type { ExtraOption, LlamaBackend, LocalModel, LocalModelsSettings, LocalRuntimeView } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -12,6 +12,21 @@ import { Input, InputField } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { PresetChips } from '@/components/settings/PresetChips';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
+import { Button, ButtonText } from '@/components/ui/button';
+import { ExtraOptionsEditor } from './ExtraOptionsEditor';
+import { useLlamaOptions } from '@/hooks/useLlamaOptions';
+import {
+  changedElsewhere,
+  draftOf,
+  followSaved,
+  rowProblems,
+  rowsToSave,
+  sameOptions,
+  withServerProblem,
+  type OptionDraft,
+  type ServerProblem,
+} from '@/lib/extraOptions';
+import { AdminSettingsError } from '@loxaic/api-client';
 import { cpuWarning, formatBytes, restartHeadline, runtimeHeadline } from '@/lib/localModels';
 import { bundledNewerNote, changeVersionControl, offersRevert, versionLabel } from '@/lib/runtimeVersions';
 import { useServerReachable } from '@/lib/connection';
@@ -37,7 +52,8 @@ interface RuntimeCardProps {
     cpuAcknowledged?: boolean;
     devices?: string[] | null;
     hfToken?: string | null;
-  }) => Promise<boolean>;
+    extraOptions?: ExtraOption[];
+  }, onRefused?: (err: unknown) => void) => Promise<boolean>;
   /** Open the version picker. */
   onChangeVersion: () => void;
   /** Back to the bundled llama.cpp, when the chosen one will not start. */
@@ -58,6 +74,15 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
   const [advanced, setAdvanced] = useState(false);
   const [confirmCpu, setConfirmCpu] = useState(false);
   const [token, setToken] = useState('');
+  // The options for every model being edited. Held here rather than in the
+  // section, which unmounts when "Runtime settings" is hidden: hiding it to
+  // look at something else must not throw a half-typed row away.
+  const savedOptions = runtime.extraOptions ?? [];
+  const savedOptionsKey = JSON.stringify(savedOptions);
+  const [optionsDraft, setOptionsDraft] = useState<OptionDraft>(() => draftOf(savedOptions));
+  useEffect(() => {
+    setOptionsDraft((d) => followSaved(d, JSON.parse(savedOptionsKey) as ExtraOption[]));
+  }, [savedOptionsKey]);
   const warning = cpuWarning(runtime);
   const restarting = Boolean(runtime.restart);
   const busy = restarting || runtime.state === 'installing' || runtime.state === 'starting' || runtime.state === 'not-installed';
@@ -304,6 +329,18 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
               Needed only for gated models (Llama, Gemma and similar), after accepting their terms on huggingface.co.
             </Text>
           </VStack>
+
+          {/* Absent from a server that predates extra options: it would
+              ignore a save, and the rows would vanish at the next poll. */}
+          {runtime.extraOptions !== undefined && (
+            <RouterOptions
+              runtime={runtime}
+              reachable={reachable}
+              draft={optionsDraft}
+              onDraft={setOptionsDraft}
+              onSave={(extraOptions, onRefused) => onSettings({ extraOptions }, onRefused)}
+            />
+          )}
         </VStack>
       )}
 
@@ -320,5 +357,83 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
         }}
       />
     </Box>
+  );
+}
+
+/**
+ * Options passed to llama.cpp for every model, with their own Save: the
+ * card's other controls apply as they are touched, but a half-typed row must
+ * not restart the runtime. The draft lives in the card (see `optionsDraft`).
+ * Usable while the runtime is in error, since a value it cannot read is one
+ * way to get there.
+ */
+function RouterOptions({
+  runtime,
+  reachable,
+  draft,
+  onDraft,
+  onSave,
+}: {
+  runtime: LocalRuntimeView;
+  reachable: boolean;
+  draft: OptionDraft;
+  onDraft: (draft: OptionDraft) => void;
+  onSave: (rows: ExtraOption[], onRefused: (err: unknown) => void) => Promise<boolean>;
+}) {
+  const saved = runtime.extraOptions ?? [];
+  const { rows } = draft;
+  const [saving, setSaving] = useState(false);
+  const [refusal, setRefusal] = useState<ServerProblem | null>(null);
+  const { options, unavailable } = useLlamaOptions(true, `${runtime.tag}:${runtime.version?.reported ?? ''}:${String(runtime.state === 'running')}`);
+  const problems = withServerProblem(rowProblems(rows, options, saved), rows, refusal);
+  const changed = !sameOptions(rows, saved);
+  const clearing = rowsToSave(rows).length === 0;
+
+  return (
+    <VStack space="sm">
+      <ExtraOptionsEditor
+        scope="router"
+        rows={rows}
+        onChange={(next) => { onDraft({ ...draft, rows: next }); }}
+        options={options}
+        unavailable={unavailable}
+        problems={problems}
+        skipped={runtime.extraOptionsSkipped ?? []}
+        disabled={!reachable || saving}
+      />
+      {changedElsewhere(draft, saved) && (
+        <Text testID="localModels.extraOptions.router.changedElsewhere" size="2xs" className="text-warning">
+          These were changed elsewhere since you started editing. Saving replaces that change with what is shown here.
+        </Text>
+      )}
+      {changed && (
+        <HStack>
+          <Button
+            testID="localModels.extraOptions.router.save"
+            size="sm"
+            className="bg-primary"
+            isDisabled={saving || !reachable || problems.some((p) => p !== null) || (options === null && !clearing)}
+            onPress={() => {
+              const sent = rowsToSave(rows);
+              setSaving(true);
+              setRefusal(null);
+              void onSave(sent, (err) => {
+                if (err instanceof AdminSettingsError && err.index !== null) {
+                  setRefusal({ index: err.index, message: err.message, sent: JSON.stringify(sent) });
+                }
+              })
+                .then((ok) => {
+                  // What was sent is now what the server has; the next poll
+                  // brings it, and the draft follows it.
+                  if (ok) onDraft({ rows, base: sent });
+                })
+                .finally(() => { setSaving(false); });
+            }}
+          >
+            <ButtonText className="text-primary-foreground">{saving ? 'Saving…' : 'Save and restart'}</ButtonText>
+          </Button>
+        </HStack>
+      )}
+    </VStack>
   );
 }

@@ -596,6 +596,11 @@ export const localModels = pgTable(
      * validated before they are stored and again before they reach the preset
      * file — an unknown key there stops the router from starting at all. */
     loadSettings: jsonb("load_settings").notNull().default({}),
+    /** Options passed to llama.cpp as an admin typed them, `[{ key, value }]`
+     * (apps/server/src/llama/extra-options.ts). Kept apart from `loadSettings`,
+     * whose keys are a whitelist: a key here is checked against the build's own
+     * `--help` when written, and again whenever the preset is. Null for none. */
+    extraOptions: jsonb("extra_options"),
     /** GGUF facts from HuggingFace, for the settings sheet's ranges and the
      * fit estimate: `{ nLayers?, nCtxTrain?, nParams?, architecture? }`. */
     meta: jsonb("meta").notNull().default({}),

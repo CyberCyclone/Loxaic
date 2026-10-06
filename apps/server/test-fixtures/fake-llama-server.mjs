@@ -80,6 +80,27 @@ if (args.includes("--version")) {
   process.exit(0);
 }
 
+/**
+ * Options beyond the keys Loxaic writes, which an admin may add as extra
+ * options (extra-options.ts): `keep` takes a number (and a value that is not
+ * one fails the model's load, as b11342's does), the rest are switches. `port`,
+ * `host` and `log-file` are listed so the server's refusal of them is exercised
+ * through `--help`, as on the real build; they are never accepted in a preset.
+ * `LOXAIC_FAKE_HELP_OMIT` names one this fake then neither lists nor accepts:
+ * an older release, in the mock release server.
+ */
+const EXTRA_OPTIONS = [
+  ["--keep N", "number of tokens to keep from the initial prompt (default: 0, -1 = all)"],
+  ["--metrics", "enable prometheus compatible metrics endpoint (default: disabled)"],
+  ["-cb,   --cont-batching, -nocb, --no-cont-batching", "whether to enable continuous batching (a.k.a dynamic batching) (default: enabled)"],
+];
+const OMITTED = process.env.LOXAIC_FAKE_HELP_OMIT ?? "";
+const EXTRA_KEYS = new Set(
+  EXTRA_OPTIONS.flatMap(([head]) => head.split(/,\s+/).map((n) => n.split(" ")[0].replace(/^-+/, ""))).filter((k) => k !== OMITTED),
+);
+/** Keys Loxaic writes that are switches, for the help text's layout. */
+const SWITCHES = new Set(["jinja", "kv-offload", "kv-unified"]);
+
 function arg(name) {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
@@ -126,6 +147,25 @@ const PRESET_KEYS = new Set([
   "log-verbosity", "lazy-mode",
 ]);
 
+if (args.includes("--help")) {
+  // llama.cpp's layout: names at column 0, the description at column 40 (or
+  // on the next line when the names are longer), continuation lines indented.
+  const out = ["----- common params -----", ""];
+  const line = (head, text) => {
+    if (head.length < 39) out.push(`${head.padEnd(40)}${text}`);
+    else out.push(head, `${" ".repeat(40)}${text}`);
+  };
+  for (const key of PRESET_KEYS) {
+    if (key === "version") continue;
+    line(SWITCHES.has(key) ? `--${key}, --no-${key}` : `--${key} VALUE`, `the fake's ${key}`);
+  }
+  for (const [head, text] of EXTRA_OPTIONS) if (!head.includes(`--${OMITTED} `) && !head.endsWith(`--${OMITTED}`)) line(head, text);
+  line("--host HOST", "ip address to listen, or bind to an UNIX socket");
+  line("--port PORT", "port to listen (default: 8080)");
+  line("--log-file FNAME", "Log to file");
+  console.log(out.join("\n"));
+  process.exit(0);
+}
 /** Parse the INI into { globals, sections: Map<id, Record<string,string>> }. */
 function readPreset() {
   const sections = new Map();
@@ -145,7 +185,7 @@ function readPreset() {
     // `LOXAIC_FAKE_REJECT_KEY` makes this fake a build that does not know one
     // of the keys Loxaic writes — how an older release or a fork really
     // fails: fatally, at boot, naming the key.
-    if (kv && (!PRESET_KEYS.has(kv[1]) || kv[1] === process.env.LOXAIC_FAKE_REJECT_KEY)) {
+    if (kv && ((!PRESET_KEYS.has(kv[1]) && !EXTRA_KEYS.has(kv[1])) || kv[1] === process.env.LOXAIC_FAKE_REJECT_KEY)) {
       throw new Error(`option '${kv[1]}' not recognized in preset`);
     }
     if (kv && current) current[kv[1]] = kv[2];
@@ -216,6 +256,21 @@ function load(id) {
   // Qwen3.8-Flash-Next with unsloth's head (ggml-org/llama.cpp#29811).
   const spec = merged(id);
   const crashes = spec["spec-type"] === "draft-mtp" && /crashy/i.test(spec.model ?? "");
+  // As b11342's child: an option's value is read when the model loads, not
+  // when the router reads the preset, so a bad one fails this load only.
+  if (spec.keep !== undefined && !/^-?\d+$/.test(spec.keep)) {
+    const p = String(childPort).padStart(5, " ");
+    process.stderr.write(
+      [
+        `[${p}] error while handling argument "--keep": stoi: no conversion`,
+        `[${p}] --keep N                                number of tokens to keep from the initial prompt (default: 0, -1 =`,
+        `0.00.000.200 I srv    operator(): instance name=${id} exited with status 1`,
+      ].join("\n") + "\n",
+    );
+    failed.add(id);
+    logEvent({ event: "load-failed", model: id, reason: "argument" });
+    return "failed";
+  }
   const badSpec =
     (spec["spec-type"] !== undefined && spec["spec-type"] !== "draft-mtp") ||
     (spec["spec-draft-model"] !== undefined && !existsSync(spec["spec-draft-model"])) ||

@@ -37,6 +37,7 @@ import {
   rowStages,
   settingsForStage,
 } from "../llama/context-stages.ts";
+import { coerceExtraOptions, ExtraOptionError, normalizeExtraOptions, optionViews, type ExtraOption } from "../llama/extra-options.ts";
 import { bestFit, type FitLabel } from "../llama/fit.ts";
 import { HfError, repoDetails, repoFiles, searchModels, type HfSort } from "../llama/hf.ts";
 import { checkMtpSetting, checkTableSetting, LOAD_SETTINGS, LoadSettingsError, normalizeLoadSettings } from "../llama/load-settings.ts";
@@ -63,17 +64,20 @@ import {
   startVersionDownload,
 } from "../llama/runtime-versions.ts";
 import {
+  currentOptions,
   ensureHardwareDetected,
   ensureRuntime,
   officialFlavour,
   runningRuntime,
   modelBusy,
+  optionsUnavailableReason,
   rawPlacementFor,
   refreshRuntimeState,
   reloadPendingFor,
   routerModelStatuses,
   routerPid,
   runtimeView,
+  skippedExtraOptions,
   syncPreset,
   unloadModel,
 } from "../llama/router.ts";
@@ -81,9 +85,11 @@ import {
   addCustomBuild,
   getLlamaMode,
   getLocalModelsSettings,
+  getRouterExtraOptions,
   getRuntimeSelection,
   LocalModelsSettingsError,
   removeCustomBuild,
+  setRouterExtraOptions,
   setRuntimeSelection,
   updateLocalModelsSettings,
   type RuntimeSelection,
@@ -126,6 +132,7 @@ function modelView(
   const status = loaded.get(row.id);
   const settings = effectiveSettings(row);
   const head = rowMtpHead(row);
+  const extraOptions = coerceExtraOptions(row.extraOptions);
   return {
     id: row.id,
     repo: row.repo,
@@ -142,6 +149,11 @@ function modelView(
     /** Why a pinned model is not loaded, or null. */
     pinError: row.pinned ? pinErrorFor(row.id) : null,
     loadSettings: row.loadSettings,
+    /** Options passed to llama.cpp as the admin typed them, and the keys
+     * among them the build running now does not accept (left out of the
+     * preset, so the router still starts). */
+    extraOptions,
+    extraOptionsSkipped: skippedExtraOptions(extraOptions),
     /** YaRN stages as stored (null until set up), and the stage the model
      * loads at now — 0 is standard. */
     contextStages: row.contextStages ?? null,
@@ -211,6 +223,8 @@ async function afterModelWrite(): Promise<{ deferred: boolean; reloading: string
 
 function fail(reply: FastifyReply, err: unknown) {
   if (err instanceof DownloadError) return reply.code(err.status).send({ error: err.message });
+  // Before LoadSettingsError, which it extends: the client marks the row.
+  if (err instanceof ExtraOptionError) return reply.code(400).send({ error: err.message, index: err.index });
   if (err instanceof LoadSettingsError) return reply.code(400).send({ error: err.message });
   if (err instanceof LocalModelsSettingsError) {
     return reply.code(err.code === "envOverride" ? 409 : 400).send({ error: err.message, envOverride: err.code === "envOverride" });
@@ -240,6 +254,36 @@ function versionsUnavailable(reply: FastifyReply): boolean {
         : "Local models are switched off on this server (LLAMA_MODE=off).",
   });
   return true;
+}
+
+/**
+ * An admin's extra llama.cpp options, checked against the build that will read
+ * them. Clearing them needs no list, and neither does sending back what is
+ * stored (the settings sheet sends every field on each save). Anything else
+ * does, and without one the answer is 409 with the reason: a key nobody could
+ * check is exactly the one that stops the router from starting.
+ */
+function checkedExtraOptions(raw: unknown, kept: readonly ExtraOption[]): ExtraOption[] {
+  if (raw === null || (Array.isArray(raw) && raw.length === 0)) return [];
+  const list = currentOptions();
+  if (!list) {
+    if (sameRows(raw, kept)) return [...kept];
+    throw new DownloadError(optionsUnavailableReason() ?? "llama.cpp's options are not known yet.", 409);
+  }
+  return normalizeExtraOptions(raw, list, kept);
+}
+
+/** Whether a request's rows are the stored ones, give or take dashes and spaces. */
+function sameRows(raw: unknown, kept: readonly ExtraOption[]): boolean {
+  if (!Array.isArray(raw) || raw.length !== kept.length) return false;
+  return raw.every((r: unknown, i) => {
+    const row = r as { key?: unknown; value?: unknown } | null;
+    return (
+      typeof row?.key === "string" &&
+      row.key.trim().replace(/^-+/, "") === kept[i].key &&
+      (typeof row.value === "string" ? row.value.trim() : "") === kept[i].value
+    );
+  });
 }
 
 /** Where a third-party build comes from, as far as another admin needs to
@@ -529,20 +573,43 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
 
   app.patch("/v1/admin/local-models/settings", async (request, reply) => {
     await requireAdmin(request, reply);
-    const body = (request.body ?? {}) as Record<string, unknown>;
+    const { extraOptions: rawExtra, ...body } = (request.body ?? {}) as Record<string, unknown>;
+    let extraChanged = false;
     try {
-      await updateLocalModelsSettings(body);
+      // Checked before anything is written, so a refused option leaves the
+      // rest of the request unapplied too.
+      const extra = rawExtra === undefined ? null : checkedExtraOptions(rawExtra, getRouterExtraOptions());
+      if (Object.keys(body).length > 0 || extra === null) await updateLocalModelsSettings(body);
+      if (extra !== null) {
+        extraChanged = JSON.stringify(extra) !== JSON.stringify(getRouterExtraOptions());
+        await setRouterExtraOptions(extra);
+      }
     } catch (err) {
       return fail(reply, err);
     }
-    // Backend and devices are process arguments or preset globals: the runtime
-    // restarts to take them. The loaded-model limit is Loxaic's own (room.ts)
-    // and a token change needs nothing.
-    if (body.backend !== undefined || body.devices !== undefined) {
+    // Backend, devices and the options for every model are process arguments
+    // or preset globals: the runtime restarts to take them (attach mode can
+    // only rewrite the preset). The loaded-model limit is Loxaic's own
+    // (room.ts) and a token change needs nothing.
+    if (body.backend !== undefined || body.devices !== undefined || (extraChanged && getLlamaMode() === "managed")) {
       void ensureRuntime({ restart: true });
       await settleBriefly();
+    } else if (extraChanged) {
+      await afterModelWrite();
     }
     return fullView();
+  });
+
+  /**
+   * The options the build running now lists in its `--help`, with why any of
+   * them may not be set here: for checking extra options as they are typed and
+   * saying what each does. `options` is null, with `unavailable` saying why,
+   * when the build has not been (or could not be) asked.
+   */
+  app.get("/v1/admin/local-models/runtime/options", async (request, reply) => {
+    await requireAdmin(request, reply);
+    const list = currentOptions();
+    return { options: list ? optionViews(list) : null, unavailable: list ? null : optionsUnavailableReason() };
   });
 
   app.get("/v1/admin/local-models/hf/search", async (request, reply) => {
@@ -707,6 +774,10 @@ export function adminLocalModelRoutes(app: FastifyInstance) {
         if (body.contextStages !== undefined) patch.contextStages = stages;
         const count = stages?.enabled ? stages.stages.length : 0;
         if (row.activeStage > count) patch.activeStage = count;
+      }
+      if (body.extraOptions !== undefined) {
+        const extra = checkedExtraOptions(body.extraOptions, coerceExtraOptions(row.extraOptions));
+        patch.extraOptions = extra.length > 0 ? extra : null;
       }
     } catch (err) {
       return fail(reply, err);
