@@ -97,6 +97,10 @@ export interface RouterEvent {
   /** On a "chat" event: the thinking fields the request carried. */
   reasoning_effort?: string | null;
   chat_template_kwargs?: Record<string, unknown> | null;
+  /** On a "chat" event: the window the model was loaded with, and what the
+   * request reported costing ("fill/overflow/exceed the context"). */
+  ctx_size?: number;
+  prompt_tokens?: number;
 }
 
 export function routerEvents(): RouterEvent[] {

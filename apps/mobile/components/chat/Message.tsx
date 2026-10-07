@@ -21,7 +21,7 @@ import { promptReuse } from '@/lib/usage';
 import { describeMtpAcceptance } from '@/lib/mtp';
 import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
 import { instructionsUpdateLine } from '@/lib/projectInstructions';
-import { PLAN_REQUIRED_NUDGE } from '@loxaic/types';
+import { COMPACTION_CONTINUE_NUDGE, PLAN_REQUIRED_NUDGE } from '@loxaic/types';
 import type { Message as MessageType } from '@/lib/types';
 import type { LiveCompaction } from './compactionState';
 import { displayModelRef } from '@loxaic/types';
@@ -112,6 +112,20 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
       <Box testID="chat.message.planNudge" className="px-4 py-2">
         <Text size="xs" className="text-center italic text-muted-foreground">
           Asked the agent to finish with a plan or questions
+        </Text>
+      </Box>
+    );
+  }
+
+  // Written by the server after a compaction in the middle of a run, so the
+  // agent carries on from the summary (compactWithinRun). Nobody typed it.
+  // The testID is on the Text: XCUITest does not expose a plain container
+  // view's identifier.
+  if (msg.role === 'user' && msg.text === COMPACTION_CONTINUE_NUDGE) {
+    return (
+      <Box className="px-4 py-2">
+        <Text testID="chat.message.compactionNudge" size="xs" className="text-center italic text-muted-foreground">
+          Compacted mid-reply — carrying on from the summary
         </Text>
       </Box>
     );

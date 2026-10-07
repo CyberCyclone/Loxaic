@@ -58,8 +58,9 @@ export async function readAsDataUri(ref: string, mime: string): Promise<string> 
 /**
  * Ceiling on the raw image bytes one prompt may carry, summed across every
  * replayed turn. The per-upload caps (10 MB × 4 per message) bound a single
- * send but not a conversation: HISTORY_LIMIT is 50, so without this a user
- * could build a thread whose every subsequent turn re-reads and base64s a
+ * send but not a conversation: everything since the last summary is replayed,
+ * so without this a user could build a thread whose every subsequent turn
+ * re-reads and base64s a
  * gigabyte off disk into one JSON body — heap exhaustion on demand, repeatable
  * for the cost of one WebSocket frame. Base64 inflates this by ~4/3 on the
  * wire, so 32 MiB here is ~43 MB of request body.
@@ -109,7 +110,7 @@ export const MAX_HISTORY_DOCUMENT_TOKENS = MAX_SINGLE_DOCUMENT_TOKENS * 3;
  * out one the previous prompt had included, silently rewriting a message the
  * model had already seen. Since backends cache a prompt *prefix*, rewriting an
  * old message throws away the cache for everything from that message onward —
- * the same class of bug as a sliding history window (see HISTORY_STEP in
+ * the same class of bug as a sliding history window (see `historyWindow` in
  * `streams/runs/engine.ts`).
  *
  * So the guarantee is now explicit instead of emergent: the newest turn draws

@@ -7,8 +7,7 @@ import { formatWindow } from './contextStages';
  *
  * Client-only, folded from the stream's `context.stage` events and from a
  * snapshot's `context_stage`. It is never a message: the server writes no row
- * for a stage run, because a row would enter the prompt and move the history
- * anchor. So after the stream log's TTL a reload simply has no card, which
+ * for a stage run, because a row would enter the prompt. So after the stream log's TTL a reload simply has no card, which
  * reads as "we were not told", never as "nothing happened".
  */
 

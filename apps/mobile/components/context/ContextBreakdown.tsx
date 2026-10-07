@@ -218,7 +218,7 @@ export function ContextBreakdown({
       )}
 
       <VStack space="xs">
-        {over && <Note warn>{`Over by ${fmt(used - window)} tokens — oldest turns will be dropped.`}</Note>}
+        {over && <Note warn>{`Over by ${fmt(used - window)} tokens — the next request compacts or extends the context first.`}</Note>}
         {context.maxWindow != null && context.maxWindow > window && (
           <Note>{`Loaded at ${fmt(window)} of ${fmt(context.maxWindow)} max.`}</Note>
         )}
@@ -226,11 +226,9 @@ export function ContextBreakdown({
           <Note>Estimated from model max — actual window unknown.</Note>
         )}
         {context.truncated && (
-          // historyMessages, not historyLimit: the limit stopped being the
-          // window size when the replay was anchored — it is a floor now, and
-          // the window grows to HISTORY_LIMIT + HISTORY_STEP - 1 before
-          // re-anchoring. Reporting the floor would claim "last 50" on a
-          // conversation that actually replayed 74.
+          // Only an older server says this: it replayed the newest 50–74
+          // messages and dropped the rest. A current one drops nothing — a
+          // full conversation is compacted or its context extended.
           <Note>{`Showing last ${String(context.historyMessages)} messages; older turns already dropped.`}</Note>
         )}
       </VStack>

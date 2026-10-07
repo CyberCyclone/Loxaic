@@ -48,9 +48,10 @@ export interface ContextView {
   free: number | null;
   segments: ContextSegment[];
   breakdownAvailable: boolean;
+  /** Older servers only: they replayed the newest 50–74 rows and said when
+   * that had dropped older ones. A current server drops nothing. */
   truncated: boolean;
   historyMessages: number;
-  historyLimit: number;
   windowSource: ModelWindow['source'];
   maxWindow: number | null;
   lastTurn: LastTurn | null;
@@ -127,7 +128,6 @@ export function useContextUsage(msgs: Message[] | undefined, window: ModelWindow
       breakdownAvailable: !!breakdown?.parts.length,
       truncated: !!breakdown?.history_truncated,
       historyMessages: breakdown?.history_messages ?? 0,
-      historyLimit: breakdown?.history_limit ?? 0,
       windowSource: window?.source ?? null,
       maxWindow: window?.max ?? null,
       toolSources: breakdown?.tool_sources ?? null,

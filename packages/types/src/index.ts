@@ -104,8 +104,9 @@ export interface InstructionsTracking {
   /** The version the chat was last told about, when it differs from the one
    * in the system prompt. Cleared when it is folded in. */
   latest?: InstructionsVersion;
-  /** Which prompt front the last run was built on (compaction point and
-   * history-window anchor). A new one is what allows a fold. */
+  /** Which prompt front the last run was built on (its compaction point;
+   * older snapshots also carry the history window's anchor, which no longer
+   * exists). A new one is what allows a fold. */
   frontKey?: string;
 }
 export type ProjectInstructions =

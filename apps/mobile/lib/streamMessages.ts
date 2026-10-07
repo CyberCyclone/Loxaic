@@ -35,9 +35,11 @@ export function roleOf(authorType: string): Message['role'] | null {
 export function extractCompaction(blocks: ContentBlock[]): CompactionStats | undefined {
   const block = blocks.find((b) => b.kind === 'compaction');
   if (!block) return undefined;
-  const { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
+  const { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance, auto } =
     block;
-  return { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
+  // `auto` carried through: without it every compaction the server made on its
+  // own read "Compacted" and lost its "reached the context limit" note.
+  return { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance, auto };
 }
 
 /** The last instructions notice on a user message — normally the only one. */
@@ -358,9 +360,9 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
         m.id === event.message_id ? { ...m, instructionsUpdate: { path: event.path, summary: event.summary } } : m,
       );
     case 'compaction': {
-      const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance } =
+      const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance, auto } =
         event;
-      const stats = { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance };
+      const stats = { messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance, auto };
       return msgs.map((m) => (m.id === message_id ? { ...m, compaction: stats } : m));
     }
     case 'message.usage':

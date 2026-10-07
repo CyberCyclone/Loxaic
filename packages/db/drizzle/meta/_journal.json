@@ -274,6 +274,13 @@
       "when": 1791267427475,
       "tag": "0038_local_model_extra_options",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1791367373917,
+      "tag": "0039_user_prefs_drop_auto_compact",
+      "breakpoints": true
     }
   ]
 }

@@ -210,8 +210,8 @@ describe("attachmentContentParts — document truncation and overflow handling",
 });
 
 /**
- * The per-prompt image budget. Without it, HISTORY_LIMIT (50) multiplies the
- * per-send caps: a thread of image-bearing turns makes every later send
+ * The per-prompt image budget. Without it, replaying the whole history since
+ * the last summary multiplies the per-send caps: a thread of image-bearing turns makes every later send
  * re-read and base64 the lot into one JSON body, which is heap exhaustion on
  * demand for the price of one WebSocket frame.
  */

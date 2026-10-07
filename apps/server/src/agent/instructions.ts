@@ -831,8 +831,8 @@ export function nestedCandidateDirs(fileAbs: string, workdir: string): string[] 
 }
 
 /** Whether a directory's file is already in what the model is being sent.
- * Read from the messages themselves, not stored anywhere: once compaction or
- * the history window drops the tool result that carried it, a later read
+ * Read from the messages themselves, not stored anywhere: once compaction
+ * summarises away the tool result that carried it, a later read
  * attaches it again — which is exactly when the model has lost it. */
 export function alreadyAttached(messages: readonly ChatMessage[], relPath: string, cksum: string): boolean {
   // Only a block this module appended counts: one in an fs_read result, at

@@ -39,7 +39,7 @@ export function answerNowNotice(authorUserId: string | null | undefined, current
  * instruction row that follows it.
  *
  * Client-only by design: persisting this as a message would put it in the
- * next prompt and move the history anchor's count, so it comes from the
+ * next prompt, so it comes from the
  * stream log and is simply absent once that has expired.
  */
 export function autoContinueNotice(note: CheckinDecisionNote | undefined): string | null {

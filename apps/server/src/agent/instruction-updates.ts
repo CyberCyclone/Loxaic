@@ -8,8 +8,8 @@
  * switch) reaches the model as a notice on the next run's user message,
  * appended at the end of the prompt where it costs only its own tokens. The
  * system prompt takes the newest version only when the front of the prompt
- * changes anyway — a compaction lands, or the history window moves — since
- * those already re-read everything after the system prompt.
+ * changes anyway — when a compaction lands — since that already re-reads
+ * everything after the system prompt.
  *
  * The check runs once per run, before the history is loaded
  * (`prepareInstructions`, wired as the tool loop's `prepare`). It costs one

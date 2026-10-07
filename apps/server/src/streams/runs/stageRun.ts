@@ -13,7 +13,7 @@ import type { StreamProducer } from "../broker.ts";
 import { getStreamBroker } from "../index.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
-import { userAllowsAutoCompact } from "./auto-compact.ts";
+import type { RunSlot } from "../../inference/scheduler.ts";
 import { lastRequestShape } from "./request-shape.ts";
 
 /**
@@ -29,8 +29,10 @@ import { lastRequestShape } from "./request-shape.ts";
  * before its first request, reported on the same stream.
  *
  * Nothing here writes a message row: the card is client-only, folded from the
- * stream log like a check-in decision, because a row would enter the prompt
- * and move the history anchor.
+ * stream log like a check-in decision, because a row would enter the prompt.
+ *
+ * A run that fills its window extends inside itself (`extendWithinRun`), on its
+ * own stream, before the request that would not fit.
  */
 
 function emitter(producer: StreamProducer) {
@@ -195,38 +197,60 @@ export async function startStageRun(input: {
   return { streamId, conversationId: convId };
 }
 
+/** A model's context stages as `fillDecision` reads them, or null for a model
+ * with none (not a local model, or stages not set up). */
+export async function stagesForFill(model: string): Promise<{ whenFull: "extend" | "compact"; active: number; count: number } | null> {
+  const row = await getLocalModelRow(model);
+  const config = row ? rowStages(row) : null;
+  if (!row || !config) return null;
+  return { whenFull: config.whenFull, active: activeStageIndex(row), count: config.stages.length };
+}
+
 /**
- * The model's `whenFull: "extend"`: called where automatic compaction would
- * be, once a turn has crossed the threshold. True when a stage run started;
- * false means "compact as usual" — the model is set to compact, is at its
- * largest stage, or the next stage will not fit. A stage run that then fails
- * compacts instead, so the conversation is never left full with nothing done.
+ * The stage a full conversation may move up to, or null — the model is set to
+ * compact, is at its largest stage, or the next stage is refused (it will not
+ * fit, or another conversation's switch is in the way). An automatic request
+ * by the model's own setting, so not subject to who may change it or the
+ * cooldown.
+ */
+export async function planExtension(input: { model: string; conversationId: string }): Promise<number | null> {
+  const row = await getLocalModelRow(input.model);
+  if (!row) return null;
+  const config = rowStages(row);
+  if (config?.whenFull !== "extend") return null;
+  const next = activeStageIndex(row) + 1;
+  if (next > config.stages.length) return null;
+  try {
+    await checkStageRequest({ row, target: next, isAdmin: true, conversationId: input.conversationId, auto: true });
+  } catch (err) {
+    if (err instanceof StageRequestError) return null;
+    throw err;
+  }
+  return next;
+}
+
+/**
+ * The model's `whenFull: "extend"` after a turn: called where automatic
+ * compaction would be, once a turn has crossed the threshold. True when a
+ * stage run started; false means "compact as usual". A stage run that then
+ * fails compacts instead, so the conversation is never left full with nothing
+ * done.
  */
 export async function autoExtend(input: {
   userId: string;
   conversationId: string;
   model: string;
   surface: "chat" | "agent";
-  /** Whether automatic compaction would have fired for this turn, the
-   * `AUTO_COMPACT_MIN_MESSAGES` floor included. Extending ignores the floor
-   * (one big paste can fill a short thread), but the compaction a failed
-   * extension falls back to must not: a three-message thread whose summary
-   * is still over the threshold would otherwise extend, fail and compact on
-   * every turn, paying a model call and a full re-read each time. */
+  /** Whether a compaction may follow a failed extension: the
+   * `AUTO_COMPACT_MIN_MESSAGES` floor. Extending ignores the floor (one big
+   * paste can fill a short thread), but the compaction a failed extension
+   * falls back to must not: a three-message thread whose summary is still
+   * over the threshold would otherwise extend, fail and compact on every turn,
+   * paying a model call and a full re-read each time. */
   canCompact: boolean;
 }): Promise<boolean> {
-  const row = await getLocalModelRow(input.model);
-  if (!row) return false;
-  const config = rowStages(row);
-  if (config?.whenFull !== "extend") return false;
-  const next = activeStageIndex(row) + 1;
-  if (next > config.stages.length) return false;
-  try {
-    await checkStageRequest({ row, target: next, isAdmin: true, conversationId: input.conversationId, auto: true });
-  } catch (err) {
-    if (err instanceof StageRequestError) return false;
-    throw err;
-  }
+  const next = await planExtension({ model: input.model, conversationId: input.conversationId });
+  if (next === null) return false;
   await startStageRun({
     userId: input.userId,
     conversationId: input.conversationId,
@@ -238,13 +262,45 @@ export async function autoExtend(input: {
     onDone: (outcome) => {
       if (outcome.kind !== "failed" || !input.canCompact) return;
       void (async () => {
-        if (!(await userAllowsAutoCompact(input.userId))) return;
         const { startCompactRun } = await import("./compactRun.ts");
         await startCompactRun({ userId: input.userId, conversationId: input.conversationId, model: input.model, surface: input.surface, auto: true });
       })().catch((e: unknown) => { console.warn(`compaction after a failed extension skipped: ${(e as Error).message}`); });
     },
   });
   return true;
+}
+
+/**
+ * The model's `whenFull: "extend"` inside a run: moves the model up to
+ * `target` between two of the run's requests, so the next one fits.
+ *
+ * The switch needs the whole backend (`acquireExclusiveSlot` waits for nothing
+ * to be running), and the run holds a slot of it — so the slot is handed back
+ * for the switch, as at an approval, and taken again at the front of the
+ * queue. Nothing is warmed: the run's next request is the re-read. A stop
+ * during the switch puts the stage back (applyStageChange) and is then thrown
+ * by `yieldWhile` as `RunSlotAbortedError`, which the run ends on.
+ */
+export async function extendWithinRun(input: {
+  slot: RunSlot;
+  model: string;
+  conversationId: string;
+  target: number;
+  producer: StreamProducer;
+  signal: AbortSignal;
+}): Promise<StageOutcome> {
+  return input.slot.yieldWhile(() =>
+    applyStageChange({
+      modelId: input.model,
+      target: input.target,
+      reason: "full",
+      auto: true,
+      byUserId: null,
+      conversationId: input.conversationId,
+      signal: input.signal,
+      emit: emitter(input.producer),
+    }),
+  );
 }
 
 /** `conversation|model|stage` → when a crossing there was left to the person.

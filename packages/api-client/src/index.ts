@@ -2145,24 +2145,24 @@ export interface UserPrefs {
    * tool loop runs. MCP tools have their own per-server allowlist instead. */
   toolAllowlist: string[];
   /**
-   * Optional because a server that predates the field simply omits it — it
-   * does not error — and the client talks to servers it was not shipped with
-   * (desktop Client mode, any remote host). Typing these as always-present
-   * made `undefined` sail past a `=== null` guard and render a settings
-   * control with nothing selected, which would then PATCH a field the old
-   * server ignores. Callers must treat absence as "this server has no such
-   * setting", not as a value.
-   */
-  autoCompact?: boolean;
-  /** Tool round-trips the agent takes for one message before it pauses and
+   * Tool round-trips the agent takes for one message before it pauses and
    * asks whether to keep going. A cadence, not a ceiling — the run is never
-   * cut off. 1-500; defaults to 100. Optional — see `autoCompact`. */
+   * cut off. 1-500; defaults to 100.
+   *
+   * Optional, like every field below, because a server that predates a field
+   * simply omits it — it does not error — and the client talks to servers it
+   * was not shipped with (desktop Client mode, any remote host). Typing these
+   * as always-present made `undefined` sail past a `=== null` guard and render
+   * a settings control with nothing selected, which would then PATCH a field
+   * the old server ignores. Callers must treat absence as "this server has no
+   * such setting", not as a value.
+   */
   maxIterations?: number;
   /**
    * Model references this user most recently sent with, newest first.
    * **Read-only** — the server records it when a model is actually used, and
    * `PATCH /v1/prefs` refuses the key. Optional for the same reason as
-   * `autoCompact`: a server that predates it omits it, and absence means
+   * `maxIterations`: a server that predates it omits it, and absence means
    * "this server does not track it", never "nothing has been used".
    */
   recentModels?: string[];
@@ -2170,7 +2170,7 @@ export interface UserPrefs {
    * How long a step check-in waits for an answer, in ms. **Null means the
    * server default** (`serverDefaults.checkinTimeoutMs`) — a choice, not a
    * missing value; PATCH null to go back to it. 5,000-86,400,000. Optional —
-   * see `autoCompact`.
+   * see `maxIterations`.
    */
   checkinTimeoutMs?: number | null;
   /** The same, for a tool approval. Separate because "may this run?" and
@@ -2189,7 +2189,7 @@ export interface UserPrefs {
   serverDefaults?: { checkinTimeoutMs: number; approvalTimeoutMs: number };
   /** Which model a sub-agent runs on: the parent's unless the agent picks
    * another it is offered (`choose`), always the parent's (`parent`), or one
-   * fixed model (`fixed`). Optional — see `autoCompact`. */
+   * fixed model (`fixed`). Optional — see `maxIterations`. */
   subagentModelMode?: import("@loxaic/types").SubAgentModelMode;
   /** The model `fixed` uses. Null when none was ever picked; kept when the
    * mode moves away from `fixed`. */

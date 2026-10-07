@@ -1,13 +1,35 @@
 import "./force-auto-compact.ts";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import type { CompactionStats, ContentBlock } from "@loxaic/types";
+import { COMPACTION_CONTINUE_NUDGE, type CompactionStats, type ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../index.ts";
 import { startChatRun } from "../chatRun.ts";
 import { DEFAULT_MAX_ITERATIONS, loadHistory } from "../engine.ts";
 import { getRunByConversation } from "../../registry.ts";
+import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
+import { nextConversationLamport } from "../compactRun.ts";
+import { estimateTallyTokens, tallyChatMessages } from "../../../inference/context.ts";
+import type { ChatMessage } from "../../../inference/provider.ts";
+
+/** Every request's messages, in call order — so a case can see how a
+ * compaction was actually sent, not just that one landed. */
+const requests: ChatMessage[][] = [];
+vi.mock("../../../inference/provider.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../inference/provider.ts")>();
+  return {
+    ...actual,
+    streamCompletion: (model: string, msgs: ChatMessage[], options?: unknown) => {
+      // A copy at call time: the tool loop keeps appending to the array it passes.
+      requests.push([...msgs]);
+      return actual.streamCompletion(model, msgs, options as never);
+    },
+  };
+});
 
 /**
  * The *wiring* of automatic compaction, which the pure policy test can't
@@ -83,7 +105,7 @@ describe("automatic compaction", () => {
         createdAt: new Date(1_700_000_000_000 + i),
       });
     }
-    await db.insert(messages).values(rows);
+    if (rows.length) await db.insert(messages).values(rows);
     return conv.id;
   }
 
@@ -132,30 +154,158 @@ describe("automatic compaction", () => {
     expect(after.messages.length).toBeLessThan(before.messages.length);
   });
 
-  it("does not compact for a user who turned it off", async () => {
-    // The gate is a per-user preference, checked only once the threshold has
-    // already been crossed — so this conversation is identical to the one in
-    // the first case, and the only difference is the row below.
-    await db
-      .insert(userPrefs)
-      .values({ userId, autoCompact: false, updatedAt: new Date() })
-      .onConflictDoUpdate({ target: userPrefs.userId, set: { autoCompact: false } });
-    try {
-      const convId = await seedConversation(8);
-      await startChatRun({ userId, content: "another question", model: "llama-3.1-8b-instruct", conversationId: convId });
+  describe("in the middle of a run", () => {
+    // Four tool steps in one turn. The threshold here is 0.001, so every
+    // request reads as full; AUTO_COMPACT_MIN_MESSAGES is then what decides
+    // when there is enough to summarise. Two seeded messages and the request
+    // make three, each step adds two, so the room check before the fourth
+    // request (nine messages since any summary) is the one that compacts —
+    // between the third step's result and the fourth step's call.
+    let dir: string;
+    beforeAll(() => {
+      dir = mkdtempSync(path.join(tmpdir(), "mock-scenarios-"));
+      const file = path.join(dir, "scenarios.json");
+      const step = (n: number) => ({ tool: "todo_write", args: { todos: [{ id: "1", text: `step ${String(n)}`, status: "in_progress" }] } });
+      writeFileSync(
+        file,
+        JSON.stringify([{ match: "work in four steps", steps: [step(1), step(2), step(3), step(4)], finalText: "[Mock] four steps done.\n" }]),
+      );
+      process.env.MOCK_SCENARIOS_FILE = file;
+      __resetMockScenariosForTest();
+    });
+    afterAll(() => {
+      delete process.env.MOCK_SCENARIOS_FILE;
+      __resetMockScenariosForTest();
+      rmSync(dir, { recursive: true, force: true });
+    });
 
-      await waitFor(async () => {
-        const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
-        const assistants = rows.filter((r) => r.authorType === "assistant" && r.status === "complete");
-        return assistants.length > 0 ? assistants : null;
+    it("compacts between two requests of the run, and the run carries on from the summary", async () => {
+      const convId = await seedConversation(2);
+      await startChatRun({ userId, content: "work in four steps", model: "llama-3.1-8b-instruct", conversationId: convId });
+      await waitFor(() => Promise.resolve(getRunByConversation(convId) ? null : true), 30_000);
+
+      const rows = await db.query.messages.findMany({
+        where: eq(messages.conversationId, convId),
+        orderBy: (m, { asc }) => [asc(m.lamport), asc(m.createdAt)],
       });
-      // The turn finished; give the trigger (which runs after the run's
-      // `finally`) room to have fired if the pref were being ignored.
-      await new Promise((r) => setTimeout(r, 1000));
-      expect(await summaryRow(convId)).toBeNull();
-    } finally {
-      await db.update(userPrefs).set({ autoCompact: true }).where(eq(userPrefs.userId, userId));
-    }
+      const summaries = rows.filter((r) => r.authorType === "summary");
+      // One: the floor stops a second straight after it.
+      expect(summaries).toHaveLength(1);
+      const [summary] = summaries;
+      expect(summary.status).toBe("complete");
+      expect(compactionOf(summary)?.auto).toBe(true);
+
+      // In the run, between a tool result and the next call: the row before
+      // the summary is a tool row, the one after is the nudge the run went on
+      // from, and the run's next reply follows that.
+      const at = rows.indexOf(summary);
+      expect(rows[at - 1].authorType).toBe("tool");
+      expect(rows[at + 1].authorType).toBe("user");
+      expect((rows[at + 1].content as ContentBlock[])[0]).toEqual({ kind: "text", text: COMPACTION_CONTINUE_NUDGE });
+      expect(rows[at + 1].authorUserId).toBeNull();
+      expect(rows.slice(at + 2).some((r) => r.authorType === "assistant" && r.status === "complete")).toBe(true);
+
+      // The next turn replays from the summary: the nudge first, nothing older.
+      const history = await loadHistory(convId);
+      expect(history.summaryText).not.toBeNull();
+      expect(history.messages[0]).toEqual({ role: "user", content: COMPACTION_CONTINUE_NUDGE });
+
+      const conv = await db.query.conversations.findFirst({ where: eq(conversations.id, convId) });
+      // The leaf is the run's last row, past the summary.
+      expect(rows.findIndex((r) => r.id === conv?.activeLeafId)).toBeGreaterThan(at);
+    });
+  });
+
+  it("summarises a history larger than the window in parts, each request under it", { timeout: 60_000 }, async () => {
+    // Every long thread from before history stopped being dropped is like
+    // this: more than the model can read at once, never summarised. Sent as
+    // one request, its compaction could not fit either.
+    const [conv] = await db.insert(conversations).values({ ownerId: userId, title: "huge history" }).returning();
+    convIds.push(conv.id);
+    await db.insert(messages).values(
+      Array.from({ length: 300 }, (_, i) => ({
+        id: uuid(),
+        conversationId: conv.id,
+        authorType: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+        origin: "server" as const,
+        lamport: 1000 + i,
+        content: [{ kind: "text", text: `message ${String(i)}: ${"words ".repeat(40)}` }] as ContentBlock[],
+        status: "complete" as const,
+        createdAt: new Date(1_700_000_000_000 + i),
+      })),
+    );
+    const WINDOW = 4096; // the mock model's
+    expect(estimateTallyTokens(tallyChatMessages((await loadHistory(conv.id)).messages))).toBeGreaterThan(3 * WINDOW);
+
+    requests.length = 0;
+    await startChatRun({ userId, content: "another question", model: "llama-3.1-8b-instruct", conversationId: conv.id });
+    await waitFor(() => Promise.resolve(getRunByConversation(conv.id) ? null : true), 50_000);
+
+    const summarising = requests.filter((r) => {
+      const last = r.at(-1);
+      return last?.role === "user" && typeof last.content === "string" && last.content.startsWith("Summarize this conversation");
+    });
+    expect(summarising.length).toBeGreaterThan(1);
+    for (const r of summarising) expect(estimateTallyTokens(tallyChatMessages(r))).toBeLessThan(WINDOW);
+
+    const row = await summaryRow(conv.id);
+    expect(row?.status).toBe("complete");
+    // The next turn starts from the summary, not from 300 messages.
+    const after = await loadHistory(conv.id);
+    expect(after.summaryText).not.toBeNull();
+    expect(after.messages.length).toBeLessThan(10);
+  });
+
+  it("compacts a request that would not fit at all, even with too little to compact otherwise", async () => {
+    // Under the floor of eight, but the next request is over the window less a
+    // reply's room: the floor is there to stop a summary being redone for
+    // nothing, never to send a request that cannot fit.
+    const convId = await seedConversation(0);
+    await startChatRun({ userId, content: "exceed the context and make a todo list", model: "llama-3.1-8b-instruct", conversationId: convId });
+    await waitFor(() => Promise.resolve(getRunByConversation(convId) ? null : true));
+
+    const row = await summaryRow(convId);
+    expect(row).not.toBeNull();
+    const rows = await db.query.messages.findMany({
+      where: eq(messages.conversationId, convId),
+      orderBy: (m, { asc }) => [asc(m.lamport), asc(m.createdAt)],
+    });
+    expect(rows.at(-1)).toMatchObject({ authorType: "assistant", status: "complete" });
+  });
+
+  it("refuses a single message too large for the window, rather than send it to be cut off", async () => {
+    // Nothing else to summarise: the message alone is over the window.
+    const convId = await seedConversation(0);
+    requests.length = 0;
+    await startChatRun({ userId, content: `a long paste: ${"words ".repeat(5000)}`, model: "llama-3.1-8b-instruct", conversationId: convId });
+    await waitFor(() => Promise.resolve(getRunByConversation(convId) ? null : true));
+
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    const reply = rows.find((r) => r.authorType === "assistant");
+    expect(reply?.status).toBe("error");
+    expect(reply?.error).toMatch(/doesn't fit the model's context/);
+    // Nothing was sent.
+    expect(requests).toHaveLength(0);
+    expect(await summaryRow(convId)).toBeNull();
+  });
+
+  it("puts a summary after every row the conversation already has, whatever clock wrote them", async () => {
+    // A run's rows take a monotonic lamport that can run ahead of the clock,
+    // and a client's can come from a clock ahead of ours. A summary sorted
+    // before one of them would replay it after the summary.
+    const convId = await seedConversation(2);
+    const ahead = Date.now() + 60_000;
+    await db.insert(messages).values({
+      id: uuid(),
+      conversationId: convId,
+      authorType: "assistant",
+      origin: "server",
+      lamport: ahead,
+      content: [{ kind: "text", text: "from the future" }] as ContentBlock[],
+      status: "complete",
+      createdAt: new Date(),
+    });
+    expect(await nextConversationLamport(convId)).toBe(ahead + 1);
   });
 
   it("checks in at the user's step cadence rather than the built-in default", async () => {

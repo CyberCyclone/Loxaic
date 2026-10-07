@@ -15,16 +15,22 @@
  * Web-only: it depends on the composer's real `<input type="file">`, and the
  * fixtures are written at runtime because four 256 KB files are not something
  * to commit.
+ *
+ * On a host model loaded with a 512K window: four such files are about 260K
+ * tokens, which the mock model's 4K window could never hold — a request that
+ * does not fit is compacted or refused before it is sent, and what this spec
+ * is about is the attachment budget, not the window.
  */
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { $$ } from '@wdio/globals';
+import { $$, browser } from '@wdio/globals';
 import { adminCreds, provisionAdmin } from '../../helpers/auth.ts';
 import { shot } from '../../helpers/screenshot.ts';
-import { byTestId, isVisible, waitForVisible } from '../../helpers/selectors.ts';
+import { byTestId, isVisible, tap, waitForGone, waitForVisible } from '../../helpers/selectors.ts';
 import { attachImage } from '../../helpers/attachments.ts';
 import { goToSurface, sendMessage, signIn, startNewThread } from '../../helpers/app.ts';
+import { downloadTinyModel, patchModel, removeMockModels } from '../../helpers/hostModels.ts';
 
 /** One document at the per-document cap — three fit the budget, a fourth does
  * not. Matches MAX_EXTRACTED_BYTES in @loxaic/types. */
@@ -40,19 +46,41 @@ function writeFixture(name: string): string {
   return file;
 }
 
+/** Waits until `n` replies carry their usage. The host model reports no cache
+ * figure, so each reply's prompt cost is what marks its usage as arrived. */
+async function waitForReplies(n: number): Promise<void> {
+  await browser.waitUntil(async () => (await $$('[data-testid="chat.usage.promptCost"]').length) >= n, {
+    timeout: 30_000,
+    timeoutMsg: `[e2e] expected ${String(n)} replies with their usage`,
+  });
+}
+
 describe('attachment budget', () => {
-  before(async () => {
+  let replies = 0;
+  before(async function () {
+    this.timeout(3 * 60_000);
     await provisionAdmin();
+    await removeMockModels();
+    const model = await downloadTinyModel();
+    await patchModel(model, { enabled: true, loadSettings: { ctxSize: 512 * 1024 }, contextStages: null });
     await signIn(adminCreds());
     await goToSurface('chat');
     await startNewThread('chat');
+    await tap('composer.model');
+    await waitForVisible(`models.row.${model}`);
+    await tap(`models.row.${model}`);
+    await waitForGone('models.dialog', 10_000);
+  });
+
+  after(async () => {
+    await removeMockModels();
   });
 
   it('says nothing while the attachments still fit', async () => {
     for (const name of ['report.txt', 'appendix-a.txt']) {
       await attachImage(writeFixture(name));
       await sendMessage(`Here is ${name}`);
-      await waitForVisible('chat.usage.reuse');
+      await waitForReplies(++replies);
     }
     // The notice is a claim about what was dropped, so it must stay off the
     // screen entirely while nothing has been.
@@ -64,7 +92,7 @@ describe('attachment budget', () => {
     for (const name of ['appendix-b.txt', 'latest-figures.txt']) {
       await attachImage(writeFixture(name));
       await sendMessage(`Here is ${name}`);
-      await waitForVisible('chat.usage.reuse');
+      await waitForReplies(++replies);
     }
 
     await waitForVisible('chat.usage.omittedAttachments');
@@ -87,7 +115,7 @@ describe('attachment budget', () => {
     // sentence to every subsequent reply, including ones the user attached
     // nothing to.
     await sendMessage('just a question, no attachment');
-    await waitForVisible('chat.usage.reuse');
+    await waitForReplies(++replies);
     await waitForVisible('chat.usage.omittedAttachments');
 
     const notices = $$('[data-testid="chat.usage.omittedAttachments"]');

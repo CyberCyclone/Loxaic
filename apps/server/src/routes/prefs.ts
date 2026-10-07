@@ -31,7 +31,6 @@ import { clampAutoContinues, clampWaitTimeoutMs, serverDefaultTimeoutMs } from "
  * their own per-server toolPolicies allowlist (PATCH /v1/mcp/servers/:id). */
 function toApi(row: {
   toolAllowlist: unknown;
-  autoCompact?: boolean;
   maxIterations?: number;
   recentModels?: unknown;
   checkinTimeoutMs?: number | null;
@@ -43,12 +42,8 @@ function toApi(row: {
   subagentModel?: string | null;
 }) {
   const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist.filter(isToolName) : [];
-  // Default true, matching the column: a user who has never had a prefs row
-  // must read the same as one whose row says nothing, or the setting would
-  // appear off until the first time they touched anything else.
   return {
     toolAllowlist: allowlist,
-    autoCompact: row.autoCompact ?? true,
     // Clamped with the *same* function the engine enforces with, not a
     // parallel one. `?? DEFAULT` covers a missing value but not an
     // out-of-range one, and the "plain data" argument cuts both ways: if the
@@ -147,10 +142,16 @@ export function prefsRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "serverDefaults describes the operator's configuration and cannot be set" };
     }
+    // Gone, and said so: a client from before would otherwise believe it had
+    // turned compaction off. A full conversation is always compacted or its
+    // context extended now — the alternative was a request the backend cut off.
+    if (body.autoCompact !== undefined) {
+      reply.code(400);
+      return { error: "autoCompact is no longer a setting: a full conversation is always compacted or its context extended" };
+    }
 
     const patch: {
       toolAllowlist?: string[];
-      autoCompact?: boolean;
       maxIterations?: number;
       checkinTimeoutMs?: number | null;
       approvalTimeoutMs?: number | null;
@@ -166,13 +167,6 @@ export function prefsRoutes(app: FastifyInstance) {
         return { error: "toolAllowlist must be an array of builtin tool names" };
       }
       patch.toolAllowlist = body.toolAllowlist;
-    }
-    if (body.autoCompact !== undefined) {
-      if (typeof body.autoCompact !== "boolean") {
-        reply.code(400);
-        return { error: "autoCompact must be a boolean" };
-      }
-      patch.autoCompact = body.autoCompact;
     }
     if (body.maxIterations !== undefined) {
       const n = body.maxIterations;
