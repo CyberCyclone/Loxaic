@@ -2,7 +2,7 @@ import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Switch } from '@/components/ui/switch';
-import { Outcome } from './AutoCompactToggle';
+import { Outcome } from './Outcome';
 
 /**
  * Whether a wait stretches to fit a slow backend. Both outcomes are spelled

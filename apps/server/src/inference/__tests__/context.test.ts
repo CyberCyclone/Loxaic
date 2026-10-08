@@ -11,7 +11,7 @@ import {
 } from "../context.ts";
 import type { ChatMessage, OpenAiTool } from "../provider.ts";
 
-const META = { historyMessages: 4, historyLimit: 50, historyTruncated: false };
+const META = { historyMessages: 4 };
 
 const sumParts = (parts: { tokens: number }[]) => parts.reduce((s, p) => s + p.tokens, 0);
 
@@ -88,14 +88,15 @@ describe("apportion", () => {
   it("carries the assembly metadata through", () => {
     const result = apportion({ history: 100 }, 50, 10, {
       historyMessages: 50,
-      historyLimit: 50,
-      historyTruncated: true,
       windowTokens: 8192,
     });
 
-    expect(result.history_truncated).toBe(true);
     expect(result.history_messages).toBe(50);
     expect(result.window_tokens).toBe(8192);
+    // Nothing is dropped any more, so the old window's fields are not sent:
+    // an older client reads their absence as "nothing dropped".
+    expect(result).not.toHaveProperty("history_truncated");
+    expect(result).not.toHaveProperty("history_limit");
   });
 
   it("reports a null window when the backend wouldn't say", () => {

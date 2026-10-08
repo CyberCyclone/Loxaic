@@ -118,6 +118,19 @@ export const PLAN_REQUIRED_NUDGE =
   "Finish by calling propose_plan with your plan, or ask_questions if you need answers from me first.";
 
 /**
+ * Persisted as a user row straight after a summary that a run wrote in the
+ * middle of its work, when the conversation filled the model's context
+ * between two of its requests (compactWithinRun). The prompt then reads
+ * system, summary, this — never ending on a system message, which several
+ * chat templates refuse — and the model carries on with the task rather than
+ * waiting for a turn that is not coming. Fixed text, never interpolated, for
+ * the reason CHECKIN_ANSWER_NUDGE is, and so the client can show it as a
+ * notice rather than as something the user typed. Its row's author is null.
+ */
+export const COMPACTION_CONTINUE_NUDGE =
+  "The conversation above was compacted into the summary. Continue the task from where it left off.";
+
+/**
  * The first line of the message the questions panel sends (#199). The rest is
  * one numbered line per question with its answer; the client builds it
  * (formatAnswers in apps/mobile/lib/plan.ts) and reads it back to render a
@@ -391,11 +404,16 @@ export interface ContextBreakdown {
    * now and will be in the next prompt, so the bar and the ring agree. */
   used_tokens: number;
   parts: ContextPart[];
-  /** How many prior messages were actually replayed, and the cap that applied. */
+  /** How many prior messages were replayed — everything since the newest summary. */
   history_messages: number;
-  history_limit: number;
-  /** True when older turns had already been dropped by the cap. */
-  history_truncated: boolean;
+  /**
+   * From older servers only, which replayed the newest 50–74 rows and dropped
+   * the rest: the cap, and whether it had dropped anything. A current server
+   * drops nothing — a full conversation is compacted or its context extended —
+   * and omits both, which an older client reads as "nothing dropped".
+   */
+  history_limit?: number;
+  history_truncated?: boolean;
   /** The window the prompt was actually assembled against. Belt-and-braces on
    * top of the client's model-list refresh: it closes the races refresh can't
    * (refresh in flight, model changed mid-conversation, MOCK_INFERENCE). */

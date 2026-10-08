@@ -185,8 +185,6 @@ export function splitToolTokens(tokens: number, sources: ToolSourceTally[]): Con
 
 export interface ApportionMeta {
   historyMessages: number;
-  historyLimit: number;
-  historyTruncated: boolean;
   windowTokens?: number | null;
   /** Where the tool schemas came from; splits the `tools` part when given. */
   toolSources?: ToolSourceTally[];
@@ -213,8 +211,6 @@ export function apportion(
     used_tokens: promptTokens + completionTokens,
     parts: [],
     history_messages: meta.historyMessages,
-    history_limit: meta.historyLimit,
-    history_truncated: meta.historyTruncated,
     window_tokens: meta.windowTokens ?? null,
   };
 

@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, count, db, eq, gt } from "@loxaic/db";
+import { and, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
@@ -77,7 +77,7 @@ import {
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
-import { shouldAutoCompact, userAllowsAutoCompact } from "./auto-compact.ts";
+import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
@@ -117,45 +117,6 @@ export const MAX_MAX_ITERATIONS = 500;
 // What an unanswered wait does, and how long it lasts, live in timeouts.ts —
 // the check-in ladder and the adaptive window are pure functions there, and
 // the per-user choices come from `loadRunPrefs` below.
-/**
- * The smallest number of prior messages the replay window is ever narrowed
- * to. It is a floor, not a fixed size — see `historyAnchor`.
- */
-export const HISTORY_LIMIT = 50;
-
-/**
- * How far the window's oldest edge jumps when it finally has to move.
- *
- * A window of exactly HISTORY_LIMIT messages that slides by one on every turn
- * destroys the backend's prompt cache: the prompt no longer *starts* with the
- * same tokens, so llama.cpp/LM Studio re-evaluate the entire history from
- * scratch, every single turn, for the life of the conversation. Measured on a
- * 14.5k-token thread against a local LM Studio: 312 ms when the window held
- * still versus 14,551 ms the turn one message fell off the front — a 45×
- * difference that grows with the conversation.
- *
- * So the window is allowed to *grow* from HISTORY_LIMIT up to
- * HISTORY_LIMIT + HISTORY_STEP - 1 messages, and only re-anchors — paying one
- * full prompt evaluation — once every HISTORY_STEP messages. Every turn in
- * between extends a prefix the backend already has cached.
- */
-export const HISTORY_STEP = 25;
-
-/**
- * The oldest message this turn replays, as an offset from the oldest message
- * available (0 = replay everything). Quantised to HISTORY_STEP so it is a
- * *stable* function of the conversation's length rather than a value that
- * drifts by one per message: it holds still for HISTORY_STEP messages at a
- * time, which is what keeps the prompt prefix — and so the backend's KV cache
- * — intact across turns.
- *
- * Exported for the tests that pin the quantisation; `loadHistory` is the only
- * caller.
- */
-export function historyAnchor(total: number): number {
-  if (total <= HISTORY_LIMIT) return 0;
-  return Math.max(0, Math.floor((total - HISTORY_LIMIT) / HISTORY_STEP) * HISTORY_STEP);
-}
 
 /**
  * The next lamport value a run's own messages should take, given the last one
@@ -176,9 +137,9 @@ export function monotonicLamport(previous: number, now: number = Date.now()): nu
  * The live loop appends these to `chatMessages` as a run proceeds; `loadHistory`
  * rebuilds them from stored blocks on the next turn. If the two ever differ by
  * so much as a key, the next prompt is not a prefix of the last one, the
- * backend re-evaluates from the first tool call in the window, and
- * `reusable_tokens` records 0 for every turn after it — the anchored-window
- * work upstream undone by a serialisation mismatch.
+ * backend re-evaluates from the first tool call it replays, and
+ * `reusable_tokens` records 0 for every turn after it — a stable front undone
+ * by a serialisation mismatch.
  *
  * They *did* differ, in two ways. The loop sent the model's verbatim
  * `arguments` string and a `name` on the tool message; the replay sent
@@ -329,6 +290,21 @@ function isStrictExtension(reuse: PromptReuse): reuse is PromptReuse & { tokens:
  * the engine has already measured for this request — nothing here may touch
  * the prompt itself.
  */
+/**
+ * How large a request is about to be. On a strict extension of the previous
+ * request the front of the prompt has a measured size, so only what was
+ * appended is estimated — far closer than estimating the whole thing from
+ * characters. The appended messages carry no tool schemas (those are in the
+ * measured prefix). One function for `prompt.stats` and for the run's check
+ * that a request fits, so the figure on the wire is the one acted on.
+ */
+export function promptEstimate(input: { tally: ContextTally; chatMessages: ChatMessage[]; reuse: PromptReuse }): number {
+  const { reuse } = input;
+  return isStrictExtension(reuse)
+    ? reuse.tokens + estimateTallyTokens(tallyChatMessages(input.chatMessages.slice(reuse.previousMessages)))
+    : estimateTallyTokens(input.tally);
+}
+
 export function promptStatsFor(input: {
   messageId: string;
   model: string;
@@ -341,13 +317,7 @@ export function promptStatsFor(input: {
 }): PromptStats {
   const { reuse } = input;
   const extension = isStrictExtension(reuse);
-  // On a strict extension the front of the prompt has a measured size, so
-  // only what was appended is estimated — far closer than estimating the
-  // whole thing from characters. The appended messages carry no tool schemas
-  // (those are in the measured prefix).
-  const estimate = extension
-    ? reuse.tokens + estimateTallyTokens(tallyChatMessages(input.chatMessages.slice(reuse.previousMessages)))
-    : estimateTallyTokens(input.tally);
+  const estimate = promptEstimate(input);
   // Unknown reuse is treated as none, so the ETA is an upper bound ("up to
   // about") rather than an optimistic guess.
   const toEvaluate = Math.max(0, estimate - (extension ? reuse.tokens : 0));
@@ -544,7 +514,10 @@ export async function runToolLoop(ctx: {
    * - a step check-in is not asked: it wraps up, since there is nobody to ask
    *   and its parent is parked waiting on it;
    * - it leaves no request shape and starts no compaction or context
-   *   extension — it is one run long, and those are for the run after.
+   *   extension after its turn — it is one run long. Filling up inside that
+   *   run, it compacts between its own requests like any run, but never
+   *   extends: a stage is the whole model's, and moving it is for the
+   *   conversation a person is in.
    */
   role?: { kind: "subagent"; parentConvId: string };
   abort: AbortController;
@@ -554,17 +527,14 @@ export async function runToolLoop(ctx: {
   // Whose workspace the tools run in, and whose MCP choices apply.
   const workspaceConvId = ctx.role?.parentConvId ?? convId;
 
-  // Decided inside the loop, acted on outside it: startCompactRun takes the
-  // per-conversation lock this run is still holding until `finally` releases
-  // it, so triggering in place would refuse itself with "already in progress".
-  let autoCompact = false;
-  // Whether the turn filled the window, whatever the history's length: a model
-  // set to extend its context does so for a conversation full after one big
-  // paste, which compaction (needing something to summarise) could not help.
-  let windowFull = false;
-  // Read through a call: the type checker takes the flag to be false for good,
-  // and cannot see the closure that sets it during the run.
-  const wasWindowFull = () => windowFull;
+  // How full the conversation was when the turn ended (fillDecision), decided
+  // inside the loop and acted on outside it: a compaction or stage run of its
+  // own takes the per-conversation lock this run holds until `finally`
+  // releases it, so starting one in place would refuse itself with "already
+  // in progress". Read through a call: the type checker takes the value to be
+  // the initial one for good, and cannot see the closure that sets it.
+  let afterTurn: { decision: FillDecision; canCompact: boolean } = { decision: { action: "none" }, canCompact: false };
+  const turnEndedFull = () => afterTurn;
 
   // Held from just before the first model call until the run ends, and handed
   // back only while waiting on a human — see acquireRunSlot.
@@ -573,9 +543,7 @@ export async function runToolLoop(ctx: {
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
-    // again on the next line. (`userAllowsAutoCompact` is a third reader, and
-    // deliberately not folded in — it is deferred until the compaction
-    // threshold is actually crossed, so most turns never pay for it.)
+    // again on the next line.
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
     // Decided once, like the toolset it shapes: which model a child may run
     // on is part of the tool's schema, and so of the prompt's front.
@@ -627,8 +595,10 @@ export async function runToolLoop(ctx: {
     const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments, hasSubagents);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
-    // stays in Postgres and on screen but is no longer sent.
-    const summaryMsg = history.summaryText ? summaryMessage(history.summaryText) : null;
+    // stays in Postgres and on screen but is no longer sent. Replaced when the
+    // run compacts in the middle of its work (`compactWithinRun`).
+    let summaryText = history.summaryText;
+    let summaryMsg = summaryText ? summaryMessage(summaryText) : null;
     // Fixed for the run, and what a compaction of this conversation needs to
     // send the same front of the prompt (request-shape.ts).
     // The thinking level as body fields, fixed for the run like the tools: on
@@ -648,18 +618,30 @@ export async function runToolLoop(ctx: {
       .set({ thinkingLevel })
       .where(eq(conversations.id, convId))
       .catch((err: unknown) => { console.warn(`recording the thinking level of ${convId} failed: ${(err as Error).message}`); });
-    const chatMessages: ChatMessage[] = [
+    // Appended to as the run goes; rebuilt only by a compaction inside it.
+    let chatMessages: ChatMessage[] = [
       ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
       ...(summaryMsg ? [summaryMsg] : []),
       ...history.messages,
     ];
+    /** The messages before the replayed history: the system prompt and the summary. */
+    const frontLength = (): number => (systemPrompt ? 1 : 0) + (summaryMsg ? 1 : 0);
+    // What the context breakdown reports as replayed, and the attachments this
+    // prompt left out — both describe the loaded history until a compaction
+    // inside the run replaces it.
+    let replayedMessages = history.messages.length;
+    let omittedAttachments = history.omittedAttachments;
     // Only user turns ever carry image parts, and the loop below only appends
-    // assistant and tool messages — so this holds for every iteration.
-    const hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
+    // assistant and tool messages — so this holds for every iteration, until a
+    // compaction leaves only the summary.
+    let hadImages = chatMessages.some((m) => m.role === "user" && countImageParts(m.content) > 0);
 
     // Per-message hashes from the previous iteration; safe to reuse because
-    // `chatMessages` is only ever appended to below.
+    // `chatMessages` is only ever appended to below (a compaction resets it).
     let carriedHashes: readonly string[] | undefined;
+    // The previous request's measured prompt, and how many messages it held:
+    // the next request's size is that plus an estimate of what was appended.
+    let lastPrompt: { tokens: number; completion: number; messages: number } | null = null;
 
     // Two messages persisted less than a millisecond apart both take
     // Date.now() as their lamport, and loadHistory's ORDER BY lamport (then
@@ -680,6 +662,13 @@ export async function runToolLoop(ctx: {
       lastLamport = monotonicLamport(lastLamport);
       return lastLamport;
     };
+    // The stored row this run's next request ends on and has not answered:
+    // the person's message until the first reply is written, then any nudge
+    // the run writes after a reply. A compaction keeps it after the summary
+    // rather than folding it in (compactWithinRun). Unknown without the
+    // message's lamport, and a compaction then summarises everything.
+    let unanswered: { id: string; lamport: number } | null =
+      ctx.userLamport != null ? { id: ctx.userMsgId, lamport: ctx.userLamport } : null;
 
     // Which backend this run's model lives on, for the queue it joins and the
     // cache it invalidates. A reference that cannot be resolved queues on the
@@ -780,13 +769,200 @@ export async function runToolLoop(ctx: {
       return;
     }
 
+    // The model's context stages, for what a full conversation gets. None for
+    // a sub-agent: a stage is the whole model's, and moving it is for the
+    // conversation a person is in — a child compacts instead.
+    const { stagesForFill, planExtension, extendWithinRun } = await import("./stageRun.ts");
+    let stages = ctx.role ? null : await stagesForFill(model).catch(() => null);
+    // What has already failed in this run is not tried again in it: a switch
+    // that would not load, or a summary the model would not write, would only
+    // fail again on the next request, a reload or a model call each time.
+    let extensionFailed = false;
+    let compactionFailed = false;
+    // A run that has compacted and still does not fit is not compacted again.
+    let compactedThisRun = false;
+
     // Unbounded: the window is a checkpoint, not a ceiling — every exit from
     // this loop now returns or breaks deliberately.
     for (let iteration = 1; ; iteration++) {
       producer.emit({ kind: "iteration", n: iteration, max: budgetEnd });
 
       const assistantMsgId = uuid();
+      // The model's window; whether a load sits inside this request's TTFT (no
+      // ETA can account for it, and the request's timing must not become a
+      // prefill-rate sample); and whether to ask the backend for prompt
+      // progress — see modelRunInfo.
+      const readModel = async (): Promise<{ windowTokens: number | null; loadingModel: boolean; reportProgress: boolean }> => {
+        try {
+          // This model's own provider, never the whole fan-out: searching every
+          // provider's list here would put an unreachable one's timeout in front
+          // of every tool iteration of a run that has nothing to do with it —
+          // while that run holds an inference slot that may be the deployment's
+          // only one.
+          const info = await modelRunInfo(model);
+          return {
+            windowTokens: info?.windowTokens ?? null,
+            loadingModel: !!info && !info.loaded,
+            reportProgress: info?.nativeRuntime ?? false,
+          };
+        } catch {
+          // Best-effort — fall back to the generic "thinking" indicator.
+          return { windowTokens: null, loadingModel: false, reportProgress: false };
+        }
+      };
+      let { windowTokens, loadingModel, reportProgress } = await readModel();
+
+      // Snapshot what this iteration is actually sending. `chatMessages` grows
+      // as tool calls and results are appended, so it has to be measured here
+      // rather than once per run — and `tools` is measured with it, since the
+      // schemas ride in `body.tools` and appear nowhere in the message list.
+      // The summary message is tallied separately: tallyChatMessages would
+      // classify its system role as `system` and silently fold the compacted
+      // history into the system-prompt row.
+      //
+      // The fingerprint is of the exact payload about to go out, for the same
+      // reason. Hashes from the previous iteration are carried forward:
+      // `chatMessages` is append-only within a run (a compaction resets the
+      // carry), and re-hashing it whole each time meant re-reading every
+      // inlined image data URI on every iteration. See fingerprintPrompt for
+      // the guarantee this relies on.
+      const measureRequest = () => {
+        const tally = tallyChatMessages(
+          summaryMsg ? chatMessages.filter((m) => m !== summaryMsg) : chatMessages,
+          tools,
+        );
+        if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
+        const fingerprint = fingerprintPrompt(model, chatMessages, tools, carriedHashes);
+        return { tally, fingerprint, reuse: measureReuse(convId, fingerprint) };
+      };
+      let measured = measureRequest();
+
+      // ── Room for this request ─────────────────────────────
+      //
+      // Before the request, and before this iteration's assistant row: a
+      // conversation that would not fit is extended or compacted here, between
+      // two requests of the run, so nothing is ever sent that llama.cpp would
+      // cut off mid-reply (it stops a reply at exactly the window, and a run
+      // then carries on with nine truncated replies in a row — seen on the
+      // beta). Before the row, because a summary written after it would sort
+      // past it and leave it out of every later replay. A few passes at most:
+      // extend, extend again, compact, then send what fits.
+      for (let pass = 0; pass < 4; pass++) {
+        const estimate =
+          lastPrompt && chatMessages.length >= lastPrompt.messages
+            ? lastPrompt.tokens + estimateTallyTokens(tallyChatMessages(chatMessages.slice(lastPrompt.messages)))
+            : promptEstimate({ tally: measured.tally, chatMessages, reuse: measured.reuse });
+        const decision = fillDecision({
+          estimatedTokens: estimate,
+          windowTokens,
+          // A compaction that failed in this run is not tried again in it: as
+          // if there were nothing to summarise, the request is then sent if it
+          // fits and refused with a reason if it does not.
+          messagesSinceSummary: compactionFailed ? 0 : chatMessages.length - frontLength(),
+          stages: extensionFailed ? null : stages,
+          phase: "mid_run",
+          compactedThisRun,
+        });
+        if (decision.action === "none") break;
+
+        if (decision.action === "extend") {
+          const target = await planExtension({ model, conversationId: convId }).catch(() => null);
+          const outcome = target === null
+            ? null
+            : await extendWithinRun({ slot, model, conversationId: convId, target, producer, signal: abort.signal });
+          if (outcome?.kind === "applied" || outcome?.kind === "unchanged") {
+            // A reload: the window is the new stage's, and the backend's cache
+            // of this conversation is gone (the next request re-reads it).
+            invalidateBackendModels(providerId);
+            ({ windowTokens, loadingModel, reportProgress } = await readModel());
+            stages = await stagesForFill(model).catch(() => null);
+          } else {
+            extensionFailed = true;
+          }
+          measured = measureRequest();
+          continue;
+        }
+
+        if (decision.action === "compact") {
+          const { compactWithinRun } = await import("./compactRun.ts");
+          const compacted = await compactWithinRun({
+            convId,
+            userId,
+            model,
+            producer,
+            signal: abort.signal,
+            shape: { model, system: systemPrompt, tools, thinking: thinkingBody },
+            replay: chatMessages.slice(frontLength()),
+            summaryText,
+            estimate,
+            windowTokens,
+            nextLamport,
+            parentId,
+            unanswered,
+          });
+          if (compacted.ok) {
+            // The run goes on from the summary, exactly as the next run will
+            // replay it: system prompt, summary, then the message it has yet
+            // to answer — kept as it was — or the persisted nudge. Key order
+            // matches loadHistory's own `{ role, content }`.
+            summaryText = compacted.summaryText;
+            summaryMsg = summaryMessage(summaryText);
+            chatMessages = [
+              ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
+              summaryMsg,
+              compacted.continueFrom.message,
+            ];
+            parentId = compacted.continueFrom.id;
+            unanswered = { id: compacted.continueFrom.id, lamport: compacted.continueFrom.lamport };
+            carriedHashes = undefined;
+            lastPrompt = null;
+            replayedMessages = 1;
+            omittedAttachments = [];
+            hadImages = false;
+            compactedThisRun = true;
+          } else if (compacted.stopped) {
+            await producer.end("cancelled");
+            return;
+          } else {
+            compactionFailed = true;
+          }
+          measured = measureRequest();
+          continue;
+        }
+
+        // Full, and nothing more can make room: said, rather than sent to be
+        // cut off. Recorded on a reply of its own so it reloads as it read.
+        const refusedLamport = nextLamport();
+        await db.insert(messages).values({
+          id: assistantMsgId,
+          conversationId: convId,
+          parentId,
+          authorType: "assistant",
+          origin: "server",
+          model,
+          lamport: refusedLamport,
+          content: [] as ContentBlock[],
+          status: "error",
+          error: decision.reason,
+          createdAt: new Date(),
+        });
+        producer.emit({
+          kind: "message.start",
+          message_id: assistantMsgId,
+          author_type: "assistant",
+          parent_id: parentId,
+          lamport: refusedLamport,
+          model,
+        });
+        producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "error", error: decision.reason });
+        await producer.end("error", { error: decision.reason });
+        return;
+      }
+      const { tally, fingerprint, reuse } = measured;
+      carriedHashes = fingerprint.messageHashes;
+
       const assistantLamport = nextLamport();
+      unanswered = null;
       await db.insert(messages).values({
         id: assistantMsgId,
         conversationId: convId,
@@ -807,70 +983,24 @@ export async function runToolLoop(ctx: {
         lamport: assistantLamport,
         model,
       });
+      if (loadingModel) {
+        // Say why when the reload is another conversation's stage switch:
+        // otherwise a reply that starts with a long reload is a mystery.
+        const switched = recentSwitch(model, convId);
+        producer.emit(
+          switched
+            ? { kind: "model.loading", message_id: assistantMsgId, reason: "context_stage", to_tokens: switched.toTokens }
+            : { kind: "model.loading", message_id: assistantMsgId },
+        );
+      }
 
       let text = "";
       let thinking = "";
       let toolCalls: ToolCall[] = [];
       let doneResult: CompletionResult | null = null;
 
-      let windowTokens: number | null = null;
-      // A load inside this request's TTFT: no ETA can account for it, and the
-      // request's timing must not become a prefill-rate sample.
-      let loadingModel = false;
-      // Whether to ask the backend for prompt progress — see modelRunInfo.
-      let reportProgress = false;
-      try {
-        // This model's own provider, never the whole fan-out: searching every
-        // provider's list here would put an unreachable one's timeout in front
-        // of every tool iteration of a run that has nothing to do with it —
-        // while that run holds an inference slot that may be the deployment's
-        // only one.
-        const info = await modelRunInfo(model);
-        windowTokens = info?.windowTokens ?? null;
-        reportProgress = info?.nativeRuntime ?? false;
-        if (info && !info.loaded) {
-          loadingModel = true;
-          // Say why when the reload is another conversation's stage switch:
-          // otherwise a reply that starts with a long reload is a mystery.
-          const switched = recentSwitch(model, convId);
-          producer.emit(
-            switched
-              ? { kind: "model.loading", message_id: assistantMsgId, reason: "context_stage", to_tokens: switched.toTokens }
-              : { kind: "model.loading", message_id: assistantMsgId },
-          );
-        }
-      } catch {
-        // Best-effort — fall back to the generic "thinking" indicator.
-      }
-
-      // Snapshot what this iteration is actually sending. `chatMessages` grows
-      // as tool calls and results are appended, so it has to be measured here
-      // rather than once per run — and `tools` is measured with it, since the
-      // schemas ride in `body.tools` and appear nowhere in the message list.
-      // The summary message is tallied separately: tallyChatMessages would
-      // classify its system role as `system` and silently fold the compacted
-      // history into the system-prompt row.
-      const tally = tallyChatMessages(
-        summaryMsg ? chatMessages.filter((m) => m !== summaryMsg) : chatMessages,
-        tools,
-      );
-      // Fingerprint the exact payload about to go out — same reason the tally
-      // is taken here rather than once per run: `chatMessages` grows as tool
-      // calls and results are appended, and each iteration is its own request
-      // with its own prefix relationship to the one before it.
-      //
-      // Hashes from the previous iteration are carried forward: `chatMessages`
-      // is append-only within a run, and re-hashing it whole each time meant
-      // re-reading every inlined image data URI on every iteration. See
-      // fingerprintPrompt for the guarantee this relies on.
-      const fingerprint = fingerprintPrompt(model, chatMessages, tools, carriedHashes);
-      carriedHashes = fingerprint.messageHashes;
-      const reuse = measureReuse(convId, fingerprint);
-      if (summaryMsg) addChars(tally, "summary", summaryMsg.content);
       const breakdownMeta = {
-        historyMessages: history.messages.length,
-        historyLimit: HISTORY_LIMIT,
-        historyTruncated: history.truncated,
+        historyMessages: replayedMessages,
         windowTokens,
         toolSources,
       };
@@ -932,6 +1062,13 @@ export async function runToolLoop(ctx: {
             toolCalls = event.result.toolCalls;
             doneResult = event.result;
             recordPrompt(convId, fingerprint, event.result.usage.prompt_tokens);
+            if (event.result.usage.prompt_tokens > 0) {
+              lastPrompt = {
+                tokens: event.result.usage.prompt_tokens,
+                completion: event.result.usage.completion_tokens,
+                messages: chatMessages.length,
+              };
+            }
             slowestTurnMs = Math.max(slowestTurnMs, Date.now() - requestStartedAt);
             recordPrefill(model, {
               promptTps: event.result.promptTps,
@@ -999,7 +1136,7 @@ export async function runToolLoop(ctx: {
           result: doneResult,
           reuse,
           tally,
-          omittedAttachments: history.omittedAttachments,
+          omittedAttachments,
           meta: breakdownMeta,
         });
         producer.emit({ kind: "message.usage", message_id: assistantMsgId, usage: iterationUsage });
@@ -1049,14 +1186,8 @@ export async function runToolLoop(ctx: {
        *
        * One closure rather than two copies because the two callers must stay
        * identical in everything a client or the compaction policy can see:
-       * the usage on `message.end`, the compaction verdict from the measured
-       * prompt, and `producer.end` carrying that usage. The verdict is
-       * *returned* and assigned by the caller, not assigned in here: an
-       * assignment inside a closure is invisible to control-flow analysis,
-       * so the trigger past the `finally` would read `autoCompact` as the
-       * literal `false` it was declared with and lint it as never-true —
-       * correct at runtime, and exactly the kind of thing that stops being
-       * correct on the next refactor. The "answer now"
+       * the usage on `message.end`, how full the measured prompt left the
+       * conversation, and `producer.end` carrying that usage. The "answer now"
        * fallback used to end with `producer.end("complete")` and a bare
        * `return` — a successful turn that reported no token counts, dropped
        * the omitted-attachments notice, and skipped the compaction check
@@ -1066,30 +1197,33 @@ export async function runToolLoop(ctx: {
        * Callers `break` afterwards, never `return`: the auto-compaction trigger
        * sits past the `finally`, and only a `break` reaches it.
        */
-      const endTurnComplete = async (leafId: string, messageEnded = false): Promise<boolean> => {
+      const endTurnComplete = async (leafId: string, messageEnded = false): Promise<void> => {
         await db
           .update(conversations)
           .set({ activeLeafId: leafId, updatedAt: new Date() })
           .where(eq(conversations.id, convId));
         const usage = iterationUsage;
-        // Checked here rather than before the next turn starts: this is the
-        // one point where the *measured* size of the prompt and the window it
-        // was assembled against are both in hand. The threshold leaves room
-        // for the turn that follows, which is what makes acting after the
-        // fact safe.
-        const fill = {
-          usedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : 0,
-          windowTokens: breakdownMeta.windowTokens ?? null,
+        // Checked here as well as before each request: this is the one point
+        // where the *measured* size of the whole turn and the window it was
+        // assembled against are both in hand, and acting now — once the run's
+        // lock is free — leaves the next turn a conversation that fits.
+        const sinceSummary = chatMessages.length - frontLength();
+        afterTurn = {
+          decision: fillDecision({
+            estimatedTokens: doneResult ? doneResult.usage.prompt_tokens + doneResult.usage.completion_tokens : null,
+            windowTokens: breakdownMeta.windowTokens ?? null,
+            messagesSinceSummary: sinceSummary,
+            stages,
+            phase: "after_turn",
+          }),
+          canCompact: sinceSummary >= AUTO_COMPACT_MIN_MESSAGES,
         };
-        const compact = shouldAutoCompact({ ...fill, historyMessages: history.messages.length });
-        windowFull = shouldAutoCompact({ ...fill, historyMessages: Number.MAX_SAFE_INTEGER });
         // A turn ended by a handed-over plan has already sent this: its tools
         // ran first, and message.end follows their results.
         if (!messageEnded) {
           producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage });
         }
         await producer.end("complete", { usage });
-        return compact;
       };
 
       if (toolCalls.length === 0) {
@@ -1135,10 +1269,11 @@ export async function runToolLoop(ctx: {
           producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
           chatMessages.push({ role: "user", content: PLAN_REQUIRED_NUDGE });
           parentId = nudgeId;
+          unanswered = { id: nudgeId, lamport: nudgeLamport };
           budgetEnd = Math.max(budgetEnd, iteration + 1);
           continue;
         }
-        autoCompact = await endTurnComplete(assistantMsgId);
+        await endTurnComplete(assistantMsgId);
         break;
       }
 
@@ -1185,7 +1320,7 @@ export async function runToolLoop(ctx: {
         });
         // A successful turn, ended exactly like every other one — with its
         // usage, and through `break` so the compaction check still runs.
-        autoCompact = await endTurnComplete(refusedMsgId);
+        await endTurnComplete(refusedMsgId);
         break;
       }
 
@@ -1403,7 +1538,7 @@ export async function runToolLoop(ctx: {
       // question about whether to keep going; after the abort check, so a stop
       // pressed during the plan's own call still ends the turn cancelled.
       if (handedOver) {
-        autoCompact = await endTurnComplete(toolMsgId, true);
+        await endTurnComplete(toolMsgId, true);
         break;
       }
 
@@ -1550,6 +1685,7 @@ export async function runToolLoop(ctx: {
       // prompt-prefix.test.ts for what a mismatch here costs.
       chatMessages.push({ role: "user", content: CHECKIN_ANSWER_NUDGE });
       parentId = nudgeId;
+      unanswered = { id: nudgeId, lamport: nudgeLamport };
       // The answer is one more iteration, and the window genuinely grants it:
       // without this a budget check-in at 100/100 answered here would emit
       // the final turn as `101/100`, and the header, the banner's "Step N of
@@ -1580,40 +1716,35 @@ export async function runToolLoop(ctx: {
   // error and cancel paths above, which `return` — a run that failed has not
   // established what the prompt costs, and compacting after a user pressed
   // stop would be the opposite of what they asked for.
-  // The pref is checked here rather than beside shouldAutoCompact so an
-  // ordinary turn never pays for the query — only a turn that has already
-  // decided it wants to compact asks whether it may.
+  const { decision, canCompact } = turnEndedFull();
+  let compact = decision.action === "compact";
   // A model set to extend its context when full (`whenFull: "extend"`) does
-  // that instead, when it has a stage left that fits — see stageRun.ts. Its
+  // that instead, while it has a stage left that fits — see stageRun.ts. Its
   // failure falls back to compaction there; a model that cannot extend
-  // compacts here, exactly as before.
-  if (wasWindowFull()) {
+  // compacts here.
+  if (decision.action === "extend") {
     try {
       const { autoExtend } = await import("./stageRun.ts");
-      // `canCompact` is what compaction itself would have decided, floor
-      // included — read before it is cleared below. Extending ignores the
-      // floor; the compaction a failed extension falls back to does not.
-      // The user's own auto-compact preference does not stop an extension:
-      // the admin chose `extend` for this model, and unlike a compaction it
-      // discards nothing. It does still gate that fallback.
-      if (await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface, canCompact: autoCompact })) autoCompact = false;
+      if (!(await autoExtend({ userId, conversationId: convId, model, surface: ctx.surface, canCompact }))) compact = canCompact;
     } catch (err) {
       console.warn(`automatic context extension skipped for ${convId}: ${(err as Error).message}`);
+      compact = canCompact;
     }
   }
   // A model that can still be extended by this person leaves the first
   // crossing at a stage to them: the client offers Compact or Extend, and the
-  // next turn past the threshold compacts if nobody chose (stageRun.ts).
-  if (autoCompact) {
+  // next turn past the threshold compacts if nobody chose (stageRun.ts). Only
+  // after a turn: inside a run nobody is there to choose.
+  if (compact) {
     try {
       const { leaveCompactionToPerson } = await import("./stageRun.ts");
-      if (await leaveCompactionToPerson({ userId, conversationId: convId, model })) autoCompact = false;
+      if (await leaveCompactionToPerson({ userId, conversationId: convId, model })) compact = false;
     } catch (err) {
       // Unable to tell: compact, as before this existed.
       console.warn(`could not decide whether to ask before compacting ${convId}: ${(err as Error).message}`);
     }
   }
-  if (autoCompact && (await userAllowsAutoCompact(userId))) {
+  if (compact) {
     try {
       // Dynamic on purpose: compactRun imports this module's history loader,
       // so a static import here would close a cycle between the two. See
@@ -1623,8 +1754,7 @@ export async function runToolLoop(ctx: {
     } catch (err) {
       // Best-effort. A refused lock (the user sent again the instant the turn
       // ended) or a backend hiccup must not surface as a failure of the turn
-      // that already succeeded — the threshold will simply be met again next
-      // time.
+      // that already succeeded — the next request's own check makes room.
       console.warn(`auto-compaction skipped for ${convId}: ${(err as Error).message}`);
     }
   }
@@ -2124,20 +2254,40 @@ async function recordUsage(input: {
  * Rebuilds the OpenAI message list from stored content blocks. Thinking
  * blocks are dropped (display-only), and tool calls and results that lost
  * their partner are stripped in both directions — an interrupted run leaves a
- * dangling call, and the window's oldest edge can orphan a result; most
- * servers reject either.
+ * dangling call, and a summary written between a call and its result (a
+ * `/compact` after a stopped run) can orphan the result; most servers reject
+ * either.
  *
- * The replayed window is anchored, not sliding: its oldest edge is quantised
- * to HISTORY_STEP so that consecutive turns send a prompt the previous turn's
- * prompt is a *prefix* of, which is the whole basis of the backend's KV
- * cache. See HISTORY_STEP for what a per-message slide costs.
+ * Everything after the newest summary is replayed, and nothing else ever
+ * shortens it. It used to be a window of the newest 50–74 rows, anchored so
+ * the front moved only every 25 (a front that slides by one message re-reads
+ * the whole history on every turn: 312 ms against 14,551 ms on a 14.5k-token
+ * thread). That window was sized for chat, where a row is a turn. An agent
+ * iteration stores two, so the run after a long agent turn started from a
+ * fraction of the conversation — on the beta, 91K tokens where the turn before
+ * had ended at 261K, the person's own request among what was gone. Nothing
+ * said so, and no summary held it: compaction only summarised what the window
+ * kept. Now a prompt that would not fit is compacted or its context extended
+ * (`fillDecision`), and the front moves only when a summary lands.
+ *
+ * **There is deliberately no row or byte ceiling on this read.** What it reads
+ * is bounded by compaction instead: every row after the summary is in the
+ * prompt, and the prompt is compacted at 85% of the window, so the read is
+ * about one window's worth of text, plus stored thinking, which is kept for
+ * display and never replayed. A ceiling would bring the old bug back by
+ * another route: a compaction summarises what this returns, so rows past a
+ * ceiling would never reach a summary, and would be lost exactly as the
+ * window lost them. Two reads are bigger, and neither repeats: a thread from
+ * before history stopped being dropped is read whole once and then compacted
+ * in parts. A model whose window is unknown is never compacted on a figure,
+ * so its replay grows until the backend refuses a request. If memory ever
+ * needs bounding, the compaction should read in pages, never this function.
  */
 /**
- * Where a conversation's replay starts: the newest real compaction point, and
- * the history window's anchor. `loadHistory` builds its window from exactly
- * this, and `historyFront` exposes it as a key — so "has the front of the
- * prompt moved since the last run?" is answered by the same computation that
- * moves it.
+ * Where a conversation's replay starts: the newest real compaction point.
+ * `loadHistory` replays from exactly this, and `historyFront` exposes it as a
+ * key — so "has the front of the prompt moved since the last run?" is
+ * answered by the same computation that moves it.
  */
 async function historyWindow(conversationId: string) {
   // The newest real compaction point, keyed on lamport — the same ordering
@@ -2161,30 +2311,18 @@ async function historyWindow(conversationId: string) {
     ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
     : eq(messages.conversationId, conversationId);
 
-  // A real COUNT(*), where the old code inferred "is there more?" from a
-  // limit+1 fetch. The window's oldest edge has to be a stable function of
-  // how long the conversation is (historyAnchor), and that needs the actual
-  // length — an over-fetch by one can only answer the yes/no. One indexed
-  // count per run (not per tool iteration) is a fair price for a prompt
-  // prefix the backend can cache.
-  const [{ total }] = await db
-    .select({ total: count() })
-    .from(messages)
-    .where(replayable);
-
-  return { summaryRow, replayable, total, anchor: historyAnchor(total) };
+  return { summaryRow, replayable };
 }
 
 /** The front of a conversation's replay as a key: it changes when a
- * compaction lands or the window's anchor moves, and at no other time. */
+ * compaction lands, and at no other time. */
 export async function historyFront(conversationId: string): Promise<string> {
   const w = await historyWindow(conversationId);
-  return `${String(w.summaryRow?.lamport ?? 0)}:${String(w.anchor)}`;
+  return String(w.summaryRow?.lamport ?? 0);
 }
 
 export async function loadHistory(conversationId: string): Promise<{
   messages: ChatMessage[];
-  truncated: boolean;
   summaryText: string | null;
   /** Attachments this prompt left out because their class's budget was full.
    * The model is told (`attachmentContentParts` substitutes a marker), and
@@ -2192,28 +2330,22 @@ export async function loadHistory(conversationId: string): Promise<{
    * the transcript looking exactly like one the model can see. */
   omittedAttachments: AttachmentRef[];
 }> {
-  const { summaryRow, replayable, total, anchor } = await historyWindow(conversationId);
+  const { summaryRow, replayable } = await historyWindow(conversationId);
   const summaryText = summaryRow?.text ?? null;
-  const windowSize = total - anchor;
-  const truncated = anchor > 0;
 
-  const rows = windowSize > 0
-    ? await db.query.messages.findMany({
-        where: replayable,
-        orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
-        columns: { authorType: true, content: true, status: true, lamport: true },
-        limit: windowSize,
-      })
-    : [];
-  const ordered = rows.reverse();
+  const ordered = await db.query.messages.findMany({
+    where: replayable,
+    orderBy: (msgs, { asc }) => [asc(messages.lamport), asc(msgs.createdAt)],
+    columns: { authorType: true, content: true, status: true, lamport: true },
+  });
 
   // Call ids in both directions. `resolvedCallIds` strips an assistant's
-  // dangling tool_call (an interrupted run) — but the window's oldest edge
-  // can equally cut the other way, leaving a tool_result whose assistant
-  // tool_call fell outside it. A `role: "tool"` message with no preceding
-  // call is rejected outright by most backends, so `presentCallIds` drops
-  // those too. Both sets are collected before anything is emitted, because
-  // the rows they describe are interleaved.
+  // dangling tool_call (an interrupted run) — but a summary can equally cut
+  // the other way, leaving a tool_result whose assistant tool_call sits
+  // before it (a /compact after a run stopped mid-call). A `role: "tool"`
+  // message with no preceding call is rejected outright by most backends, so
+  // `presentCallIds` drops those too. Both sets are collected before anything
+  // is emitted, because the rows they describe are interleaved.
   const resolvedCallIds = new Set<string>();
   const presentCallIds = new Set<string>();
   // A tool_result block stores no tool name, but the live loop puts one on the
@@ -2298,7 +2430,7 @@ export async function loadHistory(conversationId: string): Promise<{
       }
     }
   }
-  return { messages: out, truncated, summaryText, omittedAttachments };
+  return { messages: out, summaryText, omittedAttachments };
 }
 
 /** Attachment blocks in stored order — which is the order they were sent in,

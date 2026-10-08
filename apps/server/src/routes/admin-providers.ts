@@ -119,7 +119,15 @@ export function adminProviderRoutes(app: FastifyInstance) {
     if (!row) return reply.code(404).send({ error: "Provider not found" });
     try {
       const models = await probeProviderModels(id);
-      return { models: models.map((m) => ({ id: m.upstream_id, display_name: m.display_name })) };
+      // The size each model reports, before any the admin set: null when it
+      // reports none, which is what the context-size editor asks about.
+      return {
+        models: models.map((m) => ({
+          id: m.upstream_id,
+          display_name: m.display_name,
+          context_tokens: m.context_source === "default" ? null : m.context_tokens,
+        })),
+      };
     } catch (err) {
       return reply.code(200).send({ models: [], error: err instanceof Error ? err.message : String(err) });
     }

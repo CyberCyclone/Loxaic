@@ -1,7 +1,8 @@
 import { v4 as uuid } from "uuid";
-import { db, desc, eq } from "@loxaic/db";
+import { and, db, desc, eq, ne } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import {
+  COMPACTION_CONTINUE_NUDGE,
   DEFAULT_PROVIDER_ID,
   DEFAULT_THINKING_LEVEL,
   isThinkingLevel,
@@ -19,7 +20,7 @@ import {
 } from "../../inference/provider.ts";
 import { invalidateBackendModels, modelRunInfo, resolveWindow } from "../../inference/models.ts";
 import { assertModelUsable, resolveModelRef } from "../../inference/providers.ts";
-import { estimateTokens, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
+import { estimateTallyTokens, estimateTokens, summaryMessage, tallyChatMessages } from "../../inference/context.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { fingerprintPrompt, measureReuse } from "../../inference/prompt-reuse.ts";
 import { assertConversationAccess } from "../authz.ts";
@@ -28,7 +29,7 @@ import type { StreamProducer } from "../broker.ts";
 import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, type RunSlot } from "../../inference/scheduler.ts";
 import { announceNewRun } from "../watchers.ts";
-import { loadHistory, HISTORY_LIMIT, promptProgressEmitter, promptStatsFor } from "./engine.ts";
+import { loadHistory, promptProgressEmitter, promptStatsFor } from "./engine.ts";
 import { lastRequestShape, type RequestShape } from "./request-shape.ts";
 import { usageRecordValues } from "./usage-record.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
@@ -228,6 +229,110 @@ export function computeCompactionStats(input: {
   };
 }
 
+/** A conversation's history in pieces that each fit one summarising request.
+ *
+ * A compaction request is the history plus the instruction, so a history
+ * larger than the window cannot be summarised in one request. That used to be
+ * unreachable — the replay was cut to the newest 50–74 rows first — and is now
+ * the ordinary case for every long thread from before history stopped being
+ * dropped, and for any run one huge tool result pushed over. So the history is
+ * summarised oldest-first in parts, each request carrying the summary so far.
+ *
+ * A part never separates an assistant's tool calls from their results: a
+ * `role: "tool"` message whose call is in another request is one most
+ * backends reject. A single message larger than a part — its text, or its tool
+ * calls' arguments — is cut down inside the request only, with a marker saying
+ * so; the stored row is untouched.
+ *
+ * Pure and exported for tests.
+ */
+export function summaryParts(messages: ChatMessage[], budgetTokens: number): ChatMessage[][] {
+  // Units: an assistant message with tool calls together with the results that
+  // follow it, every other message alone.
+  const units: ChatMessage[][] = [];
+  for (const m of messages) {
+    const open = units.at(-1);
+    if (m.role === "tool" && open?.[0]?.role === "assistant" && open[0].tool_calls?.length) open.push(m);
+    else units.push([m]);
+  }
+  const parts: ChatMessage[][] = [];
+  let part: ChatMessage[] = [];
+  let used = 0;
+  const budget = Math.max(1, budgetTokens);
+  for (const unit of units) {
+    const size = unit.reduce((sum, m) => sum + messageTokens(m), 0);
+    if (part.length && used + size > budget) {
+      parts.push(part);
+      part = [];
+      used = 0;
+    }
+    if (size > budget) {
+      // Alone and still too large: shared out between its messages.
+      const each = Math.max(1, Math.floor(budget / unit.length));
+      parts.push(unit.map((m) => fitMessage(m, each)));
+      continue;
+    }
+    part.push(...unit);
+    used += size;
+  }
+  if (part.length) parts.push(part);
+  return parts;
+}
+
+function messageTokens(m: ChatMessage): number {
+  return estimateTallyTokens(tallyChatMessages([m]));
+}
+
+/** Said in place of what was cut from a message too large for one request. */
+export const SUMMARY_CUT_MARKER = "\n\n[… cut here: too long to summarise in one request …]";
+
+/**
+ * A message cut down to at most `tokens`, each piece kept from its start: the
+ * text, and every tool call's arguments. Arguments are what make an agent's
+ * message large (an `fs_write` carries the whole file), so cutting only the
+ * text left such a message over budget and its summary unable to run. A cut
+ * argument becomes a small JSON object holding the start of the original, so
+ * it still parses — templates parse arguments — and says it was cut. The
+ * call's id and name stay, so its results still pair with it.
+ */
+function fitMessage(m: ChatMessage, tokens: number): ChatMessage {
+  if (messageTokens(m) <= tokens) return m;
+  const text = textOfContent(m.content ?? "");
+  const calls = m.role === "assistant" ? (m.tool_calls ?? []) : [];
+  // Characters per token as the estimate counts them, shared equally between
+  // the pieces; escaping and the call's own fields can still push it over,
+  // so the share shrinks until it fits.
+  let share = Math.floor((tokens * 3) / (1 + calls.length));
+  for (;;) {
+    const keep = Math.max(0, share - SUMMARY_CUT_MARKER.length);
+    const content = text.length > share ? text.slice(0, keep) + SUMMARY_CUT_MARKER : text;
+    const fitted: ChatMessage =
+      m.role === "assistant"
+        ? {
+            ...m,
+            content: m.content === null && !content ? null : content,
+            ...(calls.length
+              ? {
+                  tool_calls: calls.map((c) =>
+                    c.function.arguments.length > share
+                      ? {
+                          ...c,
+                          function: {
+                            ...c.function,
+                            arguments: JSON.stringify({ cut: c.function.arguments.slice(0, keep) + SUMMARY_CUT_MARKER }),
+                          },
+                        }
+                      : c,
+                  ),
+                }
+              : {}),
+          }
+        : { ...m, content };
+    if (share <= 0 || messageTokens(fitted) <= tokens) return fitted;
+    share = Math.floor(share * 0.8);
+  }
+}
+
 export interface StartCompactRunResult {
   streamId: string;
   conversationId: string;
@@ -270,7 +375,6 @@ export async function startCompactRun(input: {
   // out would break the cached prefix at the first one. The instruction keeps
   // them out of the summary instead.
   const history = await loadHistory(convId);
-  const historyLimit = HISTORY_LIMIT;
   const hasSummary = !!history.summaryText;
   const count = history.messages.length;
 
@@ -283,6 +387,10 @@ export async function startCompactRun(input: {
 
   const summaryMsgId = uuid();
   const parentId = await currentLeafId(convId);
+  // After every row the conversation already has, whatever clock wrote them:
+  // the summary is a cutoff by lamport, and one that sorted before the run's
+  // last tool row would replay that row after it (see nextConversationLamport).
+  const summaryLamport = await nextConversationLamport(convId);
 
   if (skipped) {
     const stats: CompactionStats = {
@@ -294,14 +402,13 @@ export async function startCompactRun(input: {
       skipped,
       ...(input.auto ? { auto: true } : {}),
     };
-    const skipLamport = Date.now();
     await db.insert(messages).values({
       id: summaryMsgId,
       conversationId: convId,
       parentId,
       authorType: "summary",
       origin: "server",
-      lamport: skipLamport,
+      lamport: summaryLamport,
       // No text block, deliberately: a textless summary row is what marks a
       // skip card, and the history loader relies on that to never treat one
       // as a compaction cutoff.
@@ -318,7 +425,7 @@ export async function startCompactRun(input: {
       message_id: summaryMsgId,
       author_type: "summary",
       parent_id: parentId,
-      lamport: skipLamport,
+      lamport: summaryLamport,
     });
     producer.emit({ kind: "compaction", message_id: summaryMsgId, ...stats });
     producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete" });
@@ -327,30 +434,9 @@ export async function startCompactRun(input: {
   }
 
   // ── Real compaction ───────────────────────────────────────
-  const summaryLamport = Date.now();
-  await db.insert(messages).values({
-    id: summaryMsgId,
-    conversationId: convId,
-    parentId,
-    authorType: "summary",
-    origin: "server",
-    model,
-    lamport: summaryLamport,
-    content: [{ kind: "text", text: "" }],
-    status: "streaming",
-    createdAt: new Date(),
-  });
-
   const streamId = uuid();
   const producer = await broker.openProducer({ streamId, conversationId: convId, userId, surface });
-  producer.emit({
-    kind: "message.start",
-    message_id: summaryMsgId,
-    author_type: "summary",
-    parent_id: parentId,
-    lamport: summaryLamport,
-    model,
-  });
+  await openSummaryRow({ convId, summaryMsgId, parentId, lamport: summaryLamport, model, producer });
 
   const abort = new AbortController();
   registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
@@ -377,15 +463,37 @@ export async function startCompactRun(input: {
     abort,
     producer,
     request,
+    history,
     before,
     instruction,
     guidance,
     messagesCompacted: count + (hasSummary ? 1 : 0),
-    historyLimit,
     auto: input.auto ?? false,
   });
 
   return { streamId, conversationId: convId, summaryMessageId: summaryMsgId };
+}
+
+/**
+ * A lamport after every row the conversation already has.
+ *
+ * A summary is a cutoff — the replay starts after its lamport — so it has to
+ * sort after everything it summarises. `Date.now()` alone does not promise
+ * that: a run's own rows take `monotonicLamport`, which runs ahead of the clock
+ * after inserts in the same millisecond, and a client's message can carry a
+ * lamport from a clock ahead of ours. A summary that sorted before the run's
+ * last tool row would replay that row after it — and, when only one half of a
+ * tool exchange landed past the cutoff, an orphan.
+ */
+export async function nextConversationLamport(convId: string): Promise<number> {
+  const rows = await db
+    .select({ lamport: messages.lamport })
+    .from(messages)
+    .where(eq(messages.conversationId, convId))
+    .orderBy(desc(messages.lamport))
+    .limit(1);
+  const newest = rows.at(0)?.lamport ?? 0;
+  return Math.max(Date.now(), newest + 1);
 }
 
 /** The newest usage record is what the next prompt would have replayed — and
@@ -413,6 +521,344 @@ async function currentLeafId(convId: string): Promise<string | null> {
   return conv?.activeLeafId ?? null;
 }
 
+/** The summary row, streaming and empty, and the event that puts its card on screen. */
+async function openSummaryRow(input: {
+  convId: string;
+  summaryMsgId: string;
+  parentId: string | null;
+  lamport: number;
+  model: string;
+  producer: StreamProducer;
+}): Promise<void> {
+  await db.insert(messages).values({
+    id: input.summaryMsgId,
+    conversationId: input.convId,
+    parentId: input.parentId,
+    authorType: "summary",
+    origin: "server",
+    model: input.model,
+    lamport: input.lamport,
+    content: [{ kind: "text", text: "" }],
+    status: "streaming",
+    createdAt: new Date(),
+  });
+  input.producer.emit({
+    kind: "message.start",
+    message_id: input.summaryMsgId,
+    author_type: "summary",
+    parent_id: input.parentId,
+    lamport: input.lamport,
+    model: input.model,
+  });
+}
+
+interface GeneratedSummary {
+  summaryText: string;
+  /** The last request's result: the summary's own usage. */
+  doneResult: CompletionResult | null;
+  windowTokens: number | null;
+  /** What the history cost to read, when it was read in parts: the parts'
+   * prompts less what each carried that was not the conversation. Null for a
+   * single request, whose own prompt the stats already read. */
+  partsPromptTokens: number | null;
+}
+
+/**
+ * Generates a summary on the caller's stream, for the summary row already
+ * opened. Takes no inference slot and registers no run: a compaction of its
+ * own holds both, and one inside a run already does.
+ */
+async function generateSummary(input: {
+  convId: string;
+  summaryMsgId: string;
+  model: string;
+  signal: AbortSignal;
+  producer: StreamProducer;
+  request: ReturnType<typeof compactionRequest>;
+  history: { messages: ChatMessage[]; summaryText: string | null };
+  instruction: string;
+}): Promise<GeneratedSummary> {
+  const { convId, summaryMsgId, model, producer, signal } = input;
+  let windowTokens: number | null = null;
+  let jitLoaded = false;
+  let reportProgress = false;
+  // A stripped request has no prefix to match: it takes the level the
+  // conversation's last run recorded, or the default when none did — never
+  // the model's own default (Qwen3.8's is its highest).
+  let thinking = input.request.thinking;
+  const recorded = thinking
+    ? null
+    : await db
+        .select({ level: conversations.thinkingLevel })
+        .from(conversations)
+        .where(eq(conversations.id, convId))
+        .then((rows) => rows.at(0)?.level ?? null)
+        .catch(() => null);
+  const fallbackLevel = isThinkingLevel(recorded) ? recorded : DEFAULT_THINKING_LEVEL;
+  try {
+    // This model's own provider only — see the same lookup in engine.ts.
+    const info = await modelRunInfo(model);
+    windowTokens = info?.windowTokens ?? null;
+    reportProgress = info?.nativeRuntime ?? false;
+    thinking ??= thinkingFields(info?.thinking, fallbackLevel);
+    if (info && !info.loaded) {
+      jitLoaded = true;
+      producer.emit({ kind: "model.loading", message_id: summaryMsgId });
+    }
+  } catch {
+    // Best-effort — the generic indicator covers it.
+  }
+
+  /** One summarising request. `live` streams its text into the card. */
+  const ask = async (promptMessages: ChatMessage[], tools: OpenAiTool[] | undefined, toolChoice: "none" | undefined, live: boolean) => {
+    // What the prompt is and how much of it the backend already holds, the
+    // way the tool loop announces each request — and the backend's measured
+    // progress as it reads it. A compaction that re-read 235k tokens used to
+    // show a bare spinner for twelve minutes.
+    const stats = promptStatsFor({
+      messageId: summaryMsgId,
+      model,
+      tally: tallyChatMessages(promptMessages, tools),
+      chatMessages: promptMessages,
+      reuse: measureReuse(convId, fingerprintPrompt(model, promptMessages, tools ?? [])),
+      windowTokens,
+      loadingModel: jitLoaded,
+      startedAt: Date.now(),
+    });
+    producer.emit({ kind: "prompt.stats", ...stats });
+    const emitProgress = promptProgressEmitter(stats, (e) => {
+      producer.emit(e);
+    });
+    let text = "";
+    let doneResult: CompletionResult | null = null;
+    // The same split the engine makes: only what the stream throws is stored
+    // as the reason.
+    for await (const event of markBackendErrors(
+      streamCompletion(model, promptMessages, {
+        signal,
+        ...(tools ? { tools } : {}),
+        ...(toolChoice ? { toolChoice } : {}),
+        ...(thinking ? { thinking } : {}),
+        reportProgress,
+      }),
+    )) {
+      if (event.type === "delta") {
+        text += event.content;
+        if (live) producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
+      } else if (event.type === "progress") {
+        emitProgress(event.progress);
+      } else if (event.type === "done") {
+        doneResult = event.result;
+      }
+      // Thinking deltas are dropped: the summary is the deliverable, and
+      // replaying reasoning into the card (or the log) buys nothing.
+    }
+    if (!text.trim()) {
+      // Nothing to replace the history with. Committed as complete, this row
+      // would be skipped as a cutoff by loadHistory (it looks for a summary
+      // with text), so nothing would be compacted while the card claimed the
+      // whole saving — and the next turn would cross the threshold and pay for
+      // another compaction. A backend that ignored `tool_choice: "none"` and
+      // answered with a call is the likely way here.
+      throw new EmptySummaryError(
+        doneResult?.toolCalls.length
+          ? "The model called a tool instead of writing the summary, so nothing was compacted."
+          : "The model returned no summary, so nothing was compacted.",
+      );
+    }
+    return { text, doneResult: doneResult };
+  };
+
+  const { request } = input;
+  const instructionTokens = estimateTokens("current", input.instruction);
+  // The whole history in one request, unless that cannot fit the window: then
+  // in parts (summaryParts). Only a stripped request is ever split — one that
+  // reuses the conversation's prefix was already judged to fit.
+  const parts =
+    !request.reusesPrefix && windowTokens != null && estimateTallyTokens(tallyChatMessages(request.messages)) + summaryHeadroomTokens(windowTokens) > windowTokens
+      ? summaryParts(
+          stripImagesForCompaction(input.history.messages),
+          // Room for the instruction, the reply, and the summary so far.
+          windowTokens - 2 * summaryHeadroomTokens(windowTokens) - instructionTokens,
+        )
+      : null;
+
+  let generated: { text: string; doneResult: CompletionResult | null };
+  let partsPromptTokens: number | null = null;
+  if (parts && parts.length > 1) {
+    let running = input.history.summaryText;
+    partsPromptTokens = 0;
+    generated = { text: "", doneResult: null };
+    for (const [i, part] of parts.entries()) {
+      const carried = running ? estimateTokens("summary", running) : 0;
+      generated = await ask(
+        [...(running ? [summaryMessage(running)] : []), ...part, { role: "user", content: input.instruction }],
+        undefined,
+        undefined,
+        i === parts.length - 1,
+      );
+      partsPromptTokens += Math.max(0, (generated.doneResult?.usage.prompt_tokens ?? 0) - instructionTokens - carried);
+      running = generated.text;
+    }
+  } else {
+    generated = await ask(request.messages, request.tools, request.toolChoice, true);
+  }
+
+  if (jitLoaded) {
+    invalidateBackendModels(await resolveModelRef(model).then((r) => r.provider.id).catch(() => undefined));
+    windowTokens = (await resolveWindow(model)) ?? windowTokens;
+  }
+  return { summaryText: generated.text, doneResult: generated.doneResult, windowTokens, partsPromptTokens };
+}
+
+/**
+ * Commits a generated summary: the row becomes the compaction point, the
+ * conversation's leaf moves to `leafId`, the usage is recorded, and the card
+ * gets its stats. Ends the summary message, never the stream — the caller owns
+ * that, since a compaction inside a run goes on with the run.
+ */
+async function commitSummary(input: {
+  convId: string;
+  userId: string;
+  summaryMsgId: string;
+  model: string;
+  producer: StreamProducer;
+  generated: GeneratedSummary;
+  before: number | null;
+  /** `before` is an estimate rather than a measurement: the card says `~`. */
+  beforeEstimated?: boolean;
+  instruction: string;
+  guidance?: string;
+  messagesCompacted: number;
+  auto: boolean;
+  leafId: string;
+  /** A row that only means anything with this summary in front of it (the
+   * run's continue nudge), written in the same transaction as the summary's
+   * completion: one without the other would leave an unexplained "continue"
+   * in the history, replayed on every turn after. */
+  follow?: typeof messages.$inferInsert;
+}): Promise<TurnUsage | undefined> {
+  const { convId, userId, summaryMsgId, model, producer, generated } = input;
+  const { summaryText, doneResult, windowTokens } = generated;
+  const compaction = computeCompactionStats({
+    messagesCompacted: input.messagesCompacted,
+    // Read in parts, the conversation's size is what the parts read — when the
+    // last turn's own measurement is not there to say it.
+    lastTurnTokens: input.before ?? generated.partsPromptTokens,
+    promptTokens: doneResult?.usage.prompt_tokens ?? 0,
+    completionTokens: doneResult?.usage.completion_tokens ?? 0,
+    instructionTokens: estimateTokens("current", input.instruction),
+    summaryText,
+    guidance: input.guidance,
+    auto: input.auto,
+  });
+  if (input.before == null && generated.partsPromptTokens != null) compaction.before_estimated = true;
+  if (input.beforeEstimated) compaction.before_estimated = true;
+
+  // The breakdown describes the window AFTER compaction — the summary is
+  // now the entire replayed context. Without this, the ring would jump UP
+  // after compacting: the compact call's own prompt_tokens is the whole
+  // pre-compaction history.
+  const postBreakdown: ContextBreakdown = {
+    used_tokens: compaction.after_tokens,
+    parts: [{ category: "summary", tokens: compaction.after_tokens }],
+    history_messages: 0,
+    window_tokens: windowTokens,
+  };
+
+  const usage: TurnUsage | undefined = doneResult
+    ? {
+        prompt_tokens: doneResult.usage.prompt_tokens,
+        completion_tokens: doneResult.usage.completion_tokens,
+        total_tokens: doneResult.usage.total_tokens,
+        prompt_tps: doneResult.promptTps,
+        gen_tps: doneResult.genTps,
+        total_ms: doneResult.totalMs,
+        context: postBreakdown,
+      }
+    : undefined;
+
+  await db.transaction(async (tx) => {
+    if (input.follow) await tx.insert(messages).values(input.follow);
+    await tx
+      .update(messages)
+      .set({
+        content: [
+          { kind: "text", text: summaryText },
+          { kind: "compaction", ...compaction },
+        ] as ContentBlock[],
+        status: "complete",
+      })
+      .where(eq(messages.id, summaryMsgId));
+    await tx
+      .update(conversations)
+      .set({ activeLeafId: input.leafId, updatedAt: new Date() })
+      .where(eq(conversations.id, convId));
+  });
+  if (doneResult && (doneResult.usage.total_tokens > 0 || doneResult.timings)) {
+    // Best-effort, as the tool loop's is: the summary above is already
+    // complete and is the compaction. A usage row that cannot be written is
+    // a missing statistic, never a reason to throw the summary away — which
+    // is exactly what happened on the beta, twelve minutes of work in.
+    await db
+      .insert(usageRecords)
+      .values(
+        usageRecordValues({
+          userId,
+          conversationId: convId,
+          messageId: summaryMsgId,
+          model,
+          result: doneResult,
+          context: postBreakdown,
+        }),
+      )
+      .catch((err: unknown) => {
+        console.error(`recording compaction usage failed for ${convId}:`, err);
+      });
+  }
+
+  producer.emit({ kind: "compaction", message_id: summaryMsgId, ...compaction });
+  producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete", usage });
+  return usage;
+}
+
+/**
+ * Persists a summary that failed or was stopped, and ends its message. Never
+ * the stream: the caller owns that.
+ */
+async function failSummary(input: {
+  convId: string;
+  summaryMsgId: string;
+  err: unknown;
+  signal: AbortSignal;
+  producer: StreamProducer;
+}): Promise<{ status: "error" | "cancelled"; error: string | undefined }> {
+  const { err } = input;
+  const isAbort = (err as Error).name === "AbortError" || input.signal.aborted;
+  const status = isAbort ? "cancelled" : "error";
+  const error = isAbort
+    ? undefined
+    : err instanceof EmptySummaryError
+      ? err.message
+      : turnErrorText(err, `compaction failed in ${input.convId}`);
+
+  // A partial summary must never be mistaken for a compaction point, so it
+  // is persisted with a non-complete status — which the loaders' summary
+  // lookup already excludes. The reason is kept for the same reload the
+  // chat engine's is, and the client's CompactionCard renders it as a
+  // failed card: without that a failed summary row reloaded as a card
+  // spinning on "Compacting…" forever. The text is not kept: a part of a
+  // summary read in parts would be the summary of only its oldest part.
+  await db
+    .update(messages)
+    .set({ content: [{ kind: "text", text: "" }], status, error: error ?? null })
+    .where(eq(messages.id, input.summaryMsgId))
+    .catch(() => undefined);
+
+  input.producer.emit({ kind: "message.end", message_id: input.summaryMsgId, status, error });
+  return { status, error };
+}
+
 async function runCompactGeneration(ctx: {
   streamId: string;
   convId: string;
@@ -422,21 +868,15 @@ async function runCompactGeneration(ctx: {
   abort: AbortController;
   producer: StreamProducer;
   request: ReturnType<typeof compactionRequest>;
+  history: { messages: ChatMessage[]; summaryText: string | null };
   /** The last turn's prompt + completion, read before this call records its own. */
   before: number | null;
   instruction: string;
   guidance?: string;
   messagesCompacted: number;
-  historyLimit: number;
   auto: boolean;
 }): Promise<void> {
-  const { streamId, convId, userId, summaryMsgId, model, abort, producer } = ctx;
-  let summaryText = "";
-
-  // Same shape as chatRun: the pre-generation window read is the model's max
-  // if a JIT load is about to happen, so re-resolve afterwards.
-  let windowTokens: number | null = null;
-  let jitLoaded = false;
+  const { streamId, convId, model, abort, producer } = ctx;
   let slot: RunSlot | null = null;
 
   try {
@@ -465,199 +905,219 @@ async function runCompactGeneration(ctx: {
       });
     }
 
-    let reportProgress = false;
-    // A stripped request has no prefix to match: it takes the level the
-    // conversation's last run recorded, or the default when none did — never
-    // the model's own default (Qwen3.8's is its highest).
-    let thinking = ctx.request.thinking;
-    const recorded = thinking
-      ? null
-      : await db
-          .select({ level: conversations.thinkingLevel })
-          .from(conversations)
-          .where(eq(conversations.id, ctx.convId))
-          .then((rows) => rows.at(0)?.level ?? null)
-          .catch(() => null);
-    const fallbackLevel = isThinkingLevel(recorded) ? recorded : DEFAULT_THINKING_LEVEL;
-    try {
-      // This model's own provider only — see the same lookup in engine.ts.
-      const info = await modelRunInfo(model);
-      windowTokens = info?.windowTokens ?? null;
-      reportProgress = info?.nativeRuntime ?? false;
-      thinking ??= thinkingFields(info?.thinking, fallbackLevel);
-      if (info && !info.loaded) {
-        jitLoaded = true;
-        producer.emit({ kind: "model.loading", message_id: summaryMsgId });
-      }
-    } catch {
-      // Best-effort — the generic indicator covers it.
-    }
-
-    const before = ctx.before;
-    const { messages: promptMessages, tools, toolChoice } = ctx.request;
-
-    // What the prompt is and how much of it the backend already holds, the
-    // way the tool loop announces each request — and the backend's measured
-    // progress as it reads it. A compaction that re-read 235k tokens used to
-    // show a bare spinner for twelve minutes.
-    const stats = promptStatsFor({
-      messageId: summaryMsgId,
+    const generated = await generateSummary({
+      convId,
+      summaryMsgId: ctx.summaryMsgId,
       model,
-      tally: tallyChatMessages(promptMessages, tools),
-      chatMessages: promptMessages,
-      reuse: measureReuse(convId, fingerprintPrompt(model, promptMessages, tools ?? [])),
-      windowTokens,
-      loadingModel: jitLoaded,
-      startedAt: Date.now(),
+      signal: abort.signal,
+      producer,
+      request: ctx.request,
+      history: ctx.history,
+      instruction: ctx.instruction,
     });
-    producer.emit({ kind: "prompt.stats", ...stats });
-    const emitProgress = promptProgressEmitter(stats, (e) => {
-      producer.emit(e);
-    });
-
-    let doneResult: CompletionResult | null = null;
-    // The same split the engine makes: only what the stream throws is stored
-    // as the reason. This try also spans database writes whose errors are ours.
-    for await (const event of markBackendErrors(
-      streamCompletion(model, promptMessages, {
-        signal: abort.signal,
-        ...(tools ? { tools } : {}),
-        ...(toolChoice ? { toolChoice } : {}),
-        ...(thinking ? { thinking } : {}),
-        reportProgress,
-      }),
-    )) {
-      if (event.type === "delta") {
-        summaryText += event.content;
-        producer.emit({ kind: "text.delta", message_id: summaryMsgId, text: event.content });
-      } else if (event.type === "progress") {
-        emitProgress(event.progress);
-      } else if (event.type === "done") {
-        doneResult = event.result;
-      }
-      // Thinking deltas are dropped: the summary is the deliverable, and
-      // replaying reasoning into the card (or the log) buys nothing.
-    }
-
-    if (!summaryText.trim()) {
-      // Nothing to replace the history with. Committed as complete, this row
-      // would be skipped as a cutoff by loadHistory (it looks for a summary
-      // with text), so nothing would be compacted while the card claimed the
-      // whole saving — and the next turn would cross the threshold and pay for
-      // another compaction. A backend that ignored `tool_choice: "none"` and
-      // answered with a call is the likely way here.
-      throw new EmptySummaryError(
-        doneResult?.toolCalls.length
-          ? "The model called a tool instead of writing the summary, so nothing was compacted."
-          : "The model returned no summary, so nothing was compacted.",
-      );
-    }
-
-    if (jitLoaded) {
-      invalidateBackendModels(await resolveModelRef(model).then((r) => r.provider.id).catch(() => undefined));
-      windowTokens = (await resolveWindow(model)) ?? windowTokens;
-    }
-
-    const compaction = computeCompactionStats({
-      messagesCompacted: ctx.messagesCompacted,
-      lastTurnTokens: before,
-      promptTokens: doneResult?.usage.prompt_tokens ?? 0,
-      completionTokens: doneResult?.usage.completion_tokens ?? 0,
-      instructionTokens: estimateTokens("current", ctx.instruction),
-      summaryText,
+    const usage = await commitSummary({
+      convId,
+      userId: ctx.userId,
+      summaryMsgId: ctx.summaryMsgId,
+      model,
+      producer,
+      generated,
+      before: ctx.before,
+      instruction: ctx.instruction,
       guidance: ctx.guidance,
+      messagesCompacted: ctx.messagesCompacted,
       auto: ctx.auto,
+      leafId: ctx.summaryMsgId,
     });
-
-    // The breakdown describes the window AFTER compaction — the summary is
-    // now the entire replayed context. Without this, the ring would jump UP
-    // after compacting: the compact call's own prompt_tokens is the whole
-    // pre-compaction history.
-    const postBreakdown: ContextBreakdown = {
-      used_tokens: compaction.after_tokens,
-      parts: [{ category: "summary", tokens: compaction.after_tokens }],
-      history_messages: 0,
-      history_limit: ctx.historyLimit,
-      history_truncated: false,
-      window_tokens: windowTokens,
-    };
-
-    const usage: TurnUsage | undefined = doneResult
-      ? {
-          prompt_tokens: doneResult.usage.prompt_tokens,
-          completion_tokens: doneResult.usage.completion_tokens,
-          total_tokens: doneResult.usage.total_tokens,
-          prompt_tps: doneResult.promptTps,
-          gen_tps: doneResult.genTps,
-          total_ms: doneResult.totalMs,
-          context: postBreakdown,
-        }
-      : undefined;
-
-    await db
-      .update(messages)
-      .set({
-        content: [
-          { kind: "text", text: summaryText },
-          { kind: "compaction", ...compaction },
-        ] as ContentBlock[],
-        status: "complete",
-      })
-      .where(eq(messages.id, summaryMsgId));
-    await db
-      .update(conversations)
-      .set({ activeLeafId: summaryMsgId, updatedAt: new Date() })
-      .where(eq(conversations.id, convId));
-    if (doneResult && (doneResult.usage.total_tokens > 0 || doneResult.timings)) {
-      // Best-effort, as the tool loop's is: the summary above is already
-      // complete and is the compaction. A usage row that cannot be written is
-      // a missing statistic, never a reason to throw the summary away — which
-      // is exactly what happened on the beta, twelve minutes of work in.
-      await db
-        .insert(usageRecords)
-        .values(
-          usageRecordValues({
-            userId,
-            conversationId: convId,
-            messageId: summaryMsgId,
-            model,
-            result: doneResult,
-            context: postBreakdown,
-          }),
-        )
-        .catch((err: unknown) => {
-          console.error(`recording compaction usage failed for ${convId}:`, err);
-        });
-    }
-
-    producer.emit({ kind: "compaction", message_id: summaryMsgId, ...compaction });
-    producer.emit({ kind: "message.end", message_id: summaryMsgId, status: "complete", usage });
     await producer.end("complete", { usage });
   } catch (err) {
-    const isAbort = (err as Error).name === "AbortError" || abort.signal.aborted;
-    const status = isAbort ? "cancelled" : "error";
-    const eventError = isAbort
-      ? undefined
-      : err instanceof EmptySummaryError
-        ? err.message
-        : turnErrorText(err, `compaction failed in ${convId}`);
-
-    // A partial summary must never be mistaken for a compaction point, so it
-    // is persisted with a non-complete status — which the loaders' summary
-    // lookup already excludes. The reason is kept for the same reload the
-    // chat engine's is, and the client's CompactionCard renders it as a
-    // failed card: without that a failed summary row reloaded as a card
-    // spinning on "Compacting…" forever.
-    await db
-      .update(messages)
-      .set({ content: [{ kind: "text", text: summaryText }], status, error: eventError ?? null })
-      .where(eq(messages.id, summaryMsgId))
-      .catch(() => undefined);
-
-    producer.emit({ kind: "message.end", message_id: summaryMsgId, status, error: eventError });
-    await producer.end(status, { error: eventError }).catch(() => undefined);
+    const failed = await failSummary({ convId, summaryMsgId: ctx.summaryMsgId, err, signal: abort.signal, producer });
+    await producer.end(failed.status, { error: failed.error }).catch(() => undefined);
   } finally {
     slot?.release();
     unregisterRun(streamId);
+  }
+}
+
+/** What a compaction inside a run leaves the run to continue from. */
+export type InRunCompaction =
+  | {
+      ok: true;
+      summaryText: string;
+      summaryMsgId: string;
+      /** The row the run's next request ends on, after the summary: the
+       * message it has yet to answer, or the persisted continue nudge. */
+      continueFrom: { id: string; lamport: number; message: ChatMessage };
+    }
+  /** `stopped`: the run was stopped during it, which the run ends on. */
+  | { ok: false; stopped: boolean };
+
+/** A stored row the run has not answered yet: its own user message before
+ * the first request, or a nudge it wrote since its last reply. */
+export interface UnansweredRow {
+  id: string;
+  lamport: number;
+}
+
+/**
+ * Where a summary goes so that `row` stays after it: one below `row`'s
+ * lamport, provided nothing else in the conversation is above that. The cutoff
+ * is `lamport > summary`, so everything at or below it is summarised and `row`
+ * alone is replayed. Null when another row sorts at or above `row` (a client
+ * clock ahead of ours can do that), and the caller falls back to summarising
+ * everything.
+ */
+async function cutoffBefore(convId: string, row: UnansweredRow): Promise<{ lamport: number; parentId: string | null } | null> {
+  const lamport = row.lamport - 1;
+  const [own, other] = await Promise.all([
+    db.select({ parentId: messages.parentId }).from(messages).where(eq(messages.id, row.id)).limit(1),
+    db
+      .select({ lamport: messages.lamport })
+      .from(messages)
+      .where(and(eq(messages.conversationId, convId), ne(messages.id, row.id)))
+      .orderBy(desc(messages.lamport))
+      .limit(1),
+  ]);
+  if (own.length === 0) return null;
+  if ((other.at(0)?.lamport ?? 0) > lamport) return null;
+  return { lamport, parentId: own[0].parentId };
+}
+
+/**
+ * Compacts a conversation in the middle of a run, between two of its
+ * requests, so the next one fits the window.
+ *
+ * Under the run, not beside it: on the run's own stream (the card lands in
+ * place in the thread), and under the inference slot the run already holds (a
+ * compaction queueing for one behind the run that is waiting for it would
+ * never start).
+ *
+ * **A message the run has not answered stays after the summary.** Before a
+ * run's first request the replay ends on the person's own new message, and
+ * after a check-in or plan nudge it ends on that. Summarised with the rest, it
+ * would be answered as a line in a summary, and the model would be told to
+ * "continue the task" instead of being asked what the person just asked. So
+ * the summary takes the lamport just below that row (`cutoffBefore`) and the
+ * run goes on from the row itself, unchanged.
+ *
+ * Otherwise (the replay ends on a tool result, or no such lamport is free) the
+ * summary takes the run's next lamport, after every row it wrote, and is
+ * followed by `COMPACTION_CONTINUE_NUDGE`, a persisted user row, so the next
+ * request does not end on a system message (several chat templates refuse
+ * that) and the run after this one replays the same bytes. The nudge is
+ * written in the same transaction that completes the summary.
+ *
+ * Never throws for the summary's own failure: the failed card is persisted
+ * and shown, and `{ ok: false }` lets the run decide whether its request can
+ * still be sent.
+ */
+export async function compactWithinRun(input: {
+  convId: string;
+  userId: string;
+  model: string;
+  producer: StreamProducer;
+  signal: AbortSignal;
+  /** The run's fixed front: what a compaction reusing its prefix sends. */
+  shape: RequestShape;
+  /** Everything after the system prompt and any summary, as the run holds it. */
+  replay: ChatMessage[];
+  summaryText: string | null;
+  /** The estimated size of the request the run was about to send. An
+   * estimate, so the card says `~`; also what judges whether the compaction
+   * can reuse the run's prefix. */
+  estimate: number | null;
+  windowTokens: number | null;
+  nextLamport: () => number;
+  parentId: string;
+  /** The row the replay ends on when the run has not answered it yet. */
+  unanswered: UnansweredRow | null;
+}): Promise<InRunCompaction> {
+  const { convId, model, producer, signal } = input;
+  if (input.replay.length < 2) return { ok: false, stopped: false };
+  const last = input.replay.at(-1);
+  const row = input.unanswered;
+  const cutoff = row && last?.role === "user" ? await cutoffBefore(convId, row).catch(() => null) : null;
+  const kept = cutoff && row && last ? { ...cutoff, row, message: last } : null;
+  const summarised = kept ? input.replay.slice(0, -1) : input.replay;
+  const summaryMsgId = uuid();
+  const summaryLamport = kept ? kept.lamport : input.nextLamport();
+  await openSummaryRow({
+    convId,
+    summaryMsgId,
+    parentId: kept ? kept.parentId : input.parentId,
+    lamport: summaryLamport,
+    model,
+    producer,
+  });
+  const instruction = buildInstruction(undefined);
+  const history = { messages: summarised, summaryText: input.summaryText };
+  const hasRoom = compactionHasRoom({
+    windowTokens: input.windowTokens,
+    before: input.estimate,
+    instructionTokens: estimateTokens("current", instruction),
+  });
+  try {
+    const generated = await generateSummary({
+      convId,
+      summaryMsgId,
+      model,
+      signal,
+      producer,
+      request: compactionRequest({ shape: input.shape, model, history, instruction, hasRoom }),
+      history,
+      instruction,
+    });
+    // Minted after the summary, so it sorts after it.
+    const continueFrom = kept
+      ? { id: kept.row.id, lamport: kept.row.lamport, message: kept.message }
+      : { id: uuid(), lamport: input.nextLamport(), message: { role: "user", content: COMPACTION_CONTINUE_NUDGE } as ChatMessage };
+    await commitSummary({
+      convId,
+      userId: input.userId,
+      summaryMsgId,
+      model,
+      producer,
+      generated,
+      before: input.estimate,
+      beforeEstimated: input.estimate != null,
+      instruction,
+      messagesCompacted: summarised.length + (input.summaryText ? 1 : 0),
+      auto: true,
+      leafId: continueFrom.id,
+      ...(kept
+        ? {}
+        : {
+            follow: {
+              id: continueFrom.id,
+              conversationId: convId,
+              parentId: summaryMsgId,
+              authorType: "user",
+              // Nobody typed it.
+              authorUserId: null,
+              origin: "server",
+              lamport: continueFrom.lamport,
+              content: [{ kind: "text", text: COMPACTION_CONTINUE_NUDGE }] as ContentBlock[],
+              status: "complete",
+              createdAt: new Date(),
+            },
+          }),
+    });
+    if (!kept) {
+      producer.emit({
+        kind: "message.start",
+        message_id: continueFrom.id,
+        author_type: "user",
+        parent_id: summaryMsgId,
+        lamport: continueFrom.lamport,
+        text: COMPACTION_CONTINUE_NUDGE,
+        author_user_id: null,
+      });
+      producer.emit({ kind: "message.end", message_id: continueFrom.id, status: "complete" });
+    }
+    return { ok: true, summaryText: generated.summaryText, summaryMsgId, continueFrom };
+  } catch (err) {
+    const failed = await failSummary({ convId, summaryMsgId, err, signal, producer });
+    // A stop is the run's to act on, not a compaction that failed.
+    return { ok: false, stopped: failed.status === "cancelled" };
   }
 }

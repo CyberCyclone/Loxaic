@@ -187,6 +187,31 @@ describe("validation", () => {
   });
 });
 
+describe("context sizes", () => {
+  it("stores sizes by model and for every model that reports none, and clears them with null", async () => {
+    const created = await create({ contextWindows: { "*": 128_000, "gpt-4.1": 1_047_576 } });
+    expect(created.statusCode).toBe(201);
+    const body = created.json<ProviderBody & { contextWindows: Record<string, number> | null }>();
+    expect(body.contextWindows).toEqual({ "*": 128_000, "gpt-4.1": 1_047_576 });
+
+    // An edit that does not mention them leaves them alone.
+    const renamed = await app.inject({ method: "PATCH", url: `/v1/admin/providers/${body.id}`, payload: { name: "Renamed" } });
+    expect(renamed.json<{ contextWindows: unknown }>().contextWindows).toEqual({ "*": 128_000, "gpt-4.1": 1_047_576 });
+
+    const cleared = await app.inject({ method: "PATCH", url: `/v1/admin/providers/${body.id}`, payload: { contextWindows: null } });
+    expect(cleared.json<{ contextWindows: unknown }>().contextWindows).toBeNull();
+  });
+
+  it("refuses a size that is not a whole number of tokens in range, naming the model", async () => {
+    for (const contextWindows of [{ "*": 512 }, { "gpt-4o": 128_000.5 }, { "gpt-4o": "128k" }, ["*", 128_000], { "": 4096 }]) {
+      const res = await create({ contextWindows });
+      expect(res.statusCode).toBe(400);
+    }
+    const res = await create({ contextWindows: { "gpt-4o": 10 } });
+    expect(res.json<{ error: string }>().error).toMatch(/gpt-4o/);
+  });
+});
+
 describe("the list", () => {
   it("describes the built-in backend without making it editable", async () => {
     const body = (

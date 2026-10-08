@@ -4,8 +4,11 @@ import {
   compactionRequest,
   computeCompactionStats,
   stripImagesForCompaction,
+  SUMMARY_CUT_MARKER,
   summaryHeadroomTokens,
+  summaryParts,
 } from "../compactRun.ts";
+import { estimateTallyTokens, tallyChatMessages } from "../../../inference/context.ts";
 import type { ChatMessage } from "../../../inference/provider.ts";
 
 /**
@@ -236,5 +239,79 @@ describe("compactionHasRoom", () => {
     // llama.cpp router was until usage rows stopped failing to write.
     expect(compactionHasRoom({ windowTokens: 32_768, before: null, instructionTokens: 500 })).toBe(false);
     expect(compactionHasRoom({ windowTokens: null, before: 1_000, instructionTokens: 500 })).toBe(false);
+  });
+});
+
+/**
+ * A history larger than the window, cut into requests that each fit. Every
+ * long thread from before history stopped being dropped is one, and so is a
+ * run one huge tool result pushed over.
+ */
+describe("summaryParts", () => {
+  const size = (msgs: ChatMessage[]) => estimateTallyTokens(tallyChatMessages(msgs));
+  const user = (i: number): ChatMessage => ({ role: "user", content: `message ${String(i)} `.repeat(40) });
+  const call = (id: string): ChatMessage => ({
+    role: "assistant",
+    content: null,
+    tool_calls: [{ id, type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } }],
+  });
+  const result = (id: string, text = "ok"): ChatMessage => ({ role: "tool", tool_call_id: id, name: "bash", content: text });
+
+  it("keeps everything, in order, and fits each part in the budget", () => {
+    const history = Array.from({ length: 300 }, (_, i) => user(i));
+    const parts = summaryParts(history, 2_000);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.flat()).toEqual(history);
+    for (const part of parts) expect(size(part)).toBeLessThanOrEqual(2_000);
+  });
+
+  it("is one part when everything fits", () => {
+    const history = [user(0), user(1)];
+    expect(summaryParts(history, 100_000)).toEqual([history]);
+  });
+
+  it("never separates a tool call from its results", () => {
+    // A `role: "tool"` message whose call is in another request is one most
+    // backends reject outright.
+    const history: ChatMessage[] = [];
+    for (let i = 0; i < 40; i++) history.push(user(i), call(`c${String(i)}`), result(`c${String(i)}`), result(`c${String(i)}`));
+    for (const part of summaryParts(history, 700)) {
+      expect(part[0].role).not.toBe("tool");
+      const calls = new Set(part.flatMap((m) => (m.role === "assistant" ? (m.tool_calls ?? []).map((c) => c.id) : [])));
+      for (const m of part) if (m.role === "tool") expect(calls.has(m.tool_call_id)).toBe(true);
+    }
+  });
+
+  it("cuts a single message too large for any part, inside the request only", () => {
+    const huge = result("c1", "x".repeat(200_000));
+    const history = [call("c1"), huge];
+    const parts = summaryParts(history, 1_000);
+    const cut = parts.flat().find((m) => m.role === "tool");
+    expect(cut?.content.endsWith(SUMMARY_CUT_MARKER)).toBe(true);
+    expect(size(parts.flat())).toBeLessThanOrEqual(1_000);
+    // The message handed in is untouched: what is stored is never cut.
+    expect(huge.content).toHaveLength(200_000);
+  });
+
+  it("cuts a message whose size is its tool call's arguments, and keeps them valid JSON", () => {
+    // An fs_write of a whole file: little text, a huge argument. Cutting only
+    // the text left the part over budget, the summary failed, and the thread
+    // could not be continued.
+    const body = 'line "quoted" \\ and more\n'.repeat(8_000);
+    const write: ChatMessage = {
+      role: "assistant",
+      content: "Writing the file.",
+      tool_calls: [{ id: "w1", type: "function", function: { name: "fs_write", arguments: JSON.stringify({ path: "a.ts", content: body }) } }],
+    };
+    const before = JSON.stringify(write);
+    const parts = summaryParts([user(0), write, result("w1")], 1_000);
+    for (const part of parts) expect(size(part)).toBeLessThanOrEqual(1_000);
+    const cut = parts.flat().find((m) => m.role === "assistant");
+    const args = cut?.role === "assistant" ? cut.tool_calls?.[0].function.arguments : undefined;
+    // Still parseable, since a template may parse it, and says it was cut.
+    expect(() => JSON.parse(args ?? "") as unknown).not.toThrow();
+    expect(args).toContain("cut here");
+    expect(cut?.role === "assistant" ? cut.tool_calls?.[0].id : undefined).toBe("w1");
+    expect(JSON.stringify(write)).toBe(before);
   });
 });

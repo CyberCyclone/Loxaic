@@ -187,21 +187,23 @@ describe("a local folder", () => {
     expect(snap.status === "found" && (snap.latest ?? snap.decision)).toBeUndefined();
   });
 
-  it("folds when the history window moves, and not on an ordinary turn", async () => {
+  it("does not fold on ordinary turns, however many messages they add", async () => {
+    // The front moves only at a compaction now: nothing is ever dropped from
+    // the replay, so a long conversation alone never re-reads its front, and
+    // the newer instructions stay in the chat until a summary lands.
     writeFileSync(path.join(root, "AGENTS.md"), RULES);
     const id = await conversation(local());
     await run(id, local());
     writeFileSync(path.join(root, "AGENTS.md"), RULES.replace("Two spaces.", "Tabs."));
     await run(id, local());
-    // An ordinary turn: the front has not moved, so no fold.
     await run(id, local());
     expect((await snapshot(id)).status === "found" && (await snapshot(id) as { latest?: unknown }).latest).toBeTruthy();
 
     const frontBefore = await historyFront(id);
     for (let i = 0; i < 80; i++) await userMessage(id, `filler ${String(i)}`);
-    expect(await historyFront(id)).not.toBe(frontBefore);
+    expect(await historyFront(id)).toBe(frontBefore);
     await run(id, local());
-    expect(await snapshot(id)).toMatchObject({ status: "found", text: RULES.replace("Two spaces.", "Tabs.") });
+    expect(await snapshot(id)).toMatchObject({ status: "found", text: RULES });
   });
 
   it("says when the file is removed, and when one appears", async () => {
@@ -336,14 +338,14 @@ describe("a GitHub checkout", () => {
 });
 
 describe("the front of the prompt", () => {
-  it("moves on a compaction and on the window's anchor, and not on an ordinary message", async () => {
+  it("moves on a compaction, and not on ordinary messages however many", async () => {
     const id = await conversation(local());
     const a = await historyFront(id);
     await userMessage(id);
     expect(await historyFront(id)).toBe(a);
     for (let i = 0; i < 80; i++) await userMessage(id);
     const b = await historyFront(id);
-    expect(b).not.toBe(a);
+    expect(b).toBe(a);
     await db.insert(messages).values({
       id: uuid(), conversationId: id, authorType: "summary", origin: "server", lamport: ++lamport,
       content: [{ kind: "text", text: "S" }], status: "complete", createdAt: new Date(),

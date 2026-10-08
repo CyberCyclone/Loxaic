@@ -417,12 +417,47 @@ export async function listProviderModelsUnfiltered(provider: ResolvedProvider): 
   return models;
 }
 
+/**
+ * A model's context size with the admin's figure applied (`contextWindows` on
+ * the provider row).
+ *
+ * In order: what the backend actually allocated always wins, since it is a
+ * measurement; then a size set for this model by id, which may correct what a
+ * listing declares; then what the provider declares; then the provider-wide
+ * `"*"` size, which only fills in for a model that reports none. A model with
+ * no size anywhere stays `default`, and `windowFor` keeps refusing to guess.
+ *
+ * Without it, a model whose provider reports no size (OpenAI's /models reports
+ * none) can never be compacted: its conversations grow until the provider
+ * refuses a request, and then every turn fails, `/compact` included.
+ *
+ * Pure and exported for tests.
+ */
+export function withConfiguredWindow(provider: Pick<ResolvedProvider, "contextWindows">, model: ModelInfo): ModelInfo {
+  const sizes = provider.contextWindows;
+  if (!sizes || model.context_source === "loaded") return model;
+  // Own properties only: a model id is the provider's string, and one named
+  // like an Object prototype key must not read one.
+  const has = (id: string) => Object.prototype.hasOwnProperty.call(sizes, id);
+  const own = has(model.upstream_id) ? sizes[model.upstream_id] : undefined;
+  const fallback = model.context_source === "default" && has("*") ? sizes["*"] : undefined;
+  const tokens = own ?? fallback;
+  if (tokens === undefined) return model;
+  return {
+    ...model,
+    context_tokens: tokens,
+    max_context_tokens: tokens,
+    context_source: "configured",
+  };
+}
+
 async function fetchProviderModels(provider: ResolvedProvider): Promise<ModelInfo[]> {
   let models = await listProviderModelsUnfiltered(provider);
   if (provider.modelAllowlist) {
     const allowed = new Set(provider.modelAllowlist);
     models = models.filter((m) => allowed.has(m.upstream_id));
   }
+  if (provider.contextWindows) models = models.map((m) => withConfiguredWindow(provider, m));
   if (provider.isDefault) {
     // Stamp the built-in backend's models with the host serving them. A
     // property of *this instance*, so it is meaningless for a provider reached

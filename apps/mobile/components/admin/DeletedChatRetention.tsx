@@ -18,7 +18,7 @@ interface DeletedChatRetentionProps {
 /**
  * What this deployment does with a conversation its owner deleted.
  *
- * Both outcomes are spelled out, like AutoCompactToggle's, because neither is
+ * Both outcomes are spelled out (`Outcome`), because neither is
  * guessable from a switch: one of them means an administrator can read a chat
  * its owner believes is gone, and the other means nobody can answer a question
  * about it afterwards. Which is right depends on what the deployment is for,

@@ -308,6 +308,31 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promis
 const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
+/**
+ * Prompts that make the mock report a prompt that fills its window, the way
+ * the fake llama.cpp router does for the same words: 80%, 90% and 99% of the
+ * mock model's 4,096 tokens. Keyed on the newest user message, so a run keeps
+ * reporting it on every request of the turn — what a real conversation that
+ * has filled up does — until a compaction replaces that message with its
+ * nudge. That is what makes the run's own room check, and compacting in the
+ * middle of a run, reachable without a GGUF; every other prompt still reports
+ * 10 tokens, so nothing else crosses a line.
+ */
+const MOCK_WINDOW_TOKENS = 4096;
+const MOCK_FILL: [RegExp, number][] = [
+  [/\bexceed the context\b/i, 0.99],
+  [/\boverflow the context\b/i, 0.9],
+  [/\bfill the context\b/i, 0.8],
+];
+function mockPromptTokens(prompt: string): number {
+  const fill = MOCK_FILL.find(([re]) => re.test(prompt))?.[1];
+  return fill ? Math.round(MOCK_WINDOW_TOKENS * fill) : 10;
+}
+
+/** A compaction's instruction (compactRun.ts), and what the mock writes for it. */
+const MOCK_SUMMARY_REQUEST = /^Summarize this conversation\b/;
+const MOCK_SUMMARY = "[Mock] Summary of the conversation so far.\n";
+
 /** A prompt the mock answers with no text at all — what a backend that ignores
  * `tool_choice: "none"` and calls a tool leaves a summary with. Keyed on the
  * prompt, so `/compact say nothing` reaches it: the guidance rides in the
@@ -620,11 +645,17 @@ async function* mockStream(
       updatePaths.map((p) => `Project instructions updated: ${p}. `).join("");
     fullText = lastTool
       ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
-      : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;
+      : MOCK_SUMMARY_REQUEST.test(prompt)
+        // A summary, not an echo of the ~250-word instruction: a compaction
+        // read in parts asks once per part, and an echo streamed at 20 ms a
+        // word made each of those a five-second wait.
+        ? MOCK_SUMMARY
+        : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;
     yield* emit(fullText);
   }
 
   const completionTokens = fullText.split(" ").length;
+  const promptTokens = mockPromptTokens(prompt);
   yield {
     type: "done",
     result: {
@@ -634,13 +665,13 @@ async function* mockStream(
       finishReason: toolCalls.length > 0 ? "tool_calls" : "stop",
       ttftMs,
       totalMs: Date.now() - startTime,
-      usage: { prompt_tokens: 10, completion_tokens: completionTokens, total_tokens: 10 + completionTokens },
+      usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens },
       // Fractional milliseconds, as llama.cpp reports them. Whole numbers here
       // are how every usage row on the beta could fail to write (the timing
       // columns are integers) with nothing in the suite noticing — a mock
       // tidier than the real thing hides exactly that.
       timings: {
-        prompt_n: 10,
+        prompt_n: promptTokens,
         prompt_ms: 50.125,
         prompt_per_token_ms: 5,
         prompt_per_second: 200,

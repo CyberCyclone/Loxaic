@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { router } from 'expo-router';
 import { FlatList } from 'react-native';
 import { Plus, ShieldAlert } from 'lucide-react-native';
-import { getProviderModels, type InferenceProvider, type ProviderInput } from '@loxaic/api-client';
+import { getProviderModels, type InferenceProvider, type ProviderInput, type ProviderModelEntry } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -33,7 +33,7 @@ export default function ProvidersScreen() {
   const [editing, setEditing] = useState<InferenceProvider | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<InferenceProvider | null>(null);
-  const [availableModels, setAvailableModels] = useState<{ id: string; display_name: string }[]>([]);
+  const [availableModels, setAvailableModels] = useState<ProviderModelEntry[]>([]);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
 

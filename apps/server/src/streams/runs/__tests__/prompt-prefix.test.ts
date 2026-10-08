@@ -25,7 +25,8 @@ import type { ServerToExecutor } from "../../../executor/protocol.ts";
  * Four separate bugs have broken exactly this, each in its own way, and each
  * was found by inspection *after* shipping:
  *
- *   1. a history window that slid by one message per turn;
+ *   1. a history window that slid by one message per turn (since replaced:
+ *      nothing is dropped now, and only a compaction moves the front);
  *   2. the replay dropping `name` from tool messages the live loop sent;
  *   3. the replay re-serialising tool `arguments` — and Postgres jsonb not
  *      preserving key order, so the round-trip changed the bytes on its own;
@@ -312,18 +313,17 @@ describe("every prompt extends the previous one", () => {
     expectEachRequestExtendsTheLast();
   });
 
-  it("holds on a conversation long enough for the replay window to be anchored", async () => {
-    // 74 seeded messages puts the next two turns at 75 and 77 rows, both of
-    // which anchor at offset 25 — so the window is genuinely truncating and
-    // genuinely holding still. A window that slid with the conversation (the
-    // original defect) would start at 25 for one turn and 27 for the next,
-    // and the prefix would break at the very first replayed message.
+  it("replays a long conversation whole, and still extends it", async () => {
+    // 150 seeded messages: far past where the old window (the newest 50–74
+    // rows) started dropping the oldest. Nothing is dropped now — the first
+    // replayed message is the first one stored — and each turn still extends
+    // the last, because only a compaction moves the front.
     const [conv] = await db
       .insert(conversations)
-      .values({ ownerId: userId, title: "prefix window test" })
+      .values({ ownerId: userId, title: "prefix long history test" })
       .returning();
     convIds.push(conv.id);
-    const seeded: (typeof messages.$inferInsert)[] = Array.from({ length: 74 }, (_, i) => ({
+    const seeded: (typeof messages.$inferInsert)[] = Array.from({ length: 150 }, (_, i) => ({
         id: uuid(),
         conversationId: conv.id,
         authorType: i % 2 === 0 ? "user" : "assistant",
@@ -337,8 +337,9 @@ describe("every prompt extends the previous one", () => {
 
     await turn("first real question", conv.id);
     await turn("second real question", conv.id);
-    // The window is doing its job, not quietly replaying everything.
-    expect(requests[0].length).toBeLessThan(74);
+    // system prompt, 150 seeded, the question.
+    expect(requests[0]).toHaveLength(152);
+    expect(JSON.parse(requests[0][1]) as unknown).toEqual({ role: "user", content: "seeded 0" });
     expectEachRequestExtendsTheLast();
   });
 

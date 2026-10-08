@@ -19,7 +19,6 @@ import { Input, InputField } from '@/components/ui/input';
 import { Button, ButtonText, ButtonSpinner } from '@/components/ui/button';
 import { Pressable } from '@/components/ui/pressable';
 import { WarningConfirmModal } from '@/components/sandbox/WarningConfirmModal';
-import { AutoCompactToggle } from './AutoCompactToggle';
 import { ServerSection } from './ServerSection';
 import { UpdatesRow } from './UpdatesRow';
 import { Icon, CloseIcon } from '@/components/ui/icon';
@@ -215,7 +214,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       <ModalBackdrop />
       {/* Bounded height, matching McpServerModal.tsx: this modal has grown a
           settings row at a time (theme, thinking level, step limit,
-          auto-compact, MCP, sandbox, GitHub) and unlike a short dialog it
+          MCP, sandbox, GitHub) and unlike a short dialog it
           routinely overflows the viewport. Without a cap here the overflow
           just extends past the window edge with nothing to scroll — reachable
           with a trackpad by luck, unreachable to a click (real or
@@ -306,10 +305,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 ))}
               </HStack>
             </VStack>
-
-            <Box className="h-px bg-border" />
-
-            <AutoCompactToggle />
 
             <Box className="h-px bg-border" />
 

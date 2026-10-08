@@ -298,6 +298,13 @@ replies.
   against real builds (see `apps/e2e/README.md`).
 - Don't hand-roll these selectors in specs — use the helpers in `apps/e2e/src/helpers/`, which
   own the mapping.
+- **On a phone, a keyboard left up covers a modal's footer**, and XCUITest reports the button
+  under it as not displayed. `closeKeyboard()` (selectors.ts) puts it away: Android has a command,
+  and iOS needs a drag on a scroll view with `keyboardDismissMode="on-drag"`, which any modal with
+  a number field needs anyway (a number pad has no key that closes it). The provider form had
+  neither, and `providers.spec.ts` had never passed on iOS or Android. Found with the context-size
+  work, along with `ModelModal` spending the first tap after a search on closing the keyboard
+  (`keyboardShouldPersistTaps="handled"` now), which made choosing a searched model take two taps.
 
 ### DB / Drizzle
 
@@ -996,6 +1003,22 @@ replies.
   refuses to hand a `context_source: "default"` figure to the threshold; `context_tokens` stays
   a number for display only. Parsed where a provider does say: `context_length` (OpenRouter),
   `max_model_len` (vLLM), `max_input_tokens` (Anthropic), `meta.n_ctx_train` (llama.cpp).
+- **So an admin sets the size the provider will not say** (`inference_providers.context_windows`,
+  migration 0040: tokens by upstream id, and `"*"` for every model that reports none).
+  - **Why it is needed:** a conversation on a model with an unknown window is never compacted.
+    Once history stopped being dropped (#275), that meant it grew until the provider refused a
+    request, and then every turn failed. `/compact` failed too, since splitting a history into
+    parts needs a window. Before, the 50–74 row window kept such a thread going, losing turns
+    silently.
+  - **Precedence** (`withConfiguredWindow` in `models.ts`): what llama.cpp allocated, then a size
+    set for that model, then what the provider declares, then `"*"`. `"*"` never overrides a
+    declared size. The result is `context_source: "configured"`, which `windowFor` trusts.
+  - **Applied when the list is fetched**, after the allowlist; every provider write clears the
+    model cache, so a saved size applies at once in this process.
+  - **The form** (Context size, in the provider modal) says how many listed models report no
+    size (`GET …/providers/:id/models` returns each model's own `context_tokens`, null for
+    none). The context popup says when a size was set by an admin, and warns when it is unknown.
+  - Found in review of #275, which made the gap reachable.
 - **`format: "gguf"` requires the backend to have said so.** Only a backend that answered
   `/props` has identified itself as llama.cpp. Keying it on "has no preset" instead put a GGUF
   badge on Claude and GPT the first time a hand-entered provider was pointed at a hosted API —
@@ -1350,9 +1373,8 @@ replies.
   with a reason, never as a silent `cancelled` plus an unhandled rejection. The compaction a failed
   extension falls back to honours the 8-message floor (`canCompact`) that the extension itself
   ignores — otherwise a three-message thread over the threshold would extend, fail and compact on
-  every turn. `windowFull` also ignores the user's own auto-compact preference, deliberately: the
-  admin chose `extend` for the model and, unlike a compaction, it discards nothing; the preference
-  still gates that fallback.
+  every turn. A run that fills up mid-turn extends inside itself (`extendWithinRun`, under
+  `yieldWhile`, nothing warmed — see "Automatic compaction"), stage by stage, then compacts.
 - **On a model set to compact, the first crossing at a stage is the person's to decide.** The
   "nearly full" prompt starts at 75% and automatic compaction runs after a turn that ends past 85%,
   so a single turn that jumped across both (a big paste, a long tool result, a real model's first
@@ -1369,7 +1391,7 @@ replies.
   progress". `context-stage.test.ts` releases the conversation late to pin it.
 - **A stage run has no message rows.** Its steps (`context.stage`: waiting → reloading →
   rereading → applied/failed) are folded into the snapshot as `context_stage` and rendered from
-  run state, like a check-in decision: a row would enter the prompt and move the history anchor.
+  run state, like a check-in decision: a row would enter the prompt.
 - **The fit estimate reads the model's attention layout** (`llama/shape.ts`, from the GGUF
   header): only KV-bearing layers count (a hybrid Qwen3.5+ keeps KV in one layer of four), a
   sliding-window layer stops at `n_swa × slots + ubatch` cells, shared-KV layers hold none, the
@@ -2057,30 +2079,42 @@ replies.
   closed modal with `waitForAbsent` (`models.search`, `settings.name`): the modal's root goes on
   reporting `displayed`.
 
-### Prompt caching (why the history window is anchored)
+### Prompt caching (why the whole history is replayed)
 
 - **llama.cpp and LM Studio cache the KV state of a prompt *prefix*.** A turn is cheap only
   when the previous turn's prompt is a literal prefix of it; the moment the first tokens
   differ, the backend re-evaluates the whole history. Measured on a 14.5k-token thread
-  against a local LM Studio: **312 ms** when the window held still versus **14,551 ms** the
-  turn one message fell off the front, and the gap grows with the conversation.
-- **So `HISTORY_LIMIT` is a floor, not a window size.** `loadHistory`'s oldest edge is
-  quantised by `historyAnchor` to `HISTORY_STEP` (25), letting the replay grow to
-  `HISTORY_LIMIT + HISTORY_STEP - 1` messages and re-anchoring only once per step. A plain
-  "newest 50" window slides by one every turn — past message 50 that is a **full prompt
-  evaluation on every single turn, forever**, which is exactly what it looked like from the
-  outside ("the second message reprocesses the whole history"). An agent turn can persist a
-  dozen messages, so 50 arrives faster than it sounds.
-- This needs a real `COUNT(*)`, not the old limit+1 over-fetch: the anchor has to be a stable
-  function of the conversation's actual length, and an over-fetch by one can only answer
-  "is there more?". One indexed count per run (not per tool iteration).
+  against a local LM Studio: **312 ms** when the front held still versus **14,551 ms** the
+  turn one message fell off it, and the gap grows with the conversation.
+- **So the front of the prompt moves only at a compaction.** `loadHistory` replays every row
+  after the newest summary, in order, and nothing else ever shortens it: a conversation that
+  fills the window is compacted or its context extended (see "Automatic compaction"), never
+  trimmed. `historyFront` is the summary's lamport, so the project-instructions fold
+  (`frontKey`) fires only then.
+- **It used to be a window of the newest 50–74 rows** (`HISTORY_LIMIT` 50, re-anchored every
+  `HISTORY_STEP` 25 so it did not slide by one each turn). That was sized for chat, where a
+  row is a turn; an agent iteration stores two. On the beta a planning run's turn 4 began at
+  91K tokens where turn 3 had ended at 261K: the person's own request and the early research
+  were gone, no summary held them (compaction only summarised what the window kept), and
+  nothing said so. `history-replay.test.ts` keeps a 151-row agent turn's opening request.
+- **The read has no row or byte ceiling, deliberately.** Compaction bounds it: every row after
+  the summary is in the prompt, and the prompt is compacted at 85% of the window, so one read is
+  about a window's worth of text plus stored thinking (display-only, never replayed). A ceiling
+  would lose rows by another route, since a compaction summarises what `loadHistory` returns
+  and rows past it would never reach a summary. The big reads are a thread from before this
+  change (read whole once, then compacted in parts) and a model whose window is unknown, which
+  is never compacted on a figure. If memory ever needs bounding, page the compaction's read.
 - **Anything that changes an *older* part of the prompt breaks the cache just as badly**, which
   is why `selectAffordableAttachments` spends its history budget oldest-first — see the
   attachment-budget bullet below.
 - **Partner-less tool calls and results are stripped in both directions.** An interrupted run
-  leaves an assistant `tool_call` with no result (`resolvedCallIds`); the window's oldest edge
-  can equally orphan a `tool_result` whose call fell outside it (`presentCallIds`). Most
-  backends reject either.
+  leaves an assistant `tool_call` with no result (`resolvedCallIds`); a summary written between
+  a call and its result (a `/compact` after a stopped run) can equally orphan a `tool_result`
+  (`presentCallIds`). Most backends reject either.
+- **`ContextBreakdown.history_limit` / `history_truncated` are an older server's**, kept
+  optional on the wire: a current server omits both, which an older client reads as "nothing
+  dropped". A newer client still shows "older turns already dropped" when an older server says
+  so.
 
 ### Telling the user what the prompt actually carried
 
@@ -2156,7 +2190,7 @@ replies.
   handed its slot back). A loop check-in is the cheap case — "continue" resets the detector.
   `step-checkin.test.ts` walks the ladder and asserts no fourth check-in.
 - **The auto-continue notice is client-only, never a message.** A persisted row would enter the
-  next prompt (breaking the prefix) and the history anchor's `COUNT(*)`. It rides as
+  next prompt (breaking the prefix). It rides as
   `steps.decision {by: "timeout", n, unattended, auto_continues}` and is folded onto the last
   assistant message as `checkin_decision`, so it survives a reconnect but not the stream log's
   TTL — after that it is simply absent, which reads as "we were not told", never as "nothing
@@ -2642,54 +2676,140 @@ replies.
 
 ### Automatic compaction
 
-- **The server compacts on its own** once a finished turn's `prompt + completion` crosses
-  `AUTO_COMPACT_THRESHOLD` (default 0.85) of the model's window, provided the replay holds at
-  least `AUTO_COMPACT_MIN_MESSAGES` (8) and the user hasn't turned it off. Policy lives in
-  `streams/runs/auto-compact.ts`; `/compact` is the same machinery with `auto: false`, no
-  threshold, and no pref check — asking for it is a decision.
+- **A full conversation is always compacted or its context extended; there is no switch.**
+  The policy is one pure function, `fillDecision` (`streams/runs/auto-compact.ts`), used
+  before every request of a run (`phase: "mid_run"`) and after every turn (`"after_turn"`):
+  - below `AUTO_COMPACT_THRESHOLD` (default 0.85) of the window, nothing;
+  - a model with stages and `whenFull: "extend"` moves up a stage, stage by stage, with no
+    message floor, until none is left;
+  - otherwise a compaction, once the replay since the last summary holds
+    `AUTO_COMPACT_MIN_MESSAGES` (8);
+  - short of that floor, after a turn nothing. Before a request, one that fits the window less
+    a reply's room (`replyReserveTokens`, up to 1K) is sent; one that does not is compacted
+    anyway — the floor stops a summary being redone for nothing, never sends a request that
+    cannot fit — when there are at least two messages since the summary and the run has not
+    already compacted (`compactedThisRun`); otherwise it is refused with `CANNOT_FIT_REASON`,
+    said on an error reply, never sent to be cut off.
+  `/compact` is the same machinery with `auto: false` and no threshold — asking for it is a
+  decision.
+- **`AUTO_COMPACT_THRESHOLD=0` turns off only the early step**, never the hard limit: with it,
+  nothing is extended or compacted until the next request would not leave a reply's room, and
+  then exactly the rules above apply. It used to switch the whole policy off, which would have
+  brought back replies cut off at the window, the one thing removing the preference was for.
+  Found in review.
+- **The preference to turn it off is gone** (`user_prefs.auto_compact`, dropped in migration
+  0039, and its Settings switch). Off meant every message was sent until the window filled,
+  and then llama.cpp stopped each reply at exactly the window: on the beta a long agent turn
+  had nine replies cut off in a row (`truncated = 1` in the router log) while the run carried
+  on. `PATCH /v1/prefs` refuses `autoCompact` by name, so an older client does not believe it
+  turned anything off.
+- **Inside a run, the check runs before each request and before that iteration's assistant
+  row** (the `// ── Room for this request` block in `runToolLoop`). Before the row, because a
+  summary written after it would sort past it and leave it out of every later replay. The size
+  is the previous request's measured prompt plus an estimate of what was appended
+  (`promptEstimate`, the same figure `prompt.stats` carries); a run's first request has only
+  the character estimate. What failed once in a run (a switch that would not load, a summary
+  the model would not write) is not tried again in it.
+- **The mock model's 4K window is real to the room check.** The mock reports 10 prompt tokens
+  whatever it is sent, but a request is judged on its estimate, so a spec whose prompt
+  genuinely exceeds 4K (four 256 KB documents, say) is compacted or refused before the mock
+  sees it. `attachment-budget.spec.ts` runs on a host model loaded at 512K for that reason.
+- **A compaction inside a run is `compactWithinRun`, under the run, never beside it**: on the
+  run's own stream (the card lands in place), under the slot the run already holds (one that
+  queued for its own would wait forever behind the run waiting for it), and with the run's
+  lamport counter, so the summary sorts after every row the run wrote and before the next.
+  `startCompactRun` refuses while the run is registered, which is why it cannot be used.
+  - **A message the run has not answered stays after the summary, unchanged.** Before a run's
+    first request the replay ends on the person's new message (a thread can end a turn at 90%
+    without compacting: under the floor, or a stopped turn), and after a check-in or plan nudge
+    it ends on that. Folded into the summary, it was answered as one line of it, and the model
+    was told to "continue the task" instead. The engine tracks that row (`unanswered`: the
+    user's message until the first reply row, then any nudge it writes), and the summary takes
+    the lamport just below it (`cutoffBefore`), so it alone replays. If another row already
+    sits at or above that lamport (a client clock ahead of ours), everything is summarised and
+    the nudge follows, as before. Found in review.
+  - **Otherwise a `COMPACTION_CONTINUE_NUDGE` user row follows the summary** (author null,
+    rendered as a notice, `chat.message.compactionNudge`): the prompt then reads system,
+    summary, nudge — never ending on a system message, which several chat templates refuse —
+    and the next turn replays the same bytes. The leaf moves to the nudge. **The nudge is
+    inserted in the transaction that completes the summary** (`commitSummary`'s `follow`):
+    inserted first, a failed commit left it in the history with no summary in front of it,
+    replayed on every turn after. Found in review; the test fails the commit with a trigger,
+    because `db` is a proxy no spy reaches.
+  - **Its "before" is the run's estimate of the request, so the card shows `~`**
+    (`beforeEstimated`). The figure is kept rather than nulled because it also decides whether
+    the compaction can reuse the run's prefix (`compactionHasRoom`).
+  - The run rebuilds `chatMessages` from the summary and resets the fingerprint carry; the
+    request after it is the one expensive re-read, as after any compaction.
+  - A stop during it ends the run cancelled; a failed one leaves its failed card and the run
+    goes on to send-or-refuse.
+- **An extension inside a run is `extendWithinRun`**: the switch needs the whole backend
+  (`acquireExclusiveSlot` waits for nothing to be running), so the run hands its slot back with
+  `yieldWhile` and re-enters at the front. Nothing is warmed — the run's next request is the
+  re-read — and the window and stages are read again after it. The `context.stage` card shows
+  on the run's own stream. A stop mid-switch puts the stage back and throws
+  `RunSlotAbortedError`, which ends the run. **A sub-agent never extends** (a stage is the
+  whole model's, and moving it is for the conversation a person is in); it compacts, and that
+  in-run check is the only protection a child has, since it is one run long.
+- **A history larger than the window is summarised in parts** (`summaryParts` in
+  compactRun.ts): every long thread from before history stopped being dropped, and any run one
+  huge tool result pushed over. Oldest first, each request carrying the summary so far, a tool
+  call never separated from its results, and a single message too large for a part cut inside
+  that request only (`SUMMARY_CUT_MARKER`). **The cut covers tool-call arguments as well as
+  text** (`fitMessage`): an `fs_write` carries its whole file there, and cutting only the text
+  left the part over budget and the thread impossible to compact. A cut argument becomes a small
+  valid JSON object holding the start of the original, since templates parse arguments. Only
+  the final text is committed, as one summary row, so the cutoff rule is unchanged.
+- **Every summary takes `nextConversationLamport`** (after every row the conversation has,
+  whatever clock wrote them) or, inside a run, the run's own counter — except the in-run one
+  that keeps an unanswered message after it, above. `Date.now()` alone could
+  sort before a run's last row (`monotonicLamport` runs ahead of the clock), which would then
+  replay after the summary.
 - **Compaction deletes nothing.** It inserts a `summary`-authored row, and `loadHistory`
   replays only rows after the newest completed one — what is *sent* shrinks, what is *shown*
   does not. A compaction with nothing new since the last summary (`already_compacted`) or
   under two messages (`too_short`) still lands a card but makes no model call. Savings use the
   last usage record's prompt + completion as "before"; if either side had to be estimated,
   `before_estimated` is set and the card shows `~`.
-- **It is a per-user pref (`user_prefs.auto_compact`, default true), read only after the
-  threshold has already been crossed** — so an ordinary turn costs no extra query. A failed
-  prefs lookup **fails closed** (no compaction): not compacting costs one long prompt, whereas
-  compacting against someone's wishes costs a conversation they can't get back.
 - **`PATCH /v1/prefs` is partial.** It used to require `toolAllowlist` on every call; a second
   field on a route shaped like that is how one setting silently reverts another, since any
   client writing one key would have had to send the other, and a client holding stale prefs
   would write back the old value. Absent keys are left alone, present ones are still validated,
   and an empty patch is a 400 rather than an empty row.
-- **The settings toggle spells out both outcomes, not just the one being enabled**
-  (`components/settings/AutoCompactToggle.tsx`). The trade is between two unlike costs — losing
-  detail from old turns versus a conversation that eventually stops replying — and neither is
-  guessable from a switch label. The inactive branch stays on screen, dimmed, so the
-  consequence of flipping it is visible before it is flipped.
-- **The trigger sits past `runToolLoop`'s `finally`, and must stay there.** `startCompactRun`
-  takes the per-conversation lock the run holds until `unregisterRun`, so triggering one line
-  earlier makes the run refuse itself with "already in progress" — silently, forever. There is
-  a test that fails (by timing out) if it is moved back inside the `try`.
+- **The after-turn trigger sits past `runToolLoop`'s `finally`, and must stay there.**
+  `startCompactRun` and a stage run take the per-conversation lock the run holds until
+  `unregisterRun`, so triggering one line earlier makes the run refuse itself with "already in
+  progress" — silently, forever. There is a test that fails (by timing out) if it is moved back
+  inside the `try`. (The in-run path above avoids the lock by not being a run of its own.)
 - **Only the success path fires it.** The error and cancel paths `return` before reaching it:
   a failed turn never established what the prompt costs, and compacting straight after a user
   pressed stop is the opposite of what they asked for. A refused lock or a backend hiccup is
   caught and logged, never surfaced as a failure of the turn that already succeeded.
-- **The check is deliberately *after* a turn, not before the next one** — that is the one point
-  where the measured prompt size and the window it was assembled against are both in hand.
-  What makes acting after the fact safe is the headroom: the threshold has to be low enough
-  that the following turn still fits.
+- **The after-turn check is where the whole turn's measured size and its window are both in
+  hand**; acting then, with the lock free, leaves the next turn a conversation that fits. The
+  in-run check is what catches a turn that fills up on its own.
 - **`AUTO_COMPACT_MIN_MESSAGES` is an anti-thrash guard, not a nicety.** After a compaction the
   replay restarts at zero, so without a floor a conversation whose *summary alone* sits near
   the threshold would re-compact every turn, burning a model call and a full prompt
   re-evaluation each time to save nothing.
 - **An unknown window disables it.** A fraction of null is not a number, and compacting on a
-  guess rewrites a conversation for no established reason.
+  guess rewrites a conversation for no established reason. A request that really is too large
+  then comes back as the backend's own error, which the run reports — and since nothing is
+  dropped any more, every turn after it fails the same way. That is why an admin can set a
+  size for an added provider's models (`contextWindows`, under "Inference providers"); the
+  built-in llama.cpp models always have one.
 - **`auto-compact.ts` exists to break a cycle.** The engine needs the policy and `compactRun`
   needs the engine's `loadHistory`, so keeping the policy in `compactRun.ts` would have the two
   importing each other — working only by the accident that every binding crossing it is a
-  hoisted function declaration. The engine reaches `startCompactRun` itself through a dynamic
-  `import()` for the same reason.
+  hoisted function declaration. The engine reaches `startCompactRun` and `compactWithinRun`
+  through a dynamic `import()` for the same reason.
+- **Both test backends report a full prompt on a phrase**: "fill the context" 80%, "overflow
+  the context" 90%, "exceed the context" 99% of the window (the mock's 4,096; the fake router's
+  loaded `ctx-size`), keyed on the newest user message — so a compaction inside a run, which
+  replaces that message with its nudge, makes the next request small again, as a real summary
+  does. "work in steps" makes the fake router call `todo_write` once per turn, which is what
+  gives a run on it a second request. The mock answers a summarising request with one short
+  sentence rather than echoing the instruction, so a compaction in several parts stays fast.
 - **A compaction sends the conversation's own prompt and appends its instruction**
   (`compactionRequest`, fed by `request-shape.ts`). It sends the last run's system prompt and
   tool schemas, the history exactly as the next turn would replay it (images included), and

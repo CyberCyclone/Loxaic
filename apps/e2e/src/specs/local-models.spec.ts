@@ -590,6 +590,10 @@ describe('local models', () => {
   });
 
   it('once unpinned, the first model is unloaded to make room for the second', async () => {
+    // The router log is the whole run's, and the mock's tiny model is every
+    // spec's: extra-options.spec.ts fails a load of this very model on
+    // purpose. Only what happens from here on is this case's.
+    const from = routerEvents().length;
     await signOut();
     await signIn(adminCreds());
     await openLocalModels();
@@ -605,15 +609,15 @@ describe('local models', () => {
 
     // Unloaded by the server to make room, before the second loaded — not a
     // load that failed for want of memory.
-    const events = routerEvents();
+    const events = routerEvents().slice(from);
     const lastIndex = (event: string, model: string) =>
       events.map((e, i) => (e.event === event && e.model === model ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
     const unloaded = lastIndex('unload', routerName);
     const loaded = lastIndex('load', secondRouterName);
     expect(unloaded).toBeGreaterThanOrEqual(0);
     expect(unloaded).toBeLessThan(loaded);
-    // These two models only: the router log is the whole run's, and another
-    // spec (mtp.spec.ts) fails a load on purpose.
+    // These two models only, and only since this case began: other specs
+    // (mtp.spec.ts, extra-options.spec.ts) fail loads on purpose.
     expect(events.some((e) => e.event === 'load-failed' && (e.model === routerName || e.model === secondRouterName))).toBe(false);
 
     // The picker's badge moved with it.

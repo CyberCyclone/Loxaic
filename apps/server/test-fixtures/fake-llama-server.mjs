@@ -449,6 +449,14 @@ const server = createServer(async (req, res) => {
       model: body.model,
       reasoning_effort: body.reasoning_effort ?? null,
       chat_template_kwargs: body.chat_template_kwargs ?? null,
+      // What the request reported costing, and how it ended, so a test can see
+      // every request a run made and how full each one was.
+      prompt_tokens: promptSize(body),
+      ctx_size: Number(merged(body.model)["ctx-size"] ?? 4096),
+      last_role: (body.messages ?? []).at(-1)?.role ?? null,
+      // The start of what the model was asked, so a test can tell the
+      // person's own message from a nudge written in its place.
+      last_user: said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")).slice(0, 200),
     });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const words = ["Hello", " from", ` ${body.model}`];
@@ -485,12 +493,27 @@ const server = createServer(async (req, res) => {
         );
       }
     }
-    for (const w of words) {
-      if (perWordMs > 0) await new Promise((r) => setTimeout(r, perWordMs));
-      if (gone) return;
-      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: w }, finish_reason: null }] })}\n\n`);
+    // "work in steps": the turn's first request calls `todo_write` once, as
+    // a model working through a task does, and the request after its result
+    // answers — the in-process mock's one-call-per-turn rule. What gives a run
+    // on this backend a second request, which is where a conversation that
+    // filled up in the middle of a turn has to be extended or compacted.
+    const messages = body.messages ?? [];
+    const lastUserIndex = messages.map((m) => m.role).lastIndexOf("user");
+    const toolRanThisTurn = messages.slice(lastUserIndex + 1).some((m) => m.role === "tool");
+    const offersTodo = (body.tools ?? []).some((t) => t.function?.name === "todo_write");
+    if (/work in steps/i.test(said(lastUser)) && offersTodo && !toolRanThisTurn && body.tool_choice !== "none") {
+      const call = { index: 0, id: `call_${String(Date.now())}`, type: "function", function: { name: "todo_write", arguments: JSON.stringify({ todos: [{ id: "1", text: "step", status: "in_progress" }] }) } };
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: null, tool_calls: [call] }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+    } else {
+      for (const w of words) {
+        if (perWordMs > 0) await new Promise((r) => setTimeout(r, perWordMs));
+        if (gone) return;
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: w }, finish_reason: null }] })}\n\n`);
+      }
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
     }
-    res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
     // A prompt that says so reports itself as nearly filling the model's
     // context, so an e2e run can cross the 75% and 85% thresholds without
     // sending 200k real tokens: "fill the context" is 80% of `ctx-size`,
@@ -516,13 +539,19 @@ const server = createServer(async (req, res) => {
   json(res, 404, { error: { message: "not found" } });
 });
 
+/** A message's text, whatever shape its content is in. */
+function said(message) {
+  return typeof message?.content === "string" ? message.content : JSON.stringify(message?.content ?? "");
+}
+
 /** What a request's prompt "costs": "fill the context" in the last user
  * message is 80% of the window the model was loaded with, "overflow the
- * context" 90%, anything else 10 tokens. */
+ * context" 90%, "exceed the context" 99%, anything else 10 tokens. A
+ * compaction in the middle of a run replaces that message with its nudge, so
+ * the prompt after it is small again — as a real summary makes it. */
 function promptSize(body) {
-  const last = [...(body.messages ?? [])].reverse().find((m) => m.role === "user");
-  const said = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
-  const fill = /overflow the context/i.test(said) ? 0.9 : /fill the context/i.test(said) ? 0.8 : 0;
+  const text = said([...(body.messages ?? [])].reverse().find((m) => m.role === "user"));
+  const fill = /exceed the context/i.test(text) ? 0.99 : /overflow the context/i.test(text) ? 0.9 : /fill the context/i.test(text) ? 0.8 : 0;
   return fill > 0 ? Math.round(Number(merged(body.model)["ctx-size"] ?? 4096) * fill) : 10;
 }
 

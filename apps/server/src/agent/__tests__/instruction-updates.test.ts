@@ -168,10 +168,10 @@ describe("versions", () => {
   });
 
   it("makes a snapshot with no decision, so whole-or-outline is decided afresh", () => {
-    const snap = snapshotFrom(v(FILE, { cksums: { "AGENTS.md": "1 2" } }), "t", "0:0");
-    expect(snap).toMatchObject({ status: "found", path: "AGENTS.md", cksums: { "AGENTS.md": "1 2" }, frontKey: "0:0" });
+    const snap = snapshotFrom(v(FILE, { cksums: { "AGENTS.md": "1 2" } }), "t", "0");
+    expect(snap).toMatchObject({ status: "found", path: "AGENTS.md", cksums: { "AGENTS.md": "1 2" }, frontKey: "0" });
     expect("decision" in snap).toBe(false);
-    expect(snapshotFrom(v("", { path: null }), "t", "0:0")).toEqual({ status: "none", fetchedAt: "t", frontKey: "0:0" });
+    expect(snapshotFrom(v("", { path: null }), "t", "0")).toEqual({ status: "none", fetchedAt: "t", frontKey: "0" });
   });
 });
 

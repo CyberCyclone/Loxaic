@@ -4,7 +4,13 @@ import { v4 as uuid } from "uuid";
 process.env.MCP_ENCRYPTION_KEY ??= "provider-wire-test-key";
 
 import { db, eq, inArray } from "@loxaic/db";
-import { inferenceProviders, user } from "@loxaic/db/schema";
+import { conversations, inferenceProviders, messages, usageRecords, user } from "@loxaic/db/schema";
+import type { ContentBlock } from "@loxaic/types";
+import { initStreamBroker } from "../../streams/index.ts";
+import { getRunByConversation } from "../../streams/registry.ts";
+import { startChatRun } from "../../streams/runs/chatRun.ts";
+import { estimateTallyTokens, tallyChatMessages } from "../context.ts";
+import type { ChatMessage } from "../provider.ts";
 import { streamCompletion } from "../provider.ts";
 import {
   __resetModelCachesForTest,
@@ -256,6 +262,41 @@ describe("listing an added provider's models", () => {
     }
   });
 
+  it("uses the admin's size for a model that reports none", async () => {
+    // Without one, compaction never acts: a conversation on the model grows
+    // until the provider refuses a request, and then cannot continue.
+    const bare = await startMockOpenAi({ apiKey: API_KEY, models: [{ id: "no-context-model" }] });
+    try {
+      const row = await makeProvider({ baseUrl: bare.apiBase, contextWindows: { "*": 32_000 } });
+      const info = await getModelInfo(`${row.slug}::no-context-model`);
+      expect(info?.context_source).toBe("configured");
+      expect(info?.context_tokens).toBe(32_000);
+      expect(await resolveWindow(`${row.slug}::no-context-model`)).toBe(32_000);
+    } finally {
+      await bare.stop();
+    }
+  });
+
+  it("lets a size for one model win over what it declares, and never lets \"*\" do so", async () => {
+    const declared = await makeProvider({ contextWindows: { "*": 32_000 } });
+    expect(await resolveWindow(`${declared.slug}::mock-remote-model`)).toBe(128_000);
+    const own = await makeProvider({ contextWindows: { "*": 32_000, "mock-remote-model": 64_000 } });
+    expect(await resolveWindow(`${own.slug}::mock-remote-model`)).toBe(64_000);
+  });
+
+  it("never overrides what a llama.cpp backend actually allocated", async () => {
+    const llama = await startMockOpenAi({ apiKey: API_KEY, nCtx: 16_384, models: [{ id: "loaded-model" }] });
+    try {
+      const row = await makeProvider({ baseUrl: llama.apiBase, contextWindows: { "loaded-model": 64_000 } });
+      expect(await resolveWindow(`${row.slug}::loaded-model`)).toBe(16_384);
+      // And the list says so too, which is what the meter and picker show.
+      const info = await getModelInfo(`${row.slug}::loaded-model`);
+      expect(info).toMatchObject({ context_source: "loaded", context_tokens: 16_384 });
+    } finally {
+      await llama.stop();
+    }
+  });
+
   it("falls back to the allowlist when the provider will not list", async () => {
     // A provider whose /models needs different auth than its completions
     // endpoint is still usable: the ids an admin typed are the catalogue.
@@ -300,5 +341,53 @@ describe("listing an added provider's models", () => {
     const models = await listBackendModels();
     expect(models.filter((m) => m.provider_id === dead.id)).toHaveLength(0);
     expect(models.filter((m) => m.provider_id === live.id)).toHaveLength(1);
+  });
+});
+
+describe("a conversation on a model that reports no context size", () => {
+  it("is compacted once an admin sets a size, rather than sent whole until the provider refuses it", { timeout: 60_000 }, async () => {
+    // Before the size could be set, the window was unknown, so compaction
+    // never acted: the history grew until the provider refused a request, and
+    // every turn after failed the same way, /compact included.
+    await initStreamBroker();
+    const WINDOW = 16_384;
+    const bare = await startMockOpenAi({ apiKey: API_KEY, models: [{ id: "no-context-model" }], reply: "A summary of it all." });
+    const [conv] = await db.insert(conversations).values({ ownerId: adminId, title: "unsized model" }).returning();
+    try {
+      const row = await makeProvider({ baseUrl: bare.apiBase, contextWindows: { "*": WINDOW } });
+      await db.insert(messages).values(
+        Array.from({ length: 300 }, (_, i) => ({
+          id: uuid(),
+          conversationId: conv.id,
+          authorType: i % 2 === 0 ? ("user" as const) : ("assistant" as const),
+          origin: "server" as const,
+          lamport: 1000 + i,
+          content: [{ kind: "text", text: `message ${String(i)}: ${"words ".repeat(40)}` }] as ContentBlock[],
+          status: "complete" as const,
+          createdAt: new Date(1_700_000_000_000 + i),
+        })),
+      );
+
+      await startChatRun({ userId: adminId, content: "another question", model: `${row.slug}::no-context-model`, conversationId: conv.id });
+      const start = Date.now();
+      while (getRunByConversation(conv.id) && Date.now() - start < 50_000) await new Promise((r) => setTimeout(r, 100));
+
+      const summary = (await db.query.messages.findMany({ where: eq(messages.conversationId, conv.id) })).find(
+        (r) => r.authorType === "summary",
+      );
+      expect(summary?.status).toBe("complete");
+      // Nothing went out over the size: the history was summarised in parts,
+      // and the question was asked after the summary.
+      expect(bare.completions.length).toBeGreaterThan(1);
+      for (const req of bare.completions) {
+        expect(estimateTallyTokens(tallyChatMessages((req.body.messages ?? []) as ChatMessage[]))).toBeLessThan(WINDOW);
+      }
+      expect(bare.completions.at(-1)?.body.messages?.at(-1)).toEqual({ role: "user", content: "another question" });
+    } finally {
+      await db.delete(messages).where(eq(messages.conversationId, conv.id));
+      await db.delete(usageRecords).where(eq(usageRecords.conversationId, conv.id));
+      await db.delete(conversations).where(eq(conversations.id, conv.id));
+      await bare.stop();
+    }
   });
 });

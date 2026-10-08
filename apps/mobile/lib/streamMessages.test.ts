@@ -113,6 +113,18 @@ describe('failed turns carry their reason', () => {
     expect(compactionCardState(done.compaction, done.error)).toBe('done');
   });
 
+  it('a compaction the server made on its own says so, live and reloaded', () => {
+    // Dropped on both routes, every automatic compaction read "Compacted" and
+    // lost the note that the conversation had reached the context limit.
+    const stats = { messages_compacted: 9, before_tokens: 100, after_tokens: 10, saved_tokens: 90, before_estimated: false, auto: true };
+    const live = applyEventToMsgs([{ id: 's1', role: 'summary', text: 'summary' }], { kind: 'compaction', message_id: 's1', ...stats });
+    expect(live[0].compaction?.auto).toBe(true);
+    const [loaded] = reconstructMessages([
+      row({ authorType: 'summary', content: [{ kind: 'text', text: 'summary' }, { kind: 'compaction', ...stats }] }),
+    ]);
+    expect(loaded.compaction?.auto).toBe(true);
+  });
+
   it('never on a completed history row', () => {
     const [m] = reconstructMessages([row({ content: [{ kind: 'text', text: 'fine' }] })]);
     expect(m.error).toBe(false);
@@ -213,8 +225,6 @@ describe('usage arrives per request (#193)', () => {
       used_tokens: 1230,
       parts: [{ category: 'history' as const, tokens: 1230 }],
       history_messages: 2,
-      history_limit: 50,
-      history_truncated: false,
       window_tokens: 8192,
     },
   };

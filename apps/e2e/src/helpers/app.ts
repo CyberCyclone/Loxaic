@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, isVisible, platform, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
@@ -1204,6 +1204,9 @@ export async function returnToOnboarding(): Promise<void> {
 export async function openProviders(): Promise<void> {
   await openSidebar();
   await tap('sidebar.settings');
+  // Below the fold on a phone: the settings modal scrolls, and a tap on a row
+  // past its edge waits out its timeout on iOS.
+  await scrollTo('settings.nav.providers');
   await tap('settings.nav.providers');
   await waitForVisible('providers.builtin');
 }

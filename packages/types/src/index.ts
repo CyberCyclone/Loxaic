@@ -104,8 +104,9 @@ export interface InstructionsTracking {
   /** The version the chat was last told about, when it differs from the one
    * in the system prompt. Cleared when it is folded in. */
   latest?: InstructionsVersion;
-  /** Which prompt front the last run was built on (compaction point and
-   * history-window anchor). A new one is what allows a fold. */
+  /** Which prompt front the last run was built on (its compaction point;
+   * older snapshots also carry the history window's anchor, which no longer
+   * exists). A new one is what allows a fold. */
   frontKey?: string;
 }
 export type ProjectInstructions =
@@ -218,8 +219,9 @@ export interface ModelInfo {
    * `context_source` says so. */
   loaded_context_tokens: number | null;
   /** Where `context_tokens` came from, so the UI can admit when it's estimating
-   * instead of quietly reporting a wrong denominator as fact. */
-  context_source: "loaded" | "max" | "trained" | "default";
+   * instead of quietly reporting a wrong denominator as fact. "configured" is
+   * an admin's figure for an added provider's model (`contextWindows`). */
+  context_source: "loaded" | "max" | "trained" | "configured" | "default";
   location: "server" | "device" | "remote";
   /** Which host in the cluster serves this model, and the name that host's
    * owner chose for it. Null when the instance has no registered identity (a

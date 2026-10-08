@@ -1,0 +1,1 @@
+ALTER TABLE "inference_providers" ADD COLUMN "context_windows" jsonb;

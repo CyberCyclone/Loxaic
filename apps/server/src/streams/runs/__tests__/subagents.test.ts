@@ -6,6 +6,7 @@ import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
 import { conversationShares, conversations, messages, usageRecords, user } from "@loxaic/db/schema";
 import {
+  COMPACTION_CONTINUE_NUDGE,
   MAX_SUBAGENTS_PER_MESSAGE,
   SUBAGENT_LOST_ERROR,
   SUBAGENT_TOOL_NAME,
@@ -228,6 +229,42 @@ describe("sub-agents", () => {
     expect(childUsage.length).toBeGreaterThan(0);
     expect(childUsage.every((u) => u.runId === info.streamId)).toBe(true);
   }, 30_000);
+
+  it("compacts a child that fills its context in the middle of its work, and the child finishes", async () => {
+    // A child is one run long, so the after-turn compaction a conversation
+    // gets never comes for it: the room check between its own requests is the
+    // only thing standing between a long child and a request llama.cpp cuts
+    // off. "overflow the context" makes each of its requests read 90% of the
+    // mock's window; four tool steps give it enough to summarise.
+    const file = path.join(dir, `${uuid()}.json`);
+    const todo = (n: number) => ({ tool: "todo_write", args: { todos: [{ id: "1", text: `child step ${String(n)}`, status: "in_progress" }] } });
+    writeFileSync(
+      file,
+      JSON.stringify([
+        { match: "child steps", steps: [todo(1), todo(2), todo(3), todo(4)], finalText: "[Mock] Child finished.\n" },
+        { match: "parent hands off", steps: [sub("Filling child", "child steps and overflow the context")], finalText: "[Mock] Parent finished.\n" },
+      ]),
+    );
+    process.env.MOCK_SCENARIOS_FILE = file;
+    __resetMockScenariosForTest();
+
+    const convId = await newConversation();
+    await agentRun(convId, "parent hands off");
+    await waitFor("the parent to end", ended(convId));
+
+    const [child] = await childrenOf(convId);
+    const childRows = await rowsOf(child.id);
+    const summaries = childRows.filter((r) => r.authorType === "summary");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].status).toBe("complete");
+    const at = childRows.indexOf(summaries[0]);
+    expect(childRows[at - 1].authorType).toBe("tool");
+    expect((childRows[at + 1].content as ContentBlock[])[0]).toEqual({ kind: "text", text: COMPACTION_CONTINUE_NUDGE });
+    // It finished, and its report reached the parent.
+    expect((child.subagent as SubAgentInfo).status).toBe("complete");
+    const [result] = await resultsOf(convId);
+    expect(result.ok).toBe(true);
+  }, 60_000);
 
   it("tells a run with the tool what a sub-agent's result is, and a run without it nothing", async () => {
     const convId = await newConversation();

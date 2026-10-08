@@ -20,7 +20,15 @@ import { Icon, CloseIcon } from '@/components/ui/icon';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
-import type { InferenceProvider, ProviderInput, ProviderPreset } from '@loxaic/api-client';
+import type { InferenceProvider, ProviderInput, ProviderModelEntry, ProviderPreset } from '@loxaic/api-client';
+import {
+  buildContextWindows,
+  CONTEXT_SIZE_ERROR,
+  formatContextSize,
+  modelsWithoutSize,
+  parseContextSize,
+  splitContextWindows,
+} from '@/lib/providerContext';
 
 /**
  * What a preset fills in.
@@ -57,7 +65,7 @@ const PRESETS: {
     name: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     concurrency: 16,
-    hint: 'Key from platform.openai.com. OpenAI does not report context windows, so Loxaic will not guess one.',
+    hint: "Key from platform.openai.com. OpenAI doesn't report context sizes, so set one below: without it, conversations on its models can't be compacted.",
   },
   {
     key: 'anthropic',
@@ -84,7 +92,7 @@ interface ProviderModalProps {
   editing: InferenceProvider | null;
   /** Every model the provider lists, for the allowlist editor. Fetched by the
    * screen once a provider exists to ask. */
-  availableModels: { id: string; display_name: string }[];
+  availableModels: ProviderModelEntry[];
   modelsError: string | null;
   loadingModels: boolean;
 }
@@ -110,6 +118,11 @@ export function ProviderModal({
   const [allowlist, setAllowlist] = useState<string[] | null>(null);
   const [modelSearch, setModelSearch] = useState('');
   const [manualModel, setManualModel] = useState('');
+  // Context sizes: one for every model that reports none, and any per model.
+  const [contextFallback, setContextFallback] = useState('');
+  const [contextSizes, setContextSizes] = useState<Record<string, number>>({});
+  const [contextModel, setContextModel] = useState('');
+  const [contextTokens, setContextTokens] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const reachable = useServerReachable();
@@ -121,6 +134,11 @@ export function ProviderModal({
     setBaseUrl(editing?.baseUrl ?? '');
     setConcurrency(editing?.maxConcurrentRuns === null ? '' : String(editing?.maxConcurrentRuns ?? ''));
     setAllowlist(editing?.modelAllowlist ?? null);
+    const sizes = splitContextWindows(editing?.contextWindows);
+    setContextFallback(sizes.fallback);
+    setContextSizes(sizes.perModel);
+    setContextModel('');
+    setContextTokens('');
     // Never seeded from the row, unlike every other field: no route returns a
     // stored key, so there is nothing to seed it with. Empty means "leave the
     // stored one alone".
@@ -180,6 +198,26 @@ export function ProviderModal({
     setManualModel('');
   };
 
+  const addContextSize = () => {
+    const id = contextModel.trim();
+    const tokens = parseContextSize(contextTokens);
+    if (!id || tokens === null) return;
+    if (tokens === 'invalid') {
+      setError(CONTEXT_SIZE_ERROR);
+      return;
+    }
+    setError(null);
+    setContextSizes((prev) => ({ ...prev, [id]: tokens }));
+    setContextModel('');
+    setContextTokens('');
+  };
+
+  const removeContextSize = (id: string) => {
+    setContextSizes((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => key !== id)));
+  };
+
+  const unsized = modelsWithoutSize(availableModels, contextSizes);
+
   const handleSave = async () => {
     const trimmedName = name.trim();
     if (!trimmedName) {
@@ -199,6 +237,11 @@ export function ProviderModal({
       }
       maxConcurrentRuns = n;
     }
+    const contextWindows = buildContextWindows(contextFallback, contextSizes);
+    if (!contextWindows.ok) {
+      setError(contextWindows.error);
+      return;
+    }
 
     const input: ProviderInput = {
       name: trimmedName,
@@ -206,6 +249,7 @@ export function ProviderModal({
       preset: preset === 'custom' ? null : preset,
       maxConcurrentRuns,
       modelAllowlist: allowlist && allowlist.length > 0 ? allowlist : null,
+      contextWindows: contextWindows.value,
     };
     // Three states, matching the server's: a string replaces the key, null
     // removes it, and absent keeps it. Absent rather than empty for "keep" —
@@ -240,7 +284,10 @@ export function ProviderModal({
             <Icon as={CloseIcon} />
           </ModalCloseButton>
         </ModalHeader>
-        <ModalBody scrollEnabled>
+        {/* The keyboard goes on a drag, as in the host-model settings sheet:
+            on a phone it covers the footer, and a number pad has no key that
+            puts it away, which left Save unreachable after typing a size. */}
+        <ModalBody scrollEnabled keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
           <VStack space="lg">
             <VStack space="xs">
               <Text size="xs" className="text-muted-foreground">
@@ -389,6 +436,95 @@ export function ProviderModal({
                 falls back to one — which is right for a local model, where a second run evicts the first
                 one&apos;s cached prompt.
               </Text>
+            </VStack>
+
+            <VStack space="xs">
+              <Text size="xs" className="text-muted-foreground">
+                Context size
+              </Text>
+              <Input className="border-border bg-card">
+                <InputField
+                  testID="providers.modal.contextFallback"
+                  value={contextFallback}
+                  onChangeText={setContextFallback}
+                  placeholder="Tokens, for models that report no size"
+                  keyboardType="number-pad"
+                />
+              </Input>
+              <Text size="2xs" className="text-muted-foreground">
+                Loxaic compacts a conversation as it nears the model&apos;s context size, so it needs to
+                know it. Without one, a conversation grows until the provider refuses a request, and then
+                can&apos;t continue. This size applies to every model that doesn&apos;t report its own.
+              </Text>
+              {editing && !loadingModels && unsized > 0 && (
+                <Text testID="providers.modal.contextUnsized" size="2xs" className={contextFallback.trim() ? 'text-muted-foreground' : 'text-warning'}>
+                  {`${String(unsized)} of ${String(availableModels.length)} models report no size${
+                    contextFallback.trim() ? ', and use the size above.' : '.'
+                  }`}
+                </Text>
+              )}
+              {Object.entries(contextSizes).map(([id, tokens]) => (
+                <HStack
+                  key={id}
+                  testID={`providers.modal.contextSize.${id}`}
+                  space="xs"
+                  className="items-center justify-between rounded-md border border-border bg-background px-2 py-1.5"
+                >
+                  <Text size="xs" className="min-w-0 shrink text-foreground" numberOfLines={1} style={TRUNCATE_TEXT}>
+                    {id}
+                  </Text>
+                  <HStack space="xs" className="shrink-0 items-center">
+                    <Text size="2xs" className="text-muted-foreground">
+                      {formatContextSize(tokens)}
+                    </Text>
+                    <Pressable
+                      testID={`providers.modal.contextRemove.${id}`}
+                      onPress={() => { removeContextSize(id); }}
+                      accessibilityLabel={`Remove the context size for ${id}`}
+                      className="rounded p-1"
+                    >
+                      <Icon as={CloseIcon} size="xs" className="text-muted-foreground" />
+                    </Pressable>
+                  </HStack>
+                </HStack>
+              ))}
+              {/* A size for one model, which wins over what the provider says:
+                  OpenAI's models differ by an order of magnitude. */}
+              <HStack space="xs" className="items-center">
+                <Box className="min-w-0 flex-1">
+                  <Input className="border-border bg-card">
+                    <InputField
+                      testID="providers.modal.contextModel"
+                      value={contextModel}
+                      onChangeText={setContextModel}
+                      placeholder="Model id"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </Input>
+                </Box>
+                <Box className="w-28 shrink-0">
+                  <Input className="border-border bg-card">
+                    <InputField
+                      testID="providers.modal.contextTokens"
+                      value={contextTokens}
+                      onChangeText={setContextTokens}
+                      placeholder="Tokens"
+                      keyboardType="number-pad"
+                      onSubmitEditing={addContextSize}
+                    />
+                  </Input>
+                </Box>
+                <Button
+                  testID="providers.modal.contextAdd"
+                  size="sm"
+                  variant="outline"
+                  onPress={addContextSize}
+                  isDisabled={!contextModel.trim() || !contextTokens.trim()}
+                >
+                  <ButtonText>Set</ButtonText>
+                </Button>
+              </HStack>
             </VStack>
 
             <VStack space="xs">

@@ -25,7 +25,6 @@ const { prefsRoutes } = await import("../prefs.ts");
 
 interface PrefsBody {
   toolAllowlist: string[];
-  autoCompact: boolean;
   maxIterations: number;
   recentModels: string[];
   checkinTimeoutMs: number | null;
@@ -70,15 +69,15 @@ async function patch(payload: Record<string, unknown>) {
 }
 
 describe("GET /v1/prefs", () => {
-  it("defaults autoCompact to on for a user with no prefs row", async () => {
+  it("reads the defaults for a user with no prefs row", async () => {
     // A user who has never touched settings must read the same as one whose
-    // row says nothing — otherwise the feature looks disabled until they
-    // happen to change something unrelated.
+    // row says nothing — otherwise a setting looks changed until they happen
+    // to change something unrelated. No `autoCompact`: compaction is not a
+    // setting any more, and a client from before hides its switch on absence.
     const { serverDefaults, ...prefs } = await get();
     expect(serverDefaults).toBeDefined();
     expect(prefs).toEqual({
       toolAllowlist: [],
-      autoCompact: true,
       maxIterations: 100,
       recentModels: [],
       checkinTimeoutMs: null,
@@ -104,38 +103,29 @@ describe("GET /v1/prefs", () => {
 });
 
 describe("PATCH /v1/prefs", () => {
-  it("turns auto-compaction off and reads it back", async () => {
+  it("refuses autoCompact by name: compaction cannot be turned off", async () => {
+    // Said, not ignored: a client from before would otherwise believe it had
+    // turned compaction off.
     const res = await patch({ autoCompact: false });
-    expect(res.statusCode).toBe(200);
-    expect(res.json<PrefsBody>().autoCompact).toBe(false);
-    expect((await get()).autoCompact).toBe(false);
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/no longer a setting/);
+    expect(await get()).not.toHaveProperty("autoCompact");
   });
 
-  it("does not disturb the tool allowlist when only autoCompact is sent", async () => {
+  it("does not disturb the tool allowlist when only the step limit is sent", async () => {
     await patch({ toolAllowlist: ["fs_read"] });
-    await patch({ autoCompact: false });
+    await patch({ maxIterations: 40 });
     const prefs = await get();
     expect(prefs.toolAllowlist).toEqual(["fs_read"]);
-    expect(prefs.autoCompact).toBe(false);
+    expect(prefs.maxIterations).toBe(40);
   });
 
-  it("does not disturb autoCompact when only the allowlist is sent", async () => {
-    await patch({ autoCompact: false });
+  it("does not disturb the step limit when only the allowlist is sent", async () => {
+    await patch({ maxIterations: 40 });
     await patch({ toolAllowlist: ["grep"] });
     const prefs = await get();
-    expect(prefs.autoCompact).toBe(false);
+    expect(prefs.maxIterations).toBe(40);
     expect(prefs.toolAllowlist).toEqual(["grep"]);
-  });
-
-  it("turns it back on", async () => {
-    await patch({ autoCompact: false });
-    await patch({ autoCompact: true });
-    expect((await get()).autoCompact).toBe(true);
-  });
-
-  it("rejects a non-boolean autoCompact", async () => {
-    const res = await patch({ autoCompact: "yes" });
-    expect(res.statusCode).toBe(400);
   });
 
   it("rejects an allowlist that is not builtin tool names", async () => {
@@ -150,11 +140,11 @@ describe("PATCH /v1/prefs", () => {
   });
 
   it("leaves the other prefs alone when only the step limit is sent", async () => {
-    await patch({ autoCompact: false, toolAllowlist: ["fs_read"] });
+    await patch({ adaptiveTimeout: false, toolAllowlist: ["fs_read"] });
     await patch({ maxIterations: 50 });
     const prefs = await get();
     expect(prefs.maxIterations).toBe(50);
-    expect(prefs.autoCompact).toBe(false);
+    expect(prefs.adaptiveTimeout).toBe(false);
     expect(prefs.toolAllowlist).toEqual(["fs_read"]);
   });
 

@@ -530,6 +530,12 @@ export const inferenceProviders = pgTable(
      * in the picker is presentation, not a spending limit. Doubles as a manual
      * model list when the provider's own /models call fails. */
     modelAllowlist: jsonb("model_allowlist"),
+    /** Context sizes an admin set, in tokens: by upstream model id, and under
+     * "*" for every model the provider does not report one for. OpenAI's
+     * /models reports none, and a conversation on a model whose size is
+     * unknown can never be compacted — it grows until the provider refuses a
+     * request, and stays stuck. Null when none are set. */
+    contextWindows: jsonb("context_windows"),
     lastCheckedAt: timestamp("last_checked_at"),
     lastError: text("last_error"),
     /** Attribution only, so `set null` rather than the default `no action`
@@ -670,15 +676,6 @@ export const userPrefs = pgTable("user_prefs", {
    * manual mode alike). MCP tools have their own per-server toolPolicies
    * allowlist instead. */
   toolAllowlist: jsonb("tool_allowlist").notNull().default([]),
-  /**
-   * Whether the server may compact this user's conversations on its own once
-   * a turn crosses AUTO_COMPACT_THRESHOLD of the model's window. On by
-   * default: the alternative for a long thread is running into the window,
-   * which fails the turn outright rather than degrading. Turning it off is a
-   * deliberate choice to keep every message verbatim and manage length by
-   * hand — see streams/runs/auto-compact.ts.
-   */
-  autoCompact: boolean("auto_compact").notNull().default(true),
   /**
    * How many tool round-trips the agent takes for one message before it pauses
    * and asks whether to keep going — a cadence, not a ceiling. It used to be a
