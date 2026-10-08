@@ -230,6 +230,10 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
       testID={testID}
       ref={listRef}
       className="flex-1"
+      // A message's own buttons (Rewind, Retry, Edit message) answer the
+      // first tap while the keyboard is up, as it is after every send on a
+      // phone; a tap anywhere else still closes the keyboard.
+      keyboardShouldPersistTaps="handled"
       inverted
       data={data}
       keyExtractor={(item, index) => item.id ?? String(index)}

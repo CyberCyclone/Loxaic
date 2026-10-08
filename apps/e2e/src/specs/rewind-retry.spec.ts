@@ -17,7 +17,7 @@ import { BASE_URL, mockProviderApiBase } from '../../scripts/standup.ts';
 import { VALID_KEY } from '../../scripts/mock-provider.ts';
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, expectTextAbsent, isVisible, platform, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, closeKeyboard, expectTextAbsent, isVisible, platform, scrollTo, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   chooseScratchWorkspace,
   deleteProvidersWithBaseUrl,
@@ -26,8 +26,9 @@ import {
   listConversations,
   listSandboxes,
   patchSandboxSettings,
+  relaunchApp,
   resetSandboxSettings,
-  sendMessage,
+  sendMessage as typeAndSend,
   signIn,
   signOut,
   startNewThread,
@@ -57,6 +58,17 @@ const textOf = (row: Row) => row.content.filter((b) => b.kind === 'text').map((b
 async function composerText(): Promise<string> {
   const field = byTestId('composer.input');
   return platform() === 'web' || platform() === 'electron' ? field.getValue() : field.getText();
+}
+
+/**
+ * Sends what is typed. The keyboard is closed first: a rewind puts the message
+ * back in a focused composer, which raises the soft keyboard on a phone, and on
+ * Android the composer's Send button is then under it — ordinary sends never
+ * raise it in this harness, because typing there sets the field's value.
+ */
+async function say(text: string): Promise<void> {
+  await closeKeyboard();
+  await typeAndSend(text);
 }
 
 describe('rewinding and retrying', () => {
@@ -106,7 +118,7 @@ describe('rewinding and retrying', () => {
   /** Sends and waits for the server to say the run is over. */
   async function turn(text: string, rows: number): Promise<void> {
     await waitForComposerReady();
-    await sendMessage(text);
+    await say(text);
     if (!conversationId) conversationId = await newestConversation();
     await browser.waitUntil(async () => (await rowsOf(alice, conversationId)).length >= rows, { timeout: 30_000 });
     await waitForRunDone(alice, conversationId);
@@ -125,7 +137,9 @@ describe('rewinding and retrying', () => {
     await waitForVisible('chat.rewind.message');
     await shot('rewind-dialog');
     await tap('chat.rewind.confirm');
-    await waitForAbsent('chat.rewind.dialog');
+    // An element inside the dialog: on Android a closed modal's root goes on
+    // reporting itself displayed.
+    await waitForAbsent('chat.rewind.cancel');
 
     await browser.waitUntil(async () => (await composerText()) === 'the second question, too long', { timeout: 15_000 });
     if (platform() === 'web' || platform() === 'electron') await waitForVisible('composer.attachment.preview');
@@ -187,7 +201,7 @@ describe('rewinding and retrying', () => {
     expect(res.status).toBe(200);
     await waitForAbsent(`chat.message.rewind.${target.id}`, 15_000);
 
-    await browser.refresh();
+    await relaunchApp();
     await waitForComposerReady(30_000);
     await waitForTextIn('chat.messageList', 'the second question', 30_000);
     expect(await isVisible(`chat.message.rewind.${target.id}`)).toBe(false);
@@ -235,7 +249,7 @@ describe('rewinding and retrying', () => {
     await startNewThread();
     await pickModel(`${slug}::acme/nova-classic`);
 
-    await sendMessage('please overflow the provider');
+    await say('please overflow the provider');
     const convId = await newConversationAfter(known);
     await waitForVisible('chat.message.editMessage', 30_000);
     await waitForVisible('chat.message.contextHint');
@@ -247,7 +261,7 @@ describe('rewinding and retrying', () => {
     expect(await rowsOf(alice, convId)).toEqual([]);
 
     // Shorter (typed over what came back), and answered.
-    await sendMessage('a shorter question');
+    await say('a shorter question');
     await waitForTextIn('chat.messageList', 'Reply from the external provider.', 30_000);
   });
 
@@ -263,7 +277,7 @@ describe('rewinding and retrying', () => {
     await startNewThread();
     await pickModel('llama-3.1-8b-instruct');
     const paste = `a long paste: ${'words '.repeat(5000)}`;
-    await sendMessage(paste);
+    await say(paste);
     const convId = await newConversationAfter(known);
     await waitForVisible('chat.message.editMessage', 30_000);
     expect(await isVisible('chat.message.contextHint')).toBe(false);
@@ -273,7 +287,7 @@ describe('rewinding and retrying', () => {
     await tap('chat.message.editMessage');
     // As it was sent: the composer trims what it sends.
     await browser.waitUntil(async () => (await composerText()) === paste.trim(), { timeout: 15_000 });
-    await sendMessage('just the first paragraph');
+    await say('just the first paragraph');
     await browser.waitUntil(async () => (await rowsOf(alice, convId)).length === 2, { timeout: 30_000 });
     await waitForRunDone(alice, convId);
     expect((await rowsOf(alice, convId)).map(textOf)).toEqual(['just the first paragraph', expect.stringContaining('just the first paragraph')]);
@@ -287,9 +301,12 @@ describe('rewinding and retrying', () => {
     const known = new Set((await listConversations(alice)).map((c) => c.id));
     await goToSurface('agent');
     await chooseScratchWorkspace();
+    // The mock, whose scenarios drive the tools: a new run otherwise opens on
+    // whatever model was used last, the external provider's on a phone.
+    await pickModel('llama-3.1-8b-instruct');
     await tap('agent.mode.auto');
     const prompt = 'please edit the notes for rewind';
-    await sendMessage(prompt);
+    await say(prompt);
     const convId = await newConversationAfter(known);
     await waitForTextIn('chat.messageList', 'Notes edited', 60_000);
     await waitForRunDone(alice, convId);
@@ -304,6 +321,8 @@ describe('rewinding and retrying', () => {
     };
 
     // The conversation only: the agent's edit stays.
+    // An agent turn's tool cards push its message above the fold on a phone.
+    await scrollTo(`chat.message.rewind.${await turnMessage()}`);
     await tap(`chat.message.rewind.${await turnMessage()}`);
     await waitForVisible('chat.rewind.filesNote');
     await shot('rewind-dialog-files');
@@ -315,11 +334,13 @@ describe('rewinding and retrying', () => {
     // files: notes.md is put back to what it was before that turn, and the
     // command's build.log, which no checkpoint tracks, stays.
     await execInSandbox(token, sandbox.id, "printf 'by hand\\n' > notes.md && rm -f build.log");
-    await sendMessage(prompt);
+    await say(prompt);
     await browser.waitUntil(async () => (await rowsOf(alice, convId)).length > 1, { timeout: 30_000 });
     await waitForRunDone(alice, convId);
     expect(await cat('notes.md')).toBe('second draft');
     expect(await cat('build.log')).toBe('built');
+    // An agent turn's tool cards push its message above the fold on a phone.
+    await scrollTo(`chat.message.rewind.${await turnMessage()}`);
     await tap(`chat.message.rewind.${await turnMessage()}`);
     await waitForVisible('chat.rewind.both');
     await tap('chat.rewind.both');
