@@ -30,11 +30,11 @@ import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } f
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
-import { applyRewound, restoreReportLine } from '@/lib/rewind';
+import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
-import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
+import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
@@ -484,7 +484,8 @@ export function useAgentSession(
         // A retry that put files back says what it did.
         const restored = restoreReportLine(event.restored_files);
         if (restored) showToast(restored, 8000);
-        const { localId, isPending } = settledByTurnStarted(event.client_ref, sendsRef.current, pendingLocalIdRef.current);
+        const settled = settledByTurnStarted(event.client_ref, sendsRef.current, pendingLocalIdRef.current);
+        const { localId, isPending } = settled;
         const modelForPatch = isPending ? pendingModelRef.current : null;
         if (isPending) {
           pendingLocalIdRef.current = null;
@@ -507,8 +508,8 @@ export function useAgentSession(
         // it; opening the thread below must not subscribe a second time, which
         // would tear down the run's tap for a redundant resync.
         watchesRef.current.note([realId]);
-        // Follow it unless it is an older thread the person has since left.
-        if (isPending || localId === null || activeIdRef.current === localId) {
+        // Follow it unless it is a thread the person has since left.
+        if (followsTurnStarted(settled, activeIdRef.current)) {
           if (localId && localId !== realId) setPromotion({ localId, realId });
           setActiveId(realId);
         }
@@ -718,8 +719,8 @@ export function useAgentSession(
         setModeState(event.mode);
       } else if (event.type === 'conversation.rewound') {
         // See useChatSession. Run-level state is flat here, for the run on
-        // screen; a rewind is refused while a run is going, so a removed run
-        // being tracked is one that finished and left its state behind.
+        // screen: cleared when it belongs to a removed run, never when a
+        // retry's new run is already the one being followed.
         const convId = event.conversation_id;
         const removedStreams = new Set(event.removed_stream_ids);
         for (const streamId of removedStreams) {
@@ -729,10 +730,12 @@ export function useAgentSession(
         }
         const tracked = streamingByConvRef.current[convId];
         if (tracked && removedStreams.has(tracked.streamId)) clearStream(convId);
-        if (convId === activeIdRef.current && removedStreams.size > 0) {
+        if (convId === activeIdRef.current) {
           setPendingApproval((prev) => (prev?.streamId && removedStreams.has(prev.streamId) ? null : prev));
-          setIteration(null);
-          setLiveTodos([]);
+          if (rewindClearsLiveRun(tracked?.streamId, event.removed_stream_ids)) {
+            setIteration(null);
+            setLiveTodos([]);
+          }
         }
         setStageCardByConv((prev) => {
           const card = prev[convId];
@@ -967,11 +970,15 @@ export function useAgentSession(
         showToast(NOT_SENT_RECONNECTING);
         return false;
       }
+      // Remembered like a send, so its turn.started is placed: it must not
+      // pull the person back here if they have moved to another thread.
+      const clientRef = newClientRef();
+      sendsRef.current.remember(clientRef, retrySend(clientRef));
       const sent = sendRetry(wsRef.current, 'agent', {
         conversationId: id,
         model,
         mode: sendMode,
-        clientRef: newClientRef(),
+        clientRef,
         thinkingLevel: thinking?.current,
         restoreFiles: opts.restoreFiles,
       });

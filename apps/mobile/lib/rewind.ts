@@ -1,4 +1,4 @@
-import { isNudgeText, type FileRestoreReport, type RewindPreview, type ServerMessage } from '@loxaic/api-client';
+import { isNudgeText, type AttachmentRef, type FileRestoreReport, type RewindPreview, type ServerMessage } from '@loxaic/api-client';
 import type { Message } from './types';
 
 /**
@@ -117,3 +117,55 @@ export function restoreReportLine(report: FileRestoreReport | null | undefined):
 
 /** Said when a rewind gave back text but kept someone else's attachments. */
 export const ATTACHMENTS_WITHHELD = "The message's attachments stay with the person who sent them.";
+
+/** What a rewind gives back to the composer. */
+export interface ComposerSeed {
+  token: number;
+  text: string;
+  attachments?: AttachmentRef[];
+}
+
+/**
+ * Rewound messages waiting for their own thread's composer.
+ *
+ * A rewind answers after a round trip, and the composer on screen belongs to
+ * whichever thread is open *then*. Seeding it regardless put thread A's text
+ * and attachments in thread B's message box — sent, A's message lands in B.
+ * The rewind itself happened either way, so the text must not be lost
+ * either: it waits for its thread and is handed over when that thread is
+ * opened again. One per thread; a later rewind there replaces it.
+ */
+export class PendingSeeds {
+  private readonly seeds = new Map<string, ComposerSeed>();
+
+  /** The seed to apply now, when `convId` is on screen; otherwise kept. */
+  deliver(convId: string, seed: ComposerSeed, onScreen: string | null): ComposerSeed | null {
+    if (onScreen === convId) {
+      this.seeds.delete(convId);
+      return seed;
+    }
+    this.seeds.set(convId, seed);
+    return null;
+  }
+
+  /** The seed kept for `convId`, forgotten as it is returned. */
+  take(convId: string | null): ComposerSeed | null {
+    if (!convId) return null;
+    const seed = this.seeds.get(convId) ?? null;
+    this.seeds.delete(convId);
+    return seed;
+  }
+}
+
+/**
+ * Whether a rewind clears the run state shown flat for the thread on screen
+ * (the agent's step counter and live todos): only when it removed runs and
+ * the run being followed, if any, is one of them. A retry announces the
+ * rewind and starts its new run back to back, and the announcement is
+ * re-authorized before it is relayed while the new run's events are not, so
+ * it can land after the new run has begun — whose state must survive it.
+ */
+export function rewindClearsLiveRun(trackedStreamId: string | undefined, removedStreamIds: readonly string[]): boolean {
+  if (removedStreamIds.length === 0) return false;
+  return trackedStreamId === undefined || removedStreamIds.includes(trackedStreamId);
+}

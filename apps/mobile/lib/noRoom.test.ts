@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, unsentNote } from './noRoom';
+import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, unsentNote } from './noRoom';
 
 const send = (id: string, over: Partial<{ text: string; localConvId: string | null; hadAttachments: boolean }> = {}) => ({
   text: over.text ?? `text of ${id}`,
@@ -97,7 +97,7 @@ describe('what a turn.started settles', () => {
     const sends = new PendingSends();
     sends.remember('refA', send('refA', { localConvId: 'cA' }));
     sends.remember('refB', send('refB', { localConvId: 'cB' }));
-    expect(settledByTurnStarted('refA', sends, 'cB')).toEqual({ localId: 'cA', isPending: false });
+    expect(settledByTurnStarted('refA', sends, 'cB')).toEqual({ localId: 'cA', isPending: false, known: true });
     // B is still the one waiting, and is still findable.
     expect(sends.refFor('cB')).toBe('refB');
   });
@@ -105,18 +105,47 @@ describe('what a turn.started settles', () => {
   it('settles the waiting thread when the answer is its own', () => {
     const sends = new PendingSends();
     sends.remember('refB', send('refB', { localConvId: 'cB' }));
-    expect(settledByTurnStarted('refB', sends, 'cB')).toEqual({ localId: 'cB', isPending: true });
+    expect(settledByTurnStarted('refB', sends, 'cB')).toEqual({ localId: 'cB', isPending: true, known: true });
   });
 
   it('settles no local thread for a send into an existing conversation', () => {
     const sends = new PendingSends();
     sends.remember('refX', send('refX', { localConvId: null }));
-    expect(settledByTurnStarted('refX', sends, 'cB')).toEqual({ localId: null, isPending: false });
+    expect(settledByTurnStarted('refX', sends, 'cB')).toEqual({ localId: null, isPending: false, known: true });
+  });
+
+  it('never pulls the person back to a thread they left for a send or retry into it', () => {
+    // Retry on thread A, then open thread B before the server answers.
+    const sends = new PendingSends();
+    sends.remember('retryA', retrySend('retryA'));
+    const settled = settledByTurnStarted('retryA', sends, null);
+    expect(followsTurnStarted(settled, 'B')).toBe(false);
+    // Still on A: nothing to move.
+    sends.remember('sendA', send('sendA', { localConvId: null }));
+    expect(followsTurnStarted(settledByTurnStarted('sendA', sends, null), 'A')).toBe(false);
+  });
+
+  it('follows its own new thread, the thread on screen, and an answer it cannot place', () => {
+    const sends = new PendingSends();
+    sends.remember('refB', send('refB', { localConvId: 'cB' }));
+    expect(followsTurnStarted(settledByTurnStarted('refB', sends, 'cB'), 'cB')).toBe(true);
+    sends.remember('refA', send('refA', { localConvId: 'cA' }));
+    // An older new thread, left for another: not followed.
+    expect(followsTurnStarted(settledByTurnStarted('refA', sends, 'cB'), 'cB')).toBe(false);
+    sends.remember('refC', send('refC', { localConvId: 'cC' }));
+    expect(followsTurnStarted(settledByTurnStarted('refC', sends, null), 'cC')).toBe(true);
+    // No ref, or a ref this device never sent: as before, followed.
+    expect(followsTurnStarted(settledByTurnStarted(undefined, sends, null), 'B')).toBe(true);
+    expect(followsTurnStarted(settledByTurnStarted('elsewhere', sends, null), 'B')).toBe(true);
+  });
+
+  it('a refused retry takes back no text', () => {
+    expect(retrySend('r')).toMatchObject({ text: '', localConvId: null, hadAttachments: false });
   });
 
   it('without a ref (a compaction, an older server) settles the waiting one, as before', () => {
-    expect(settledByTurnStarted(undefined, new PendingSends(), 'cB')).toEqual({ localId: 'cB', isPending: true });
-    expect(settledByTurnStarted(undefined, new PendingSends(), null)).toEqual({ localId: null, isPending: false });
+    expect(settledByTurnStarted(undefined, new PendingSends(), 'cB')).toEqual({ localId: 'cB', isPending: true, known: false });
+    expect(settledByTurnStarted(undefined, new PendingSends(), null)).toEqual({ localId: null, isPending: false, known: false });
   });
 });
 

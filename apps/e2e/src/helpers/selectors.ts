@@ -213,7 +213,15 @@ export async function closeKeyboard(): Promise<void> {
   if (p === 'web' || p === 'electron') return;
   if (!(await browser.isKeyboardShown().catch(() => false))) return;
   if (p === 'android') {
-    await browser.hideKeyboard().catch(() => undefined);
+    // Escape first, which only the keyboard takes. Appium's hideKeyboard ends
+    // in a Back press when the keyboard still reports itself shown, and one
+    // closing on its own by then lets that Back reach the app — which left the
+    // Agent screen for Chat, and the next message went to the wrong thread.
+    await browser.pressKeyCode(111).catch(() => undefined);
+    const closed = await browser
+      .waitUntil(async () => !(await browser.isKeyboardShown().catch(() => false)), { timeout: 3_000 })
+      .then(() => true, () => false);
+    if (!closed) await browser.hideKeyboard().catch(() => undefined);
   } else {
     const { width, height } = await browser.getWindowSize();
     await browser

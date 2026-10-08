@@ -271,7 +271,7 @@ export async function retryAgentRun(input: {
   };
   claimConversation(claim);
   try {
-    const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles });
+    const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles, signal: claim.abort.signal });
     await recordModelUse(userId, model);
     const started = await startRunOnRow({
       claim,

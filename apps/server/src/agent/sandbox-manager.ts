@@ -5,6 +5,7 @@ import type { CreateSandboxConfig, SandboxHandle, SandboxKind, SandboxProvider }
 import { SandboxGoneError } from "../sandbox/errors.ts";
 import type { Workspace } from "@loxaic/types";
 import { loadWorkspace } from "./workspace.ts";
+import { dropConversationCopies } from "./checkpoints.ts";
 import { getConnection, getOwnerToken } from "../github/connection.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
 import { getSandboxRetention, getSandboxSettings } from "../settings.ts";
@@ -736,6 +737,15 @@ export async function destroyConversationSandboxes(conversationId: string): Prom
   for (const row of rows) {
     const provider = await getProviderByKind(row.provider as SandboxKind);
     const handle = await provider.attach(row.containerId).catch(() => null);
+    // First, while the workspace is still there to run it: a folder on the
+    // person's own machine keeps its checkpoint copies in their home, which
+    // `destroy` never touches. A machine that is offline keeps them — the
+    // delete dialog says so.
+    if (handle) {
+      await dropConversationCopies(handle, conversationId).catch((err: unknown) => {
+        console.warn(`could not remove the checkpoint copies of ${conversationId}: ${(err as Error).message}`);
+      });
+    }
     await handle?.destroy().catch(() => undefined);
     forgetOverflowWrites(row.containerId);
     await markDestroyed(row.id);

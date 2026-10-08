@@ -1,18 +1,13 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
-import { ApiError, previewRewind, rewindConversation, type AttachmentRef, type RewindScope } from '@loxaic/api-client';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ApiError, previewRewind, rewindConversation, type RewindResult, type RewindScope } from '@loxaic/api-client';
 import type { RewindDialog } from '@/components/chat/RewindModal';
 import type { MessageActions } from '@/components/chat/MessageList';
 import { useToastHelper } from '@/hooks/useToastHelper';
 import { describeRequestError } from '@/lib/connection';
-import { ATTACHMENTS_WITHHELD, canRewind, restoreReportLine } from '@/lib/rewind';
+import { ATTACHMENTS_WITHHELD, canRewind, PendingSeeds, restoreReportLine, type ComposerSeed } from '@/lib/rewind';
 import type { Message } from '@/lib/types';
 
-/** What a rewind gives back to the composer. */
-export interface ComposerSeed {
-  token: number;
-  text: string;
-  attachments?: AttachmentRef[];
-}
+export type { ComposerSeed };
 
 /**
  * Rewind and Retry for one screen (#166): the message actions, the dialog's
@@ -40,11 +35,32 @@ export function useRewindRetry(opts: {
   optsRef.current = opts;
   // Answers that land after the person moved on change nothing.
   const asked = useRef(0);
+  // The thread the open dialog is about: a retry acts on the thread on
+  // screen, so one confirmed for another thread must do nothing.
+  const dialogConv = useRef<string | null>(null);
+  const stillOn = (convId: string) => optsRef.current.conversationId === convId;
+  // A rewound message goes back to its own thread's composer, whenever that
+  // thread is on screen — never to whichever composer is showing when the
+  // answer lands (lib/rewind.ts's PendingSeeds).
+  const seeds = useRef(new PendingSeeds());
+  useEffect(() => {
+    const seed = seeds.current.take(opts.conversationId);
+    if (seed) optsRef.current.onSeed(seed);
+  }, [opts.conversationId]);
+  const seedFrom = useCallback((convId: string, result: RewindResult) => {
+    const seed = seeds.current.deliver(
+      convId,
+      { token: Date.now(), text: result.text, ...(result.attachments.length > 0 ? { attachments: result.attachments } : {}) },
+      optsRef.current.conversationId,
+    );
+    if (seed) optsRef.current.onSeed(seed);
+  }, []);
 
   const onRewind = useCallback((messageId: string) => {
     const convId = optsRef.current.conversationId;
     if (!convId) return;
     const ask = ++asked.current;
+    dialogConv.current = convId;
     setDialog({ kind: 'rewind', messageId, preview: null });
     previewRewind(convId, messageId)
       .then((preview) => {
@@ -69,17 +85,22 @@ export function useRewindRetry(opts: {
       return;
     }
     const ask = ++asked.current;
+    // A retry is sent for the thread on screen, so an answer that lands after
+    // the person opened another one must not send it — it would answer that
+    // thread's newest message again.
     previewRewind(convId, target)
       .then((preview) => {
-        if (asked.current !== ask) return;
+        if (asked.current !== ask || !stillOn(convId)) return;
         const files = preview.files ?? 0;
-        if (files > 0) setDialog({ kind: 'retry', files });
-        else optsRef.current.retry(false);
+        if (files > 0) {
+          dialogConv.current = convId;
+          setDialog({ kind: 'retry', files });
+        } else optsRef.current.retry(false);
       })
       // The question could not be asked: retry without touching files, which
       // is what a retry did before there were any to ask about.
       .catch(() => {
-        if (asked.current === ask) optsRef.current.retry(false);
+        if (asked.current === ask && stillOn(convId)) optsRef.current.retry(false);
       });
   }, []);
 
@@ -87,22 +108,17 @@ export function useRewindRetry(opts: {
     const current = dialog;
     setDialog(null);
     asked.current += 1;
-    if (!current) return;
+    const convId = dialogConv.current;
+    if (!current || !convId) return;
     if (current.kind === 'retry') {
-      optsRef.current.retry(scope === 'both');
+      if (stillOn(convId)) optsRef.current.retry(scope === 'both');
       return;
     }
-    const convId = optsRef.current.conversationId;
-    if (!convId) return;
     rewindConversation(convId, current.messageId, scope)
       .then((result) => {
         if (scope !== 'files') {
           optsRef.current.applyLocalRewind(convId, current.messageId, result.removed_ids);
-          optsRef.current.onSeed({
-            token: Date.now(),
-            text: result.text,
-            ...(result.attachments.length > 0 ? { attachments: result.attachments } : {}),
-          });
+          seedFrom(convId, result);
         }
         const said = [restoreReportLine(result.files), result.attachments_withheld ? ATTACHMENTS_WITHHELD : null].filter(Boolean);
         if (said.length > 0) showToast(said.join(' '), 8000);
@@ -111,7 +127,7 @@ export function useRewindRetry(opts: {
         const busy = err instanceof ApiError && err.code === 'conversation_busy';
         showToast(busy ? 'Stop the reply in progress, then rewind.' : describeRequestError(err, 'Could not rewind'), 6000);
       });
-  }, [dialog, showToast]);
+  }, [dialog, showToast, seedFrom]);
 
   /** "Edit message": straight back to the composer, conversation only — the
    * reply failed before doing anything, so there is nothing else to ask. */
@@ -121,18 +137,14 @@ export function useRewindRetry(opts: {
     rewindConversation(convId, messageId, 'conversation')
       .then((result) => {
         optsRef.current.applyLocalRewind(convId, messageId, result.removed_ids);
-        optsRef.current.onSeed({
-          token: Date.now(),
-          text: result.text,
-          ...(result.attachments.length > 0 ? { attachments: result.attachments } : {}),
-        });
+        seedFrom(convId, result);
         if (result.attachments_withheld) showToast(ATTACHMENTS_WITHHELD, 6000);
       })
       .catch((err: unknown) => {
         const busy = err instanceof ApiError && err.code === 'conversation_busy';
         showToast(busy ? 'Stop the reply in progress, then edit.' : describeRequestError(err, 'Could not take the message back'), 6000);
       });
-  }, [showToast]);
+  }, [showToast, seedFrom]);
 
   const cancel = useCallback(() => {
     asked.current += 1;

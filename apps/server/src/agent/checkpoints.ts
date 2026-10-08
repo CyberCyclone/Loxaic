@@ -39,7 +39,7 @@ export interface CheckpointTurn {
   turnMessageId: string;
 }
 
-export type CheckpointState = "saved" | "missing" | "too_large" | "symlink" | "not_file";
+export type CheckpointState = "saved" | "missing" | "too_large" | "symlink" | "not_file" | "unknown";
 
 export interface RestoreReport {
   restored: string[];
@@ -92,12 +92,14 @@ export async function recordBeforeWrite(handle: SandboxHandle, turn: CheckpointT
       .limit(1);
     if (existing.length > 0) return;
     const firstOfTurn = await isNewTurn(turn);
-    // The row first, so its id names the copy; removed again if the copy
-    // could not be made.
+    // The row first, so its id names the copy. It says `unknown` until the
+    // copy reports back, and stays so if it never does — a failed or thrown
+    // exec, or a server that stopped in between. Never `missing` as a
+    // placeholder: a restore deletes a `missing` file, and this one may exist.
     const row = await db
       .insert(checkpointFiles)
       // The app's clock, as every message row's is: a rewind compares the two.
-      .values({ conversationId: turn.conversationId, turnMessageId: turn.turnMessageId, path, state: "missing", createdAt: new Date() })
+      .values({ conversationId: turn.conversationId, turnMessageId: turn.turnMessageId, path, state: "unknown", createdAt: new Date() })
       .onConflictDoNothing()
       .returning({ id: checkpointFiles.id })
       .then((r) => r.at(0));
@@ -109,11 +111,12 @@ export async function recordBeforeWrite(handle: SandboxHandle, turn: CheckpointT
     );
     const state = res.stdout.trim() as CheckpointState;
     if (res.exitCode !== 0 || !["saved", "missing", "too_large", "symlink", "not_file"].includes(state)) {
-      await db.delete(checkpointFiles).where(eq(checkpointFiles.id, row.id));
+      // Kept as `unknown`, so a restore names this file rather than passing
+      // over it as if this turn had never touched it.
       console.warn(`could not checkpoint ${path}: ${res.stderr.trim() || `exit ${String(res.exitCode)}`}`);
       return;
     }
-    if (state !== "missing") await db.update(checkpointFiles).set({ state }).where(eq(checkpointFiles.id, row.id));
+    await db.update(checkpointFiles).set({ state }).where(eq(checkpointFiles.id, row.id));
     if (firstOfTurn) await pruneOldTurns(handle, turn.conversationId);
   } catch (err) {
     console.warn(`could not checkpoint ${path}: ${(err as Error).message}`);
@@ -161,6 +164,23 @@ export async function dropTurns(handle: SandboxHandle | null, conversationId: st
 }
 
 /**
+ * Removes every copy a conversation's checkpoints made in this workspace, for
+ * a conversation being deleted. A server workspace's copies would go with the
+ * workspace anyway; a folder on someone's own machine keeps its copies in
+ * their home directory, which destroying that workspace never touches — and
+ * those copies are what the agent was about to overwrite, the person's own
+ * file contents. Throws when the workspace cannot be reached; the caller
+ * decides what that costs.
+ */
+export async function dropConversationCopies(handle: SandboxHandle, conversationId: string): Promise<void> {
+  const res = await handle.exec(
+    ["bash", "-c", `${EXPAND_DIR}\nrm -rf -- "$dir/$1"`, "_", conversationId, storeRoot(handle)],
+    { workdir: handle.workdir, timeoutMs: 60_000 },
+  );
+  if (res.exitCode !== 0) throw new Error(res.stderr.trim() || `exit ${String(res.exitCode)}`);
+}
+
+/**
  * The checkpoints a rewind to (or a retry of) the message created at
  * `since` would restore: every record made at or after it. Ordered oldest
  * first, so the first record of a path is its state before that point.
@@ -199,6 +219,7 @@ const SKIP_REASONS: Record<string, string> = {
   not_file: "not a regular file",
   is_dir: "a directory is there now",
   no_copy: "its copy is gone",
+  unknown: "no copy could be made before the agent changed it",
 };
 
 /**
@@ -217,7 +238,12 @@ export async function restoreCheckpoints(
   for (const rec of records) {
     if (seen.has(rec.path)) continue;
     seen.add(rec.path);
-    if (rec.state === "too_large" || rec.state === "symlink" || rec.state === "not_file") {
+    // Stopped, or out of time: what is left stays as it is, and is named.
+    if (signal?.aborted) {
+      report.skipped.push({ path: rec.path, reason: "the restore stopped before reaching it" });
+      continue;
+    }
+    if (rec.state === "too_large" || rec.state === "symlink" || rec.state === "not_file" || rec.state === "unknown") {
       report.skipped.push({ path: rec.path, reason: SKIP_REASONS[rec.state] });
       continue;
     }

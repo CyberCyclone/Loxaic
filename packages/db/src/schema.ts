@@ -251,8 +251,10 @@ export const checkpointFiles = pgTable(
     path: text("path").notNull(),
     /** `saved`: a copy exists; `missing`: the file did not exist, so restoring
      * deletes it; `too_large`, `symlink`, `not_file`: nothing was copied, and a
-     * restore reports the path as skipped with that reason. */
-    state: text("state", { enum: ["saved", "missing", "too_large", "symlink", "not_file"] }).notNull(),
+     * restore reports the path as skipped with that reason; `unknown`: the
+     * state was never learned (the copy failed, or the server stopped
+     * mid-way), so a restore leaves the file alone and says so. */
+    state: text("state", { enum: ["saved", "missing", "too_large", "symlink", "not_file", "unknown"] }).notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [

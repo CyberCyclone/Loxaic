@@ -34,7 +34,11 @@ export function deleteConversationMessage(
     area !== 'agent'
       ? ''
       : workspaceKind === 'local'
-        ? ' The folder on your own machine is left exactly as it is — only the conversation goes.'
+        ? ' The folder on your own machine is left exactly as it is — only the conversation goes.' +
+          // The rewind copies of files the agent changed (#166) live in that
+          // machine's home, not the folder, and only a connected machine can
+          // be asked to remove them.
+          ' The copies Loxaic kept there for rewinding are removed too if that machine is connected; if not, they stay in ~/.loxaic/checkpoints.'
         : ' Its workspace is destroyed too, including any commits that were never pushed.'
 
   if (retentionDays === undefined) {

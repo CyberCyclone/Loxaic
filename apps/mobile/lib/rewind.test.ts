@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHECKIN_ANSWER_NUDGE } from '@loxaic/api-client';
-import { applyRewound, canRewind, filesMessage, isContextFailure, restoreReportLine, retryIndex, rewindMessage, type Rewound } from './rewind';
+import { applyRewound, canRewind, filesMessage, isContextFailure, PendingSeeds, rewindClearsLiveRun, restoreReportLine, retryIndex, rewindMessage, type Rewound } from './rewind';
 import type { Message } from './types';
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -102,5 +102,44 @@ describe('isContextFailure', () => {
     expect(isContextFailure({ ...reply(1), error: true, errorCode: 'local_model_no_room' })).toBe(false);
     expect(isContextFailure({ ...reply(1), error: true })).toBe(false);
     expect(isContextFailure({ ...reply(1), errorCode: 'context_overflow' })).toBe(false);
+  });
+});
+
+describe('PendingSeeds', () => {
+  const seed = (text: string) => ({ token: 1, text });
+
+  it('hands a rewound message to its own thread, and only there', () => {
+    const seeds = new PendingSeeds();
+    // Still on A when the answer lands: straight into the composer.
+    expect(seeds.deliver('A', seed('a'), 'A')).toEqual(seed('a'));
+    expect(seeds.take('A')).toBeNull();
+    // Moved to B meanwhile: B's composer gets nothing, A's text waits for A.
+    expect(seeds.deliver('A', seed('a again'), 'B')).toBeNull();
+    expect(seeds.take('B')).toBeNull();
+    expect(seeds.take('A')).toEqual(seed('a again'));
+    expect(seeds.take('A')).toBeNull();
+  });
+
+  it('keeps the newest per thread, and nothing for no thread', () => {
+    const seeds = new PendingSeeds();
+    seeds.deliver('A', seed('first'), null);
+    seeds.deliver('A', seed('second'), 'B');
+    expect(seeds.take('A')).toEqual(seed('second'));
+    expect(seeds.take(null)).toBeNull();
+  });
+});
+
+describe('rewindClearsLiveRun', () => {
+  it('clears what a finished, removed run left on screen', () => {
+    expect(rewindClearsLiveRun(undefined, ['old'])).toBe(true);
+    expect(rewindClearsLiveRun('old', ['old'])).toBe(true);
+  });
+
+  it("keeps a retry's new run's state when the rewind lands after it began", () => {
+    expect(rewindClearsLiveRun('new', ['old'])).toBe(false);
+  });
+
+  it('changes nothing when no run was removed', () => {
+    expect(rewindClearsLiveRun(undefined, [])).toBe(false);
   });
 });

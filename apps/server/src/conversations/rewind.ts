@@ -100,7 +100,8 @@ export async function rewindConversation(input: {
   if (grant.kind === "subagent") throw new NotFoundError();
   // Held for the whole rewind: a send arriving meanwhile is refused, never
   // written into the suffix being removed. A stream id of its own, which no
-  // stream ever has, so nothing can tap or stop it.
+  // stream ever has, so nothing can tap or stop it — which is why a files
+  // restore under it is bounded by time (`restoreFiles`).
   const claim = {
     streamId: `rewind-${uuid()}`,
     conversationId: convId,
@@ -112,7 +113,8 @@ export async function rewindConversation(input: {
   try {
     const target = await rewindTarget(convId, input.messageId);
     // Files first: a restore reads the checkpoints of the turns about to go.
-    const files = scope === "conversation" ? null : await restoreFiles(convId, target.createdAt, { inclusive: true });
+    const files =
+      scope === "conversation" ? null : await restoreFiles(convId, target.createdAt, { inclusive: true }, claim.abort.signal);
     if (scope === "files") {
       // The conversation stays, and so do its checkpoints: the same point can
       // be restored again.
@@ -168,13 +170,13 @@ export async function retryFileCount(convId: string): Promise<number> {
  */
 export async function removeAfterForRetry(
   convId: string,
-  opts: { restoreFiles?: boolean } = {},
+  opts: { restoreFiles?: boolean; signal?: AbortSignal } = {},
 ): Promise<AnsweredRow & { files: RestoreReport | null }> {
   const row = await newestTyped(convId);
   if (!row) throw new RewindError("nothing_to_retry", "There is no message to answer again.");
   // The retried turn's own edits, put back first. Its checkpoints are kept
   // either way: they record the files before this turn, which is still true.
-  const files = opts.restoreFiles ? await restoreFiles(convId, row.createdAt, { inclusive: false }) : null;
+  const files = opts.restoreFiles ? await restoreFiles(convId, row.createdAt, { inclusive: false }, opts.signal) : null;
   await removeSuffix(convId, { id: row.id, createdAt: row.createdAt }, { inclusive: false, reason: "retry" });
   const blocks = row.content as ContentBlock[];
   return { id: row.id, lamport: row.lamport, parentId: row.parentId, text: textOf(blocks), attachments: attachmentsOf(blocks), files };
@@ -200,12 +202,29 @@ async function newestTyped(convId: string) {
   return rows.find((r) => !isNudgeText(textOf(r.content as ContentBlock[])));
 }
 
+/** How long a files restore may hold the conversation, in total. */
+export const RESTORE_TIMEOUT_MS = 2 * 60_000;
+
 /**
  * Puts back the files the agent edited from `since` on. Reaches the
  * workspace without creating one — a destroyed workspace has nothing to put
  * back — but wakes a paused one, since restoring its files is what was asked.
+ *
+ * Bounded as a whole (`REWIND_RESTORE_TIMEOUT_MS`, read at call time, default
+ * {@link RESTORE_TIMEOUT_MS}): it runs under the conversation's claim, so
+ * every send is refused meanwhile, and a hundred turns' paths on a slow
+ * machine or a wedged engine is many 60-second execs. What it has not reached
+ * by then is reported as skipped. `signal` is the claim's, for a caller whose
+ * claim can be stopped (a retry's run).
  */
-async function restoreFiles(convId: string, since: Date, opts: { inclusive: boolean }): Promise<RestoreReport> {
+async function restoreFiles(
+  convId: string,
+  since: Date,
+  opts: { inclusive: boolean },
+  signal?: AbortSignal,
+): Promise<RestoreReport> {
+  const limit = AbortSignal.timeout(Number(process.env.REWIND_RESTORE_TIMEOUT_MS) || RESTORE_TIMEOUT_MS);
+  const bounded = signal ? AbortSignal.any([signal, limit]) : limit;
   const records = await checkpointsSince(convId, since, opts);
   if (records.length === 0) return { restored: [], skipped: [] };
   let handle: SandboxHandle | null;
@@ -219,7 +238,7 @@ async function restoreFiles(convId: string, since: Date, opts: { inclusive: bool
   if (!handle) {
     return { restored: [], skipped: uniquePaths(records).map((path) => ({ path, reason: "the workspace no longer exists" })) };
   }
-  return restoreCheckpoints(handle, convId, records);
+  return restoreCheckpoints(handle, convId, records, bounded);
 }
 
 /** Removed turns' checkpoints go with them. Their copies are removed only when
@@ -403,8 +422,13 @@ async function deleteRemovedStreams(convId: string, pivotAt: Date, childIds: rea
       await broker.driver.deleteStream(streamId);
       removed.push(streamId);
     }
+    // Named in the event too: a client with a removed child's transcript open
+    // is subscribed to its stream, and must ignore a snapshot still on its way.
     for (const childId of childIds) {
-      for (const streamId of await broker.driver.listConvStreams(childId)) await broker.driver.deleteStream(streamId);
+      for (const streamId of await broker.driver.listConvStreams(childId)) {
+        await broker.driver.deleteStream(streamId);
+        removed.push(streamId);
+      }
     }
   } catch (err) {
     console.warn(`could not delete the stream logs of a rewound part of ${convId}: ${(err as Error).message}`);

@@ -28,6 +28,7 @@ import {
   patchSandboxSettings,
   relaunchApp,
   resetSandboxSettings,
+  selectThread,
   sendMessage as typeAndSend,
   signIn,
   signOut,
@@ -36,6 +37,7 @@ import {
   waitForRunDone,
 } from '../helpers/app.ts';
 import { attachImage } from '../helpers/attachments.ts';
+import { pauseServer, resumeServer } from '../helpers/server.ts';
 
 interface Row {
   id: string;
@@ -81,6 +83,14 @@ describe('rewinding and retrying', () => {
     await provisionUser(alice);
     await provisionUser(viewer);
     await signIn(alice);
+  });
+
+  // A case that fails while the server is frozen must not take the rest down.
+  // And UiAutomator2's idle wait goes back to its default, which the
+  // switched-thread case turns off.
+  afterEach(async () => {
+    resumeServer();
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
   });
 
   after(async () => {
@@ -348,5 +358,81 @@ describe('rewinding and retrying', () => {
     expect(await cat('build.log')).toBe('built');
     expect(await rowsOf(alice, convId)).toEqual([]);
     await shot('rewind-files-restored');
+  });
+
+  it('keeps an answer that lands after the person opened another thread with its own thread', async function () {
+    this.timeout(4 * 60_000);
+    // A new thread raises the keyboard, and on iOS `say`'s way of closing it —
+    // a drag across the middle of the screen — lands on an empty thread's
+    // prompt suggestions and sends one. Send sits above the iOS keyboard, so
+    // there it is left up; Android closes its keyboard without touching the
+    // screen.
+    const sayInNewThread = (text: string) => (platform() === 'ios' ? typeAndSend(text) : say(text));
+    // While the server is frozen something on screen is always animating, and
+    // UiAutomator2 waits for the UI to go idle before every lookup — ~11 s
+    // each, longer than the waits below (see compaction-live.spec.ts).
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
+    await goToSurface('chat');
+    const known = new Set((await listConversations(alice)).map((c) => c.id));
+    await startNewThread();
+    await waitForComposerReady();
+    await sayInNewThread('a question in thread A');
+    const a = await newConversationAfter(known);
+    await browser.waitUntil(async () => (await rowsOf(alice, a)).length === 2, { timeout: 30_000 });
+    await waitForRunDone(alice, a);
+    known.add(a);
+    await startNewThread();
+    await waitForComposerReady();
+    await sayInNewThread('a question in thread B');
+    const b = await newConversationAfter(known);
+    await browser.waitUntil(async () => (await rowsOf(alice, b)).length === 2, { timeout: 30_000 });
+    await waitForRunDone(alice, b);
+    const bRows = await rowsOf(alice, b);
+
+    // A rewind in A, answered only once B is open: the server is frozen as it
+    // is confirmed, and thawed after the switch.
+    await selectThread(a);
+    await waitForTextIn('chat.messageList', 'a question in thread A', 15_000);
+    const asked = (await rowsOf(alice, a))[0];
+    await tap(`chat.message.rewind.${asked.id}`);
+    await waitForVisible('chat.rewind.message');
+    pauseServer();
+    await tap('chat.rewind.confirm');
+    await waitForAbsent('chat.rewind.cancel');
+    await selectThread(b);
+    resumeServer();
+    await browser.waitUntil(async () => (await rowsOf(alice, a)).length === 0, { timeout: 30_000, timeoutMsg: 'the rewind did not happen' });
+    await waitForTextIn('chat.messageList', 'a question in thread B', 15_000);
+    // B's message box is left alone...
+    await browser.pause(1500);
+    // Not toBe(''): an empty field reads back as its placeholder on iOS.
+    expect(await composerText()).not.toContain('thread A');
+    await shot('rewind-answer-after-switch');
+    // ...and A's message is waiting in A's.
+    await selectThread(a);
+    await browser.waitUntil(async () => (await composerText()) === 'a question in thread A', {
+      timeout: 15_000,
+      timeoutMsg: "A's message did not come back to A's composer",
+    });
+
+    // Sent again, so A has a reply a misdirected retry would replace.
+    await say('a question in thread A');
+    await browser.waitUntil(async () => (await rowsOf(alice, a)).length === 2, { timeout: 30_000 });
+    await waitForRunDone(alice, a);
+    const aRows = await rowsOf(alice, a);
+
+    // A retry pressed in B, whose answer to "are there files to ask about?"
+    // lands once A is open: sent for neither — not for A, which nobody asked
+    // to answer again.
+    await selectThread(b);
+    await waitForTextIn('chat.messageList', 'a question in thread B', 15_000);
+    pauseServer();
+    await tap('chat.message.retry');
+    await selectThread(a);
+    resumeServer();
+    await waitForTextIn('chat.messageList', 'a question in thread A', 15_000);
+    await browser.pause(3000);
+    expect((await rowsOf(alice, a)).map((r) => r.id)).toEqual(aRows.map((r) => r.id));
+    expect((await rowsOf(alice, b)).map((r) => r.id)).toEqual(bRows.map((r) => r.id));
   });
 });

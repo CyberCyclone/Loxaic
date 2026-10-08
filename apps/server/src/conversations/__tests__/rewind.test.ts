@@ -241,8 +241,18 @@ describe("rewinding a conversation", () => {
       await db.insert(messages).values({
         id: uuid(), conversationId: child.id, authorType: "user", origin: "server", lamport: 1, content: text("task"), status: "complete",
       });
+      // The child's own run: its log goes, and the event names it, so a client
+      // with its transcript open ignores a snapshot still on its way.
+      const childStream = uuid();
+      const childRun = await getStreamBroker().openProducer({ streamId: childStream, conversationId: child.id, userId, surface: "agent" });
+      await childRun.end("complete");
 
+      const seen: ConversationEvent[] = [];
+      const unwatch = watchConversationEvents(convId, (e) => seen.push(e));
       await rewindConversation({ userId, conversationId: convId, messageId: target });
+      unwatch();
+      expect(await getStreamBroker().getMeta(childStream)).toBeNull();
+      expect(seen.at(0)?.removed_stream_ids).toContain(childStream);
 
       const after = await db.query.conversations.findFirst({ where: eq(conversations.id, child.id) });
       if (mode === "erase") {

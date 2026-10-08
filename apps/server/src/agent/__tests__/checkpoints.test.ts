@@ -12,6 +12,7 @@ import {
   CHECKPOINT_KEEP_TURNS,
   CHECKPOINT_MAX_FILE_BYTES,
   checkpointsSince,
+  dropConversationCopies,
   recordBeforeWrite,
   restoreCheckpoints,
 } from "../checkpoints.ts";
@@ -132,6 +133,58 @@ describe("file checkpoints in a server workspace", () => {
     expect(readFileSync(at("shell.txt"), "utf8")).toBe("by bash\n");
   });
 
+  it("never deletes a file whose copy failed: it is kept as unknown and named on restore", async () => {
+    const convId = await newConv();
+    writeFileSync(at("precious.txt"), "the person's work\n");
+    writeFileSync(at("refused.txt"), "also theirs\n");
+    const turn = await turnRow(convId);
+    // The workspace stops answering as the copy is attempted (an executor's
+    // socket dropping, an engine timing out), and then refuses outright.
+    const throwing: SandboxHandle = { ...handle, exec: () => Promise.reject(new Error("machine offline")) };
+    const failing: SandboxHandle = {
+      ...handle,
+      exec: () => Promise.resolve({ stdout: "", stderr: "No space left on device", exitCode: 1, truncated: false, timedOut: false }),
+    };
+    await recordBeforeWrite(throwing, { conversationId: convId, turnMessageId: turn.id }, at("precious.txt"));
+    await recordBeforeWrite(failing, { conversationId: convId, turnMessageId: turn.id }, at("refused.txt"));
+    writeFileSync(at("precious.txt"), "changed by the agent\n");
+
+    const records = await checkpointsSince(convId, turn.createdAt);
+    expect(records.map((r) => [path.basename(r.path), r.state])).toEqual([
+      ["precious.txt", "unknown"],
+      ["refused.txt", "unknown"],
+    ]);
+    const report = await restoreCheckpoints(handle, convId, records);
+    expect(report.restored).toEqual([]);
+    expect(report.skipped.map((s) => s.path).sort()).toEqual([at("precious.txt"), at("refused.txt")].sort());
+    expect(existsSync(at("precious.txt"))).toBe(true);
+    expect(existsSync(at("refused.txt"))).toBe(true);
+  });
+
+  it("stops when its signal does, leaving what it had not reached and naming it", async () => {
+    const convId = await newConv();
+    writeFileSync(at("first.txt"), "one\n");
+    writeFileSync(at("second.txt"), "two\n");
+    const turn = await turnRow(convId);
+    await agentWrite(handle, convId, turn.id, "first.txt", "changed\n");
+    await agentWrite(handle, convId, turn.id, "second.txt", "changed\n");
+    const records = await checkpointsSince(convId, turn.createdAt);
+    // Out of time (or stopped) as the first file is put back.
+    const stop = new AbortController();
+    const stopping: SandboxHandle = {
+      ...handle,
+      exec: async (cmd, opts) => {
+        const res = await handle.exec(cmd, opts);
+        stop.abort();
+        return res;
+      },
+    };
+    const report = await restoreCheckpoints(stopping, convId, records, stop.signal);
+    expect(report.restored).toEqual([at("first.txt")]);
+    expect(report.skipped).toEqual([{ path: at("second.txt"), reason: "the restore stopped before reaching it" }]);
+    expect(readFileSync(at("second.txt"), "utf8")).toBe("changed\n");
+  });
+
   it("restores to the state before the oldest turn asked for", async () => {
     const convId = await newConv();
     writeFileSync(at("multi.txt"), "v0");
@@ -229,6 +282,29 @@ describe("file checkpoints in a folder on the person's own machine", () => {
       expect(existsSync(path.join(home, ".loxaic", "checkpoints", convId, turn.id))).toBe(true);
       await restoreCheckpoints(handle, convId, await checkpointsSince(convId, turn.createdAt));
       expect(readFileSync(path.join(folder, "notes.md"), "utf8")).toBe("mine\n");
+    } finally {
+      process.env.HOME = savedHome;
+    }
+  });
+
+  it("removes the copies from their home when the conversation goes, and nothing else", async () => {
+    const folder = mkdtempSync(path.join(scratch, "project-"));
+    const home = mkdtempSync(path.join(scratch, "home-"));
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const handle = attachDirectory(folder);
+      const convId = await newConv();
+      const otherId = await newConv();
+      writeFileSync(path.join(folder, "notes.md"), "mine\n");
+      await agentWrite(handle, convId, (await turnRow(convId)).id, "notes.md", "the agent's\n");
+      await agentWrite(handle, otherId, (await turnRow(otherId)).id, "notes.md", "again\n");
+
+      await dropConversationCopies(handle, convId);
+
+      expect(existsSync(path.join(home, ".loxaic", "checkpoints", convId))).toBe(false);
+      expect(existsSync(path.join(home, ".loxaic", "checkpoints", otherId))).toBe(true);
+      expect(readFileSync(path.join(folder, "notes.md"), "utf8")).toBe("again\n");
     } finally {
       process.env.HOME = savedHome;
     }

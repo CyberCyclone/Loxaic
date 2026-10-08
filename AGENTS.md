@@ -3204,7 +3204,19 @@ replies.
   events, re-authorized in `delivery.ts` like a new run). The client applies it **by id, never
   by position** (`lib/rewind.ts`): a retry's new reply can arrive before the event saying the
   old one went. It also ignores any later snapshot or event of a removed run, which covers one
-  already in flight when the logs were deleted.
+  already in flight when the logs were deleted. **A removed sub-agent's streams are named in
+  `removed_stream_ids` too**: a client with its transcript open is subscribed to them. And the
+  agent's flat run state (step counter, live todos) is cleared only when the run being followed
+  is a removed one (`rewindClearsLiveRun`): the event is re-authorized before it is relayed and
+  a retry's new run is not, so it can land after the new run has begun.
+- **An answer for a thread the person has left changes nothing on screen.** A rewind's message
+  goes back to *its* thread's composer (`PendingSeeds`), waiting there if another thread is open
+  when the answer lands — the composer is one box, and seeding it put thread A's message in
+  thread B's. A retry whose files question is answered after the person moved is not sent (it
+  would answer the open thread's message). And a `turn.started` for a send or retry of ours
+  into an existing conversation never moves the screen (`followsTurnStarted`); a retry is
+  remembered like a send for that, and only an answer this device cannot place is followed
+  blindly. All found in review.
 - **Only the uploader gets a rewound message's attachments back**, and their `created_at` is
   refreshed: the reaper's grace counts from upload, and erasing the message unreferences them.
 - **Context failures are coded, with a way out.** `context_cannot_fit` is Loxaic refusing a
@@ -3245,6 +3257,21 @@ replies.
 - **Reaching the workspace never creates one** (a destroyed workspace has nothing to put back),
   but a restore wakes a paused one. Dropping a removed turn's copies does not wake anything;
   they go when the workspace is destroyed.
+- **A record is `unknown` until its copy reports back, and stays so if it never does** — a
+  thrown or failed `exec`, or a server that stopped in between. It was first inserted as
+  `missing` as a placeholder, and a restore *deletes* a `missing` file: a copy lost to a dropped
+  executor socket deleted the very file it was meant to protect, reported as put back. A
+  restore skips `unknown` and names the file.
+- **A restore is bounded as a whole** (`REWIND_RESTORE_TIMEOUT_MS`, default 2 min, read at call
+  time) and stops on its claim's signal (a retry's run, aborted by deleting the conversation).
+  It runs under the conversation's claim, so every send is refused meanwhile, and a rewind's
+  claim has no stream anyone can stop. What it had not reached is reported as skipped.
+- **Deleting a conversation removes its copies from the workspace first**
+  (`dropConversationCopies`, from `destroyConversationSandboxes`). A server workspace's copies
+  would go with it anyway; a direct folder's are in the person's home, which destroying that
+  workspace never touches, and they are their own file contents. A machine that is offline
+  keeps them, and the delete dialog says where (`~/.loxaic/checkpoints`). No executor-side sweep:
+  two servers can share one machine's `~/.loxaic`, and one would delete the other's copies.
 - **Retention**: the newest 100 turns per conversation. A rewind of the conversation drops the
   removed turns' checkpoints; "files only" keeps them, so it can be done again. A retry keeps
   its turn's: they still describe the files before it.
