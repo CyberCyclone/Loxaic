@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import type { ServerMessage } from "@loxaic/types";
 
 const emitter = new EventEmitter();
 emitter.setMaxListeners(0);
@@ -20,4 +21,25 @@ export function announceNewRun(conversationId: string, streamId: string): void {
 export function watchConversation(conversationId: string, onNewRun: (streamId: string) => void): () => void {
   emitter.on(conversationId, onNewRun);
   return () => emitter.off(conversationId, onNewRun);
+}
+
+/** Something that happened to a conversation itself rather than in one run —
+ * today only messages being removed from its end (conversations/rewind.ts). */
+export type ConversationEvent = Extract<ServerMessage, { type: "conversation.rewound" }>;
+
+const EVENT_CHANNEL = (conversationId: string) => `event:${conversationId}`;
+
+/** Tells every socket watching `conversationId`. Each re-authorizes before it
+ * passes the event on (`delivery.ts`), as it does for a new run. */
+export function announceConversationEvent(event: ConversationEvent): void {
+  emitter.emit(EVENT_CHANNEL(event.conversation_id), event);
+}
+
+export function watchConversationEvents(
+  conversationId: string,
+  onEvent: (event: ConversationEvent) => void,
+): () => void {
+  const channel = EVENT_CHANNEL(conversationId);
+  emitter.on(channel, onEvent);
+  return () => emitter.off(channel, onEvent);
 }

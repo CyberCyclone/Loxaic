@@ -110,6 +110,18 @@ function driverContract(label: string, driver: StreamLogDriver) {
       expect(await driver.readFrom(streamId, 0)).toEqual([]);
     });
 
+    it("deleteStream takes the run out of its conversation's list, keeping the rest in order", async () => {
+      // A rewind deletes the logs of the runs it removed; a subscribe reads
+      // the conversation's last three, so a stale id would hide a live run.
+      const convId = freshId("conv");
+      const runs = [freshId("run"), freshId("run"), freshId("run")];
+      for (const streamId of runs) {
+        await driver.createStream({ streamId, conversationId: convId, userId: "u1", surface: "chat", createdAt: Date.now() });
+      }
+      await driver.deleteStream(runs[1]);
+      expect(await driver.listConvStreams(convId)).toEqual([runs[0], runs[2]]);
+    });
+
     it("listConvStreams tracks a conversation's run ids in creation order", async () => {
       const convId = freshId("conv");
       expect(await driver.listConvStreams(convId)).toEqual([]);

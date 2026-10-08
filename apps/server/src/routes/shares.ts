@@ -260,7 +260,9 @@ export function adminConversationRoutes(app: FastifyInstance) {
       // of exactly the long conversation an audit is most likely to be about.
       let page: MessagePage;
       try {
-        page = await loadMessagePage(request.params.id, { limit: 500, before: request.query.before });
+        // Rewound rows too, marked: keeping them for exactly this is what
+        // the retention setting asked for (conversations/rewind.ts).
+        page = await loadMessagePage(request.params.id, { limit: 500, before: request.query.before, includeRemoved: true });
       } catch (err) {
         if (!(err instanceof BadCursorError)) throw err;
         reply.code(400);
@@ -274,6 +276,7 @@ export function adminConversationRoutes(app: FastifyInstance) {
         content: m.content,
         status: m.status,
         createdAt: m.createdAt,
+        removedAt: m.deletedAt,
       }));
       return { messages: rows, hasMore: page.hasMore, before: page.before };
     },

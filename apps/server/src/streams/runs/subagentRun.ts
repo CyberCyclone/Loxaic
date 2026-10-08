@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, desc, eq, sql } from "@loxaic/db";
+import { and, db, desc, eq, isNull, sql } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
 import type {
   ContentBlock,
@@ -616,7 +616,15 @@ export async function listSubagents(
       )`,
     })
     .from(conversations)
-    .where(and(eq(conversations.parentConversationId, parentConvId), eq(conversations.kind, "subagent")))
+    .where(
+      and(
+        eq(conversations.parentConversationId, parentConvId),
+        eq(conversations.kind, "subagent"),
+        // A rewind on an audit-retaining deployment stamps the children of
+        // what it removed (conversations/rewind.ts).
+        isNull(conversations.deletedAt),
+      ),
+    )
     .orderBy(desc(conversations.createdAt))
     .limit(200);
 

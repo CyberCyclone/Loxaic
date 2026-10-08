@@ -93,7 +93,15 @@ export class MemoryStreamLogDriver implements StreamLogDriver {
   }
 
   deleteStream(streamId: string): Promise<void> {
+    const convId = this.streams.get(streamId)?.meta.conversationId;
     this.streams.delete(streamId);
+    // Out of the conversation's run list too: a subscribe looks at its last
+    // three, and a deleted id there hides a run that still exists behind it.
+    if (convId) {
+      const live = (this.convStreams.get(convId) ?? []).filter((id) => id !== streamId);
+      if (live.length === 0) this.convStreams.delete(convId);
+      else this.convStreams.set(convId, live);
+    }
     return Promise.resolve();
   }
 

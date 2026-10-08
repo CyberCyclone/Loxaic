@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, desc, eq, ne } from "@loxaic/db";
+import { and, db, desc, eq, isNull, ne } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import {
   COMPACTION_CONTINUE_NUDGE,
@@ -974,7 +974,7 @@ async function cutoffBefore(convId: string, row: UnansweredRow): Promise<{ lampo
     db
       .select({ lamport: messages.lamport })
       .from(messages)
-      .where(and(eq(messages.conversationId, convId), ne(messages.id, row.id)))
+      .where(and(eq(messages.conversationId, convId), ne(messages.id, row.id), isNull(messages.deletedAt)))
       .orderBy(desc(messages.lamport))
       .limit(1),
   ]);

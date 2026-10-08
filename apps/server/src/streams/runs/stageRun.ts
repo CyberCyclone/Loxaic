@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { count, db, eq } from "@loxaic/db";
+import { and, count, db, eq, isNull } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
 import type { ContextStageReason, ContextStageStatus, PromptProgress } from "@loxaic/types";
 import { summaryMessage } from "../../inference/context.ts";
@@ -442,7 +442,10 @@ export async function stageForNewConversation(input: {
  * it. True for a conversation created by this send, one the agent created up
  * front to choose a workspace, and a routine's fresh run alike. */
 export async function hasNoMessages(convId: string): Promise<boolean> {
-  const [row] = await db.select({ n: count() }).from(messages).where(eq(messages.conversationId, convId));
+  const [row] = await db
+    .select({ n: count() })
+    .from(messages)
+    .where(and(eq(messages.conversationId, convId), isNull(messages.deletedAt)));
   return row.n === 0;
 }
 

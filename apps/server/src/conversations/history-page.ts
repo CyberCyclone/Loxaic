@@ -49,10 +49,18 @@ export class BadCursorError extends Error {
 
 export async function loadMessagePage(
   conversationId: string,
-  opts: { limit: number; before?: string | null },
+  opts: {
+    limit: number;
+    before?: string | null;
+    /** Rows a rewind removed on an audit-retaining deployment too (stamped
+     * `deletedAt`) — for the admin transcript, never anyone else. */
+    includeRemoved?: boolean;
+  },
 ): Promise<MessagePage> {
   const { limit } = opts;
-  const visible = and(eq(messages.conversationId, conversationId), isNull(messages.deletedAt));
+  const visible = opts.includeRemoved
+    ? eq(messages.conversationId, conversationId)
+    : and(eq(messages.conversationId, conversationId), isNull(messages.deletedAt));
 
   let older = visible;
   if (opts.before !== undefined && opts.before !== null) {

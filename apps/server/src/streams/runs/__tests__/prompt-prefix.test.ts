@@ -104,6 +104,8 @@ afterAll(async () => {
     await db.delete(usageRecords).where(eq(usageRecords.conversationId, id));
     await db.delete(conversations).where(eq(conversations.id, id));
   }
+  // A rewind detaches usage from its conversation rather than deleting it.
+  await db.delete(usageRecords).where(eq(usageRecords.userId, userId));
   await db.delete(user).where(eq(user.id, userId));
   delete process.env.AUTO_COMPACT_THRESHOLD;
 });
@@ -992,4 +994,45 @@ describe("a sub-agent leaves its parent's prefix alone", () => {
     // And the child was never offered the tool itself.
     for (const i of childIndexes) expect(requestOptions[i].tools).not.toContain('"name":"subagent"');
   }, 60_000);
+});
+
+describe("after a retry or a rewind, the next request extends what survives", () => {
+  it("a retry sends exactly the request the replaced reply answered", async () => {
+    const convId = await turn("first question");
+    await turn("second question", convId);
+    const original = requests.at(-1);
+    requests.length = 0;
+
+    const { retryChatRun } = await import("../chatRun.ts");
+    await retryChatRun({ userId, conversationId: convId, model: "llama-3.1-8b-instruct" });
+    await waitForRun(convId);
+
+    // Byte for byte: everything before the reply is the cached prefix.
+    expect(requests[0]).toEqual(original);
+  });
+
+  it("a send after a rewind extends the request the surviving turn made", async () => {
+    process.env.DELETED_CHAT_RETENTION_ENABLED = "false";
+    try {
+      const convId = await turn("keep this question");
+      const surviving = requests.at(-1);
+      await turn("a question to take back", convId);
+      const [target] = await db
+        .select({ id: messages.id, content: messages.content })
+        .from(messages)
+        .where(eq(messages.conversationId, convId))
+        .then((rows) => rows.filter((r) => JSON.stringify(r.content).includes("take back")));
+      const { rewindConversation } = await import("../../../conversations/rewind.ts");
+      await rewindConversation({ userId, conversationId: convId, messageId: target.id });
+      requests.length = 0;
+
+      await turn("a better question", convId);
+
+      expect(surviving).toBeDefined();
+      expectEachRequestExtendsTheLast([surviving ?? [], requests[0]]);
+      expect(requests[0].some((m) => m.includes("take back"))).toBe(false);
+    } finally {
+      delete process.env.DELETED_CHAT_RETENTION_ENABLED;
+    }
+  });
 });

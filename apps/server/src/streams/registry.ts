@@ -53,6 +53,29 @@ export function registerRun(handle: RunHandle): void {
   runByConversation.set(handle.conversationId, handle.streamId);
 }
 
+/** Refused because the conversation already has a run (or a rewind) going. */
+export class ConversationBusyError extends Error {
+  readonly code = "conversation_busy";
+  constructor(message = "A response is already in progress for this conversation") {
+    super(message);
+    this.name = "ConversationBusyError";
+  }
+}
+
+/**
+ * Takes the conversation's one run slot, or throws when something holds it.
+ *
+ * Synchronous on purpose: the check and the claim have to be one step. With
+ * an await between them, two requests arriving together each pass the check
+ * and `registerRun` silently overwrites the first — a send and a rewind could
+ * then both proceed, the send writing into the very suffix the rewind is
+ * removing. Every starter claims this way before its first await that matters.
+ */
+export function claimConversation(handle: RunHandle): void {
+  if (runByConversation.has(handle.conversationId)) throw new ConversationBusyError();
+  registerRun(handle);
+}
+
 export function unregisterRun(streamId: string): void {
   const handle = runsByStreamId.get(streamId);
   if (!handle) return;

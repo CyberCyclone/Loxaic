@@ -114,7 +114,8 @@ export function beginSendFor(
   msg: { type: string },
   surface: "chat" | "agent",
 ): PendingSendOutcome | undefined {
-  if (msg.type !== `${surface}.send`) return undefined;
+  // A retry starts a run the same way and loses its answer the same way.
+  if (msg.type !== `${surface}.send` && msg.type !== `${surface}.retry`) return undefined;
   const ref = clientRefOf(msg);
   return ref ? beginSend(userId, ref) : undefined;
 }

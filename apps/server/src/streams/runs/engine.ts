@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, eq, gt } from "@loxaic/db";
+import { and, db, eq, gt, isNull } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
@@ -2298,6 +2298,7 @@ async function historyWindow(conversationId: string) {
       eq(messages.conversationId, conversationId),
       eq(messages.authorType, "summary"),
       eq(messages.status, "complete"),
+      isNull(messages.deletedAt),
     ),
     orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
     columns: { content: true, lamport: true },
@@ -2307,9 +2308,10 @@ async function historyWindow(conversationId: string) {
     .map((r) => ({ text: textOf(r.content as ContentBlock[]), lamport: r.lamport }))
     .find((r) => r.text.length > 0);
 
-  const replayable = summaryRow
-    ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
-    : eq(messages.conversationId, conversationId);
+  // A row a rewind removed on an audit-retaining deployment is kept, stamped
+  // `deletedAt`, for admins — and must never reach the model again.
+  const live = and(eq(messages.conversationId, conversationId), isNull(messages.deletedAt));
+  const replayable = summaryRow ? and(live, gt(messages.lamport, summaryRow.lamport)) : live;
 
   return { summaryRow, replayable };
 }

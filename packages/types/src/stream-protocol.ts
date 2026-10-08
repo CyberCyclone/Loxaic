@@ -131,6 +131,16 @@ export const COMPACTION_CONTINUE_NUDGE =
   "The conversation above was compacted into the summary. Continue the task from where it left off.";
 
 /**
+ * Whether a user row's text is one the server wrote rather than a person:
+ * the check-in, plan and compaction nudges. Rewind and retry target only what
+ * someone typed, and the author alone cannot say so — an answered check-in's
+ * nudge carries the id of the person who pressed the button.
+ */
+export function isNudgeText(text: string): boolean {
+  return text === CHECKIN_ANSWER_NUDGE || text === PLAN_REQUIRED_NUDGE || text === COMPACTION_CONTINUE_NUDGE;
+}
+
+/**
  * The first line of the message the questions panel sends (#199). The rest is
  * one numbered line per question with its answer; the client builds it
  * (formatAnswers in apps/mobile/lib/plan.ts) and reads it back to render a
@@ -837,6 +847,24 @@ export type ServerMessage =
       error_code?: StreamErrorCode;
     }
   | { type: "agent.mode_changed"; mode: PermissionMode }
+  /**
+   * Messages were removed from the end of a conversation: a rewind, or the
+   * old reply a retry replaced. Sent to every socket watching it. The client
+   * drops `removed_ids`, and every run whose `stream_id` is in
+   * `removed_stream_ids` — their logs are deleted, so a snapshot of one
+   * already on its way must not put the messages back.
+   */
+  | {
+      type: "conversation.rewound";
+      conversation_id: string;
+      /** The first message removed, or for a retry the message kept and
+       * answered again. */
+      from_message_id: string;
+      removed_ids: string[];
+      removed_stream_ids: string[];
+      /** "rewind" removed `from_message_id` too; "retry" kept it. */
+      reason: "rewind" | "retry";
+    }
   | {
       type: "error";
       error: string;
@@ -897,6 +925,28 @@ export type ClientMessage =
        * existed; read only by the send that opens it. */
       context_stage?: number;
       /** As on `chat.send`. */
+      thinking_level?: ThinkingLevel;
+    }
+  /**
+   * Answer the conversation's newest message again: the reply to it (and
+   * anything after it) is removed and a new run starts on the same message,
+   * on `model` — the composer's choice, so retrying on another model is a
+   * model switch and then Retry. Only the newest message can be retried.
+   * `client_ref` works as on a send (`send.status` included).
+   */
+  | {
+      type: "chat.retry";
+      conversation_id: string;
+      model?: string;
+      client_ref?: string;
+      thinking_level?: ThinkingLevel;
+    }
+  | {
+      type: "agent.retry";
+      conversation_id: string;
+      model?: string;
+      mode?: PermissionMode;
+      client_ref?: string;
       thinking_level?: ThinkingLevel;
     }
   /** Run a built-in slash command against an existing conversation. The
