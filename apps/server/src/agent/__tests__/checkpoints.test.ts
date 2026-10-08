@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { join as posixJoin } from "node:path/posix";
 import { v4 as uuid } from "uuid";
 import { asc, db, eq, inArray } from "@loxaic/db";
 import { checkpointFiles, conversations, messages, sandboxes, usageRecords, user } from "@loxaic/db/schema";
@@ -21,6 +22,8 @@ import { retryAgentRun, startAgentRun } from "../../streams/runs/agentRun.ts";
 import { __resetMockScenariosForTest } from "../../inference/mock-scenarios.ts";
 import { destroyConversationSandboxes, getConversationSandbox } from "../sandbox-manager.ts";
 import { previewRewind, rewindConversation } from "../../conversations/rewind.ts";
+import { getContainerProvider } from "../../sandbox/container-provider.ts";
+import { sandboxImageReady } from "../../sandbox/__tests__/docker-available.ts";
 
 /**
  * File checkpoints (#166), on the host provider, which needs no container
@@ -175,6 +178,37 @@ describe("file checkpoints in a server workspace", () => {
     expect(kept).toHaveLength(CHECKPOINT_KEEP_TURNS);
     expect(kept.map((k) => k.turn)).not.toContain(turns[0]);
     expect(existsSync(path.join(handle.root, ".loxaic", "checkpoints", convId, turns[0]))).toBe(false);
+  });
+});
+
+// Asked before any case switches this file to host mode.
+const dockerReady = await sandboxImageReady();
+
+describe("file checkpoints in a container", () => {
+  it.skipIf(!dockerReady)("keeps the copies beside the working tree, and puts a binary file back byte for byte", async () => {
+    const handle = await getContainerProvider().create(userId, {});
+    try {
+      const convId = await newConv();
+      const file = posixJoin(handle.workdir, "data.bin");
+      // Bytes `readFile` could never carry: a NUL and an invalid UTF-8 byte.
+      await handle.exec(["bash", "-c", "printf 'a\\000b\\377c' > data.bin && chmod 640 data.bin"], { workdir: handle.workdir });
+      const before = (await handle.exec(["bash", "-c", "od -An -tx1 data.bin; stat -c %a data.bin"], { workdir: handle.workdir })).stdout;
+      const turn = await turnRow(convId);
+      await recordBeforeWrite(handle, { conversationId: convId, turnMessageId: turn.id }, file);
+      await handle.writeFile(file, "overwritten by the agent\n");
+
+      const [record] = await checkpointsSince(convId, turn.createdAt);
+      const listed = await handle.exec(["bash", "-c", `ls /home/loxaic/.loxaic/checkpoints/${convId}/${turn.id}`], { workdir: handle.workdir });
+      expect(listed.stdout.trim()).toBe(record.id);
+
+      const report = await restoreCheckpoints(handle, convId, [record]);
+      expect(report).toEqual({ restored: [file], skipped: [] });
+      const after = (await handle.exec(["bash", "-c", "od -An -tx1 data.bin; stat -c %a data.bin"], { workdir: handle.workdir })).stdout;
+      expect(after).toBe(before);
+      expect(before).toContain("640");
+    } finally {
+      await handle.destroy();
+    }
   });
 });
 
