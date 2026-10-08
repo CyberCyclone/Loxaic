@@ -458,6 +458,21 @@ const server = createServer(async (req, res) => {
       // person's own message from a nudge written in its place.
       last_user: said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")).slice(0, 200),
     });
+    // "overflow the provider": refused as longer than the slot, in b11342's
+    // own words and shape (read from its server library), so the run's
+    // classifier is tested against what the real router sends (#166).
+    if (/overflow the provider/i.test(said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")))) {
+      const nCtx = Number(merged(body.model)["ctx-size"] ?? 4096);
+      return json(res, 400, {
+        error: {
+          code: 400,
+          message: `request (${String(nCtx + 904)} tokens) exceeds the available context size (${String(nCtx)} tokens), try increasing it`,
+          type: "exceed_context_size_error",
+          n_prompt_tokens: nCtx + 904,
+          n_ctx: nCtx,
+        },
+      });
+    }
     res.writeHead(200, { "content-type": "text/event-stream" });
     const words = ["Hello", " from", ` ${body.model}`];
     // "take your time" makes the reply slow (1.5 s a word; "take your time

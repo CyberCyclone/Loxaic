@@ -41,6 +41,18 @@ describe('failed turns carry their reason', () => {
     expect(m.errorText).toBe(REASON);
   });
 
+  it('keeps the code of a reply that could not fit, live and from history, so it can offer Edit message (#166)', () => {
+    const live = applyEventToMsgs([{ id: 'a1', role: 'assistant', text: '' }], {
+      kind: 'message.end', message_id: 'a1', status: 'error', error: 'too long', error_code: 'context_overflow',
+    });
+    expect(live[0].errorCode).toBe('context_overflow');
+    const [stored] = reconstructMessages([row({ status: 'error', error: 'too long', errorCode: 'context_cannot_fit' })]);
+    expect(stored.errorCode).toBe('context_cannot_fit');
+    // A code this client does not know is not one.
+    const [unknown] = reconstructMessages([row({ status: 'error', error: 'x', errorCode: 'something_new' })]);
+    expect(unknown.errorCode).toBeUndefined();
+  });
+
   it('not from a cancelled message.end, which stays a stop', () => {
     const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: 'partial' }];
     const [m] = applyEventToMsgs(msgs, { kind: 'message.end', message_id: 'a1', status: 'cancelled' });

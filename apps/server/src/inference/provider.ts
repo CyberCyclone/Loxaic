@@ -10,6 +10,7 @@ import { listServableModels } from "../llama/catalog.ts";
 import { ensureRoom, trackRequest } from "../llama/room.ts";
 import { describeLoadFailure } from "../llama/load-failure.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
+import { backendErrorFields, ContextOverflowError, isContextOverflow, type BackendErrorFields } from "./context-overflow.ts";
 
 // Read at call time, not module load — a supervisor sets these in the child's
 // env, and module-scope reads would freeze them before any caller could act.
@@ -313,6 +314,22 @@ const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
  * mock's echo is otherwise the same for the same prompt. Per process.
  */
 const MOCK_DIFFERENT_MATCH = /\bgive a different answer\b/i;
+
+/**
+ * A prompt the mock refuses the way llama.cpp refuses one longer than its
+ * context — its own body, read from b11342 — through the same classifier a
+ * live backend's refusal goes through (#166).
+ */
+const MOCK_PROVIDER_OVERFLOW_MATCH = /\boverflow the provider\b/i;
+const MOCK_PROVIDER_OVERFLOW_BODY = {
+  error: {
+    code: 400,
+    message: "request (5000 tokens) exceeds the available context size (4096 tokens), try increasing it",
+    type: "exceed_context_size_error",
+    n_prompt_tokens: 5000,
+    n_ctx: 4096,
+  },
+};
 let mockAnswerCount = 0;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
@@ -488,6 +505,9 @@ async function* mockStream(
   const prompt = rawPrompt.replace(/<project-instructions-update [\s\S]*?<\/project-instructions-update>\s*/g, "").trim();
   // Before anything is yielded, as a refused request is: nothing streamed.
   if (MOCK_FAIL_MATCH.test(prompt)) throw new Error(MOCK_FAIL_MESSAGE);
+  if (MOCK_PROVIDER_OVERFLOW_MATCH.test(prompt) && isContextOverflow(backendErrorFields(MOCK_PROVIDER_OVERFLOW_BODY) ?? {})) {
+    throw new ContextOverflowError(MOCK_PROVIDER_OVERFLOW_BODY.error.message);
+  }
   const imageCount = countImageParts(lastUser?.content);
   const documentCount = countDocumentParts(lastUser?.content);
 
@@ -705,7 +725,7 @@ async function* mockStream(
 interface ToolCallFragment { id: string; name: string; args: string }
 
 interface InferenceErrorResponse {
-  error?: { message?: string };
+  error?: { message?: string; code?: unknown; type?: unknown };
 }
 
 /** A tool-call fragment as it arrives in a streamed `delta` — accumulated across chunks by index. */
@@ -815,8 +835,10 @@ async function* liveStream(
     // {"error":{"message":"..."}} — surface just that instead of the raw body,
     // so the client can show it directly rather than a JSON dump.
     let message = errText;
+    let fields: BackendErrorFields | null = null;
     try {
       const parsed = JSON.parse(errText) as InferenceErrorResponse;
+      fields = backendErrorFields(parsed);
       // eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing -- an empty (but present) message should still fall back to errText; ?? would keep the empty string instead.
       message = parsed.error?.message || errText;
     } catch {
@@ -832,9 +854,10 @@ async function* liveStream(
         `The "${provider.name}" provider rejected this server's API key. Ask an admin to check it in Settings → Model providers.`,
       );
     }
-    throw new Error(
-      redactSecrets(message || `Inference error ${String(response.status)}`, secretsOf(provider)),
-    );
+    const text = redactSecrets(message || `Inference error ${String(response.status)}`, secretsOf(provider));
+    // Longer than the model's context: the run offers a way out of this one.
+    if (isContextOverflow(fields ?? { message })) throw new ContextOverflowError(text);
+    throw new Error(text);
   }
 
   if (!response.body) throw new Error("Inference response has no body");
@@ -883,7 +906,10 @@ async function* liveStream(
         if (parsed.error) {
           const detail =
             typeof parsed.error === "string" ? parsed.error : (parsed.error.message ?? JSON.stringify(parsed.error));
-          throw new Error(redactSecrets(`Inference backend error: ${detail}`, secretsOf(provider)));
+          const text = redactSecrets(`Inference backend error: ${detail}`, secretsOf(provider));
+          // A context filled mid-reply arrives this way from llama.cpp.
+          if (isContextOverflow(backendErrorFields(parsed) ?? {})) throw new ContextOverflowError(text);
+          throw new Error(text);
         }
 
         // Before anything else in the chunk, and deliberately not touching

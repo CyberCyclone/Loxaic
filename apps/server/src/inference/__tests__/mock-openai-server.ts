@@ -54,6 +54,10 @@ export interface MockOpenAiOptions {
    * content before anything else — llama.cpp treats a trailing assistant
    * message as a prefill to continue, and does exactly this. */
   echoPrefill?: boolean;
+  /** Refuse every completion: with this status and JSON body, the way a
+   * backend refuses before streaming — or, with `status: 200`, as an SSE
+   * `error` chunk in the middle of a stream, the way llama.cpp does. */
+  refuse?: { status: number; body: unknown };
 }
 
 /** What `progress` streams before the reply: llama.cpp's 0% report as the
@@ -118,6 +122,19 @@ export async function startMockOpenAi(options: MockOpenAiOptions = {}): Promise<
       if (req.url?.endsWith("/models")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: models.map((m) => ({ object: "model", ...m })) }));
+        return;
+      }
+
+      if (req.url?.endsWith("/chat/completions") && options.refuse) {
+        const { status, body: refusal } = options.refuse;
+        if (status === 200) {
+          res.writeHead(200, { "Content-Type": "text/event-stream" });
+          res.write(sse(refusal));
+          res.end();
+        } else {
+          res.writeHead(status, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(refusal));
+        }
         return;
       }
 

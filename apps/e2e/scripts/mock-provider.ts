@@ -67,10 +67,10 @@ export async function startMockProvider(): Promise<MockProvider> {
         return;
       }
 
-      let body: { model?: string } & Record<string, unknown> = {};
+      let body: { model?: string; messages?: { role?: string; content?: unknown }[] } & Record<string, unknown> = {};
       try {
         const raw = Buffer.concat(chunks).toString('utf8');
-        body = raw ? (JSON.parse(raw) as { model?: string } & Record<string, unknown>) : {};
+        body = raw ? (JSON.parse(raw) as typeof body) : {};
       } catch {
         // A malformed body is still a request that arrived.
       }
@@ -92,6 +92,26 @@ export async function startMockProvider(): Promise<MockProvider> {
       if (url.endsWith('/models')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ data: PROVIDER_MODELS.map((m) => ({ object: 'model', ...m })) }));
+        return;
+      }
+
+      // "overflow the provider": refused as longer than the model's context,
+      // in OpenAI's own words and code — what a model whose size Loxaic did
+      // not know looks like when it fills up (#166).
+      const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user');
+      if (url.endsWith('/chat/completions') && /overflow the provider/i.test(JSON.stringify(lastUser?.content ?? ''))) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: {
+              message:
+                "This model's maximum context length is 8192 tokens. However, your messages resulted in 9100 tokens. Please reduce the length of the messages.",
+              type: 'invalid_request_error',
+              param: 'messages',
+              code: 'context_length_exceeded',
+            },
+          }),
+        );
         return;
       }
 

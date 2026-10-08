@@ -11,7 +11,7 @@ import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
 import { isStageActive, type StageCard } from '@/lib/stageCard';
-import { canRewind, retryIndex } from '@/lib/rewind';
+import { canRewind, isContextFailure, retryIndex } from '@/lib/rewind';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -47,6 +47,9 @@ interface MessageListProps {
 export interface MessageActions {
   onRewind: (messageId: string) => void;
   onRetry: () => void;
+  /** "Edit message" on a reply that could not fit: rewinds to the message it
+   * answers, conversation only, with no dialog — nothing else goes. */
+  onEdit: (messageId: string) => void;
 }
 
 /** What the session hooks expose for the open thread's scroll-back. */
@@ -191,6 +194,9 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // Nothing to rewind or retry while a run is going: the server would refuse.
   const live = actions && !pending ? actions : null;
   const retryAt = live ? retryIndex(msgsToRender) : -1;
+  // The message that reply answers: the newest one someone typed.
+  const editTarget = retryAt >= 0 ? [...msgsToRender.slice(0, retryAt)].reverse().find(canRewind)?.id : undefined;
+  const onEdit = useMemo(() => (live && editTarget ? () => { live.onEdit(editTarget); } : undefined), [live, editTarget]);
 
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<MessageType>) => {
@@ -209,11 +215,12 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
             liveCompaction={originalIndex === liveCompactionIndex ? liveCompaction : null}
             onRewind={live && canRewind(item) ? live.onRewind : undefined}
             onRetry={live && originalIndex === retryAt ? live.onRetry : undefined}
+            onEdit={originalIndex === retryAt && isContextFailure(item) ? onEdit : undefined}
           />
         </Box>
       );
     },
-    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt, liveCompactionIndex, liveCompaction, live, retryAt],
+    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt, liveCompactionIndex, liveCompaction, live, retryAt, onEdit],
   );
 
   if (!conversation) return null;

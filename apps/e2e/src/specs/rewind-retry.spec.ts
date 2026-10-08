@@ -13,11 +13,12 @@
  * up every time, so a retry is visibly a new reply rather than the same echo.
  */
 import { browser } from '@wdio/globals';
-import { BASE_URL } from '../../scripts/standup.ts';
-import { apiToken, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
+import { BASE_URL, mockProviderApiBase } from '../../scripts/standup.ts';
+import { VALID_KEY } from '../../scripts/mock-provider.ts';
+import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, expectTextAbsent, isVisible, platform, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { listConversations, sendMessage, signIn, signOut, startNewThread, waitForComposerReady, waitForRunDone } from '../helpers/app.ts';
+import { deleteProvidersWithBaseUrl, listConversations, sendMessage, signIn, signOut, startNewThread, waitForComposerReady, waitForRunDone } from '../helpers/app.ts';
 import { attachImage } from '../helpers/attachments.ts';
 
 interface Row {
@@ -49,10 +50,37 @@ describe('rewinding and retrying', () => {
   let conversationId = '';
 
   before(async () => {
+    await provisionAdmin();
     await provisionUser(alice);
     await provisionUser(viewer);
     await signIn(alice);
   });
+
+  after(async () => {
+    await deleteProvidersWithBaseUrl(mockProviderApiBase());
+  });
+
+  async function pickModel(id: string): Promise<void> {
+    await tap('composer.model');
+    await waitForVisible(`models.row.${id}`);
+    await tap(`models.row.${id}`);
+    // An element inside the dialog: on Android a closed modal's root goes on
+    // reporting itself displayed.
+    await waitForAbsent('models.search', 10_000);
+  }
+
+  /** A conversation started from this page, found by being new. */
+  async function newConversationAfter(known: Set<string>): Promise<string> {
+    let id = '';
+    await browser.waitUntil(
+      async () => {
+        id = (await listConversations(alice)).find((c) => !known.has(c.id))?.id ?? '';
+        return id !== '';
+      },
+      { timeout: 30_000 },
+    );
+    return id;
+  }
 
   async function newestConversation(): Promise<string> {
     await browser.waitUntil(async () => (await listConversations(alice)).length > 0, { timeout: 30_000 });
@@ -173,5 +201,65 @@ describe('rewinding and retrying', () => {
     expect(await isVisible('chat.message.retry')).toBe(false);
     await signOut();
     await signIn(alice);
+  });
+
+  it("offers Edit message on a reply the model's server refused as too long, and says who can fix it", async function () {
+    this.timeout(3 * 60_000);
+    // An added provider whose model reports no context size: Loxaic cannot
+    // know it is full, so the provider is the one that says so.
+    const adminToken = await apiToken(adminCreds());
+    const created = await fetch(`${BASE_URL}/v1/admin/providers`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${adminToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: `Rewind ${String(Date.now())}`, baseUrl: mockProviderApiBase(), apiKey: VALID_KEY }),
+    });
+    expect(created.ok).toBe(true);
+    const { slug } = (await created.json()) as { slug: string };
+    const known = new Set((await listConversations(alice)).map((c) => c.id));
+    await startNewThread();
+    await pickModel(`${slug}::acme/nova-classic`);
+
+    await sendMessage('please overflow the provider');
+    const convId = await newConversationAfter(known);
+    await waitForVisible('chat.message.editMessage', 30_000);
+    await waitForVisible('chat.message.contextHint');
+    await shot('overflow-edit-message');
+
+    await tap('chat.message.editMessage');
+    await browser.waitUntil(async () => (await composerText()) === 'please overflow the provider', { timeout: 15_000 });
+    await waitForAbsent('chat.message.editMessage');
+    expect(await rowsOf(alice, convId)).toEqual([]);
+
+    // Shorter (typed over what came back), and answered.
+    await sendMessage('a shorter question');
+    await waitForTextIn('chat.messageList', 'Reply from the external provider.', 30_000);
+  });
+
+  it('offers Edit message on a message Loxaic knows cannot fit, and a shorter one is answered', async function () {
+    // Typing a 30,000-character paste is something only a browser can do in
+    // the time a spec has: XCUITest and UiAutomator2 type a character at a
+    // time. The refusal itself is the server's and is unit-tested
+    // (auto-compact-run.test.ts); the button is the same one the case above
+    // drives on every platform.
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    this.timeout(3 * 60_000);
+    const known = new Set((await listConversations(alice)).map((c) => c.id));
+    await startNewThread();
+    await pickModel('llama-3.1-8b-instruct');
+    const paste = `a long paste: ${'words '.repeat(5000)}`;
+    await sendMessage(paste);
+    const convId = await newConversationAfter(known);
+    await waitForVisible('chat.message.editMessage', 30_000);
+    expect(await isVisible('chat.message.contextHint')).toBe(false);
+    await waitForTextIn('chat.messageList', "doesn't fit the model's context", 15_000);
+    await shot('cannot-fit-edit-message');
+
+    await tap('chat.message.editMessage');
+    // As it was sent: the composer trims what it sends.
+    await browser.waitUntil(async () => (await composerText()) === paste.trim(), { timeout: 15_000 });
+    await sendMessage('just the first paragraph');
+    await browser.waitUntil(async () => (await rowsOf(alice, convId)).length === 2, { timeout: 30_000 });
+    await waitForRunDone(alice, convId);
+    expect((await rowsOf(alice, convId)).map(textOf)).toEqual(['just the first paragraph', expect.stringContaining('just the first paragraph')]);
   });
 });

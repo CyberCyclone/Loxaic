@@ -22,6 +22,7 @@ import { describeMtpAcceptance } from '@/lib/mtp';
 import { answerNowNotice, autoContinueNotice } from '@/lib/checkinNotice';
 import { instructionsUpdateLine } from '@/lib/projectInstructions';
 import { COMPACTION_CONTINUE_NUDGE, PLAN_REQUIRED_NUDGE } from '@loxaic/types';
+import { CONTEXT_OVERFLOW_HINT } from '@/lib/rewind';
 import type { Message as MessageType } from '@/lib/types';
 import type { LiveCompaction } from './compactionState';
 import { displayModelRef } from '@loxaic/types';
@@ -45,6 +46,8 @@ interface MessageProps {
   onRewind?: (messageId: string) => void;
   /** Answer the newest message again, on this reply only. */
   onRetry?: () => void;
+  /** On a reply that could not fit: put its message back to edit. */
+  onEdit?: () => void;
 }
 
 /** "photo.png" when the server knew a name, "An image"/"A file" when it didn't
@@ -62,7 +65,7 @@ function listOmitted(atts: { mime: string; name?: string }[], max = 4): string {
   return rest > 0 ? `${shown} and ${String(rest)} more` : shown;
 }
 
-function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction, onRewind, onRetry }: MessageProps) {
+function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveCompaction, onRewind, onRetry, onEdit }: MessageProps) {
   // Hoisted above the summary early-return below: hooks can't be called
   // conditionally, and a summary card renders no attachments anyway.
   const { token, user } = useSession();
@@ -223,6 +226,25 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
                     {msg.errorText ?? 'This response failed.'}
                   </Text>
                 </HStack>
+                {msg.errorCode === 'context_overflow' && (
+                  <Text testID="chat.message.contextHint" size="xs" className="text-muted-foreground">
+                    {CONTEXT_OVERFLOW_HINT}
+                  </Text>
+                )}
+                {onEdit && (
+                  // Too long for the model: the way out is a shorter message,
+                  // so it goes back to the composer (#166).
+                  <Pressable
+                    testID="chat.message.editMessage"
+                    onPress={onEdit}
+                    className="flex-row items-center gap-1 self-start rounded-sm border border-border px-2 py-1 web:hover:bg-muted/50"
+                  >
+                    <Icon as={Undo2} size="xs" className="text-foreground" />
+                    <Text size="xs" className="text-foreground">
+                      Edit message
+                    </Text>
+                  </Pressable>
+                )}
               </VStack>
             ) : isUser ? (
               // User bubbles stay plain: someone typing a literal `*` or `#`
@@ -420,5 +442,6 @@ export const Message = memo(
     // Both appear and disappear without `msg` changing: a run starting hides
     // them, and a newer reply moves Retry off this one.
     prev.onRewind === next.onRewind &&
-    prev.onRetry === next.onRetry,
+    prev.onRetry === next.onRetry &&
+    prev.onEdit === next.onEdit,
 );

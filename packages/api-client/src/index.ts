@@ -1618,6 +1618,9 @@ export interface ApiMessage {
   /** Why an errored turn failed. Null otherwise, and on errored rows that
    * predate the column. */
   error: string | null;
+  /** A `StreamErrorCode` beside `error`, when the client offers a way out of
+   * it. Absent from an older server. */
+  errorCode?: string | null;
   createdAt: string;
   deletedAt: string | null;
   /** Persisted usage/timing for this message — null for user messages or if never recorded. */

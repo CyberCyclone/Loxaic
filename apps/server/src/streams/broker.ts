@@ -216,6 +216,7 @@ export class StreamBroker {
           m.status = event.status;
           if (event.usage) m.usage = event.usage;
           if (event.error) m.error = event.error;
+          if (event.error_code) m.error_code = event.error_code;
           break;
         }
         case "model.loading":

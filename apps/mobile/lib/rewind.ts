@@ -63,6 +63,17 @@ export function retryIndex(msgs: Message[]): number {
   return -1;
 }
 
+/** A reply that failed because its request could not fit the model's context
+ * — refused by Loxaic, or by the backend. Offered "Edit message". */
+export function isContextFailure(msg: Message): boolean {
+  return msg.error === true && (msg.errorCode === 'context_cannot_fit' || msg.errorCode === 'context_overflow');
+}
+
+/** Under a reply the backend refused as too long: the one cause Loxaic cannot
+ * see for itself, and who can fix it. */
+export const CONTEXT_OVERFLOW_HINT =
+  "The model's server refused this as longer than its context. If the model's context size is missing or wrong in Loxaic, an admin can set it in Settings → Model providers.";
+
 /** Said in the dialog whenever files are offered: what a restore cannot do. */
 export const FILE_LIMITS =
   'Only changes the agent made with its file tools can be put back. Commands it ran, edits made outside Loxaic, symbolic links and files over 10 MiB stay as they are.';

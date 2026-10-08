@@ -551,6 +551,8 @@ export type StreamEventKind =
       status: "complete" | "error" | "cancelled";
       usage?: TurnUsage;
       error?: string;
+      /** Why it failed, when the client offers a way out — see StreamErrorCode. */
+      error_code?: StreamErrorCode;
     }
   /**
    * The model request behind `message_id` has finished and this is what it
@@ -671,6 +673,7 @@ export interface StreamSnapshotMessage {
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;
   error?: string;
+  error_code?: StreamErrorCode;
   /** Folded from `message.start` when present — see its doc. */
   author_user_id?: string | null;
   /** Set on the assistant message a check-in followed, when nobody answered
@@ -883,8 +886,24 @@ export type ServerMessage =
  * Errors a client handles specially rather than as a toast.
  * - `local_model_no_room`: a host model that pinned models leave no GPU memory
  *   for. Shown as a modal naming them.
+ * - `context_cannot_fit`: Loxaic refused to send a request that cannot fit the
+ *   model's context even after compacting — a message bigger than the window.
+ * - `context_overflow`: the model's backend refused a request as longer than
+ *   its context (a size Loxaic did not know, or got wrong).
+ *
+ * Both context codes are offered "Edit message" (a rewind to the message,
+ * #166) and Retry on the failed reply.
  */
-export type StreamErrorCode = "local_model_no_room";
+export type StreamErrorCode = "local_model_no_room" | "context_cannot_fit" | "context_overflow";
+
+/** The codes a server sends; anything else off the wire is dropped. */
+export const STREAM_ERROR_CODES: readonly StreamErrorCode[] = ["local_model_no_room", "context_cannot_fit", "context_overflow"];
+
+/** Whether a code is one of `STREAM_ERROR_CODES` — for a value that came from
+ * an error object or a stored column, which only claims to be one. */
+export function isStreamErrorCode(value: unknown): value is StreamErrorCode {
+  return typeof value === "string" && (STREAM_ERROR_CODES as readonly string[]).includes(value);
+}
 
 /** What a file-checkpoint restore did (a rewind or a retry, #166). Only the
  * agent's own edit tools are tracked; `skipped` says why a file was not put

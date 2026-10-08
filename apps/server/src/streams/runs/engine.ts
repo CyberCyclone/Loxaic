@@ -12,6 +12,7 @@ import {
   type StreamEventKind,
   isLoopSensitivity,
   sanitizeFilename,
+  isStreamErrorCode,
   type AttachmentRef,
   type CheckinReason,
   type ContentBlock,
@@ -951,6 +952,8 @@ export async function runToolLoop(ctx: {
           content: [] as ContentBlock[],
           status: "error",
           error: decision.reason,
+          // What lets the reply offer "Edit message" after a reload too.
+          errorCode: "context_cannot_fit",
           createdAt: new Date(),
         });
         producer.emit({
@@ -961,8 +964,14 @@ export async function runToolLoop(ctx: {
           lamport: refusedLamport,
           model,
         });
-        producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "error", error: decision.reason });
-        await producer.end("error", { error: decision.reason });
+        producer.emit({
+          kind: "message.end",
+          message_id: assistantMsgId,
+          status: "error",
+          error: decision.reason,
+          error_code: "context_cannot_fit",
+        });
+        await producer.end("error", { error: decision.reason, errorCode: "context_cannot_fit" });
         return;
       }
       const { tally, fingerprint, reuse } = measured;
@@ -1101,15 +1110,23 @@ export async function runToolLoop(ctx: {
         // watching right now, and a reload used to show a bare empty reply.
         // A cancel stores nothing — a user stop is not an error.
         const eventError = isAbort ? undefined : turnErrorText(err, `turn failed in ${convId}`, backendText);
+        // A reason the client acts on rather than only shows: no room behind
+        // pinned models (a modal, llama/room.ts), or a backend refusing the
+        // request as longer than its context ("Edit message", #166).
+        const code = (err as { code?: unknown }).code;
+        const errorCode = !isAbort && isStreamErrorCode(code) ? code : undefined;
         await db
           .update(messages)
-          .set({ content: blocks, status, error: eventError ?? null })
+          .set({ content: blocks, status, error: eventError ?? null, errorCode: errorCode ?? null })
           .where(eq(messages.id, assistantMsgId))
           .catch(() => undefined);
-        producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
-        // No room behind pinned models (llama/room.ts) is shown as a modal,
-        // which needs to know it is that rather than read the sentence.
-        const errorCode = !isAbort && (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
+        producer.emit({
+          kind: "message.end",
+          message_id: assistantMsgId,
+          status,
+          error: eventError,
+          ...(errorCode ? { error_code: errorCode } : {}),
+        });
         await producer.end(status, { error: eventError, errorCode }).catch(() => undefined);
         return;
       }

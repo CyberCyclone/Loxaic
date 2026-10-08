@@ -1017,11 +1017,12 @@ describe("after a retry or a rewind, the next request extends what survives", ()
       const convId = await turn("keep this question");
       const surviving = requests.at(-1);
       await turn("a question to take back", convId);
+      // The user row, not the mock's echo of it, which says the same words.
       const [target] = await db
-        .select({ id: messages.id, content: messages.content })
+        .select({ id: messages.id, content: messages.content, authorType: messages.authorType })
         .from(messages)
         .where(eq(messages.conversationId, convId))
-        .then((rows) => rows.filter((r) => JSON.stringify(r.content).includes("take back")));
+        .then((rows) => rows.filter((r) => r.authorType === "user" && JSON.stringify(r.content).includes("take back")));
       const { rewindConversation } = await import("../../../conversations/rewind.ts");
       await rewindConversation({ userId, conversationId: convId, messageId: target.id });
       requests.length = 0;

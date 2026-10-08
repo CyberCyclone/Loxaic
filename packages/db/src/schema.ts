@@ -212,6 +212,10 @@ export const messages = pgTable(
      * other status — a user stop is not an error — and for failed rows written
      * before this column, which the client answers with a plain fallback. */
     error: text("error"),
+    /** A `StreamErrorCode` beside `error`, when the client offers a way out
+     * of it (a reply that could not fit: "Edit message", #166). Null for every
+     * other failure. */
+    errorCode: text("error_code"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     deletedAt: timestamp("deleted_at"),
   },

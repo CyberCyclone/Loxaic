@@ -113,12 +113,33 @@ export function useRewindRetry(opts: {
       });
   }, [dialog, showToast]);
 
+  /** "Edit message": straight back to the composer, conversation only — the
+   * reply failed before doing anything, so there is nothing else to ask. */
+  const onEdit = useCallback((messageId: string) => {
+    const convId = optsRef.current.conversationId;
+    if (!convId) return;
+    rewindConversation(convId, messageId, 'conversation')
+      .then((result) => {
+        optsRef.current.applyLocalRewind(convId, messageId, result.removed_ids);
+        optsRef.current.onSeed({
+          token: Date.now(),
+          text: result.text,
+          ...(result.attachments.length > 0 ? { attachments: result.attachments } : {}),
+        });
+        if (result.attachments_withheld) showToast(ATTACHMENTS_WITHHELD, 6000);
+      })
+      .catch((err: unknown) => {
+        const busy = err instanceof ApiError && err.code === 'conversation_busy';
+        showToast(busy ? 'Stop the reply in progress, then edit.' : describeRequestError(err, 'Could not take the message back'), 6000);
+      });
+  }, [showToast]);
+
   const cancel = useCallback(() => {
     asked.current += 1;
     setDialog(null);
   }, []);
 
-  const actions: MessageActions | null = useMemo(() => ({ onRewind, onRetry }), [onRewind, onRetry]);
+  const actions: MessageActions | null = useMemo(() => ({ onRewind, onRetry, onEdit }), [onRewind, onRetry, onEdit]);
 
   return {
     /** For the message list; null when this person cannot act here. */

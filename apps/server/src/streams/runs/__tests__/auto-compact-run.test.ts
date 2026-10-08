@@ -335,6 +335,8 @@ describe("automatic compaction", () => {
     const reply = rows.find((r) => r.authorType === "assistant");
     expect(reply?.status).toBe("error");
     expect(reply?.error).toMatch(/doesn't fit the model's context/);
+    // Coded, so the reply offers "Edit message" — after a reload too (#166).
+    expect(reply?.errorCode).toBe("context_cannot_fit");
     // Nothing was sent.
     expect(requests).toHaveLength(0);
     expect(await summaryRow(convId)).toBeNull();

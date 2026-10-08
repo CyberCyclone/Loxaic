@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CHECKIN_ANSWER_NUDGE } from '@loxaic/api-client';
-import { applyRewound, canRewind, filesMessage, restoreReportLine, retryIndex, rewindMessage, type Rewound } from './rewind';
+import { applyRewound, canRewind, filesMessage, isContextFailure, restoreReportLine, retryIndex, rewindMessage, type Rewound } from './rewind';
 import type { Message } from './types';
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -92,5 +92,15 @@ describe('what the dialog says', () => {
         ],
       }),
     ).toBe('Put back 1 file. Could not put back big.bin and 1 more: larger than 10 MiB, so no copy was kept.');
+  });
+});
+
+describe('isContextFailure', () => {
+  it('is a failed reply whose request could not fit, by either side', () => {
+    expect(isContextFailure({ ...reply(1), error: true, errorCode: 'context_cannot_fit' })).toBe(true);
+    expect(isContextFailure({ ...reply(1), error: true, errorCode: 'context_overflow' })).toBe(true);
+    expect(isContextFailure({ ...reply(1), error: true, errorCode: 'local_model_no_room' })).toBe(false);
+    expect(isContextFailure({ ...reply(1), error: true })).toBe(false);
+    expect(isContextFailure({ ...reply(1), errorCode: 'context_overflow' })).toBe(false);
   });
 });
