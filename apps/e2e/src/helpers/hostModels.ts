@@ -101,6 +101,10 @@ export interface RouterEvent {
    * request reported costing ("fill/overflow/exceed the context"). */
   ctx_size?: number;
   prompt_tokens?: number;
+  /** On a "chat" event: how the request ended — its last message's role, and
+   * the start of its last user message. */
+  last_role?: string | null;
+  last_user?: string;
 }
 
 export function routerEvents(): RouterEvent[] {

@@ -292,4 +292,26 @@ describe("summaryParts", () => {
     // The message handed in is untouched: what is stored is never cut.
     expect(huge.content).toHaveLength(200_000);
   });
+
+  it("cuts a message whose size is its tool call's arguments, and keeps them valid JSON", () => {
+    // An fs_write of a whole file: little text, a huge argument. Cutting only
+    // the text left the part over budget, the summary failed, and the thread
+    // could not be continued.
+    const body = 'line "quoted" \\ and more\n'.repeat(8_000);
+    const write: ChatMessage = {
+      role: "assistant",
+      content: "Writing the file.",
+      tool_calls: [{ id: "w1", type: "function", function: { name: "fs_write", arguments: JSON.stringify({ path: "a.ts", content: body }) } }],
+    };
+    const before = JSON.stringify(write);
+    const parts = summaryParts([user(0), write, result("w1")], 1_000);
+    for (const part of parts) expect(size(part)).toBeLessThanOrEqual(1_000);
+    const cut = parts.flat().find((m) => m.role === "assistant");
+    const args = cut?.role === "assistant" ? cut.tool_calls?.[0].function.arguments : undefined;
+    // Still parseable, since a template may parse it, and says it was cut.
+    expect(() => JSON.parse(args ?? "") as unknown).not.toThrow();
+    expect(args).toContain("cut here");
+    expect(cut?.role === "assistant" ? cut.tool_calls?.[0].id : undefined).toBe("w1");
+    expect(JSON.stringify(write)).toBe(before);
+  });
 });

@@ -22,9 +22,12 @@ export const WRONG_KEY = 'sk-e2e-wrong-key-0123456789';
 
 /** What this provider lists. Names nothing the built-in mock backend serves,
  * so a spec asserting on a group can never be reading the wrong one. */
-export const PROVIDER_MODELS = [
+export const PROVIDER_MODELS: { id: string; context_length?: number }[] = [
   { id: 'acme/nova-large', context_length: 200_000 },
   { id: 'acme/nova-mini', context_length: 64_000 },
+  // Reports no size, as every OpenAI model does: the case an admin has to set
+  // one for, or its conversations can never be compacted.
+  { id: 'acme/nova-classic' },
 ];
 
 export interface RecordedRequest {

@@ -454,6 +454,9 @@ const server = createServer(async (req, res) => {
       prompt_tokens: promptSize(body),
       ctx_size: Number(merged(body.model)["ctx-size"] ?? 4096),
       last_role: (body.messages ?? []).at(-1)?.role ?? null,
+      // The start of what the model was asked, so a test can tell the
+      // person's own message from a nudge written in its place.
+      last_user: said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")).slice(0, 200),
     });
     res.writeHead(200, { "content-type": "text/event-stream" });
     const words = ["Hello", " from", ` ${body.model}`];

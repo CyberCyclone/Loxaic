@@ -328,6 +328,9 @@ export interface InferenceProvider {
   maxConcurrentRuns: number | null;
   /** Upstream model ids users may pick, or null for "everything it lists". */
   modelAllowlist: string[] | null;
+  /** Context sizes in tokens the admin set: by model id, and under "*" for
+   * every model the provider reports none for. null when none are set. */
+  contextWindows: Record<string, number> | null;
   lastCheckedAt: string | null;
   lastError: string | null;
   createdAt: string;
@@ -361,6 +364,8 @@ export interface ProviderInput {
   headers?: Record<string, string> | null;
   maxConcurrentRuns?: number | null;
   modelAllowlist?: string[] | null;
+  /** Replaces every size; null clears them. */
+  contextWindows?: Record<string, number> | null;
   enabled?: boolean;
 }
 
@@ -395,11 +400,19 @@ export async function testProvider(id: string): Promise<{ ok: boolean; models?: 
   return adminFetch(`/v1/admin/providers/${id}/test`, { method: "POST" });
 }
 
+export interface ProviderModelEntry {
+  id: string;
+  display_name: string;
+  /** The context size the provider itself reports for this model, before any
+   * the admin set; null when it reports none (an older server omits it). */
+  context_tokens?: number | null;
+}
+
 /** Everything the provider lists, before its own allowlist is applied — the
  * allowlist editor needs what is *not* yet allowed. */
 export async function getProviderModels(
   id: string,
-): Promise<{ models: { id: string; display_name: string }[]; error?: string }> {
+): Promise<{ models: ProviderModelEntry[]; error?: string }> {
   return adminFetch(`/v1/admin/providers/${id}/models`);
 }
 

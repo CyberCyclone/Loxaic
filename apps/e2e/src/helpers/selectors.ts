@@ -200,6 +200,39 @@ export async function typeInto(id: string, text: string): Promise<void> {
  * browser. On the web the element exists either way; it is scrolled into
  * view so a screenshot shows it.
  */
+/**
+ * Puts a phone's software keyboard away, so what it covers can be tapped:
+ * XCUITest reports a button under the keyboard as not displayed. Android has
+ * a command for it. iOS's WebDriverAgent cannot close every keyboard (a number
+ * pad has no key that does), so a short drag does it instead — which needs the
+ * scroll view under it to dismiss on drag (`keyboardDismissMode="on-drag"`),
+ * as a person's own swipe would. Nothing on the web or in Electron.
+ */
+export async function closeKeyboard(): Promise<void> {
+  const p = platform();
+  if (p === 'web' || p === 'electron') return;
+  if (!(await browser.isKeyboardShown().catch(() => false))) return;
+  if (p === 'android') {
+    await browser.hideKeyboard().catch(() => undefined);
+  } else {
+    const { width, height } = await browser.getWindowSize();
+    await browser
+      .action('pointer', { parameters: { pointerType: 'touch' } })
+      .move({ x: Math.round(width / 2), y: Math.round(height * 0.4) })
+      .down()
+      .pause(100)
+      .move({ duration: 300, x: Math.round(width / 2), y: Math.round(height * 0.45) })
+      .up()
+      .perform();
+  }
+  await browser
+    .waitUntil(async () => !(await browser.isKeyboardShown().catch(() => false)), { timeout: 5_000 })
+    .catch(() => undefined);
+  // The layout moves back as the keyboard goes; a tap during that lands on
+  // whatever was under it a moment ago.
+  await browser.pause(400);
+}
+
 export async function scrollTo(id: string, timeout = 20_000, across = 0.5): Promise<void> {
   const p = platform();
   if (p === 'web' || p === 'electron') {

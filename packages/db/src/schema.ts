@@ -530,6 +530,12 @@ export const inferenceProviders = pgTable(
      * in the picker is presentation, not a spending limit. Doubles as a manual
      * model list when the provider's own /models call fails. */
     modelAllowlist: jsonb("model_allowlist"),
+    /** Context sizes an admin set, in tokens: by upstream model id, and under
+     * "*" for every model the provider does not report one for. OpenAI's
+     * /models reports none, and a conversation on a model whose size is
+     * unknown can never be compacted — it grows until the provider refuses a
+     * request, and stays stuck. Null when none are set. */
+    contextWindows: jsonb("context_windows"),
     lastCheckedAt: timestamp("last_checked_at"),
     lastError: text("last_error"),
     /** Attribution only, so `set null` rather than the default `no action`

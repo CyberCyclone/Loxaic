@@ -298,6 +298,13 @@ replies.
   against real builds (see `apps/e2e/README.md`).
 - Don't hand-roll these selectors in specs — use the helpers in `apps/e2e/src/helpers/`, which
   own the mapping.
+- **On a phone, a keyboard left up covers a modal's footer**, and XCUITest reports the button
+  under it as not displayed. `closeKeyboard()` (selectors.ts) puts it away: Android has a command,
+  and iOS needs a drag on a scroll view with `keyboardDismissMode="on-drag"`, which any modal with
+  a number field needs anyway (a number pad has no key that closes it). The provider form had
+  neither, and `providers.spec.ts` had never passed on iOS or Android. Found with the context-size
+  work, along with `ModelModal` spending the first tap after a search on closing the keyboard
+  (`keyboardShouldPersistTaps="handled"` now), which made choosing a searched model take two taps.
 
 ### DB / Drizzle
 
@@ -996,6 +1003,22 @@ replies.
   refuses to hand a `context_source: "default"` figure to the threshold; `context_tokens` stays
   a number for display only. Parsed where a provider does say: `context_length` (OpenRouter),
   `max_model_len` (vLLM), `max_input_tokens` (Anthropic), `meta.n_ctx_train` (llama.cpp).
+- **So an admin sets the size the provider will not say** (`inference_providers.context_windows`,
+  migration 0040: tokens by upstream id, and `"*"` for every model that reports none).
+  - **Why it is needed:** a conversation on a model with an unknown window is never compacted.
+    Once history stopped being dropped (#275), that meant it grew until the provider refused a
+    request, and then every turn failed. `/compact` failed too, since splitting a history into
+    parts needs a window. Before, the 50–74 row window kept such a thread going, losing turns
+    silently.
+  - **Precedence** (`withConfiguredWindow` in `models.ts`): what llama.cpp allocated, then a size
+    set for that model, then what the provider declares, then `"*"`. `"*"` never overrides a
+    declared size. The result is `context_source: "configured"`, which `windowFor` trusts.
+  - **Applied when the list is fetched**, after the allowlist; every provider write clears the
+    model cache, so a saved size applies at once in this process.
+  - **The form** (Context size, in the provider modal) says how many listed models report no
+    size (`GET …/providers/:id/models` returns each model's own `context_tokens`, null for
+    none). The context popup says when a size was set by an admin, and warns when it is unknown.
+  - Found in review of #275, which made the gap reachable.
 - **`format: "gguf"` requires the backend to have said so.** Only a backend that answered
   `/props` has identified itself as llama.cpp. Keying it on "has no preset" instead put a GGUF
   badge on Claude and GPT the first time a hand-entered provider was pointed at a hosted API —
@@ -2074,6 +2097,13 @@ replies.
   91K tokens where turn 3 had ended at 261K: the person's own request and the early research
   were gone, no summary held them (compaction only summarised what the window kept), and
   nothing said so. `history-replay.test.ts` keeps a 151-row agent turn's opening request.
+- **The read has no row or byte ceiling, deliberately.** Compaction bounds it: every row after
+  the summary is in the prompt, and the prompt is compacted at 85% of the window, so one read is
+  about a window's worth of text plus stored thinking (display-only, never replayed). A ceiling
+  would lose rows by another route, since a compaction summarises what `loadHistory` returns
+  and rows past it would never reach a summary. The big reads are a thread from before this
+  change (read whole once, then compacted in parts) and a model whose window is unknown, which
+  is never compacted on a figure. If memory ever needs bounding, page the compaction's read.
 - **Anything that changes an *older* part of the prompt breaks the cache just as badly**, which
   is why `selectAffordableAttachments` spends its history budget oldest-first — see the
   attachment-budget bullet below.
@@ -2662,6 +2692,11 @@ replies.
     said on an error reply, never sent to be cut off.
   `/compact` is the same machinery with `auto: false` and no threshold — asking for it is a
   decision.
+- **`AUTO_COMPACT_THRESHOLD=0` turns off only the early step**, never the hard limit: with it,
+  nothing is extended or compacted until the next request would not leave a reply's room, and
+  then exactly the rules above apply. It used to switch the whole policy off, which would have
+  brought back replies cut off at the window, the one thing removing the preference was for.
+  Found in review.
 - **The preference to turn it off is gone** (`user_prefs.auto_compact`, dropped in migration
   0039, and its Settings switch). Off meant every message was sent until the window filled,
   and then llama.cpp stopped each reply at exactly the window: on the beta a long agent turn
@@ -2684,10 +2719,26 @@ replies.
   queued for its own would wait forever behind the run waiting for it), and with the run's
   lamport counter, so the summary sorts after every row the run wrote and before the next.
   `startCompactRun` refuses while the run is registered, which is why it cannot be used.
-  - **A `COMPACTION_CONTINUE_NUDGE` user row follows the summary** (author null, rendered as a
-    notice, `chat.message.compactionNudge`): the prompt then reads system, summary, nudge —
-    never ending on a system message, which several chat templates refuse — and the next
-    turn replays the same bytes. The leaf moves to the nudge.
+  - **A message the run has not answered stays after the summary, unchanged.** Before a run's
+    first request the replay ends on the person's new message (a thread can end a turn at 90%
+    without compacting: under the floor, or a stopped turn), and after a check-in or plan nudge
+    it ends on that. Folded into the summary, it was answered as one line of it, and the model
+    was told to "continue the task" instead. The engine tracks that row (`unanswered`: the
+    user's message until the first reply row, then any nudge it writes), and the summary takes
+    the lamport just below it (`cutoffBefore`), so it alone replays. If another row already
+    sits at or above that lamport (a client clock ahead of ours), everything is summarised and
+    the nudge follows, as before. Found in review.
+  - **Otherwise a `COMPACTION_CONTINUE_NUDGE` user row follows the summary** (author null,
+    rendered as a notice, `chat.message.compactionNudge`): the prompt then reads system,
+    summary, nudge — never ending on a system message, which several chat templates refuse —
+    and the next turn replays the same bytes. The leaf moves to the nudge. **The nudge is
+    inserted in the transaction that completes the summary** (`commitSummary`'s `follow`):
+    inserted first, a failed commit left it in the history with no summary in front of it,
+    replayed on every turn after. Found in review; the test fails the commit with a trigger,
+    because `db` is a proxy no spy reaches.
+  - **Its "before" is the run's estimate of the request, so the card shows `~`**
+    (`beforeEstimated`). The figure is kept rather than nulled because it also decides whether
+    the compaction can reuse the run's prefix (`compactionHasRoom`).
   - The run rebuilds `chatMessages` from the summary and resets the fingerprint carry; the
     request after it is the one expensive re-read, as after any compaction.
   - A stop during it ends the run cancelled; a failed one leaves its failed card and the run
@@ -2704,10 +2755,14 @@ replies.
   compactRun.ts): every long thread from before history stopped being dropped, and any run one
   huge tool result pushed over. Oldest first, each request carrying the summary so far, a tool
   call never separated from its results, and a single message too large for a part cut inside
-  that request only (`SUMMARY_CUT_MARKER`). Only the final text is committed, as one summary
-  row, so the cutoff rule is unchanged.
+  that request only (`SUMMARY_CUT_MARKER`). **The cut covers tool-call arguments as well as
+  text** (`fitMessage`): an `fs_write` carries its whole file there, and cutting only the text
+  left the part over budget and the thread impossible to compact. A cut argument becomes a small
+  valid JSON object holding the start of the original, since templates parse arguments. Only
+  the final text is committed, as one summary row, so the cutoff rule is unchanged.
 - **Every summary takes `nextConversationLamport`** (after every row the conversation has,
-  whatever clock wrote them) or, inside a run, the run's own counter. `Date.now()` alone could
+  whatever clock wrote them) or, inside a run, the run's own counter — except the in-run one
+  that keeps an unanswered message after it, above. `Date.now()` alone could
   sort before a run's last row (`monotonicLamport` runs ahead of the clock), which would then
   replay after the summary.
 - **Compaction deletes nothing.** It inserts a `summary`-authored row, and `loadHistory`
@@ -2739,7 +2794,10 @@ replies.
   re-evaluation each time to save nothing.
 - **An unknown window disables it.** A fraction of null is not a number, and compacting on a
   guess rewrites a conversation for no established reason. A request that really is too large
-  then comes back as the backend's own error, which the run reports.
+  then comes back as the backend's own error, which the run reports — and since nothing is
+  dropped any more, every turn after it fails the same way. That is why an admin can set a
+  size for an added provider's models (`contextWindows`, under "Inference providers"); the
+  built-in llama.cpp models always have one.
 - **`auto-compact.ts` exists to break a cycle.** The engine needs the policy and `compactRun`
   needs the engine's `loadHistory`, so keeping the policy in `compactRun.ts` would have the two
   importing each other — working only by the accident that every binding crossing it is a

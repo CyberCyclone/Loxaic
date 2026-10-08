@@ -180,7 +180,10 @@ export function ModelModal({
             />
           </Input>
         </Box>
-        <ModalBody className="p-0" scrollEnabled>
+        {/* "handled": a tap on a row picks it while the search keyboard is up.
+            The default spent the first tap closing the keyboard, so on a phone
+            choosing a searched-for model took two taps. */}
+        <ModalBody className="p-0" scrollEnabled keyboardShouldPersistTaps="handled">
           {isEmpty ? (
             <VStack space="sm" className="items-center justify-center py-10">
               {loading ? (

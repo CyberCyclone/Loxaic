@@ -48,6 +48,9 @@ export interface ResolvedProvider {
   maxConcurrentRuns: number | null;
   /** Upstream ids a user may pick, or null for "whatever it lists". */
   modelAllowlist: string[] | null;
+  /** Context sizes the admin set: by upstream id, and `"*"` for every model
+   * the provider reports none for. Null when none are set. */
+  contextWindows: Record<string, number> | null;
   enabled: boolean;
   /** True for the synthesized built-in backend (the local llama.cpp router).
    * The mock inference backend and the `host_id` stamp apply to it and to
@@ -116,6 +119,7 @@ export function defaultProvider(): ResolvedProvider {
     headers: {},
     maxConcurrentRuns: null,
     modelAllowlist: null,
+    contextWindows: null,
     enabled: true,
     isDefault: true,
   };
@@ -156,6 +160,19 @@ function normalizeAllowlist(raw: unknown): string[] | null {
   return out.length > 0 ? out : null;
 }
 
+/** A stored context-size map, tolerating anything that is not one: the
+ * column is plain data, and a bad entry must cost only itself. */
+function normalizeContextWindows(raw: unknown): Record<string, number> | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, number> = {};
+  for (const [id, tokens] of Object.entries(raw as Record<string, unknown>)) {
+    if (id && typeof tokens === "number" && Number.isInteger(tokens) && tokens >= CONTEXT_WINDOW_MIN && tokens <= CONTEXT_WINDOW_MAX) {
+      out[id] = tokens;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 /**
  * Decrypt a row's key into the shape the rest of the server uses. The one
  * decrypt site outside this module's tests.
@@ -181,6 +198,7 @@ export function resolveRow(row: ProviderRow): ResolvedProvider {
     headers: normalizeHeaders(row.headers),
     maxConcurrentRuns: row.maxConcurrentRuns,
     modelAllowlist: normalizeAllowlist(row.modelAllowlist),
+    contextWindows: normalizeContextWindows(row.contextWindows),
     enabled: row.enabled,
     isDefault: false,
   };
@@ -460,6 +478,42 @@ export function normalizeAllowlistInput(raw: unknown): string[] | null {
   return out.length > 0 ? out : null;
 }
 
+/** The smallest and largest context size an admin may set. Below the floor
+ * nothing useful fits; the ceiling is far above any model and well inside
+ * llama.cpp's 32-bit one. */
+export const CONTEXT_WINDOW_MIN = 1024;
+export const CONTEXT_WINDOW_MAX = 100_000_000;
+const CONTEXT_WINDOW_ENTRIES_MAX = 500;
+
+/**
+ * Context sizes from a request body: `{ "<model id>" | "*": tokens }`, or null
+ * to clear them all. Refused rather than clamped, so an admin who typed a size
+ * is told it was not taken.
+ */
+export function normalizeContextWindowsInput(raw: unknown): Record<string, number> | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new ProviderInputError('Context sizes must be an object of model id (or "*") to tokens');
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > CONTEXT_WINDOW_ENTRIES_MAX) {
+    throw new ProviderInputError(`At most ${String(CONTEXT_WINDOW_ENTRIES_MAX)} context sizes`);
+  }
+  const out: Record<string, number> = {};
+  for (const [rawId, tokens] of entries) {
+    const id = rawId.trim();
+    if (!id || id.length > 300) throw new ProviderInputError("Every context size needs a model id");
+    const label = id === "*" ? "models that report no size" : id;
+    if (typeof tokens !== "number" || !Number.isInteger(tokens) || tokens < CONTEXT_WINDOW_MIN || tokens > CONTEXT_WINDOW_MAX) {
+      throw new ProviderInputError(
+        `The context size for ${label} must be a whole number of tokens from ${String(CONTEXT_WINDOW_MIN)} to ${String(CONTEXT_WINDOW_MAX)}`,
+      );
+    }
+    out[id] = tokens;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 export function normalizeMaxConcurrent(raw: unknown): number | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1 || raw > 64) {
@@ -519,6 +573,7 @@ export interface CreateProviderInput {
   headers?: unknown;
   maxConcurrentRuns?: unknown;
   modelAllowlist?: unknown;
+  contextWindows?: unknown;
   enabled?: unknown;
 }
 
@@ -533,6 +588,7 @@ export async function createProvider(input: CreateProviderInput, createdBy: stri
     headers: normalizeHeaderInput(input.headers),
     maxConcurrentRuns: normalizeMaxConcurrent(input.maxConcurrentRuns),
     modelAllowlist: normalizeAllowlistInput(input.modelAllowlist),
+    contextWindows: normalizeContextWindowsInput(input.contextWindows),
     enabled: input.enabled === undefined ? true : Boolean(input.enabled),
     createdBy,
   };
@@ -552,6 +608,7 @@ export interface UpdateProviderInput {
   headers?: unknown;
   maxConcurrentRuns?: unknown;
   modelAllowlist?: unknown;
+  contextWindows?: unknown;
   enabled?: unknown;
   slug?: unknown;
 }
@@ -572,6 +629,7 @@ export async function updateProvider(id: string, input: UpdateProviderInput): Pr
   if (input.headers !== undefined) patch.headers = normalizeHeaderInput(input.headers);
   if (input.maxConcurrentRuns !== undefined) patch.maxConcurrentRuns = normalizeMaxConcurrent(input.maxConcurrentRuns);
   if (input.modelAllowlist !== undefined) patch.modelAllowlist = normalizeAllowlistInput(input.modelAllowlist);
+  if (input.contextWindows !== undefined) patch.contextWindows = normalizeContextWindowsInput(input.contextWindows);
   if (input.enabled !== undefined) patch.enabled = Boolean(input.enabled);
   if (input.apiKey !== undefined) {
     if (input.apiKey === null) patch.encryptedApiKey = null;
@@ -621,6 +679,7 @@ export function toApi(row: ProviderRow) {
     enabled: row.enabled,
     maxConcurrentRuns: row.maxConcurrentRuns,
     modelAllowlist: normalizeAllowlist(row.modelAllowlist),
+    contextWindows: normalizeContextWindows(row.contextWindows),
     lastCheckedAt: row.lastCheckedAt ? row.lastCheckedAt.toISOString() : null,
     lastError: row.lastError,
     createdAt: row.createdAt.toISOString(),

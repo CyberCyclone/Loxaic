@@ -3,7 +3,6 @@ import { and, db, eq, gt } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
-  COMPACTION_CONTINUE_NUDGE,
   PLAN_REQUIRED_NUDGE,
   DEFAULT_CHECKIN_AUTO_CONTINUES,
   DEFAULT_LOOP_SENSITIVITY,
@@ -544,9 +543,7 @@ export async function runToolLoop(ctx: {
   try {
     // One read for both: the iteration ceiling and the builtin allowlist live
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
-    // again on the next line. (`userAllowsAutoCompact` is a third reader, and
-    // deliberately not folded in — it is deferred until the compaction
-    // threshold is actually crossed, so most turns never pay for it.)
+    // again on the next line.
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
     // Decided once, like the toolset it shapes: which model a child may run
     // on is part of the tool's schema, and so of the prompt's front.
@@ -665,6 +662,13 @@ export async function runToolLoop(ctx: {
       lastLamport = monotonicLamport(lastLamport);
       return lastLamport;
     };
+    // The stored row this run's next request ends on and has not answered:
+    // the person's message until the first reply is written, then any nudge
+    // the run writes after a reply. A compaction keeps it after the summary
+    // rather than folding it in (compactWithinRun). Unknown without the
+    // message's lamport, and a compaction then summarises everything.
+    let unanswered: { id: string; lamport: number } | null =
+      ctx.userLamport != null ? { id: ctx.userMsgId, lamport: ctx.userLamport } : null;
 
     // Which backend this run's model lives on, for the queue it joins and the
     // cache it invalidates. A reference that cannot be resolved queues on the
@@ -890,23 +894,26 @@ export async function runToolLoop(ctx: {
             shape: { model, system: systemPrompt, tools, thinking: thinkingBody },
             replay: chatMessages.slice(frontLength()),
             summaryText,
-            before: estimate,
+            estimate,
             windowTokens,
             nextLamport,
             parentId,
+            unanswered,
           });
           if (compacted.ok) {
             // The run goes on from the summary, exactly as the next run will
-            // replay it: system prompt, summary, the persisted nudge. Key order
+            // replay it: system prompt, summary, then the message it has yet
+            // to answer — kept as it was — or the persisted nudge. Key order
             // matches loadHistory's own `{ role, content }`.
             summaryText = compacted.summaryText;
             summaryMsg = summaryMessage(summaryText);
             chatMessages = [
               ...(systemPrompt ? [{ role: "system", content: systemPrompt } as ChatMessage] : []),
               summaryMsg,
-              { role: "user", content: COMPACTION_CONTINUE_NUDGE },
+              compacted.continueFrom.message,
             ];
-            parentId = compacted.nudgeId;
+            parentId = compacted.continueFrom.id;
+            unanswered = { id: compacted.continueFrom.id, lamport: compacted.continueFrom.lamport };
             carriedHashes = undefined;
             lastPrompt = null;
             replayedMessages = 1;
@@ -955,6 +962,7 @@ export async function runToolLoop(ctx: {
       carriedHashes = fingerprint.messageHashes;
 
       const assistantLamport = nextLamport();
+      unanswered = null;
       await db.insert(messages).values({
         id: assistantMsgId,
         conversationId: convId,
@@ -1261,6 +1269,7 @@ export async function runToolLoop(ctx: {
           producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
           chatMessages.push({ role: "user", content: PLAN_REQUIRED_NUDGE });
           parentId = nudgeId;
+          unanswered = { id: nudgeId, lamport: nudgeLamport };
           budgetEnd = Math.max(budgetEnd, iteration + 1);
           continue;
         }
@@ -1676,6 +1685,7 @@ export async function runToolLoop(ctx: {
       // prompt-prefix.test.ts for what a mismatch here costs.
       chatMessages.push({ role: "user", content: CHECKIN_ANSWER_NUDGE });
       parentId = nudgeId;
+      unanswered = { id: nudgeId, lamport: nudgeLamport };
       // The answer is one more iteration, and the window genuinely grants it:
       // without this a budget check-in at 100/100 answered here would emit
       // the final turn as `101/100`, and the header, the banner's "Step N of
@@ -2244,8 +2254,9 @@ async function recordUsage(input: {
  * Rebuilds the OpenAI message list from stored content blocks. Thinking
  * blocks are dropped (display-only), and tool calls and results that lost
  * their partner are stripped in both directions — an interrupted run leaves a
- * dangling call, and the window's oldest edge can orphan a result; most
- * servers reject either.
+ * dangling call, and a summary written between a call and its result (a
+ * `/compact` after a stopped run) can orphan the result; most servers reject
+ * either.
  *
  * Everything after the newest summary is replayed, and nothing else ever
  * shortens it. It used to be a window of the newest 50–74 rows, anchored so
@@ -2258,6 +2269,19 @@ async function recordUsage(input: {
  * said so, and no summary held it: compaction only summarised what the window
  * kept. Now a prompt that would not fit is compacted or its context extended
  * (`fillDecision`), and the front moves only when a summary lands.
+ *
+ * **There is deliberately no row or byte ceiling on this read.** What it reads
+ * is bounded by compaction instead: every row after the summary is in the
+ * prompt, and the prompt is compacted at 85% of the window, so the read is
+ * about one window's worth of text, plus stored thinking, which is kept for
+ * display and never replayed. A ceiling would bring the old bug back by
+ * another route: a compaction summarises what this returns, so rows past a
+ * ceiling would never reach a summary, and would be lost exactly as the
+ * window lost them. Two reads are bigger, and neither repeats: a thread from
+ * before history stopped being dropped is read whole once and then compacted
+ * in parts. A model whose window is unknown is never compacted on a figure,
+ * so its replay grows until the backend refuses a request. If memory ever
+ * needs bounding, the compaction should read in pages, never this function.
  */
 /**
  * Where a conversation's replay starts: the newest real compaction point.

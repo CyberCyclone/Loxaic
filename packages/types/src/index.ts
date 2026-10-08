@@ -219,8 +219,9 @@ export interface ModelInfo {
    * `context_source` says so. */
   loaded_context_tokens: number | null;
   /** Where `context_tokens` came from, so the UI can admit when it's estimating
-   * instead of quietly reporting a wrong denominator as fact. */
-  context_source: "loaded" | "max" | "trained" | "default";
+   * instead of quietly reporting a wrong denominator as fact. "configured" is
+   * an admin's figure for an added provider's model (`contextWindows`). */
+  context_source: "loaded" | "max" | "trained" | "configured" | "default";
   location: "server" | "device" | "remote";
   /** Which host in the cluster serves this model, and the name that host's
    * owner chose for it. Null when the instance has no registered identity (a

@@ -113,6 +113,45 @@ describe('a conversation that fills up in the middle of a run', () => {
     expect(sent.at(-1)?.prompt_tokens).toBe(10);
   });
 
+  it('compacts before answering a new message, and answers that message rather than a nudge', async function () {
+    this.timeout(4 * 60_000);
+    // A turn that ends almost at the window without compacting: two messages
+    // are under the floor of eight. The next message then cannot fit, so the
+    // run compacts before its first request — and the message it was started
+    // for must stay after the summary, to be answered, not summarised.
+    await startNewThread();
+    await pickModel(model);
+    const known = new Set((await listConversations(alice)).map((c) => c.id));
+    await sendMessage('exceed the context');
+    let conversationId = '';
+    await browser.waitUntil(
+      async () => {
+        conversationId = (await listConversations(alice)).find((c) => !known.has(c.id))?.id ?? '';
+        return conversationId !== '';
+      },
+      { timeout: 30_000 },
+    );
+    await waitForRunDone(alice, conversationId);
+    expect(await rowsOf(conversationId)).toHaveLength(2);
+    await waitForComposerReady();
+    const before = chats().length;
+
+    await sendMessage('and now a short question');
+    await waitForTextIn('chat.messageList', 'Auto-compacted', 120_000);
+    await waitForRunDone(alice, conversationId);
+    await shot('context-fill-compacted-before-answering');
+    expect(await isVisible('chat.message.compactionNudge')).toBe(false);
+
+    // Stored: the summary, then the person's message, then its answer.
+    const rows = await rowsOf(conversationId);
+    const at = rows.findIndex((r) => r.authorType === 'summary');
+    expect(rows[at].status).toBe('complete');
+    expect(rows[at + 1]).toMatchObject({ authorType: 'user', content: [{ kind: 'text', text: 'and now a short question' }] });
+    expect(rows.slice(at + 2).map((r) => r.authorType)).toEqual(['assistant']);
+    // And that is what the model was asked.
+    expect(chats().slice(before).at(-1)?.last_user).toBe('and now a short question');
+  });
+
   it('extends the context of a model set to extend, inside the run, and the reply carries on at the larger window', async function () {
     this.timeout(4 * 60_000);
     await patchModel(model, {

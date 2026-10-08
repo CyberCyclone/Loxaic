@@ -517,13 +517,18 @@ describe('YaRN context stages', () => {
     await waitForVisible('context.stageModal.extend');
     await shot('context-stages-asked-before-compacting');
     await browser.pause(3_000);
-    if ((await listText()).includes('Compacted')) throw new Error('it compacted instead of asking');
+    // Any case: the card reads "Auto-compacted". Matching "Compacted" only
+    // ever caught the mid-run nudge's notice, never the card.
+    if ((await listText()).toLowerCase().includes('compacted')) throw new Error('it compacted instead of asking');
 
     // Nobody chose: the next turn past the threshold compacts, as it always did.
     await tap('context.stageModal.notNow');
     await waitForGone('context.stageModal', 10_000);
     await sendMessage('please overflow the context');
-    await waitForTextIn('chat.messageList', 'Compacted', 90_000);
+    // Before the reply, with the message kept after the summary: the card,
+    // and no "carrying on" nudge, since the person's own message is what the
+    // model answers.
+    await waitForTextIn('chat.messageList', 'Auto-compacted', 90_000);
     await shot('context-stages-compacted-when-nobody-chose');
   });
 });

@@ -23,8 +23,11 @@
 
 /**
  * Fraction of the model's context window at which a conversation counts as
- * full. Env-overridable (tests drop it to something a mock can reach); `0` —
- * or anything outside 0-1 — disables it entirely.
+ * full. Env-overridable (tests drop it to something a mock can reach). `0` —
+ * or anything outside 0-1 — turns off only the *early* step: nothing is
+ * compacted or extended until the next request would not fit at all. It never
+ * turns off that hard limit, which is what keeps a reply from being cut off
+ * at the window; no setting may bring that back.
  *
  * The default leaves real headroom on purpose: the after-turn check runs once
  * the turn is over, so the turn that follows still has to fit, and a local
@@ -88,6 +91,9 @@ export interface FillInput {
   /** Whether this run has already compacted. Before a request, a run that
    * has compacted and still does not fit is not compacted again. */
   compactedThisRun?: boolean;
+  /** The fraction that counts as full; `AUTO_COMPACT_THRESHOLD` unless a test
+   * says otherwise (the constant is read once, at import). */
+  threshold?: number;
 }
 
 export type FillDecision =
@@ -99,7 +105,8 @@ export type FillDecision =
 /**
  * What to do about how full the conversation is.
  *
- * In order: below the threshold, nothing. A model set to extend its context
+ * In order: below the threshold, nothing (with the threshold off, below the
+ * hard limit). A model set to extend its context
  * when full moves up a stage, stage by stage, until there is none left — then
  * compacts, as every other model does, once there is enough to be worth it
  * (the floor). Short of the floor, after a turn nothing is done (the next
@@ -115,10 +122,14 @@ export type FillDecision =
  * long — which is exactly when nobody is watching it.
  */
 export function fillDecision(input: FillInput): FillDecision {
-  if (AUTO_COMPACT_THRESHOLD <= 0) return { action: "none" };
   const { windowTokens, estimatedTokens } = input;
   if (windowTokens == null || windowTokens <= 0 || estimatedTokens == null) return { action: "none" };
-  if (estimatedTokens < windowTokens * AUTO_COMPACT_THRESHOLD) return { action: "none" };
+  const threshold = input.threshold ?? AUTO_COMPACT_THRESHOLD;
+  // With the early step off, "full" is the hard limit itself: a request that
+  // would not leave a reply's room.
+  const full =
+    threshold > 0 ? estimatedTokens >= windowTokens * threshold : estimatedTokens + replyReserveTokens(windowTokens) > windowTokens;
+  if (!full) return { action: "none" };
   const stages = input.stages;
   if (stages?.whenFull === "extend" && stages.active < stages.count) {
     return { action: "extend", target: stages.active + 1 };

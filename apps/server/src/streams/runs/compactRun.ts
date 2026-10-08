@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { db, desc, eq } from "@loxaic/db";
+import { and, db, desc, eq, ne } from "@loxaic/db";
 import { conversations, messages, usageRecords } from "@loxaic/db/schema";
 import {
   COMPACTION_CONTINUE_NUDGE,
@@ -240,8 +240,9 @@ export function computeCompactionStats(input: {
  *
  * A part never separates an assistant's tool calls from their results: a
  * `role: "tool"` message whose call is in another request is one most
- * backends reject. A single message larger than a part is cut down inside the
- * request only, with a marker saying so — the stored row is untouched.
+ * backends reject. A single message larger than a part — its text, or its tool
+ * calls' arguments — is cut down inside the request only, with a marker saying
+ * so; the stored row is untouched.
  *
  * Pure and exported for tests.
  */
@@ -285,14 +286,51 @@ function messageTokens(m: ChatMessage): number {
 /** Said in place of what was cut from a message too large for one request. */
 export const SUMMARY_CUT_MARKER = "\n\n[… cut here: too long to summarise in one request …]";
 
-/** A message cut down to roughly `tokens`, its text kept from the start. */
+/**
+ * A message cut down to at most `tokens`, each piece kept from its start: the
+ * text, and every tool call's arguments. Arguments are what make an agent's
+ * message large (an `fs_write` carries the whole file), so cutting only the
+ * text left such a message over budget and its summary unable to run. A cut
+ * argument becomes a small JSON object holding the start of the original, so
+ * it still parses — templates parse arguments — and says it was cut. The
+ * call's id and name stay, so its results still pair with it.
+ */
 function fitMessage(m: ChatMessage, tokens: number): ChatMessage {
   if (messageTokens(m) <= tokens) return m;
-  // Characters per token as the estimate counts them, so the cut lands under it.
-  const chars = Math.max(0, tokens * 3 - SUMMARY_CUT_MARKER.length);
   const text = textOfContent(m.content ?? "");
-  const cut = text.slice(0, chars) + SUMMARY_CUT_MARKER;
-  return { ...m, content: cut };
+  const calls = m.role === "assistant" ? (m.tool_calls ?? []) : [];
+  // Characters per token as the estimate counts them, shared equally between
+  // the pieces; escaping and the call's own fields can still push it over,
+  // so the share shrinks until it fits.
+  let share = Math.floor((tokens * 3) / (1 + calls.length));
+  for (;;) {
+    const keep = Math.max(0, share - SUMMARY_CUT_MARKER.length);
+    const content = text.length > share ? text.slice(0, keep) + SUMMARY_CUT_MARKER : text;
+    const fitted: ChatMessage =
+      m.role === "assistant"
+        ? {
+            ...m,
+            content: m.content === null && !content ? null : content,
+            ...(calls.length
+              ? {
+                  tool_calls: calls.map((c) =>
+                    c.function.arguments.length > share
+                      ? {
+                          ...c,
+                          function: {
+                            ...c.function,
+                            arguments: JSON.stringify({ cut: c.function.arguments.slice(0, keep) + SUMMARY_CUT_MARKER }),
+                          },
+                        }
+                      : c,
+                  ),
+                }
+              : {}),
+          }
+        : { ...m, content };
+    if (share <= 0 || messageTokens(fitted) <= tokens) return fitted;
+    share = Math.floor(share * 0.8);
+  }
 }
 
 export interface StartCompactRunResult {
@@ -687,11 +725,18 @@ async function commitSummary(input: {
   producer: StreamProducer;
   generated: GeneratedSummary;
   before: number | null;
+  /** `before` is an estimate rather than a measurement: the card says `~`. */
+  beforeEstimated?: boolean;
   instruction: string;
   guidance?: string;
   messagesCompacted: number;
   auto: boolean;
   leafId: string;
+  /** A row that only means anything with this summary in front of it (the
+   * run's continue nudge), written in the same transaction as the summary's
+   * completion: one without the other would leave an unexplained "continue"
+   * in the history, replayed on every turn after. */
+  follow?: typeof messages.$inferInsert;
 }): Promise<TurnUsage | undefined> {
   const { convId, userId, summaryMsgId, model, producer, generated } = input;
   const { summaryText, doneResult, windowTokens } = generated;
@@ -708,6 +753,7 @@ async function commitSummary(input: {
     auto: input.auto,
   });
   if (input.before == null && generated.partsPromptTokens != null) compaction.before_estimated = true;
+  if (input.beforeEstimated) compaction.before_estimated = true;
 
   // The breakdown describes the window AFTER compaction — the summary is
   // now the entire replayed context. Without this, the ring would jump UP
@@ -732,20 +778,23 @@ async function commitSummary(input: {
       }
     : undefined;
 
-  await db
-    .update(messages)
-    .set({
-      content: [
-        { kind: "text", text: summaryText },
-        { kind: "compaction", ...compaction },
-      ] as ContentBlock[],
-      status: "complete",
-    })
-    .where(eq(messages.id, summaryMsgId));
-  await db
-    .update(conversations)
-    .set({ activeLeafId: input.leafId, updatedAt: new Date() })
-    .where(eq(conversations.id, convId));
+  await db.transaction(async (tx) => {
+    if (input.follow) await tx.insert(messages).values(input.follow);
+    await tx
+      .update(messages)
+      .set({
+        content: [
+          { kind: "text", text: summaryText },
+          { kind: "compaction", ...compaction },
+        ] as ContentBlock[],
+        status: "complete",
+      })
+      .where(eq(messages.id, summaryMsgId));
+    await tx
+      .update(conversations)
+      .set({ activeLeafId: input.leafId, updatedAt: new Date() })
+      .where(eq(conversations.id, convId));
+  });
   if (doneResult && (doneResult.usage.total_tokens > 0 || doneResult.timings)) {
     // Best-effort, as the tool loop's is: the summary above is already
     // complete and is the compaction. A usage row that cannot be written is
@@ -892,25 +941,71 @@ async function runCompactGeneration(ctx: {
 
 /** What a compaction inside a run leaves the run to continue from. */
 export type InRunCompaction =
-  | { ok: true; summaryText: string; summaryMsgId: string; nudgeId: string }
+  | {
+      ok: true;
+      summaryText: string;
+      summaryMsgId: string;
+      /** The row the run's next request ends on, after the summary: the
+       * message it has yet to answer, or the persisted continue nudge. */
+      continueFrom: { id: string; lamport: number; message: ChatMessage };
+    }
   /** `stopped`: the run was stopped during it, which the run ends on. */
   | { ok: false; stopped: boolean };
+
+/** A stored row the run has not answered yet: its own user message before
+ * the first request, or a nudge it wrote since its last reply. */
+export interface UnansweredRow {
+  id: string;
+  lamport: number;
+}
+
+/**
+ * Where a summary goes so that `row` stays after it: one below `row`'s
+ * lamport, provided nothing else in the conversation is above that. The cutoff
+ * is `lamport > summary`, so everything at or below it is summarised and `row`
+ * alone is replayed. Null when another row sorts at or above `row` (a client
+ * clock ahead of ours can do that), and the caller falls back to summarising
+ * everything.
+ */
+async function cutoffBefore(convId: string, row: UnansweredRow): Promise<{ lamport: number; parentId: string | null } | null> {
+  const lamport = row.lamport - 1;
+  const [own, other] = await Promise.all([
+    db.select({ parentId: messages.parentId }).from(messages).where(eq(messages.id, row.id)).limit(1),
+    db
+      .select({ lamport: messages.lamport })
+      .from(messages)
+      .where(and(eq(messages.conversationId, convId), ne(messages.id, row.id)))
+      .orderBy(desc(messages.lamport))
+      .limit(1),
+  ]);
+  if (own.length === 0) return null;
+  if ((other.at(0)?.lamport ?? 0) > lamport) return null;
+  return { lamport, parentId: own[0].parentId };
+}
 
 /**
  * Compacts a conversation in the middle of a run, between two of its
  * requests, so the next one fits the window.
  *
  * Under the run, not beside it: on the run's own stream (the card lands in
- * place in the thread), under the inference slot the run already holds (a
+ * place in the thread), and under the inference slot the run already holds (a
  * compaction queueing for one behind the run that is waiting for it would
- * never start), and with the run's lamport counter, so the summary sorts after
- * every row the run wrote and before the next one — the cutoff exact by
- * construction.
+ * never start).
  *
- * The summary is followed by `COMPACTION_CONTINUE_NUDGE`, a persisted user
- * row, so the next request does not end on a system message (several chat
- * templates refuse that) and the run after this one replays the same bytes.
- * The leaf moves to the nudge.
+ * **A message the run has not answered stays after the summary.** Before a
+ * run's first request the replay ends on the person's own new message, and
+ * after a check-in or plan nudge it ends on that. Summarised with the rest, it
+ * would be answered as a line in a summary, and the model would be told to
+ * "continue the task" instead of being asked what the person just asked. So
+ * the summary takes the lamport just below that row (`cutoffBefore`) and the
+ * run goes on from the row itself, unchanged.
+ *
+ * Otherwise (the replay ends on a tool result, or no such lamport is free) the
+ * summary takes the run's next lamport, after every row it wrote, and is
+ * followed by `COMPACTION_CONTINUE_NUDGE`, a persisted user row, so the next
+ * request does not end on a system message (several chat templates refuse
+ * that) and the run after this one replays the same bytes. The nudge is
+ * written in the same transaction that completes the summary.
  *
  * Never throws for the summary's own failure: the failed card is persisted
  * and shown, and `{ ok: false }` lets the run decide whether its request can
@@ -927,21 +1022,38 @@ export async function compactWithinRun(input: {
   /** Everything after the system prompt and any summary, as the run holds it. */
   replay: ChatMessage[];
   summaryText: string | null;
-  /** The run's last measured prompt + completion, when it has one. */
-  before: number | null;
+  /** The estimated size of the request the run was about to send. An
+   * estimate, so the card says `~`; also what judges whether the compaction
+   * can reuse the run's prefix. */
+  estimate: number | null;
   windowTokens: number | null;
   nextLamport: () => number;
   parentId: string;
+  /** The row the replay ends on when the run has not answered it yet. */
+  unanswered: UnansweredRow | null;
 }): Promise<InRunCompaction> {
   const { convId, model, producer, signal } = input;
   if (input.replay.length < 2) return { ok: false, stopped: false };
+  const last = input.replay.at(-1);
+  const row = input.unanswered;
+  const cutoff = row && last?.role === "user" ? await cutoffBefore(convId, row).catch(() => null) : null;
+  const kept = cutoff && row && last ? { ...cutoff, row, message: last } : null;
+  const summarised = kept ? input.replay.slice(0, -1) : input.replay;
   const summaryMsgId = uuid();
-  await openSummaryRow({ convId, summaryMsgId, parentId: input.parentId, lamport: input.nextLamport(), model, producer });
+  const summaryLamport = kept ? kept.lamport : input.nextLamport();
+  await openSummaryRow({
+    convId,
+    summaryMsgId,
+    parentId: kept ? kept.parentId : input.parentId,
+    lamport: summaryLamport,
+    model,
+    producer,
+  });
   const instruction = buildInstruction(undefined);
-  const history = { messages: input.replay, summaryText: input.summaryText };
+  const history = { messages: summarised, summaryText: input.summaryText };
   const hasRoom = compactionHasRoom({
     windowTokens: input.windowTokens,
-    before: input.before,
+    before: input.estimate,
     instructionTokens: estimateTokens("current", instruction),
   });
   try {
@@ -955,21 +1067,10 @@ export async function compactWithinRun(input: {
       history,
       instruction,
     });
-    const nudgeId = uuid();
-    const nudgeLamport = input.nextLamport();
-    await db.insert(messages).values({
-      id: nudgeId,
-      conversationId: convId,
-      parentId: summaryMsgId,
-      authorType: "user",
-      // Nobody typed it.
-      authorUserId: null,
-      origin: "server",
-      lamport: nudgeLamport,
-      content: [{ kind: "text", text: COMPACTION_CONTINUE_NUDGE }] as ContentBlock[],
-      status: "complete",
-      createdAt: new Date(),
-    });
+    // Minted after the summary, so it sorts after it.
+    const continueFrom = kept
+      ? { id: kept.row.id, lamport: kept.row.lamport, message: kept.message }
+      : { id: uuid(), lamport: input.nextLamport(), message: { role: "user", content: COMPACTION_CONTINUE_NUDGE } as ChatMessage };
     await commitSummary({
       convId,
       userId: input.userId,
@@ -977,23 +1078,43 @@ export async function compactWithinRun(input: {
       model,
       producer,
       generated,
-      before: input.before,
+      before: input.estimate,
+      beforeEstimated: input.estimate != null,
       instruction,
-      messagesCompacted: input.replay.length + (input.summaryText ? 1 : 0),
+      messagesCompacted: summarised.length + (input.summaryText ? 1 : 0),
       auto: true,
-      leafId: nudgeId,
+      leafId: continueFrom.id,
+      ...(kept
+        ? {}
+        : {
+            follow: {
+              id: continueFrom.id,
+              conversationId: convId,
+              parentId: summaryMsgId,
+              authorType: "user",
+              // Nobody typed it.
+              authorUserId: null,
+              origin: "server",
+              lamport: continueFrom.lamport,
+              content: [{ kind: "text", text: COMPACTION_CONTINUE_NUDGE }] as ContentBlock[],
+              status: "complete",
+              createdAt: new Date(),
+            },
+          }),
     });
-    producer.emit({
-      kind: "message.start",
-      message_id: nudgeId,
-      author_type: "user",
-      parent_id: summaryMsgId,
-      lamport: nudgeLamport,
-      text: COMPACTION_CONTINUE_NUDGE,
-      author_user_id: null,
-    });
-    producer.emit({ kind: "message.end", message_id: nudgeId, status: "complete" });
-    return { ok: true, summaryText: generated.summaryText, summaryMsgId, nudgeId };
+    if (!kept) {
+      producer.emit({
+        kind: "message.start",
+        message_id: continueFrom.id,
+        author_type: "user",
+        parent_id: summaryMsgId,
+        lamport: continueFrom.lamport,
+        text: COMPACTION_CONTINUE_NUDGE,
+        author_user_id: null,
+      });
+      producer.emit({ kind: "message.end", message_id: continueFrom.id, status: "complete" });
+    }
+    return { ok: true, summaryText: generated.summaryText, summaryMsgId, continueFrom };
   } catch (err) {
     const failed = await failSummary({ convId, summaryMsgId, err, signal, producer });
     // A stop is the run's to act on, not a compaction that failed.

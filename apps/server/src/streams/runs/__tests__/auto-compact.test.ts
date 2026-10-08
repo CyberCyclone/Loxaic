@@ -105,6 +105,22 @@ describe("fillDecision", () => {
     expect(decide({ messagesSinceSummary: 1, estimatedTokens: over })).toEqual({ action: "cannot", reason: CANNOT_FIT_REASON });
   });
 
+  it("with the threshold off, still compacts, extends or refuses a request that would not fit", () => {
+    // AUTO_COMPACT_THRESHOLD=0 turns off the early step only. The hard limit
+    // is what keeps a reply from being cut off at the window, and no setting
+    // brings that back.
+    const fits = WINDOW - replyReserveTokens(WINDOW);
+    const off = (patch: Partial<FillInput>) => decide({ threshold: 0, ...patch });
+    expect(off({ estimatedTokens: over })).toEqual({ action: "none" });
+    expect(off({ estimatedTokens: fits })).toEqual({ action: "none" });
+    expect(off({ estimatedTokens: fits + 1 })).toEqual({ action: "compact" });
+    expect(off({ estimatedTokens: fits + 1, stages: { whenFull: "extend", active: 0, count: 1 } })).toEqual({
+      action: "extend",
+      target: 1,
+    });
+    expect(off({ estimatedTokens: fits + 1, messagesSinceSummary: 1 })).toEqual({ action: "cannot", reason: CANNOT_FIT_REASON });
+  });
+
   it("keeps a reply's worth of room, never more than 1K tokens", () => {
     expect(replyReserveTokens(4096)).toBe(204);
     expect(replyReserveTokens(262_144)).toBe(1024);

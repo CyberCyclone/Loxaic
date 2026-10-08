@@ -43,9 +43,9 @@ function Row({
   );
 }
 
-function Note({ children, warn }: { children: string; warn?: boolean }) {
+function Note({ children, warn, testID }: { children: string; warn?: boolean; testID?: string }) {
   return (
-    <Text size="2xs" className={warn ? 'text-destructive' : 'text-muted-foreground'}>
+    <Text testID={testID} size="2xs" className={warn ? 'text-destructive' : 'text-muted-foreground'}>
       {children}
     </Text>
   );
@@ -222,9 +222,17 @@ export function ContextBreakdown({
         {context.maxWindow != null && context.maxWindow > window && (
           <Note>{`Loaded at ${fmt(window)} of ${fmt(context.maxWindow)} max.`}</Note>
         )}
-        {context.windowSource != null && context.windowSource !== 'loaded' && (
-          <Note>Estimated from model max — actual window unknown.</Note>
-        )}
+        {context.windowSource === 'configured' ? (
+          <Note testID="context.windowSource">Context size set by an admin — the provider doesn&apos;t report one.</Note>
+        ) : context.windowSource === 'default' ? (
+          // Compaction never acts on a guess, so this conversation can't be
+          // compacted until an admin sets the model's size on its provider.
+          <Note testID="context.windowSource" warn>
+            Context size unknown — this conversation can&apos;t be compacted until an admin sets one for this model.
+          </Note>
+        ) : context.windowSource != null && context.windowSource !== 'loaded' ? (
+          <Note testID="context.windowSource">Estimated from model max — actual window unknown.</Note>
+        ) : null}
         {context.truncated && (
           // Only an older server says this: it replayed the newest 50–74
           // messages and dropped the rest. A current one drops nothing — a

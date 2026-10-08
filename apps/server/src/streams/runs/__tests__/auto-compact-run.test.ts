@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { v4 as uuid } from "uuid";
-import { db, eq } from "@loxaic/db";
+import { db, eq, sql } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
 import { COMPACTION_CONTINUE_NUDGE, type CompactionStats, type ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../index.ts";
@@ -13,7 +13,7 @@ import { DEFAULT_MAX_ITERATIONS, loadHistory } from "../engine.ts";
 import { getRunByConversation } from "../../registry.ts";
 import { __resetMockScenariosForTest } from "../../../inference/mock-scenarios.ts";
 import { nextConversationLamport } from "../compactRun.ts";
-import { estimateTallyTokens, tallyChatMessages } from "../../../inference/context.ts";
+import { SUMMARY_PREAMBLE, estimateTallyTokens, tallyChatMessages } from "../../../inference/context.ts";
 import type { ChatMessage } from "../../../inference/provider.ts";
 
 /** Every request's messages, in call order — so a case can see how a
@@ -194,6 +194,9 @@ describe("automatic compaction", () => {
       const [summary] = summaries;
       expect(summary.status).toBe("complete");
       expect(compactionOf(summary)?.auto).toBe(true);
+      // The size before was the run's estimate of its next request, not a
+      // measurement: the card says `~`.
+      expect(compactionOf(summary)?.before_estimated).toBe(true);
 
       // In the run, between a tool result and the next call: the row before
       // the summary is a tool row, the one after is the nudge the run went on
@@ -213,6 +216,38 @@ describe("automatic compaction", () => {
       const conv = await db.query.conversations.findFirst({ where: eq(conversations.id, convId) });
       // The leaf is the run's last row, past the summary.
       expect(rows.findIndex((r) => r.id === conv?.activeLeafId)).toBeGreaterThan(at);
+    });
+
+    it("leaves no continue nudge behind when the summary cannot be committed", async () => {
+      // The nudge means "the conversation above was compacted": without the
+      // summary in front of it, it would sit in the history as an unexplained
+      // instruction, replayed on every turn after.
+      const convId = await seedConversation(2);
+      // The database refuses to complete this conversation's summary, as a
+      // transient failure would. A trigger rather than a mock: `db` is a proxy
+      // a spy cannot reach, and this fails the real statement wherever it runs.
+      const name = `fail_summary_${convId.replaceAll("-", "_")}`;
+      await db.execute(
+        sql.raw(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN RAISE EXCEPTION 'commit failed'; END $$;
+          CREATE TRIGGER ${name} BEFORE UPDATE ON messages FOR EACH ROW
+          WHEN (NEW.conversation_id = '${convId}' AND NEW.author_type = 'summary' AND NEW.status = 'complete')
+          EXECUTE FUNCTION ${name}();`),
+      );
+      try {
+        await startChatRun({ userId, content: "work in four steps", model: "llama-3.1-8b-instruct", conversationId: convId });
+        await waitFor(() => Promise.resolve(getRunByConversation(convId) ? null : true), 30_000);
+      } finally {
+        await db.execute(sql.raw(`DROP TRIGGER ${name} ON messages; DROP FUNCTION ${name}();`));
+      }
+      const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+      const summaries = rows.filter((r) => r.authorType === "summary");
+      // The run's own and the after-turn one: neither could be completed.
+      expect(summaries.length).toBeGreaterThan(0);
+      expect(summaries.every((r) => r.status === "error")).toBe(true);
+      const nudges = rows.filter((r) => (r.content as ContentBlock[]).some((b) => b.kind === "text" && b.text === COMPACTION_CONTINUE_NUDGE));
+      expect(nudges).toHaveLength(0);
+      expect((await loadHistory(convId)).messages.some((m) => m.content === COMPACTION_CONTINUE_NUDGE)).toBe(false);
     });
   });
 
@@ -254,6 +289,22 @@ describe("automatic compaction", () => {
     const after = await loadHistory(conv.id);
     expect(after.summaryText).not.toBeNull();
     expect(after.messages.length).toBeLessThan(10);
+
+    // Compacted before the run's first request, the message it was started
+    // for is not folded into the summary: it stays after it, and is what the
+    // model is asked, rather than a nudge to "continue the task".
+    expect(after.messages[0]).toEqual({ role: "user", content: "another question" });
+    const answered = requests.filter((r) => !summarising.includes(r)).at(-1);
+    expect(answered?.some((m) => m.role === "system" && m.content.startsWith(SUMMARY_PREAMBLE))).toBe(true);
+    expect(answered?.at(-1)).toEqual({ role: "user", content: "another question" });
+    const rows = await db.query.messages.findMany({
+      where: eq(messages.conversationId, conv.id),
+      orderBy: (m, { asc }) => [asc(m.lamport), asc(m.createdAt)],
+    });
+    expect(rows.some((r) => (r.content as ContentBlock[]).some((b) => b.kind === "text" && b.text === COMPACTION_CONTINUE_NUDGE))).toBe(false);
+    const at = rows.findIndex((r) => r.id === row?.id);
+    expect((rows[at + 1].content as ContentBlock[])[0]).toEqual({ kind: "text", text: "another question" });
+    expect(rows.slice(at + 2).map((r) => r.authorType)).toEqual(["assistant"]);
   });
 
   it("compacts a request that would not fit at all, even with too little to compact otherwise", async () => {
