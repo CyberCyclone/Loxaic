@@ -303,6 +303,18 @@ export function useSubAgentState(opts: {
     return true;
   }, [setByParent, wsRef]);
 
+  /** Forgets the sub-agents spawned by messages a rewind removed. */
+  const forgetSpawnedBy = useCallback((parentConvId: string, messageIds: readonly string[]) => {
+    const removed = new Set(messageIds);
+    setByParent((prev) => {
+      const list = prev[parentConvId];
+      if (!list?.some((s) => removed.has(s.message_id))) return prev;
+      const gone = list.filter((s) => removed.has(s.message_id)).map((s) => s.conversation_id);
+      setOpenIdState((open) => (open !== null && gone.includes(open) ? null : open));
+      return { ...prev, [parentConvId]: list.filter((s) => !removed.has(s.message_id)) };
+    });
+  }, [setByParent]);
+
   return useMemo(
     () => ({
       byParent,
@@ -322,8 +334,9 @@ export function useSubAgentState(opts: {
       close,
       stop,
       answer,
+      forgetSpawnedBy,
     }),
-    [answer, byParent, close, isChild, listFailed, loadFor, onChildEnd, onChildEvent, onChildSync, onParentEvent, onParentSync, open, openId, resubscribe, stop, stopping, transcripts],
+    [answer, byParent, forgetSpawnedBy, close, isChild, listFailed, loadFor, onChildEnd, onChildEvent, onChildSync, onParentEvent, onParentSync, open, openId, resubscribe, stop, stopping, transcripts],
   );
 }
 

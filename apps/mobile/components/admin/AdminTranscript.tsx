@@ -83,11 +83,18 @@ export function AdminTranscript({ messages, loading, hasOlder, loadingOlder = fa
         </Button>
       )}
       {messages.map((m, i) => (
-        <Box key={m.id} className="rounded-md border border-border bg-card px-2.5 py-2">
+        <Box key={m.id} className={`rounded-md border border-border px-2.5 py-2 ${m.removedAt ? 'bg-muted/40' : 'bg-card'}`}>
           <HStack space="xs" className="items-center">
             <Text size="2xs" className="font-medium text-foreground">
               {AUTHOR_LABEL[m.authorType] ?? m.authorType}
             </Text>
+            {/* Removed from the conversation by a rewind, kept only because
+                this server keeps deleted chats for an audit. */}
+            {m.removedAt && (
+              <Text testID="admin.transcript.rewound" size="2xs" className="text-destructive">
+                Rewound {new Date(m.removedAt).toLocaleString()}
+              </Text>
+            )}
             <Text size="2xs" className="text-muted-foreground">
               {new Date(m.createdAt).toLocaleString()}
               {m.model ? ` · ${m.model}` : ''}

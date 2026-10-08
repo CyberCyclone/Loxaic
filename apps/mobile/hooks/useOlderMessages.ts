@@ -57,5 +57,19 @@ export function useOlderMessages(apply: (conversationId: string, older: Message[
     [],
   );
 
-  return { paging, record, loadOlder, hasOlder };
+  /**
+   * Forgets a cursor a rewind removed. The cursor is the oldest loaded row, so
+   * it goes only when everything loaded was removed — and older history is
+   * still there, unreachable by a cursor naming a row that no longer exists.
+   * True when the caller should load the thread's newest page again.
+   */
+  const forgetRemoved = useCallback((conversationId: string, removedIds: readonly string[]): boolean => {
+    const before = (pagingRef.current[conversationId] as HistoryPaging | undefined)?.before;
+    if (!before || !removedIds.includes(before)) return false;
+    pagingRef.current = Object.fromEntries(Object.entries(pagingRef.current).filter(([key]) => key !== conversationId));
+    setPaging((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => key !== conversationId)));
+    return true;
+  }, []);
+
+  return { paging, record, loadOlder, hasOlder, forgetRemoved };
 }

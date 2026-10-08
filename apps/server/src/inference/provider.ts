@@ -306,6 +306,14 @@ function sleepUnlessAborted(ms: number, signal: AbortSignal | undefined): Promis
  * Without it a failed turn needs a real, broken backend, so whether its reason
  * reaches the user could not be tested on the mock lane at all. */
 const MOCK_FAIL_MATCH = /\bfail to load the model\b/i;
+
+/**
+ * A prompt whose answer differs every time it is asked, so a retry (#166)
+ * visibly replaced the reply rather than repeating it word for word — the
+ * mock's echo is otherwise the same for the same prompt. Per process.
+ */
+const MOCK_DIFFERENT_MATCH = /\bgive a different answer\b/i;
+let mockAnswerCount = 0;
 const MOCK_FAIL_MESSAGE = 'Failed to load model "mock-model". Error: the mock backend was asked to fail this turn.';
 
 /**
@@ -650,7 +658,9 @@ async function* mockStream(
         // read in parts asks once per part, and an echo streamed at 20 ms a
         // word made each of those a five-second wait.
         ? MOCK_SUMMARY
-        : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;
+        : MOCK_DIFFERENT_MATCH.test(prompt)
+          ? `[Mock] Answer number ${String(++mockAnswerCount)}.`
+          : `[Mock] ${imageNote}${documentNote}${instructionsNote}Echo: ${prompt || "Hello"}`;
     yield* emit(fullText);
   }
 

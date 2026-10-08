@@ -11,6 +11,7 @@ import { TypingIndicator } from './TypingIndicator';
 import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
 import { isStageActive, type StageCard } from '@/lib/stageCard';
+import { canRewind, retryIndex } from '@/lib/rewind';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -37,6 +38,15 @@ interface MessageListProps {
    * list at once — a sub-agent's panel over its parent's thread — where two
    * with one id would make every selector on it ambiguous. */
   testID?: string;
+  /** Rewind and Retry (#166), for someone who can send here. Absent leaves
+   * both off — a viewer, a sub-agent's transcript. Both functions must be
+   * stable: every message's memo compares them. */
+  actions?: MessageActions | null;
+}
+
+export interface MessageActions {
+  onRewind: (messageId: string) => void;
+  onRetry: () => void;
 }
 
 /** What the session hooks expose for the open thread's scroll-back. */
@@ -61,7 +71,7 @@ export interface MessageHistory {
  * there, and following a live response is a scroll to zero rather than a chase
  * after a moving, half-measured target.
  */
-export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, testID = 'chat.messageList' }: MessageListProps) {
+export function MessageList({ conversation, responseStartedAt, loadingModel, queuePosition, model, promptStats, history, stageCard, testID = 'chat.messageList', actions = null }: MessageListProps) {
   const listRef = useRef<FlatList<MessageType>>(null);
   const pending = !!responseStartedAt;
   const reachable = useServerReachable();
@@ -178,6 +188,9 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // Newest first, to match the inverted axis.
   const data = useMemo(() => [...msgsToRender].reverse(), [msgsToRender]);
   const lastRenderIndex = msgsToRender.length - 1;
+  // Nothing to rewind or retry while a run is going: the server would refuse.
+  const live = actions && !pending ? actions : null;
+  const retryAt = live ? retryIndex(msgsToRender) : -1;
 
   const renderItem = useCallback(
     ({ item, index }: ListRenderItemInfo<MessageType>) => {
@@ -194,11 +207,13 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
             elapsedSince={originalIndex === liveElapsedIndex ? responseStartedAt : null}
             isNewest={originalIndex === lastRenderIndex}
             liveCompaction={originalIndex === liveCompactionIndex ? liveCompaction : null}
+            onRewind={live && canRewind(item) ? live.onRewind : undefined}
+            onRetry={live && originalIndex === retryAt ? live.onRetry : undefined}
           />
         </Box>
       );
     },
-    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt, liveCompactionIndex, liveCompaction],
+    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt, liveCompactionIndex, liveCompaction, live, retryAt],
   );
 
   if (!conversation) return null;

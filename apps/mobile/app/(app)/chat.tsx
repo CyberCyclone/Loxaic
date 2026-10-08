@@ -29,6 +29,9 @@ import { ShareModal } from '@/components/chat/ShareModal';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
+import { RewindModal } from '@/components/chat/RewindModal';
+import { useRewindRetry, type ComposerSeed } from '@/hooks/useRewindRetry';
+import { isServerConvId } from '@/lib/streamMessages';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useSession } from '@/lib/session';
 import { useThinkingChoice } from '@/hooks/useThinkingChoice';
@@ -65,6 +68,8 @@ export default function ChatScreen() {
     pendingApproval,
     pendingCheckin,
     handleSend,
+    handleRetry,
+    applyLocalRewind,
     handleStop,
     handleCommand,
     handleNewChat,
@@ -94,7 +99,7 @@ export default function ChatScreen() {
   const [pendingModel, setPendingModel] = useState<string | null>(null);
   const [modelModalOpen, setModelModalOpen] = useState(false);
   // Puts an unsent message back in the message box (a no-room refusal).
-  const [composerSeed, setComposerSeed] = useState<{ token: number; text: string } | null>(null);
+  const [composerSeed, setComposerSeed] = useState<ComposerSeed | null>(null);
   // A send the server never heard of comes back to the message box.
   useEffect(() => { if (returnedText) setComposerSeed(returnedText); }, [returnedText]);
   const [threadListOpen, setThreadListOpen] = useState(false);
@@ -134,6 +139,20 @@ export default function ChatScreen() {
       : !showsDisconnected(connection)
         ? null
         : disconnectedCopy(connection).readOnly('conversation');
+
+  // Rewind to a message, or answer the newest one again (#166): for someone
+  // who can send here, while the server can be reached.
+  const rewind = useRewindRetry({
+    conversationId: activeId && isServerConvId(activeId) ? activeId : null,
+    messages: activeConv?.msgs,
+    enabled: readOnlyReason === null,
+    retry: (restoreFiles) => {
+      bumpRecentModel(selectedModel);
+      return handleRetry(selectedModel, { restoreFiles });
+    },
+    applyLocalRewind,
+    onSeed: setComposerSeed,
+  });
 
   // A host model with YaRN stages: the approaching-the-limit and step-down
   // modals, Context settings, and the stage chosen before a chat exists.
@@ -208,6 +227,8 @@ export default function ChatScreen() {
       <ContextStageModal stages={stages} />
       <ContextSettingsSheet stages={stages} />
 
+      <RewindModal dialog={rewind.dialog} onConfirm={rewind.confirm} onCancel={rewind.cancel} />
+
       <NoRoomModal
         notice={noRoom}
         isAdmin={isAdmin}
@@ -269,6 +290,7 @@ export default function ChatScreen() {
             model={selectedModel ? getName(selectedModel) : undefined}
             history={history}
             stageCard={stageCard}
+            actions={rewind.actions}
           />
         ) : (
           <PromptSuggestions
