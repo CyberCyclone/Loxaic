@@ -17,6 +17,12 @@ import { beginSendFor } from "../../../ws/send-outcomes.ts";
  * second copy of it, so the prompt is the one the replaced reply answered.
  */
 process.env.MOCK_INFERENCE = "true";
+
+/** The value, or a failed test saying what was missing. */
+function must<T>(value: T | undefined | null, what = "value"): T {
+  if (value === undefined || value === null) throw new Error(`expected a ${what}`);
+  return value;
+}
 const MODEL = "llama-3.1-8b-instruct";
 
 describe("retrying the newest reply", () => {
@@ -70,8 +76,8 @@ describe("retrying the newest reply", () => {
     const convId = first.conversationId;
     const before = await rowsOf(convId);
     const oldReply = before.at(-1);
-    expect(oldReply?.authorType).toBe("assistant");
-    const oldUsage = await db.select().from(usageRecords).where(eq(usageRecords.messageId, oldReply?.id));
+    expect(must(oldReply).authorType).toBe("assistant");
+    const oldUsage = await db.select().from(usageRecords).where(eq(usageRecords.messageId, must(oldReply).id));
     expect(oldUsage.length).toBeGreaterThan(0);
 
     const retried = await retryChatRun({ userId, conversationId: convId, model: MODEL });
@@ -83,7 +89,7 @@ describe("retrying the newest reply", () => {
     // The same four rows' shape, the reply a new one: one user row per turn.
     expect(after.map((r) => r.authorType)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(after.filter((r) => r.authorType === "user").map((r) => r.id)).toEqual([first.userMessageId, second.userMessageId]);
-    expect(after.at(-1)?.id).not.toBe(oldReply?.id);
+    expect(after.at(-1)?.id).not.toBe(must(oldReply).id);
     expect(after.at(-1)?.status).toBe("complete");
     const detached = await db.select().from(usageRecords).where(inArray(usageRecords.id, oldUsage.map((u) => u.id)));
     expect(detached.every((u) => u.conversationId === null && u.messageId === null)).toBe(true);

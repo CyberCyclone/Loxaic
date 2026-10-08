@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, routineRuns, routines } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, McpOverrides, ThinkingLevel } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, FileRestoreReport, McpOverrides, ThinkingLevel } from "@loxaic/types";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
@@ -211,7 +211,9 @@ export async function retryChatRun(input: {
   conversationId: string;
   model: string;
   thinkingLevel?: ThinkingLevel;
-}): Promise<StartChatRunResult> {
+  /** Put back the files the replaced turn's edit tools changed first. */
+  restoreFiles?: boolean;
+}): Promise<StartChatRunResult & { restoredFiles: FileRestoreReport | null }> {
   const { userId, conversationId: convId } = input;
   const grant = await assertConversationAccess(userId, convId, "editor");
   if (grant.kind !== "chat" && grant.kind !== "routine") throw new NotFoundError();
@@ -229,9 +231,9 @@ export async function retryChatRun(input: {
   };
   claimConversation(claim);
   try {
-    const row = await removeAfterForRetry(convId);
+    const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles });
     await recordModelUse(userId, model);
-    return await startRunOnRow({
+    const started = await startRunOnRow({
       claim,
       surface: "chat",
       row,
@@ -243,6 +245,7 @@ export async function retryChatRun(input: {
         ...(routine ? { subagents: { routine: true } } : {}),
       }),
     });
+    return { ...started, restoredFiles: row.files };
   } catch (err) {
     unregisterRun(claim.streamId);
     throw err;

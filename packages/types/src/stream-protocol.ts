@@ -811,6 +811,9 @@ export type ServerMessage =
       /** The send this started, when it named itself — always present on a
        * replay answering `send.status`. */
       client_ref?: string;
+      /** A retry asked to put the agent's file edits back first: what was
+       * restored and what could not be. */
+      restored_files?: FileRestoreReport;
     }
   /** Answers `send.status` for a send this server never heard of, or no
    * longer remembers: the message may not have been sent. */
@@ -883,6 +886,14 @@ export type ServerMessage =
  */
 export type StreamErrorCode = "local_model_no_room";
 
+/** What a file-checkpoint restore did (a rewind or a retry, #166). Only the
+ * agent's own edit tools are tracked; `skipped` says why a file was not put
+ * back. */
+export interface FileRestoreReport {
+  restored: string[];
+  skipped: { path: string; reason: string }[];
+}
+
 export type ClientMessage =
   | {
       type: "chat.send";
@@ -940,6 +951,8 @@ export type ClientMessage =
       model?: string;
       client_ref?: string;
       thinking_level?: ThinkingLevel;
+      /** Put back the files the reply's turn edited before answering again. */
+      restore_files?: boolean;
     }
   | {
       type: "agent.retry";
@@ -948,6 +961,8 @@ export type ClientMessage =
       mode?: PermissionMode;
       client_ref?: string;
       thinking_level?: ThinkingLevel;
+      /** As on `chat.retry`. */
+      restore_files?: boolean;
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

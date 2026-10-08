@@ -145,6 +145,7 @@ export function chatWsHandler(app: FastifyInstance) {
             conversationId: msg.conversation_id,
             model: msg.model ?? "default",
             thinkingLevel: isThinkingLevel(msg.thinking_level) ? msg.thinking_level : undefined,
+            restoreFiles: msg.restore_files === true,
           });
           pendingSend?.started(run);
           const result = await run;
@@ -154,6 +155,7 @@ export function chatWsHandler(app: FastifyInstance) {
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
             ...(ref ? { client_ref: ref } : {}),
+            ...(result.restoredFiles ? { restored_files: result.restoredFiles } : {}),
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {

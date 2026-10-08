@@ -6,7 +6,7 @@ import { normalizeMcpOverrides, type ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
-import { previewRewind, rewindConversation, RewindError } from "../conversations/rewind.ts";
+import { isRewindScope, previewRewind, rewindConversation, RewindError } from "../conversations/rewind.ts";
 import { ConversationBusyError } from "../streams/registry.ts";
 import { NotFoundError } from "../streams/authz.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
@@ -238,7 +238,7 @@ export function conversationRoutes(app: FastifyInstance) {
    * and 409 while a run is going. What "removed" means follows the deleted-
    * conversation retention setting — see conversations/rewind.ts.
    */
-  app.post<{ Params: { id: string }; Body: { message_id?: unknown } | undefined }>(
+  app.post<{ Params: { id: string }; Body: { message_id?: unknown; scope?: unknown } | undefined }>(
     "/v1/conversations/:id/rewind",
     async (request, reply) => {
       const userId = await authenticate(request, reply);
@@ -247,13 +247,19 @@ export function conversationRoutes(app: FastifyInstance) {
         reply.code(400);
         return { error: "message_id is required" };
       }
+      const scope = request.body?.scope ?? "both";
+      if (!isRewindScope(scope)) {
+        reply.code(400);
+        return { error: 'scope must be "both", "conversation" or "files"' };
+      }
       try {
-        const result = await rewindConversation({ userId, conversationId: request.params.id, messageId });
+        const result = await rewindConversation({ userId, conversationId: request.params.id, messageId, scope });
         return {
           text: result.text,
           attachments: result.attachments,
           attachments_withheld: result.attachmentsWithheld,
           removed_ids: result.removedIds,
+          files: result.files,
         };
       } catch (err) {
         return rewindFailure(err, reply);
@@ -272,7 +278,7 @@ export function conversationRoutes(app: FastifyInstance) {
       }
       try {
         const preview = await previewRewind({ userId, conversationId: request.params.id, messageId: request.params.messageId });
-        return { turns: preview.turns, others: preview.others, retained: preview.retained };
+        return { turns: preview.turns, others: preview.others, retained: preview.retained, files: preview.files };
       } catch (err) {
         return rewindFailure(err, reply);
       }

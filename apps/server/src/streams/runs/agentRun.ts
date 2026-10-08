@@ -4,6 +4,7 @@ import { conversations, messages } from "@loxaic/db/schema";
 import type {
   AttachmentRef,
   ContentBlock,
+  FileRestoreReport,
   InstructionsDecision,
   McpOverrides,
   ProjectInstructions,
@@ -249,7 +250,9 @@ export async function retryAgentRun(input: {
   model: string;
   mode: PermissionMode;
   thinkingLevel?: ThinkingLevel;
-}): Promise<StartAgentRunResult> {
+  /** See `retryChatRun`. */
+  restoreFiles?: boolean;
+}): Promise<StartAgentRunResult & { restoredFiles: FileRestoreReport | null }> {
   const { userId, conversationId: convId, model, mode } = input;
   const grant = await assertConversationAccess(userId, convId, "editor");
   if (grant.kind !== "agent") throw new NotFoundError();
@@ -268,9 +271,9 @@ export async function retryAgentRun(input: {
   };
   claimConversation(claim);
   try {
-    const row = await removeAfterForRetry(convId);
+    const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles });
     await recordModelUse(userId, model);
-    return await startRunOnRow({
+    const started = await startRunOnRow({
       claim,
       surface: "agent",
       row,
@@ -279,6 +282,7 @@ export async function retryAgentRun(input: {
         thinkingLevel: input.thinkingLevel,
       }),
     });
+    return { ...started, restoredFiles: row.files };
   } catch (err) {
     unregisterRun(claim.streamId);
     throw err;

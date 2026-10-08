@@ -17,7 +17,7 @@
  * The ordering below is the load-bearing part, and it is not the obvious one.
  */
 import { db, and, eq, inArray } from "@loxaic/db";
-import { conversations, messages, routineRuns, sandboxes, usageRecords } from "@loxaic/db/schema";
+import { checkpointFiles, conversations, messages, routineRuns, sandboxes, usageRecords } from "@loxaic/db/schema";
 import { destroyConversationSandboxes } from "../agent/sandbox-manager.ts";
 import { getConversationSettings } from "../settings.ts";
 import { getRunByConversation, waitForRunEnd } from "../streams/registry.ts";
@@ -284,6 +284,10 @@ async function eraseRows(id: string): Promise<void> {
       await tx.delete(conversations).where(inArray(conversations.id, childIds));
     }
     await tx.delete(messages).where(eq(messages.conversationId, id));
+    // The file checkpoints' manifest. Their copies live in the workspace,
+    // which this delete destroys (or, for a folder on someone's own machine,
+    // in their home directory, which nothing here can reach).
+    await tx.delete(checkpointFiles).where(eq(checkpointFiles.conversationId, id));
     // A routine's run points at its conversation with no foreign key, so
     // erasing the conversation without this leaves a row claiming a run whose
     // chat is gone — listed in the routine's history, opening onto nothing.

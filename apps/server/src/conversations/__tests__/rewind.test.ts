@@ -22,6 +22,12 @@ import { previewRewind, rewindConversation, RewindError } from "../rewind.ts";
  * Integration against the dev Postgres, with the mock model for real runs.
  */
 process.env.MOCK_INFERENCE = "true";
+
+/** The value, or a failed test saying what was missing. */
+function must<T>(value: T | undefined | null, what = "value"): T {
+  if (value === undefined || value === null) throw new Error(`expected a ${what}`);
+  return value;
+}
 const MODEL = "llama-3.1-8b-instruct";
 
 describe("rewinding a conversation", () => {
@@ -127,11 +133,11 @@ describe("rewinding a conversation", () => {
     const before = await rowsOf(convId);
     const second = before.find((r) => r.authorType === "user" && JSON.stringify(r.content).includes("hello two"));
     expect(second).toBeDefined();
-    const removed = before.filter((r) => r.createdAt >= second?.createdAt).map((r) => r.id);
+    const removed = before.filter((r) => r.createdAt >= must(second).createdAt).map((r) => r.id);
     const usageBefore = await db.select().from(usageRecords).where(inArray(usageRecords.messageId, removed));
     expect(usageBefore.length).toBeGreaterThan(0);
 
-    const result = await rewindConversation({ userId, conversationId: convId, messageId: second?.id });
+    const result = await rewindConversation({ userId, conversationId: convId, messageId: must(second).id });
 
     expect(result.text).toBe("hello two");
     expect(result.removedIds.sort()).toEqual(removed.sort());
@@ -186,7 +192,7 @@ describe("rewinding a conversation", () => {
     const two = (await rowsOf(convId)).find((r) => JSON.stringify(r.content).includes('"two"'));
     const seen: ConversationEvent[] = [];
     const unwatch = watchConversationEvents(convId, (e) => seen.push(e));
-    await rewindConversation({ userId, conversationId: convId, messageId: two?.id });
+    await rewindConversation({ userId, conversationId: convId, messageId: must(two).id });
     unwatch();
 
     const streamsAfter = await broker.driver.listConvStreams(convId);
@@ -194,7 +200,7 @@ describe("rewinding a conversation", () => {
     expect(await broker.getMeta(streamsBefore[1])).toBeNull();
     // Every device watching is told, with the runs to forget.
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toMatchObject({ type: "conversation.rewound", conversation_id: convId, from_message_id: two?.id, reason: "rewind" });
+    expect(seen[0]).toMatchObject({ type: "conversation.rewound", conversation_id: convId, from_message_id: must(two).id, reason: "rewind" });
     expect(seen[0].removed_stream_ids.sort()).toEqual(streamsBefore.slice(1).sort());
   });
 
@@ -286,7 +292,7 @@ describe("rewinding a conversation", () => {
     expect(mine.attachments).toEqual([{ ref: att.id, mime: "image/png", name: "a.png" }]);
     expect(mine.attachmentsWithheld).toBe(false);
     const refreshed = await db.query.attachments.findFirst({ where: eq(attachments.id, att.id) });
-    expect(refreshed?.createdAt.getTime()).toBeGreaterThan(old.getTime() + 3_600_000);
+    expect(must(refreshed).createdAt.getTime()).toBeGreaterThan(old.getTime() + 3_600_000);
 
     const theirsTarget = await row(convId, "user", content);
     const theirs = await rewindConversation({ userId: otherId, conversationId: convId, messageId: theirsTarget });
@@ -351,7 +357,12 @@ describe("rewinding a conversation", () => {
     await row(convId, "user", text("theirs"), { authorUserId: otherId });
     await row(convId, "user", text(CHECKIN_ANSWER_NUDGE), { authorUserId: otherId });
 
-    expect(await previewRewind({ userId, conversationId: convId, messageId: target })).toEqual({ turns: 2, others: 1, retained: true });
+    expect(await previewRewind({ userId, conversationId: convId, messageId: target })).toEqual({
+      turns: 2,
+      others: 1,
+      retained: true,
+      files: 0,
+    });
     // Nothing was touched.
     expect(await rowsOf(convId)).toHaveLength(5);
     expect(

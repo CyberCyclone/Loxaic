@@ -15,14 +15,25 @@
  * that run's work and goes with it.
  */
 import { v4 as uuid } from "uuid";
-import { db, and, desc, eq, gt, gte, inArray, isNull, sql } from "@loxaic/db";
-import { attachments, conversations, messages, usageRecords } from "@loxaic/db/schema";
+import { db, and, desc, eq, gt, gte, inArray, isNull, ne, sql } from "@loxaic/db";
+import { attachments, conversations, messages, sandboxes, usageRecords } from "@loxaic/db/schema";
 import { isNudgeText, type AttachmentRef, type ContentBlock } from "@loxaic/types";
 import { getConversationSettings } from "../settings.ts";
 import { assertConversationAccess, NotFoundError } from "../streams/authz.ts";
 import { getStreamBroker, hasStreamBroker } from "../streams/index.ts";
 import { claimConversation, unregisterRun } from "../streams/registry.ts";
 import { announceConversationEvent } from "../streams/watchers.ts";
+import { checkpointsSince, dropTurns, hasCheckpointsSince, restoreCheckpoints, type RestoreReport } from "../agent/checkpoints.ts";
+import { attachActiveSandbox, attachRunningSandbox } from "../agent/sandbox-manager.ts";
+import type { SandboxHandle } from "../sandbox/provider.ts";
+
+/** What a rewind does: the conversation and the files the agent edited (the
+ * default), the conversation alone, or the files alone. */
+export type RewindScope = "both" | "conversation" | "files";
+
+export function isRewindScope(value: unknown): value is RewindScope {
+  return value === "both" || value === "conversation" || value === "files";
+}
 
 /** A rewind or retry that cannot be done, with the reason the person sees. */
 export class RewindError extends Error {
@@ -53,6 +64,9 @@ export interface RewindResult {
   /** True when it had attachments that are not the caller's to send. */
   attachmentsWithheld: boolean;
   removedIds: string[];
+  /** What a files restore put back and what it could not; null when files
+   * were not asked for. */
+  files: RestoreReport | null;
 }
 
 export interface RewindPreview {
@@ -62,6 +76,9 @@ export interface RewindPreview {
   others: number;
   /** Whether admins can still read what is removed (audit retention). */
   retained: boolean;
+  /** Files the agent's edit tools changed from here on, which a rewind can
+   * put back. 0 hides the file choices. */
+  files: number;
 }
 
 /**
@@ -74,7 +91,10 @@ export async function rewindConversation(input: {
   userId: string;
   conversationId: string;
   messageId: string;
+  /** Default "both". */
+  scope?: RewindScope;
 }): Promise<RewindResult> {
+  const scope = input.scope ?? "both";
   const { userId, conversationId: convId } = input;
   const grant = await assertConversationAccess(userId, convId, "editor");
   if (grant.kind === "subagent") throw new NotFoundError();
@@ -91,7 +111,15 @@ export async function rewindConversation(input: {
   claimConversation(claim);
   try {
     const target = await rewindTarget(convId, input.messageId);
+    // Files first: a restore reads the checkpoints of the turns about to go.
+    const files = scope === "conversation" ? null : await restoreFiles(convId, target.createdAt, { inclusive: true });
+    if (scope === "files") {
+      // The conversation stays, and so do its checkpoints: the same point can
+      // be restored again.
+      return { text: target.text, attachments: [], attachmentsWithheld: false, removedIds: [], files };
+    }
     const removed = await removeSuffix(convId, target, { inclusive: true, reason: "rewind" });
+    await dropRemovedCheckpoints(convId, removed.removedIds);
     const mine = target.authorUserId === userId;
     if (mine && target.attachments.length > 0) await refreshAttachments(target.attachments.map((a) => a.ref));
     return {
@@ -99,6 +127,7 @@ export async function rewindConversation(input: {
       attachments: mine ? target.attachments : [],
       attachmentsWithheld: !mine && target.attachments.length > 0,
       removedIds: removed.removedIds,
+      files,
     };
   } finally {
     unregisterRun(claim.streamId);
@@ -121,7 +150,14 @@ export async function previewRewind(input: {
     turns: typed.length,
     others: typed.filter((r) => r.authorUserId !== userId).length,
     retained: getConversationSettings().keepDeleted,
+    files: await hasCheckpointsSince(convId, target.createdAt),
   };
+}
+
+/** Files the newest message's turn changed, for retry's file question. */
+export async function retryFileCount(convId: string): Promise<number> {
+  const row = await newestTyped(convId);
+  return row ? hasCheckpointsSince(convId, row.createdAt, false) : 0;
 }
 
 /**
@@ -130,7 +166,22 @@ export async function previewRewind(input: {
  * message, which stays and is answered again. Only the newest can be retried,
  * so there is nothing to choose.
  */
-export async function removeAfterForRetry(convId: string): Promise<AnsweredRow> {
+export async function removeAfterForRetry(
+  convId: string,
+  opts: { restoreFiles?: boolean } = {},
+): Promise<AnsweredRow & { files: RestoreReport | null }> {
+  const row = await newestTyped(convId);
+  if (!row) throw new RewindError("nothing_to_retry", "There is no message to answer again.");
+  // The retried turn's own edits, put back first. Its checkpoints are kept
+  // either way: they record the files before this turn, which is still true.
+  const files = opts.restoreFiles ? await restoreFiles(convId, row.createdAt, { inclusive: false }) : null;
+  await removeSuffix(convId, { id: row.id, createdAt: row.createdAt }, { inclusive: false, reason: "retry" });
+  const blocks = row.content as ContentBlock[];
+  return { id: row.id, lamport: row.lamport, parentId: row.parentId, text: textOf(blocks), attachments: attachmentsOf(blocks), files };
+}
+
+/** The newest user row a person typed, skipping nudges a run wrote. */
+async function newestTyped(convId: string) {
   const rows = await db
     .select({
       id: messages.id,
@@ -146,11 +197,58 @@ export async function removeAfterForRetry(convId: string): Promise<AnsweredRow> 
   // The newest user rows may be nudges the last run wrote (a check-in's
   // "answer now", a compaction's "continue"); the message to answer again is
   // the newest one a person typed.
-  const row = rows.find((r) => !isNudgeText(textOf(r.content as ContentBlock[])));
-  if (!row) throw new RewindError("nothing_to_retry", "There is no message to answer again.");
-  await removeSuffix(convId, { id: row.id, createdAt: row.createdAt }, { inclusive: false, reason: "retry" });
-  const blocks = row.content as ContentBlock[];
-  return { id: row.id, lamport: row.lamport, parentId: row.parentId, text: textOf(blocks), attachments: attachmentsOf(blocks) };
+  return rows.find((r) => !isNudgeText(textOf(r.content as ContentBlock[])));
+}
+
+/**
+ * Puts back the files the agent edited from `since` on. Reaches the
+ * workspace without creating one — a destroyed workspace has nothing to put
+ * back — but wakes a paused one, since restoring its files is what was asked.
+ */
+async function restoreFiles(convId: string, since: Date, opts: { inclusive: boolean }): Promise<RestoreReport> {
+  const records = await checkpointsSince(convId, since, opts);
+  if (records.length === 0) return { restored: [], skipped: [] };
+  let handle: SandboxHandle | null;
+  try {
+    handle = await workspaceHandle(convId, { wake: true });
+  } catch (err) {
+    // An offline machine, or an engine that will not answer: the files stay
+    // as they are, and the report says why.
+    return { restored: [], skipped: uniquePaths(records).map((path) => ({ path, reason: (err as Error).message })) };
+  }
+  if (!handle) {
+    return { restored: [], skipped: uniquePaths(records).map((path) => ({ path, reason: "the workspace no longer exists" })) };
+  }
+  return restoreCheckpoints(handle, convId, records);
+}
+
+/** Removed turns' checkpoints go with them. Their copies are removed only when
+ * the workspace is up; a paused one is not woken for it, and its copies go
+ * when it is destroyed. */
+async function dropRemovedCheckpoints(convId: string, removedIds: string[]): Promise<void> {
+  if (removedIds.length === 0) return;
+  const handle = await workspaceHandle(convId, { wake: false }).catch(() => null);
+  await dropTurns(handle, convId, removedIds).catch((err: unknown) => {
+    console.warn(`could not drop the checkpoints of a rewound part of ${convId}: ${(err as Error).message}`);
+  });
+}
+
+async function workspaceHandle(convId: string, opts: { wake: boolean }): Promise<SandboxHandle | null> {
+  const active = await attachActiveSandbox(convId);
+  if (active || !opts.wake) return active;
+  const conv = await db.query.conversations.findFirst({ where: eq(conversations.id, convId), columns: { ownerId: true } });
+  if (!conv) return null;
+  // The owner's own row, never one that merely names the conversation — the
+  // rule routes/git.ts follows for the same reason.
+  const row = await db.query.sandboxes.findFirst({
+    where: and(eq(sandboxes.conversationId, convId), eq(sandboxes.ownerId, conv.ownerId), ne(sandboxes.status, "destroyed")),
+    orderBy: desc(sandboxes.createdAt),
+  });
+  return row ? attachRunningSandbox(row) : null;
+}
+
+function uniquePaths(records: { path: string }[]): string[] {
+  return [...new Set(records.map((r) => r.path))];
 }
 
 interface Target {

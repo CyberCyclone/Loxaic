@@ -75,11 +75,18 @@ describe("POST /v1/conversations/:id/rewind", () => {
     currentUser.id = owner;
     const { convId, ids } = await thread();
     const preview = await app.inject({ method: "GET", url: `/v1/conversations/${convId}/rewind/${ids[2]}` });
-    expect(preview.json()).toEqual({ turns: 1, others: 0, retained: false });
+    expect(preview.json()).toEqual({ turns: 1, others: 0, retained: false, files: 0 });
 
     const res = await post(convId, { message_id: ids[2] });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ text: "two", attachments: [], attachments_withheld: false, removed_ids: [ids[2], ids[3]] });
+    expect(res.json()).toEqual({
+      text: "two",
+      attachments: [],
+      attachments_withheld: false,
+      removed_ids: [ids[2], ids[3]],
+      // Nothing was edited, so nothing to put back.
+      files: { restored: [], skipped: [] },
+    });
     const page = await app.inject({ method: "GET", url: `/v1/conversations/${convId}/messages` });
     expect(page.json<{ messages: { id: string }[] }>().messages.map((m) => m.id)).toEqual(ids.slice(0, 2));
   });
@@ -88,6 +95,7 @@ describe("POST /v1/conversations/:id/rewind", () => {
     currentUser.id = owner;
     const { convId, ids } = await thread();
     expect((await post(convId, {})).statusCode).toBe(400);
+    expect((await post(convId, { message_id: ids[2], scope: "everything" })).statusCode).toBe(400);
     expect((await post(convId, { message_id: ids[1] })).json()).toMatchObject({ code: "not_rewindable" });
     expect((await post(convId, { message_id: uuid() })).statusCode).toBe(404);
 

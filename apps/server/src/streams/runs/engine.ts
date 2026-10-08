@@ -67,6 +67,7 @@ import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import {
   attachActiveSandbox,
@@ -520,12 +521,18 @@ export async function runToolLoop(ctx: {
    *   conversation a person is in.
    */
   role?: { kind: "subagent"; parentConvId: string };
+  /** The turn this run's file edits are checkpointed under
+   * (agent/checkpoints.ts). Absent means this run's own: its workspace's
+   * conversation and its user message. A sub-agent is given its parent's, so
+   * its edits are undone with the turn that spawned it. */
+  checkpointTurn?: CheckpointTurn;
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
   // Whose workspace the tools run in, and whose MCP choices apply.
   const workspaceConvId = ctx.role?.parentConvId ?? convId;
+  const checkpointTurn: CheckpointTurn = ctx.checkpointTurn ?? { conversationId: workspaceConvId, turnMessageId: ctx.userMsgId };
 
   // How full the conversation was when the turn ended (fillDecision), decided
   // inside the loop and acted on outside it: a compaction or stage run of its
@@ -1419,6 +1426,7 @@ export async function runToolLoop(ctx: {
               producer,
               signal: abort.signal,
               thinkingLevel: ctx.thinkingLevel,
+              checkpointTurn,
             },
           });
           const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
@@ -1457,6 +1465,7 @@ export async function runToolLoop(ctx: {
               messages: chatMessages,
               windowTokens,
               nestedInstructions: ctx.nestedInstructions ?? false,
+              checkpointTurn,
             },
             call,
           );
@@ -1884,6 +1893,8 @@ async function runOneToolCall(
     windowTokens: number | null;
     /** See runToolLoop's `nestedInstructions`. */
     nestedInstructions: boolean;
+    /** See runToolLoop's `checkpointTurn`. */
+    checkpointTurn: CheckpointTurn;
   },
   call: ToolCall,
 ): Promise<{
@@ -2009,7 +2020,14 @@ async function runOneToolCall(
     }
   }
 
-  const result: ToolResult = await executeTool(handle, builtinName, args, ctx.signal);
+  const writeHandle = handle;
+  const result: ToolResult = await executeTool(
+    handle,
+    builtinName,
+    args,
+    ctx.signal,
+    writeHandle ? (path) => recordBeforeWrite(writeHandle, ctx.checkpointTurn, path) : undefined,
+  );
   // A read inside a subdirectory with its own AGENTS.md brings that file
   // along, once — appended here so the live event and the persisted row carry
   // the same text, and the replay reproduces it (agent/instructions.ts).

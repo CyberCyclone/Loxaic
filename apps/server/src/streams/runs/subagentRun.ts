@@ -30,6 +30,7 @@ import { announceNewRun } from "../watchers.ts";
 import { chatWorkspaceDescription } from "./chatRun.ts";
 import { runToolLoop } from "./engine.ts";
 import { subagentOutcome } from "./subagent-policy.ts";
+import type { CheckpointTurn } from "../../agent/checkpoints.ts";
 
 /**
  * Sub-agents: one run handing a self-contained task to a child run.
@@ -68,6 +69,8 @@ export interface SubagentParent {
   producer: StreamProducer;
   signal: AbortSignal;
   thinkingLevel?: ThinkingLevel;
+  /** The parent turn's checkpoint, which the child's file edits go under. */
+  checkpointTurn?: CheckpointTurn;
 }
 
 export interface SubagentCall {
@@ -374,6 +377,7 @@ export async function runSubagent(
       thinkingLevel: parent.thinkingLevel,
       nestedInstructions: parent.surface === "agent" && workspace.kind !== "scratch",
       role: { kind: "subagent", parentConvId: parent.convId },
+      ...(parent.checkpointTurn ? { checkpointTurn: parent.checkpointTurn } : {}),
       abort,
       producer: mirrorProgress(producer, parent.producer, childId, streamId, hooks?.onInLine),
     });

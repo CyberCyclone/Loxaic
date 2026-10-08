@@ -140,6 +140,7 @@ export function agentWsHandler(app: FastifyInstance) {
             model: msg.model ?? "default",
             mode: msg.mode === "planning" || msg.mode === "auto" ? msg.mode : "manual",
             thinkingLevel: isThinkingLevel(msg.thinking_level) ? msg.thinking_level : undefined,
+            restoreFiles: msg.restore_files === true,
           });
           pendingSend?.started(run);
           const result = await run;
@@ -149,6 +150,7 @@ export function agentWsHandler(app: FastifyInstance) {
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
             ...(ref ? { client_ref: ref } : {}),
+            ...(result.restoredFiles ? { restored_files: result.restoredFiles } : {}),
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {
