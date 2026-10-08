@@ -18,7 +18,22 @@ import { VALID_KEY } from '../../scripts/mock-provider.ts';
 import { adminCreds, apiToken, provisionAdmin, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, expectTextAbsent, isVisible, platform, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { deleteProvidersWithBaseUrl, listConversations, sendMessage, signIn, signOut, startNewThread, waitForComposerReady, waitForRunDone } from '../helpers/app.ts';
+import {
+  chooseScratchWorkspace,
+  deleteProvidersWithBaseUrl,
+  execInSandbox,
+  goToSurface,
+  listConversations,
+  listSandboxes,
+  patchSandboxSettings,
+  resetSandboxSettings,
+  sendMessage,
+  signIn,
+  signOut,
+  startNewThread,
+  waitForComposerReady,
+  waitForRunDone,
+} from '../helpers/app.ts';
 import { attachImage } from '../helpers/attachments.ts';
 
 interface Row {
@@ -58,6 +73,7 @@ describe('rewinding and retrying', () => {
 
   after(async () => {
     await deleteProvidersWithBaseUrl(mockProviderApiBase());
+    await resetSandboxSettings();
   });
 
   async function pickModel(id: string): Promise<void> {
@@ -261,5 +277,55 @@ describe('rewinding and retrying', () => {
     await browser.waitUntil(async () => (await rowsOf(alice, convId)).length === 2, { timeout: 30_000 });
     await waitForRunDone(alice, convId);
     expect((await rowsOf(alice, convId)).map(textOf)).toEqual(['just the first paragraph', expect.stringContaining('just the first paragraph')]);
+  });
+
+  it("puts back the files the agent's edit tools changed, and leaves what a command made", async function () {
+    this.timeout(5 * 60_000);
+    // A host sandbox: no container engine needed, and its files are the
+    // server's to read back through the exec API.
+    await patchSandboxSettings({ mode: 'host' });
+    const known = new Set((await listConversations(alice)).map((c) => c.id));
+    await goToSurface('agent');
+    await chooseScratchWorkspace();
+    await tap('agent.mode.auto');
+    const prompt = 'please edit the notes for rewind';
+    await sendMessage(prompt);
+    const convId = await newConversationAfter(known);
+    await waitForTextIn('chat.messageList', 'Notes edited', 60_000);
+    await waitForRunDone(alice, convId);
+    const token = await apiToken(alice);
+    const [sandbox] = await listSandboxes(token, convId);
+    const cat = async (file: string) => (await execInSandbox(token, sandbox.id, `cat ${file} 2>/dev/null || echo MISSING`)).stdout.trim();
+    expect(await cat('notes.md')).toBe('second draft');
+    const turnMessage = async () => {
+      const row = (await rowsOf(alice, convId)).find((r) => r.authorType === 'user' && textOf(r) === prompt);
+      if (!row) throw new Error('the message was not stored');
+      return row.id;
+    };
+
+    // The conversation only: the agent's edit stays.
+    await tap(`chat.message.rewind.${await turnMessage()}`);
+    await waitForVisible('chat.rewind.filesNote');
+    await shot('rewind-dialog-files');
+    await tap('chat.rewind.conversation');
+    await browser.waitUntil(async () => (await composerText()) === prompt, { timeout: 15_000 });
+    expect(await cat('notes.md')).toBe('second draft');
+
+    // Changed by hand, then the same request again; then rewound with the
+    // files: notes.md is put back to what it was before that turn, and the
+    // command's build.log, which no checkpoint tracks, stays.
+    await execInSandbox(token, sandbox.id, "printf 'by hand\\n' > notes.md && rm -f build.log");
+    await sendMessage(prompt);
+    await browser.waitUntil(async () => (await rowsOf(alice, convId)).length > 1, { timeout: 30_000 });
+    await waitForRunDone(alice, convId);
+    expect(await cat('notes.md')).toBe('second draft');
+    expect(await cat('build.log')).toBe('built');
+    await tap(`chat.message.rewind.${await turnMessage()}`);
+    await waitForVisible('chat.rewind.both');
+    await tap('chat.rewind.both');
+    await browser.waitUntil(async () => (await cat('notes.md')) === 'by hand', { timeout: 15_000, timeoutMsg: 'notes.md was not put back' });
+    expect(await cat('build.log')).toBe('built');
+    expect(await rowsOf(alice, convId)).toEqual([]);
+    await shot('rewind-files-restored');
   });
 });
