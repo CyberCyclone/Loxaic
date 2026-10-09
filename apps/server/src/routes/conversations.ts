@@ -31,6 +31,7 @@ function publicConversation<T extends { instructions: unknown }>(row: T): Omit<T
 }
 import { getRun, getRunByConversation } from "../streams/registry.ts";
 import { listSubagents } from "../streams/runs/subagentRun.ts";
+import { latestTodos } from "../conversations/latest-todos.ts";
 import { hasRole, resolveAccess } from "../streams/authz";
 
 export function conversationRoutes(app: FastifyInstance) {
@@ -109,7 +110,18 @@ export function conversationRoutes(app: FastifyInstance) {
     // Whether a run is going right now, from the registry — exact, and the
     // signal a test (or a client) polls for "has the agent finished" rather
     // than guessing from message statuses. Process-local, like the registry.
-    return { ...publicConversation(row), role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
+    //
+    // `latest_todos` is the agent's newest list, which the client cannot
+    // always rebuild: the call that wrote it may be on a history page not yet
+    // loaded. Read only for an agent conversation, the one surface that shows
+    // a list; absent elsewhere and from an older server.
+    const todos = row.kind === "agent" ? await latestTodos(row.id) : null;
+    return {
+      ...publicConversation(row),
+      role: grant.role,
+      active_run: getRunByConversation(row.id) !== undefined,
+      ...(row.kind === "agent" ? { latest_todos: todos } : {}),
+    };
   });
 
   /**

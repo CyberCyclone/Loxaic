@@ -104,6 +104,9 @@ export interface ToolCall {
    * model's call ids repeat across messages). Same three construction sites
    * as `plan`. See lib/subAgents.ts. */
   subagent?: { description: string; messageId?: string }
+  /** A `todo_write` call's list — same three construction sites as `plan`.
+   * See lib/todos.ts. */
+  todos?: import('@loxaic/types').Todo[]
 }
 
 export interface DiffLine {

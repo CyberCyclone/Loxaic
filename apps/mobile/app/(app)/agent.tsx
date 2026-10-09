@@ -35,6 +35,8 @@ import { formatWindow } from '@/lib/contextStages';
 import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useProjectInstructions } from '@/hooks/useProjectInstructions';
+import { useServerTodos } from '@/hooks/useServerTodos';
+import { displayedTodos, todoProgress } from '@/lib/todos';
 import { useGitPanel } from '@/hooks/useGitPanel';
 import { canEdit, isOwner } from '@/lib/types';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
@@ -96,7 +98,7 @@ export default function AgentScreen() {
     queuePosition,
     pendingWorkspace,
     setPendingWorkspace,
-    todos,
+    todos: sessionTodos,
     changedFiles,
     handleSend,
     handleStop,
@@ -185,6 +187,10 @@ export default function AgentScreen() {
   const { sandbox } = useWorkspaceStatus(activeId, runState);
   // Looked for on the conversation's first run, so asked again as runs end.
   const instructions = useProjectInstructions(activeRun ? activeId : null, runState);
+  // The list the Inspector shows: the newest loaded, else the server's.
+  const serverTodos = useServerTodos(activeRun ? activeId : null, runState);
+  const todos = useMemo(() => displayedTodos(sessionTodos, serverTodos), [sessionTodos, serverTodos]);
+  const progress = todoProgress(todos);
   // The banner is about *this* workspace's network, which is fixed at its
   // creation (the row records it), not the server-wide setting, which only
   // says what the next one gets. Keyed on the setting alone, it vanished the
@@ -403,9 +409,15 @@ export default function AgentScreen() {
                   className="flex-row items-center gap-1 rounded-sm p-1.5 web:hover:bg-muted/50"
                 >
                   <Icon as={PanelRight} size="sm" className="text-foreground" />
-                  {changedFiles.length > 0 && (
-                    <Badge variant="destructive">
-                      <BadgeText className="text-2xs normal-case">{changedFiles.length}</BadgeText>
+                  {/* How far through its list the agent is. It was the count of
+                      changed files, in red, which read as tasks: "8" beside a
+                      list with one item started. Changed files have their own
+                      section in the Inspector. */}
+                  {progress && (
+                    <Badge variant="outline" className="border-border">
+                      <BadgeText testID="agent.inspector.toggle.progress" className="text-2xs normal-case">
+                        {progress.label}
+                      </BadgeText>
                     </Badge>
                   )}
                 </Pressable>

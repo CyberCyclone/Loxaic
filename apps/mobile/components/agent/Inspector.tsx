@@ -326,7 +326,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
           Todo List
         </Text>
         {todos.length === 0 ? (
-          <Text size="xs" className="text-muted-foreground">
+          <Text testID="agent.inspector.todos.empty" size="xs" className="text-muted-foreground">
             No todos yet
           </Text>
         ) : (
@@ -334,6 +334,7 @@ function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCo
             <HStack key={todo.id ?? i} space="xs" className="items-center">
               <Icon as={TODO_ICON[todo.status]} size="xs" className={TODO_TINT[todo.status]} />
               <Text
+                testID={`agent.inspector.todo.${String(i)}`}
                 size="sm"
                 className={todo.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'}
               >

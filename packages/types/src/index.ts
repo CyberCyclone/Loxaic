@@ -335,6 +335,7 @@ export function displayModelRef(ref: string): string {
 }
 
 export * from "./stream-protocol";
+export * from "./todos";
 export * from "./waits";
 export * from "./commands";
 export * from "./mcp-state";

@@ -431,6 +431,53 @@ describe("a mock scenario's steps replay identically too", () => {
   });
 });
 
+describe("the stale todo reminder replays exactly", () => {
+  // The reminder is appended to a tool result mid-turn (todo-staleness.ts).
+  // That is safe for the cache only if the text the request carried is the
+  // text stored and replayed: appended after the row was written, or only to
+  // the live event, the next turn would diverge at that result.
+  let dir: string;
+
+  beforeAll(() => {
+    dir = mkdtempSync(path.join(tmpdir(), "todo-reminder-prefix-"));
+    const file = path.join(dir, "scenarios.json");
+    writeFileSync(
+      file,
+      JSON.stringify([
+        {
+          match: "list then fetch",
+          steps: [
+            { tool: "todo_write", args: { todos: [{ status: "in_progress", id: "1", text: "step one" }] } },
+            // The SSRF guard refuses loopback at once: work with no sandbox.
+            ...Array.from({ length: 11 }, (_, i) => ({ tool: "web_fetch", args: { url: `http://127.0.0.1:1/${String(i)}` } })),
+          ],
+          finalText: "[Mock] fetched.\n",
+        },
+      ]),
+    );
+    process.env.MOCK_SCENARIOS_FILE = file;
+    __resetMockScenariosForTest();
+  });
+
+  afterAll(() => {
+    delete process.env.MOCK_SCENARIOS_FILE;
+    __resetMockScenariosForTest();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("carries it in the request, and the next turn extends that request byte for byte", async () => {
+    const convId = await turn("list then fetch");
+    const carried = requests.filter((r) => r.some((m) => m.includes("todo-reminder")));
+    // Every request from the one after the reminded result carries it.
+    expect(carried.length).toBeGreaterThan(0);
+    await turn("thanks, what is next?", convId);
+    expectEachRequestExtendsTheLast();
+    // Once, not once per request: it rides on one stored result.
+    const last = requests.at(-1) ?? [];
+    expect(last.filter((m) => m.includes("todo-reminder")).length).toBe(1);
+  });
+});
+
 describe("prompt prefix across a step check-in", () => {
   /**
    * A check-in parks the run mid-turn and then resumes it, which makes it a

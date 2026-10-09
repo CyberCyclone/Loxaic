@@ -140,7 +140,8 @@ export function subagentSystemPrompt(input: {
   const how =
     input.mode === "planning"
       ? "This run is read-only: investigate with the read-only tools you have. Do not write, edit or execute anything."
-      : "Work in small, verifiable steps: read before you edit, and prefer fs_edit over rewriting a whole file.";
+      : "Work in small, verifiable steps: read before you edit, and prefer fs_edit over rewriting a whole file. " +
+        "For a task with several steps, keep a todo list with todo_write and update it as each step starts and finishes.";
   const base = [
     `You are a Loxaic sub-agent, ${where}`,
     "Another agent has handed you one task, in the message below. You share its workspace: files it or other",

@@ -125,7 +125,15 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: "todo_write",
-    description: "Replace the agent's visible todo list. Use it to plan and track multi-step work.",
+    // The rules, not just the purpose: with only "plan and track multi-step
+    // work", a model wrote the list once and did four more items without
+    // touching it, while the person watching read item 1 as still in progress.
+    description:
+      "Replace the visible todo list with the full list, in order. Use it for work with several steps. " +
+      "Keep it current as you go, because the person watching reads it to see where you are: mark an item " +
+      "in_progress just before you start it and completed as soon as it is done, one call at a time rather " +
+      "than all at the end; keep exactly one item in_progress while you work; add items you discover and drop " +
+      "ones that no longer apply.",
     parameters: {
       type: "object",
       properties: {
