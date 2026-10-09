@@ -224,6 +224,100 @@
     "finalText": "[Mock] Both sub-agents have reported back.\n"
   },
   {
+    "match": "write the list once, then work",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Schema",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Routes",
+              "status": "in_progress"
+            },
+            {
+              "id": "3",
+              "text": "Client",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-0"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-1"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-2"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-3"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-4"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-5"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-6"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-7"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-8"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-9"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-10"
+        }
+      }
+    ],
+    "finalText": "[Mock] Worked through the list.\n"
+  },
+  {
     "match": "survey in passes",
     "steps": [
       {

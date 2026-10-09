@@ -23,6 +23,8 @@ import {
   type TurnUsage,
   DEFAULT_THINKING_LEVEL,
   MAX_SUBAGENTS_PER_MESSAGE,
+  TODO_STALE_REMINDER,
+  parseTodoList,
   type ThinkingLevel,
 } from "@loxaic/types";
 import {
@@ -86,6 +88,7 @@ import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inferen
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
+import { TodoStaleness } from "./todo-staleness.ts";
 import {
   clampAutoContinues,
   clampWaitTimeoutMs,
@@ -750,6 +753,9 @@ export async function runToolLoop(ctx: {
     // how many windows have been granted.
     let budgetEnd = maxIterations;
     const detector = new LoopDetector(loopDetectorOptions(waits.loopSensitivity));
+    // Whether the todo list has gone stale — see todo-staleness.ts. Seeded from
+    // the replay, so a list written in an earlier turn counts.
+    const todoStaleness = TodoStaleness.fromHistory(history.messages);
     // Iteration key -> the calls that produced it, so a loop check-in can name
     // what is repeating. Bounded: only the last few keys can ever be part of a
     // hit, and a 500-step run must not accumulate every argument string it saw.
@@ -1356,6 +1362,14 @@ export async function runToolLoop(ctx: {
       // The outcomes of this message's sub-agent calls, by call index. Filled
       // in one go at the first of them — see `runSubagentGroup`.
       let subagentOutcomes: Map<number, SubagentOutcome> | null = null;
+      // Handed to the first built-in tool that runs, once (runOneToolCall).
+      let todoReminderDue = todoStaleness.due(toolCalls.map((c) => c.function.name));
+      const takeTodoReminder = (): string | null => {
+        if (!todoReminderDue) return null;
+        todoReminderDue = false;
+        todoStaleness.reminded();
+        return TODO_STALE_REMINDER;
+      };
       for (const [callIndex, call] of toolCalls.entries()) {
         // A sub-agent call whose child has already run is recorded with what
         // the child did, ahead of the two skips below: it ran (with the rest
@@ -1483,6 +1497,7 @@ export async function runToolLoop(ctx: {
               windowTokens,
               nestedInstructions: ctx.nestedInstructions ?? false,
               checkpointTurn,
+              takeTodoReminder,
             },
             call,
           );
@@ -1524,7 +1539,12 @@ export async function runToolLoop(ctx: {
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
         if (HANDOVER_TOOL_NAMES.has(call.function.name) && outcome.ok) handedOver = true;
+        if (call.function.name === "todo_write" && outcome.ok) {
+          const written = parseTodoList(safeParseArgs(call.function.arguments));
+          if (written) todoStaleness.wrote(written);
+        }
       }
+      todoStaleness.endIteration();
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
 
       const toolMsgId = uuid();
@@ -1912,6 +1932,9 @@ async function runOneToolCall(
     nestedInstructions: boolean;
     /** See runToolLoop's `checkpointTurn`. */
     checkpointTurn: CheckpointTurn;
+    /** The stale-todo reminder, when this iteration owes one and no tool has
+     * carried it yet — see todo-staleness.ts. */
+    takeTodoReminder?: () => string | null;
   },
   call: ToolCall,
 ): Promise<{
@@ -2054,6 +2077,14 @@ async function runOneToolCall(
       windowTokens: ctx.windowTokens,
       signal: ctx.signal,
     });
+  }
+  // The stale-todo reminder rides on a built-in tool's result for the same
+  // reason: the live event, the stored row and every replay carry one text, so
+  // the prefix the backend has cached never changes under it. Never on the
+  // `todo_write` that answers it.
+  if (builtinName !== "todo_write") {
+    const reminder = ctx.takeTodoReminder?.();
+    if (reminder) result.output += reminder;
   }
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({

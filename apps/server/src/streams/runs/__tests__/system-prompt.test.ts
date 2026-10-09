@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { MCP_SYSTEM_ADDENDUM } from "../../../mcp/sanitize.ts";
 import { DOCUMENT_SYSTEM_ADDENDUM } from "../../../files/storage.ts";
+import { TOOLS } from "@loxaic/agent";
 import { assembleSystemPrompt } from "../engine.ts";
+import { baseSystemPrompt, planningSystemPrompt } from "../agentRun.ts";
+import { subagentSystemPrompt } from "../subagentRun.ts";
 
 /**
  * Regression coverage for a defence that was defined, documented, and never
@@ -57,5 +60,24 @@ describe("assembleSystemPrompt", () => {
 
   it("still returns the addendum when there is no base prompt", () => {
     expect(assembleSystemPrompt(null, null, true)).toBe(DOCUMENT_SYSTEM_ADDENDUM);
+  });
+});
+
+describe("todo list guidance", () => {
+  // With only "plan and track multi-step work" to go on, a model wrote its list
+  // once and never touched it again. The rules are in the tool's description,
+  // which every surface sees, and one sentence in the working modes' prompts.
+  const scratch = { kind: "scratch" } as const;
+
+  it("is in the tool's description", () => {
+    const tool = TOOLS.find((t) => t.name === "todo_write");
+    expect(tool?.description).toMatch(/in_progress just before you start it and completed as soon as it is done/);
+  });
+
+  it("is in the working modes' prompt and a sub-agent's, and not in planning mode's", () => {
+    expect(baseSystemPrompt(scratch)).toContain("todo_write");
+    expect(subagentSystemPrompt({ surface: "agent", workspace: scratch, mode: "auto", instructions: null })).toContain("todo_write");
+    // Planning ends every turn in a plan or questions; a list is not its job.
+    expect(planningSystemPrompt(scratch)).not.toContain("todo_write");
   });
 });

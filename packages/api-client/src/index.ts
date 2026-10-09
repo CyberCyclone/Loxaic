@@ -1217,6 +1217,10 @@ export interface Conversation {
   instructions?: import("@loxaic/types").ProjectInstructionsSummary | null;
   /** Only on the single-conversation read: whether a run is going right now. */
   active_run?: boolean;
+  /** Only on the single-conversation read of an agent conversation: the
+   * agent's newest todo list, or null when it never wrote one. Absent from an
+   * older server and on every other read. */
+  latest_todos?: import("@loxaic/types").Todo[] | null;
   createdAt: string;
   updatedAt: string;
   /** What the caller may do here. Present on list and single-conversation

@@ -3,6 +3,7 @@ import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 import { QUESTION_LIMITS } from "@loxaic/agent";
+import { parseTodoList } from "@loxaic/types";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
 const SANDBOX_TOOLS: ToolName[] = ["fs_read", "fs_write", "fs_edit", "bash", "grep", "glob"];
@@ -331,21 +332,10 @@ async function runGlob(handle: SandboxHandle, args: Record<string, unknown>): Pr
 // ── Todos (virtual — no sandbox involved) ─────────────────
 
 function runTodoWrite(args: Record<string, unknown>): ToolResult {
-  const raw = args.todos;
-  if (!Array.isArray(raw)) return { ok: false, output: "todos must be an array" };
-
-  const todos: Todo[] = raw.map((t, i) => {
-    const item = (t ?? {}) as Record<string, unknown>;
-    const status = item.status;
-    return {
-      id: typeof item.id === "string" ? item.id : String(i + 1),
-      text:
-        typeof item.text === "string" ? item.text
-        : typeof item.text === "number" || typeof item.text === "boolean" ? String(item.text)
-        : "",
-      status: status === "completed" || status === "in_progress" ? status : "pending",
-    };
-  });
+  // The one rule for what a call's arguments mean, shared with the client,
+  // which reads a stored call back into the same list.
+  const todos = parseTodoList(args);
+  if (!todos) return { ok: false, output: "todos must be an array" };
 
   const rendered = todos
     .map((t) => `${t.status === "completed" ? "[x]" : t.status === "in_progress" ? "[~]" : "[ ]"} ${t.text}`)

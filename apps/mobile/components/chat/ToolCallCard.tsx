@@ -145,6 +145,9 @@ export function ToolCallCard({ tool }: { tool: ToolCall }) {
           ) : (
             <ScrollView testID={tool.callId ? `chat.toolCall.result.${tool.callId}` : undefined} style={{ maxHeight: 200 }}>
               <Text
+                // On the Text as well as the scroll view: XCUITest reports a
+                // scroll view's text as empty, so the words are only readable here.
+                testID={tool.callId ? `chat.toolCall.resultText.${tool.callId}` : undefined}
                 className="p-3 text-muted-foreground"
                 style={{ fontFamily: 'monospace', fontSize: 12, lineHeight: 18 }}
               >
