@@ -529,7 +529,7 @@ export function useAgentSession(
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         updateRunMsgs(convId, (msgs) =>
-          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }),
+          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now }),
         );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         const stageSnapshot = event.snapshot.context_stage;

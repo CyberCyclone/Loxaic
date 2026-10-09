@@ -62,7 +62,7 @@ export function TypingIndicator({ loadingModel, since, model, queuePosition, pro
                   ? 'Loading model…'
                   : 'Processing prompt…'}
             </Text>
-            <LiveElapsed since={since} />
+            <LiveElapsed since={since} testID="chat.typing.elapsed" />
           </HStack>
           {showStats && promptStats && (
             <Text testID="chat.status.promptStats" size="2xs" className="text-muted-foreground">

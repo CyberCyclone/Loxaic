@@ -123,6 +123,12 @@ export interface Message {
    * server. Used to place a snapshot's messages in a thread loaded a page at a
    * time (#213) — see applySnapshotToMsgs. */
   lamport?: number
+  /** When this message began, on this device's clock: arrival of its live
+   * `message.start`, or a snapshot's `started_at` corrected by the sync's
+   * `server_now`. What the live counter on a still-streaming message times
+   * from (lib/liveTimer.ts). Absent from history and from an older server,
+   * where the counter falls back to the run's start. */
+  startedAt?: number
   model?: string
   text: string
   thinking?: string

@@ -181,6 +181,7 @@ export class StreamBroker {
           m.author_type = event.author_type;
           m.parent_id = event.parent_id;
           if (event.lamport !== undefined) m.lamport = event.lamport;
+          if (event.started_at !== undefined) m.started_at = event.started_at;
           if (event.model) m.model = event.model;
           if (event.text) m.text = event.text;
           if (event.attachments?.length) m.attachments = event.attachments;

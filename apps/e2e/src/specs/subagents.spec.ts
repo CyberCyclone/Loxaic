@@ -28,6 +28,8 @@ import {
   APPROVAL_SUBAGENT_PROMPT,
   LONG_SUBAGENT_NAME,
   MOCK_SUBAGENT_NAME,
+  QUEUED_SUBAGENT_NAME,
+  QUEUED_SUBAGENT_PROMPT,
   QUICK_SUBAGENT_NAME,
   SLOW_SUBAGENT_NAME,
   SLOW_SUBAGENT_PROMPT,
@@ -39,7 +41,9 @@ import {
   listSubAgents,
   openSettings,
   patchPrefs,
+  relaunchApp,
   runRoutine,
+  selectThread,
   sendInNewRun,
   signUp,
   startNewAgentRun,
@@ -271,8 +275,9 @@ describe('sub-agents', () => {
     await waitForFreshText(`subagent.card.${long.call_id}.status`, 'Stopped');
     await waitForFreshText(`subagent.card.${quick.call_id}.model`, MODEL_A);
     await waitForFreshText(`subagent.card.${quick.call_id}.context`, '% context');
-    // A finished sub-agent's time is its own start to its own end, as stored.
-    const stored = ((quick.ended_at ?? Number.NaN) - quick.started_at) / 1000;
+    // A finished sub-agent's time is from when it got a slot to its end, as
+    // stored (from its start, for a server that does not say).
+    const stored = ((quick.ended_at ?? Number.NaN) - (quick.admitted_at ?? quick.started_at)) / 1000;
     expect(Math.abs((await readElapsed(`subagent.card.${quick.call_id}.elapsed`)) - stored)).toBeLessThan(0.2);
     await tap('agent.header.menu');
     // None running now, so the item says nothing about a count.
@@ -590,5 +595,58 @@ describe('sub-agents', () => {
     expect(child.model).toBe(MODEL_B);
     await waitForFreshText(`subagent.card.${child.call_id}.model`, MODEL_B);
     await waitForRunDone(creds, convId, 60_000);
+  });
+
+  // Last on purpose: on iOS the case that used to follow it (the plan one,
+  // which has eight seconds to open a panel) then found the ⋮ menu would not
+  // open. Not understood; it does not happen on the other platforms, and
+  // every case before this one is unaffected.
+  it('counts a queued sub-agent\'s wait, then its running time from when it got a slot', async function () {
+    this.timeout(4 * 60_000);
+
+    await goToSurface('agent');
+    await startNewAgentRun();
+    await tap('agent.mode.auto');
+    await waitForTextIn('composer.model', MODEL_A, 30_000);
+    const convId = await sendInNewRun(creds, QUEUED_SUBAGENT_PROMPT);
+    const children = await waitForSubAgents(creds, convId, 2);
+    const quick = children.find((c) => c.description === QUEUED_SUBAGENT_NAME);
+    if (!quick) throw new Error('the quick sub-agent was never started');
+    const card = `subagent.card.${quick.call_id}`;
+
+    // In line behind the slow one, and the card counts the wait.
+    await waitForFreshText(`${card}.status`, 'Queued', 30_000);
+    await browser.pause(8_000);
+    const waited = await readElapsed(`${card}.elapsed`);
+    expect(waited).toBeGreaterThanOrEqual(6);
+    await shot('subagent-card-queued');
+
+    // A fresh start while it is still waiting: the stored listing says
+    // "Queued", not "Running" — it used to report every unfinished child as
+    // running — and the wait is counted from its real start.
+    await relaunchApp();
+    await waitForVisible('composer.input', 60_000);
+    await goToSurface('agent');
+    await selectThread(convId, 'agent');
+    await waitForFreshText(`${card}.status`, 'Queued', 30_000);
+    const sinceCreated = (Date.now() - quick.started_at) / 1000;
+    expect(Math.abs((await readElapsed(`${card}.elapsed`)) - sinceCreated)).toBeLessThan(5);
+
+    // Given a slot once the slow one finishes (seven eight-second requests):
+    // the counter starts again from there. It used to carry the whole wait
+    // over, and read "Running 60s" the moment the child began. Its own one
+    // request takes eight seconds, which is the window to look in.
+    await waitForFreshText(`${card}.status`, 'Running', 120_000);
+    expect(await readElapsed(`${card}.elapsed`)).toBeLessThan(6);
+    await shot('subagent-card-just-admitted');
+
+    // Finished: its length is its running time, not its wait.
+    await waitForRunDone(creds, convId, 120_000);
+    const [stored] = (await listSubAgents(creds, convId)).filter((c) => c.conversation_id === quick.conversation_id);
+    expect(stored.admitted_at).toBeDefined();
+    expect((stored.admitted_at ?? 0) - stored.started_at).toBeGreaterThan(30_000);
+    const ran = ((stored.ended_at ?? Number.NaN) - (stored.admitted_at ?? Number.NaN)) / 1000;
+    await waitForFreshText(`${card}.status`, 'Finished', 30_000);
+    expect(Math.abs((await readElapsed(`${card}.elapsed`)) - ran)).toBeLessThan(0.2);
   });
 });
