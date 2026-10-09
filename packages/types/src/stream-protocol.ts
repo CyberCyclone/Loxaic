@@ -542,6 +542,15 @@ export type StreamEventKind =
        * client must read as "not told", never as either answer.
        */
       author_user_id?: string | null;
+      /**
+       * When this message began, on the server's clock (epoch ms). A live
+       * counter times the message from here, not from the run's start: an
+       * agent turn is many messages, and the run's age on the newest one read
+       * "Thinking… 1955s" for a reply seconds old. A client reading a live
+       * event has no server clock, so it times from arrival; a snapshot
+       * converts it with the sync's `server_now`. Absent from an older server.
+       */
+      started_at?: number;
     }
   | { kind: "text.delta"; message_id: string; text: string }
   | { kind: "thinking.delta"; message_id: string; text: string }
@@ -653,6 +662,8 @@ export interface StreamSnapshotMessage {
   parent_id: string | null;
   /** Folded from `message.start` — see its doc. Absent from an older server. */
   lamport?: number;
+  /** Folded from `message.start` — see its doc. Absent from an older server. */
+  started_at?: number;
   model?: string;
   text: string;
   thinking: string;

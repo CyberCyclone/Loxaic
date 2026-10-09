@@ -706,7 +706,7 @@ export function useChatSession(
         setConversations((prev) =>
           prev.map((c) =>
             c.id === convId
-              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }) }
+              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now }) }
               : c,
           ),
         );

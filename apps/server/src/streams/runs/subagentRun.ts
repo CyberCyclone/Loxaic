@@ -190,6 +190,15 @@ async function instructionsFor(snapshot: unknown, model: string, parentConvId: s
  */
 const starting = new Set<string>();
 
+/**
+ * Where each running child of this process is in the run queue, by stream id:
+ * whether it is waiting for a slot, and when it first got one. Held here, not
+ * in its row, because both change while it runs and a write per change is not
+ * worth it — the admission time is written once, with the end (`markEnded`).
+ * What lets a reload tell "Queued" from "Running" and time each correctly.
+ */
+const childClock = new Map<string, { queued: boolean; admittedAt?: number }>();
+
 /** Whether a child's run is between its row and its registration. */
 export function isSubagentStarting(streamId: string): boolean {
   return starting.has(streamId);
@@ -379,7 +388,20 @@ export async function runSubagent(
       role: { kind: "subagent", parentConvId: parent.convId },
       ...(parent.checkpointTurn ? { checkpointTurn: parent.checkpointTurn } : {}),
       abort,
-      producer: mirrorProgress(producer, parent.producer, childId, streamId, hooks?.onInLine),
+      producer: mirrorProgress(producer, parent.producer, childId, streamId, {
+        onInLine: hooks?.onInLine,
+        onQueued: () => {
+          childClock.set(streamId, { ...childClock.get(streamId), queued: true });
+        },
+        onAdmitted: (at) => {
+          info.admittedAt = at;
+          childClock.set(streamId, { queued: false, admittedAt: at });
+        },
+        onRunning: () => {
+          const clock = childClock.get(streamId);
+          if (clock?.queued) childClock.set(streamId, { ...clock, queued: false });
+        },
+      }),
     });
   } catch (err) {
     // `runToolLoop` rethrows anything that is not a cancellation. Awaited here
@@ -394,6 +416,7 @@ export async function runSubagent(
     parent.signal.removeEventListener("abort", onParentAbort);
     // One run long: nothing will ever measure reuse against this again.
     forgetPromptTrace(childId);
+    childClock.delete(streamId);
   }
   if (!ending.end) {
     // Every deliberate exit of the loop ends the stream; this is the backstop
@@ -435,18 +458,30 @@ export async function runSubagent(
  *
  * Emitted on change, with no timer behind it: every structural event is kept
  * in the stream log for its TTL, and the one figure that moves continuously —
- * elapsed time — is the client's to count from `started_at`.
+ * elapsed time — is the client's to count, from `started_at` while it waits
+ * for a slot and from `admitted_at` once it has one.
  */
 function mirrorProgress(
   child: StreamProducer,
   parent: StreamProducer,
   childConvId: string,
   childStreamId: string,
-  onInLine?: () => void,
+  hooks: {
+    onInLine?: () => void;
+    /** It is waiting for a slot: first in line, or back in line after
+     * handing its slot back (an approval, a check-in). */
+    onQueued?: () => void;
+    /** Its first iteration: the moment it got a slot, once. */
+    onAdmitted?: (at: number) => void;
+    /** Any later iteration: it has a slot again. */
+    onRunning?: () => void;
+  } = {},
 ): StreamProducer {
+  const { onInLine } = hooks;
   let tokensOut = 0;
   let pendingCallId: string | null = null;
   let inLine = false;
+  let admitted = false;
   // The first sign the child has reached the scheduler: a place in the queue,
   // or — when a slot was free — its first iteration.
   const reachedLine = () => {
@@ -461,11 +496,24 @@ function mirrorProgress(
     switch (event.kind) {
       case "run.queued":
         reachedLine();
+        hooks.onQueued?.();
         report({ state: "queued", queue_position: event.position });
         break;
       case "iteration":
         reachedLine();
-        report({ state: "running", iteration: event.n });
+        if (!admitted) {
+          // The first iteration is the run's real start: whatever came before
+          // it was the queue. The card counts the wait until here and the
+          // running time from here, so a child that queued behind a sibling
+          // does not begin at "100s".
+          admitted = true;
+          const at = Date.now();
+          hooks.onAdmitted?.(at);
+          report({ state: "running", iteration: event.n, admitted_at: at });
+        } else {
+          hooks.onRunning?.();
+          report({ state: "running", iteration: event.n });
+        }
         break;
       case "message.usage": {
         tokensOut += event.usage.completion_tokens;
@@ -639,6 +687,8 @@ export async function listSubagents(
     const lost = info.status === "running" && !isRunning(info.streamId) && !starting.has(info.streamId);
     const status: SubAgentStatus = lost ? "error" : info.status;
     const used = row.last ? (row.last.used ?? (row.last.input ?? 0) + (row.last.output ?? 0)) : null;
+    const clock = status === "running" ? childClock.get(info.streamId) : undefined;
+    const admittedAt = info.admittedAt ?? clock?.admittedAt;
     out.push({
       conversation_id: row.id,
       stream_id: info.streamId,
@@ -647,8 +697,13 @@ export async function listSubagents(
       description: info.description,
       model: info.model,
       started_at: info.startedAt,
+      ...(admittedAt === undefined ? {} : { admitted_at: admittedAt }),
       status,
-      ...(status === "running" ? { state: "running" as const } : {}),
+      // A child still waiting for its slot says so: this used to report every
+      // running child as `running`, so a reload showed "Running" for one that
+      // had not begun. Its place in line is not kept, so the card says
+      // "Queued" without a number until the next report.
+      ...(status === "running" ? { state: clock?.queued ? ("queued" as const) : ("running" as const) } : {}),
       ...(info.endedAt !== undefined ? { ended_at: info.endedAt } : {}),
       ...(lost ? { error: SUBAGENT_LOST_ERROR } : info.error ? { error: info.error } : {}),
       context_used: used,

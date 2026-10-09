@@ -32,6 +32,12 @@ export interface SubAgentView extends SubAgentLive {
    * counting from that would show a minute too much.
    */
   startedLocal: number;
+  /**
+   * When it got its inference slot, on this device's clock — what the counter
+   * runs from once it is running. Until then it counts the queue wait from
+   * `startedLocal`. Absent before admission and from an older server.
+   */
+  runningLocal?: number;
   /** Its pending approval with the deadline on this device's clock, ready for
    * the same components the parent's approval uses. */
   approval?: ChildApproval;
@@ -86,13 +92,27 @@ function toView(live: SubAgentLive, previous: SubAgentView | undefined, now: num
   // A start time already worked out is kept: recomputing it on every report
   // would make the elapsed counter jump by the delivery latency each time.
   const startedLocal = previous?.startedLocal ?? localRunStart(live.started_at, serverNow, now);
+  // A live report arrives as the child is admitted, so its arrival is the
+  // admission; a snapshot or listing converts the server's time.
+  const runningLocal =
+    previous?.runningLocal ??
+    (live.admitted_at === undefined
+      ? undefined
+      : serverNow === undefined
+        ? now
+        : localRunStart(live.admitted_at, serverNow, now));
   // The same for an approval's deadline, while it is the same question.
   const sameQuestion =
     previous?.approval &&
     live.pending_approval?.call_id === previous.approval.callId &&
     live.pending_approval.stream_id === previous.approval.streamId;
   const approval = sameQuestion ? previous.approval : approvalOf(live, now, serverNow);
-  const { approval: _dropped, ...rest } = { ...live, startedLocal, approval };
+  const { approval: _dropped, ...rest } = {
+    ...live,
+    startedLocal,
+    ...(runningLocal === undefined ? {} : { runningLocal }),
+    approval,
+  };
   return approval ? { ...rest, approval } : rest;
 }
 
@@ -187,6 +207,7 @@ export function mergeListedSubAgents(
       const { state: _state, queue_position: _queue, pending_approval: _pending, approval: _approval, ...kept } = previous;
       next[at] = {
         ...kept,
+        ...(kept.admitted_at === undefined && row.admitted_at !== undefined ? { admitted_at: row.admitted_at } : {}),
         status: row.status,
         ...(row.ended_at === undefined ? {} : { ended_at: row.ended_at }),
         ...(row.error === undefined ? {} : { error: row.error }),
@@ -200,6 +221,7 @@ export function mergeListedSubAgents(
         last_gen_tps: previous.last_gen_tps ?? row.last_gen_tps,
         last_prompt_tps: previous.last_prompt_tps ?? row.last_prompt_tps,
         tokens_out: previous.tokens_out ?? row.tokens_out,
+        ...(previous.admitted_at === undefined && row.admitted_at !== undefined ? { admitted_at: row.admitted_at } : {}),
       };
       next[at] = filled;
       changed = true;
@@ -293,10 +315,23 @@ export function subAgentContextPercent(s: Pick<SubAgentLive, 'context_used' | 'w
   return Math.min(100, Math.round((s.context_used / s.window_tokens) * 100));
 }
 
-/** How long a finished child ran, in ms, from its own start and end — both on
- * the server's clock, so no conversion. Null while it is running. */
-export function subAgentDurationMs(s: Pick<SubAgentLive, 'started_at' | 'ended_at'>): number | null {
-  return s.ended_at == null ? null : Math.max(0, s.ended_at - s.started_at);
+/** How long a finished child ran, in ms, from when it got a slot to its end —
+ * both on the server's clock, so no conversion. Its wait in the queue is not
+ * running time. From its creation when it never got a slot, or the server did
+ * not say. Null while it is running. */
+export function subAgentDurationMs(s: Pick<SubAgentLive, 'started_at' | 'admitted_at' | 'ended_at'>): number | null {
+  return s.ended_at == null ? null : Math.max(0, s.ended_at - (s.admitted_at ?? s.started_at));
+}
+
+/**
+ * What a running child's counter counts from: its wait in the queue until it
+ * gets a slot, then its running time from there. Counted from creation alone,
+ * a child that waited 100 s behind a sibling read "Running 100s" the moment it
+ * began. A child sent back to the queue after it has run (an approval, a
+ * check-in) keeps counting its running time: those waits are part of its run.
+ */
+export function subAgentCounterSince(s: Pick<SubAgentView, 'startedLocal' | 'runningLocal'>): number {
+  return s.runningLocal ?? s.startedLocal;
 }
 
 /** "12.3s", "4m 05s" — a finished run's length. */

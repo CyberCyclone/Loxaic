@@ -63,7 +63,7 @@ export function historyAsked(t: ChildTranscript): ChildTranscript {
 }
 
 export function applyChildSync(t: ChildTranscript, event: Sync, now = Date.now()): ChildTranscript {
-  const msgs = applySnapshotToMsgs(t.msgs, event.snapshot, { olderUnloaded: false });
+  const msgs = applySnapshotToMsgs(t.msgs, event.snapshot, { olderUnloaded: false, serverNow: event.server_now, now });
   if (event.status !== 'active') {
     // A finished run's snapshot: only this run's own "live" is cleared, so the
     // catch-up of an older stream cannot end a newer one. (A child has one

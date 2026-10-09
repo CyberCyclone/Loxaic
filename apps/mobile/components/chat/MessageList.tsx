@@ -12,6 +12,7 @@ import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
 import { isStageActive, type StageCard } from '@/lib/stageCard';
 import { canRewind, isContextFailure, retryIndex } from '@/lib/rewind';
+import { isEmptyGenerating, liveCounterStart } from '@/lib/liveTimer';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -162,16 +163,18 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
   // A compaction is not: its card is its face for the whole run — it used to
   // hand over to the indicator whenever this device learnt the run was going,
   // which could be minutes in, and switch styles mid-compaction.
-  const lastIsEmptyGenerating =
-    !!lastMsg && lastMsg.role === 'assistant' && !lastMsg.thinking && !lastMsg.text;
+  const lastIsEmptyGenerating = isEmptyGenerating(lastMsg);
+  // Every live counter below times the newest message, not the run — see
+  // lib/liveTimer.ts.
+  const counterSince = liveCounterStart(lastMsg, responseStartedAt);
   const liveCompactionIndex =
     pending && lastMsg?.role === 'summary' && !lastMsg.compaction && !lastMsg.error ? lastIndex : -1;
   const liveCompaction = useMemo(
     () =>
-      liveCompactionIndex >= 0 && responseStartedAt
-        ? { since: responseStartedAt, queuePosition, loadingModel, promptStats }
+      liveCompactionIndex >= 0 && counterSince
+        ? { since: counterSince, queuePosition, loadingModel, promptStats }
         : null,
-    [liveCompactionIndex, responseStartedAt, queuePosition, loadingModel, promptStats],
+    [liveCompactionIndex, counterSince, queuePosition, loadingModel, promptStats],
   );
   // A switch in progress is its own status: the typing indicator beside it
   // would claim the model is working on a reply.
@@ -210,7 +213,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
           <Message
             msg={item}
             liveThinking={originalIndex === liveThinkingIndex}
-            elapsedSince={originalIndex === liveElapsedIndex ? responseStartedAt : null}
+            elapsedSince={originalIndex === liveElapsedIndex ? counterSince : null}
             isNewest={originalIndex === lastRenderIndex}
             liveCompaction={originalIndex === liveCompactionIndex ? liveCompaction : null}
             onRewind={live && canRewind(item) ? live.onRewind : undefined}
@@ -220,7 +223,7 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
         </Box>
       );
     },
-    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, responseStartedAt, liveCompactionIndex, liveCompaction, live, retryAt, onEdit],
+    [lastRenderIndex, liveThinkingIndex, liveElapsedIndex, counterSince, liveCompactionIndex, liveCompaction, live, retryAt, onEdit],
   );
 
   if (!conversation) return null;
@@ -244,12 +247,12 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
         stageCard || showTyping ? (
           <Box className="mx-auto w-full max-w-[820px]">
             {stageCard ? <ContextStageCard card={stageCard} /> : null}
-            {showTyping ? (
+            {showTyping && counterSince !== null ? (
               <TypingIndicator
                 loadingModel={loadingModel}
                 queuePosition={queuePosition}
                 promptStats={promptStats}
-                since={responseStartedAt}
+                since={counterSince}
                 model={model}
               />
             ) : null}

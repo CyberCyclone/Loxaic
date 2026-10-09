@@ -276,7 +276,7 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
             {!isUser && !msg.usage && !!elapsedSince && !liveThinking && (
               <HStack space="xs" className="items-center pt-1">
                 <Box className="h-1.5 w-1.5 rounded-full bg-primary" />
-                <LiveElapsed since={elapsedSince} />
+                <LiveElapsed since={elapsedSince} testID="chat.message.elapsed" />
               </HStack>
             )}
 

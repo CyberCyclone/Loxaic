@@ -998,6 +998,9 @@ export async function runToolLoop(ctx: {
         parent_id: parentId,
         lamport: assistantLamport,
         model,
+        // What the reply's live counter times from: each iteration is its own
+        // message, and the run's start is the whole turn's age.
+        started_at: Date.now(),
       });
       if (loadingModel) {
         // Say why when the reload is another conversation's stage switch:

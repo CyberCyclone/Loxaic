@@ -517,6 +517,16 @@ export const LONG_SUBAGENT_NAME = 'Long survey';
  * mode. The mock's own trigger: the text after the colon is the child's task. */
 export const APPROVAL_SUBAGENT_PROMPT = 'Use a sub-agent: write a file called notes';
 export const MOCK_SUBAGENT_NAME = 'Mock sub-task';
+/** Two sub-agent calls, slow one first: with one slot the quick one waits in
+ * the queue for the whole of the slow one's run (seven of the mock's eight-
+ * second requests), which is what a queued card's counter needs to be seen.
+ * The quick one then takes one eight-second request itself: answered at once,
+ * its "Running" lasted a fraction of a second, too short to look at. */
+export const QUEUED_SUBAGENT_PROMPT = 'Please delegate a slow task, then a quick one.';
+export const QUEUED_SUBAGENT_NAME = 'Quick answer';
+/** A turn of seven requests, each taking the mock's eight seconds: long
+ * enough that the run's age and the newest message's cannot be mistaken. */
+export const LONG_TURN_PROMPT = 'Please take your time and survey in passes.';
 
 export interface E2ESubAgent {
   conversation_id: string;
@@ -527,6 +537,8 @@ export interface E2ESubAgent {
   status: 'running' | 'complete' | 'error' | 'cancelled';
   /** On the server's clock. */
   started_at: number;
+  /** When it got an inference slot, on the server's clock. */
+  admitted_at?: number;
   ended_at?: number;
 }
 
