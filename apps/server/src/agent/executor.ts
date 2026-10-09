@@ -73,6 +73,10 @@ export async function executeTool(
    * only `bash` is long-running enough for it to matter, but it costs nothing
    * to offer and a future slow tool gets it for free (#119). */
   signal?: AbortSignal,
+  /** Called with the resolved path just before `fs_write` or `fs_edit`
+   * changes a file — what records its file checkpoint (agent/checkpoints.ts).
+   * Never for a call that fails before writing. */
+  beforeWrite?: (path: string) => Promise<void>,
 ): Promise<ToolResult> {
   try {
     if (toolNeedsSandbox(tool)) {
@@ -81,8 +85,8 @@ export async function executeTool(
       }
       switch (tool) {
         case "fs_read":  return await runFsRead(handle, args);
-        case "fs_write": return await runFsWrite(handle, args);
-        case "fs_edit":  return await runFsEdit(handle, args);
+        case "fs_write": return await runFsWrite(handle, args, beforeWrite);
+        case "fs_edit":  return await runFsEdit(handle, args, beforeWrite);
         case "bash":     return await runBash(handle, args, signal);
         case "grep":     return await runGrep(handle, args);
         case "glob":     return await runGlob(handle, args);
@@ -226,10 +230,15 @@ async function readOrNull(handle: SandboxHandle, path: string): Promise<string |
   }
 }
 
-async function runFsWrite(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
+async function runFsWrite(
+  handle: SandboxHandle,
+  args: Record<string, unknown>,
+  beforeWrite?: (path: string) => Promise<void>,
+): Promise<ToolResult> {
   const path = resolvePath(handle, args.path);
   const content = requireString(args, "content");
   const oldContent = await readOrNull(handle, path);
+  await beforeWrite?.(path);
   await handle.writeFile(path, content);
   return {
     ok: true,
@@ -238,7 +247,11 @@ async function runFsWrite(handle: SandboxHandle, args: Record<string, unknown>):
   };
 }
 
-async function runFsEdit(handle: SandboxHandle, args: Record<string, unknown>): Promise<ToolResult> {
+async function runFsEdit(
+  handle: SandboxHandle,
+  args: Record<string, unknown>,
+  beforeWrite?: (path: string) => Promise<void>,
+): Promise<ToolResult> {
   const path = resolvePath(handle, args.path);
   const oldText = requireString(args, "oldText");
   const newText = requireString(args, "newText");
@@ -254,6 +267,7 @@ async function runFsEdit(handle: SandboxHandle, args: Record<string, unknown>): 
   }
 
   const updated = current.replace(oldText, newText);
+  await beforeWrite?.(path);
   await handle.writeFile(path, updated);
   return {
     ok: true,

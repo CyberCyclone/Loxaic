@@ -1,4 +1,4 @@
-import type { ServerMessage } from "@loxaic/types";
+import { isStreamErrorCode, type ServerMessage } from "@loxaic/types";
 import { NotFoundError } from "../streams/authz.ts";
 import { clientRefOf } from "./client-ref.ts";
 
@@ -58,7 +58,8 @@ const outcomes = new Map<string, Map<string, Promise<SendOutcome>>>();
  */
 export function sendErrorFor(err: unknown, ref: string | undefined): SendError {
   if (err instanceof NotFoundError) return { type: "error", error: "not found", ...(ref ? { client_ref: ref } : {}) };
-  const code = (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
+  const raw = (err as { code?: unknown }).code;
+  const code = isStreamErrorCode(raw) ? raw : undefined;
   return {
     type: "error",
     error: (err as Error).message,
@@ -114,7 +115,8 @@ export function beginSendFor(
   msg: { type: string },
   surface: "chat" | "agent",
 ): PendingSendOutcome | undefined {
-  if (msg.type !== `${surface}.send`) return undefined;
+  // A retry starts a run the same way and loses its answer the same way.
+  if (msg.type !== `${surface}.send` && msg.type !== `${surface}.retry`) return undefined;
   const ref = clientRefOf(msg);
   return ref ? beginSend(userId, ref) : undefined;
 }

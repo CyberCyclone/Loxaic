@@ -19,6 +19,8 @@ import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
+import { RewindModal } from '@/components/chat/RewindModal';
+import { useRewindRetry, type ComposerSeed } from '@/hooks/useRewindRetry';
 import { Composer } from '@/components/composer/Composer';
 import { useChatSession, toConversation, type ChatScope } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
@@ -153,6 +155,8 @@ export default function RoutineChatScreen() {
     pendingApproval,
     pendingCheckin,
     handleSend,
+    handleRetry,
+    applyLocalRewind,
     handleStop,
     handleCommand,
     handleApprove,
@@ -197,7 +201,7 @@ export default function RoutineChatScreen() {
   // a first send to carry choices on: every switch here is a PATCH.
   const mcp = useMcpSwitches(token, activeConv?.id ?? null, 'routine');
   // Puts an unsent message back in the message box (a no-room refusal).
-  const [composerSeed, setComposerSeed] = useState<{ token: number; text: string } | null>(null);
+  const [composerSeed, setComposerSeed] = useState<ComposerSeed | null>(null);
 
   // The routine's model, and only it: the server serves every send in one of
   // these conversations on the routine's model whatever the client names, so
@@ -205,6 +209,17 @@ export default function RoutineChatScreen() {
   const model = routine?.model ?? activeConv?.model ?? '';
   const modelName = model ? (isKnown(model) ? getName(model) : model) : 'No model';
   const context = useContextUsage(activeConv?.msgs, model ? getWindow(model) : null);
+
+  // Rewind and Retry — see chat.tsx. A retry here is answered on the
+  // routine's model, which the server enforces whatever is named.
+  const rewind = useRewindRetry({
+    conversationId: activeConv?.id ?? null,
+    messages: activeConv?.msgs,
+    enabled: !showsDisconnected(connection),
+    retry: (restoreFiles) => handleRetry(model, { restoreFiles }),
+    applyLocalRewind,
+    onSeed: setComposerSeed,
+  });
 
   /** The schedule in words, or null when `humanizeCron` had none to give and
    * handed back the raw expression. */
@@ -325,6 +340,8 @@ export default function RoutineChatScreen() {
       {breakpoint === 'wide' && threadList}
 
       {/* No "choose a model": a routine's chats run on the routine's model. */}
+      <RewindModal dialog={rewind.dialog} onConfirm={rewind.confirm} onCancel={rewind.cancel} />
+
       <NoRoomModal
         notice={noRoom}
         isAdmin={isAdmin}
@@ -395,6 +412,7 @@ export default function RoutineChatScreen() {
                 queuePosition={queuePosition}
                 model={model ? modelName : undefined}
                 history={history}
+                actions={rewind.actions}
               />
             </SubAgentContext.Provider>
           ) : !listLoaded ? (

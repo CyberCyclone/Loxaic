@@ -1,18 +1,17 @@
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, routineRuns, routines } from "@loxaic/db/schema";
-import type { AttachmentRef, ContentBlock, McpOverrides, ThinkingLevel } from "@loxaic/types";
+import type { AttachmentRef, ContentBlock, FileRestoreReport, McpOverrides, ThinkingLevel } from "@loxaic/types";
 import {
   assertAttachmentsOwned,
   assertConversationAccess,
   assertParentInConversation,
+  NotFoundError,
 } from "../authz.ts";
-import { turnErrorText } from "../error-text.ts";
-import { getStreamBroker } from "../index.ts";
-import { getRunByConversation, registerRun } from "../registry.ts";
-import { announceNewRun } from "../watchers.ts";
-import { runToolLoop } from "./engine.ts";
+import { claimConversation, unregisterRun, type RunHandle } from "../registry.ts";
 import { hasNoMessages } from "./stageRun.ts";
+import { startRunOnRow, type RunSettled, type StartedRun } from "./start-run.ts";
+import { removeAfterForRetry } from "../../conversations/rewind.ts";
 import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
@@ -42,17 +41,8 @@ function chatSystemPrompt(): string {
   ].join(" ");
 }
 
-export interface StartChatRunResult {
-  streamId: string;
-  conversationId: string;
-  userMessageId: string;
-}
-
-/** How a run ended, as the stream log finalized it. */
-export interface RunSettled {
-  status: "complete" | "error" | "cancelled";
-  error?: string;
-}
+export type StartChatRunResult = StartedRun;
+export type { RunSettled };
 
 export async function startChatRun(input: {
   userId: string;
@@ -90,7 +80,6 @@ export async function startChatRun(input: {
   onSettled?: (info: RunSettled) => void;
 }): Promise<StartChatRunResult> {
   const { userId, content } = input;
-  const broker = getStreamBroker();
 
   // Before anything is written: a bad ref must fail the whole send, not
   // leave a half-created conversation behind.
@@ -139,143 +128,128 @@ export async function startChatRun(input: {
     convId = conv.id;
   }
 
-  if (getRunByConversation(convId)) {
-    throw new Error("A response is already in progress for this conversation");
-  }
-
-  // Before the user message lands: this send opens the conversation (a new
-  // chat, or a routine's fresh run), so its model starts at the stage it chose
-  // or at standard — see stageRun.ts.
-  const opening = await hasNoMessages(convId);
-
-  const userMsgId = uuid();
-  const userLamport = Date.now();
-  await db.insert(messages).values({
-    id: userMsgId,
-    conversationId: convId,
-    parentId: input.parentId ?? null,
-    authorType: "user",
-    authorUserId: userId,
-    origin: "server",
-    lamport: userLamport,
-    content: [
-      ...atts.map((a): ContentBlock => ({
-        kind: "attachment",
-        ref: a.ref,
-        mime: a.mime,
-        ...(a.name === undefined ? {} : { name: a.name }),
-      })),
-      { kind: "text", text: content },
-    ] as ContentBlock[],
-    status: "complete",
-    createdAt: new Date(),
-  });
-
-  // After the send is committed to, so a refused turn never reorders the
-  // picker; before the run, so the next screen the user opens is already
-  // right. It swallows its own failures — the list is a convenience, the turn
-  // is not — but it is awaited, so the write cannot land after the request.
-  if (input.recordUse !== false) {
-    await recordModelUse(userId, model);
-  }
-
-  const streamId = uuid();
-  const producer = await broker.openProducer({
-    streamId,
+  // Claimed before anything below is written, so a rewind or a second send
+  // arriving meanwhile is refused rather than interleaved (claimConversation).
+  const claim: RunHandle = {
+    streamId: uuid(),
     conversationId: convId,
     userId,
-    surface: "chat",
-  });
-
-  producer.emit({
-    kind: "message.start",
-    message_id: userMsgId,
-    author_type: "user",
-    parent_id: input.parentId ?? null,
-    lamport: userLamport,
-    text: content,
-    ...(atts.length ? { attachments: atts } : {}),
-  });
-  producer.emit({ kind: "message.end", message_id: userMsgId, status: "complete" });
-
-  const abort = new AbortController();
-  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
-  announceNewRun(convId, streamId);
-
-  // Wired before the loop starts, because a run that fails inside its first
-  // await would otherwise finalize before anyone was listening.
-  const settle = onceSettled(input.onSettled, broker.onEnd.bind(broker), streamId);
-
-  // Detached: the caller gets turn.started immediately, and generation
-  // continues independent of whatever socket happened to start it.
-  runToolLoop({
-    streamId,
-    convId,
-    userId,
-    userMsgId,
-    userLamport,
+    abort: new AbortController(),
+    approvals: new Map(),
     model,
-    mode: "manual",
-    basePrompt: chatSystemPrompt(),
-    surface: "chat",
-    newConversation: opening ? { chosenStage: input.contextStage } : undefined,
-    thinkingLevel: input.thinkingLevel,
-    ...(routine ? { subagents: { routine: true } } : {}),
-    abort,
-    producer,
-  }).then(
-    () => {
-      // Every deliberate exit of the loop ends the stream, so this normally
-      // finds the run already settled. If it does not, the stream would stay
-      // "active" forever — a resync would keep waiting on a run nothing is
-      // running — so end it rather than leave it hanging.
-      settle({ status: "error", error: "The run ended without a result." });
-    },
-    async (err: unknown) => {
-      // `runToolLoop` rethrows anything that is not a cancellation, and
-      // nothing above this point catches it: as a bare `void` it was an
-      // unhandled rejection that also left the stream active. Reachable with
-      // nobody watching now that a cron can start a run.
-      const text = turnErrorText(err, `run failed in ${convId}`);
-      console.error(`run ${streamId} failed in ${convId}:`, err);
-      // Idempotent — a no-op if the loop already ended the stream itself.
-      await producer.end("error", { error: text }).catch(() => undefined);
-      settle({ status: "error", error: text });
-    },
-  );
+  };
+  claimConversation(claim);
+  try {
+    // Before the user message lands: this send opens the conversation (a new
+    // chat, or a routine's fresh run), so its model starts at the stage it
+    // chose or at standard — see stageRun.ts.
+    const opening = await hasNoMessages(convId);
 
-  return { streamId, conversationId: convId, userMessageId: userMsgId };
+    const userMsgId = uuid();
+    const userLamport = Date.now();
+    await db.insert(messages).values({
+      id: userMsgId,
+      conversationId: convId,
+      parentId: input.parentId ?? null,
+      authorType: "user",
+      authorUserId: userId,
+      origin: "server",
+      lamport: userLamport,
+      content: [
+        ...atts.map((a): ContentBlock => ({
+          kind: "attachment",
+          ref: a.ref,
+          mime: a.mime,
+          ...(a.name === undefined ? {} : { name: a.name }),
+        })),
+        { kind: "text", text: content },
+      ] as ContentBlock[],
+      status: "complete",
+      createdAt: new Date(),
+    });
+
+    // After the send is committed to, so a refused turn never reorders the
+    // picker; before the run, so the next screen the user opens is already
+    // right. It swallows its own failures — the list is a convenience, the
+    // turn is not — but it is awaited, so the write cannot land after the
+    // request.
+    if (input.recordUse !== false) {
+      await recordModelUse(userId, model);
+    }
+
+    return await startRunOnRow({
+      claim,
+      surface: "chat",
+      row: { id: userMsgId, lamport: userLamport, parentId: input.parentId ?? null, text: content, attachments: atts },
+      loop: () => ({
+        model,
+        mode: "manual",
+        basePrompt: chatSystemPrompt(),
+        newConversation: opening ? { chosenStage: input.contextStage } : undefined,
+        thinkingLevel: input.thinkingLevel,
+        ...(routine ? { subagents: { routine: true } } : {}),
+      }),
+      onSettled: input.onSettled,
+    });
+  } catch (err) {
+    // Anything thrown here is from before the loop started (startRunOnRow
+    // returns as soon as it has), so the slot is still the starter's to give
+    // back. A no-op when startRunOnRow already did.
+    unregisterRun(claim.streamId);
+    throw err;
+  }
 }
 
 /**
- * Bridges the stream log's terminal status to the caller's callback, once.
- *
- * `broker.onEnd` is the source of truth — it is what the producer's own
- * `end()` emits, so the status here is exactly the one the log recorded. The
- * promise handlers above are the backstop for the case it never fires.
+ * Answers a chat conversation's newest message again (`chat.retry`): the
+ * reply and anything after it are removed, and a new run starts on the same
+ * stored message. On `model` — the composer's current choice — except in a
+ * routine's conversation, which only ever runs on its routine's model.
  */
-function onceSettled(
-  cb: ((info: RunSettled) => void) | undefined,
-  onEnd: (streamId: string, listener: (info: RunSettled) => void) => () => void,
-  streamId: string,
-): (info: RunSettled) => void {
-  if (!cb) return () => undefined;
-  let done = false;
-  const fire = (info: RunSettled) => {
-    if (done) return;
-    done = true;
-    off();
-    try {
-      cb(info);
-    } catch (err) {
-      // The caller's bookkeeping is not allowed to take the run down with it.
-      console.error(`run ${streamId} settle handler threw:`, err);
-    }
+export async function retryChatRun(input: {
+  userId: string;
+  conversationId: string;
+  model: string;
+  thinkingLevel?: ThinkingLevel;
+  /** Put back the files the replaced turn's edit tools changed first. */
+  restoreFiles?: boolean;
+}): Promise<StartChatRunResult & { restoredFiles: FileRestoreReport | null }> {
+  const { userId, conversationId: convId } = input;
+  const grant = await assertConversationAccess(userId, convId, "editor");
+  if (grant.kind !== "chat" && grant.kind !== "routine") throw new NotFoundError();
+  const routine = grant.kind === "routine";
+  const model = routine ? ((await routineModelFor(convId)) ?? input.model) : input.model;
+  await assertModelUsable(model);
+
+  const claim: RunHandle = {
+    streamId: uuid(),
+    conversationId: convId,
+    userId,
+    abort: new AbortController(),
+    approvals: new Map(),
+    model,
   };
-  const off = onEnd(streamId, (info) => {
-    fire({ status: info.status, ...(info.error === undefined ? {} : { error: info.error }) });
-  });
-  return fire;
+  claimConversation(claim);
+  try {
+    const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles, signal: claim.abort.signal });
+    await recordModelUse(userId, model);
+    const started = await startRunOnRow({
+      claim,
+      surface: "chat",
+      row,
+      loop: () => ({
+        model,
+        mode: "manual",
+        basePrompt: chatSystemPrompt(),
+        thinkingLevel: input.thinkingLevel,
+        ...(routine ? { subagents: { routine: true } } : {}),
+      }),
+    });
+    return { ...started, restoredFiles: row.files };
+  } catch (err) {
+    unregisterRun(claim.streamId);
+    throw err;
+  }
 }
 
 /**

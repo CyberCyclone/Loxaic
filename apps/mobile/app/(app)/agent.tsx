@@ -50,6 +50,9 @@ import { SubAgentsList } from '@/components/subagents/SubAgentsList';
 import { PLAN_ACCEPTED_MESSAGE, PLAN_REJECTED_MESSAGE, acceptMode, formatAnswers, type PlanStatus, type QuestionsStatus } from '@/lib/plan';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
+import { RewindModal } from '@/components/chat/RewindModal';
+import { useRewindRetry, type ComposerSeed } from '@/hooks/useRewindRetry';
+import { isServerConvId } from '@/lib/streamMessages';
 import { useSession } from '@/lib/session';
 import { useSettings } from '@/hooks/useSettings';
 import { useThinkingChoice } from '@/hooks/useThinkingChoice';
@@ -98,6 +101,8 @@ export default function AgentScreen() {
     handleSend,
     handleStop,
     handleCommand,
+    handleRetry,
+    applyLocalRewind,
     handleNewRun,
     handleModeChange,
     handleApprove,
@@ -141,7 +146,7 @@ export default function AgentScreen() {
   // Composer's subtree — its Compact button reaches the input through this,
   // bumping `token` so pressing it twice in a row still re-seeds. See
   // Composer's `commandSeed` prop.
-  const [commandSeed, setCommandSeed] = useState<{ token: number; text: string } | null>(null);
+  const [commandSeed, setCommandSeed] = useState<ComposerSeed | null>(null);
   // A send the server never heard of comes back to the message box.
   useEffect(() => { if (returnedText) setCommandSeed(returnedText); }, [returnedText]);
 
@@ -227,6 +232,20 @@ export default function AgentScreen() {
       : !showsDisconnected(connection)
         ? null
         : disconnectedCopy(connection).readOnly('run');
+
+  // Rewind and Retry — see chat.tsx. A retry runs in the mode the composer
+  // has now, as a send would.
+  const rewind = useRewindRetry({
+    conversationId: activeId && isServerConvId(activeId) ? activeId : null,
+    messages: activeRun?.msgs,
+    enabled: readOnlyReason === null,
+    retry: (restoreFiles) => {
+      bumpRecentModel(selectedModel);
+      return handleRetry(selectedModel, mode, { restoreFiles });
+    },
+    applyLocalRewind,
+    onSeed: setCommandSeed,
+  });
 
   // A host model with YaRN stages — see chat.tsx.
   const stages = useContextStages({
@@ -498,6 +517,7 @@ export default function AgentScreen() {
                     pendingCheckin={pendingCheckin}
                     history={history}
                     stageCard={stageCard}
+                    actions={rewind.actions}
                     onAllow={() => {
                       if (pendingApproval) handleApprove(pendingApproval.callId);
                       else if (childApproval) subAgents.answer(childApproval.conversation_id, true);
@@ -626,6 +646,8 @@ export default function AgentScreen() {
       />
       <ContextStageModal stages={stages} />
       <ContextSettingsSheet stages={stages} />
+      <RewindModal dialog={rewind.dialog} onConfirm={rewind.confirm} onCancel={rewind.cancel} />
+
       <NoRoomModal
         notice={noRoom}
         isAdmin={isAdmin}

@@ -350,12 +350,17 @@ replies.
   `[0]`, "the last assistant row") needs an `orderBy`; `.find` by content does not.
 - **Messages form a tree on paper and a list in practice.** Every row carries `parent_id` and
   the engine keeps `conversations.active_leaf_id` on the newest row, but nothing walks the
-  tree: `loadHistory` replays rows in `(lamport, created_at)` order regardless of `parent_id`,
-  `deleted_at` or the leaf, and the `forks` array `GET /v1/conversations/:id/messages` returns
-  is read by no client. That holds only because the per-conversation run lock never lets one
-  message get two children. Anything that creates a real in-thread branch must first make
-  `loadHistory` walk parent links back from `active_leaf_id`, or both branches are
-  interleaved into one prompt.
+  tree: `loadHistory` replays rows in `(lamport, created_at)` order regardless of `parent_id`
+  or the leaf, and the `forks` array `GET /v1/conversations/:id/messages` returns is read by
+  no client. That holds only because the per-conversation run lock never lets one message get
+  two children. A rewind does not branch either: it removes a suffix (see "Rewind and retry").
+  Anything that creates a real in-thread branch must first make `loadHistory` walk parent
+  links back from `active_leaf_id`, or both branches are interleaved into one prompt.
+- **`messages.deleted_at` is a rewind's audit stamp, and every read that feeds a prompt or a
+  decision skips it**: `historyWindow` (and so `loadHistory`, `historyFront`), `cutoffBefore`,
+  `hasNoMessages`, `assertParentInConversation`, the history pages. Only the admin transcript
+  reads stamped rows (`loadMessagePage`'s `includeRemoved`). A new query over `messages` that
+  feeds the model or a decision needs `isNull(messages.deletedAt)`.
 
 ### Passwords
 
@@ -3157,6 +3162,119 @@ replies.
   claim about every run, which is most alarming exactly where it is false: the one workspace
   holding work a user can really lose. `lib/deleteMessage.ts` is a pure module so both of the
   things this sentence varies on are unit-tested.
+
+### Rewind and retry (#166)
+
+- **A rewind removes a message and everything after it; a retry removes everything after the
+  newest typed message and answers that same row again.** Both are `conversations/rewind.ts`,
+  the only code that removes part of a conversation (`delete.ts` removes a whole one).
+  "After" is **`created_at`, not lamport**: a summary a run writes mid-run is placed just
+  *below* the message it was answering (`cutoffBefore`), so by lamport it would survive a
+  rewind of that very message. By time it is that run's work, and goes with it.
+- **Removed means what deleting a conversation means here.** Retention off: erased. "Keep for
+  an audit" on: stamped `deleted_at`, invisible to everyone using the conversation and to the
+  model, readable in the admin transcript, marked "Rewound". Otherwise rewinding would be a
+  way round the audit. Usage rows are detached, as for a deleted conversation, so Stats keeps
+  the tokens and the context ring stops reading a removed turn. Sub-agents spawned by a
+  removed message follow the same setting (a stamped child is refused by `resolveAccess`).
+- **The removed runs' stream logs are deleted**, and the drivers drop a deleted stream from
+  the conversation's run list. A resubscribe snapshots the last three runs, and a snapshot of
+  a removed one would put every message back on every device for the log's TTL. A run belongs
+  to the suffix when its stream started at or after the pivot message, which also catches
+  compaction and stage runs that write no rows.
+- **Every starter claims the conversation before it writes** (`claimConversation`: the busy
+  check and `registerRun` in one synchronous step). Sends used to check, await the insert, and
+  register afterwards; a rewind landing in that gap would have removed the very row the send
+  then ran on. A rewind holds a claim of its own (`rewind-<uuid>`, a stream id no stream has)
+  for its whole length, and both answer `ConversationBusyError` (409, `conversation_busy`)
+  while a run is going.
+- **`startRunOnRow` (`streams/runs/start-run.ts`) is a send after its insert**: open the
+  stream, re-emit the row's `message.start`, announce, run the loop on the stored id and
+  lamport. Chat, agent and retry all use it, so a retry is the same loop — a mid-run
+  compaction still keeps the message after the summary (`unanswered`).
+- **The model is the client's**: a retry runs on whatever the composer has selected, so
+  "retry on another model" is a model switch and then Retry. A routine's conversation still
+  runs only on its routine's model. `chat.retry`/`agent.retry` are remembered for
+  `send.status` like a send.
+- **A removed `instructions_update` notice clears `instructions.latest`.** The version before
+  it is stored nowhere, so the next run compares against the system prompt's version and
+  announces the change again — possibly repeating part of an earlier notice, which costs
+  tokens and nothing else.
+- **`conversation.rewound` reaches every socket watching** (`watchers.ts`'s conversation
+  events, re-authorized in `delivery.ts` like a new run). The client applies it **by id, never
+  by position** (`lib/rewind.ts`): a retry's new reply can arrive before the event saying the
+  old one went. It also ignores any later snapshot or event of a removed run, which covers one
+  already in flight when the logs were deleted. **A removed sub-agent's streams are named in
+  `removed_stream_ids` too**: a client with its transcript open is subscribed to them. And the
+  agent's flat run state (step counter, live todos) is cleared only when the run being followed
+  is a removed one (`rewindClearsLiveRun`): the event is re-authorized before it is relayed and
+  a retry's new run is not, so it can land after the new run has begun.
+- **An answer for a thread the person has left changes nothing on screen.** A rewind's message
+  goes back to *its* thread's composer (`PendingSeeds`), waiting there if another thread is open
+  when the answer lands — the composer is one box, and seeding it put thread A's message in
+  thread B's. A retry whose files question is answered after the person moved is not sent (it
+  would answer the open thread's message). And a `turn.started` for a send or retry of ours
+  into an existing conversation never moves the screen (`followsTurnStarted`); a retry is
+  remembered like a send for that, and only an answer this device cannot place is followed
+  blindly. All found in review.
+- **Only the uploader gets a rewound message's attachments back**, and their `created_at` is
+  refreshed: the reaper's grace counts from upload, and erasing the message unreferences them.
+- **Context failures are coded, with a way out.** `context_cannot_fit` is Loxaic refusing a
+  request that cannot fit even after compacting; `context_overflow` is the backend refusing one
+  (`inference/context-overflow.ts` recognises OpenAI, vLLM, llama.cpp, LM Studio and Anthropic
+  bodies, and nothing that merely mentions context). Both are stored on the reply
+  (`messages.error_code`) and offer "Edit message" — a rewind to its message, conversation only,
+  with no dialog — beside Retry.
+- **e2e**: `rewind-retry.spec.ts`. The mock's "give a different answer" numbers its replies so a
+  retry is visibly new; "overflow the provider" refuses as llama.cpp does (the mock, the fake
+  router) or as OpenAI does (the e2e mock provider). The cannot-fit case types a 30,000-character
+  paste and runs on web and Electron only: XCUITest and UiAutomator2 type a character at a time.
+
+### File checkpoints
+
+- **What the agent's file tools change can be put back by a rewind**, modelled on Claude Code's
+  checkpoints (`agent/checkpoints.ts`). A turn's first `fs_write` or `fs_edit` of a path records
+  its state before the turn — a copy, "did not exist", or why there is no copy — keyed by the
+  turn's user message. Later writes in the turn change nothing, so the record is always "before
+  this turn". A sub-agent's edits go under the turn that spawned it.
+- **Only the file tools are tracked**: `bash`, the terminal and edits outside Loxaic are not,
+  symlinks are not followed, and files over 10 MiB get no copy. All of it is said in the dialog,
+  and a restore reports what it skipped. Claude Code draws the same line for the same reason:
+  tracking a shell's effects means a filesystem snapshot per command.
+- **Copies are made with `cp -p` by `exec`, inside the workspace**, so no file content crosses
+  the wire and bytes and mode are exact (`diff.oldContent` on the tool row is capped by
+  `readFile` at 256 KiB on a container and cannot carry binary files). A server workspace keeps
+  them beside the working tree (`<root>/.loxaic/checkpoints/<conv>/<turn>/`), destroyed with it.
+  **A folder used directly on someone's own machine has no "beside"**: its root is the folder,
+  so its copies go under `~/.loxaic/checkpoints` on that machine, through the same `exec` —
+  never into the person's folder, and with no new executor verb, so installed desktops work.
+- **The database holds only the manifest** (`checkpoint_files`, migration 0041), so the dialog
+  knows whether a point has changes without asking the workspace. `created_at` is the app's
+  clock, as every message row's is, because a rewind compares the two.
+- **Restoring to a turn takes, for each path, its oldest record from that turn on** — its
+  state before that turn. A path that did not exist is deleted. A destination that has become a
+  symlink or a directory is skipped, so a restore never writes through a link.
+- **Reaching the workspace never creates one** (a destroyed workspace has nothing to put back),
+  but a restore wakes a paused one. Dropping a removed turn's copies does not wake anything;
+  they go when the workspace is destroyed.
+- **A record is `unknown` until its copy reports back, and stays so if it never does** — a
+  thrown or failed `exec`, or a server that stopped in between. It was first inserted as
+  `missing` as a placeholder, and a restore *deletes* a `missing` file: a copy lost to a dropped
+  executor socket deleted the very file it was meant to protect, reported as put back. A
+  restore skips `unknown` and names the file.
+- **A restore is bounded as a whole** (`REWIND_RESTORE_TIMEOUT_MS`, default 2 min, read at call
+  time) and stops on its claim's signal (a retry's run, aborted by deleting the conversation).
+  It runs under the conversation's claim, so every send is refused meanwhile, and a rewind's
+  claim has no stream anyone can stop. What it had not reached is reported as skipped.
+- **Deleting a conversation removes its copies from the workspace first**
+  (`dropConversationCopies`, from `destroyConversationSandboxes`). A server workspace's copies
+  would go with it anyway; a direct folder's are in the person's home, which destroying that
+  workspace never touches, and they are their own file contents. A machine that is offline
+  keeps them, and the delete dialog says where (`~/.loxaic/checkpoints`). No executor-side sweep:
+  two servers can share one machine's `~/.loxaic`, and one would delete the other's copies.
+- **Retention**: the newest 100 turns per conversation. A rewind of the conversation drops the
+  removed turns' checkpoints; "files only" keeps them, so it can be done again. A retry keeps
+  its turn's: they still describe the files before it.
 
 ### Routines
 

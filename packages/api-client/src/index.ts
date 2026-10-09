@@ -1268,6 +1268,9 @@ export interface AdminMessage {
   content: unknown;
   status: string;
   createdAt: string;
+  /** When a rewind removed it (#166), on a server that keeps deleted chats
+   * for an audit. Null or absent for a message still in the conversation. */
+  removedAt?: string | null;
 }
 
 export interface DirectoryUser {
@@ -1507,6 +1510,58 @@ export async function deleteConversation(id: string): Promise<{ ok: true }> {
   return (await authedFetch(`/v1/conversations/${id}`, { method: "DELETE" })).json() as Promise<{ ok: true }>;
 }
 
+/** What a rewind does: the conversation and the files the agent edited, the
+ * conversation alone, or the files alone (#166). */
+export type RewindScope = "both" | "conversation" | "files";
+
+/** What a rewind to a message would remove, for its confirm dialog. */
+export interface RewindPreview {
+  /** Messages people typed that would go, the rewound one included. */
+  turns: number;
+  /** How many of those someone else sent. */
+  others: number;
+  /** Whether admins keep what is removed (audit retention is on). */
+  retained: boolean;
+  /** Files the agent's edit tools changed from here on — what "files" can put
+   * back. Absent from a server without checkpoints. */
+  files?: number;
+}
+
+export interface RewindResult {
+  /** The message's text, for the composer. */
+  text: string;
+  /** Its attachments — only for the person who sent them. */
+  attachments: import("@loxaic/types").AttachmentRef[];
+  /** The message had attachments that are not the caller's to send. */
+  attachments_withheld: boolean;
+  removed_ids: string[];
+  /** What a files restore did; null when files were not asked for. */
+  files: import("@loxaic/types").FileRestoreReport | null;
+}
+
+export async function previewRewind(conversationId: string, messageId: string): Promise<RewindPreview> {
+  return (await authedFetch(`/v1/conversations/${conversationId}/rewind/${messageId}`)).json() as Promise<RewindPreview>;
+}
+
+/**
+ * Rewinds a conversation to one of its messages: that message and everything
+ * after it are removed and its text comes back. A run in progress answers 409
+ * (`ApiError.code` "conversation_busy").
+ */
+export async function rewindConversation(
+  conversationId: string,
+  messageId: string,
+  scope: RewindScope = "both",
+): Promise<RewindResult> {
+  return (
+    await authedFetch(`/v1/conversations/${conversationId}/rewind`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message_id: messageId, scope }),
+    })
+  ).json() as Promise<RewindResult>;
+}
+
 export async function updateConversation(
   id: string,
   patch: {
@@ -1563,6 +1618,9 @@ export interface ApiMessage {
   /** Why an errored turn failed. Null otherwise, and on errored rows that
    * predate the column. */
   error: string | null;
+  /** A `StreamErrorCode` beside `error`, when the client offers a way out of
+   * it. Absent from an older server. */
+  errorCode?: string | null;
   createdAt: string;
   deletedAt: string | null;
   /** Persisted usage/timing for this message — null for user messages or if never recorded. */
@@ -2354,6 +2412,7 @@ export type {
   SubAgentStatus,
   SubAgentState,
   SubAgentModelMode,
+  FileRestoreReport,
 } from "@loxaic/types";
 import type { ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
 export {
@@ -2361,7 +2420,7 @@ export {
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,
-  CHECKIN_ANSWER_NUDGE,
+  CHECKIN_ANSWER_NUDGE, isNudgeText,
   DEFAULT_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS,
   MAX_CHECKIN_AUTO_CONTINUES, DEFAULT_CHECKIN_AUTO_CONTINUES,
   LOOP_SENSITIVITIES, DEFAULT_LOOP_SENSITIVITY,
@@ -2524,6 +2583,35 @@ export function sendAgentMessage(
     ...(mcpOverrides ? { mcp_overrides: mcpOverrides } : {}),
     ...(contextStage !== undefined ? { context_stage: contextStage } : {}),
     ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+  });
+}
+
+/**
+ * Answer the conversation's newest message again (#166): its reply goes and a
+ * new run answers the same stored message, on `model`. The socket decides the
+ * surface; `mode` matters only on the agent socket.
+ */
+export function sendRetry(
+  ws: WebSocket,
+  surface: "chat" | "agent",
+  input: {
+    conversationId: string;
+    model?: string;
+    mode?: import("@loxaic/types").PermissionMode;
+    clientRef?: string;
+    thinkingLevel?: import("@loxaic/types").ThinkingLevel;
+    /** Put back the files the reply's turn edited first. */
+    restoreFiles?: boolean;
+  },
+): boolean {
+  return trySend(ws, {
+    type: `${surface}.retry`,
+    conversation_id: input.conversationId,
+    model: input.model ?? "default",
+    ...(surface === "agent" && input.mode ? { mode: input.mode } : {}),
+    ...(input.clientRef ? { client_ref: input.clientRef } : {}),
+    ...(input.thinkingLevel ? { thinking_level: input.thinkingLevel } : {}),
+    ...(input.restoreFiles ? { restore_files: true } : {}),
   });
 }
 

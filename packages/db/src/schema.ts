@@ -212,6 +212,10 @@ export const messages = pgTable(
      * other status — a user stop is not an error — and for failed rows written
      * before this column, which the client answers with a plain fallback. */
     error: text("error"),
+    /** A `StreamErrorCode` beside `error`, when the client offers a way out
+     * of it (a reply that could not fit: "Edit message", #166). Null for every
+     * other failure. */
+    errorCode: text("error_code"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     deletedAt: timestamp("deleted_at"),
   },
@@ -221,6 +225,43 @@ export const messages = pgTable(
     index("messages_conversation_created_idx").on(t.conversationId, t.createdAt),
     // Serves the agent tool loop's history ordering ([desc(lamport), desc(createdAt)]).
     index("messages_conversation_lamport_idx").on(t.conversationId, t.lamport),
+  ],
+);
+
+// ── File checkpoints (agent/checkpoints.ts) ──
+/**
+ * What a file was before a turn's first `fs_write` or `fs_edit` of it, so a
+ * rewind can put it back (#166). The bytes are a copy in the workspace itself
+ * (or, for a folder on the person's own machine, beside it in their home
+ * directory), never here: this is the manifest, which lets the rewind dialog
+ * say whether a point has changes to restore without asking the workspace.
+ *
+ * Keyed to the conversation whose workspace the file is in and the user
+ * message whose turn wrote it — a sub-agent's edits are its parent's turn's.
+ * No foreign keys, like `messages`: erasing a conversation erases these in
+ * `conversations/delete.ts`.
+ */
+export const checkpointFiles = pgTable(
+  "checkpoint_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    conversationId: uuid("conversation_id").notNull(),
+    turnMessageId: uuid("turn_message_id").notNull(),
+    /** Absolute, as `resolvePath` gave it inside the workspace. */
+    path: text("path").notNull(),
+    /** `saved`: a copy exists; `missing`: the file did not exist, so restoring
+     * deletes it; `too_large`, `symlink`, `not_file`: nothing was copied, and a
+     * restore reports the path as skipped with that reason; `unknown`: the
+     * state was never learned (the copy failed, or the server stopped
+     * mid-way), so a restore leaves the file alone and says so. */
+    state: text("state", { enum: ["saved", "missing", "too_large", "symlink", "not_file", "unknown"] }).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    // The first write of a path in a turn is its state before the turn; a
+    // second one must not replace it.
+    uniqueIndex("checkpoint_files_turn_path_idx").on(t.conversationId, t.turnMessageId, t.path),
+    index("checkpoint_files_conversation_idx").on(t.conversationId, t.createdAt),
   ],
 );
 

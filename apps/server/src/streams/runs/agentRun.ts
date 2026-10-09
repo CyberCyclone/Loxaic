@@ -4,6 +4,7 @@ import { conversations, messages } from "@loxaic/db/schema";
 import type {
   AttachmentRef,
   ContentBlock,
+  FileRestoreReport,
   InstructionsDecision,
   McpOverrides,
   ProjectInstructions,
@@ -15,12 +16,13 @@ import {
   assertAttachmentsOwned,
   assertConversationAccess,
   assertParentInConversation,
+  NotFoundError,
 } from "../authz.ts";
-import { getStreamBroker } from "../index.ts";
-import { getRunByConversation, registerRun } from "../registry.ts";
-import { announceNewRun } from "../watchers.ts";
+import type { StreamProducer } from "../broker.ts";
+import { claimConversation, unregisterRun, type RunHandle } from "../registry.ts";
 import { hasNoMessages } from "./stageRun.ts";
-import { runToolLoop } from "./engine.ts";
+import { startRunOnRow, type LoopOptions, type StartedRun } from "./start-run.ts";
+import { removeAfterForRetry } from "../../conversations/rewind.ts";
 import { assertModelUsable } from "../../inference/providers.ts";
 import { recordModelUse } from "../../inference/recent-models.ts";
 import { getSandboxMode } from "../../sandbox/provider.ts";
@@ -120,11 +122,7 @@ export async function agentSystemPrompt(input: {
   }
 }
 
-export interface StartAgentRunResult {
-  streamId: string;
-  conversationId: string;
-  userMessageId: string;
-}
+export type StartAgentRunResult = StartedRun;
 
 export async function startAgentRun(input: {
   userId: string;
@@ -145,7 +143,6 @@ export async function startAgentRun(input: {
   thinkingLevel?: ThinkingLevel;
 }): Promise<StartAgentRunResult> {
   const { userId, content, model, mode } = input;
-  const broker = getStreamBroker();
 
   // Before anything is written: a bad ref must fail the whole send, not
   // leave a half-created conversation behind.
@@ -185,72 +182,129 @@ export async function startAgentRun(input: {
     convId = conv.id;
   }
 
-  if (getRunByConversation(convId)) {
-    throw new Error("A run is already in progress for this conversation");
-  }
-
-  // See chatRun.ts. The agent may have created the conversation up front to
-  // choose a workspace, so "opens" is "has no messages", not "created here".
-  const opening = await hasNoMessages(convId);
-
-  const userMsgId = uuid();
-  const userLamport = Date.now();
-  await db.insert(messages).values({
-    id: userMsgId,
-    conversationId: convId,
-    parentId: input.parentId ?? null,
-    authorType: "user",
-    authorUserId: userId,
-    origin: "server",
-    lamport: userLamport,
-    content: [
-      ...atts.map((a): ContentBlock => ({
-        kind: "attachment",
-        ref: a.ref,
-        mime: a.mime,
-        ...(a.name === undefined ? {} : { name: a.name }),
-      })),
-      { kind: "text", text: content },
-    ] as ContentBlock[],
-    status: "complete",
-    createdAt: new Date(),
-  });
-
-  // See chatRun.ts: recorded once the send is committed to.
-  await recordModelUse(userId, model);
-
-  const streamId = uuid();
-  const producer = await broker.openProducer({
-    streamId,
+  // Claimed before anything below is written — see chatRun.ts.
+  const claim: RunHandle = {
+    streamId: uuid(),
     conversationId: convId,
     userId,
-    surface: "agent",
-  });
+    abort: new AbortController(),
+    approvals: new Map(),
+    model,
+  };
+  claimConversation(claim);
+  try {
+    // See chatRun.ts. The agent may have created the conversation up front to
+    // choose a workspace, so "opens" is "has no messages", not "created here".
+    const opening = await hasNoMessages(convId);
 
-  producer.emit({
-    kind: "message.start",
-    message_id: userMsgId,
-    author_type: "user",
-    parent_id: input.parentId ?? null,
-    lamport: userLamport,
-    text: content,
-    ...(atts.length ? { attachments: atts } : {}),
-  });
-  producer.emit({ kind: "message.end", message_id: userMsgId, status: "complete" });
+    const userMsgId = uuid();
+    const userLamport = Date.now();
+    await db.insert(messages).values({
+      id: userMsgId,
+      conversationId: convId,
+      parentId: input.parentId ?? null,
+      authorType: "user",
+      authorUserId: userId,
+      origin: "server",
+      lamport: userLamport,
+      content: [
+        ...atts.map((a): ContentBlock => ({
+          kind: "attachment",
+          ref: a.ref,
+          mime: a.mime,
+          ...(a.name === undefined ? {} : { name: a.name }),
+        })),
+        { kind: "text", text: content },
+      ] as ContentBlock[],
+      status: "complete",
+      createdAt: new Date(),
+    });
 
-  const abort = new AbortController();
-  registerRun({ streamId, conversationId: convId, userId, abort, approvals: new Map(), model });
-  announceNewRun(convId, streamId);
+    // See chatRun.ts: recorded once the send is committed to.
+    await recordModelUse(userId, model);
 
+    return await startRunOnRow({
+      claim,
+      surface: "agent",
+      row: { id: userMsgId, lamport: userLamport, parentId: input.parentId ?? null, text: content, attachments: atts },
+      loop: (producer) => ({
+        ...agentLoop({ convId, ownerId, workspace, mode, model, userMsgId, producer, abort: claim.abort }),
+        newConversation: opening ? { chosenStage: input.contextStage } : undefined,
+        thinkingLevel: input.thinkingLevel,
+      }),
+    });
+  } catch (err) {
+    // From before the loop started — see chatRun.ts.
+    unregisterRun(claim.streamId);
+    throw err;
+  }
+}
+
+/**
+ * Answers an agent conversation's newest message again (`agent.retry`) — see
+ * `retryChatRun`. In `mode`, on `model`: the composer's current choices.
+ */
+export async function retryAgentRun(input: {
+  userId: string;
+  conversationId: string;
+  model: string;
+  mode: PermissionMode;
+  thinkingLevel?: ThinkingLevel;
+  /** See `retryChatRun`. */
+  restoreFiles?: boolean;
+}): Promise<StartAgentRunResult & { restoredFiles: FileRestoreReport | null }> {
+  const { userId, conversationId: convId, model, mode } = input;
+  const grant = await assertConversationAccess(userId, convId, "editor");
+  if (grant.kind !== "agent") throw new NotFoundError();
+  await assertModelUsable(model);
+  const loaded = await loadWorkspace(convId);
+  const workspace: Workspace = loaded?.workspace ?? { kind: "scratch" };
+  const ownerId = loaded?.ownerId ?? userId;
+
+  const claim: RunHandle = {
+    streamId: uuid(),
+    conversationId: convId,
+    userId,
+    abort: new AbortController(),
+    approvals: new Map(),
+    model,
+  };
+  claimConversation(claim);
+  try {
+    const row = await removeAfterForRetry(convId, { restoreFiles: input.restoreFiles, signal: claim.abort.signal });
+    await recordModelUse(userId, model);
+    const started = await startRunOnRow({
+      claim,
+      surface: "agent",
+      row,
+      loop: (producer) => ({
+        ...agentLoop({ convId, ownerId, workspace, mode, model, userMsgId: row.id, producer, abort: claim.abort }),
+        thinkingLevel: input.thinkingLevel,
+      }),
+    });
+    return { ...started, restoredFiles: row.files };
+  } catch (err) {
+    unregisterRun(claim.streamId);
+    throw err;
+  }
+}
+
+/** What an agent run is, whether a send or a retry started it. */
+function agentLoop(input: {
+  convId: string;
+  ownerId: string;
+  workspace: Workspace;
+  mode: PermissionMode;
+  model: string;
+  userMsgId: string;
+  producer: StreamProducer;
+  abort: AbortController;
+}): LoopOptions {
+  const { convId, ownerId, workspace, mode, model, userMsgId, producer, abort } = input;
   // What prepare leaves stored, handed to the system prompt so it is not read
   // a second time. Undefined when prepare failed: the prompt then reads it.
   let prepared: ProjectInstructions | null | undefined;
-  void runToolLoop({
-    streamId,
-    convId,
-    userId,
-    userMsgId,
-    userLamport,
+  return {
     model,
     mode,
     // First, before the history loads: a change to the project's
@@ -263,20 +317,13 @@ export async function startAgentRun(input: {
       });
     },
     basePrompt: () => agentSystemPrompt({ convId, ownerId, workspace, mode, model, signal: abort.signal, snapshot: prepared }),
-    surface: "agent",
-    newConversation: opening ? { chosenStage: input.contextStage } : undefined,
-    thinkingLevel: input.thinkingLevel,
     // The same gate agentSystemPrompt applies to the root file: a scratch
     // workspace has no project, only what the model wrote.
     nestedInstructions: workspace.kind !== "scratch",
     // The agent may hand tasks to sub-agents (subagentRun.ts). Someone is at
     // this conversation, so the model may be offered a choice of model.
     subagents: { routine: false },
-    abort,
-    producer,
-  });
-
-  return { streamId, conversationId: convId, userMessageId: userMsgId };
+  };
 }
 
 /**

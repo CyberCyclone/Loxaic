@@ -94,8 +94,9 @@ export class PendingSends {
 }
 
 /**
- * Which local conversation a `turn.started` gives its real id to, and whether
- * that is the one still being waited on (`pendingLocalId`).
+ * Which local conversation a `turn.started` gives its real id to, whether
+ * that is the one still being waited on (`pendingLocalId`), and whether the
+ * send it answers is one this device remembers (`known`).
  *
  * An answer naming its send (`client_ref`) settles that send's conversation and
  * no other. A replayed answer can land after the person has started another
@@ -107,10 +108,35 @@ export function settledByTurnStarted(
   clientRef: string | undefined,
   sends: PendingSends,
   pendingLocalId: string | null,
-): { localId: string | null; isPending: boolean } {
-  if (!clientRef) return { localId: pendingLocalId, isPending: pendingLocalId !== null };
-  const localId = sends.take(clientRef)?.localConvId ?? null;
-  return { localId, isPending: localId !== null && localId === pendingLocalId };
+): { localId: string | null; isPending: boolean; known: boolean } {
+  if (!clientRef) return { localId: pendingLocalId, isPending: pendingLocalId !== null, known: false };
+  const send = sends.take(clientRef);
+  const localId = send?.localConvId ?? null;
+  return { localId, isPending: localId !== null && localId === pendingLocalId, known: send !== undefined };
+}
+
+/**
+ * Whether the screen should move to the conversation a `turn.started` names.
+ * Its own new thread still being waited on, or the thread on screen: yes. A
+ * send of ours into a conversation that already existed (a message, a retry):
+ * never — it is on screen already, or the person has left it, and pulling them
+ * back mid-typing is the one wrong answer. Only an answer this device cannot
+ * place (no ref, an older server) is followed blindly, as it always was.
+ */
+export function followsTurnStarted(
+  settled: { localId: string | null; isPending: boolean; known: boolean },
+  activeId: string | null,
+): boolean {
+  if (settled.isPending) return true;
+  if (!settled.known) return true;
+  return settled.localId !== null && activeId === settled.localId;
+}
+
+/** What a retry is remembered as: a send with no text and no bubble, into a
+ * conversation that exists — so its answer is placed, and a refusal of it
+ * takes nothing back. */
+export function retrySend(ref: string): PendingSend {
+  return { text: '', localMsgId: ref, localConvId: null, hadAttachments: false };
 }
 
 /** The notice for a refusal of `send`, or of a send no longer known. */

@@ -1297,3 +1297,18 @@ export async function clearConversationModel(
   });
   if (!res.ok) throw new Error(`[e2e] clearing the conversation's model failed (${String(res.status)})`);
 }
+
+/** The bundle and package id of the app the native lanes drive. */
+const NATIVE_APP_ID = 'com.loxaic.app';
+
+/** A fresh start: a reload on the web and Electron, a cold start on a phone —
+ * `browser.refresh()` is a browser command XCUITest and UiAutomator2 refuse. */
+export async function relaunchApp(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') {
+    await browser.refresh();
+    return;
+  }
+  const app = platform() === 'ios' ? { bundleId: NATIVE_APP_ID } : { appId: NATIVE_APP_ID };
+  await browser.execute('mobile: terminateApp', app);
+  await browser.execute('mobile: activateApp', app);
+}

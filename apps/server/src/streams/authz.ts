@@ -1,4 +1,4 @@
-import { and, db, eq, inArray } from "@loxaic/db";
+import { and, db, eq, inArray, isNull } from "@loxaic/db";
 import { attachments, conversationShares, conversations, messages, user } from "@loxaic/db/schema";
 import type { AttachmentRef, ConversationKind } from "@loxaic/types";
 import { MAX_ATTACHMENTS } from "@loxaic/types";
@@ -186,7 +186,7 @@ export async function isAdmin(userId: string): Promise<boolean> {
  * silently accepted. */
 export async function assertParentInConversation(conversationId: string, parentId: string): Promise<void> {
   const row = await db.query.messages.findFirst({
-    where: eq(messages.id, parentId),
+    where: and(eq(messages.id, parentId), isNull(messages.deletedAt)),
     columns: { conversationId: true },
   });
   if (row?.conversationId !== conversationId) throw new NotFoundError();

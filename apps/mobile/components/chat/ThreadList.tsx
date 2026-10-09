@@ -114,6 +114,10 @@ export function ThreadList({
       <FlatList
         data={filtered}
         keyExtractor={(c) => c.id}
+        // A thread answers the first tap while the keyboard is up — after a
+        // search, or with the composer focused behind the list on a phone.
+        // Without this the first tap only closed the keyboard.
+        keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 8 }}
         renderItem={({ item }) => (
           <Pressable

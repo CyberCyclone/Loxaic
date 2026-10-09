@@ -4,7 +4,7 @@ import type {
   StreamSnapshotMessage,
   ApiMessage,
 } from '@loxaic/api-client';
-import { CHECKIN_ANSWER_NUDGE, SUBAGENT_TOOL_NAME, type CompactionStats, type ContentBlock, type FileDiff } from '@loxaic/types';
+import { CHECKIN_ANSWER_NUDGE, SUBAGENT_TOOL_NAME, isStreamErrorCode, type CompactionStats, type ContentBlock, type FileDiff } from '@loxaic/types';
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
@@ -172,6 +172,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         // renders as still compacting — so without these it spun forever.
         error: row.status === 'error',
         errorText: row.status === 'error' ? (row.error ?? undefined) : undefined,
+        ...(row.status === 'error' && isStreamErrorCode(row.errorCode) ? { errorCode: row.errorCode } : {}),
       };
       out.push(msg);
       byId.set(row.id, msg);
@@ -208,6 +209,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         // the column, which the bubble answers with a plain fallback.
         error: row.status === 'error',
         errorText: row.status === 'error' ? (row.error ?? undefined) : undefined,
+        ...(row.status === 'error' && isStreamErrorCode(row.errorCode) ? { errorCode: row.errorCode } : {}),
       };
       out.push(msg);
       byId.set(row.id, msg);
@@ -262,6 +264,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
     usage: sm.usage ? usageFromTurn(sm.usage) : undefined,
     error: sm.status === 'error',
     errorText: sm.status === 'error' ? sm.error : undefined,
+    ...(sm.status === 'error' && sm.error_code ? { errorCode: sm.error_code } : {}),
     stopped: sm.status === 'cancelled',
     compaction: role === 'summary' ? sm.compaction : undefined,
     attachments: role === 'user' ? sm.attachments : undefined,
@@ -378,6 +381,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
               usage: event.usage ? usageFromTurn(event.usage) : m.usage,
               error: event.status === 'error',
               errorText: event.status === 'error' ? event.error : undefined,
+              ...(event.status === 'error' && event.error_code ? { errorCode: event.error_code } : {}),
               stopped: event.status === 'cancelled',
             }
           : m,

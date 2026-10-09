@@ -288,6 +288,20 @@
       "when": 1791404698429,
       "tag": "0040_provider_context_windows",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1791447430634,
+      "tag": "0041_file_checkpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1791448700891,
+      "tag": "0042_message_error_code",
+      "breakpoints": true
     }
   ]
 }

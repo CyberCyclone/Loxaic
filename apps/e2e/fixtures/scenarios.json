@@ -450,5 +450,32 @@
       }
     ],
     "finalText": "[Mock] Surveyed in six passes.\n"
+  },
+  {
+    "match": "edit the notes for rewind",
+    "steps": [
+      {
+        "tool": "fs_write",
+        "args": {
+          "path": "notes.md",
+          "content": "first draft\n"
+        }
+      },
+      {
+        "tool": "fs_edit",
+        "args": {
+          "path": "notes.md",
+          "oldText": "first",
+          "newText": "second"
+        }
+      },
+      {
+        "tool": "bash",
+        "args": {
+          "command": "echo built > build.log"
+        }
+      }
+    ],
+    "finalText": "[Mock] Notes edited.\n"
   }
 ]

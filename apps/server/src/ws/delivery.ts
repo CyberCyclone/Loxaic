@@ -2,7 +2,7 @@ import { endStaleSubAgents, type ServerMessage, type StreamSnapshot, type Stream
 import { assertConversationAccess } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
-import { watchConversation } from "../streams/watchers.ts";
+import { watchConversation, watchConversationEvents } from "../streams/watchers.ts";
 
 const BACKPRESSURE_BYTES = 512 * 1024;
 
@@ -301,7 +301,23 @@ export function createDelivery(
         .then(() => subscribeToStream(streamId, conversationId, 0, "forceSync"))
         .catch(() => undefined);
     });
-    convWatches.set(conversationId, unwatch);
+    // Messages removed from its end (a rewind, a retry): passed on so this
+    // device drops them, re-authorized for the same reason as a run.
+    const unwatchEvents = watchConversationEvents(conversationId, (event) => {
+      assertConversationAccess(userId, conversationId)
+        .then(() => {
+          for (const streamId of event.removed_stream_ids) {
+            unsubscribeStream(streamId);
+            syncedFinished.delete(streamId);
+          }
+          send(event);
+        })
+        .catch(() => undefined);
+    });
+    convWatches.set(conversationId, () => {
+      unwatch();
+      unwatchEvents();
+    });
   }
 
   /** Auto-subscribes the socket that just started a run to its own stream,

@@ -8,6 +8,7 @@ import {
   MAX_ATTACHMENTS,
   ATTACHMENT_MIMES,
   attachmentClass,
+  attachmentUrl,
   maxBytesForMime,
   resolveAttachmentMime,
   type AttachmentRef,
@@ -331,6 +332,24 @@ export function useComposerAttachments() {
     setItems([]);
   }, [releaseAll]);
 
+  /**
+   * Puts attachments that are already uploaded back in the composer — a
+   * rewound message's (#166). Nothing is uploaded again: the refs are the
+   * server's, and the server checks they are the sender's when they are sent.
+   * An image's preview is read from the server; anything else shows as a chip.
+   */
+  const restore = useCallback((refs: AttachmentRef[], token: string | null) => {
+    setItems(
+      refs.slice(0, MAX_ATTACHMENTS).map((a) => ({
+        localUri: attachmentClass(a.mime) === 'image' && token ? attachmentUrl(a.ref, token) : `ref:${a.ref}`,
+        mime: a.mime,
+        ref: a.ref,
+        ...(a.name ? { name: a.name } : {}),
+        status: 'ready' as const,
+      })),
+    );
+  }, []);
+
   const readyAttachments: AttachmentRef[] = useMemo(
     () =>
       items
@@ -348,6 +367,7 @@ export function useComposerAttachments() {
     addWebFiles,
     remove,
     reset,
+    restore,
     readyAttachments,
     uploading,
     rejection,

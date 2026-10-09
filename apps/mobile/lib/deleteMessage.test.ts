@@ -32,6 +32,8 @@ describe('deleteConversationMessage', () => {
       expect(msg).not.toContain('workspace is destroyed')
       expect(msg).not.toContain('never pushed')
       expect(msg).toContain('left exactly as it is')
+      // Its rewind copies are in the home directory, and an offline machine keeps them.
+      expect(msg).toContain('~/.loxaic/checkpoints')
     })
 
     it('says nothing about a workspace on the chat surface', () => {

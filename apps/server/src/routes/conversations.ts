@@ -6,6 +6,9 @@ import { normalizeMcpOverrides, type ContextBreakdown } from "@loxaic/types";
 import { authenticate } from "../auth/middleware";
 import { detectForks } from "@loxaic/sync";
 import { deleteConversation } from "../conversations/delete.ts";
+import { isRewindScope, previewRewind, rewindConversation, RewindError } from "../conversations/rewind.ts";
+import { ConversationBusyError } from "../streams/registry.ts";
+import { NotFoundError } from "../streams/authz.ts";
 import { BadCursorError, loadMessagePage, type MessagePage } from "../conversations/history-page.ts";
 
 /** Rows per page of a thread's history — a floor, since a page grows back to
@@ -229,6 +232,60 @@ export function conversationRoutes(app: FastifyInstance) {
   });
 
   /**
+   * Rewinds a conversation to one of its messages (#166): that message and
+   * everything after it are removed, and its text (with its attachments, for
+   * the person who sent them) comes back to go in the composer. Editors only,
+   * and 409 while a run is going. What "removed" means follows the deleted-
+   * conversation retention setting — see conversations/rewind.ts.
+   */
+  app.post<{ Params: { id: string }; Body: { message_id?: unknown; scope?: unknown } | undefined }>(
+    "/v1/conversations/:id/rewind",
+    async (request, reply) => {
+      const userId = await authenticate(request, reply);
+      const messageId = request.body?.message_id;
+      if (typeof messageId !== "string" || !UUID_RE.test(messageId)) {
+        reply.code(400);
+        return { error: "message_id is required" };
+      }
+      const scope = request.body?.scope ?? "both";
+      if (!isRewindScope(scope)) {
+        reply.code(400);
+        return { error: 'scope must be "both", "conversation" or "files"' };
+      }
+      try {
+        const result = await rewindConversation({ userId, conversationId: request.params.id, messageId, scope });
+        return {
+          text: result.text,
+          attachments: result.attachments,
+          attachments_withheld: result.attachmentsWithheld,
+          removed_ids: result.removedIds,
+          files: result.files,
+        };
+      } catch (err) {
+        return rewindFailure(err, reply);
+      }
+    },
+  );
+
+  /** What a rewind to `messageId` would remove, for its confirm dialog. */
+  app.get<{ Params: { id: string; messageId: string } }>(
+    "/v1/conversations/:id/rewind/:messageId",
+    async (request, reply) => {
+      const userId = await authenticate(request, reply);
+      if (!UUID_RE.test(request.params.messageId)) {
+        reply.code(404);
+        return { error: "Not found" };
+      }
+      try {
+        const preview = await previewRewind({ userId, conversationId: request.params.id, messageId: request.params.messageId });
+        return { turns: preview.turns, others: preview.others, retained: preview.retained, files: preview.files };
+      } catch (err) {
+        return rewindFailure(err, reply);
+      }
+    },
+  );
+
+  /**
    * The sub-agents this conversation's runs have spawned, newest first.
    *
    * What the thread's cards and its Sub-agents list are drawn from after a
@@ -321,4 +378,23 @@ export function conversationRoutes(app: FastifyInstance) {
     const forks = detectForks(msgs);
     return { messages: rowsWithUsage, forks, hasMore: page.hasMore, before: page.before };
   });
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A rewind's refusal as a response: not found (the same for "not yours"),
+ * busy, or a message that cannot be rewound to. Anything else is a fault. */
+function rewindFailure(err: unknown, reply: { code(n: number): unknown }): { error: string; code?: string } {
+  if (err instanceof NotFoundError) {
+    reply.code(404);
+    return { error: "Not found" };
+  }
+  if (err instanceof ConversationBusyError) {
+    reply.code(409);
+    return { error: "Stop the reply in progress first.", code: err.code };
+  }
+  if (err instanceof RewindError) {
+    reply.code(400);
+    return { error: err.message, code: err.code };
+  }
+  throw err;
 }

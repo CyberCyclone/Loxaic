@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, desc, eq, sql } from "@loxaic/db";
+import { and, db, desc, eq, isNull, sql } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
 import type {
   ContentBlock,
@@ -30,6 +30,7 @@ import { announceNewRun } from "../watchers.ts";
 import { chatWorkspaceDescription } from "./chatRun.ts";
 import { runToolLoop } from "./engine.ts";
 import { subagentOutcome } from "./subagent-policy.ts";
+import type { CheckpointTurn } from "../../agent/checkpoints.ts";
 
 /**
  * Sub-agents: one run handing a self-contained task to a child run.
@@ -68,6 +69,8 @@ export interface SubagentParent {
   producer: StreamProducer;
   signal: AbortSignal;
   thinkingLevel?: ThinkingLevel;
+  /** The parent turn's checkpoint, which the child's file edits go under. */
+  checkpointTurn?: CheckpointTurn;
 }
 
 export interface SubagentCall {
@@ -374,6 +377,7 @@ export async function runSubagent(
       thinkingLevel: parent.thinkingLevel,
       nestedInstructions: parent.surface === "agent" && workspace.kind !== "scratch",
       role: { kind: "subagent", parentConvId: parent.convId },
+      ...(parent.checkpointTurn ? { checkpointTurn: parent.checkpointTurn } : {}),
       abort,
       producer: mirrorProgress(producer, parent.producer, childId, streamId, hooks?.onInLine),
     });
@@ -616,7 +620,15 @@ export async function listSubagents(
       )`,
     })
     .from(conversations)
-    .where(and(eq(conversations.parentConversationId, parentConvId), eq(conversations.kind, "subagent")))
+    .where(
+      and(
+        eq(conversations.parentConversationId, parentConvId),
+        eq(conversations.kind, "subagent"),
+        // A rewind on an audit-retaining deployment stamps the children of
+        // what it removed (conversations/rewind.ts).
+        isNull(conversations.deletedAt),
+      ),
+    )
     .orderBy(desc(conversations.createdAt))
     .limit(200);
 

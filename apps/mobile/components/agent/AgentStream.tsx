@@ -3,7 +3,7 @@ import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Box } from '@/components/ui/box';
 import type { StageCard } from '@/lib/stageCard';
-import { MessageList, type MessageHistory } from '@/components/chat/MessageList';
+import { MessageList, type MessageActions, type MessageHistory } from '@/components/chat/MessageList';
 import { RunHeader } from './RunHeader';
 import { ModeSwitch } from './ModeSwitch';
 import { PlanningBanner } from './PlanningBanner';
@@ -33,6 +33,8 @@ interface AgentStreamProps {
   history?: MessageHistory | null;
   /** The latest step of a context-stage switch in this run. */
   stageCard?: StageCard | null;
+  /** Rewind and Retry — see MessageList. */
+  actions?: MessageActions | null;
   onAllow: () => void;
   /** "Allow always" on the bar (#266) — see PermissionBar. */
   onAllowAlways: () => void;
@@ -57,6 +59,7 @@ export function AgentStream({
   pendingCheckin,
   history,
   stageCard,
+  actions = null,
   onAllow,
   onAllowAlways,
   onDeny,
@@ -100,6 +103,7 @@ export function AgentStream({
           queuePosition={queuePosition}
           history={history}
           stageCard={stageCard}
+          actions={actions}
         />
       </Box>
       {mode === 'planning' && <PlanningBanner />}

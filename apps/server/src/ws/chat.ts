@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
 import { findCommand, isThinkingLevel, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
-import { startChatRun } from "../streams/runs/chatRun.ts";
+import { retryChatRun, startChatRun } from "../streams/runs/chatRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
@@ -136,6 +136,26 @@ export function chatWsHandler(app: FastifyInstance) {
             conversation_id: result.conversationId,
             user_message_id: result.userMessageId,
             ...(ref ? { client_ref: ref } : {}),
+          });
+          await delivery.autoSubscribe(result.streamId, result.conversationId);
+        } else if (msg.type === "chat.retry") {
+          const ref = clientRefOf(msg);
+          const run = retryChatRun({
+            userId,
+            conversationId: msg.conversation_id,
+            model: msg.model ?? "default",
+            thinkingLevel: isThinkingLevel(msg.thinking_level) ? msg.thinking_level : undefined,
+            restoreFiles: msg.restore_files === true,
+          });
+          pendingSend?.started(run);
+          const result = await run;
+          safeSend({
+            type: "turn.started",
+            stream_id: result.streamId,
+            conversation_id: result.conversationId,
+            user_message_id: result.userMessageId,
+            ...(ref ? { client_ref: ref } : {}),
+            ...(result.restoredFiles ? { restored_files: result.restoredFiles } : {}),
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {

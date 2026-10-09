@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   createAgentSocket,
   sendAgentMessage,
+  sendRetry,
   sendCommand,
   subscribeStreams,
   askSendStatus,
@@ -29,10 +30,11 @@ import { NOT_SENT_RECONNECTING, connectionState, disconnectedCopy, isOffline } f
 import { onReconnectRequest, trackSocket, untrackSocket } from '@/lib/connectionMonitor';
 import type { Conversation, Message, ChangedFile, WorkspaceChoice } from '@/lib/types';
 import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyPages';
+import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
 import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
-import { isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
+import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
 import type { Promotion } from '@/lib/mcpSwitches';
@@ -117,6 +119,7 @@ export function useAgentSession(
   }, []);
   const olderMessages = useOlderMessages(applyOlder);
   const recordPaging = olderMessages.record;
+  const forgetRemovedCursor = olderMessages.forgetRemoved;
   const hasOlderHistory = olderMessages.hasOlder;
   const [activeId, setActiveIdState] = useState<string | null>(null);
   // The last placeholder swapped for a server id. `useMcpSwitches` reads it to
@@ -135,6 +138,8 @@ export function useAgentSession(
   // Stage runs whose card the person has dismissed (sent again, or the run was
   // stopped before it said anything): a reconnect's catch-up must not bring them back.
   const droppedStageStreams = useRef(new Set<string>());
+  /** Runs a rewind or retry removed — see useChatSession. */
+  const rewoundStreamsRef = useRef(new Set<string>());
   /** See useChatSession's `dismissStageCard`: the send is where a finished
    * switch's card is dismissed, because the run's own `message.start` reaches
    * the client in a snapshot, not as a live event. */
@@ -229,6 +234,7 @@ export function useAgentSession(
     onChildEnd: onSubAgentStreamEnd,
     loadFor: loadSubAgents,
     resubscribe: resubscribeSubAgents,
+    forgetSpawnedBy,
   } = subAgents;
 
   const setStreamingByConv = useCallback(
@@ -475,7 +481,11 @@ export function useAgentSession(
     const onEvent = (event: ServerMessage) => {
       if (event.type === 'turn.started') {
         const realId = event.conversation_id;
-        const { localId, isPending } = settledByTurnStarted(event.client_ref, sendsRef.current, pendingLocalIdRef.current);
+        // A retry that put files back says what it did.
+        const restored = restoreReportLine(event.restored_files);
+        if (restored) showToast(restored, 8000);
+        const settled = settledByTurnStarted(event.client_ref, sendsRef.current, pendingLocalIdRef.current);
+        const { localId, isPending } = settled;
         const modelForPatch = isPending ? pendingModelRef.current : null;
         if (isPending) {
           pendingLocalIdRef.current = null;
@@ -498,8 +508,8 @@ export function useAgentSession(
         // it; opening the thread below must not subscribe a second time, which
         // would tear down the run's tap for a redundant resync.
         watchesRef.current.note([realId]);
-        // Follow it unless it is an older thread the person has since left.
-        if (isPending || localId === null || activeIdRef.current === localId) {
+        // Follow it unless it is a thread the person has since left.
+        if (followsTurnStarted(settled, activeIdRef.current)) {
           if (localId && localId !== realId) setPromotion({ localId, realId });
           setActiveId(realId);
         }
@@ -508,6 +518,7 @@ export function useAgentSession(
         }
       } else if (event.type === 'stream.sync') {
         const convId = event.conversation_id;
+        if (rewoundStreamsRef.current.has(event.stream_id)) return;
         // A sub-agent's own stream: its transcript, not a run's. Before
         // anything below, all of which is about a thread.
         if (isSubAgentConv(convId)) {
@@ -554,6 +565,7 @@ export function useAgentSession(
         }
       } else if (event.type === 'stream.event') {
         const convId = event.conversation_id;
+        if (rewoundStreamsRef.current.has(event.stream_id)) return;
         const lastSeq = cursorsRef.current[event.stream_id];
         if (lastSeq !== undefined && event.seq !== lastSeq + 1) {
           // Gap — resync, but rate-limited: see useChatSession for why an
@@ -705,6 +717,38 @@ export function useAgentSession(
         onStreamEndRef.current?.();
       } else if (event.type === 'agent.mode_changed') {
         setModeState(event.mode);
+      } else if (event.type === 'conversation.rewound') {
+        // See useChatSession. Run-level state is flat here, for the run on
+        // screen: cleared when it belongs to a removed run, never when a
+        // retry's new run is already the one being followed.
+        const convId = event.conversation_id;
+        const removedStreams = new Set(event.removed_stream_ids);
+        for (const streamId of removedStreams) {
+          rewoundStreamsRef.current.add(streamId);
+          cursorsRef.current[streamId] = undefined;
+          lastMessageErrorRef.current.delete(streamId);
+        }
+        const tracked = streamingByConvRef.current[convId];
+        if (tracked && removedStreams.has(tracked.streamId)) clearStream(convId);
+        if (convId === activeIdRef.current) {
+          setPendingApproval((prev) => (prev?.streamId && removedStreams.has(prev.streamId) ? null : prev));
+          if (rewindClearsLiveRun(tracked?.streamId, event.removed_stream_ids)) {
+            setIteration(null);
+            setLiveTodos([]);
+          }
+        }
+        setStageCardByConv((prev) => {
+          const card = prev[convId];
+          if (!card || !removedStreams.has(card.streamId)) return prev;
+          droppedStageStreams.current.add(card.streamId);
+          return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
+        });
+        forgetSpawnedBy(convId, event.removed_ids);
+        updateRunMsgs(convId, (msgs) => applyRewound(msgs, event));
+        if (forgetRemovedCursor(convId, event.removed_ids)) {
+          loadedConvIdsRef.current.delete(convId);
+          if (activeIdRef.current === convId) setActiveId(convId);
+        }
       } else if (event.type === 'send.unknown') {
         // The server has no record of the send that created the conversation
         // still waiting for its id. Only while it is still waiting: a
@@ -777,7 +821,7 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor]);
 
   /** The selector moves only if the server heard it: a chip that switched
    * on screen while the frame went nowhere left the run in the old mode with
@@ -914,6 +958,52 @@ export function useAgentSession(
       return true;
     },
     [mode, handleModeChange, setActiveId, showToast, pendingMcp, pendingStage, thinking, dismissStageCard],
+  );
+
+  /** Answers the run's newest message again (#166) — see useChatSession. In
+   * `sendMode`, on `model`: the composer's current choices. */
+  const handleRetry = useCallback(
+    (model: string, sendMode: PermissionMode, opts: { restoreFiles?: boolean } = {}): boolean => {
+      const id = activeIdRef.current;
+      if (!wsRef.current || !id || !isServerConvId(id)) return false;
+      if (isOffline()) {
+        showToast(NOT_SENT_RECONNECTING);
+        return false;
+      }
+      // Remembered like a send, so its turn.started is placed: it must not
+      // pull the person back here if they have moved to another thread.
+      const clientRef = newClientRef();
+      sendsRef.current.remember(clientRef, retrySend(clientRef));
+      const sent = sendRetry(wsRef.current, 'agent', {
+        conversationId: id,
+        model,
+        mode: sendMode,
+        clientRef,
+        thinkingLevel: thinking?.current,
+        restoreFiles: opts.restoreFiles,
+      });
+      if (!sent) showToast(NOT_SENT_RECONNECTING);
+      else dismissStageCard(id);
+      return sent;
+    },
+    [showToast, thinking, dismissStageCard],
+  );
+
+  /** See useChatSession. */
+  const applyLocalRewind = useCallback(
+    (convId: string, messageId: string, removedIds: string[]) => {
+      updateRunMsgs(convId, (msgs) =>
+        applyRewound(msgs, {
+          type: 'conversation.rewound',
+          conversation_id: convId,
+          from_message_id: messageId,
+          removed_ids: removedIds,
+          removed_stream_ids: [],
+          reason: 'rewind',
+        }),
+      );
+    },
+    [updateRunMsgs],
   );
 
   /** Take back a send the server refused before writing anything. */
@@ -1128,6 +1218,8 @@ export function useAgentSession(
     todos: liveTodos,
     changedFiles,
     handleSend,
+    handleRetry,
+    applyLocalRewind,
     handleStop,
     handleCommand,
     handleNewRun,

@@ -131,6 +131,16 @@ export const COMPACTION_CONTINUE_NUDGE =
   "The conversation above was compacted into the summary. Continue the task from where it left off.";
 
 /**
+ * Whether a user row's text is one the server wrote rather than a person:
+ * the check-in, plan and compaction nudges. Rewind and retry target only what
+ * someone typed, and the author alone cannot say so — an answered check-in's
+ * nudge carries the id of the person who pressed the button.
+ */
+export function isNudgeText(text: string): boolean {
+  return text === CHECKIN_ANSWER_NUDGE || text === PLAN_REQUIRED_NUDGE || text === COMPACTION_CONTINUE_NUDGE;
+}
+
+/**
  * The first line of the message the questions panel sends (#199). The rest is
  * one numbered line per question with its answer; the client builds it
  * (formatAnswers in apps/mobile/lib/plan.ts) and reads it back to render a
@@ -541,6 +551,8 @@ export type StreamEventKind =
       status: "complete" | "error" | "cancelled";
       usage?: TurnUsage;
       error?: string;
+      /** Why it failed, when the client offers a way out — see StreamErrorCode. */
+      error_code?: StreamErrorCode;
     }
   /**
    * The model request behind `message_id` has finished and this is what it
@@ -661,6 +673,7 @@ export interface StreamSnapshotMessage {
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;
   error?: string;
+  error_code?: StreamErrorCode;
   /** Folded from `message.start` when present — see its doc. */
   author_user_id?: string | null;
   /** Set on the assistant message a check-in followed, when nobody answered
@@ -801,6 +814,9 @@ export type ServerMessage =
       /** The send this started, when it named itself — always present on a
        * replay answering `send.status`. */
       client_ref?: string;
+      /** A retry asked to put the agent's file edits back first: what was
+       * restored and what could not be. */
+      restored_files?: FileRestoreReport;
     }
   /** Answers `send.status` for a send this server never heard of, or no
    * longer remembers: the message may not have been sent. */
@@ -837,6 +853,24 @@ export type ServerMessage =
       error_code?: StreamErrorCode;
     }
   | { type: "agent.mode_changed"; mode: PermissionMode }
+  /**
+   * Messages were removed from the end of a conversation: a rewind, or the
+   * old reply a retry replaced. Sent to every socket watching it. The client
+   * drops `removed_ids`, and every run whose `stream_id` is in
+   * `removed_stream_ids` — their logs are deleted, so a snapshot of one
+   * already on its way must not put the messages back.
+   */
+  | {
+      type: "conversation.rewound";
+      conversation_id: string;
+      /** The first message removed, or for a retry the message kept and
+       * answered again. */
+      from_message_id: string;
+      removed_ids: string[];
+      removed_stream_ids: string[];
+      /** "rewind" removed `from_message_id` too; "retry" kept it. */
+      reason: "rewind" | "retry";
+    }
   | {
       type: "error";
       error: string;
@@ -852,8 +886,32 @@ export type ServerMessage =
  * Errors a client handles specially rather than as a toast.
  * - `local_model_no_room`: a host model that pinned models leave no GPU memory
  *   for. Shown as a modal naming them.
+ * - `context_cannot_fit`: Loxaic refused to send a request that cannot fit the
+ *   model's context even after compacting — a message bigger than the window.
+ * - `context_overflow`: the model's backend refused a request as longer than
+ *   its context (a size Loxaic did not know, or got wrong).
+ *
+ * Both context codes are offered "Edit message" (a rewind to the message,
+ * #166) and Retry on the failed reply.
  */
-export type StreamErrorCode = "local_model_no_room";
+export type StreamErrorCode = "local_model_no_room" | "context_cannot_fit" | "context_overflow";
+
+/** The codes a server sends; anything else off the wire is dropped. */
+export const STREAM_ERROR_CODES: readonly StreamErrorCode[] = ["local_model_no_room", "context_cannot_fit", "context_overflow"];
+
+/** Whether a code is one of `STREAM_ERROR_CODES` — for a value that came from
+ * an error object or a stored column, which only claims to be one. */
+export function isStreamErrorCode(value: unknown): value is StreamErrorCode {
+  return typeof value === "string" && (STREAM_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/** What a file-checkpoint restore did (a rewind or a retry, #166). Only the
+ * agent's own edit tools are tracked; `skipped` says why a file was not put
+ * back. */
+export interface FileRestoreReport {
+  restored: string[];
+  skipped: { path: string; reason: string }[];
+}
 
 export type ClientMessage =
   | {
@@ -898,6 +956,32 @@ export type ClientMessage =
       context_stage?: number;
       /** As on `chat.send`. */
       thinking_level?: ThinkingLevel;
+    }
+  /**
+   * Answer the conversation's newest message again: the reply to it (and
+   * anything after it) is removed and a new run starts on the same message,
+   * on `model` — the composer's choice, so retrying on another model is a
+   * model switch and then Retry. Only the newest message can be retried.
+   * `client_ref` works as on a send (`send.status` included).
+   */
+  | {
+      type: "chat.retry";
+      conversation_id: string;
+      model?: string;
+      client_ref?: string;
+      thinking_level?: ThinkingLevel;
+      /** Put back the files the reply's turn edited before answering again. */
+      restore_files?: boolean;
+    }
+  | {
+      type: "agent.retry";
+      conversation_id: string;
+      model?: string;
+      mode?: PermissionMode;
+      client_ref?: string;
+      thinking_level?: ThinkingLevel;
+      /** As on `chat.retry`. */
+      restore_files?: boolean;
     }
   /** Run a built-in slash command against an existing conversation. The
    * surface is implied by which socket this arrives on (chat vs agent), which

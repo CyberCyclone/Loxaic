@@ -12,7 +12,7 @@ export type AgentMode = 'planning' | 'manual' | 'auto'
 export type RunState = 'running' | 'awaiting_approval' | 'done' | 'error'
 
 export type { ThinkingLevel } from '@loxaic/types'
-import type { ThinkingLevel } from '@loxaic/types'
+import type { StreamErrorCode, ThinkingLevel } from '@loxaic/types'
 
 export type ThemePref = 'light' | 'dark' | 'system'
 
@@ -134,6 +134,9 @@ export interface Message {
   /** Why the turn failed, when the server said. Absent on an `error` message
    * whose reason was never recorded — rendered as a fallback, not a guess. */
   errorText?: string
+  /** What kind of failure, when the app offers a way out of it: a reply that
+   * could not fit the model's context gets "Edit message" (#166). */
+  errorCode?: StreamErrorCode
   /** User-initiated stop (stream.stop), not a failure — rendered distinctly from `error`. */
   stopped?: boolean
   /** Present only on role: 'summary' — what a /compact did. Absent while the

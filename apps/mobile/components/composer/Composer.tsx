@@ -21,6 +21,7 @@ import type { McpSwitches } from '@/hooks/useMcpSwitches';
 import type { StageControls } from '@/hooks/useContextStages';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { useServerReachable } from '@/lib/connection';
+import { useSession } from '@/lib/session';
 import { ContextRing } from './ContextRing';
 
 interface ComposerProps {
@@ -49,7 +50,7 @@ interface ComposerProps {
    * local state. A fresh `token` (not just new text) is what re-triggers
    * the effect below, so pressing Compact twice in a row still re-seeds and
    * re-focuses even though the text would otherwise be unchanged. */
-  commandSeed?: { token: number; text: string } | null;
+  commandSeed?: { token: number; text: string; attachments?: AttachmentRef[] } | null;
   /** This conversation's MCP switches, shown in the `+` menu and under "Tool
    * definitions" in the context popup. Null leaves MCP out of both. */
   mcp?: McpSwitches | null;
@@ -84,6 +85,8 @@ export function Composer({
   thinking = null,
 }: ComposerProps) {
   const [text, setText] = useState('');
+  // For a restored image's preview, which the server serves by ref.
+  const { token: sessionToken } = useSession();
   // Send and Stop wait for an open socket. While a resume is inside its grace
   // period nothing else says so (readOnlyReason is for a real outage), so the
   // text stays in the box and the button is simply not pressable yet (#231).
@@ -101,6 +104,7 @@ export function Composer({
     addWebFiles,
     remove: removeAttachment,
     reset: resetAttachments,
+    restore: restoreAttachments,
     readyAttachments,
     uploading: attachmentsUploading,
     rejection: attachmentRejection,
@@ -130,6 +134,8 @@ export function Composer({
   useEffect(() => {
     if (!commandSeed) return;
     setText(commandSeed.text);
+    // A rewound message comes back with its attachments, already uploaded.
+    if (commandSeed.attachments?.length) restoreAttachments(commandSeed.attachments, sessionToken);
     textareaInputRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commandSeed?.token]);

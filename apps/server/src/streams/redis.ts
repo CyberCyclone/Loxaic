@@ -134,7 +134,12 @@ export class RedisStreamLogDriver implements StreamLogDriver {
     const pipeline = this.redis.pipeline();
     pipeline.del(streamKey(streamId), metaKey(streamId));
     pipeline.srem(globalActiveKey, streamId);
-    if (meta) pipeline.srem(convActiveKey(meta.conversationId), streamId);
+    if (meta) {
+      pipeline.srem(convActiveKey(meta.conversationId), streamId);
+      // See the memory driver: a deleted id must not stay among the
+      // conversation's runs, or it takes one of a subscribe's three places.
+      pipeline.lrem(convRunsKey(meta.conversationId), 0, streamId);
+    }
     await pipeline.exec();
   }
 

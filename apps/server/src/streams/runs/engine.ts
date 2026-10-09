@@ -1,5 +1,5 @@
 import { v4 as uuid } from "uuid";
-import { and, db, eq, gt } from "@loxaic/db";
+import { and, db, eq, gt, isNull } from "@loxaic/db";
 import { conversations, messages, usageRecords, userPrefs } from "@loxaic/db/schema";
 import {
   CHECKIN_ANSWER_NUDGE,
@@ -12,6 +12,7 @@ import {
   type StreamEventKind,
   isLoopSensitivity,
   sanitizeFilename,
+  isStreamErrorCode,
   type AttachmentRef,
   type CheckinReason,
   type ContentBlock,
@@ -67,6 +68,7 @@ import { turnDraftUsage, usageRecordValues } from "./usage-record.ts";
 import { recordRequestShape } from "./request-shape.ts";
 import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
+import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
 import {
   attachActiveSandbox,
@@ -520,12 +522,18 @@ export async function runToolLoop(ctx: {
    *   conversation a person is in.
    */
   role?: { kind: "subagent"; parentConvId: string };
+  /** The turn this run's file edits are checkpointed under
+   * (agent/checkpoints.ts). Absent means this run's own: its workspace's
+   * conversation and its user message. A sub-agent is given its parent's, so
+   * its edits are undone with the turn that spawned it. */
+  checkpointTurn?: CheckpointTurn;
   abort: AbortController;
   producer: StreamProducer;
 }): Promise<void> {
   const { streamId, convId, userId, model, mode, abort, producer } = ctx;
   // Whose workspace the tools run in, and whose MCP choices apply.
   const workspaceConvId = ctx.role?.parentConvId ?? convId;
+  const checkpointTurn: CheckpointTurn = ctx.checkpointTurn ?? { conversationId: workspaceConvId, turnMessageId: ctx.userMsgId };
 
   // How full the conversation was when the turn ended (fillDecision), decided
   // inside the loop and acted on outside it: a compaction or stage run of its
@@ -944,6 +952,8 @@ export async function runToolLoop(ctx: {
           content: [] as ContentBlock[],
           status: "error",
           error: decision.reason,
+          // What lets the reply offer "Edit message" after a reload too.
+          errorCode: "context_cannot_fit",
           createdAt: new Date(),
         });
         producer.emit({
@@ -954,8 +964,14 @@ export async function runToolLoop(ctx: {
           lamport: refusedLamport,
           model,
         });
-        producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "error", error: decision.reason });
-        await producer.end("error", { error: decision.reason });
+        producer.emit({
+          kind: "message.end",
+          message_id: assistantMsgId,
+          status: "error",
+          error: decision.reason,
+          error_code: "context_cannot_fit",
+        });
+        await producer.end("error", { error: decision.reason, errorCode: "context_cannot_fit" });
         return;
       }
       const { tally, fingerprint, reuse } = measured;
@@ -1094,15 +1110,23 @@ export async function runToolLoop(ctx: {
         // watching right now, and a reload used to show a bare empty reply.
         // A cancel stores nothing — a user stop is not an error.
         const eventError = isAbort ? undefined : turnErrorText(err, `turn failed in ${convId}`, backendText);
+        // A reason the client acts on rather than only shows: no room behind
+        // pinned models (a modal, llama/room.ts), or a backend refusing the
+        // request as longer than its context ("Edit message", #166).
+        const code = (err as { code?: unknown }).code;
+        const errorCode = !isAbort && isStreamErrorCode(code) ? code : undefined;
         await db
           .update(messages)
-          .set({ content: blocks, status, error: eventError ?? null })
+          .set({ content: blocks, status, error: eventError ?? null, errorCode: errorCode ?? null })
           .where(eq(messages.id, assistantMsgId))
           .catch(() => undefined);
-        producer.emit({ kind: "message.end", message_id: assistantMsgId, status, error: eventError });
-        // No room behind pinned models (llama/room.ts) is shown as a modal,
-        // which needs to know it is that rather than read the sentence.
-        const errorCode = !isAbort && (err as { code?: unknown }).code === "local_model_no_room" ? "local_model_no_room" : undefined;
+        producer.emit({
+          kind: "message.end",
+          message_id: assistantMsgId,
+          status,
+          error: eventError,
+          ...(errorCode ? { error_code: errorCode } : {}),
+        });
         await producer.end(status, { error: eventError, errorCode }).catch(() => undefined);
         return;
       }
@@ -1419,6 +1443,7 @@ export async function runToolLoop(ctx: {
               producer,
               signal: abort.signal,
               thinkingLevel: ctx.thinkingLevel,
+              checkpointTurn,
             },
           });
           const mine = subagentOutcomes.get(callIndex) ?? { output: SUBAGENT_NOT_RUN, ok: false };
@@ -1457,6 +1482,7 @@ export async function runToolLoop(ctx: {
               messages: chatMessages,
               windowTokens,
               nestedInstructions: ctx.nestedInstructions ?? false,
+              checkpointTurn,
             },
             call,
           );
@@ -1884,6 +1910,8 @@ async function runOneToolCall(
     windowTokens: number | null;
     /** See runToolLoop's `nestedInstructions`. */
     nestedInstructions: boolean;
+    /** See runToolLoop's `checkpointTurn`. */
+    checkpointTurn: CheckpointTurn;
   },
   call: ToolCall,
 ): Promise<{
@@ -2009,7 +2037,14 @@ async function runOneToolCall(
     }
   }
 
-  const result: ToolResult = await executeTool(handle, builtinName, args, ctx.signal);
+  const writeHandle = handle;
+  const result: ToolResult = await executeTool(
+    handle,
+    builtinName,
+    args,
+    ctx.signal,
+    writeHandle ? (path) => recordBeforeWrite(writeHandle, ctx.checkpointTurn, path) : undefined,
+  );
   // A read inside a subdirectory with its own AGENTS.md brings that file
   // along, once — appended here so the live event and the persisted row carry
   // the same text, and the replay reproduces it (agent/instructions.ts).
@@ -2298,6 +2333,7 @@ async function historyWindow(conversationId: string) {
       eq(messages.conversationId, conversationId),
       eq(messages.authorType, "summary"),
       eq(messages.status, "complete"),
+      isNull(messages.deletedAt),
     ),
     orderBy: (msgs, { desc }) => [desc(messages.lamport), desc(msgs.createdAt)],
     columns: { content: true, lamport: true },
@@ -2307,9 +2343,10 @@ async function historyWindow(conversationId: string) {
     .map((r) => ({ text: textOf(r.content as ContentBlock[]), lamport: r.lamport }))
     .find((r) => r.text.length > 0);
 
-  const replayable = summaryRow
-    ? and(eq(messages.conversationId, conversationId), gt(messages.lamport, summaryRow.lamport))
-    : eq(messages.conversationId, conversationId);
+  // A row a rewind removed on an audit-retaining deployment is kept, stamped
+  // `deletedAt`, for admins — and must never reach the model again.
+  const live = and(eq(messages.conversationId, conversationId), isNull(messages.deletedAt));
+  const replayable = summaryRow ? and(live, gt(messages.lamport, summaryRow.lamport)) : live;
 
   return { summaryRow, replayable };
 }
