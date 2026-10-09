@@ -298,7 +298,7 @@ describe('queue wait, then running time', () => {
     const state = fold([started('b'), queued('b')], NOW);
     const b = state[PARENT]?.[0];
     expect(b).toMatchObject({ state: 'queued', queue_position: 1 });
-    expect(subAgentCounterSince(b!)).toBe(NOW);
+    expect(b && subAgentCounterSince(b)).toBe(NOW);
   });
 
   it('starts again from its admission, not from its creation 100 s earlier', () => {
@@ -306,14 +306,14 @@ describe('queue wait, then running time', () => {
     state = applySubAgentEvent(state, PARENT, admitted('b', 600), NOW + 100_000);
     const b = state[PARENT]?.[0];
     expect(b).toMatchObject({ state: 'running', admitted_at: 600, startedLocal: NOW, runningLocal: NOW + 100_000 });
-    expect(subAgentCounterSince(b!)).toBe(NOW + 100_000);
+    expect(b && subAgentCounterSince(b)).toBe(NOW + 100_000);
   });
 
   it('keeps counting its running time when it goes back in line after running', () => {
     let state = fold([started('b')], NOW);
     state = applySubAgentEvent(state, PARENT, admitted('b', 600), NOW + 1_000);
     state = applySubAgentEvent(state, PARENT, queued('b'), NOW + 20_000);
-    expect(subAgentCounterSince(state[PARENT]![0])).toBe(NOW + 1_000);
+    expect(subAgentCounterSince((state[PARENT] ?? [])[0])).toBe(NOW + 1_000);
   });
 
   it('converts the admission with the server\'s clock after a reconnect', () => {
@@ -339,12 +339,12 @@ describe('queue wait, then running time', () => {
   it('takes the admission from the listing for a child whose end it missed', () => {
     let state = fold([started('a')]);
     state = mergeListedSubAgents(state, PARENT, [live('a', { status: 'complete', state: undefined, admitted_at: 700, ended_at: 2_500 })], NOW);
-    expect(subAgentDurationMs(state[PARENT]![0])).toBe(1_800);
+    expect(subAgentDurationMs((state[PARENT] ?? [])[0])).toBe(1_800);
   });
 
   it('counts from creation for an older server, which reports no admission', () => {
     const state = fold([started('b'), { kind: 'subagent.progress', conversation_id: 'b', state: 'running', iteration: 1 }], NOW);
-    expect(subAgentCounterSince(state[PARENT]![0])).toBe(NOW);
+    expect(subAgentCounterSince((state[PARENT] ?? [])[0])).toBe(NOW);
   });
 
   it('reports running time as a finished child\'s length, not its wait', () => {

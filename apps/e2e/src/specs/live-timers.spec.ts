@@ -69,7 +69,7 @@ describe('live counters', () => {
     const convId = await sendInNewRun(creds, LONG_TURN_PROMPT);
 
     // Three requests in: the run is well past twenty seconds old.
-    await browser.waitUntil(async () => Date.now() - sentAt > 22_000, { timeout: 30_000, interval: 500 });
+    await browser.waitUntil(() => Promise.resolve(Date.now() - sentAt > 22_000), { timeout: 30_000, interval: 500 });
     const live = await readNewestCounter();
     expect(live).toBeLessThan(10);
     expect((Date.now() - sentAt) / 1000).toBeGreaterThan(20);
@@ -82,7 +82,7 @@ describe('live counters', () => {
     await waitForVisible('composer.input', 60_000);
     await goToSurface('agent');
     await selectThread(convId, 'agent');
-    await browser.waitUntil(async () => Date.now() - sentAt > 30_000, { timeout: 30_000, interval: 500 });
+    await browser.waitUntil(() => Promise.resolve(Date.now() - sentAt > 30_000), { timeout: 30_000, interval: 500 });
     const afterRelaunch = await readNewestCounter();
     expect(afterRelaunch).toBeLessThan(10);
     await shot('live-timer-after-relaunch');
