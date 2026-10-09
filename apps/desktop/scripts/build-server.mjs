@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pruneToPayload } from "./server-payload.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -91,11 +92,11 @@ try {
 // project dir (apps/server/apps/desktop/…) — remove the stray.
 rmSync(path.join(repoRoot, "apps/server/apps"), { recursive: true, force: true });
 
-// Only dist/ + node_modules/ + package.json are needed at runtime. "apps" is
-// a prior run's stray that deploy would have copied along as a project file.
-for (const extra of ["src", "apps", "tsconfig.json", "tsup.config.ts", "vitest.config.ts"]) {
-  rmSync(path.join(outDir, extra), { recursive: true, force: true });
-}
+// Only dist/ + node_modules/ + package.json are needed at runtime. Pruned by allowlist: deploy
+// copies whatever sits in apps/server, including a dev checkout's downloaded models (`llama/`)
+// and users' uploads, which once tripled a 16 GB model on disk and would have shipped in the app.
+const pruned = pruneToPayload(outDir);
+if (pruned.length > 0) console.log(`[build-server] left out of the payload: ${pruned.join(", ")}`);
 
 // Nothing at runtime imports the server by its own package name — the server
 // *is* dist/ — so a link pointing out of the payload is never load-bearing,
