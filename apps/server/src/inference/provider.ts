@@ -5,10 +5,12 @@ import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
 import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
 import { routerModelName } from "../llama/preset.ts";
-import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
+import { lostDeviceFor, routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { listServableModels } from "../llama/catalog.ts";
-import { ensureRoom, trackRequest } from "../llama/room.ts";
+import { discardLostModel, ensureRoom, trackRequest } from "../llama/room.ts";
 import { describeLoadFailure } from "../llama/load-failure.ts";
+import { describeDeviceLoss, isDeviceLost } from "../llama/device-lost.ts";
+import { gpuJobLimit } from "../llama/gpu-job-limit.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 import { backendErrorFields, ContextOverflowError, isContextOverflow, type BackendErrorFields } from "./context-overflow.ts";
 
@@ -247,6 +249,13 @@ export async function* streamCompletion(
     // an admin can change (llama/load-failure.ts).
     const explained = err instanceof Error ? await describeLoadFailure(upstreamModel, err.message) : null;
     if (explained) throw new Error(explained, { cause: err });
+    // The GPU was reset under the model: its process will never answer again,
+    // so it is unloaded (in the background — the person is told now), and the
+    // sentence says what happened instead of `ErrorDeviceLost`.
+    if (err instanceof Error && isDeviceLost(err.message)) {
+      void discardLostModel(upstreamModel);
+      throw new Error(await describeDeviceLoss(upstreamModel, lostDeviceFor(upstreamModel), gpuJobLimit()), { cause: err });
+    }
     throw err;
   } finally {
     release();

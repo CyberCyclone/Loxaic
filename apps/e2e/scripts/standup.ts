@@ -171,6 +171,10 @@ export const FAKE_HARDWARE_FILE = path.join(RUN_DIR, 'fake-hardware');
  * loaded it with — how a spec proves an admin's settings reached the model) or
  * unloads (how a spec proves a model was unloaded to make room). */
 export const FAKE_ROUTER_LOG = path.join(RUN_DIR, 'fake-router-loads.jsonl');
+/** Stands in for `/sys/module/amdgpu/parameters`. Empty, as on a machine
+ * without amdgpu, until a spec writes `lockup_timeout` into it and presses
+ * Restart (device-lost.spec.ts). */
+export const FAKE_AMDGPU_DIR = path.join(RUN_DIR, 'amdgpu');
 /** What the fake router's loaded models hold of its GPU, for its device
  * listing (a separate process) to report as used. */
 const FAKE_VRAM_STATE = path.join(RUN_DIR, 'fake-vram.json');
@@ -380,6 +384,8 @@ async function ensureServer(): Promise<void> {
 
   log(`starting server on port ${String(PORT)} with ${REAL_MODEL ? `INFERENCE_BASE_URL=${String(INFERENCE_URL)}` : 'MOCK_INFERENCE=true'}`);
   mkdirSync(SANDBOX_HOST_ROOT, { recursive: true });
+  rmSync(FAKE_AMDGPU_DIR, { recursive: true, force: true });
+  mkdirSync(FAKE_AMDGPU_DIR, { recursive: true });
   mkdirSync(UPLOADS_DIR, { recursive: true });
   const { email: adminEmail } = writeAdminCreds();
   // The git server first, because the mock GitHub API hands out its URLs as
@@ -483,6 +489,7 @@ async function ensureServer(): Promise<void> {
       LOXAIC_TEST_HTTP_BUILDS: '1',
       LOXAIC_FAKE_HARDWARE: FAKE_HARDWARE_FILE,
       LOXAIC_FAKE_ROUTER_LOG: FAKE_ROUTER_LOG,
+      LOXAIC_AMDGPU_PARAMS_DIR: FAKE_AMDGPU_DIR,
       LOXAIC_FAKE_DEVICES: 'FAKE0: E2E Fake GPU (24576 MiB, 24000 MiB free)',
       // Each loaded model holds almost the whole fake GPU, so two never fit
       // together: loading a second has to unload the first, or be refused

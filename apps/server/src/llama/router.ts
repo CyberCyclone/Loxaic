@@ -19,6 +19,8 @@ import {
 import { presetPath, routerLogPath } from "./paths.ts";
 import { foldPlacementLine, newPlacementTracker, type RawPlacement } from "./placement.ts";
 import { carriesPrompt, lineSplitter, openRouterLog, type RouterLog } from "./router-log.ts";
+import { lostDevice } from "./device-lost.ts";
+import { gpuJobLimit, refreshGpuJobLimit, type GpuJobLimit } from "./gpu-job-limit.ts";
 import {
   modelIdFromRouterName,
   renderPreset,
@@ -122,6 +124,9 @@ export interface RuntimeView {
   /** Why extra options cannot be checked (and so cannot be set) right now, or
    * null when the build's option list is known. */
   optionsUnavailable: string | null;
+  /** How long the GPU driver lets one GPU job run before resetting the GPU,
+   * where that can be read (amdgpu on Linux, Vulkan runtime), or null. */
+  gpuJobLimit: GpuJobLimit | null;
 }
 
 export interface RuntimeVersionView {
@@ -354,6 +359,11 @@ export function explainModelLoadFailure(lines: string[], routerName: string): st
 /** `explainModelLoadFailure` over what this process has seen the router print. */
 export function modelLoadFailureReason(id: string): string | null {
   return explainModelLoadFailure(logTail, routerModelName(id));
+}
+
+/** `lostDevice` over what this process has seen the router print. */
+export function lostDeviceFor(id: string): string | null {
+  return lostDevice(logTail, routerModelName(id));
 }
 
 // ── Where requests go ───────────────────────────────────────────────────────
@@ -1358,6 +1368,7 @@ async function doEnsure(opts: { restart?: boolean }): Promise<void> {
   }
   st.runtime = runtime;
   await refreshOptions(runtime.bin);
+  await refreshGpuJobLimit();
 
   const listed = await listDevices(runtime.bin);
   st.devices = listed.devices;
@@ -1539,6 +1550,9 @@ export function runtimeView(): RuntimeView {
     extraOptions: getRouterExtraOptions(),
     extraOptionsSkipped: skippedExtraOptions(getRouterExtraOptions()),
     optionsUnavailable: optionsUnavailableReason(),
+    // Only Vulkan is held to amdgpu's limit here: it is the backend that runs
+    // on AMD cards, and the only one that reads the parameter's meaning.
+    gpuJobLimit: mode === "managed" && st.flavour === "vulkan" ? gpuJobLimit() : null,
   };
 }
 

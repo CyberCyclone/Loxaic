@@ -1718,6 +1718,42 @@ replies.
   unload, which the tracker needs. The mock HuggingFace's "Tabled" repo is both.
   `host-model-state.test.ts` and `host-model-state.spec.ts` drive all of it.
 
+### A GPU reset under a host model
+
+- **What happened on Pheonix:** after a context-stage switch to 512K, the reload threw away the
+  cached prompt, and re-reading the 221K-token conversation ran for 31 minutes. At about 207K
+  tokens the kernel logged `ring comp_1.1.0 timeout` and reset one card. llama.cpp answered
+  `decode() failed: vk::Queue::submit: ErrorDeviceLost`, and the chat showed exactly that.
+- **The cause is the driver's job limit, not the model.** amdgpu resets the GPU when one
+  submission runs past `lockup_timeout`. On kernel 7.0 the default is 2 s for every queue
+  (older kernels gave compute 60 s). Each prompt step attends to the whole context read so far,
+  so it gets longer as the context does: at about 200K tokens a step took roughly two seconds
+  per card. A larger ubatch makes each step longer, which is probably also why ubatch above 512
+  "crashed the GPU" there. Only root on the host can raise it
+  (`options amdgpu lockup_timeout=2000,60000,2000,2000` in `/etc/modprobe.d`, then
+  `update-initramfs -u` and a reboot).
+- **The limit is read, not assumed** (`llama/gpu-job-limit.ts`). It comes from
+  `/sys/module/amdgpu/parameters/lockup_timeout`: one value for every queue, or four, with
+  compute second; 0 or blank is the module default, and negative is no limit. The default comes
+  from `modinfo -p amdgpu`, whose wording differs by kernel. It is read when the runtime starts
+  (the parameter changes only with the module) and reported as `runtime.gpuJobLimit` for a
+  managed Vulkan runtime. The runtime card warns below 10 s and gives the line that raises it.
+- **A lost device is explained, and the model is unloaded** (`llama/device-lost.ts`,
+  `room.ts`'s `discardLostModel`). A lost Vulkan device never comes back, and the old process
+  stayed up: the next request, six and a half hours later, crashed it. `streamCompletion`
+  recognises llama.cpp's three ways of saying so, and replaces its words with a sentence:
+  - which device, from the model's own `device lost on VulkanN` line;
+  - the driver's limit, when it is short enough to be the cause;
+  - that the next message reads the whole conversation again.
+
+  The unload runs in the background, one per model at a time, and nothing refuses it: not the
+  failed request still counted as in flight, and not a pin. A pinned model is loaded straight
+  back.
+- **The fake router** fails a request whose last user message says "lose the device", printing
+  b11457's lines, and keeps failing every request on that model until it is unloaded, as the
+  real child does. `LOXAIC_AMDGPU_PARAMS_DIR` stands in for the sysfs directory under test, on
+  any platform. `device-lost.test.ts` and `device-lost.spec.ts` drive both.
+
 ### Choosing the llama.cpp version (#270)
 
 - **Three sources, one installer** (`llama/runtime.ts` `installSource`). *Bundled* is the manifest's

@@ -493,6 +493,43 @@ export async function requestUnload(id: string, pinned: boolean): Promise<void> 
   loadErrors.delete(id);
 }
 
+const discarding = new Map<string, Promise<void>>();
+
+/**
+ * Unload a model whose GPU was reset under it (device-lost.ts), so the next
+ * request loads a fresh process: a lost Vulkan device never comes back, and the
+ * old one would fail, or crash, on whatever it is asked next.
+ *
+ * Unlike an admin's Unload, nothing refuses this — not a request in flight
+ * (every request on the model has failed, or is about to), not a pin. A pinned
+ * model is loaded straight back, as after a restart. One discard per model at
+ * a time: every request on it fails at once, and each would ask.
+ */
+export function discardLostModel(id: string): Promise<void> {
+  const running = discarding.get(id);
+  if (running) return running;
+  const job = (async () => {
+    if (!routerEndpoint()) return;
+    await withRoomLock(async () => {
+      console.warn(`[llama] the GPU was reset under ${id}; unloading it so the next request loads it afresh`);
+      await unloadModel(id);
+      const status = await waitForModelStatus(id, "unloaded", UNLOAD_WAIT_MS);
+      if (status !== undefined && status.value !== "unloaded") {
+        console.error(`[llama] ${id} still reads ${status.value} after its GPU was reset`);
+      }
+    });
+    await refreshMemory({ force: true });
+    const pinned = (await listServableModels()).some((r) => r.id === id && r.pinned);
+    if (pinned) await loadPinnedModels();
+  })()
+    .catch((e: unknown) => {
+      console.error(`[llama] could not unload ${id} after its GPU was reset: ${e instanceof Error ? e.message : String(e)}`);
+    })
+    .finally(() => { discarding.delete(id); });
+  discarding.set(id, job);
+  return job;
+}
+
 /** Test seam: forget use tracking and pin errors. */
 export function __resetRoomForTest(): void {
   inFlight.clear();
