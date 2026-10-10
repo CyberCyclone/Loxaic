@@ -228,9 +228,16 @@ function writeVram() {
   if (VRAM_STATE) writeFileSync(VRAM_STATE, JSON.stringify({ heldMib: loadedIds().length * MODEL_MIB }));
 }
 
+/** Each loaded model's child port, for lines that pretend to be its output. */
+const childPorts = new Map();
+/** Models whose GPU was "reset" under them ("lose the device"): like a real
+ * child after `ErrorDeviceLost`, one fails every request until it is unloaded. */
+const lostDevice = new Set();
+
 function unload(id) {
   if (status.get(id) !== "loaded") return;
   status.set(id, "unloaded");
+  lostDevice.delete(id);
   loadedArgs.delete(id);
   // As the real router, which the placement tracker reads.
   process.stderr.write(`0.00.000.300 I srv        unload: stopping model instance name=${id}\n`);
@@ -249,6 +256,7 @@ function load(id) {
   // As the real router: each load is a child on its own port, announced on
   // the router's output, with the child's lines forwarded as `[    P] line`.
   const childPort = 40000 + (spawnCount++ % 20000);
+  childPorts.set(id, childPort);
   process.stderr.write(`0.00.000.100 I srv    operator(): spawning server instance with name=${id} on port ${childPort}\n`);
   // As the real child: an unknown speculative type, or a draft file that is
   // not there, fails the load (not the router). A model file named "Crashy"
@@ -474,6 +482,26 @@ const server = createServer(async (req, res) => {
       });
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    // "lose the device": the GPU is reset part-way through reading the prompt,
+    // as amdgpu did to a 221K-token re-read on Pheonix — the child prints what
+    // b11457's did and the request ends with its SSE error. The model then
+    // stays "loaded" and fails every request, as the real one did, until it is
+    // unloaded.
+    if (lostDevice.has(body.model) || /lose the device/i.test(said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")))) {
+      const p = String(childPorts.get(body.model) ?? 40000).padStart(5, " ");
+      process.stderr.write(
+        [
+          `[${p}] radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.`,
+          `[${p}] 0.31.58.475 E ggml_vulkan: device lost on Vulkan0`,
+          `[${p}] 0.31.58.475 E srv  update_slots: decode() failed: vk::Queue::submit: ErrorDeviceLost`,
+        ].join("\n") + "\n",
+      );
+      lostDevice.add(body.model);
+      logEvent({ event: "device-lost", model: body.model });
+      res.write(`data: ${JSON.stringify({ error: { code: 500, message: "decode() failed: vk::Queue::submit: ErrorDeviceLost", type: "server_error" } })}\n\n`);
+      res.end();
+      return;
+    }
     const words = ["Hello", " from", ` ${body.model}`];
     // "take your time" makes the reply slow (1.5 s a word; "take your time
     // 6000" is 6 s a word), so a test can hold a run on the model while

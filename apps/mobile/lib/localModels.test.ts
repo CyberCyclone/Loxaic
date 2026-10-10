@@ -7,6 +7,7 @@ import {
   draftFactor,
   draftFromConfig,
   etaSeconds,
+  gpuJobLimitWarning,
   parseNumericInput,
   pollIntervalMs,
   progressPercent,
@@ -45,6 +46,26 @@ describe('CPU warnings', () => {
     const w = cpuWarning(rt({ gpuAvailable: false, devices: [], activeDevices: [] }));
     expect(w.title).toBe('Run models on the CPU?');
     expect(w.confirm).toMatch(/small models only/);
+  });
+});
+
+describe('the GPU driver\'s job limit', () => {
+  it('warns about a short limit, says whose it is, and gives the line that raises it', () => {
+    const w = gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 2000, source: 'default' } }));
+    expect(w?.message).toMatch(/^This host's AMD GPU driver \(amdgpu\) resets the GPU when one piece of GPU work runs longer than 2 s\./);
+    expect(w?.message).toContain('update-initramfs');
+    expect(w?.fix).toBe("echo 'options amdgpu lockup_timeout=2000,60000,2000,2000' | sudo tee /etc/modprobe.d/amdgpu-timeout.conf");
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 1500, source: 'set' } }))?.message).toMatch(
+      /^This host is set to reset the GPU when one piece of GPU work runs longer than 1500 ms\./,
+    );
+  });
+
+  it('says nothing for a long limit, no limit, an unknown one, or an older server', () => {
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 60_000, source: 'set' } }))).toBeNull();
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 10_000, source: 'set' } }))).toBeNull();
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: null, source: 'set' } }))).toBeNull();
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: null }))).toBeNull();
+    expect(gpuJobLimitWarning(rt({}))).toBeNull();
   });
 });
 
