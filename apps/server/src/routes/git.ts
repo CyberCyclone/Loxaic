@@ -1,9 +1,9 @@
 /**
  * Git actions for a conversation's GitHub workspace — status, commit, push,
- * open a pull request — run from the Inspector rather than left to the
- * model. The agent is told to commit as it goes but never to push or open a
- * PR (see agent/workspace.ts's describeWorkspace): those are the user's own
- * actions, taken here.
+ * open a pull request — from the Inspector's Git panel. They run in the
+ * checkout with `git` and `gh`, through the egress proxy (egress/proxy.ts),
+ * exactly as the agent's own commands do: one path to GitHub, one set of
+ * rules about what may be written, and the token never in the sandbox.
  *
  * Owner-only throughout, matching the sandbox terminal and REST routes:
  * pushing to the user's own GitHub as them, and the token that requires, is
@@ -17,10 +17,10 @@ import { hasRole } from "../streams/authz";
 import { getRunByConversation } from "../streams/registry.ts";
 import { loadWorkspace, setWorkspacePr } from "../agent/workspace.ts";
 import { attachRunningSandbox } from "../agent/sandbox-manager.ts";
-import { getConnection, getOwnerToken } from "../github/connection.ts";
-import { createPull, GithubApiError, GithubPullExistsError } from "../github/client.ts";
+import { getConnection } from "../github/connection.ts";
 import { describeGithubPermissionFailure } from "../github/permissions.ts";
-import { gitCredentialArgs, gitEnv } from "../sandbox/git.ts";
+import { GIT_NO_PROMPT, gitSafeArgs } from "../sandbox/git.ts";
+import { runningEgressProxy } from "../egress/env.ts";
 import type { Workspace } from "@loxaic/types";
 
 /** Every route needs the same four things: the workspace (and its owner), the
@@ -81,6 +81,10 @@ function parseStatus(porcelain: string): { path: string; status: string }[] {
       return { path, status };
     });
 }
+
+/** Every write reaches GitHub through the egress proxy; without it `git` and
+ * `gh` would fail with a sentence about logging in, which is not the problem. */
+const PROXY_DOWN = "Loxaic's GitHub proxy isn't running on this server, so nothing can reach GitHub from the workspace. Check the server log for why it did not start.";
 
 function runningError(): { status: 409; error: string } {
   return { status: 409, error: "The agent is still working — try again once this run finishes." };
@@ -233,18 +237,20 @@ export function gitRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "The agent hasn't started working in this repository yet — send a message first" };
     }
-    const token = await getOwnerToken(ctx.ownerId);
-    if (!token) {
+    if (!(await getConnection(ctx.ownerId))) {
       reply.code(400);
       return { error: "GitHub is not connected" };
+    }
+    if (!runningEgressProxy()) {
+      reply.code(503);
+      return { error: PROXY_DOWN };
     }
 
     // `origin` is read from a `.git/config` the model writes to freely, and
     // `git remote set-url origin https://attacker/…` is one bash tool call.
-    // The push goes to the URL the workspace was created with, or nowhere:
-    // checked here against the server's own record before anything
-    // credentialed runs. (The credential helper is also scoped to that URL's
-    // host — sandbox/git.ts — so this is the first of two locks.)
+    // The push goes to the URL the workspace was created with, or nowhere.
+    // (The token is added by the egress proxy, and only for github.com, so a
+    // repointed origin would get nothing — this is the clearer refusal.)
     const remote = await handle.exec(["git", "remote", "get-url", "origin"], { workdir: handle.workdir });
     if (remote.exitCode !== 0 || remote.stdout.trim() !== ctx.workspace.cloneUrl) {
       reply.code(409);
@@ -254,10 +260,12 @@ export function gitRoutes(app: FastifyInstance) {
           "refusing to push. Restore it with `git remote set-url origin " + ctx.workspace.cloneUrl + "` first.",
       };
     }
-    const push = await handle.exec(
-      ["git", ...gitCredentialArgs(), "push", "-u", "origin", ctx.workspace.branch],
-      { workdir: handle.workdir, env: gitEnv(token, ctx.workspace.cloneUrl) },
-    );
+    // Through the egress proxy (the handle carries it), which adds the
+    // owner's token and lets this branch, and only this branch, be pushed.
+    const push = await handle.exec(["git", ...gitSafeArgs(), "push", "-u", "origin", ctx.workspace.branch], {
+      workdir: handle.workdir,
+      env: GIT_NO_PROMPT,
+    });
     if (push.exitCode !== 0) {
       reply.code(400);
       // The same misdirection as the clone, one permission along: GitHub
@@ -271,7 +279,7 @@ export function gitRoutes(app: FastifyInstance) {
         repo: ctx.workspace.repo,
         need: "contents-write",
       });
-      return { error: redact(permission ?? stderr, token) };
+      return { error: permission ?? stderr };
     }
     return { ok: true };
   });
@@ -301,52 +309,54 @@ export function gitRoutes(app: FastifyInstance) {
       reply.code(400);
       return { error: "title must be a non-empty string" };
     }
-    const token = await getOwnerToken(ctx.ownerId);
-    if (!token) {
+    if (!(await getConnection(ctx.ownerId))) {
       reply.code(400);
       return { error: "GitHub is not connected" };
     }
-    const [owner, name] = ctx.workspace.repo.split("/");
-    try {
-      const pull = await createPull(token, owner, name, {
-        head: ctx.workspace.branch,
-        base: ctx.workspace.baseBranch,
-        title,
-        ...(typeof body === "string" && body.length > 0 ? { body } : {}),
-      });
-      const pr = { number: pull.number, url: pull.html_url };
-      await setWorkspacePr(request.params.id, pr);
-      return pr;
-    } catch (err) {
-      if (err instanceof GithubPullExistsError) {
-        reply.code(409);
-        return { error: "A pull request for this branch already exists on GitHub, but Loxaic lost track of it." };
-      }
-      // Every other 422 — "No commits between main and …" being the common
-      // one, since nothing gates Open PR on having pushed — reaches the user
-      // as GitHub's own words, which say what to do.
-      if (err instanceof GithubApiError) {
-        reply.code(400);
-        // A 403 here means the token cannot open pull requests, which is its
-        // own permission and not the one the clone or the push would name.
-        // Every other status (the 422 family above all else) keeps GitHub's
-        // own words, which do say what to do.
-        const permission = describeGithubPermissionFailure({
-          status: err.status,
-          message: err.message,
-          repo: ctx.workspace.repo,
-          need: "pull-requests",
-        });
-        return { error: permission ?? err.message };
-      }
-      throw err;
+    if (!runningEgressProxy()) {
+      reply.code(503);
+      return { error: PROXY_DOWN };
     }
+    const row = await findSandboxRow(request.params.id, ctx.ownerId);
+    const handle = row ? await attachRunningSandbox(row) : null;
+    if (!handle) {
+      reply.code(400);
+      return { error: "The agent hasn't started working in this repository yet — send a message first" };
+    }
+    // `gh` in the checkout, through the egress proxy — the same way the agent
+    // opens one, so there is one path to GitHub and one set of rules.
+    const created = await handle.exec(
+      [
+        "gh", "pr", "create",
+        "--repo", ctx.workspace.repo,
+        "--head", ctx.workspace.branch,
+        "--base", ctx.workspace.baseBranch,
+        "--title", title,
+        "--body", typeof body === "string" ? body : "",
+      ],
+      { workdir: handle.workdir, env: GIT_NO_PROMPT, timeoutMs: 60_000 },
+    );
+    const said = `${created.stdout}\n${created.stderr}`.trim();
+    const url = /https?:\/\/\S+\/pull\/(\d+)/.exec(said);
+    // gh refuses a second PR for a branch and names the open one ("a pull
+    // request for branch … already exists:\n<url>"). That is this
+    // workspace's PR — opened by the agent with `gh`, or by an earlier click
+    // whose answer was lost — so it is recorded rather than reported lost.
+    const existing = created.exitCode !== 0 && /already exists/i.test(said);
+    if ((created.exitCode !== 0 && !existing) || !url) {
+      if (existing) {
+        reply.code(409);
+        return { error: "A pull request for this branch already exists on GitHub, but Loxaic could not tell which." };
+      }
+      reply.code(400);
+      // A refusal for want of permission names the permission; anything else
+      // ("No commits between main and …") is GitHub's own words, which say
+      // what to do.
+      const permission = describeGithubPermissionFailure({ message: said, repo: ctx.workspace.repo, need: "pull-requests" });
+      return { error: permission ?? (said || "gh pr create failed") };
+    }
+    const pr = { number: Number(url[1]), url: url[0] };
+    await setWorkspacePr(request.params.id, pr);
+    return pr;
   });
 }
-
-/** Local redaction — this route never imports the sandbox handle's owning
- * provider's own redact(), which is a module-private helper in sandbox/git.ts. */
-function redact(text: string, token: string): string {
-  return token.length >= 4 ? text.split(token).join("[redacted]") : text;
-}
-

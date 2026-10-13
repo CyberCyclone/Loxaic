@@ -53,6 +53,20 @@ let engineGeneration = 0;
  * only rediscovers when a ping *fails*, so switching Docker → Podman while
  * Docker is still running would otherwise keep using Docker indefinitely.
  */
+/**
+ * The default bridge network's gateway — the address a container reaches this
+ * host on under Linux Docker, and so where the egress proxy listens there
+ * (egress/bind.ts). Null when there is no engine or it does not say.
+ */
+export async function bridgeGateway(): Promise<string | null> {
+  const found = await getDocker().catch(() => null);
+  if (!found) return null;
+  const info = (await found.docker.getNetwork("bridge").inspect().catch(() => null)) as {
+    IPAM?: { Config?: { Gateway?: string }[] };
+  } | null;
+  return info?.IPAM?.Config?.find((c) => c.Gateway)?.Gateway ?? null;
+}
+
 export function resetEngineCache(): void {
   cached = null;
   engineGeneration++;

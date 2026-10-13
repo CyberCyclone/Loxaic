@@ -26,13 +26,14 @@ export const MCP_SYSTEM_ADDENDUM = [
  * model asked about issues or pull requests reaches for `curl` or `gh`, gets
  * nothing, and reports that it cannot see GitHub at all — which is what
  * happened the first time this shipped, with all 45 tools sitting unused in
- * the same request.
+ * the same request. It used to say `gh` could not work at all; since the
+ * egress proxy (egress/) it does in a GitHub workspace, and the workspace's
+ * own prompt says so, so this must not contradict it.
  */
 export const GITHUB_TOOLS_ADDENDUM = [
-  "GitHub itself is reachable only through the github__* tools — issues, pull requests, file",
-  "contents, and code search. The sandbox has no network access, so curl, gh, and the GitHub API",
-  "will not work from a command. Use the github__* tools for anything about GitHub, including a",
-  "repository you also have checked out locally.",
+  "The github__* tools reach GitHub — issues, pull requests, file contents, and code search —",
+  "from any conversation. In a GitHub workspace, `git` and `gh` in the checkout reach it too;",
+  "change files there with fs_edit rather than writing a whole file through a GitHub tool.",
 ].join(" ");
 
 /** Strip control characters and ANSI escapes; keep newlines and tabs. */

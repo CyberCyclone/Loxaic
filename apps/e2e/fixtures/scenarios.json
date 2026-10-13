@@ -561,5 +561,65 @@
       }
     ],
     "finalText": "[Mock] Made the slow note."
+  },
+  {
+    "match": "egress drill: push the branch",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git push origin HEAD"
+        }
+      }
+    ],
+    "finalText": "[Mock] Pushed the branch."
+  },
+  {
+    "match": "egress drill: open the pull request",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "gh pr create --base main --head \"$(git branch --show-current)\" --title \"Opened by the agent\" --body \"Through Loxaic's proxy\""
+        }
+      }
+    ],
+    "finalText": "[Mock] Opened the pull request."
+  },
+  {
+    "match": "egress drill: view the pull request",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "gh pr view 1"
+        }
+      }
+    ],
+    "finalText": "[Mock] Read the pull request."
+  },
+  {
+    "match": "egress drill: push to main",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git commit -q --allow-empty -m \"agent commit\" && git push origin HEAD:main"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to push to main."
+  },
+  {
+    "match": "egress drill: delete the branch",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git push origin --delete \"$(git branch --show-current)\""
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to delete the branch."
   }
 ]

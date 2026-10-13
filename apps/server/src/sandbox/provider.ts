@@ -112,8 +112,9 @@ export interface SandboxHandle {
    * provider cannot pass megabytes as an exec argument. */
   writeFileBinary(path: string, data: Buffer): Promise<void>;
   fileTree(path?: string): Promise<FileNode[]>;
-  /** Absent when the provider has no interactive-terminal support. */
-  openTerminal?(): Promise<TerminalSession>;
+  /** Absent when the provider has no interactive-terminal support. `env` is
+   * added to the shell's environment (egress/env.ts's proxy settings). */
+  openTerminal?(options?: { env?: Record<string, string> }): Promise<TerminalSession>;
   isRunning(): Promise<boolean>;
   /**
    * Whether the sandbox still exists at all — **true for a stopped one**.
@@ -164,12 +165,11 @@ export interface CreateSandboxConfig {
   /** Create and check out this branch from `branch` after cloning — the branch
    * an agent works on, so its commits never land on the base directly. */
   newBranch?: string;
-  /** Credentials and identity for the clone. The token reaches git through
-   * the exec environment for exactly that command (sandbox/git.ts), never
-   * through the URL — a URL-embedded token persists in `.git/config` inside a
-   * model-directed environment. */
+  /** Who the clone is for, and the identity it commits as. No token: the
+   * clone goes through the egress proxy (egress/env.ts), which adds the
+   * owner's, so no GitHub credential ever enters the sandbox. */
   git?: {
-    token?: string;
+    egress?: { conversationId: string; ownerId: string };
     identity?: { name: string; email: string };
   };
   /**

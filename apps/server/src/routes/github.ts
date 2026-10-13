@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { authenticate } from "../auth/middleware";
 import { getRepo, getViewer, listBranches, listRepos, GithubApiError } from "../github/client.ts";
 import { describeGithubPermissionFailure } from "../github/permissions.ts";
+import { forgetEgressToken } from "../egress/proxy.ts";
 import {
   deleteConnection,
   getConnection,
@@ -89,6 +90,9 @@ export function githubRoutes(app: FastifyInstance) {
         email: viewer.email,
         scopes,
       });
+      // The egress proxy keeps a token (or its absence) for 30 s; a new one
+      // applies to the next request, not half a minute later.
+      forgetEgressToken(userId);
       // Connecting GitHub also sets up its MCP tools. A failure there must not
       // fail the connection — the token still clones and pushes — so it is
       // reported beside it for the screen to show.
@@ -112,6 +116,9 @@ export function githubRoutes(app: FastifyInstance) {
     // is a server row that can no longer connect (and may now be deleted by
     // hand), not a token nobody can see.
     await deleteConnection(userId);
+    // Disconnecting stops the sandboxes' GitHub access now, not when the
+    // proxy's cached copy of the token expires.
+    forgetEgressToken(userId);
     await removeGithubMcpServer(userId).catch((err: unknown) => {
       request.log.warn(`Could not remove the GitHub MCP server: ${(err as Error).message}`);
     });

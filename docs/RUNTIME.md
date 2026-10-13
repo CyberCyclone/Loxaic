@@ -96,8 +96,9 @@ host's own network. `web_fetch` is unaffected either way — it always runs on
 the server, behind an SSRF guard, never in the sandbox.
 
 **Starting an agent chat in a GitHub repository requires this.** The clone
-happens inside the sandbox, so a deployment with network off cannot offer it;
-the workspace chooser says so and points at this setting. `SANDBOX_EXTRA_HOSTS`
+happens inside the sandbox, and so does every `git push` and `gh` command, so a
+deployment with network off cannot offer it; the workspace chooser says so and
+points at this setting. `SANDBOX_EXTRA_HOSTS`
 (`name:ip`, comma-separated; `host-gateway` is accepted as an ip) adds
 `/etc/hosts` entries to networked sandboxes, for reaching a service on the host
 machine by name from Linux or Podman. Which token that clone uses, and what it
@@ -118,6 +119,7 @@ for a deployment nobody outside it can reach.
 | List branches, clone the repo | Contents: Read | `repo` |
 | Push your branch | Contents: Read and write | `repo` |
 | Open a pull request | Pull requests: Read and write | `repo` |
+| Read issues with `gh issue view` | Issues: Read | `repo` |
 
 Metadata: Read is mandatory and GitHub adds it for you as soon as you select any
 other repository permission. In practice a fine-grained token wants **Contents:
@@ -153,6 +155,38 @@ That message says *write* even when the missing permission is **Contents: Read**
 and the operation was a read-only clone. Loxaic now checks Contents when you
 pick a repository, so a token that cannot reach the code is refused up front,
 naming the permission to add, rather than failing in a container later.
+
+#### How a sandbox reaches GitHub without your token
+
+The token never goes into a sandbox. The agent (and the Inspector's Git panel)
+runs ordinary `git` and `gh` there, and Loxaic's server sits in between as a
+proxy: it adds your token to requests for `github.com` and `api.github.com`,
+and lets a GitHub workspace write only to its own branch and its own pull
+request. Pushing to `main`, deleting a branch, merging or closing a pull
+request, and anything in another repository are refused, and the agent is told
+why. Reads reach whatever your token can read, so a fine-grained token limited
+to the repositories you want an agent in is the safer choice.
+
+The proxy starts with the server. It listens on loopback, which Docker Desktop,
+OrbStack and Colima containers reach as `host.docker.internal`; on Linux it also
+listens on the Docker bridge's gateway (usually `172.17.0.1`), which is how
+containers reach the host there. A host firewall that blocks containers from
+reaching the host blocks this too.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `EGRESS_PROXY_BIND` | `127.0.0.1`, plus the bridge gateway on Linux | Addresses to listen on, comma-separated. Never a public one. |
+| `EGRESS_PROXY_PORT` | an ephemeral port | Pin the port, for a firewall rule. |
+| `EGRESS_PROXY_HOST` | the bridge gateway on Linux, else `host.docker.internal` | The address containers are told to use. |
+| `EGRESS_CA_DIR` | `./egress-ca` (the desktop app: its data folder) | Where the proxy's certificate authority is kept. Its key is a secret. |
+| `GITHUB_WEB_URL` | `https://github.com` | Where git traffic for github.com is sent. For testing only. |
+
+In Docker Compose the server is itself a container. Compose sets up no sandbox
+engine, so this only matters if you add one: then set `EGRESS_PROXY_BIND` to an
+address the sandbox containers can reach, and `EGRESS_PROXY_HOST` to match.
+
+A folder on your own machine (a local workspace) does not go through the proxy:
+there the agent uses your own `git` and `gh` login, as you would.
 
 #### GitHub tools in chats
 

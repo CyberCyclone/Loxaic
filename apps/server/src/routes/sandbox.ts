@@ -41,10 +41,9 @@ export function sandboxRoutes(app: FastifyInstance) {
 
   app.post("/v1/sandboxes", async (request, reply) => {
     const userId = await authenticate(request, reply);
-    const { repo_url, branch, token, conversation_id } = request.body as {
+    const { repo_url, branch, conversation_id } = request.body as {
       repo_url?: string;
       branch?: string;
-      token?: string;
       conversation_id?: string;
     };
     // The execution model is a deployment-wide, admin-only decision (see
@@ -96,14 +95,10 @@ export function sandboxRoutes(app: FastifyInstance) {
 
     try {
       const provider = await getProviderByKind(kind);
-      // The body's `token` is kept for compatibility, mapped onto the config
-      // shape sandbox/git.ts reads — it now travels through the exec
-      // environment rather than the clone URL.
-      const handle = await provider.create(userId, {
-        repoUrl: repo_url,
-        branch,
-        ...(token ? { git: { token } } : {}),
-      });
+      // No credential: a token in the body used to be handed to git, and no
+      // client sent one. A private repository is cloned through a GitHub
+      // workspace, whose clone goes through the egress proxy.
+      const handle = await provider.create(userId, { repoUrl: repo_url, branch });
 
       const [row] = await db
         .insert(sandboxes)

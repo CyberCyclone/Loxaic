@@ -1,7 +1,7 @@
 /**
- * Commit, push, and open a pull request from the Inspector — the actions the
- * agent is deliberately never told to take itself (see agent/workspace.ts's
- * describeWorkspace: "do not push … the user does that from the interface").
+ * Commit, push, and open a pull request from the Inspector's Git panel —
+ * which runs `git push` and `gh pr create` in the checkout, through the
+ * server's egress proxy, the same way the agent does (agent-gh-proxy.spec.ts).
  *
  * Builds on agent-github-workspace.spec.ts's flow: clone into a networked
  * sandbox, then dirty it with the same `fs_write` trigger smoke.spec.ts uses,
@@ -90,7 +90,7 @@ describe("git actions from the Inspector", () => {
     // happened and cannot be used to wait on one. Polled instead, since the
     // push is a real network round trip whose completion the UI otherwise
     // gives no distinct signal for.
-    const gitDir = `${GIT_SERVER_DIR}/bugfix-app.git`;
+    const gitDir = `${GIT_SERVER_DIR}/e2e/bugfix-app.git`;
     const deadline = Date.now() + 30_000;
     let log = "";
     for (;;) {

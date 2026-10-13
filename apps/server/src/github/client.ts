@@ -289,37 +289,4 @@ export interface GithubPull {
   html_url: string;
 }
 
-/** Opens a PR. `422` from GitHub means one already exists for this head/base —
- * surfaced as a distinct error so a caller (a later stage's git route) can
- * treat "already open" as success rather than a failure. */
-export async function createPull(
-  token: string,
-  owner: string,
-  repo: string,
-  input: { head: string; base: string; title: string; body?: string },
-): Promise<GithubPull> {
-  try {
-    return await request<GithubPull>(token, `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-    });
-  } catch (err) {
-    // 422 is GitHub's whole validation family for this endpoint — "No commits
-    // between base and head", an unknown head, base equal to head — and only
-    // one of them is "already exists". The message is the discriminator
-    // (`errors[].message`, which the error text carries), so the rest reach
-    // the caller as the GithubApiError they are.
-    if (err instanceof GithubApiError && err.status === 422 && /already exists/i.test(err.message)) {
-      throw new GithubPullExistsError(err.message);
-    }
-    throw err;
-  }
-}
 
-export class GithubPullExistsError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "GithubPullExistsError";
-  }
-}

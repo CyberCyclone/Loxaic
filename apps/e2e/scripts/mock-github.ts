@@ -12,7 +12,10 @@
  * Deliberately not a full fixture library — just enough of `/user`,
  * `/user/repos`, `/repos/:owner/:repo`, `/repos/:owner/:repo/branches` and
  * `/repos/:owner/:repo/branches/:branch` to exercise every route the server
- * calls. Anything that is not one of the two tokens below 401s, matching a
+ * calls, plus `POST /graphql` for the operations `gh` sends to read and open
+ * pull requests (answered by the server's own GhMock, so the server's tests
+ * and this harness answer `gh` the same way). `gh` reaches it only through
+ * the server's egress proxy, which adds the token. Anything that is not one of the two tokens below 401s, matching a
  * real bad-credential response closely enough for the client's error handling
  * to be exercised honestly.
  *
@@ -31,6 +34,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import type { IncomingMessage } from 'node:http';
+import { GhMock } from '../../server/src/egress/__tests__/gh-mock.ts';
 
 export const VALID_TOKEN = 'e2e-github-token';
 
@@ -50,12 +54,19 @@ interface RecordedPull {
   body?: string;
 }
 
-/** Every PR the mock has "opened", in call order. Module-scoped: a fresh
- * server per stand-up starts empty, and a spec reads this back through
- * `GET /__e2e/pulls` to confirm a push through the Inspector's panel reached
- * (the fixture standing in for) GitHub with the right head and base — proof
- * independent of whatever the UI claims happened. */
-let pulls: RecordedPull[] = [];
+/** Pull requests, and the GraphQL answers about them. Replaced per stand-up,
+ * so a fresh server starts empty; a spec reads what was opened back through
+ * `GET /__e2e/pulls` to confirm it reached (the fixture standing in for)
+ * GitHub with the right head and base — proof independent of whatever the UI
+ * claims happened. */
+let gh = new GhMock();
+
+function recordedPulls(): RecordedPull[] {
+  return gh.pulls.map((p) => {
+    const [owner, repo] = p.repo.split('/');
+    return { number: p.number, html_url: p.url, owner, repo, head: p.headRefName, base: p.baseRefName, title: p.title, body: p.body };
+  });
+}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
@@ -72,7 +83,7 @@ function readBody(req: IncomingMessage): Promise<string> {
  * server (the settings spec alone) they are inert placeholders.
  */
 function repos(cloneUrlFor: (name: string) => string) {
-  return [
+  return withNodeIds([
     { id: 1, full_name: 'e2e/bugfix-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('bugfix-app') },
     { id: 2, full_name: 'e2e/other-repo', private: true, default_branch: 'trunk', clone_url: cloneUrlFor('other-repo') },
     // Real-model lane only (apps/e2e/fixtures/seeded-app): a repo, not a
@@ -85,7 +96,15 @@ function repos(cloneUrlFor: (name: string) => string) {
     // Only a CLAUDE.md, which imports its rules with @path
     // (apps/e2e/fixtures/imports-app).
     { id: 5, full_name: 'e2e/imports-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('imports-app') },
-  ];
+    // agent-gh-proxy.spec.ts's own, so the pull request it opens is always #1
+    // however many other specs open one on bugfix-app in the same run.
+    { id: 6, full_name: 'e2e/gh-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('gh-app') },
+  ]);
+}
+
+/** GraphQL ids, which the egress proxy checks a `createPullRequest` against. */
+function withNodeIds<T extends { full_name: string }>(list: T[]): (T & { node_id: string })[] {
+  return list.map((r) => ({ ...r, node_id: `R_${r.full_name.replace(/\W/g, '_')}` }));
 }
 
 const BRANCHES = new Map<string, string[]>([
@@ -94,6 +113,7 @@ const BRANCHES = new Map<string, string[]>([
   ['e2e/seeded-app', ['main']],
   ['e2e/instructions-app', ['main']],
   ['e2e/imports-app', ['main']],
+  ['e2e/gh-app', ['main']],
 ]);
 
 function json(res: import('node:http').ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
@@ -110,8 +130,12 @@ export async function startMockGithub(opts?: {
    * API returns is what a clone would check out. */
   fixtureDirFor?: (name: string) => string | undefined;
 }): Promise<{ url: string; stop: () => Promise<void> }> {
-  pulls = [];
-  const REPOS = repos(opts?.cloneUrlFor ?? ((name) => `https://example.test/e2e/${name}.git`));
+  const REPOS = repos(opts?.cloneUrlFor ?? ((name) => `https://github.com/e2e/${name}.git`));
+  gh = new GhMock();
+  for (const r of REPOS) {
+    const [owner, name] = r.full_name.split('/');
+    gh.repos.push({ owner, name, nodeId: r.node_id, defaultBranch: r.default_branch });
+  }
   server = createServer((req, res) => {
     void (async () => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -119,12 +143,14 @@ export async function startMockGithub(opts?: {
     // Unauthenticated and outside the token gate below: this is the harness
     // itself asking what was recorded, not a call GitHub would ever receive.
     if (url.pathname === '/__e2e/pulls') {
-      json(res, 200, pulls);
+      json(res, 200, recordedPulls());
       return;
     }
 
+    // `Bearer` from the server's REST client, `token` (GitHub's other form)
+    // from the egress proxy.
     const auth = req.headers.authorization ?? '';
-    const token = auth.replace(/^Bearer /, '');
+    const token = auth.replace(/^(?:Bearer|token) /, '');
     if (token !== VALID_TOKEN && token !== METADATA_ONLY_TOKEN) {
       json(res, 401, { message: 'Bad credentials' });
       return;
@@ -133,20 +159,16 @@ export async function startMockGithub(opts?: {
     /** GitHub's own wording for a fine-grained token that may not do this. */
     const forbidden = { message: 'Resource not accessible by personal access token' };
 
-    const pullsMatch = /^\/repos\/([^/]+)\/([^/]+)\/pulls$/.exec(url.pathname);
-    if (pullsMatch && req.method === 'POST') {
-      const owner = pullsMatch[1];
-      const repo = pullsMatch[2];
-      const raw = await readBody(req);
-      const input = JSON.parse(raw) as { head: string; base: string; title: string; body?: string };
-      const number = pulls.length + 1;
-      const pull: RecordedPull = {
-        number,
-        html_url: `https://github.example/${owner}/${repo}/pull/${String(number)}`,
-        owner, repo, head: input.head, base: input.base, title: input.title, body: input.body,
-      };
-      pulls.push(pull);
-      json(res, 201, { number: pull.number, html_url: pull.html_url });
+    if (url.pathname === '/graphql' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req)) as { query?: string; variables?: Record<string, unknown> };
+      json(res, 200, gh.answer(body));
+      return;
+    }
+    // A pull request by number — the egress proxy's own lookup, before it
+    // lets an edit to one through.
+    const pullRest = /^\/repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(url.pathname) ? gh.rest(req.method ?? 'GET', url.pathname) : null;
+    if (pullRest) {
+      json(res, pullRest.status, pullRest.body);
       return;
     }
 

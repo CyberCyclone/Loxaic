@@ -331,12 +331,16 @@ describe("describeWorkspace", () => {
     expect(describeWorkspace({ kind: "scratch" }, "container")).toMatch(/not a checked-out project/);
   });
 
-  it("tells the model the repo, the branch, and that pushing is the user's job", () => {
+  it("tells the model the repo, the branch, and how to reach GitHub with git and gh", () => {
     const text = describeWorkspace(github, "container");
     expect(text).toContain("octo/real");
-    expect(text).toContain("loxaic/x");
     expect(text).toContain("main");
-    expect(text).toMatch(/Do not push/);
+    expect(text).toContain("git push origin loxaic/x");
+    expect(text).toContain("gh pr create --base main");
+    expect(text).toMatch(/fs_edit rather than rewriting them whole/);
+    expect(text).toMatch(/Only loxaic\/x can be pushed/);
+    // No GitHub MCP to reach for, and no credentials to look for.
+    expect(text).not.toMatch(/MCP|token/i);
   });
 
   it("is a pure function of the workspace and mode — the prefix-stability contract", () => {

@@ -3828,33 +3828,27 @@ replies.
   not a clone failure on the first tool call), takes `clone_url` from the answer, and ignores any
   `pr` the client sends. A client that could name the clone URL could point the checkout
   anywhere.
-- **Clone credentials belong to the conversation owner, never the sender.** Sandboxes are
-  created lazily on first tool use, which may be a shared editor's; the row's `ownerId` is the
-  owner's for the same reason (`sandbox-manager.ts`'s `createConfigFor`).
-- **A GitHub token meets git in exactly one place: `sandbox/git.ts`.** It rides in
-  `ExecOptions.env` for one command, read by a `credential.helper` passed with `-c` — never in
-  argv, never in the clone URL (which git writes into `.git/config`, where the model can `cat`
-  it and `web_fetch` it out), never in a file, never logged. `git.test.ts` greps the whole
-  `.git` directory for it after a clone. The previous code embedded it in the URL.
-  Three bounds sit around it, because the checkout is one the model writes to freely: the
-  helper list is **reset** first (`-c credential.helper=` — `-c` appends, and a `store` helper
-  in the server account's own gitconfig would otherwise be handed the token by git's
-  post-auth `approve` and write it to `~/.git-credentials`; `file://` clones never consult a
-  helper, which is why the test could not see it); the helper answers **only for the host the
-  token was issued for** (`$LOXAIC_GIT_HOST` from the clone URL, read from the `host=` line git
-  writes to its stdin — `credential.useHttpPath` does *not* scope a custom helper); and hooks,
-  fsmonitor and proxies are off for the credentialed command, which alone carries the token
-  (the checkout/config steps after a clone get none). What this does **not** close is an
-  actively adversarial process in the container — a shim `git` on PATH — which shares the
-  exec's uid; the sturdier shape is pushing from the server against a bundle, a follow-up.
+- **GitHub access belongs to the conversation owner, never the sender.** Sandboxes are
+  created lazily on first tool use, which may be a shared editor's; the egress credential names
+  the owner, and the row's `ownerId` is the owner's for the same reason (`sandbox-manager.ts`'s
+  `createConfigFor`).
+- **No GitHub token ever enters a sandbox.** `git` and `gh` there reach GitHub through the egress
+  proxy, which adds the token on the server (see "The GitHub credential proxy"). The clone
+  (`sandbox/git.ts`'s `cloneInto`) is an ordinary `git clone` with the proxy's environment, and
+  the checkout's `origin` is the plain `https://github.com/…` URL. Hooks and fsmonitor stay off
+  for the commands Loxaic itself runs in the checkout (`gitSafeArgs`): the model writes `.git`
+  freely, and a hook it planted must not run as Loxaic's push. `git.test.ts` plants both.
+  The token used to ride the clone's exec environment through a scoped credential helper, which
+  closed every leak but one: a process in the container sharing the exec's uid could read it.
 - **Full clone, not `--depth=1`.** Shallow made `git log`, `blame` and `diff <base>` — the first
   things a model reaches for — empty or wrong. Paid once per conversation; the checkout is kept
   (stop-and-resume).
 - **GitHub workspaces need sandbox networking**, which containers lack unless an admin enabled
   it. The chooser reads `GET /v1/config` and refuses GitHub *with the reason and the fix* rather
-  than hiding it; a coding agent that cannot `npm install` is not one. `SANDBOX_EXTRA_HOSTS`
-  (`host:ip`, comma-separated → `HostConfig.ExtraHosts`) exists so a networked sandbox can
-  reach a service on the host by name on Linux/Podman.
+  than hiding it; a coding agent that cannot `npm install` is not one. It is also how a sandbox
+  reaches the egress proxy, so a sealed sandbox has no GitHub at all, by design.
+  `SANDBOX_EXTRA_HOSTS` (`host:ip`, comma-separated → `HostConfig.ExtraHosts`) exists so a
+  networked sandbox can reach another service on the host by name on Linux/Podman.
 - **`REPO_RE` alone admits `..`**, and `repos/../user` normalises to `/user` in the API URL — a
   200 whose body is the viewer, once persisted as a workspace with an undefined repo. Traversal
   segments are refused, and the lookup's answer must describe a repository. The chooser resets
@@ -3866,10 +3860,12 @@ replies.
   the chooser. `titleIfUnnamed` names a pre-created conversation from its first message, gated
   on the message count so a thread a user renamed to literally "New conversation" is never
   overwritten.
-- **e2e:** `apps/e2e/scripts/git-server.ts` runs `git daemon` over the fixture repos and the
-  mock GitHub API hands out its `git://host.docker.internal:<port>/…` URLs as `clone_url`, so
-  the spec exercises the server's real workspace path with nothing stubbed. Specs that clone
-  turn `allowNetwork` on through the admin API and reset it after — the env pin would make
+- **e2e:** `apps/e2e/scripts/git-server.ts` serves the fixture repos over smart HTTP as
+  `e2e/<name>` on loopback, and the spawned server is pointed at it as github.com
+  (`GITHUB_WEB_URL`); the mock API hands out `https://github.com/e2e/<name>.git` as `clone_url`
+  and answers `gh`'s GraphQL through the server's own `GhMock`. The git server refuses anything
+  without the token, so a clone that works proves the proxy added it. Specs that clone turn
+  `allowNetwork` on through the admin API and reset it after — the env pin would make
   `resetSandboxSettings()` 409.
 
 ### Project instructions (the workspace's own AGENTS.md)
@@ -4117,6 +4113,9 @@ replies.
 - `PUT /v1/github/connection` validates the token against GitHub (`getViewer`) before storing
   anything — a bad token fails at connect time, not on the first clone three steps later (a
   later stage).
+- **The egress proxy is the token's way into sandboxes** (see "The GitHub credential proxy"),
+  through `getOwnerToken()` like everything else. It caches a token for 30 s, so connecting and
+  disconnecting call `forgetEgressToken`: a disconnect must stop sandbox access at once.
 - **The token has a third consumer: the GitHub MCP server** (see "MCP servers"). It reaches that
   server only as a request header built in `mcp/client-manager.ts`, and is redacted from every
   error there via the connection entry's `redactions`. `getOwnerToken()` is still the only decrypt
@@ -4125,10 +4124,13 @@ replies.
 
 ### Git actions from the Inspector
 
-- `routes/git.ts` (`/v1/conversations/:id/git/{status,commit,push,pr}`) is deliberately the
-  only way to push or open a PR. `agent/workspace.ts`'s system-prompt fragment tells the model
-  to commit as it goes but never to push or open a pull request — those are the user's own
-  actions, taken from the Inspector's Git panel, not the model's.
+- `routes/git.ts` (`/v1/conversations/:id/git/{status,commit,push,pr}`) is the Inspector's Git
+  panel. Push and Open PR run `git push` and `gh pr create` in the checkout, through the egress
+  proxy, exactly as the agent's own commands do: one path to GitHub and one set of rules about
+  what may be written. The agent may push its branch and open its PR too (asking first, since
+  both are built-in "ask" commands); the panel is for doing it by hand.
+- **Neither works without the proxy**, so both answer 503 with a sentence when it is not running
+  (`runningEgressProxy()`), rather than `gh`'s advice to log in.
 - **Owner-only, every route**, matching the sandbox terminal and REST routes: pushing to the
   user's own GitHub as them, with their token, is not something a shared editor should be able
   to trigger. **409 while a run is active** (`getRunByConversation`), so a commit/push/PR click
@@ -4142,7 +4144,9 @@ replies.
   clone must still be able to commit under the current name/email.
 - **Opening a PR is idempotent by our own memory**: once `workspace.pr` is set
   (`setWorkspacePr`), every later call returns the stored PR without asking GitHub again,
-  rather than risking a duplicate PR on a retried click.
+  rather than risking a duplicate PR on a retried click. **A PR the branch already has is
+  recorded, not reported lost**: `gh` refuses a second one and prints the open one's URL, which
+  is the agent's own (opened with `gh`) or an earlier click whose answer was lost.
 - **`findSandboxRow` is scoped to the conversation owner's rows**, because every action here
   runs in whatever it returns — Push with the owner's PAT in its environment — and a row that
   merely *names* the conversation must not be enough (see the `POST /v1/sandboxes` owner
@@ -4150,13 +4154,11 @@ replies.
   `cloneUrl`**: `origin` lives in a `.git/config` the model writes to, and `set-url` is one
   bash call away. Status checks both exit codes — a failed `git status` is a 500, not a clean
   tree with Commit greyed out; a failed rev-list reports `ahead`/`behind` as `null`, which the
-  panel shows as "?" and never treats as 0. Only a 422 whose body says "already exists" is
-  the lost-PR 409; "No commits between base and head" reaches the user as GitHub's own words.
-- Push errors are redacted a second time in `routes/git.ts` itself (`redact()`, a local
-  module-private helper — it does not import the sandbox git module's own), on top of
-  whatever `sandbox/git.ts` already scrubbed, for the same defense-in-depth reason as the
-  GitHub connection routes above: a token must not reach the client even if one layer's
-  redaction misses it.
+  panel shows as "?" and never treats as 0. "No commits between base and head" reaches the
+  user as GitHub's own words. There is no token in the checkout to redact from an error any
+  more; a refusal from the proxy arrives as git's or gh's own output.
+- **The route tests run the real `gh`** through the real proxy against `GhMock`, so a server
+  test machine needs `gh` on PATH (GitHub's Ubuntu runners have it).
 - **A test file that mutates real DB-wide sandbox state must scope its cleanup to its own
   rows.** `git.test.ts` originally ran an unscoped `db.delete(sandboxes)` in its `afterEach`,
   which wiped every other suite's sandbox rows out from under them whenever the full server
@@ -4185,6 +4187,65 @@ replies.
   fold) and only appears once the panel's *total* content is tall enough. `Inspector`'s wide
   and narrow layouts both wrap `InspectorBody` in a plain React Native `ScrollView` now
   (`style={{flex:1, minHeight:0}}`) instead of a bare `Box`.
+
+### The GitHub credential proxy
+
+- **A sandbox reaches GitHub through Loxaic, and the token never leaves the server**
+  (`apps/server/src/egress/`). It is an HTTP proxy started beside the API (`boot.ts`). A sandbox
+  is given its address in `HTTPS_PROXY`, with a credential of Loxaic's own, plus trust in the
+  proxy's CA, plus `GH_TOKEN=loxaic-egress-proxy` (a placeholder: `gh` refuses to run without
+  one). For `github.com` and `api.github.com` the proxy terminates TLS with a leaf certificate
+  from that CA, strips any `Authorization` the sandbox sent, checks the request, adds the
+  owner's token, and forwards. Every other host is a plain tunnel to a public address
+  (`isBlockedAddress`, the `web_fetch` SSRF rule: no loopback, private ranges or metadata).
+- **The credential is signed, not stored** (`credential.ts`: HMAC over `{conversation, owner}`
+  keyed off `MCP_ENCRYPTION_KEY`/`BETTER_AUTH_SECRET`). It must exist before the sandbox row
+  does (the clone runs inside `provider.create`). The proxy honours it only while the
+  conversation exists and still belongs to that owner. It is not a GitHub credential: whoever
+  holds it gets only what the rules allow, only where the proxy is reachable.
+- **Given per command, never baked into the container** (`env.ts`'s `withEgress`, applied in
+  `getConversationSandbox` and `attachRunningSandbox`). A paused container resumes with the
+  environment it was created with, and the proxy's port changes between server starts. The same
+  wrapper covers the agent's tools, the Inspector's routes and the terminal panel. The CA and a
+  bundle of the system roots plus it are written to `<root>/.loxaic/` once per sandbox per CA.
+  **A local workspace is left alone**: on someone's own machine the agent uses their own git and
+  gh login, and the server's proxy may not be reachable from there.
+- **What may be written is narrow, and only from a GitHub workspace** (`rules.ts`, pure):
+  - reads pass for anything the token can read, the same reach the GitHub MCP had. The token's
+    own scope is the boundary, which is why Settings recommends a fine-grained token;
+  - git pushes only to `refs/heads/<the workspace's branch>` of its repository. Force pushes are
+    allowed; deletes and tags are not. The receive-pack commands are parsed (gunzipped,
+    pkt-lines up to the flush, capped at 64 KB and 100 updates) before a byte of the pack is
+    forwarded, and a refusal is answered as a receive-pack report (side-band when asked), so
+    `git push` prints `! [remote rejected] main -> main (Loxaic lets this workspace push only to
+    …)` and the model reads why;
+  - REST: opening a PR from the branch, editing the branch's own PR (never `state`), comments,
+    and reviewers, labels and assignees on its own PR;
+  - GraphQL: queries pass; mutations only from an allowlist. `createPullRequest` is checked
+    against the repository's node id and the branch; `addComment` against the subject's
+    repository; own-PR mutations against a `node(id)` lookup. The document is read by a linear
+    tokenizer (`graphql.ts`, 64 KB) that names each mutation field behind its alias. A mutation
+    with a literal input, a top-level fragment or a missing variable is refused, since what it
+    does cannot be checked. Every operation in the document is checked, not only the one
+    `operationName` picks;
+  - everything else (merges, closes, deletes, other branches or repositories, settings) is a
+    403 with a sentence.
+- **Where it listens is the whole security story of its address** (`boot.ts`): loopback always
+  (host-mode sandboxes; Docker Desktop, OrbStack and Colima forward `host.docker.internal`
+  there), and on Linux the Docker bridge's gateway too. Containers are given the gateway
+  address directly, not a hosts entry, so one paused before the server started still finds it.
+  Never a public address. `EGRESS_PROXY_BIND`, `EGRESS_PROXY_PORT` (ephemeral by default: the
+  port rides each command, and a fixed one would collide between servers on one machine) and
+  `EGRESS_PROXY_HOST` override it. A proxy that cannot start is logged and the server runs on;
+  sandboxes then have no GitHub, and the Git panel says so.
+- **The CA lives in `EGRESS_CA_DIR`** (`<cwd>/egress-ca`, gitignored; the desktop puts it under
+  its data dir). Its key signs certificates every sandbox trusts, so it is 0600 and per
+  deployment. Generated with Node's crypto; `node-forge` builds the X.509, which Node cannot.
+- **A sealed sandbox has no GitHub.** The proxy is reached over the network, so networking off
+  means no proxy, which is the point of sealing it.
+- **Not verified on Linux, Podman or OrbStack.** Docker Desktop on macOS was checked by hand
+  (`host.docker.internal` reaches a loopback listener). Linux rests on the bridge gateway being
+  reachable from containers, which a host firewall can block.
 
 ### Local workspaces (the desktop's executor)
 
