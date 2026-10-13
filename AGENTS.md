@@ -2427,9 +2427,9 @@ replies.
   unasked needs someone to have said so. What changed is that the prompt now says why it is
   there and makes "Allow always" the filled button, so one tap per tool ends it.
 - **`ToolPolicy.grantedFrom: "prompt"`** marks an allow that came from a prompt. The tools
-  sheet's note is shown only for those: GitHub's read-only tools start allowed
-  (`catalogDefaultPolicy`), and a note on every `allow` told people they had allowed twenty
-  tools they had never touched. A save in the sheet or a revocation clears it.
+  sheet's note is shown only for those: a note on every `allow` told people they had allowed
+  tools they had never touched (the built-in GitHub server's read-only tools once started
+  allowed). A save in the sheet or a revocation clears it.
 - **An older server sends neither field and ignores `always`**, so the bar offers no standing
   grant against one. Chat's dialog still writes its grant over REST, so in chat "Allow always"
   takes effect from the next run, not the rest of this one.
@@ -3680,15 +3680,14 @@ replies.
   `MCP_ENCRYPTION_KEY`, fallback `BETTER_AUTH_SECRET`) and `redact()`-ed out of every error
   path. stdio children get a minimal env (`PATH`/`HOME` + row env + secrets), never
   `process.env`. HTTP transports re-run the SSRF guard per request unless the user confirmed
-  `allowPrivateNetwork` in the GUI — **the one exception is the GitHub server when an operator
-  sets `GITHUB_MCP_URL`** (below): that address is trusted the way `GITHUB_API_URL` is, and no
-  request can widen it (`PATCH` refuses `allowPrivateNetwork` on that row).
+  `allowPrivateNetwork` in the GUI.
 - Connections are cached per `userId:serverId` with an idle reaper (`mcp/client-manager.ts`,
   mirrors sandbox-manager); a dead/hung server fails only its own tool calls, never the run.
 - **A failed connect is remembered for `CONNECT_FAILURE_TTL_MS` (30 s).** The registry connects
   every enabled server at the start of every turn, and a failure used to be cached nowhere — so a
   server nobody could reach cost `CONNECT_TIMEOUT_MS` on *every* turn. That was tolerable while
-  every row was one the user added by hand; it is not for a row provisioned automatically. An
+  every row was one the user added by hand; it was not for the GitHub row provisioned
+  automatically while that existed. An
   edited row (new `updatedAt`) **bypasses** the cached failure — that is what makes Test always
   really try — while `dropEntry`/`closeServerClients` are what actually delete the entry, and the
   idle reaper sweeps whatever neither names, since a failure past its window is an `Error` and its
@@ -3697,42 +3696,20 @@ replies.
   `@brave/brave-search-mcp-server` — spawned from the installed package's bin, never `npx`.
   The GUI lives at `/mcp` (mobile/web); per-conversation server switches are in the agent
   Inspector (`conversations.mcpOverrides`).
-- **GitHub is a second built-in, of a different kind: its credential is the GitHub connection.**
-  `CatalogEntry` is a union — stdio entries carry `secretKeys` the user types; the http entry
-  carries `credentials: "github-connection"` and stores nothing in the row. `PUT
-  /v1/github/connection` provisions it and `DELETE` removes it (`mcp/github-server.ts`, the only
-  code that creates or deletes that row); `client-manager.ts` reads the *row owner's* token through
-  `getOwnerToken()` and sends it as `Authorization: Bearer` to GitHub's hosted server
-  (`https://api.githubcopilot.com/mcp/`). One copy of the token, so rotating or revoking it in
-  Settings → GitHub is the whole story. Users who connected before this existed get the row from
-  `backfillGithubMcpServers()` at boot; tests must pass its `ownerId`, because an unscoped run
-  from a test provisions every connection in the shared database (its first draft did, 206 rows).
-- **Its address is resolved at connect time, never read from the row.** The row records the
-  public endpoint for display; the real one comes from `resolveUrl()` each time. Every server on a
-  machine shares one database, and the e2e harness boots with `GITHUB_MCP_URL` pointed at a mock —
-  storing that would leave other people's GitHub tools aimed at a dead loopback port, with the
-  SSRF guard lifted, after the harness exited.
-- **Read-only GitHub tools start allowed, decided on first discovery.** `reconcileTools` takes a
-  `defaultPolicyFor`, and `catalogDefaultPolicy(row)` answers allow+readOnly for names in
-  `GITHUB_READONLY_TOOLS`. Not pre-seeded into `toolPolicies`: a stored policy the server does not
-  list is marked `missing`, GitHub has renamed tools before (`get_issue_comments` → `issue_read`),
-  and a stale pre-seeded name would sit in the Tools sheet as "missing" forever. The policy and
-  the tool's hash are recorded together, so a schema change still revokes the grant.
-- **The prompt has to say the tools exist.** `GITHUB_TOOLS_ADDENDUM` (`mcp/sanitize.ts`) is appended
-  whenever a github tool is actually *offered* — not merely enabled, since planning mode hides the
-  write ones and a failed connect contributes none. Without it the first real session did exactly
-  what the sandbox invites: asked about issues, reached for `curl`, got nothing (a sandbox has no
-  network), and told the user it could not see GitHub at all — with all 45 tools sitting unused in
-  that same request. Knowing a tool is in the list is not the same as knowing to reach for it.
-- **The linked row cannot be deleted while GitHub is connected** (409 naming the two things that
-  do what the user wants: switch it off, or disconnect GitHub) — deleting it would only have it
-  come back on the next reconnect. Once the connection is gone it is an ordinary row, so a crash
-  between disconnect's two deletes never leaves one stuck. A hand-made server already using slug
-  `github` is never renamed or taken over: connecting still succeeds and `mcp.ok: false` says why
-  the tools are missing.
+- **There is no GitHub MCP server any more.** It was a second built-in, provisioned from the
+  GitHub connection, and was removed for `git` and `gh` in the workspace through the egress
+  proxy (see "The GitHub credential proxy"). Its write tools took whole files, so an agent could
+  not change one bullet in a 439 KB AGENTS.md, and GitHub has no API that takes a diff. Migration
+  0044 deletes the rows by `builtin_key`, so someone's own server under the slug `github`
+  survives; a conversation's `mcp_overrides` naming a deleted id is inert. `CatalogEntry` is
+  stdio-only again. Anyone who wants GitHub's hosted MCP can still add it as an ordinary HTTP
+  server, with their own token as a secret.
 - Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
+  The e2e harness also runs a streamable-HTTP mock (`test-fixtures/mock-mcp-http-server.ts`)
+  that a spec adds as a user's own server under the slug `httpmock` (`http mcp who am i` calls
+  its `get_me`); it refuses every bearer but `MOCK_MCP_HTTP_TOKEN`.
 
 ### MCP switches per chat and per kind of conversation
 
@@ -4116,11 +4093,6 @@ replies.
 - **The egress proxy is the token's way into sandboxes** (see "The GitHub credential proxy"),
   through `getOwnerToken()` like everything else. It caches a token for 30 s, so connecting and
   disconnecting call `forgetEgressToken`: a disconnect must stop sandbox access at once.
-- **The token has a third consumer: the GitHub MCP server** (see "MCP servers"). It reaches that
-  server only as a request header built in `mcp/client-manager.ts`, and is redacted from every
-  error there via the connection entry's `redactions`. `getOwnerToken()` is still the only decrypt
-  site. `GET`/`PUT /v1/github/connection` report `mcp: { ok, serverId, enabled } | { ok: false,
-  error }`; a provisioning failure never fails the connect, because the token still clones.
 
 ### Git actions from the Inspector
 
@@ -4232,7 +4204,8 @@ replies.
   upstream's origin plus a parsed path, then checked for the same origin. Found in review (the
   backslash form while fixing it).
 - **What may be written is narrow, and only from a GitHub workspace** (`rules.ts`, pure):
-  - reads pass for anything the token can read, the same reach the GitHub MCP had. The token's
+  - reads pass for anything the token can read, the same reach the GitHub MCP server it
+    replaced had. The token's
     own scope is the boundary, which is why Settings recommends a fine-grained token;
   - git pushes only to `refs/heads/<the workspace's branch>` of its repository. Force pushes are
     allowed; deletes and tags are not. The receive-pack commands are parsed (pkt-lines up to

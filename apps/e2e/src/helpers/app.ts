@@ -112,12 +112,11 @@ export const CHECKIN_ANSWER_NUDGE =
  * used to check that a sandbox actually executes, in whichever mode is
  * currently configured (container or host). See MOCK_TOOL_TRIGGERS in
  * apps/server/src/inference/provider.ts. */
-/** Calls `get_me` on the GitHub MCP server a GitHub connection sets up — see
- * MOCK_TOOL_TRIGGERS. `get_me` starts allowed, so it runs without an approval
- * prompt, and the harness's mock MCP server answers with this login only when
- * the connection's token reached it. */
-export const GITHUB_MCP_PROMPT = 'github who am i';
-export const GITHUB_MCP_LOGIN = 'e2e-bot';
+/** Calls `get_me` on a user's own HTTP MCP server with the slug `httpmock`
+ * (the harness's mock, `mockMcpHttpUrl`) — see MOCK_TOOL_TRIGGERS. The mock
+ * answers with this login only when the server's own secret reached it. */
+export const HTTP_MCP_PROMPT = 'http mcp who am i';
+export const HTTP_MCP_LOGIN = 'e2e-bot';
 
 export const BASH_PROMPT = 'run a bash command';
 

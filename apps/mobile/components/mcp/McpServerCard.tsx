@@ -28,9 +28,6 @@ interface McpServerCardProps {
   onTools: () => void;
   onEdit: () => void;
   onDelete: () => void;
-  /** The server follows another connection (GitHub): it has no address or
-   * credential of its own to show, and is removed by disconnecting that. */
-  linked?: boolean;
 }
 
 export function McpServerCard({
@@ -42,7 +39,6 @@ export function McpServerCard({
   onTools,
   onEdit,
   onDelete,
-  linked,
 }: McpServerCardProps) {
   // Toggle, test and delete are requests; Edit and Tools open sheets that say
   // for themselves why they cannot save.
@@ -65,11 +61,9 @@ export function McpServerCard({
             )}
           </HStack>
           <Text size="xs" className="mt-0.5 text-muted-foreground" numberOfLines={1}>
-            {linked
-              ? 'Uses your GitHub connection'
-              : server.transport === 'stdio'
-                ? (server.builtinKey ? 'stdio' : server.command)
-                : server.url}
+            {server.transport === 'stdio'
+              ? (server.builtinKey ? 'stdio' : server.command)
+              : server.url}
           </Text>
         </Pressable>
         <Switch
@@ -128,16 +122,14 @@ export function McpServerCard({
         <Pressable testID={`mcp.serverEdit.${server.id}`} onPress={onEdit} className="p-1">
           <Icon as={Pencil} size="xs" className="text-muted-foreground" />
         </Pressable>
-        {!linked && (
-          <Pressable
-            testID={`mcp.serverDelete.${server.id}`}
-            onPress={onDelete}
-            disabled={!reachable}
-            className={`p-1 ${reachable ? '' : 'opacity-50'}`}
-          >
-            <Icon as={Trash2} size="xs" className="text-destructive" />
-          </Pressable>
-        )}
+        <Pressable
+          testID={`mcp.serverDelete.${server.id}`}
+          onPress={onDelete}
+          disabled={!reachable}
+          className={`p-1 ${reachable ? '' : 'opacity-50'}`}
+        >
+          <Icon as={Trash2} size="xs" className="text-destructive" />
+        </Pressable>
       </HStack>
     </Box>
   );

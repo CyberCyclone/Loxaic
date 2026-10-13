@@ -437,11 +437,9 @@ const MOCK_TOOL_TRIGGERS: {
   { match: /\bmcp huge\b/i, name: "mockmcp__huge", args: {} },
   { match: /\bmcp evil\b/i, name: "mockmcp__evil", args: {} },
   { match: /\bmcp bad args\b/i, name: "mockmcp__echo", args: { wrong: 1 } },
-  // The GitHub MCP server provisioned from a GitHub connection. `get_me` is
-  // one of the tools that start allowed, so this one prompt shows both that
-  // the default policy applied (no approval asked) and that the connection's
-  // token reached the server.
-  { match: /\bgithub who am i\b/i, name: "github__get_me", args: {} },
+  // A user's own streamable-HTTP server, added under the slug `httpmock`
+  // (test-fixtures/mock-mcp-http-server.ts in the e2e harness).
+  { match: /\bhttp mcp who am i\b/i, name: "httpmock__get_me", args: {} },
   // A sub-agent (streams/runs/subagentRun.ts). Only the agent surface and
   // routines offer the tool, and a sub-agent itself never is, so the child's
   // own prompt cannot start another. What follows the first colon is the

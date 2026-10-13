@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Linking, ScrollView } from 'react-native';
-import { useRouter } from 'expo-router';
 import { Eye, EyeOff } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { VStack } from '@/components/ui/vstack';
@@ -36,7 +35,6 @@ function openLink(href: string) {
 
 export default function GithubScreen() {
   const shell = useShell();
-  const router = useRouter();
   const { token: sessionToken } = useSession();
   const { connection, loading, unknown, error, connect, disconnect } = useGithubConnection(sessionToken);
   const reachable = useServerReachable();
@@ -112,8 +110,9 @@ export default function GithubScreen() {
                 <Text testID="github.status.permissions" size="xs" className="text-muted-foreground">
                   Fine-grained token. GitHub does not report what these can reach, so Loxaic cannot
                   show it here. Connecting proved the token is yours, not that it can reach your
-                  code: it needs Contents (read and write) on each repository you work in, and Pull
-                  requests (read and write) to open a PR.
+                  code: it needs Contents (read and write) on each repository you work in, Pull
+                  requests (read and write) to open a PR, and Issues (read) for agents to read
+                  issues.
                 </Text>
               ) : connection.scopes === '' ? (
                 <Text testID="github.status.permissions" size="xs" className="text-muted-foreground">
@@ -128,30 +127,15 @@ export default function GithubScreen() {
                   Scopes: {connection.scopes}
                 </Text>
               )}
-              {/* The MCP tools are set up by connecting, so this card is where
-                  someone learns they exist — and, when they could not be set
-                  up, the only place that says why. */}
-              {connection.mcp?.ok ? (
-                <VStack space="xs" className="rounded-md border border-border bg-background p-3">
-                  <Text testID="github.mcp.status" size="xs" className="text-foreground">
-                    {connection.mcp.enabled
-                      ? 'GitHub tools are on for chats and agents. Reading issues, pull requests and files runs without asking; anything that changes GitHub asks first.'
-                      : 'GitHub tools are set up but switched off. Switch them on under MCP Servers.'}
-                  </Text>
-                  <Pressable testID="github.mcp.manage" onPress={() => { router.push('/mcp'); }}>
-                    <Text size="xs" className="text-primary">
-                      Manage GitHub tools →
-                    </Text>
-                  </Pressable>
-                </VStack>
-              ) : (
-                <Text testID="github.mcp.error" size="xs" className="text-warning">
-                  {/* An older server sends no `mcp` at all, and so no reason
-                      either — absence reads as "not set up here", never as a
-                      blank screen. */}
-                  {connection.mcp?.error ?? 'GitHub tools are not available on this server.'}
-                </Text>
-              )}
+              {/* What the token is used for, said where it is connected: it is
+                  the only place that explains why the token's reach matters. */}
+              <Text testID="github.access.note" size="xs" className="text-muted-foreground">
+                Agents in a GitHub workspace use git and gh with this token. Loxaic adds it on the
+                server, so it never enters the sandbox, and lets an agent push only its own branch
+                and open its own pull request. Reading reaches anything the token can read, so a
+                fine-grained token limited to the repositories you want agents in is the safer
+                choice.
+              </Text>
               <Button
                 testID="github.disconnect"
                 variant="outline"
@@ -183,12 +167,11 @@ export default function GithubScreen() {
                   cloning a repo, committing as you go, and opening a pull request when you ask.
                 </Text>
 
-                <Text size="xs" className="text-muted-foreground">
-                  The same token also turns on GitHub tools for chats: reading and searching issues,
-                  pull requests and code through GitHub’s own MCP server. Nothing else to set up. For
-                  those, a fine-grained token also needs{' '}
+                <Text testID="github.setup.access" size="xs" className="text-muted-foreground">
+                  Agents use it through git and gh, and Loxaic adds it on the server, so it never
+                  enters the sandbox. For agents to read issues, a fine-grained token also needs{' '}
                   <Text size="xs" className="font-medium text-foreground">Issues: Read</Text> on
-                  the repositories you want the model to read.
+                  those repositories.
                 </Text>
 
                 <Text size="xs" className="text-muted-foreground">

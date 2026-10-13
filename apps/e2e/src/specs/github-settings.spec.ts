@@ -6,15 +6,17 @@
  * 401, so the "bad token" case exercises the server's real error path rather
  * than a canned client-side rejection.
  */
-import { provisionUser, uniqueCreds } from '../helpers/auth.ts';
+import { apiToken, provisionUser, uniqueCreds } from '../helpers/auth.ts';
+import { BASE_URL } from '../../scripts/standup.ts';
 import { METADATA_ONLY_TOKEN, VALID_TOKEN } from '../../scripts/mock-github.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, typeInto, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { openGithubSettings, signIn } from '../helpers/app.ts';
+import { isVisible, tap, typeInto, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { openGithubSettings, openMcpServers, signIn } from '../helpers/app.ts';
 
 describe('GitHub connection', () => {
+  const creds = uniqueCreds();
+
   before(async () => {
-    const creds = uniqueCreds();
     await provisionUser(creds);
     await signIn(creds);
   });
@@ -31,7 +33,17 @@ describe('GitHub connection', () => {
     // have to find out from a failed clone which permissions to grant.
     await waitForTextIn('github.setup', 'Contents: Read and write');
     await waitForTextIn('github.setup', 'Pull requests: Read and write');
+    // How the token is used, and no promise of GitHub MCP tools.
+    await waitForTextIn('github.setup', 'never enters the sandbox');
     await shot('github-setup-instructions');
+  });
+
+  it('offers no GitHub server among the MCP servers', async () => {
+    await openMcpServers();
+    // Anchored on the one built-in there is, so an empty screen cannot pass.
+    await waitForVisible('mcp.catalogRow.brave');
+    expect(await isVisible('mcp.catalogRow.github')).toBe(false);
+    await shot('mcp-no-github');
   });
 
   it('rejects a token the mock does not recognize, and stores nothing', async () => {
@@ -51,8 +63,19 @@ describe('GitHub connection', () => {
     await tap('github.connect');
     await waitForVisible('github.status');
     await waitForTextIn('github.status', 'e2e-bot');
+    // What the token is for, now that git and gh use it through the egress
+    // proxy — and no GitHub MCP tools set up beside it.
+    await waitForTextIn('github.access.note', 'never enters the sandbox');
+    expect(await isVisible('github.mcp.status')).toBe(false);
+    expect(await isVisible('github.mcp.error')).toBe(false);
+    // Connecting provisions no MCP server (it used to add one, and hide the
+    // catalog card that the case above looks for).
+    const res = await fetch(`${BASE_URL}/v1/mcp/servers`, { headers: { authorization: `Bearer ${await apiToken(creds)}` } });
+    const servers = (await res.json()) as { builtinKey: string | null }[];
+    expect(servers.filter((s) => s.builtinKey === 'github')).toEqual([]);
     await shot('github-connected');
   });
+
 
   it('persists the connection across a navigation', async () => {
     await openGithubSettings();
