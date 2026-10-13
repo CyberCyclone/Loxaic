@@ -28,6 +28,10 @@ apps/mobile/keys/
 # real user images and must never be committed.
 apps/server/uploads/
 uploads/
+# The egress proxy's certificate authority (EGRESS_CA_DIR, falling back to
+# <cwd>/egress-ca). Its private key signs certificates every sandbox trusts.
+apps/server/egress-ca/
+egress-ca/
 # The managed llama.cpp runtime and downloaded models: LLAMA_DIR, which falls
 # back to <cwd>/llama the same way. Many gigabytes; never commit.
 apps/server/llama/

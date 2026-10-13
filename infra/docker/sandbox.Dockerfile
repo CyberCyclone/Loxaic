@@ -9,6 +9,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --break-system-packages ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
+# GitHub's CLI, which the agent and the Inspector's Git panel use to open and
+# read pull requests. It reaches GitHub only through Loxaic's egress proxy,
+# which holds the token (apps/server/src/egress/). A pinned release, checked
+# against the sha256 GitHub publishes for it, never the apt repository's
+# latest: this runs model-directed commands, and its version is part of the
+# image's content hash. To move it, take both sums from that release's
+# gh_<version>_checksums.txt.
+RUN set -eu; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) sum=f876a3b87bf67c94f773d17becca4dc7340b056dab901473a9260ee2a73e237b ;; \
+      arm64) sum=9aec87f9a011b1521556b06cb003776e7e214144c8efd2144924a28d90c23057 ;; \
+      *) echo "no pinned gh build for $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/gh.deb "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_${arch}.deb"; \
+    echo "$sum  /tmp/gh.deb" | sha256sum -c -; \
+    dpkg -i /tmp/gh.deb; \
+    rm /tmp/gh.deb
+
 # Office/ebook text extraction for attachments (see sandbox/extract.py).
 #
 # Deliberately the individual format libraries rather than Microsoft's

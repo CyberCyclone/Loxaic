@@ -4,22 +4,18 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getHostProvider } from "../host-provider.ts";
-import { CREDENTIAL_HELPER, gitCredentialArgs, gitEnv } from "../git.ts";
+import { gitSafeArgs } from "../git.ts";
 
 /**
- * The invariant sandbox/git.ts exists for: after a clone with credentials, the
- * token is nowhere on disk in the sandbox. Driven through the host provider
- * against a local bare repository — no network, no Docker — because the
- * property is about what git writes, which is the same under either provider.
- *
- * `file://` never consults a credential helper, so the token is not *used*
- * here; what is asserted is that it is not *written*. That is the half that
- * used to be wrong: the old code embedded it in the clone URL, which git
- * stores in `.git/config`, inside an environment the model can `cat`.
+ * The clone that fills a GitHub workspace (sandbox/git.ts), through the host
+ * provider against a local bare repository — no network, no Docker. No token
+ * is involved any more: GitHub sees one only through the egress proxy
+ * (egress/__tests__/proxy.test.ts covers that path with real git), so what
+ * is held here is that the checkout is right, and that Loxaic's own git
+ * commands run nothing from it.
  */
 let root: string;
 let origin: string;
-const TOKEN = "ghp_verysecrettoken1234";
 
 beforeEach(() => {
   root = mkdtempSync(path.join(os.tmpdir(), "loxaic-git-"));
@@ -47,23 +43,18 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-describe("cloning with credentials", () => {
-  it("leaves no trace of the token in the checkout", async () => {
+describe("cloning a workspace", () => {
+  it("writes no credential configuration into the checkout", async () => {
     const handle = await getHostProvider().create("u", {
       repoUrl: `file://${origin}`,
       branch: "main",
       newBranch: "loxaic/abc",
-      git: { token: TOKEN, identity: { name: "Octo Cat", email: "octo@example.test" } },
+      git: { identity: { name: "Octo Cat", email: "octo@example.test" } },
     });
-
     const config = readFileSync(path.join(handle.workdir, ".git", "config"), "utf8");
-    expect(config).not.toContain(TOKEN);
+    expect(config).not.toMatch(/credential|helper|x-access-token|extraheader/i);
     const remote = await handle.exec(["git", "config", "--get", "remote.origin.url"], { workdir: handle.workdir });
-    expect(remote.stdout).not.toContain(TOKEN);
-    // Nothing else either: the helper text goes in argv for one command and is
-    // never persisted, so the whole .git directory should be token-free.
-    const grep = await handle.exec(["grep", "-r", TOKEN, ".git"], { workdir: handle.workdir });
-    expect(grep.exitCode).not.toBe(0);
+    expect(remote.stdout.trim()).toBe(`file://${origin}`);
     await handle.destroy();
   });
 
@@ -95,58 +86,22 @@ describe("cloning with credentials", () => {
     await handle.destroy();
   });
 
-  it("fails the create, redacted, rather than returning an empty checkout", async () => {
-    const attempt = () =>
-      getHostProvider().create("u", { repoUrl: `file://${root}/does-not-exist.git`, git: { token: TOKEN } });
-    await expect(attempt()).rejects.toThrow(/git clone failed/);
-    let message = "";
-    try {
-      await attempt();
-    } catch (err) {
-      message = (err as Error).message;
-    }
-    expect(message).not.toContain(TOKEN);
+  it("fails the create rather than returning an empty checkout", async () => {
+    await expect(getHostProvider().create("u", { repoUrl: `file://${root}/does-not-exist.git` })).rejects.toThrow(/git clone failed/);
   });
 });
 
-describe("the credential helper", () => {
-  const helperFn = CREDENTIAL_HELPER.slice(1); // drop git's leading "!"
-
-  /** Runs the helper the way git does: `host=` and friends on stdin. */
-  function ask(stdin: string, env: Record<string, string>): string {
-    return execFileSync("bash", ["-c", `${helperFn} get`], { input: stdin, env: { ...process.env, ...env } }).toString();
-  }
-
-  it("resets the helper list first, so a `store` helper in the account's gitconfig never sees the token", () => {
-    // `-c credential.helper=…` appends. Without the reset, git's post-auth
-    // `approve` hands the token to every helper in the chain — including a
-    // `credential.helper = store` in the server account's own ~/.gitconfig,
-    // which writes it to ~/.git-credentials in plaintext. file:// clones never
-    // consult a helper, which is why the clone test above cannot see this.
-    const args = gitCredentialArgs();
-    const reset = args.indexOf("credential.helper=");
-    const helper = args.findIndex((a) => a.startsWith("credential.helper=!"));
-    expect(reset).toBeGreaterThanOrEqual(0);
-    expect(helper).toBeGreaterThan(reset);
-    // Nothing from the checkout runs beside, or between git and, the token.
-    expect(args).toContain("core.hooksPath=/dev/null");
-    expect(args).toContain("core.fsmonitor=false");
-    expect(args).toContain("http.proxy=");
-    expect(args).toContain("http.sslVerify=true");
-  });
-
-  it("answers only for the host the token was issued for", () => {
-    const env = gitEnv(TOKEN, "https://github.com/octo/real.git");
-    expect(env.LOXAIC_GIT_HOST).toBe("github.com");
-    expect(ask("protocol=https\nhost=github.com\n\n", env)).toContain(`password=${TOKEN}`);
-    // `git remote set-url origin https://attacker/…` is one bash tool call;
-    // a helper that ignored its stdin would POST the token there.
-    expect(ask("protocol=https\nhost=attacker.example\n\n", env)).toBe("");
-  });
-
-  it("answers for any host when no expected host is set, which only a tokenless env does", () => {
-    const env = gitEnv(TOKEN);
-    expect(env.LOXAIC_GIT_HOST).toBeUndefined();
-    expect(ask("host=anything\n\n", env)).toContain(`password=${TOKEN}`);
+describe("Loxaic's own git commands", () => {
+  it("run no hook and no fsmonitor from the checkout", async () => {
+    const handle = await getHostProvider().create("u", { repoUrl: `file://${origin}`, branch: "main", newBranch: "loxaic/abc" });
+    // A hook the model planted, which a push of Loxaic's must not run.
+    const marker = path.join(root, "hook-ran");
+    writeFileSync(path.join(handle.workdir, ".git", "hooks", "pre-push"), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 });
+    await handle.exec(["git", "config", "core.fsmonitor", `touch ${marker}-fsmonitor`], { workdir: handle.workdir });
+    const push = await handle.exec(["git", ...gitSafeArgs(), "push", "-q", "origin", "loxaic/abc"], { workdir: handle.workdir });
+    expect(push.exitCode, push.stderr).toBe(0);
+    expect(() => readFileSync(marker)).toThrow();
+    expect(() => readFileSync(`${marker}-fsmonitor`)).toThrow();
+    await handle.destroy();
   });
 });

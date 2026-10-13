@@ -206,7 +206,8 @@ function freePort(): Promise<number> {
 }
 
 /**
- * Where the harness's git daemon keeps its bare repositories. Unlike the
+ * Where the harness's git server keeps its bare repositories
+ * (`e2e/<name>.git` under it — see git-server.ts's `bareRepoDir`). Unlike the
  * mock GitHub port, this needs no file: it is a fixed path under this run's
  * own artifacts directory, computable identically in any process without
  * having to ask the one that created it.
@@ -390,6 +391,7 @@ async function ensureServer(): Promise<void> {
     'seeded-app': SEED_DIR,
     'instructions-app': path.join(FIXTURES_DIR, 'instructions-app'),
     'imports-app': path.join(FIXTURES_DIR, 'imports-app'),
+    'gh-app': path.join(FIXTURES_DIR, 'bugfix-app'),
   };
   gitServer = await startGitServer({ dir: GIT_SERVER_DIR, fixtures: fixtureRepos });
   const mockGithub = await startMockGithub({
@@ -456,16 +458,18 @@ async function ensureServer(): Promise<void> {
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
       GITHUB_API_URL: mockGithub.url,
+      // github.com, for git: the harness's smart-HTTP server. Only the
+      // server's egress proxy reaches it; sandboxes reach the proxy.
+      GITHUB_WEB_URL: gitServer.webUrl,
+      // The egress proxy's CA for this run, kept out of the checkout.
+      EGRESS_CA_DIR: path.join(RUN_DIR, 'egress-ca'),
       // Read when a GitHub MCP server connects, never stored in its row — so
       // the rows this harness's boot backfill creates in the shared database
       // keep pointing at GitHub once the harness has gone.
       GITHUB_MCP_URL: mockGithubMcpUrlValue,
       MOCK_SCENARIOS_FILE: writeScenarios(),
-      // Lets a networked sandbox reach this machine's git server by name on
-      // Linux and Podman; Docker Desktop resolves it without help. Network
-      // itself stays off by default — a spec that clones turns it on through
+      // Network stays off by default — a spec that clones turns it on through
       // the admin API and resets it after, like every other sandbox setting.
-      SANDBOX_EXTRA_HOSTS: 'host.docker.internal:host-gateway',
       // The idle-stop reaper's real tick is five minutes.
       // sandbox-lifecycle.spec.ts has to watch it actually pause a workspace,
       // and reaching past the timer to stop a container by hand would assert
@@ -601,7 +605,7 @@ export async function teardown(): Promise<void> {
   }
   rmSync(MOCK_GITHUB_MCP_FILE, { force: true });
   if (gitServer) {
-    gitServer.stop();
+    await gitServer.stop();
     gitServer = null;
     if (owned) rmSync(GIT_SERVER_DIR, { recursive: true, force: true });
   }

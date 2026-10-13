@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, closeKeyboard, isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
@@ -759,11 +759,14 @@ export async function chooseGithubWorkspace(repoId: number, search?: string): Pr
   // depends on the fixture.
   if (search !== undefined) {
     await waitForVisible('agent.workspace.repoSearch');
-    // On a phone the keyboard would then cover the filtered rows. Return
-    // submits the single-line field, which blurs it and closes the keyboard —
-    // what a person does; iOS offers no dismiss key to press instead.
+    // On a phone the keyboard would then cover the filtered rows. On iOS,
+    // Return submits the single-line field, which blurs it and closes the
+    // keyboard — what a person does; iOS offers no dismiss key to press
+    // instead. On Android a typed newline lands in the field's text and
+    // filters everything out, so the keyboard is put away instead.
     await typeInto('agent.workspace.repoSearch', search);
-    if (platform() === 'ios' || platform() === 'android') await byTestId('agent.workspace.repoSearch').addValue('\n');
+    if (platform() === 'ios') await byTestId('agent.workspace.repoSearch').addValue('\n');
+    if (platform() === 'android') await closeKeyboard();
   }
   await waitForVisible(`agent.workspace.repo.${String(repoId)}`);
   await tap(`agent.workspace.repo.${String(repoId)}`);
