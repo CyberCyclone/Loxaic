@@ -24,7 +24,7 @@
     "@loxaic/db": "workspace:*",
     "@loxaic/sync": "workspace:*",
     "@loxaic/types": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "ajv": "^8.20.0",
     "better-auth": "1.6.26",
     "dockerode": "^5.0.1",
