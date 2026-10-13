@@ -104,6 +104,10 @@ export interface ToolCall {
    * model's call ids repeat across messages). Same three construction sites
    * as `plan`. See lib/subAgents.ts. */
   subagent?: { description: string; messageId?: string }
+  /** Why it ran (or was refused) without a person approving — read-only, a
+   * command rule, a sandbox that contains it, or auto mode's permission
+   * check. Absent when someone approved it, and from older servers. */
+  permission?: import('@loxaic/api-client').ToolPermission
 }
 
 export interface DiffLine {

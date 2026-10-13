@@ -187,6 +187,8 @@ async function pickModel(id: string): Promise<void> {
 
 async function openLocalModels(): Promise<void> {
   await openSettings();
+  // Below the Settings modal's fold on a phone.
+  await scrollTo('settings.nav.localModels');
   await tap('settings.nav.localModels');
   await waitForVisible('localModels.runtime');
 }

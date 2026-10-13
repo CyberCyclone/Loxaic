@@ -14,11 +14,7 @@ import {
   getConversations,
   getMessages,
   isUnreachableError,
-  getMcpServers,
-  getPrefs,
   updateConversation,
-  updateMcpServer,
-  updatePrefs,
   type ServerMessage,
   type AttachmentRef,
   type StepsDecision,
@@ -52,14 +48,6 @@ export type { PendingApproval };
 /** Imported from the agent hook rather than redeclared: both surfaces render
  * the same banner, so a second definition is a second thing to keep in step. */
 export type { PendingCheckin };
-
-/** MCP tools arrive namespaced as `server__tool`; builtins never contain
- * `__` — mirrors ToolCallCard/PermissionBar's splitMcpTool. */
-function splitMcpTool(name: string): { slug: string; remoteName: string } | null {
-  const idx = name.indexOf('__');
-  if (idx <= 0) return null;
-  return { slug: name.slice(0, idx), remoteName: name.slice(idx + 2) };
-}
 
 /** Per-conversation in-flight stream state — keyed by conversation id so
  * switching threads mid-response can never show one conversation's stop
@@ -1300,39 +1288,21 @@ export function useChatSession(
     [showToast],
   );
 
-  /** "Allow always": persists the tool's approval policy before approving
-   * this call — an MCP tool patches its server's per-tool policy (the same
-   * allowlist the /mcp screen's tool sheet manages), a builtin patches the
-   * user's global tool_allowlist (PATCH /v1/prefs). If the persist fails,
-   * this call is still approved — the user's "allow" click is honored now,
-   * they just weren't spared the next prompt too. */
-  const rememberAlwaysAllow = useCallback(
-    async (tool: string) => {
-      try {
-        const mcp = splitMcpTool(tool);
-        if (mcp) {
-          const servers = await getMcpServers();
-          const server = servers.find((s) => s.slug === mcp.slug);
-          if (server) {
-            await updateMcpServer(server.id, { toolPolicies: { [mcp.remoteName]: { approval: 'allow' } } });
-          }
-        } else {
-          const prefs = await getPrefs();
-          await updatePrefs({ toolAllowlist: [...new Set([...prefs.toolAllowlist, tool])] });
-        }
-      } catch {
-        showToast('Could not save "always allow" — approved just this once');
-      }
-    },
-    [showToast],
-  );
-
+  /** "Allow always": approves this call and asks the server to stop asking —
+   * the tool's MCP policy, a builtin's place on the allowlist, or for `bash`
+   * the command rules the approval proposed. The server records it, and only
+   * for the person the approval names as its granter; it used to be a
+   * read-modify-write of the whole allowlist from here, which raced another
+   * device and could not express a command rule at all. */
   const handleAllowAlways = useCallback(
-    async (callId: string, tool: string) => {
-      await rememberAlwaysAllow(tool);
-      handleApprove(callId);
+    (callId: string) => {
+      if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId, approvalStream(callId), true)) {
+        showToast(NOT_SENT_RECONNECTING, 4000);
+        return;
+      }
+      if (activeIdRef.current) clearApproval(activeIdRef.current);
     },
-    [handleApprove, rememberAlwaysAllow],
+    [approvalStream, clearApproval, showToast],
   );
 
   /** Runs a built-in slash command (currently just "compact") against the
@@ -1467,9 +1437,6 @@ export function useChatSession(
     handleDeny,
     handleSteps,
     handleAllowAlways,
-    /** The persisting half of "Allow always", for an approval answered some
-     * other way than `handleApprove` — a sub-agent's, which names its run. */
-    rememberAlwaysAllow,
     /** Every thread's sub-agents, and the open panel's transcript. */
     subAgents,
     handleFork,

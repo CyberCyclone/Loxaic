@@ -477,5 +477,89 @@
       }
     ],
     "finalText": "[Mock] Notes edited.\n"
+  },
+  {
+    "match": "list the workspace read-only",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "ls -la"
+        }
+      }
+    ],
+    "finalText": "[Mock] Listed the workspace."
+  },
+  {
+    "match": "touch a scratch note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch scratch-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Touched the scratch note."
+  },
+  {
+    "match": "list then touch a note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "ls && touch compound-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Listed, then touched."
+  },
+  {
+    "match": "remove the old note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "rm -f old-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to remove it."
+  },
+  {
+    "match": "make a checked note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch checked-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the checked note."
+  },
+  {
+    "match": "make a classifier-ask note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch classifier-ask-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the asked-about note."
+  },
+  {
+    "match": "make a classifier-slow note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch classifier-slow-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the slow note."
   }
 ]

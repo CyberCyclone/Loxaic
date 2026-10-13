@@ -98,11 +98,24 @@ export interface InferenceSettings {
    * error.
    */
   maxConcurrentRuns: number | null;
+  /**
+   * The model the auto-mode permission check runs on (apps/server/src/
+   * permissions/check.ts). Null means the run's own model, whose request
+   * extends the prompt the backend just cached; another model gets a short
+   * standalone prompt instead, and on a single-GPU llama.cpp host loading it
+   * can unload the run's model.
+   */
+  permissionCheckModel: string | null;
+  /** How long a permission check may take before the command asks instead. */
+  permissionCheckTimeoutMs: number;
 }
 
 export interface InferenceSettingsView extends InferenceSettings {
   envOverrides: { maxConcurrentRuns: boolean };
 }
+
+export const DEFAULT_PERMISSION_CHECK_TIMEOUT_MS = 90_000;
+const PERMISSION_CHECK_TIMEOUT_RANGE = { min: 5_000, max: 600_000 };
 
 /**
  * What happens to a conversation its owner deletes.
@@ -357,18 +370,38 @@ export function getInferenceSettings(): InferenceSettingsView {
   const pinned = envPositiveInt("INFERENCE_MAX_CONCURRENT_RUNS");
   return {
     maxConcurrentRuns: pinned ?? persistedInference.maxConcurrentRuns ?? null,
+    permissionCheckModel: persistedInference.permissionCheckModel ?? null,
+    // An env pin, read at call time, outranks the stored value: it is also
+    // how a test asks for a short window without writing deployment-wide
+    // settings into a database other suites share.
+    permissionCheckTimeoutMs:
+      envPositiveInt("PERMISSION_CHECK_TIMEOUT_MS") ??
+      persistedInference.permissionCheckTimeoutMs ??
+      DEFAULT_PERMISSION_CHECK_TIMEOUT_MS,
     envOverrides: { maxConcurrentRuns: pinned !== null },
   };
 }
 
 function coerceInference(raw: unknown): Partial<InferenceSettings> {
   if (typeof raw !== "object" || raw === null) return {};
-  const value = (raw as Record<string, unknown>).maxConcurrentRuns;
-  if (value === null) return { maxConcurrentRuns: null };
-  if (typeof value === "number" && Number.isInteger(value) && value > 0) {
-    return { maxConcurrentRuns: value };
+  const row = raw as Record<string, unknown>;
+  const out: Partial<InferenceSettings> = {};
+  const value = row.maxConcurrentRuns;
+  if (value === null) out.maxConcurrentRuns = null;
+  else if (typeof value === "number" && Number.isInteger(value) && value > 0) out.maxConcurrentRuns = value;
+  if (typeof row.permissionCheckModel === "string" && row.permissionCheckModel.length > 0) {
+    out.permissionCheckModel = row.permissionCheckModel;
   }
-  return {};
+  const timeout = row.permissionCheckTimeoutMs;
+  if (
+    typeof timeout === "number" &&
+    Number.isInteger(timeout) &&
+    timeout >= PERMISSION_CHECK_TIMEOUT_RANGE.min &&
+    timeout <= PERMISSION_CHECK_TIMEOUT_RANGE.max
+  ) {
+    out.permissionCheckTimeoutMs = timeout;
+  }
+  return out;
 }
 
 /** Accepted range. The ceiling is not a resource limit — it is a sanity bound
@@ -380,17 +413,37 @@ export async function updateInferenceSettings(input: unknown): Promise<Inference
   if (typeof input !== "object" || input === null) {
     throw new SettingsError("body must be an object", "invalid");
   }
-  const raw = (input as Record<string, unknown>).maxConcurrentRuns;
-  if (raw === undefined) throw new SettingsError("nothing to update", "invalid");
-  if (getInferenceSettings().envOverrides.maxConcurrentRuns) {
+  const body = input as Record<string, unknown>;
+  const raw = body.maxConcurrentRuns;
+  const checkModel = body.permissionCheckModel;
+  const checkTimeout = body.permissionCheckTimeoutMs;
+  if (raw === undefined && checkModel === undefined && checkTimeout === undefined) {
+    throw new SettingsError("nothing to update", "invalid");
+  }
+  if (raw !== undefined && getInferenceSettings().envOverrides.maxConcurrentRuns) {
     throw new SettingsError(
       "maxConcurrentRuns is pinned by the INFERENCE_MAX_CONCURRENT_RUNS environment variable",
       "envOverride",
     );
   }
+  if (checkModel !== undefined && checkModel !== null && (typeof checkModel !== "string" || checkModel.trim() === "")) {
+    throw new SettingsError("permissionCheckModel must be a model reference or null", "invalid");
+  }
+  if (
+    checkTimeout !== undefined &&
+    (typeof checkTimeout !== "number" ||
+      !Number.isInteger(checkTimeout) ||
+      checkTimeout < PERMISSION_CHECK_TIMEOUT_RANGE.min ||
+      checkTimeout > PERMISSION_CHECK_TIMEOUT_RANGE.max)
+  ) {
+    throw new SettingsError(
+      `permissionCheckTimeoutMs must be an integer between ${String(PERMISSION_CHECK_TIMEOUT_RANGE.min)} and ${String(PERMISSION_CHECK_TIMEOUT_RANGE.max)}`,
+      "invalid",
+    );
+  }
   // null is a real value here, not an absent one: it is how an admin says
   // "go back to following the backend".
-  if (raw !== null) {
+  if (raw !== undefined && raw !== null) {
     if (typeof raw !== "number" || !Number.isInteger(raw)) {
       throw new SettingsError("maxConcurrentRuns must be an integer or null", "invalid");
     }
@@ -402,7 +455,13 @@ export async function updateInferenceSettings(input: unknown): Promise<Inference
     }
   }
 
-  const next: InferenceSettings = { maxConcurrentRuns: raw };
+  // A partial update: fields left out keep what is stored.
+  const next: Partial<InferenceSettings> = {
+    ...persistedInference,
+    ...(raw !== undefined ? { maxConcurrentRuns: raw } : {}),
+    ...(checkModel !== undefined ? { permissionCheckModel: checkModel === null ? null : (checkModel).trim() } : {}),
+    ...(checkTimeout !== undefined ? { permissionCheckTimeoutMs: checkTimeout } : {}),
+  };
   await db
     .insert(serverSettings)
     .values({ key: INFERENCE_KEY, value: next, updatedAt: new Date() })

@@ -1,4 +1,4 @@
-import { and, db, desc, eq, gt, isNotNull, ne, sql } from "@loxaic/db";
+import { and, db, desc, eq, gt, isNotNull, isNull, ne, sql } from "@loxaic/db";
 import { conversations, usageRecords } from "@loxaic/db/schema";
 import { CONTEXT_STAGE_PROMPT_AT } from "@loxaic/types";
 import { prefillRate } from "../inference/prefill-rate.ts";
@@ -121,6 +121,8 @@ export async function recentUses(model: string, exceptConversationId?: string | 
         eq(usageRecords.model, model),
         gt(usageRecords.createdAt, since),
         isNotNull(usageRecords.conversationId),
+        // A permission check is not the conversation's size.
+        isNull(usageRecords.purpose),
         exceptConversationId ? ne(usageRecords.conversationId, exceptConversationId) : undefined,
         // IS DISTINCT FROM throughout: a plain `<>` against a null answers
         // null, and a null condition drops the row — every ordinary
@@ -140,7 +142,7 @@ export async function conversationTokens(conversationId: string): Promise<number
   const rows = await db
     .select({ tokens: sql<number>`(${usageRecords.inputTokens} + ${usageRecords.outputTokens})::float8` })
     .from(usageRecords)
-    .where(eq(usageRecords.conversationId, conversationId))
+    .where(and(eq(usageRecords.conversationId, conversationId), isNull(usageRecords.purpose)))
     .orderBy(desc(usageRecords.createdAt))
     .limit(1);
   const row = rows.at(0);

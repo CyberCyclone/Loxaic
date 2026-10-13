@@ -710,10 +710,13 @@ replies.
   they pass in; `agentRun.ts` additionally exposes planning/manual/auto modes. **Chat has no
   mode selector** — it always runs manual-mode approval semantics (write builtins and
   non-allowlisted MCP tools ask; read-only builtins run free).
-- **The three agent modes, exactly** (`toolsetRequiresApproval` in `mcp/registry.ts`):
-  `planning` does not offer write tools at all and adds a planning system prompt; `manual`
-  asks for write builtins and non-allowlisted MCP tools; `auto` asks for no builtin — but an
-  MCP tool still asks until the user allowlists it. There is no denylist.
+- **The three agent modes, exactly** (`toolsetRequiresApproval` in `mcp/registry.ts`, and for
+  `bash` `decideBash` in `permissions/bash/policy.ts` — see "Bash permissions" below):
+  `planning` does not offer write tools and adds a planning system prompt, and offers `bash`
+  for read-only commands only; `manual` asks for write builtins, for `bash` beyond the
+  read-only set and the person's rules, and for non-allowlisted MCP tools; `auto` asks for no
+  builtin except `bash` outside an isolated sandbox, which goes to the permission check — and
+  an MCP tool still asks until the user allowlists it. Command rules can deny.
 - `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
   server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
   policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below). The wire
@@ -721,9 +724,10 @@ replies.
 - **"Allow always"**: an MCP tool's grant is its server's own per-tool policy (the allowlist
   the `/mcp` screen manages); a builtin's is the user's global allowlist — the
   `user_prefs.tool_allowlist` column, read by `buildToolset` (`apps/server/src/mcp/registry.ts`)
-  and exposed via `GET`/`PATCH /v1/prefs`. Chat's dialog writes them over REST; the agent's
-  bar sends it with the answer — see "The mode control and "Allow always" on the agent
-  surface" below.
+  and exposed via `GET`/`PATCH /v1/prefs` — **except `bash`, whose grants are command rules**
+  (see "Bash permissions"). Every surface sends "always" with the answer
+  (`agent.approve {always}`), and the server records it; chat used to write the allowlist
+  over REST, a read-modify-write that raced other devices and could not express a rule.
   This is global and mode-independent (it clears `requiresApproval`, not the `isWrite` gate),
   so it also silently benefits agent's manual mode — planning mode is unaffected since it
   filters on `isWrite` regardless of approval policy.
@@ -2442,6 +2446,101 @@ replies.
 - **Not fixed here:** tapping a thread in the agent's list clears a waiting prompt until the
   socket reconnects (`selectRun` resets run-level state, and a conversation is subscribed once
   per socket). `agent-allow-always.spec.ts` avoids `selectThread` for that reason.
+
+### Bash permissions (per-command rules)
+
+- **A `bash` call is judged command by command** (`apps/server/src/permissions/bash/`). It is
+  the one tool whose safety depends on what it is given, so "Allow always" for the whole tool
+  — what `tool_allowlist` used to hold — let every command run unasked forever, in every mode.
+  - `parse.ts` splits a command line into the simple commands that run: across `&& || ; | &`
+    and newlines, inside `( )`, `$( )` and backticks.
+  - It is a single pass with a 16 KB cap and a nesting cap: the command is the model's, so it
+    is hostile input.
+  - Anything it does not understand for certain — loops, `eval`, process substitution, a
+    computed command name — is unparseable, and an unparseable command asks.
+- **A command is only as allowed as its least allowed part.** Per part, the order is:
+  1. the person's deny rules;
+  2. their ask rules;
+  3. their allow rules;
+  4. the built-in "always ask" commands (`git push`, gh writes, non-GET `gh api`, `sudo`);
+  5. the built-in read-only set (`readonly.ts`).
+
+  What nothing covers falls to the mode: manual asks; auto runs it in an isolated sandbox and
+  checks it otherwise (below); planning refuses it. User allow rules do not count in planning.
+- **Read-only is strict and is not a boundary.** A part qualifies only if all of these hold:
+  - no write redirect (except to `/dev/null`) and nothing under `/dev/tcp`;
+  - a bare command name;
+  - only cosmetic env prefixes;
+  - none of the flags that make a reader write or run something: `sed -i` or a `w`/`e`
+    flag, `find -exec`, `sort -o`, `git -c`, `git diff --output`, `gh api` with fields.
+
+  `curl`, `wget`, `git ls-remote <url>`, `awk`, `xargs`, `tee` and interpreters are never on
+  it. The sandbox is what contains a command that runs; this list only decides who is asked.
+- **Read-only commands run with git's repo-config hooks off** (`READ_ONLY_BASH_ENV` in
+  engine.ts: `core.fsmonitor=false`, a `cat` pager). A model can write `.git/config`, and a
+  `git status` nobody was asked about would otherwise run what it planted.
+  - Textconv and filter drivers remain a residual risk.
+  - So, in auto mode outside isolation, an `fs_write`/`fs_edit` into `.git`, outside the
+    workspace, or under `~` goes to the permission check (`isSensitiveWrite`). Dotfiles and
+    `~/.local/bin` change what every later command runs.
+- **A rule is plain words with an optional trailing `*`** (`gh pr view *`), matched word by
+  word against the unquoted argv.
+  - An allow rule matches strictly: no unusual env prefix, and no redirect outside the
+    working directory. Deny and ask rules match loosely (the basename, ignoring both), since
+    erring there only asks more.
+  - The validator refuses `*` alone, shell syntax, and a wildcard on an interpreter or
+    wrapper (`python *` allows every program).
+  - "Allow always" records what the server *proposed* with the approval (`rules` on
+    `approval.request`); a client never names one. It is the command plus its subcommand
+    levels (`gh pr create *`, `npm run test *`), or the exact command for `rm`/`curl`/
+    interpreters. When any part that needs approval has no rule that says exactly it, nothing
+    is offered.
+- **Rules live one per row** (`command_rules`, migration 0043), so each write is one statement.
+  They are read once per run, and "Allow always" adds to the run's in-memory list as well,
+  so the rest of the run stops asking (#266's lesson). Only the run's sender's "always" is
+  recorded.
+- **Migration 0043 retired every whole-`bash` grant.** It drops `"bash"` from `tool_allowlist`
+  and sets `user_prefs.bash_grant_retired_at`, which the permissions screen
+  (`app/(app)/permissions.tsx`) shows once. `PATCH /v1/prefs` drops `"bash"` silently rather
+  than refusing it, because an older chat client sends the whole list with it added.
+- **The mock's generic bash trigger writes** (`touch .mock-bash && echo …`). `echo` alone is
+  read-only now, and every spec that drives an approval with it needs a command that asks.
+
+### The permission check (auto mode outside isolation)
+
+- **Auto mode checks a command with the model where the workspace does not contain it**
+  (`permissions/check.ts`, like Claude Code's auto mode). Isolated means a server container
+  with no network (`permissions/isolation.ts`: the sandbox row's `limits.network`, else the
+  setting). These are never isolated:
+  - GitHub workspaces;
+  - host mode;
+  - networked containers;
+  - local workspaces.
+- **The check extends the run's own request**, as a compaction does:
+  - the messages just sent, plus the model's tool-call message;
+  - a placeholder result for every call of the batch still unanswered (templates refuse a call
+    with no partner);
+  - the instruction as the last user turn;
+  - the run's tools and thinking fields, with `tool_choice: "none"`.
+
+  Measured on Qwen3.5-9B / b11342 with a 10.5k-token front, the check re-read 186 tokens
+  (0.55 s), and the next real turn 73. Nothing of it is persisted.
+- **Only an exact `VERDICT: ALLOW` in the reply's text allows.** The reasoning is never read.
+  The last `VERDICT:` line decides, and the reason may sit on the same line or a `REASON:`
+  line (models drift). A refusal, a tool call, no verdict, a timeout or an error asks the
+  person, and the bar says why (`check` on the approval). A stop during the check records the
+  call as stopped.
+- **It runs under the run's slot** (one short request, part of the turn).
+  - Its usage row has `purpose = 'permission_check'` and no `message_id`.
+  - Every reader of "the last turn" (`lastTurnTokens`, `conversationTokens`, `recentUses`)
+    skips it.
+- **An admin can set another model** (`permissionCheckModel`), which gets a short standalone
+  prompt instead, and a timeout (`permissionCheckTimeoutMs`; `PERMISSION_CHECK_TIMEOUT_MS`
+  pins it, read at call time, which is also how a test gets a short one). On a single-GPU
+  llama.cpp host another model can unload the run's; the admin screen says so.
+- **The mock answers by keyword** in the action it describes: ALLOW by default, ASK for
+  `classifier-ask`, no verdict for `classifier-garbage`, and an answer slower than any timeout
+  for `classifier-slow`.
 
 ### Sub-agents
 

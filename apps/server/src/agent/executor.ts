@@ -77,6 +77,11 @@ export async function executeTool(
    * changes a file — what records its file checkpoint (agent/checkpoints.ts).
    * Never for a call that fails before writing. */
   beforeWrite?: (path: string) => Promise<void>,
+  options?: {
+    /** Extra environment for `bash` — what hardens a read-only command that
+     * ran without anyone being asked (engine.ts's READ_ONLY_BASH_ENV). */
+    bashEnv?: Record<string, string>;
+  },
 ): Promise<ToolResult> {
   try {
     if (toolNeedsSandbox(tool)) {
@@ -87,7 +92,7 @@ export async function executeTool(
         case "fs_read":  return await runFsRead(handle, args);
         case "fs_write": return await runFsWrite(handle, args, beforeWrite);
         case "fs_edit":  return await runFsEdit(handle, args, beforeWrite);
-        case "bash":     return await runBash(handle, args, signal);
+        case "bash":     return await runBash(handle, args, signal, options?.bashEnv);
         case "grep":     return await runGrep(handle, args);
         case "glob":     return await runGlob(handle, args);
       }
@@ -282,12 +287,14 @@ async function runBash(
   handle: SandboxHandle,
   args: Record<string, unknown>,
   signal?: AbortSignal,
+  env?: Record<string, string>,
 ): Promise<ToolResult> {
   const command = requireString(args, "command");
   const res = await handle.exec(["bash", "-lc", command], {
     workdir: handle.workdir,
     timeoutMs: 60_000,
     ...(signal ? { signal } : {}),
+    ...(env ? { env } : {}),
   });
   const body = [res.stdout, res.stderr].filter((s) => s.trim() !== "").join("\n");
   return {

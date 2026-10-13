@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { permissionBarView, splitMcpTool } from './permissionBar';
+import { permissionBadge, permissionBarView, permissionCheckNote, splitMcpTool } from './permissionBar';
 
 const ME = 'user-me';
 
@@ -42,5 +42,54 @@ describe('permissionBarView', () => {
     });
     // Nor when this device does not know who is signed in.
     expect(permissionBarView({ tool: 'fs_write', mode: 'manual', granterUserId: ME }, null).canAllowAlways).toBe(false);
+  });
+});
+
+describe('bash approvals', () => {
+  it('offers Allow always only with the server-proposed rules, and names them', () => {
+    const view = permissionBarView({ tool: 'bash', mode: 'manual', granterUserId: ME, rules: ['gh pr create *'] }, ME);
+    expect(view).toMatchObject({ canAllowAlways: true, alwaysLabel: 'Always allow `gh pr create *`', checkNote: null });
+    expect(permissionBarView({ tool: 'bash', mode: 'manual', granterUserId: ME, rules: ['make *', 'npm test *'] }, ME).alwaysLabel).toBe(
+      'Always allow `make *` and `npm test *`',
+    );
+  });
+
+  it('offers no standing grant for the whole tool: no rules, no Allow always', () => {
+    for (const rules of [undefined, []]) {
+      expect(permissionBarView({ tool: 'bash', mode: 'manual', granterUserId: ME, rules }, ME)).toMatchObject({
+        canAllowAlways: false,
+        alwaysLabel: null,
+      });
+    }
+  });
+
+  it('offers it to nobody but the granter', () => {
+    expect(permissionBarView({ tool: 'bash', granterUserId: 'other', rules: ['make *'] }, ME).canAllowAlways).toBe(false);
+  });
+
+  it('says why auto mode is asking', () => {
+    const note = (check: Parameters<typeof permissionCheckNote>[0]) => permissionCheckNote(check);
+    expect(note({ by: 'classifier', outcome: 'ask', reason: 'It pushes.' })).toBe("Auto mode's permission check asked you: It pushes.");
+    expect(note({ by: 'classifier', outcome: 'timeout' })).toContain('took too long');
+    expect(note({ by: 'classifier', outcome: 'unparseable' })).toContain('no clear answer');
+    expect(note(undefined)).toBeNull();
+    expect(permissionBarView({ tool: 'fs_write', check: { by: 'classifier', outcome: 'ask' } }, ME).checkNote).toContain('asking you');
+  });
+});
+
+describe('permissionBadge', () => {
+  it.each([
+    [{ by: 'readonly' as const }, 'Read-only command · ran without asking'],
+    [{ by: 'rule' as const, rule: 'npm test' }, 'Allowed by your rule `npm test`'],
+    [{ by: 'isolated' as const }, 'Ran without asking · sandbox has no network'],
+    [{ by: 'classifier' as const, reason: 'Runs tests.' }, 'Allowed by the permission check · Runs tests.'],
+    [{ by: 'denied' as const, rule: 'rm *' }, 'Denied by your rule `rm *`'],
+    [{ by: 'refused' as const }, 'Refused · planning mode runs only read-only commands'],
+  ])('%j', (permission, text) => {
+    expect(permissionBadge(permission)).toBe(text);
+  });
+
+  it('says nothing for a call someone approved', () => {
+    expect(permissionBadge(undefined)).toBeNull();
   });
 });
