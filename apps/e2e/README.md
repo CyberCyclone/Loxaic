@@ -331,16 +331,13 @@ the workspace pre-flight makes). That is the combination that used to produce a 
 minutes later. A spec cannot reconfigure the mock — it is started once per stand-up and its URL
 crosses a process boundary — so both behaviours are reached by choosing a token.
 
-## What the GitHub MCP spec covers
+## The mock HTTP MCP server
 
-`github-mcp.spec.ts` connects GitHub through the API and follows what that sets up: the status
-line on the GitHub screen, the provisioned server on `/mcp` (with no delete control and no second
-catalogue card), a chat turn that calls `github__get_me` without an approval prompt, and the
-server disappearing again on disconnect. `standup.ts` runs
-`apps/server/test-fixtures/mock-mcp-http-server.ts` as a process (apps/e2e has no MCP SDK) and
-passes its URL to the test server as `GITHUB_MCP_URL`. That stand-in refuses every bearer except
-`VALID_TOKEN`, so the tool answering at all proves the connection's token reached it, and its
-`/__e2e/auth` endpoint lets the spec check the header directly.
+`standup.ts` runs `apps/server/test-fixtures/mock-mcp-http-server.ts` as a process (apps/e2e has
+no MCP SDK) and records its URL for `mockMcpHttpUrl()`. A spec adds it as a user's own server
+(slug `httpmock`, `allowPrivateNetwork`, an `Authorization: Bearer MOCK_MCP_HTTP_TOKEN` secret),
+as `agent-allow-always.spec.ts` does. It refuses every other bearer, so a tool answering at all
+proves the server's own secret reached it.
 
 ## What the GitHub-workspace and mock-scenario specs cover
 

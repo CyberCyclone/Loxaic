@@ -309,6 +309,13 @@
       "when": 1791884132812,
       "tag": "0043_command_rules",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1791892347935,
+      "tag": "0044_remove_github_mcp",
+      "breakpoints": true
     }
   ]
 }

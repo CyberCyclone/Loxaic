@@ -190,21 +190,13 @@ address the sandbox containers can reach, and `EGRESS_PROXY_HOST` to match.
 A folder on your own machine (a local workspace) does not go through the proxy:
 there the agent uses your own `git` and `gh` login, as you would.
 
-#### GitHub tools in chats
+#### There are no built-in GitHub tools any more
 
-Connecting the token also sets up GitHub's official MCP server for that user, so
-chats and agents can read and search issues, pull requests and code without a
-clone. Nothing else is configured and the token is not stored a second time;
-disconnecting removes the tools. Tools that only read run without asking, and
-anything that changes GitHub asks first, like every other MCP tool. The server
-appears under **MCP Servers**, where it can be switched off or have individual
-tools changed.
-
-It uses GitHub's hosted endpoint, `https://api.githubcopilot.com/mcp/`, so the
-Loxaic server needs to reach it. For a fine-grained token, reading issues also
-needs **Issues: Read** on those repositories. `GITHUB_MCP_URL` overrides the
-endpoint; set it only to an address you trust, because the private-network
-guard is lifted for it. GitHub Enterprise Server is not supported.
+Earlier versions set up GitHub's MCP server when you connected a token. Agents
+now use `git` and `gh` instead, and upgrading removes that server. If you want
+GitHub's MCP tools in plain chats as well, add it yourself under **MCP
+Servers** as an HTTP server (`https://api.githubcopilot.com/mcp/`) with an
+`Authorization: Bearer <token>` secret.
 
 ### How long a workspace lasts
 

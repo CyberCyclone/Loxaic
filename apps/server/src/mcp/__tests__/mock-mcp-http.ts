@@ -39,11 +39,11 @@ function buildServer(): McpServer {
     { description: "Returns pong plus the given text.", inputSchema: { text: z.string().optional() } },
     ({ text }) => Promise.resolve({ content: [{ type: "text" as const, text: `pong${text ? `: ${text}` : ""}` }] }),
   );
-  // Named after GitHub's own tool, so the GitHub server's default read-only
-  // policy applies to it exactly as it would against the real endpoint.
+  // Answers who the caller is, so a spec can tell the call reached the
+  // server with the credential it was configured with.
   server.registerTool(
     "get_me",
-    { description: "Returns the authenticated GitHub user.", inputSchema: {} },
+    { description: "Returns the authenticated user.", inputSchema: {} },
     () => Promise.resolve({ content: [{ type: "text" as const, text: JSON.stringify({ login: "e2e-bot" }) }] }),
   );
   return server;

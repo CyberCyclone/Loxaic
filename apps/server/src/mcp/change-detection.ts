@@ -40,9 +40,8 @@ export function toolHash(tool: SanitizedToolMeta): string {
 export function reconcileTools(
   stored: { toolPolicies: ToolPolicies; knownTools: KnownTools },
   discovered: SanitizedToolMeta[],
-  /** The policy a tool seen for the first time starts with. Built-in catalog
-   * entries use this to start known read-only tools allowed (catalog.ts's
-   * `catalogDefaultPolicy`); everything else asks. */
+  /** The policy a tool seen for the first time starts with; by default it
+   * asks. */
   defaultPolicyFor: (name: string) => ToolPolicy = () => ({ ...DEFAULT_POLICY }),
 ): { toolPolicies: ToolPolicies; knownTools: KnownTools; changedTools: string[] } {
   const policies: ToolPolicies = { ...stored.toolPolicies };
