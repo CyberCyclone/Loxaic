@@ -284,7 +284,8 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export interface InferenceSettings {
   /** null = follow the backend's own slot count. */
   maxConcurrentRuns: number | null;
-  envOverrides: { maxConcurrentRuns: boolean };
+  /** `permissionCheckTimeoutMs` is absent from a server that predates its pin. */
+  envOverrides: { maxConcurrentRuns: boolean; permissionCheckTimeoutMs?: boolean };
   /** What `maxConcurrentRuns` actually resolves to right now — the number null
    * stands for. Shown alongside the setting because the two routinely differ
    * and the resolved one is what an admin needs to see. */

@@ -39,6 +39,8 @@ export function PermissionCheckSettings({
 }: PermissionCheckSettingsProps) {
   const model = settings.permissionCheckModel ?? null;
   const timeout = settings.permissionCheckTimeoutMs;
+  // Set on the server's own command line, so the API refuses a change.
+  const timeoutPinned = settings.envOverrides.permissionCheckTimeoutMs === true;
   return (
     <VStack testID="inference.permissionCheck" space="xs" className="border-t border-border pt-4">
       <Text size="xs" className="text-muted-foreground">
@@ -82,6 +84,11 @@ export function PermissionCheckSettings({
           <Text size="xs" className="text-muted-foreground">
             If the check takes longer than this, the command asks instead.
           </Text>
+          {timeoutPinned && (
+            <Text testID="inference.permissionCheck.timeoutPinned" size="xs" className="text-muted-foreground">
+              Set to {String(Math.round(timeout / 1000))} s by PERMISSION_CHECK_TIMEOUT_MS on the server.
+            </Text>
+          )}
           <HStack space="xs" className="flex-wrap">
             {TIMEOUTS.map((choice) => {
               const selected = timeout === choice.ms;
@@ -89,9 +96,9 @@ export function PermissionCheckSettings({
                 <Pressable
                   key={choice.ms}
                   testID={`inference.permissionCheck.timeout.${String(choice.ms)}`}
-                  disabled={unavailable}
+                  disabled={unavailable || timeoutPinned}
                   onPress={() => { onTimeout(choice.ms); }}
-                  className={`rounded-full px-3 py-1.5 ${selected ? 'bg-primary/15' : 'bg-muted'} ${unavailable ? 'opacity-40' : ''}`}
+                  className={`rounded-full px-3 py-1.5 ${selected ? 'bg-primary/15' : 'bg-muted'} ${unavailable || timeoutPinned ? 'opacity-40' : ''}`}
                 >
                   <Text size="sm" className={selected ? 'text-primary' : 'text-muted-foreground'}>
                     {choice.label}

@@ -71,13 +71,17 @@ export function normalizePattern(pattern: string): string {
   return pattern.trim().split(/\s+/).join(" ");
 }
 
-/** A write redirect a rule can carry: a file under the working directory. */
+/** A write redirect a rule can carry: a file under the working directory,
+ * and never inside `.git`, where a hook or a config entry would run later
+ * under a command nobody is asked about. The same line `isSensitiveWrite`
+ * draws for `fs_write` and `fs_edit`. */
 function isWorkspaceRedirect(r: Redirect): boolean {
   if (isHarmlessRedirect(r)) return true;
   const t = r.target;
   if (!t || t.dynamic || t.glob) return false;
   if (r.op === "<>" || r.op.startsWith("<")) return false;
-  return !t.text.startsWith("/") && !t.text.split("/").includes("..") && t.text.length > 0;
+  const parts = t.text.split("/");
+  return !t.text.startsWith("/") && !parts.includes("..") && !parts.includes(".git") && t.text.length > 0;
 }
 
 const basename = (text: string) => text.slice(text.lastIndexOf("/") + 1);

@@ -2467,12 +2467,24 @@ replies.
 
   What nothing covers falls to the mode: manual asks; auto runs it in an isolated sandbox and
   checks it otherwise (below); planning refuses it. User allow rules do not count in planning.
+  **Planning's refusal comes before ask rules**, judged on the command itself: an ask rule only
+  ever adds a question, and checked first it turned a refused `rm` into a prompt someone could
+  approve. An ask rule on a read-only command still asks in planning. Found in review.
 - **Read-only is strict and is not a boundary.** A part qualifies only if all of these hold:
   - no write redirect (except to `/dev/null`) and nothing under `/dev/tcp`;
   - a bare command name;
-  - only cosmetic env prefixes;
+  - only cosmetic env prefixes — never a pager variable (`PAGER`, `GIT_PAGER`, `GH_PAGER`),
+    which names a program to run; the engine sets `PAGER=cat` itself;
   - none of the flags that make a reader write or run something: `sed -i` or a `w`/`e`
-    flag, `find -exec`, `sort -o`, `git -c`, `git diff --output`, `gh api` with fields.
+    flag, `find -exec`, `sort -o`, `git -c`, `git diff --output`, `rg --pre`/`--pre-glob`/
+    `--hostname-bin` (each runs a program), `gh api` with fields.
+  - **`gh api` is an allowlist of flags** (`ghApiIsReadOnly`): gh's parser (pflag) takes the
+    *last* of repeated `-X`, and attached and combined shorthands (`-XDELETE`, `-X=DELETE`,
+    `-iX DELETE`). Reading the first `-X` passed `-X GET -X DELETE …` as read-only, and an
+    unknown dash-word was skipped, so the shorthand forms passed too: a branch deleted with the
+    owner's token, unasked, in every mode. Now every method given must be GET, a method-override
+    header is refused, and any flag not on the list makes the command not read-only. Found in
+    review (the repeated `-X`); the shorthand forms were found fixing it.
 
   `curl`, `wget`, `git ls-remote <url>`, `awk`, `xargs`, `tee` and interpreters are never on
   it. The sandbox is what contains a command that runs; this list only decides who is asked.
@@ -2486,7 +2498,8 @@ replies.
 - **A rule is plain words with an optional trailing `*`** (`gh pr view *`), matched word by
   word against the unquoted argv.
   - An allow rule matches strictly: no unusual env prefix, and no redirect outside the
-    working directory. Deny and ask rules match loosely (the basename, ignoring both), since
+    working directory or into `.git` (a planted hook or config entry runs later under a command
+    nobody is asked about; the line `isSensitiveWrite` draws for the file tools). Deny and ask rules match loosely (the basename, ignoring both), since
     erring there only asks more.
   - The validator refuses `*` alone, shell syntax, and a wildcard on an interpreter or
     wrapper (`python *` allows every program).
@@ -2536,7 +2549,12 @@ replies.
     skips it.
 - **An admin can set another model** (`permissionCheckModel`), which gets a short standalone
   prompt instead, and a timeout (`permissionCheckTimeoutMs`; `PERMISSION_CHECK_TIMEOUT_MS`
-  pins it, read at call time, which is also how a test gets a short one). On a single-GPU
+  pins it, read at call time, which is also how a test gets a short one). A pinned timeout is
+  reported in `envOverrides` and refused by the API with a 409, like every other pin.
+- **The inference row is patched in the database, one statement** (`value || excluded.value`),
+  and the cache is set from what comes back. It holds several fields now, and a failed boot read
+  leaves the cache `{}`: merging onto the cache and writing it back erased every field a PATCH
+  did not name. Found in review; `inference-settings.test.ts` starts from an empty cache. On a single-GPU
   llama.cpp host another model can unload the run's; the admin screen says so.
 - **The mock answers by keyword** in the action it describes: ALLOW by default, ASK for
   `classifier-ask`, no verdict for `classifier-garbage`, and an answer slower than any timeout

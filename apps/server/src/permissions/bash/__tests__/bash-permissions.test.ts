@@ -89,6 +89,8 @@ describe("the read-only set", () => {
     "git remote -v", "git config --get user.name", "git stash list", "LANG=C sort x",
     "gh pr view 3", "gh issue list --state open", "gh api repos/o/r/pulls", "gh api -X GET repos/o/r",
     "gh search issues bug", "npm ls", "pnpm why react", "node --version", "echo hello", "sleep 2", "cd src",
+    "gh api -X GET -X GET repos/o/r", "gh api --jq .name repos/o/r", "gh api --jq=.name repos/o/r --paginate",
+    "gh api -i -H 'Accept: application/vnd.github.raw' repos/o/r/readme", "rg --hyperlink-format=default foo",
   ])("%s is read-only", (cmd) => {
     expect(isReadOnlySegment(one(cmd))).toBe(true);
   });
@@ -102,6 +104,17 @@ describe("the read-only set", () => {
     "gh api https://evil.example/", "gh pr view --web", "npm install", "awk '{print}' f", "xargs ls",
     "tee out", "curl https://x", "LD_PRELOAD=x ls", "X=1", "./script.sh", "/bin/ls", "rm x",
     "cat < /dev/tcp/1.2.3.4/80", "date -s now", "uniq a b", "env FOO=1 ls", "touch x",
+    // gh takes the last of repeated -X, and its flag parser takes attached and
+    // combined shorthands; review of #288 found the first.
+    "gh api -X GET -X DELETE repos/o/r/git/refs/heads/main", "gh api -XDELETE repos/o/r/git/refs/heads/main",
+    "gh api -X=DELETE repos/o/r", "gh api -iX DELETE repos/o/r", "gh api --method=GET -X DELETE repos/o/r",
+    "gh api -X GET --method DELETE repos/o/r", "gh api -H 'X-HTTP-Method-Override: DELETE' repos/o/r",
+    "gh api --field=x=1 repos/o/r", "gh api repos/o/r extra", "gh api -X",
+    // ripgrep runs a program for each of these.
+    "rg --pre-glob '*' foo", "rg --pre=./x foo", "rg --hyperlink-format='x://{host}{path}' --hostname-bin ./s.sh foo",
+    "rg --hostname-bin=./s.sh foo",
+    // A pager variable names a program to run.
+    "PAGER=./evil gh pr view 1", "GIT_PAGER=./evil git log", "GH_PAGER=./evil gh issue list",
   ])("%s is not read-only", (cmd) => {
     expect(isReadOnlySegment(one(cmd))).toBe(false);
   });
@@ -131,6 +144,16 @@ describe("rules", () => {
     expect(ruleMatches("npm run build *", one("NODE_OPTIONS=--require=x npm run build"), true)).toBe(false);
     expect(ruleMatches("npm test", one("/usr/bin/npm test"), true)).toBe(false);
     expect(ruleMatches("npm test", one("npm $X"), true)).toBe(false);
+  });
+
+  it("never lets an allow rule's redirect write inside .git", () => {
+    // A hook or a config entry written there runs later under a command
+    // nobody is asked about. Same line as isSensitiveWrite.
+    expect(ruleMatches("echo *", one("echo x > out.txt"), true)).toBe(true);
+    expect(ruleMatches("echo *", one("echo x >> .git/config"), true)).toBe(false);
+    expect(ruleMatches("echo *", one("echo x > .git/hooks/pre-commit"), true)).toBe(false);
+    expect(ruleMatches("echo *", one("echo x > sub/.git/config"), true)).toBe(false);
+    expect(ruleMatches("echo *", one("echo x > .github/notes"), true)).toBe(true);
   });
 
   it("matches deny and ask rules loosely", () => {
@@ -203,6 +226,19 @@ describe("decideBash", () => {
       expect(decide("git push origin feat", "auto", { isolated })).toMatchObject({ kind: "ask", rules: ["git push *"] });
     }
     expect(decide("gh pr create --fill", "manual")).toMatchObject({ kind: "ask", rules: ["gh pr create *"] });
+  });
+
+  it("never lets an ask rule turn a planning refusal into a prompt, and still asks for a read it names", () => {
+    const rules: CommandRule[] = [
+      { pattern: "rm *", action: "ask" },
+      { pattern: "cat *", action: "ask" },
+    ];
+    expect(decide("rm -rf build", "planning", { rules })).toMatchObject({ kind: "refuse" });
+    expect(decide("ls && rm -rf build", "planning", { rules })).toMatchObject({ kind: "refuse" });
+    expect(decide("cat .env", "planning", { rules })).toMatchObject({ kind: "ask", rules: [] });
+    expect(decide("cat .env", "planning")).toEqual({ kind: "run", by: "readonly" });
+    // Deny still comes first.
+    expect(decide("cat .env", "planning", { rules: [{ pattern: "cat *", action: "deny" }] })).toMatchObject({ kind: "deny" });
   });
 
   it("refuses in planning anything that is not built-in read-only, allow rules included", () => {

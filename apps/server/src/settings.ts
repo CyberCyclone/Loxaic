@@ -15,7 +15,7 @@
  * tests that never load it — resolution falls back to env > default, which is
  * exactly the behaviour that existed before this table.
  */
-import { db, eq } from "@loxaic/db";
+import { db, eq, sql } from "@loxaic/db";
 import { serverSettings } from "@loxaic/db/schema";
 import type { SandboxKind, SandboxMode } from "./sandbox/provider.ts";
 import { __resetLocalModelsSettingsForTest, loadLocalModelsSettings } from "./llama/settings.ts";
@@ -111,7 +111,7 @@ export interface InferenceSettings {
 }
 
 export interface InferenceSettingsView extends InferenceSettings {
-  envOverrides: { maxConcurrentRuns: boolean };
+  envOverrides: { maxConcurrentRuns: boolean; permissionCheckTimeoutMs: boolean };
 }
 
 export const DEFAULT_PERMISSION_CHECK_TIMEOUT_MS = 90_000;
@@ -368,17 +368,15 @@ export function getSandboxSettings(): SandboxSettingsView {
  */
 export function getInferenceSettings(): InferenceSettingsView {
   const pinned = envPositiveInt("INFERENCE_MAX_CONCURRENT_RUNS");
+  const pinnedTimeout = envPositiveInt("PERMISSION_CHECK_TIMEOUT_MS");
   return {
     maxConcurrentRuns: pinned ?? persistedInference.maxConcurrentRuns ?? null,
     permissionCheckModel: persistedInference.permissionCheckModel ?? null,
     // An env pin, read at call time, outranks the stored value: it is also
     // how a test asks for a short window without writing deployment-wide
     // settings into a database other suites share.
-    permissionCheckTimeoutMs:
-      envPositiveInt("PERMISSION_CHECK_TIMEOUT_MS") ??
-      persistedInference.permissionCheckTimeoutMs ??
-      DEFAULT_PERMISSION_CHECK_TIMEOUT_MS,
-    envOverrides: { maxConcurrentRuns: pinned !== null },
+    permissionCheckTimeoutMs: pinnedTimeout ?? persistedInference.permissionCheckTimeoutMs ?? DEFAULT_PERMISSION_CHECK_TIMEOUT_MS,
+    envOverrides: { maxConcurrentRuns: pinned !== null, permissionCheckTimeoutMs: pinnedTimeout !== null },
   };
 }
 
@@ -426,6 +424,12 @@ export async function updateInferenceSettings(input: unknown): Promise<Inference
       "envOverride",
     );
   }
+  if (checkTimeout !== undefined && getInferenceSettings().envOverrides.permissionCheckTimeoutMs) {
+    throw new SettingsError(
+      "permissionCheckTimeoutMs is pinned by the PERMISSION_CHECK_TIMEOUT_MS environment variable",
+      "envOverride",
+    );
+  }
   if (checkModel !== undefined && checkModel !== null && (typeof checkModel !== "string" || checkModel.trim() === "")) {
     throw new SettingsError("permissionCheckModel must be a model reference or null", "invalid");
   }
@@ -455,18 +459,25 @@ export async function updateInferenceSettings(input: unknown): Promise<Inference
     }
   }
 
-  // A partial update: fields left out keep what is stored.
-  const next: Partial<InferenceSettings> = {
-    ...persistedInference,
+  // A partial update: fields left out keep what is stored. Merged into the
+  // row as stored, in the one statement, never onto this process's copy: that
+  // copy is `{}` after a failed boot read, and writing it back would erase
+  // every field the PATCH did not name. One statement also keeps two admins
+  // saving different fields at once from undoing each other.
+  const patch: Partial<InferenceSettings> = {
     ...(raw !== undefined ? { maxConcurrentRuns: raw } : {}),
-    ...(checkModel !== undefined ? { permissionCheckModel: checkModel === null ? null : (checkModel).trim() } : {}),
+    ...(checkModel !== undefined ? { permissionCheckModel: checkModel === null ? null : checkModel.trim() } : {}),
     ...(checkTimeout !== undefined ? { permissionCheckTimeoutMs: checkTimeout } : {}),
   };
-  await db
+  const [row] = await db
     .insert(serverSettings)
-    .values({ key: INFERENCE_KEY, value: next, updatedAt: new Date() })
-    .onConflictDoUpdate({ target: serverSettings.key, set: { value: next, updatedAt: new Date() } });
-  persistedInference = next;
+    .values({ key: INFERENCE_KEY, value: patch, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: serverSettings.key,
+      set: { value: sql`${serverSettings.value} || excluded.value`, updatedAt: new Date() },
+    })
+    .returning({ value: serverSettings.value });
+  persistedInference = coerceInference(row.value);
   return getInferenceSettings();
 }
 

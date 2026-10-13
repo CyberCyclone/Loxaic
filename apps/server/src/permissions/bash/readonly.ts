@@ -16,8 +16,10 @@
 import type { Redirect, Segment, Word } from "./parse.ts";
 
 /** Environment prefixes that change only how output looks. Anything else
- * (`LD_PRELOAD=`, `NODE_OPTIONS=`, `GIT_SSH_COMMAND=`) can change what runs. */
-const BENIGN_ENV = /^(LANG|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|CI|TERM|COLUMNS|LINES|PAGER|GIT_PAGER)=/;
+ * (`LD_PRELOAD=`, `NODE_OPTIONS=`, `GIT_SSH_COMMAND=`) can change what runs —
+ * and so can a pager variable (`PAGER`, `GIT_PAGER`, `GH_PAGER`), which names a
+ * program to run. Read-only commands get `PAGER=cat` from the engine already. */
+const BENIGN_ENV = /^(LANG|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|CI|TERM|COLUMNS|LINES)=/;
 
 /** Prefixes that run the rest of the line as the command. Stripped before a
  * command is judged, here and by rule matching. */
@@ -171,28 +173,48 @@ const GH_READ: Partial<Record<string, readonly string[]>> = {
   search: ["repos", "issues", "prs", "code", "commits"],
 };
 
+/** `gh api` flags that take a value, and those that do not, which a read may
+ * carry. Anything else — a field, `--input`, `--hostname`, a combined or
+ * attached shorthand (`-iX`, `-XDELETE`, `-X=DELETE`) — is not judged, and so
+ * not read-only: gh's flag parser takes forms this one would have to imitate
+ * exactly to be safe, and the last of repeated `-X` wins. */
+const GH_API_VALUED = new Set(["-X", "--method", "-H", "--header", "-q", "--jq", "-t", "--template", "-p", "--preview", "--cache"]);
+const GH_API_SWITCHES = new Set(["-i", "--include", "--paginate", "--slurp", "--silent", "--verbose"]);
+
+function ghApiIsReadOnly(rest: readonly string[]): boolean {
+  let endpoint: string | undefined;
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k];
+    if (a.startsWith("--method=")) {
+      if (a.slice(9).toUpperCase() !== "GET") return false;
+    } else if (GH_API_VALUED.has(a)) {
+      const value = rest.at(k + 1);
+      if (value === undefined) return false;
+      // Every method given must be GET: gh takes the last of several.
+      if ((a === "-X" || a === "--method") && value.toUpperCase() !== "GET") return false;
+      // A header can ask for another method too.
+      if ((a === "-H" || a === "--header") && /method-override/i.test(value)) return false;
+      k++;
+    } else if (a.startsWith("--header=")) {
+      if (/method-override/i.test(a)) return false;
+    } else if (/^--(jq|template|cache|preview)=/.test(a)) {
+      // Output shaping only.
+    } else if (a.startsWith("-")) {
+      if (!GH_API_SWITCHES.has(a)) return false;
+    } else if (endpoint === undefined) {
+      endpoint = a;
+    } else {
+      return false;
+    }
+  }
+  // A full URL could name any host, and GraphQL can mutate.
+  return endpoint !== undefined && endpoint !== "graphql" && !endpoint.includes("://");
+}
+
 function ghIsReadOnly(args: readonly string[]): boolean {
   const group = args.at(0);
   const verb = args.at(1);
-  if (group === "api") {
-    const rest = args.slice(1);
-    if (has(rest, "-f", "-F", "--field", "--raw-field", "--input", "--hostname")) return false;
-    const method = rest.findIndex((a) => a === "-X" || a === "--method");
-    if (method !== -1 && rest[method + 1]?.toUpperCase() !== "GET") return false;
-    if (rest.some((a) => a.startsWith("--method=") && a.slice(9).toUpperCase() !== "GET")) return false;
-    // The endpoint is the first word that is not a flag or a flag's value. A
-    // full URL could name any host, and GraphQL can mutate.
-    const valued = new Set(["-X", "--method", "-H", "--header", "-q", "--jq", "-t", "--template", "-p", "--preview", "--cache"]);
-    let path: string | undefined;
-    for (let k = 0; k < rest.length; k++) {
-      if (valued.has(rest[k])) k++;
-      else if (!rest[k].startsWith("-")) {
-        path = rest[k];
-        break;
-      }
-    }
-    return path !== undefined && path !== "graphql" && !path.includes("://");
-  }
+  if (group === "api") return ghApiIsReadOnly(args.slice(1));
   return group !== undefined && verb !== undefined && (GH_READ[group]?.includes(verb) ?? false) && !has(args, "--web", "-w");
 }
 
@@ -233,7 +255,9 @@ export function isReadOnlySegment(seg: Segment): boolean {
     case "tree":
       return !has(args, "-o");
     case "rg":
-      return !has(args, "--pre", "--pre-glob");
+      // Each of these runs a program: a preprocessor per file, and ripgrep
+      // 14's `--hostname-bin` for a hyperlink's `{host}`.
+      return !args.some((a) => /^--(pre|pre-glob|hostname-bin)(=|$)/.test(a));
     case "find":
       return !args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprint0|fprintf|fls)$/.test(a));
     case "sed":

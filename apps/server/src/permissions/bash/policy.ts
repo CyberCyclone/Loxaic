@@ -89,16 +89,19 @@ export function decideBash(input: {
   if (denied) {
     return { kind: "deny", rule: denied.rule, reason: `Not run: your rule \`${denied.rule}\` denies this command.` };
   }
-  const askRule = parts.find((p): p is Extract<Part, { state: "ask-rule" }> => p.state === "ask-rule");
-  if (askRule) return { kind: "ask", rules: [], reason: `Your rule \`${askRule.rule}\` asks about this command.` };
-
-  if (mode === "planning") {
-    if (parts.every((p) => p.state === "readonly")) return { kind: "run", by: "readonly" };
+  // Planning runs read-only commands and nothing else, before any ask rule is
+  // looked at: an ask rule only ever adds a question, so it must not turn a
+  // refusal into a prompt someone can approve. Judged on the command itself,
+  // since a part's state records only the rule that matched it first.
+  if (mode === "planning" && !segments.every(isReadOnlySegment)) {
     return {
       kind: "refuse",
       reason: "Not run: planning mode runs only read-only commands (listing, reading, searching, git and gh reads).",
     };
   }
+  const askRule = parts.find((p): p is Extract<Part, { state: "ask-rule" }> => p.state === "ask-rule");
+  if (askRule) return { kind: "ask", rules: [], reason: `Your rule \`${askRule.rule}\` asks about this command.` };
+  if (mode === "planning") return { kind: "run", by: "readonly" };
 
   if (parts.some((p) => p.state === "builtin-ask")) {
     return { kind: "ask", rules: proposals(segments, parts), reason: "Pushing, GitHub writes and sudo always ask." };
