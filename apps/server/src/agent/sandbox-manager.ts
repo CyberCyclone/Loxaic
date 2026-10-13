@@ -92,9 +92,18 @@ export async function getConversationSandbox(
   entry.lastUsedAt = Date.now();
   const entryProvider = entry.provider === provider.kind ? provider : await getProviderByKind(entry.provider);
   const handle = await entryProvider.attach(entry.ref);
-  // Every command reaches GitHub through the egress proxy, as the
-  // conversation's owner (egress/env.ts).
-  return loaded ? withEgress(handle, { conversationId, ownerId: loaded.ownerId }) : handle;
+  return loaded ? egressFor(handle, conversationId, loaded) : handle;
+}
+
+/**
+ * A GitHub workspace's sandbox reaches GitHub through the egress proxy, as
+ * the conversation's owner (egress/env.ts); no other sandbox is given it. The
+ * proxy's reads reach whatever the owner's token can read, so handing it to a
+ * scratch chat would let one list and clone the owner's private repositories
+ * with nobody asked, in a conversation that was never about GitHub.
+ */
+function egressFor(handle: SandboxHandle, conversationId: string, loaded: { ownerId: string; workspace: Workspace }): SandboxHandle {
+  return loaded.workspace.kind === "github" ? withEgress(handle, { conversationId, ownerId: loaded.ownerId }) : handle;
 }
 
 /**
@@ -158,10 +167,11 @@ export async function attachRunningSandbox(row: {
     }
   }
   // The Inspector's git routes and the terminal reach GitHub the way the
-  // agent does: through the egress proxy, as the conversation's owner.
-  return row.conversationId && row.ownerId
-    ? withEgress(handle, { conversationId: row.conversationId, ownerId: row.ownerId })
-    : handle;
+  // agent does: through the egress proxy, as the conversation's owner, and
+  // only in a GitHub workspace.
+  if (!row.conversationId) return handle;
+  const loaded = await loadWorkspace(row.conversationId).catch(() => null);
+  return loaded && loaded.ownerId === row.ownerId ? egressFor(handle, row.conversationId, loaded) : handle;
 }
 
 /** True when this process already has a live sandbox for this conversation.

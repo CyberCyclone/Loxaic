@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import http from "node:http";
@@ -9,6 +10,8 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { v4 as uuid } from "uuid";
 import { ProxyAgent, request } from "undici";
+import { gzipSync } from "node:zlib";
+import tls from "node:tls";
 import { db, eq } from "@loxaic/db";
 import { conversations, githubConnections, user } from "@loxaic/db/schema";
 import { upsertConnection } from "../../github/connection.ts";
@@ -172,6 +175,42 @@ async function apiCall(credential: string, method: string, pathname: string, bod
   return { status: res.statusCode, text: await res.body.text() };
 }
 
+/** The proxy's first answer to a CONNECT. */
+function connectReply(credential: string, target: string): Promise<string> {
+  return new Promise((resolve) => {
+    const socket = net.connect(proxy.port, "127.0.0.1", () => {
+      const auth = Buffer.from(`sbx:${credential}`).toString("base64");
+      socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`);
+    });
+    socket.on("data", (d) => {
+      resolve(d.toString());
+      socket.destroy();
+    });
+    socket.on("error", () => { resolve(""); });
+  });
+}
+
+/** A request written byte for byte inside an intercepted tunnel — what a
+ * sandbox can send, which no HTTP client library would. */
+function rawThroughTunnel(credential: string, host: string, raw: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(proxy.port, "127.0.0.1", () => {
+      const auth = Buffer.from(`sbx:${credential}`).toString("base64");
+      socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\nProxy-Authorization: Basic ${auth}\r\n\r\n`);
+    });
+    socket.once("data", (d) => {
+      if (!d.toString().startsWith("HTTP/1.1 200")) { reject(new Error(d.toString())); return; }
+      const secure = tls.connect({ socket, servername: host, ca: egressCa().certPem }, () => { secure.write(raw); });
+      let out = "";
+      secure.on("data", (c: Buffer) => { out += c.toString(); });
+      secure.on("end", () => { resolve(out); });
+      secure.on("close", () => { resolve(out); });
+      secure.on("error", () => { resolve(out); });
+    });
+    socket.on("error", reject);
+  });
+}
+
 describe("the egress proxy", () => {
   it("refuses a sandbox without a valid credential", async () => {
     for (const header of [undefined, `Basic ${Buffer.from("sbx:forged.credential").toString("base64")}`]) {
@@ -227,13 +266,136 @@ describe("the egress proxy", () => {
     expect(tag.ok).toBe(false);
   }, 60_000);
 
-  it("lets a sandbox outside a GitHub workspace read but never push", async () => {
+  it("passes a gzipped push it has judged, and refuses one to main with a report", async () => {
+    // git itself never gzips a push (only a fetch's request), but other
+    // clients (libgit2, JGit) do, so the body is built here: real commands
+    // and a real pack, gzipped.
+    const clone = path.join(dir, "gzip-clone");
+    await gitIn(dir, githubCred(), "clone", "-q", "https://github.com/e2e/demo.git", clone);
+    await gitIn(clone, githubCred(), "checkout", "-q", "-B", "gzip-work", "origin/main");
+    writeFileSync(path.join(clone, "blob.bin"), randomBytes(64 * 1024));
+    await gitIn(clone, githubCred(), "add", ".");
+    await gitIn(clone, githubCred(), "commit", "-q", "-m", "a larger change");
+    const sha = (rev: string) => execFileSync("git", ["-C", clone, "rev-parse", rev]).toString().trim();
+    const base = sha("origin/main");
+    const commit = sha("HEAD");
+    const pack = execFileSync("git", ["-C", clone, "pack-objects", "--stdout", "--revs"], { input: `${commit}\n^${base}\n` });
+    const pkt = (line: string) => `${(Buffer.byteLength(line) + 4).toString(16).padStart(4, "0")}${line}`;
+    const push = (ref: string, old: string) =>
+      request("https://github.com/e2e/demo.git/git-receive-pack", {
+        method: "POST",
+        dispatcher: apiClient(githubCred()),
+        headers: { "content-type": "application/x-git-receive-pack-request", "content-encoding": "gzip" },
+        body: gzipSync(Buffer.concat([Buffer.from(`${pkt(`${old} ${commit} ${ref}\0report-status\n`)}0000`), pack])),
+      });
+    const zero = "0".repeat(40);
+
+    git.pushEncodings.length = 0;
+    const branchBefore = bareHead(BRANCH);
+    const ok = await push(`refs/heads/${BRANCH}`, branchBefore ?? zero);
+    const okText = await ok.body.text();
+    expect(ok.statusCode, okText).toBe(200);
+    expect(okText).toContain(`ok refs/heads/${BRANCH}`);
+    expect(git.pushEncodings).toEqual(["gzip"]);
+    expect(bareHead(BRANCH)).toBe(commit);
+
+    const mainBefore = bareHead("main");
+    const toMain = await push("refs/heads/main", mainBefore ?? zero);
+    const toMainText = await toMain.body.text();
+    expect(toMainText).toContain("ng refs/heads/main Loxaic lets this workspace push only to refs/heads/loxaic/feature");
+    expect(bareHead("main")).toBe(mainBefore);
+  }, 60_000);
+
+  it("serves only a GitHub workspace's sandbox: a scratch conversation's credential gets nothing", async () => {
+    // Reads reach whatever the owner's token can, so a scratch chat would
+    // otherwise list and clone their private repositories, unasked.
     const credential = signEgressCredential({ conversationId: scratchConv, ownerId });
-    const clone = path.join(dir, "scratch-clone");
-    expect((await gitIn(dir, credential, "clone", "-q", "https://github.com/e2e/demo.git", clone)).ok).toBe(true);
-    const push = await gitIn(clone, credential, "push", "origin", "HEAD:refs/heads/x");
-    expect(push.ok).toBe(false);
-    expect(push.stderr).toMatch(/403|read GitHub but not write/);
+    expect(await connectReply(credential, "github.com:443")).toMatch(/^HTTP\/1\.1 407/);
+    const clone = await gitIn(dir, credential, "clone", "-q", "https://github.com/e2e/demo.git", path.join(dir, "scratch-clone"));
+    expect(clone.ok).toBe(false);
+  }, 30_000);
+
+  it("never sends the token to a host the request line names", async () => {
+    const seen: { url: string; auth?: string }[] = [];
+    const other = http.createServer((req, res) => {
+      seen.push({ url: req.url ?? "", auth: req.headers.authorization });
+      res.end("ok");
+    });
+    await new Promise<void>((r) => { other.listen(0, "127.0.0.1", r); });
+    const elsewhere = `127.0.0.1:${String((other.address() as AddressInfo).port)}`;
+    try {
+      for (const target of [`http://${elsewhere}/steal`, `https://${elsewhere}/steal`, `//${elsewhere}/steal`, `/\\\\${elsewhere}/steal`]) {
+        const reply = await rawThroughTunnel(githubCred(), "api.github.com", `GET ${target} HTTP/1.1\r\nHost: api.github.com\r\nConnection: close\r\n\r\n`);
+        expect(reply, target).toMatch(/^HTTP\/1\.1 400/);
+      }
+      expect(seen).toEqual([]);
+    } finally {
+      await new Promise((r) => { other.close(r); });
+    }
+  });
+
+  it("decides who a request is for on every request, not once per connection", async () => {
+    // git and gh keep one connection open; what it was opened with must not
+    // outlive a disconnect.
+    const agent = apiClient(githubCred());
+    const get = async () => {
+      const res = await request("https://api.github.com/repos/e2e/demo", { dispatcher: agent });
+      await res.body.text();
+      return res.statusCode;
+    };
+    apiSeen = [];
+    expect(await get()).toBe(200);
+    expect(apiSeen.at(-1)?.auth).toBe(`token ${TOKEN}`);
+    await db.delete(githubConnections).where(eq(githubConnections.userId, ownerId));
+    forgetEgressToken(ownerId);
+    try {
+      expect(await get()).toBe(200);
+      expect(apiSeen.at(-1)?.auth).toBeUndefined();
+    } finally {
+      await upsertConnection(ownerId, { token: TOKEN, login: "octo", name: "Octo", email: null, scopes: "repo" });
+      forgetEgressToken(ownerId);
+      await agent.close();
+    }
+  });
+
+  it("reads only the head of a gzipped push, so a small body cannot inflate to gigabytes", async () => {
+    // 1.5 GB of zeros as fifteen concatenated gzip members, about 1.5 MB on
+    // the wire: not a push, refused from its first bytes without inflating
+    // the rest, and without stalling the loop. (Inflated whole, as it once
+    // was, it holds the loop for seconds and the process for 1.5 GB.)
+    const member = gzipSync(Buffer.alloc(100 * 1024 * 1024));
+    const bomb = Buffer.concat(Array.from({ length: 15 }, () => member));
+    let worst = 0;
+    let last = Date.now();
+    const ticker = setInterval(() => {
+      worst = Math.max(worst, Date.now() - last);
+      last = Date.now();
+    }, 10);
+    try {
+      const res = await request("https://github.com/e2e/demo.git/git-receive-pack", {
+        method: "POST",
+        dispatcher: apiClient(githubCred()),
+        headers: { "content-type": "application/x-git-receive-pack-request", "content-encoding": "gzip" },
+        body: bomb,
+      });
+      const text = await res.body.text();
+      expect(res.statusCode).toBe(400);
+      expect(text).toContain("could not be read");
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(worst).toBeLessThan(500);
+  }, 30_000);
+
+  it("says why when an API request is too large to check, rather than dropping the connection", async () => {
+    const res = await request("https://api.github.com/repos/e2e/demo/issues/1/comments", {
+      method: "POST",
+      dispatcher: apiClient(githubCred()),
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body: "x".repeat(2 * 1024 * 1024) }),
+    });
+    expect(res.statusCode).toBe(413);
+    expect(await res.body.text()).toContain("too large for Loxaic to check");
   }, 30_000);
 
   it("adds the token to API reads and checks writes", async () => {

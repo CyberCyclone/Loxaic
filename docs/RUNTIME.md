@@ -165,7 +165,9 @@ and lets a GitHub workspace write only to its own branch and its own pull
 request. Pushing to `main`, deleting a branch, merging or closing a pull
 request, and anything in another repository are refused, and the agent is told
 why. Reads reach whatever your token can read, so a fine-grained token limited
-to the repositories you want an agent in is the safer choice.
+to the repositories you want an agent in is the safer choice. Only an agent
+chat started in a GitHub workspace goes through the proxy; no other chat or
+sandbox has GitHub access through Loxaic.
 
 The proxy starts with the server. It listens on loopback, which Docker Desktop,
 OrbStack and Colima containers reach as `host.docker.internal`; on Linux it also

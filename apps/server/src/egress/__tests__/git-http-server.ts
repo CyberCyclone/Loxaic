@@ -16,14 +16,18 @@ export interface GitHttpServer {
   url: string;
   /** Every Authorization header received, in order. */
   authorizations: (string | undefined)[];
+  /** The Content-Encoding of every push received (`git-receive-pack`), in order. */
+  pushEncodings: (string | undefined)[];
   close(): Promise<void>;
 }
 
 export function startGitHttpServer(opts: { root: string; token: string; host?: string; port?: number }): Promise<GitHttpServer> {
   const authorizations: (string | undefined)[] = [];
+  const pushEncodings: (string | undefined)[] = [];
   const expected = `Basic ${Buffer.from(`x-access-token:${opts.token}`).toString("base64")}`;
   const server = http.createServer((req, res) => {
     authorizations.push(req.headers.authorization);
+    if (req.method === "POST" && (req.url ?? "").endsWith("/git-receive-pack")) pushEncodings.push(req.headers["content-encoding"]);
     if (req.headers.authorization !== expected) {
       res.writeHead(401, { "www-authenticate": 'Basic realm="test"' });
       res.end("bad credentials\n");
@@ -82,6 +86,7 @@ export function startGitHttpServer(opts: { root: string; token: string; host?: s
       resolve({
         url: `http://${opts.host ?? "127.0.0.1"}:${String(port)}`,
         authorizations,
+        pushEncodings,
         close: () => new Promise<void>((done) => {
           server.closeAllConnections();
           server.close(() => { done(); });

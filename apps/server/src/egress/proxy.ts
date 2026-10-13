@@ -21,7 +21,7 @@ import https from "node:https";
 import net, { type Socket } from "node:net";
 import tls from "node:tls";
 import dns from "node:dns/promises";
-import { gunzipSync } from "node:zlib";
+import { createGunzip } from "node:zlib";
 import type { Duplex } from "node:stream";
 import { loadWorkspace } from "../agent/workspace.ts";
 import { isBlockedAddress } from "../agent/executor.ts";
@@ -48,7 +48,6 @@ export const GITHUB_API_HOST = "api.github.com";
 const INTERCEPTED = new Set([GITHUB_WEB_HOST, GITHUB_API_HOST]);
 
 const MAX_JSON_BODY = 1024 * 1024;
-const MAX_GZIP_PUSH = 256 * 1024 * 1024;
 
 /** Where each intercepted host is really sent — operator and test seams,
  * read at call time. */
@@ -81,17 +80,26 @@ async function tokenFor(ownerId: string): Promise<string | null> {
   return token;
 }
 
-async function callerFor(header: string | undefined): Promise<Caller | null> {
+function identityFor(header: string | undefined): EgressIdentity | null {
   const credential = credentialFromHeader(header);
-  const identity = credential ? verifyEgressCredential(credential) : null;
+  return credential ? verifyEgressCredential(credential) : null;
+}
+
+/**
+ * Who a request is for, resolved per request — never once per connection.
+ * `git` and `gh` keep a connection open across many requests, and a caller
+ * kept with the socket would outlive a disconnected token, a deleted
+ * conversation and a changed workspace for as long as the client held it.
+ */
+async function callerFor(identity: EgressIdentity | null): Promise<Caller | null> {
   if (!identity) return null;
   const loaded = await loadWorkspace(identity.conversationId).catch(() => null);
-  // The conversation must still exist, and still be this owner's.
-  if (loaded?.ownerId !== identity.ownerId) return null;
-  const scope: EgressScope =
-    loaded.workspace.kind === "github"
-      ? { repo: loaded.workspace.repo.toLowerCase(), branch: loaded.workspace.branch }
-      : { repo: null, branch: null };
+  // The conversation must still exist, still be this owner's, and be a
+  // GitHub workspace: only those sandboxes are given the proxy
+  // (sandbox-manager.ts's egressFor), and a credential is honoured on the same
+  // terms it was handed out.
+  if (loaded?.ownerId !== identity.ownerId || loaded.workspace.kind !== "github") return null;
+  const scope: EgressScope = { repo: loaded.workspace.repo.toLowerCase(), branch: loaded.workspace.branch };
   return { identity, scope, token: await tokenFor(identity.ownerId) };
 }
 
@@ -119,14 +127,36 @@ function authHeader(host: string, token: string | null): Record<string, string> 
     : { authorization: `token ${token}` };
 }
 
+/**
+ * The upstream URL for an origin-form request path, built so it cannot leave
+ * the upstream's origin. The path is the sandbox's to write: resolved with
+ * `new URL(path, base)`, an absolute-form target (`https://elsewhere/`) or one
+ * the URL parser reads as protocol-relative (`//elsewhere`, `\\elsewhere`)
+ * re-bases onto another host, with the owner's token already attached.
+ */
+export function upstreamTarget(host: string, path: string): URL {
+  const base = upstreamFor(host);
+  if (!isOriginForm(path)) throw new Error("not an origin-form request target");
+  const parsed = new URL(path, "http://upstream.invalid");
+  const target = new URL(base.href);
+  target.pathname = `${base.pathname.replace(/\/+$/, "")}${parsed.pathname}`;
+  target.search = parsed.search;
+  if (target.origin !== base.origin) throw new Error("request target left the upstream");
+  return target;
+}
+
+/** `/path?query` and nothing else: no scheme, no authority, no backslash. */
+export function isOriginForm(path: string): boolean {
+  return path.startsWith("/") && !path.startsWith("//") && !path.includes("\\");
+}
+
 function upstreamRequest(
   host: string,
   method: string,
   path: string,
   headers: Record<string, string | string[]>,
 ): http.ClientRequest {
-  const base = upstreamFor(host);
-  const target = new URL(path.replace(/^\//, ""), base);
+  const target = upstreamTarget(host, path);
   const lib = target.protocol === "https:" ? https : http;
   return lib.request(target, { method, headers: { ...headers, host: target.host } });
 }
@@ -210,15 +240,29 @@ function refuse(res: ServerResponse, status: number, message: string): void {
   res.end(`${message}\n`);
 }
 
+/**
+ * The request body, or null when it is over `max`. Past the cap the rest is
+ * read and dropped rather than the request destroyed: destroying it takes the
+ * connection down before the refusal can be written, and the client sees a
+ * reset instead of the sentence. A body that keeps coming well past the cap is
+ * cut off all the same.
+ */
 function readBody(req: IncomingMessage, max: number): Promise<Buffer | null> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let over = false;
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > max) {
-        resolve(null);
+      if (size > max * 8) {
         req.destroy();
+        return;
+      }
+      if (over) return;
+      if (size > max) {
+        over = true;
+        chunks.length = 0;
+        resolve(null);
         return;
       }
       chunks.push(c);
@@ -277,6 +321,53 @@ async function readPushHead(req: IncomingMessage): Promise<{ head: Buffer; comma
   });
 }
 
+/**
+ * The commands at the start of a gzipped push, inflating only as far as they
+ * go. The rules need nothing past the flush, so nothing past it is inflated or
+ * buffered: a small gzip body can inflate to gigabytes, and inflating the
+ * whole of it in this process would stall every other user's stream, then run
+ * out of memory. The bytes read so far are kept as they arrived, still
+ * compressed, and forwarded as they are.
+ */
+async function readGzipPushHead(req: IncomingMessage): Promise<{ head: Buffer; commands: ReceivePackCommands } | { error: string }> {
+  return new Promise((resolve) => {
+    const raw: Buffer[] = [];
+    let inflated = Buffer.alloc(0);
+    let settled = false;
+    const gunzip = createGunzip();
+    const finish = (result: { head: Buffer; commands: ReceivePackCommands } | { error: string }) => {
+      if (settled) return;
+      settled = true;
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.pause();
+      gunzip.destroy();
+      resolve(result);
+    };
+    const judge = (final: boolean) => {
+      const parsed = parseReceivePack(inflated);
+      if (parsed === null) {
+        if (final) finish({ error: "the push ended before its commands" });
+        return;
+      }
+      finish("error" in parsed ? { error: parsed.error } : { head: Buffer.concat(raw), commands: parsed });
+    };
+    const onData = (c: Buffer) => {
+      raw.push(c);
+      gunzip.write(c);
+    };
+    const onEnd = () => { gunzip.end(); };
+    gunzip.on("data", (c: Buffer) => {
+      inflated = Buffer.concat([inflated, c]);
+      judge(false);
+    });
+    gunzip.on("end", () => { judge(true); });
+    gunzip.on("error", () => { finish({ error: "it is not valid gzip" }); });
+    req.on("data", onData);
+    req.on("end", onEnd);
+  });
+}
+
 async function handleGit(caller: Caller, req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", `https://${GITHUB_WEB_HOST}`);
   const kind = classifyGitRequest(req.method ?? "GET", url);
@@ -295,23 +386,12 @@ async function handleGit(caller: Caller, req: IncomingMessage, res: ServerRespon
     return;
   }
   // The push itself: judge its ref updates before any of the pack goes on.
-  if (req.headers["content-encoding"] === "gzip") {
-    const raw = await readBody(req, MAX_GZIP_PUSH);
-    if (!raw) { refuse(res, 413, "This push is too large for Loxaic to check."); return; }
-    let body: Buffer;
-    try {
-      body = gunzipSync(raw);
-    } catch {
-      refuse(res, 400, "This push could not be read."); return;
-    }
-    const parsed = parseReceivePack(body);
-    if (!parsed || "error" in parsed) { refuse(res, 400, "This push could not be read."); return; }
-    const verdict = checkPush(parsed.updates, caller.scope, kind.repo);
-    if (!verdict.allow) { sendRejection(res, parsed, verdict.reason); return; }
-    forward(GITHUB_WEB_HOST, caller, req, res, { buffer: body }, ["content-encoding"]);
+  const encoding = req.headers["content-encoding"];
+  if (encoding !== undefined && encoding !== "gzip" && encoding !== "identity") {
+    refuse(res, 400, `Loxaic can't read a push sent as ${encoding}.`);
     return;
   }
-  const head = await readPushHead(req);
+  const head = encoding === "gzip" ? await readGzipPushHead(req) : await readPushHead(req);
   if ("error" in head) { refuse(res, 400, `This push could not be read (${head.error}).`); return; }
   const verdict = checkPush(head.commands.updates, caller.scope, kind.repo);
   if (!verdict.allow) {
@@ -363,8 +443,9 @@ async function handleApi(caller: Caller, req: IncomingMessage, res: ServerRespon
 
 // ── The listener ─────────────────────────────────────────────
 
-/** What an intercepted TLS socket is for: its host and its caller. */
-const intercepted = new WeakMap<Duplex, { host: string; caller: Caller }>();
+/** What an intercepted TLS socket is for: its host, and who opened it. The
+ * caller is resolved again for every request on it (`callerFor`). */
+const intercepted = new WeakMap<Duplex, { host: string; identity: EgressIdentity }>();
 
 const mitm = http.createServer((req, res) => {
   const meta = intercepted.get(req.socket);
@@ -372,10 +453,24 @@ const mitm = http.createServer((req, res) => {
     res.destroy();
     return;
   }
-  const handle = meta.host === GITHUB_API_HOST ? handleApi : handleGit;
-  handle(meta.caller, req, res).catch((err: unknown) => {
-    refuse(res, 502, `Loxaic's proxy failed: ${redactToken((err as Error).message, meta.caller.token ?? "")}`);
-  });
+  // Origin-form only: an absolute-form line (`GET https://elsewhere/`) is
+  // legal HTTP/1.1, and is how a sandbox would try to send the token
+  // somewhere else. upstreamTarget refuses it too; this says why.
+  if (!isOriginForm(req.url ?? "")) {
+    refuse(res, 400, "Loxaic only forwards requests for a path on this host.");
+    return;
+  }
+  void (async () => {
+    const caller = await callerFor(meta.identity);
+    if (!caller) {
+      refuse(res, 403, "This sandbox's GitHub access has ended: its conversation is gone or no longer this owner's.");
+      return;
+    }
+    const handle = meta.host === GITHUB_API_HOST ? handleApi : handleGit;
+    await handle(caller, req, res).catch((err: unknown) => {
+      refuse(res, 502, `Loxaic's proxy failed: ${redactToken((err as Error).message, caller.token ?? "")}`);
+    });
+  })().catch(() => { refuse(res, 502, "Loxaic's proxy failed."); });
 });
 
 const PROXY_AUTH_REQUIRED =
@@ -389,8 +484,9 @@ async function publicAddress(host: string): Promise<{ address: string; family: n
 
 async function onConnect(req: IncomingMessage, client: Socket, head: Buffer): Promise<void> {
   client.on("error", () => client.destroy());
-  const caller = await callerFor(req.headers["proxy-authorization"]);
-  if (!caller) {
+  const identity = identityFor(req.headers["proxy-authorization"]);
+  const caller = await callerFor(identity);
+  if (!identity || !caller) {
     client.end(PROXY_AUTH_REQUIRED);
     return;
   }
@@ -406,7 +502,7 @@ async function onConnect(req: IncomingMessage, client: Socket, head: Buffer): Pr
     });
     if (head.length) secure.unshift(head);
     secure.on("error", () => secure.destroy());
-    intercepted.set(secure, { host: host.toLowerCase(), caller });
+    intercepted.set(secure, { host: host.toLowerCase(), identity });
     mitm.emit("connection", secure);
     return;
   }
@@ -430,7 +526,7 @@ async function onConnect(req: IncomingMessage, client: Socket, head: Buffer): Pr
 
 /** A plain-http request through the proxy (`GET http://host/…`). */
 async function onRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const caller = await callerFor(req.headers["proxy-authorization"]);
+  const caller = await callerFor(identityFor(req.headers["proxy-authorization"]));
   if (!caller) {
     res.writeHead(407, { "proxy-authenticate": 'Basic realm="loxaic"' });
     res.end();

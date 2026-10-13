@@ -60,11 +60,29 @@ const caPaths = (root: string) => ({
 });
 
 /** Sandboxes whose CA files are written, keyed by ref and CA. */
-const prepared = new Map<string, Promise<boolean>>();
+const prepared = new Map<string, Promise<string | null>>();
+
+/**
+ * The proxy is running and this sandbox is meant to reach GitHub through it,
+ * but the proxy's CA could not be written into it. Never answered with an
+ * empty environment: git would then reach github.com without a credential and
+ * report a private repository as not found, which reads as a problem with the
+ * person's token.
+ */
+export class EgressCaError extends Error {
+  constructor(reason: string) {
+    super(
+      `Loxaic could not put its GitHub certificate into this workspace (${reason}), ` +
+        "so git and gh cannot reach GitHub through Loxaic from it.",
+    );
+    this.name = "EgressCaError";
+  }
+}
 
 /** Writes the proxy's CA, and a bundle of the system's roots plus it, into
- * the sandbox. Once per sandbox per CA; false when it could not. */
-function prepareCa(handle: SandboxHandle, certPem: string): Promise<boolean> {
+ * the sandbox. Once per sandbox per CA; null when done, else why not. A
+ * failure is not kept, so the next command tries again. */
+function prepareCa(handle: SandboxHandle, certPem: string): Promise<string | null> {
   const key = `${handle.ref}\0${String(certPem.length)}\0${certPem.slice(-64)}`;
   let p = prepared.get(key);
   if (!p) {
@@ -75,9 +93,9 @@ function prepareCa(handle: SandboxHandle, certPem: string): Promise<boolean> {
       `printf '%s\\n' "$LOXAIC_EGRESS_CA" > "${paths.ca}"`;
     p = handle
       .exec(["sh", "-c", script], { env: { LOXAIC_EGRESS_CA: certPem.trim() }, workdir: handle.root })
-      .then((r) => r.exitCode === 0)
-      .catch(() => false);
-    p.then((ok) => { if (!ok) prepared.delete(key); }, () => prepared.delete(key));
+      .then((r) => (r.exitCode === 0 ? null : (r.stderr.trim().split("\n").at(-1) ?? "") || `exit ${String(r.exitCode)}`))
+      .catch((err: unknown) => (err instanceof Error ? err.message : String(err)));
+    void p.then((failed) => { if (failed !== null) prepared.delete(key); });
     prepared.set(key, p);
   }
   return p;
@@ -87,11 +105,13 @@ function prepareCa(handle: SandboxHandle, certPem: string): Promise<boolean> {
  * The environment that routes this sandbox's GitHub traffic through the
  * proxy. Empty when the proxy is not running, or for a local workspace — and
  * then git and gh simply reach GitHub (or fail to) as they would anyway.
+ * Throws `EgressCaError` when the CA could not be written.
  */
 export async function egressEnv(handle: SandboxHandle, identity: EgressIdentity): Promise<Record<string, string>> {
   if (!running || handle.provider === "executor") return {};
   const certPem = egressCa().certPem;
-  if (!(await prepareCa(handle, certPem))) return {};
+  const failed = await prepareCa(handle, certPem);
+  if (failed !== null) throw new EgressCaError(failed);
   const credential = signEgressCredential(identity);
   const proxyUrl = `http://sbx:${credential}@${proxyHostFor(handle.provider, running)}:${String(running.port)}`;
   const paths = caPaths(handle.root);
@@ -124,7 +144,18 @@ export function withEgress(handle: SandboxHandle, identity: EgressIdentity): San
     get(target, prop, receiver) {
       if (prop === "exec") {
         const exec: SandboxHandle["exec"] = async (command, options) => {
-          const env = await egressEnv(target, identity);
+          let env: Record<string, string>;
+          try {
+            env = await egressEnv(target, identity);
+          } catch (err) {
+            if (!(err instanceof EgressCaError)) throw err;
+            // The command still runs: most have nothing to do with GitHub.
+            // One that fails is told what is missing, rather than left to
+            // GitHub's own words about a repository it could not see.
+            const result = await target.exec(command, options);
+            if (result.exitCode === 0) return result;
+            return { ...result, stderr: `${result.stderr}${result.stderr.endsWith("\n") || !result.stderr ? "" : "\n"}[Loxaic] ${err.message}\n` };
+          }
           return target.exec(command, { ...options, env: { ...env, ...options?.env } });
         };
         return exec;
@@ -132,7 +163,12 @@ export function withEgress(handle: SandboxHandle, identity: EgressIdentity): San
       if (prop === "openTerminal" && target.openTerminal) {
         const original = target.openTerminal.bind(target);
         const open = async (options?: { env?: Record<string, string> }): Promise<TerminalSession> => {
-          const env = await egressEnv(target, identity);
+          // A shell opens either way; without the CA it simply has no GitHub
+          // through Loxaic, as a command run from it would be told.
+          const env = await egressEnv(target, identity).catch((err: unknown) => {
+            if (err instanceof EgressCaError) return {};
+            throw err;
+          });
           return original({ env: { ...env, ...options?.env } });
         };
         return open;

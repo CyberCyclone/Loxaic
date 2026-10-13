@@ -4208,17 +4208,47 @@ replies.
   environment it was created with, and the proxy's port changes between server starts. The same
   wrapper covers the agent's tools, the Inspector's routes and the terminal panel. The CA and a
   bundle of the system roots plus it are written to `<root>/.loxaic/` once per sandbox per CA.
+  **A CA that cannot be written is said, not skipped** (`EgressCaError`): an empty environment
+  sent a clone to github.com with no credential, to fail as "repository not found", which reads
+  as a problem with the person's token. A clone fails with the sentence; any other command still
+  runs, and one that fails has the sentence appended to its stderr. Found in review.
   **A local workspace is left alone**: on someone's own machine the agent uses their own git and
   gh login, and the server's proxy may not be reachable from there.
+- **Only a GitHub workspace's sandbox is given the proxy, and the proxy honours no other**
+  (`egressFor` in sandbox-manager.ts, and `callerFor`'s workspace check). Its reads reach whatever
+  the owner's token can, and `gh api`/`gh repo view` are read-only commands that run unasked, so a
+  scratch chat given it could list and clone the owner's private repositories in a conversation
+  never about GitHub. The plan gave scratch sandboxes reads; review narrowed it.
+- **Who a request is for is decided per request, never per connection** (`callerFor` in the
+  intercepted handler; only the verified identity is kept with the socket). `git` and `gh` keep
+  one connection open, and a caller kept with it outlived a disconnected token, a deleted
+  conversation and a changed workspace. Found in review.
+- **The upstream URL is built so it cannot leave the upstream** (`upstreamTarget`). Inside the
+  intercepted tunnel the request line is the sandbox's to write: absolute-form
+  (`GET https://elsewhere/`) is legal HTTP/1.1, and `new URL(path, base)` re-bases onto it — the
+  owner's token sent to a host of the model's choosing, past the SSRF guard. So is anything the
+  URL parser reads as protocol-relative (`//elsewhere`, and `/\\elsewhere` once a leading `/` is
+  stripped). Only origin-form is accepted (`isOriginForm`), and the target is assembled from the
+  upstream's origin plus a parsed path, then checked for the same origin. Found in review (the
+  backslash form while fixing it).
 - **What may be written is narrow, and only from a GitHub workspace** (`rules.ts`, pure):
   - reads pass for anything the token can read, the same reach the GitHub MCP had. The token's
     own scope is the boundary, which is why Settings recommends a fine-grained token;
   - git pushes only to `refs/heads/<the workspace's branch>` of its repository. Force pushes are
-    allowed; deletes and tags are not. The receive-pack commands are parsed (gunzipped,
-    pkt-lines up to the flush, capped at 64 KB and 100 updates) before a byte of the pack is
-    forwarded, and a refusal is answered as a receive-pack report (side-band when asked), so
-    `git push` prints `! [remote rejected] main -> main (Loxaic lets this workspace push only to
-    …)` and the model reads why;
+    allowed; deletes and tags are not. The receive-pack commands are parsed (pkt-lines up to
+    the flush, capped at 64 KB and 100 updates) before a byte of the pack is forwarded, and a
+    refusal is answered as a receive-pack report (side-band when asked), so `git push` prints
+    `! [remote rejected] main -> main (Loxaic lets this workspace push only to …)` and the model
+    reads why;
+  - **a gzipped push is inflated only as far as its commands** (`readGzipPushHead`), and its
+    original bytes are forwarded. Inflated whole with `gunzipSync`, 1.5 MB of gzip held the event
+    loop for most of a second here and the process for 1.5 GB; a little more takes the server
+    down. git itself never gzips a push (only a fetch's request), but libgit2 and JGit do, so the
+    test builds the body by hand. Found in review;
+  - **a body too large to check is answered, not cut off**: `readBody` drains past its cap (to 8×)
+    rather than destroying the request, which took the connection down before the 413 was
+    written, so the client saw a reset indistinguishable from an unreachable proxy. Found in
+    review;
   - REST: opening a PR from the branch, editing the branch's own PR (never `state`), comments,
     and reviewers, labels and assignees on its own PR;
   - GraphQL: queries pass; mutations only from an allowlist. `createPullRequest` is checked
