@@ -248,15 +248,23 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
  * always carry their owning message_id directly) straight onto the
  * assistant message, same shape reconstructMessages produces from cold
  * storage. */
-export function snapshotMessageToMessage(sm: StreamSnapshotMessage, clock: SyncClock = {}): Message {
+export function snapshotMessageToMessage(
+  sm: StreamSnapshotMessage,
+  clock: SyncClock = {},
+  knownStartedAt?: number,
+): Message {
   const role = roleOf(sm.author_type) ?? 'assistant';
   // Only with the server's clock to read it against: without one,
   // `localRunStart` would time the message from now, which on a reconnect
   // minutes into a reply errs short. Absent, the counter uses the run's start.
+  // A start the thread already holds is kept, as `toView` keeps `startedLocal`:
+  // recomputing it on every snapshot moves it by the difference in delivery
+  // latency, and a slow resync after a fast one sends the counter backwards.
   const startedAt =
-    sm.started_at !== undefined && clock.serverNow !== undefined
+    knownStartedAt ??
+    (sm.started_at !== undefined && clock.serverNow !== undefined
       ? localRunStart(sm.started_at, clock.serverNow, clock.now)
-      : undefined;
+      : undefined);
   return {
     id: sm.message_id,
     role,
@@ -313,8 +321,8 @@ export function applySnapshotToMsgs(
   const loadedFloor = Math.min(...result.flatMap((m) => (m.lamport === undefined ? [] : [m.lamport])));
   const clock: SyncClock = { serverNow: opts.serverNow, now: opts.now ?? Date.now() };
   for (const sm of snapshot.messages) {
-    const converted = snapshotMessageToMessage(sm, clock);
     const idx = result.findIndex((m) => m.id === sm.message_id);
+    const converted = snapshotMessageToMessage(sm, clock, idx >= 0 ? result[idx].startedAt : undefined);
     if (idx >= 0) {
       result[idx] = converted;
       continue;

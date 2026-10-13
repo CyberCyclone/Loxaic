@@ -84,8 +84,8 @@ export function applyChildSync(t: ChildTranscript, event: Sync, now = Date.now()
   return { ...t, msgs, live };
 }
 
-export function applyChildEvent(t: ChildTranscript, event: StreamEvent): ChildTranscript {
-  const msgs = applyEventToMsgs(t.msgs, event.event);
+export function applyChildEvent(t: ChildTranscript, event: StreamEvent, now = Date.now()): ChildTranscript {
+  const msgs = applyEventToMsgs(t.msgs, event.event, now);
   let live = t.live;
   if (live?.streamId === event.stream_id) {
     const promptStats = foldPromptStats(live.promptStats, event.event);

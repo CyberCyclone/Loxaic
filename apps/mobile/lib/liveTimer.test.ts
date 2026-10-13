@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { StreamSnapshot } from '@loxaic/api-client';
-import { isEmptyGenerating, liveCounterStart } from './liveTimer';
+import { isEmptyGenerating, liveCounterStart, typingIndicatorFor } from './liveTimer';
 import { applyEventToMsgs, applySnapshotToMsgs } from './streamMessages';
 import type { Message } from './types';
 
@@ -47,6 +47,37 @@ describe('a reply with nothing to show yet', () => {
   it('is never someone\'s message', () => {
     expect(isEmptyGenerating({ role: 'user', text: '' })).toBe(false);
     expect(isEmptyGenerating(undefined)).toBe(false);
+  });
+});
+
+describe('when the typing indicator speaks for the newest message', () => {
+  const toolOnly = { role: 'assistant' as const, text: '', tools: [{ tool: 'fs_write', summary: 'a.txt', result: '' }] };
+  const idle = { queuePosition: null, loadingModel: false };
+
+  it('before anything is written: model load and prefill', () => {
+    expect(typingIndicatorFor(undefined, idle)).toBe(true);
+    expect(typingIndicatorFor({ role: 'user', text: 'hi' }, idle)).toBe(true);
+    expect(typingIndicatorFor({ role: 'assistant', text: '' }, idle)).toBe(true);
+  });
+
+  it('not once the reply has thinking or text of its own', () => {
+    expect(typingIndicatorFor({ role: 'assistant', text: '', thinking: 'hm' }, idle)).toBe(false);
+    expect(typingIndicatorFor({ role: 'assistant', text: 'ok' }, { queuePosition: 2 })).toBe(false);
+  });
+
+  it('not while a tool-only reply\'s tools run: its cards say so, and "Processing prompt…" would not be true', () => {
+    expect(typingIndicatorFor(toolOnly, idle)).toBe(false);
+  });
+
+  it('for a tool-only reply whose run went back in the queue after an approval — the only place Chat says "Queued"', () => {
+    expect(typingIndicatorFor(toolOnly, { queuePosition: 2 })).toBe(true);
+    expect(typingIndicatorFor(toolOnly, { loadingModel: true })).toBe(true);
+    // And the row stays: the two decisions are separate.
+    expect(isEmptyGenerating(toolOnly)).toBe(false);
+  });
+
+  it('never for a compaction, whose card is its face', () => {
+    expect(typingIndicatorFor({ role: 'summary', text: '' }, { queuePosition: 1 })).toBe(false);
   });
 });
 
@@ -98,6 +129,22 @@ describe('a message learns when it began', () => {
     // device's clock is an hour off. The start lands 40 s before now, here.
     const [m] = applySnapshotToMsgs([], snapshot(10_000), { serverNow: 50_000, now: RUN + 3_600_000 });
     expect(m.startedAt).toBe(RUN + 3_600_000 - 40_000);
+  });
+
+  it('keeps a start it already has: a slow resync after a fast one must not move the counter back', () => {
+    // First sync: generated at the server's 50 s, start 40 s before → now - 40 s.
+    let msgs = applySnapshotToMsgs([], snapshot(10_000), { serverNow: 50_000, now: RUN });
+    expect(msgs[0].startedAt).toBe(RUN - 40_000);
+    // Second, for the same message: generated at 55 s, delivered 3 s late at
+    // RUN + 8 s. Recomputed, it would read RUN + 8 s - 45 s = RUN - 37 s.
+    msgs = applySnapshotToMsgs(msgs, snapshot(10_000), { serverNow: 55_000, now: RUN + 8_000 });
+    expect(msgs[0].startedAt).toBe(RUN - 40_000);
+  });
+
+  it('keeps a live start through the snapshot that follows it', () => {
+    let msgs = applyEventToMsgs([], start(10_000), RUN);
+    msgs = applySnapshotToMsgs(msgs, snapshot(10_000), { serverNow: 50_000, now: RUN + 3_000 });
+    expect(msgs[0].startedAt).toBe(RUN);
   });
 
   it('not from a snapshot without the server\'s clock, which would time it from now', () => {

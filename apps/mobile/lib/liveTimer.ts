@@ -39,3 +39,30 @@ export function liveCounterStart(
 export function isEmptyGenerating(msg: Pick<Message, 'role' | 'thinking' | 'text' | 'tools'> | undefined): boolean {
   return !!msg && msg.role === 'assistant' && !msg.thinking && !msg.text && !msg.tools?.length;
 }
+
+/**
+ * Whether the typing indicator speaks for the newest message, so the thread
+ * still says what the run is doing when the reply itself cannot.
+ *
+ * Before anything is written (no thinking, no text) it always does: that is
+ * model load and prefill, which only the indicator reports.
+ *
+ * A reply that is only tool calls has its cards on screen (see
+ * `isEmptyGenerating`), and while its tools run the cards are the whole story:
+ * a "Processing prompt…" line under a two-minute `bash` claims work that is not
+ * happening. But a run can go back to waiting with that reply still the newest:
+ * an approval hands its slot back and re-enters the queue, and on Chat the
+ * indicator is the only place "Queued · #N" and "Loading model…" are shown. So
+ * a tool-only reply gets the indicator exactly while the run reports one of
+ * those. Prompt stats need no case here: `tool.call` clears them, and the next
+ * request's arrive after its own `message.start`, on a new, empty message.
+ */
+export function typingIndicatorFor(
+  newest: Pick<Message, 'role' | 'thinking' | 'text' | 'tools'> | undefined,
+  run: { queuePosition?: number | null; loadingModel?: boolean },
+): boolean {
+  if (!newest || newest.role === 'user') return true;
+  if (newest.role !== 'assistant' || newest.thinking || newest.text) return false;
+  if (!newest.tools?.length) return true;
+  return !!run.queuePosition || !!run.loadingModel;
+}

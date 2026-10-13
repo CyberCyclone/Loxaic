@@ -461,7 +461,7 @@ export async function runSubagent(
  * elapsed time — is the client's to count, from `started_at` while it waits
  * for a slot and from `admitted_at` once it has one.
  */
-function mirrorProgress(
+export function mirrorProgress(
   child: StreamProducer,
   parent: StreamProducer,
   childConvId: string,
@@ -536,9 +536,15 @@ function mirrorProgress(
       }
       case "tool.result":
         // However the wait ended — allowed, refused, timed out, stopped — its
-        // call now has a result, and the question is no longer open.
+        // call now has a result, and the question is no longer open. It is
+        // also back on a slot: `yieldWhile` re-enters the queue before the
+        // call runs, so this result is written holding one. The next
+        // `iteration` is on the far side of the message's whole tool batch,
+        // and leaving the queued flag until then had the listing say "Queued"
+        // for a child two minutes into a command.
         if (pendingCallId === event.call_id) {
           pendingCallId = null;
+          hooks.onRunning?.();
           report({ state: "running", pending_approval: null });
         }
         break;

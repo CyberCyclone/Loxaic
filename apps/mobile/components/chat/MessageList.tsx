@@ -12,7 +12,7 @@ import type { Conversation, Message as MessageType } from '@/lib/types';
 import { useServerReachable } from '@/lib/connection';
 import { isStageActive, type StageCard } from '@/lib/stageCard';
 import { canRewind, isContextFailure, retryIndex } from '@/lib/rewind';
-import { isEmptyGenerating, liveCounterStart } from '@/lib/liveTimer';
+import { isEmptyGenerating, liveCounterStart, typingIndicatorFor } from '@/lib/liveTimer';
 
 const CONTENT_PADDING = 16;
 /** How close to the newest message still counts as "following along". */
@@ -177,8 +177,11 @@ export function MessageList({ conversation, responseStartedAt, loadingModel, que
     [liveCompactionIndex, counterSince, queuePosition, loadingModel, promptStats],
   );
   // A switch in progress is its own status: the typing indicator beside it
-  // would claim the model is working on a reply.
-  const showTyping = pending && !isStageActive(stageCard ?? null) && (!lastMsg || lastMsg.role === 'user' || lastIsEmptyGenerating);
+  // would claim the model is working on a reply. Not `lastIsEmptyGenerating`:
+  // that decides whether the reply has a row, and a tool-only reply has one
+  // while the run can still be queued behind it — see typingIndicatorFor.
+  const showTyping =
+    pending && !isStageActive(stageCard ?? null) && typingIndicatorFor(lastMsg, { queuePosition, loadingModel });
   // While the empty placeholder is represented by the typing indicator, don't
   // *also* render it as its own contentless row — that produced two stacked
   // "S" rows for the same in-flight response.

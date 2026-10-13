@@ -583,6 +583,25 @@ replies.
     a model that called `subagent` or `bash` without a word had its card hidden behind
     "Processing prompt…" for as long as the tools ran, counting the run's age. The mock always
     writes a preamble, which is why no spec ever saw it.
+  - **Whether the reply has a row and whether the typing indicator shows are two decisions.**
+    `isEmptyGenerating` decides the row; `typingIndicatorFor` the indicator. On Chat the
+    indicator is the only place "Queued · #N" and "Loading model…" appear, and a manual-mode
+    approval hands the slot back and re-queues with the tool-only reply still newest. So a
+    tool-only reply gets the indicator exactly while the run reports a queue place or a load,
+    and never while its tools run, where "Processing prompt…" would be false. One flag for both
+    hid the queue line; found in review. `queued-after-approval.spec.ts` answers a Chat approval
+    while a second socket holds the only slot; the mock's "without a word" makes the tool call
+    with no preamble, which is what reaches a tool-only reply at all.
+  - **A start already worked out is kept.** A snapshot of a message the thread holds keeps its
+    `startedAt` (`applySnapshotToMsgs` hands it to `snapshotMessageToMessage`), as `toView` keeps
+    `startedLocal`: recomputed per snapshot it moved by the difference in delivery latency, and a
+    slow resync after a fast one sent the counter backwards. Found in review.
+  - **The clock is read once per socket message, in the handler, never in a fold.** Every fold
+    that times something (`applyEventToMsgs`, `applySnapshotToMsgs`, the sub-agent card and
+    transcript folds) runs inside a state updater, which React may defer to a render or run
+    twice, and a backgrounded tab's clamped timers can put that render a second later. Each
+    hook's `onEvent` stamps `arrivedAt` first and passes it down. Same rule as
+    `useStoredState`'s. Found in review.
   - `live-timers.spec.ts` reads `chat.typing.elapsed` three requests into a turn of eight-second
     mock requests, live and after a fresh start.
 
@@ -2583,6 +2602,11 @@ replies.
     (`childClock`, then `markEnded`), so there is no write per admission. The same map is what
     lets `listSubagents` report a waiting child as `queued`: it reported every unfinished child
     as `running`, so a reload said "Running" for one that had not begun.
+  - **The queued flag clears on an answered approval's `tool.result`, not only at the next
+    `iteration`.** `yieldWhile` re-enters the queue before the call runs, so the result is
+    written holding a slot; the next `iteration` follows the message's whole tool batch, and
+    until then a reload's listing said "Queued" for a child two minutes into a `bash`, while the
+    stream said running. Found in review; `subagent-progress.test.ts` drives the mirror.
   - `subagents.spec.ts`'s queued case delegates a slow child then one with a single slow request
     (answered at once, its "Running" lasted too briefly to see). The listing fix is held by the
     server test, not the spec: on a fresh start the run's snapshot follows the listing within a

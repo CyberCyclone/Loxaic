@@ -660,6 +660,12 @@ export function useChatSession(
     };
 
     const onEvent = (event: ServerMessage) => {
+      // When this message arrived, read once, before anything else. Every fold
+      // below that times a message is handed this rather than reading the
+      // clock itself: those folds run inside state updaters, which React may
+      // defer to a render or run twice, and a backgrounded tab's clamped timers
+      // can put that render a second later. Same rule as `useStoredState`.
+      const arrivedAt = Date.now();
       if (event.type === 'turn.started') {
         const realId = event.conversation_id;
         // A retry that put files back says what it did.
@@ -697,16 +703,16 @@ export function useChatSession(
         if (rewoundStreamsRef.current.has(event.stream_id)) return;
         // A sub-agent's own stream — see useAgentSession.
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamSync(event);
+          onSubAgentStreamSync(event, arrivedAt);
           return;
         }
-        onSubAgentSync(convId, event.snapshot, event.server_now);
+        onSubAgentSync(convId, event.snapshot, event.server_now, arrivedAt);
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         setConversations((prev) =>
           prev.map((c) =>
             c.id === convId
-              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now }) }
+              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }) }
               : c,
           ),
         );
@@ -808,13 +814,13 @@ export function useChatSession(
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamEvent(event);
+          onSubAgentStreamEvent(event, arrivedAt);
           return;
         }
         // A child's start, progress or end on this run's stream: nothing
         // about this run itself — see useAgentSession.
         if (isSubAgentEvent(event.event)) {
-          onSubAgentEvent(convId, event.event);
+          onSubAgentEvent(convId, event.event, arrivedAt);
           return;
         }
         setStreamingByConv((prev) =>
@@ -842,7 +848,7 @@ export function useChatSession(
           promotePendingUserMsg(convId, event.event.message_id);
         }
         setConversations((prev) =>
-          prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event) } : c)),
+          prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event, arrivedAt) } : c)),
         );
         const inner = event.event;
         if (inner.kind === 'context.stage') {
