@@ -17,7 +17,8 @@
  */
 import { provisionAdmin, uniqueCreds, apiToken, type Credentials } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { browser } from '@wdio/globals';
+import { platform, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import { MOCK_TOOL_DONE, SLOW_PROMPT, goToSurface, resetInferenceSettings, sendMessage, signUp } from '../helpers/app.ts';
 import { BASE_URL } from '../../scripts/standup.ts';
 
@@ -69,9 +70,14 @@ describe('queued after an approval', () => {
     // spec's leftovers, the holder would not be in the way.
     await resetInferenceSettings();
     await signUp(creds);
+    // The line being looked for sits beside a spinner, and UiAutomator2 waits
+    // for the UI to go idle before every query: the whole eight-second queue
+    // passed during one lookup. See compaction-live.spec.ts.
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
   });
 
   after(async () => {
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
     await resetInferenceSettings();
   });
 
