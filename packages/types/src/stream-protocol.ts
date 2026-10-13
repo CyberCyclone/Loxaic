@@ -25,6 +25,34 @@ export interface ApprovalContext {
    * since the tools and the policies are theirs. Anyone else who may answer
    * (an editor on a shared conversation) approves the one call. */
   granter_user_id?: string;
+  /**
+   * For `bash`: the command rules "Allow always" records (apps/server/src/
+   * permissions/bash/rules.ts), proposed by the server — a client shows them
+   * and never names its own. Empty or absent: there is no rule that says
+   * exactly this command, and "Allow always" is not offered.
+   */
+  rules?: string[];
+  /** Why an auto-mode command is asking: the permission check said ASK, or
+   * could not answer. Absent when the mode simply asks. */
+  check?: PermissionCheckNote;
+}
+
+/** What the auto-mode permission check made of a command it sent to a person. */
+export interface PermissionCheckNote {
+  by: "classifier";
+  outcome: "ask" | "timeout" | "unparseable" | "error";
+  /** The check's own one-sentence reason, when it gave one. */
+  reason?: string;
+}
+
+/** Why a `bash` call ran (or did not) without anyone being asked. Absent on a
+ * call a person approved, and from a server that predates it. */
+export interface ToolPermission {
+  by: "readonly" | "rule" | "isolated" | "classifier" | "denied" | "refused";
+  /** The rule that allowed or denied it. */
+  rule?: string;
+  /** The permission check's reason for allowing it. */
+  reason?: string;
 }
 
 export interface Todo { id?: string; text: string; status: "pending" | "in_progress" | "completed" }
@@ -542,6 +570,15 @@ export type StreamEventKind =
        * client must read as "not told", never as either answer.
        */
       author_user_id?: string | null;
+      /**
+       * When this message began, on the server's clock (epoch ms). A live
+       * counter times the message from here, not from the run's start: an
+       * agent turn is many messages, and the run's age on the newest one read
+       * "Thinking… 1955s" for a reply seconds old. A client reading a live
+       * event has no server clock, so it times from arrival; a snapshot
+       * converts it with the sync's `server_now`. Absent from an older server.
+       */
+      started_at?: number;
     }
   | { kind: "text.delta"; message_id: string; text: string }
   | { kind: "thinking.delta"; message_id: string; text: string }
@@ -631,6 +668,7 @@ export type StreamEventKind =
       output: string;
       ok: boolean;
       diff?: FileDiff[];
+      permission?: ToolPermission;
     }
   | { kind: "todos"; todos: Todo[] }
   /** The project's instructions changed before this run, and the user message
@@ -653,6 +691,8 @@ export interface StreamSnapshotMessage {
   parent_id: string | null;
   /** Folded from `message.start` — see its doc. Absent from an older server. */
   lamport?: number;
+  /** Folded from `message.start` — see its doc. Absent from an older server. */
+  started_at?: number;
   model?: string;
   text: string;
   thinking: string;
@@ -669,6 +709,7 @@ export interface StreamSnapshotMessage {
     output?: string;
     ok?: boolean;
     diff?: FileDiff[];
+    permission?: ToolPermission;
   }[];
   status: "streaming" | "complete" | "error" | "cancelled";
   usage?: TurnUsage;

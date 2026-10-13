@@ -45,8 +45,10 @@ import { fileRoutes } from "./routes/files";
 import { hostingBlockedReason, loadServerSettings } from "./settings";
 import { ensureCluster, registerHost } from "./cluster";
 import { startMcpReaper } from "./mcp/client-manager";
-import { backfillGithubMcpServers } from "./mcp/github-server.ts";
 import { startAttachmentReaper, sweepOrphanAttachments } from "./files/reaper";
+import { bootEgressProxy } from "./egress/boot.ts";
+import { egressCa } from "./egress/ca.ts";
+import type { EgressProxy } from "./egress/proxy.ts";
 import { startExtractionReaper, stopAllExtractionSandboxes } from "./files/extract";
 import { startConversationReaper, sweepRetainedConversations } from "./conversations/reaper";
 
@@ -264,6 +266,7 @@ let mcpReaperTimer: NodeJS.Timeout | null = null;
 let attachmentReaperTimer: NodeJS.Timeout | null = null;
 let extractionReaperTimer: NodeJS.Timeout | null = null;
 let conversationReaperTimer: NodeJS.Timeout | null = null;
+let egressProxies: EgressProxy[] = [];
 
 app.listen({ port: PORT, host: HOST }, (err) => {
   if (err) {
@@ -277,6 +280,15 @@ app.listen({ port: PORT, host: HOST }, (err) => {
   // pattern as tsnet-proxy's `LISTENING <addr>` line). Must be plain stdout,
   // not pino, so a readline consumer can match it without parsing JSON.
   console.log(`LOXAIC_LISTENING ${String(actualPort)}`);
+  // How sandboxes reach GitHub without holding the token (egress/). The CA is
+  // made now rather than on the first sandbox's first command.
+  Promise.resolve()
+    .then(() => { egressCa(); })
+    .then(() => bootEgressProxy((m) => { app.log.info(m); }))
+    .then((p) => { egressProxies = p; })
+    .catch((e: unknown) => {
+      app.log.error(`GitHub egress proxy did not start — sandboxes cannot reach GitHub: ${e instanceof Error ? e.message : String(e)}`);
+    });
   startRoutineScheduler().catch((e: unknown) => {
     app.log.warn(`Scheduler start skipped: ${e instanceof Error ? e.message : String(e)}`);
   });
@@ -287,11 +299,6 @@ app.listen({ port: PORT, host: HOST }, (err) => {
     .then((n) => { if (n > 0) app.log.info(`Swept ${String(n)} orphaned sandbox container(s)`); })
     .catch(() => { /* best-effort sweep */ });
   mcpReaperTimer = startMcpReaper((n) => { app.log.info(`Closed ${String(n)} idle MCP connection(s)`); });
-  // Users who connected GitHub before its MCP server was provisioned with the
-  // connection have a token and no server; give them one.
-  backfillGithubMcpServers((m) => { app.log.warn(m); })
-    .then((n) => { if (n > 0) app.log.info(`Set up GitHub tools for ${String(n)} existing GitHub connection(s)`); })
-    .catch((e: unknown) => { app.log.warn(`GitHub tools backfill skipped: ${e instanceof Error ? e.message : String(e)}`); });
   // Uploads that no message references — a picked-then-abandoned image has no
   // other reclaim path.
   sweepOrphanAttachments()
@@ -335,6 +342,7 @@ async function shutdown(signal: string) {
     await stopAllExtractionSandboxes().catch(() => undefined);
     await stopDownloads().catch(() => undefined);
     await stopLocalRuntime().catch(() => undefined);
+    await Promise.all(egressProxies.map((p) => p.close().catch(() => undefined)));
     await app.close();
     await closeDb();
   } catch (e) {

@@ -107,6 +107,10 @@ export interface ToolCall {
   /** A `todo_write` call's list — same three construction sites as `plan`.
    * See lib/todos.ts. */
   todos?: import('@loxaic/types').Todo[]
+  /** Why it ran (or was refused) without a person approving — read-only, a
+   * command rule, a sandbox that contains it, or auto mode's permission
+   * check. Absent when someone approved it, and from older servers. */
+  permission?: import('@loxaic/api-client').ToolPermission
 }
 
 export interface DiffLine {
@@ -126,6 +130,12 @@ export interface Message {
    * server. Used to place a snapshot's messages in a thread loaded a page at a
    * time (#213) — see applySnapshotToMsgs. */
   lamport?: number
+  /** When this message began, on this device's clock: arrival of its live
+   * `message.start`, or a snapshot's `started_at` corrected by the sync's
+   * `server_now`. What the live counter on a still-streaming message times
+   * from (lib/liveTimer.ts). Absent from history and from an older server,
+   * where the counter falls back to the run's start. */
+  startedAt?: number
   model?: string
   text: string
   thinking?: string

@@ -14,11 +14,7 @@ import {
   getConversations,
   getMessages,
   isUnreachableError,
-  getMcpServers,
-  getPrefs,
   updateConversation,
-  updateMcpServer,
-  updatePrefs,
   type ServerMessage,
   type AttachmentRef,
   type StepsDecision,
@@ -52,14 +48,6 @@ export type { PendingApproval };
 /** Imported from the agent hook rather than redeclared: both surfaces render
  * the same banner, so a second definition is a second thing to keep in step. */
 export type { PendingCheckin };
-
-/** MCP tools arrive namespaced as `server__tool`; builtins never contain
- * `__` — mirrors ToolCallCard/PermissionBar's splitMcpTool. */
-function splitMcpTool(name: string): { slug: string; remoteName: string } | null {
-  const idx = name.indexOf('__');
-  if (idx <= 0) return null;
-  return { slug: name.slice(0, idx), remoteName: name.slice(idx + 2) };
-}
 
 /** Per-conversation in-flight stream state — keyed by conversation id so
  * switching threads mid-response can never show one conversation's stop
@@ -660,6 +648,12 @@ export function useChatSession(
     };
 
     const onEvent = (event: ServerMessage) => {
+      // When this message arrived, read once, before anything else. Every fold
+      // below that times a message is handed this rather than reading the
+      // clock itself: those folds run inside state updaters, which React may
+      // defer to a render or run twice, and a backgrounded tab's clamped timers
+      // can put that render a second later. Same rule as `useStoredState`.
+      const arrivedAt = Date.now();
       if (event.type === 'turn.started') {
         const realId = event.conversation_id;
         // A retry that put files back says what it did.
@@ -697,16 +691,16 @@ export function useChatSession(
         if (rewoundStreamsRef.current.has(event.stream_id)) return;
         // A sub-agent's own stream — see useAgentSession.
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamSync(event);
+          onSubAgentStreamSync(event, arrivedAt);
           return;
         }
-        onSubAgentSync(convId, event.snapshot, event.server_now);
+        onSubAgentSync(convId, event.snapshot, event.server_now, arrivedAt);
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         setConversations((prev) =>
           prev.map((c) =>
             c.id === convId
-              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }) }
+              ? { ...c, msgs: applySnapshotToMsgs(c.msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }) }
               : c,
           ),
         );
@@ -808,13 +802,13 @@ export function useChatSession(
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamEvent(event);
+          onSubAgentStreamEvent(event, arrivedAt);
           return;
         }
         // A child's start, progress or end on this run's stream: nothing
         // about this run itself — see useAgentSession.
         if (isSubAgentEvent(event.event)) {
-          onSubAgentEvent(convId, event.event);
+          onSubAgentEvent(convId, event.event, arrivedAt);
           return;
         }
         setStreamingByConv((prev) =>
@@ -842,7 +836,7 @@ export function useChatSession(
           promotePendingUserMsg(convId, event.event.message_id);
         }
         setConversations((prev) =>
-          prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event) } : c)),
+          prev.map((c) => (c.id === convId ? { ...c, msgs: applyEventToMsgs(c.msgs, event.event, arrivedAt) } : c)),
         );
         const inner = event.event;
         if (inner.kind === 'context.stage') {
@@ -1300,39 +1294,21 @@ export function useChatSession(
     [showToast],
   );
 
-  /** "Allow always": persists the tool's approval policy before approving
-   * this call — an MCP tool patches its server's per-tool policy (the same
-   * allowlist the /mcp screen's tool sheet manages), a builtin patches the
-   * user's global tool_allowlist (PATCH /v1/prefs). If the persist fails,
-   * this call is still approved — the user's "allow" click is honored now,
-   * they just weren't spared the next prompt too. */
-  const rememberAlwaysAllow = useCallback(
-    async (tool: string) => {
-      try {
-        const mcp = splitMcpTool(tool);
-        if (mcp) {
-          const servers = await getMcpServers();
-          const server = servers.find((s) => s.slug === mcp.slug);
-          if (server) {
-            await updateMcpServer(server.id, { toolPolicies: { [mcp.remoteName]: { approval: 'allow' } } });
-          }
-        } else {
-          const prefs = await getPrefs();
-          await updatePrefs({ toolAllowlist: [...new Set([...prefs.toolAllowlist, tool])] });
-        }
-      } catch {
-        showToast('Could not save "always allow" — approved just this once');
-      }
-    },
-    [showToast],
-  );
-
+  /** "Allow always": approves this call and asks the server to stop asking —
+   * the tool's MCP policy, a builtin's place on the allowlist, or for `bash`
+   * the command rules the approval proposed. The server records it, and only
+   * for the person the approval names as its granter; it used to be a
+   * read-modify-write of the whole allowlist from here, which raced another
+   * device and could not express a command rule at all. */
   const handleAllowAlways = useCallback(
-    async (callId: string, tool: string) => {
-      await rememberAlwaysAllow(tool);
-      handleApprove(callId);
+    (callId: string) => {
+      if (isOffline() || !wsRef.current || !approveTool(wsRef.current, callId, approvalStream(callId), true)) {
+        showToast(NOT_SENT_RECONNECTING, 4000);
+        return;
+      }
+      if (activeIdRef.current) clearApproval(activeIdRef.current);
     },
-    [handleApprove, rememberAlwaysAllow],
+    [approvalStream, clearApproval, showToast],
   );
 
   /** Runs a built-in slash command (currently just "compact") against the
@@ -1467,9 +1443,6 @@ export function useChatSession(
     handleDeny,
     handleSteps,
     handleAllowAlways,
-    /** The persisting half of "Allow always", for an approval answered some
-     * other way than `handleApprove` — a sub-agent's, which names its run. */
-    rememberAlwaysAllow,
     /** Every thread's sub-agents, and the open panel's transcript. */
     subAgents,
     handleFork,

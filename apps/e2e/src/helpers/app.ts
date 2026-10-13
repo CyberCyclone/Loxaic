@@ -4,7 +4,7 @@
  * anything platform- or layout-specific is absorbed here.
  */
 import { browser } from '@wdio/globals';
-import { byTestId, isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
+import { byTestId, closeKeyboard, isVisible, platform, scrollTo, tap, typeInto, waitForAbsent, waitForGone, waitForTextIn, waitForVisible } from './selectors.ts';
 import { adminCreds, apiToken, type Credentials } from './auth.ts';
 import path from 'node:path';
 import { BASE_URL } from '../../scripts/standup.ts';
@@ -112,12 +112,11 @@ export const CHECKIN_ANSWER_NUDGE =
  * used to check that a sandbox actually executes, in whichever mode is
  * currently configured (container or host). See MOCK_TOOL_TRIGGERS in
  * apps/server/src/inference/provider.ts. */
-/** Calls `get_me` on the GitHub MCP server a GitHub connection sets up — see
- * MOCK_TOOL_TRIGGERS. `get_me` starts allowed, so it runs without an approval
- * prompt, and the harness's mock MCP server answers with this login only when
- * the connection's token reached it. */
-export const GITHUB_MCP_PROMPT = 'github who am i';
-export const GITHUB_MCP_LOGIN = 'e2e-bot';
+/** Calls `get_me` on a user's own HTTP MCP server with the slug `httpmock`
+ * (the harness's mock, `mockMcpHttpUrl`) — see MOCK_TOOL_TRIGGERS. The mock
+ * answers with this login only when the server's own secret reached it. */
+export const HTTP_MCP_PROMPT = 'http mcp who am i';
+export const HTTP_MCP_LOGIN = 'e2e-bot';
 
 export const BASH_PROMPT = 'run a bash command';
 
@@ -485,19 +484,27 @@ export async function getMessageTexts(
 export async function getToolResults(
   creds: Pick<Credentials, 'email' | 'password'>,
   conversationId: string,
-): Promise<{ call_id: string; output: string; ok?: boolean }[]> {
+): Promise<{ call_id: string; output: string; ok?: boolean; permission?: { by: string; rule?: string; reason?: string } }[]> {
   const token = await apiToken(creds);
   const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
     headers: { authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`[e2e] getting tool results failed (${String(res.status)})`);
   const body = (await res.json()) as {
-    messages: { content: { kind: string; call_id?: string; output?: string; ok?: boolean }[] }[];
+    messages: {
+      content: {
+        kind: string;
+        call_id?: string;
+        output?: string;
+        ok?: boolean;
+        permission?: { by: string; rule?: string; reason?: string };
+      }[];
+    }[];
   };
   return body.messages.flatMap((m) =>
     m.content
       .filter((b) => b.kind === 'tool_result')
-      .map((b) => ({ call_id: b.call_id ?? '', output: b.output ?? '', ok: b.ok })),
+      .map((b) => ({ call_id: b.call_id ?? '', output: b.output ?? '', ok: b.ok, ...(b.permission ? { permission: b.permission } : {}) })),
   );
 }
 
@@ -522,6 +529,16 @@ export const MOCK_SUBAGENT_NAME = 'Mock sub-task';
  * server's stale-list reminder. `web_fetch` to loopback is refused at once by
  * the SSRF guard, so it needs no sandbox and no network. */
 export const TODO_STALE_PROMPT = 'Please write the list once, then work.';
+/** Two sub-agent calls, slow one first: with one slot the quick one waits in
+ * the queue for the whole of the slow one's run (seven of the mock's eight-
+ * second requests), which is what a queued card's counter needs to be seen.
+ * The quick one then takes one eight-second request itself: answered at once,
+ * its "Running" lasted a fraction of a second, too short to look at. */
+export const QUEUED_SUBAGENT_PROMPT = 'Please delegate a slow task, then a quick one.';
+export const QUEUED_SUBAGENT_NAME = 'Quick answer';
+/** A turn of seven requests, each taking the mock's eight seconds: long
+ * enough that the run's age and the newest message's cannot be mistaken. */
+export const LONG_TURN_PROMPT = 'Please take your time and survey in passes.';
 
 export interface E2ESubAgent {
   conversation_id: string;
@@ -532,6 +549,8 @@ export interface E2ESubAgent {
   status: 'running' | 'complete' | 'error' | 'cancelled';
   /** On the server's clock. */
   started_at: number;
+  /** When it got an inference slot, on the server's clock. */
+  admitted_at?: number;
   ended_at?: number;
 }
 
@@ -624,6 +643,8 @@ export async function waitForSubAgents(
 export async function openSandboxSettings(): Promise<void> {
   await openSidebar();
   await tap('sidebar.settings');
+  // Below the Settings modal's fold on a phone once the list grew past it.
+  await scrollTo('settings.nav.sandbox');
   await tap('settings.nav.sandbox');
   await waitForVisible('sandbox.status');
 }
@@ -754,16 +775,25 @@ export async function chooseGithubWorkspace(repoId: number, search?: string): Pr
   // depends on the fixture.
   if (search !== undefined) {
     await waitForVisible('agent.workspace.repoSearch');
-    // On a phone the keyboard would then cover the filtered rows. Return
-    // submits the single-line field, which blurs it and closes the keyboard —
-    // what a person does; iOS offers no dismiss key to press instead.
+    // On a phone the keyboard would then cover the filtered rows. On iOS,
+    // Return submits the single-line field, which blurs it and closes the
+    // keyboard — what a person does; iOS offers no dismiss key to press
+    // instead. On Android a typed newline lands in the field's text and
+    // filters everything out, so the keyboard is put away instead.
     await typeInto('agent.workspace.repoSearch', search);
-    if (platform() === 'ios' || platform() === 'android') await byTestId('agent.workspace.repoSearch').addValue('\n');
+    if (platform() === 'ios') await byTestId('agent.workspace.repoSearch').addValue('\n');
+    if (platform() === 'android') await closeKeyboard();
   }
   await waitForVisible(`agent.workspace.repo.${String(repoId)}`);
   await tap(`agent.workspace.repo.${String(repoId)}`);
+  // Below the fold on a phone: the repository list sits between the source
+  // options and the branch field, and the dialog does not scroll itself.
+  await scrollTo('agent.workspace.branchName');
   await waitForVisible('agent.workspace.branchName');
-  const branch = await byTestId('agent.workspace.branchName').getValue();
+  // UiAutomator2 has no `value` attribute; an Android text field's contents
+  // are its text.
+  const field = byTestId('agent.workspace.branchName');
+  const branch = platform() === 'android' ? await field.getText() : await field.getValue();
   await tap('agent.workspace.confirm');
   await waitForTextIn('agent.workspace.button', branch);
   return branch;
@@ -807,6 +837,15 @@ export async function openInspector(): Promise<void> {
   await waitForVisible('agent.inspector.panel');
 }
 
+/** Closes the Inspector where it covers the screen: on a phone it is a sheet
+ * over the thread, the thread list and the composer. On web and Electron it is
+ * a side panel that leaves the rest usable, and stays. */
+export async function closeInspector(): Promise<void> {
+  if (platform() === 'web' || platform() === 'electron') return;
+  await tapOverlayBackdrop();
+  await waitForAbsent('agent.inspector.panel');
+}
+
 /** Opens Settings and navigates to the GitHub connection screen. Waits for
  * either state the screen can load into — connected (`github.status`) or not
  * (`github.token`, the connect form) — since which one appears depends on
@@ -814,6 +853,7 @@ export async function openInspector(): Promise<void> {
 export async function openGithubSettings(timeout = 20_000): Promise<void> {
   await openSidebar();
   await tap('sidebar.settings');
+  await scrollTo('settings.nav.github');
   await tap('settings.nav.github');
   await browser.waitUntil(
     async () => (await isVisible('github.status')) || (await isVisible('github.token')),
@@ -834,6 +874,54 @@ export async function resetInferenceSettings(): Promise<void> {
   });
   if (!res.ok) {
     throw new Error(`[e2e] inference settings reset failed (${String(res.status)}): ${await res.text()}`);
+  }
+}
+
+/** Admin: the inference settings, including auto mode's permission check
+ * (its model and how long it may take). */
+export async function patchInferenceSettings(patch: Record<string, unknown>): Promise<void> {
+  const token = await apiToken(adminCreds());
+  const res = await fetch(`${BASE_URL}/v1/admin/settings/inference`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    throw new Error(`[e2e] inference settings patch failed (${String(res.status)}): ${await res.text()}`);
+  }
+}
+
+/** A user's command rules (what bash may run without asking), over the API. */
+export async function commandRules(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<{ id: string; pattern: string; action: string; source: string }[]> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/prefs/command-rules`, { headers: { authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(`[e2e] listing command rules failed (${String(res.status)})`);
+  return ((await res.json()) as { rules: { id: string; pattern: string; action: string; source: string }[] }).rules;
+}
+
+export async function addCommandRuleFor(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  pattern: string,
+  action: 'allow' | 'ask' | 'deny',
+): Promise<void> {
+  const token = await apiToken(creds);
+  const res = await fetch(`${BASE_URL}/v1/prefs/command-rules`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ pattern, action }),
+  });
+  if (!res.ok) throw new Error(`[e2e] adding a command rule failed (${String(res.status)}): ${await res.text()}`);
+}
+
+export async function clearCommandRules(creds: Pick<Credentials, 'email' | 'password'>): Promise<void> {
+  const token = await apiToken(creds);
+  for (const rule of await commandRules(creds)) {
+    await fetch(`${BASE_URL}/v1/prefs/command-rules/${rule.id}`, {
+      method: 'DELETE',
+      headers: { authorization: `Bearer ${token}` },
+    });
   }
 }
 

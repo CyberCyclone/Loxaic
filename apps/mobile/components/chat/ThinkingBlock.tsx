@@ -33,7 +33,7 @@ export function ThinkingBlock({ text, live, since }: ThinkingBlockProps) {
             {live ? 'Thinking…' : 'Thought'}
           </Text>
           {live && <Spinner size="small" className="text-muted-foreground" />}
-          {live && !!since && <LiveElapsed since={since} />}
+          {live && !!since && <LiveElapsed since={since} testID="chat.thinking.elapsed" />}
         </HStack>
       </Pressable>
       {open && (

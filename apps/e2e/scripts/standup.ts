@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { createConnection, createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockGithub, VALID_TOKEN } from './mock-github.ts';
+import { startMockGithub } from './mock-github.ts';
 import { startMockProvider } from './mock-provider.ts';
 import { startMockHf, type MockHf } from './mock-hf.ts';
 import { startMockLlamaReleases, type MockLlamaReleases } from './mock-llama-releases.ts';
@@ -175,23 +175,25 @@ export const FAKE_ROUTER_LOG = path.join(RUN_DIR, 'fake-router-loads.jsonl');
  * listing (a separate process) to report as used. */
 const FAKE_VRAM_STATE = path.join(RUN_DIR, 'fake-vram.json');
 
-/** The stand-in for GitHub's hosted MCP server, handed across processes the
- * same way as the mock GitHub API (see `mockGithubUrl`). */
-const MOCK_GITHUB_MCP_FILE = path.join(RUN_DIR, 'mock-github-mcp.json');
+/** A streamable-HTTP MCP server for specs to add as a user's own server,
+ * handed across processes the same way as the mock GitHub API (see
+ * `mockGithubUrl`). It refuses every bearer but `MOCK_MCP_HTTP_TOKEN`. */
+const MOCK_MCP_HTTP_FILE = path.join(RUN_DIR, 'mock-mcp-http.json');
+export const MOCK_MCP_HTTP_TOKEN = 'e2e-mcp-http-token';
 
-/** The mock GitHub MCP server's `/mcp` URL, from whichever process asks. */
-export function mockGithubMcpUrl(): string {
-  if (!existsSync(MOCK_GITHUB_MCP_FILE)) {
-    throw new Error(`[e2e] no mock GitHub MCP server recorded at ${MOCK_GITHUB_MCP_FILE} — was standup() run?`);
+/** The mock HTTP MCP server's `/mcp` URL, from whichever process asks. */
+export function mockMcpHttpUrl(): string {
+  if (!existsSync(MOCK_MCP_HTTP_FILE)) {
+    throw new Error(`[e2e] no mock HTTP MCP server recorded at ${MOCK_MCP_HTTP_FILE} — was standup() run?`);
   }
-  const { url } = JSON.parse(readFileSync(MOCK_GITHUB_MCP_FILE, 'utf8')) as { url: string };
+  const { url } = JSON.parse(readFileSync(MOCK_MCP_HTTP_FILE, 'utf8')) as { url: string };
   return url;
 }
 
-/** The mock GitHub MCP server runs as its own process from apps/server's tree,
+/** The mock HTTP MCP server runs as its own process from apps/server's tree,
  * because apps/e2e has no MCP SDK of its own. Started with the spawned server,
  * stopped with it. */
-let mockGithubMcp: ChildProcess | null = null;
+let mockMcpHttp: ChildProcess | null = null;
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -206,7 +208,8 @@ function freePort(): Promise<number> {
 }
 
 /**
- * Where the harness's git daemon keeps its bare repositories. Unlike the
+ * Where the harness's git server keeps its bare repositories
+ * (`e2e/<name>.git` under it — see git-server.ts's `bareRepoDir`). Unlike the
  * mock GitHub port, this needs no file: it is a fixed path under this run's
  * own artifacts directory, computable identically in any process without
  * having to ask the one that created it.
@@ -390,6 +393,7 @@ async function ensureServer(): Promise<void> {
     'seeded-app': SEED_DIR,
     'instructions-app': path.join(FIXTURES_DIR, 'instructions-app'),
     'imports-app': path.join(FIXTURES_DIR, 'imports-app'),
+    'gh-app': path.join(FIXTURES_DIR, 'bugfix-app'),
   };
   gitServer = await startGitServer({ dir: GIT_SERVER_DIR, fixtures: fixtureRepos });
   const mockGithub = await startMockGithub({
@@ -413,20 +417,16 @@ async function ensureServer(): Promise<void> {
   const mockProvider = await startMockProvider();
   stopMockProvider = mockProvider.stop;
   writeFileSync(MOCK_PROVIDER_FILE, JSON.stringify({ apiBase: mockProvider.apiBase }), 'utf8');
-  // GitHub's hosted MCP server, standing in for api.githubcopilot.com. It
-  // refuses every bearer but the one the mock GitHub API accepts, so a GitHub
-  // tool answering at all proves the connection's token reached it.
   const mcpPort = await freePort();
-  mockGithubMcp = spawn(path.join(REPO_ROOT, 'apps/server/node_modules/.bin/tsx'), ['test-fixtures/mock-mcp-http-server.ts'], {
+  mockMcpHttp = spawn(path.join(REPO_ROOT, 'apps/server/node_modules/.bin/tsx'), ['test-fixtures/mock-mcp-http-server.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
     detached: false,
-    env: { ...process.env, MOCK_MCP_HTTP_PORT: String(mcpPort), MOCK_MCP_HTTP_TOKEN: VALID_TOKEN },
+    env: { ...process.env, MOCK_MCP_HTTP_PORT: String(mcpPort), MOCK_MCP_HTTP_TOKEN },
   });
-  await waitUntil('the mock GitHub MCP server to listen', () => tcpOpen('127.0.0.1', mcpPort), 60_000);
-  const mockGithubMcpUrlValue = `http://127.0.0.1:${String(mcpPort)}/mcp`;
+  await waitUntil('the mock HTTP MCP server to listen', () => tcpOpen('127.0.0.1', mcpPort), 60_000);
   mkdirSync(RUN_DIR, { recursive: true });
-  writeFileSync(MOCK_GITHUB_MCP_FILE, JSON.stringify({ url: mockGithubMcpUrlValue }), 'utf8');
+  writeFileSync(MOCK_MCP_HTTP_FILE, JSON.stringify({ url: `http://127.0.0.1:${String(mcpPort)}/mcp` }), 'utf8');
   const child = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.join(REPO_ROOT, 'apps/server'),
     stdio: 'ignore',
@@ -456,16 +456,14 @@ async function ensureServer(): Promise<void> {
       SANDBOX_HOST_ROOT,
       UPLOADS_DIR,
       GITHUB_API_URL: mockGithub.url,
-      // Read when a GitHub MCP server connects, never stored in its row — so
-      // the rows this harness's boot backfill creates in the shared database
-      // keep pointing at GitHub once the harness has gone.
-      GITHUB_MCP_URL: mockGithubMcpUrlValue,
+      // github.com, for git: the harness's smart-HTTP server. Only the
+      // server's egress proxy reaches it; sandboxes reach the proxy.
+      GITHUB_WEB_URL: gitServer.webUrl,
+      // The egress proxy's CA for this run, kept out of the checkout.
+      EGRESS_CA_DIR: path.join(RUN_DIR, 'egress-ca'),
       MOCK_SCENARIOS_FILE: writeScenarios(),
-      // Lets a networked sandbox reach this machine's git server by name on
-      // Linux and Podman; Docker Desktop resolves it without help. Network
-      // itself stays off by default — a spec that clones turns it on through
+      // Network stays off by default — a spec that clones turns it on through
       // the admin API and resets it after, like every other sandbox setting.
-      SANDBOX_EXTRA_HOSTS: 'host.docker.internal:host-gateway',
       // The idle-stop reaper's real tick is five minutes.
       // sandbox-lifecycle.spec.ts has to watch it actually pause a workspace,
       // and reaching past the timer to stop a container by hand would assert
@@ -591,17 +589,17 @@ export async function teardown(): Promise<void> {
     stopMockLlamaReleases = null;
   }
   rmSync(MOCK_LLAMA_RELEASES_FILE, { force: true });
-  if (mockGithubMcp?.pid !== undefined) {
+  if (mockMcpHttp?.pid !== undefined) {
     try {
-      mockGithubMcp.kill();
+      mockMcpHttp.kill();
     } catch {
       // Already gone.
     }
-    mockGithubMcp = null;
+    mockMcpHttp = null;
   }
-  rmSync(MOCK_GITHUB_MCP_FILE, { force: true });
+  rmSync(MOCK_MCP_HTTP_FILE, { force: true });
   if (gitServer) {
-    gitServer.stop();
+    await gitServer.stop();
     gitServer = null;
     if (owned) rmSync(GIT_SERVER_DIR, { recursive: true, force: true });
   }

@@ -96,8 +96,9 @@ host's own network. `web_fetch` is unaffected either way — it always runs on
 the server, behind an SSRF guard, never in the sandbox.
 
 **Starting an agent chat in a GitHub repository requires this.** The clone
-happens inside the sandbox, so a deployment with network off cannot offer it;
-the workspace chooser says so and points at this setting. `SANDBOX_EXTRA_HOSTS`
+happens inside the sandbox, and so does every `git push` and `gh` command, so a
+deployment with network off cannot offer it; the workspace chooser says so and
+points at this setting. `SANDBOX_EXTRA_HOSTS`
 (`name:ip`, comma-separated; `host-gateway` is accepted as an ip) adds
 `/etc/hosts` entries to networked sandboxes, for reaching a service on the host
 machine by name from Linux or Podman. Which token that clone uses, and what it
@@ -118,6 +119,7 @@ for a deployment nobody outside it can reach.
 | List branches, clone the repo | Contents: Read | `repo` |
 | Push your branch | Contents: Read and write | `repo` |
 | Open a pull request | Pull requests: Read and write | `repo` |
+| Read issues with `gh issue view` | Issues: Read | `repo` |
 
 Metadata: Read is mandatory and GitHub adds it for you as soon as you select any
 other repository permission. In practice a fine-grained token wants **Contents:
@@ -154,21 +156,47 @@ and the operation was a read-only clone. Loxaic now checks Contents when you
 pick a repository, so a token that cannot reach the code is refused up front,
 naming the permission to add, rather than failing in a container later.
 
-#### GitHub tools in chats
+#### How a sandbox reaches GitHub without your token
 
-Connecting the token also sets up GitHub's official MCP server for that user, so
-chats and agents can read and search issues, pull requests and code without a
-clone. Nothing else is configured and the token is not stored a second time;
-disconnecting removes the tools. Tools that only read run without asking, and
-anything that changes GitHub asks first, like every other MCP tool. The server
-appears under **MCP Servers**, where it can be switched off or have individual
-tools changed.
+The token never goes into a sandbox. The agent (and the Inspector's Git panel)
+runs ordinary `git` and `gh` there, and Loxaic's server sits in between as a
+proxy: it adds your token to requests for `github.com` and `api.github.com`,
+and lets a GitHub workspace write only to its own branch and its own pull
+request. Pushing to `main`, deleting a branch, merging or closing a pull
+request, and anything in another repository are refused, and the agent is told
+why. Reads reach whatever your token can read, so a fine-grained token limited
+to the repositories you want an agent in is the safer choice. Only an agent
+chat started in a GitHub workspace goes through the proxy; no other chat or
+sandbox has GitHub access through Loxaic.
 
-It uses GitHub's hosted endpoint, `https://api.githubcopilot.com/mcp/`, so the
-Loxaic server needs to reach it. For a fine-grained token, reading issues also
-needs **Issues: Read** on those repositories. `GITHUB_MCP_URL` overrides the
-endpoint; set it only to an address you trust, because the private-network
-guard is lifted for it. GitHub Enterprise Server is not supported.
+The proxy starts with the server. It listens on loopback, which Docker Desktop,
+OrbStack and Colima containers reach as `host.docker.internal`; on Linux it also
+listens on the Docker bridge's gateway (usually `172.17.0.1`), which is how
+containers reach the host there. A host firewall that blocks containers from
+reaching the host blocks this too.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `EGRESS_PROXY_BIND` | `127.0.0.1`, plus the bridge gateway on Linux | Addresses to listen on, comma-separated. Never a public one. |
+| `EGRESS_PROXY_PORT` | an ephemeral port | Pin the port, for a firewall rule. |
+| `EGRESS_PROXY_HOST` | the bridge gateway on Linux, else `host.docker.internal` | The address containers are told to use. |
+| `EGRESS_CA_DIR` | `./egress-ca` (the desktop app: its data folder) | Where the proxy's certificate authority is kept. Its key is a secret. |
+| `GITHUB_WEB_URL` | `https://github.com` | Where git traffic for github.com is sent. For testing only. |
+
+In Docker Compose the server is itself a container. Compose sets up no sandbox
+engine, so this only matters if you add one: then set `EGRESS_PROXY_BIND` to an
+address the sandbox containers can reach, and `EGRESS_PROXY_HOST` to match.
+
+A folder on your own machine (a local workspace) does not go through the proxy:
+there the agent uses your own `git` and `gh` login, as you would.
+
+#### There are no built-in GitHub tools any more
+
+Earlier versions set up GitHub's MCP server when you connected a token. Agents
+now use `git` and `gh` instead, and upgrading removes that server. If you want
+GitHub's MCP tools in plain chats as well, add it yourself under **MCP
+Servers** as an HTTP server (`https://api.githubcopilot.com/mcp/`) with an
+`Authorization: Bearer <token>` secret.
 
 ### How long a workspace lasts
 
@@ -222,6 +250,19 @@ An admin can pin a number in **Settings → Agent Sandbox → Concurrent runs**,
 a deployment can pin it with `INFERENCE_MAX_CONCURRENT_RUNS`. Setting it higher
 than the server can actually hold makes *every* conversation slower and reports
 no error, so raise it only to match what the model is configured for.
+
+### Auto mode's permission check
+
+In auto mode, a shell command that is not read-only and that none of the user's
+command rules covers runs without asking only in a sealed sandbox (a container
+with networking off). Anywhere else — a GitHub workspace, a networked sandbox,
+host mode, a folder on the user's own machine — the model is asked first whether
+it may run, and anything short of a clear yes asks the user. By default the check
+uses the run's own model and extends the prompt it just read, so it costs a few
+hundred tokens. An admin can choose another model and the time a check may take
+in **Settings → Agent Sandbox → Auto mode permission check**;
+`PERMISSION_CHECK_TIMEOUT_MS` pins the time. Another model on a single-GPU
+llama.cpp host can unload the model the run is using.
 
 ### Hosting for others requires a container engine
 

@@ -502,7 +502,8 @@ async function lastTurnTokens(convId: string): Promise<number | null> {
   const rows = await db
     .select({ inputTokens: usageRecords.inputTokens, outputTokens: usageRecords.outputTokens })
     .from(usageRecords)
-    .where(eq(usageRecords.conversationId, convId))
+    // A permission check's row is not a turn (usage_records.purpose).
+    .where(and(eq(usageRecords.conversationId, convId), isNull(usageRecords.purpose)))
     .orderBy(desc(usageRecords.createdAt))
     .limit(1);
   // `.at(0)` rather than destructuring `[row]`: TS types array destructuring
@@ -549,6 +550,9 @@ async function openSummaryRow(input: {
     parent_id: input.parentId,
     lamport: input.lamport,
     model: input.model,
+    // Inside an agent run the compaction card would otherwise time from the
+    // run's start (see `message.start.started_at`).
+    started_at: Date.now(),
   });
 }
 

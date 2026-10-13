@@ -567,6 +567,43 @@ replies.
   randomness, since the key is per user and one user has several devices.
   `send-status.test.ts` closes a real socket straight after the send; `lost-send-answer.spec.ts`
   does it inside the page.
+- **A live counter times the newest message, not the run** (`lib/liveTimer.ts`). Every counter
+  in a thread (the typing indicator, "Thinking… Ns", the elapsed time under a reply, a mid-run
+  compaction card) used to count from `responseStartedAt`, the run's start. A run is a whole
+  turn and an agent turn is one message per tool iteration, so fifty iterations in, a reply
+  seconds old read "Thinking… 1955s" on the beta.
+  - **Where the start comes from:** `message.start.started_at` (server epoch ms), set on the
+    per-iteration assistant message and a generated summary, folded into the snapshot.
+  - **Converting it:** a live event carries no server clock, so the client takes arrival as the
+    start (`Message.startedAt`). A snapshot converts it with the sync's `server_now`, threaded
+    into `applySnapshotToMsgs`, so a reconnect mid-reply keeps counting rather than resetting.
+  - **Fallback:** the run's start before the turn has a reply of its own (the first queue wait),
+    for an older server, and as a floor, so a previous turn's reply cannot make it jump back.
+  - **A reply that is only tool calls is not "empty".** `isEmptyGenerating` ignored `tools`, so
+    a model that called `subagent` or `bash` without a word had its card hidden behind
+    "Processing prompt…" for as long as the tools ran, counting the run's age. The mock always
+    writes a preamble, which is why no spec ever saw it.
+  - **Whether the reply has a row and whether the typing indicator shows are two decisions.**
+    `isEmptyGenerating` decides the row; `typingIndicatorFor` the indicator. On Chat the
+    indicator is the only place "Queued · #N" and "Loading model…" appear, and a manual-mode
+    approval hands the slot back and re-queues with the tool-only reply still newest. So a
+    tool-only reply gets the indicator exactly while the run reports a queue place or a load,
+    and never while its tools run, where "Processing prompt…" would be false. One flag for both
+    hid the queue line; found in review. `queued-after-approval.spec.ts` answers a Chat approval
+    while a second socket holds the only slot; the mock's "without a word" makes the tool call
+    with no preamble, which is what reaches a tool-only reply at all.
+  - **A start already worked out is kept.** A snapshot of a message the thread holds keeps its
+    `startedAt` (`applySnapshotToMsgs` hands it to `snapshotMessageToMessage`), as `toView` keeps
+    `startedLocal`: recomputed per snapshot it moved by the difference in delivery latency, and a
+    slow resync after a fast one sent the counter backwards. Found in review.
+  - **The clock is read once per socket message, in the handler, never in a fold.** Every fold
+    that times something (`applyEventToMsgs`, `applySnapshotToMsgs`, the sub-agent card and
+    transcript folds) runs inside a state updater, which React may defer to a render or run
+    twice, and a backgrounded tab's clamped timers can put that render a second later. Each
+    hook's `onEvent` stamps `arrivedAt` first and passes it down. Same rule as
+    `useStoredState`'s. Found in review.
+  - `live-timers.spec.ts` reads `chat.typing.elapsed` three requests into a turn of eight-second
+    mock requests, live and after a fresh start.
 
 ### Reaching the server (the connection monitor)
 
@@ -710,10 +747,13 @@ replies.
   they pass in; `agentRun.ts` additionally exposes planning/manual/auto modes. **Chat has no
   mode selector** — it always runs manual-mode approval semantics (write builtins and
   non-allowlisted MCP tools ask; read-only builtins run free).
-- **The three agent modes, exactly** (`toolsetRequiresApproval` in `mcp/registry.ts`):
-  `planning` does not offer write tools at all and adds a planning system prompt; `manual`
-  asks for write builtins and non-allowlisted MCP tools; `auto` asks for no builtin — but an
-  MCP tool still asks until the user allowlists it. There is no denylist.
+- **The three agent modes, exactly** (`toolsetRequiresApproval` in `mcp/registry.ts`, and for
+  `bash` `decideBash` in `permissions/bash/policy.ts` — see "Bash permissions" below):
+  `planning` does not offer write tools and adds a planning system prompt, and offers `bash`
+  for read-only commands only; `manual` asks for write builtins, for `bash` beyond the
+  read-only set and the person's rules, and for non-allowlisted MCP tools; `auto` asks for no
+  builtin except `bash` outside an isolated sandbox, which goes to the permission check — and
+  an MCP tool still asks until the user allowlists it. Command rules can deny.
 - `packages/agent` owns the builtin `TOOLS` plus the `ResolvedTool`/`ToolSource` types; the
   server's per-run `Toolset` (`apps/server/src/mcp/registry.ts`) resolves names, approval
   policy, and dispatch for builtins and MCP tools alike (see "MCP servers" below). The wire
@@ -721,9 +761,10 @@ replies.
 - **"Allow always"**: an MCP tool's grant is its server's own per-tool policy (the allowlist
   the `/mcp` screen manages); a builtin's is the user's global allowlist — the
   `user_prefs.tool_allowlist` column, read by `buildToolset` (`apps/server/src/mcp/registry.ts`)
-  and exposed via `GET`/`PATCH /v1/prefs`. Chat's dialog writes them over REST; the agent's
-  bar sends it with the answer — see "The mode control and "Allow always" on the agent
-  surface" below.
+  and exposed via `GET`/`PATCH /v1/prefs` — **except `bash`, whose grants are command rules**
+  (see "Bash permissions"). Every surface sends "always" with the answer
+  (`agent.approve {always}`), and the server records it; chat used to write the allowlist
+  over REST, a read-modify-write that raced other devices and could not express a rule.
   This is global and mode-independent (it clears `requiresApproval`, not the `isWrite` gate),
   so it also silently benefits agent's manual mode — planning mode is unaffected since it
   filters on `isWrite` regardless of approval policy.
@@ -2460,9 +2501,9 @@ replies.
   unasked needs someone to have said so. What changed is that the prompt now says why it is
   there and makes "Allow always" the filled button, so one tap per tool ends it.
 - **`ToolPolicy.grantedFrom: "prompt"`** marks an allow that came from a prompt. The tools
-  sheet's note is shown only for those: GitHub's read-only tools start allowed
-  (`catalogDefaultPolicy`), and a note on every `allow` told people they had allowed twenty
-  tools they had never touched. A save in the sheet or a revocation clears it.
+  sheet's note is shown only for those: a note on every `allow` told people they had allowed
+  tools they had never touched (the built-in GitHub server's read-only tools once started
+  allowed). A save in the sheet or a revocation clears it.
 - **An older server sends neither field and ignores `always`**, so the bar offers no standing
   grant against one. Chat's dialog still writes its grant over REST, so in chat "Allow always"
   takes effect from the next run, not the rest of this one.
@@ -2479,6 +2520,119 @@ replies.
 - **Not fixed here:** tapping a thread in the agent's list clears a waiting prompt until the
   socket reconnects (`selectRun` resets run-level state, and a conversation is subscribed once
   per socket). `agent-allow-always.spec.ts` avoids `selectThread` for that reason.
+
+### Bash permissions (per-command rules)
+
+- **A `bash` call is judged command by command** (`apps/server/src/permissions/bash/`). It is
+  the one tool whose safety depends on what it is given, so "Allow always" for the whole tool
+  — what `tool_allowlist` used to hold — let every command run unasked forever, in every mode.
+  - `parse.ts` splits a command line into the simple commands that run: across `&& || ; | &`
+    and newlines, inside `( )`, `$( )` and backticks.
+  - It is a single pass with a 16 KB cap and a nesting cap: the command is the model's, so it
+    is hostile input.
+  - Anything it does not understand for certain — loops, `eval`, process substitution, a
+    computed command name — is unparseable, and an unparseable command asks.
+- **A command is only as allowed as its least allowed part.** Per part, the order is:
+  1. the person's deny rules;
+  2. their ask rules;
+  3. their allow rules;
+  4. the built-in "always ask" commands (`git push`, gh writes, non-GET `gh api`, `sudo`);
+  5. the built-in read-only set (`readonly.ts`).
+
+  What nothing covers falls to the mode: manual asks; auto runs it in an isolated sandbox and
+  checks it otherwise (below); planning refuses it. User allow rules do not count in planning.
+  **Planning's refusal comes before ask rules**, judged on the command itself: an ask rule only
+  ever adds a question, and checked first it turned a refused `rm` into a prompt someone could
+  approve. An ask rule on a read-only command still asks in planning. Found in review.
+- **Read-only is strict and is not a boundary.** A part qualifies only if all of these hold:
+  - no write redirect (except to `/dev/null`) and nothing under `/dev/tcp`;
+  - a bare command name;
+  - only cosmetic env prefixes — never a pager variable (`PAGER`, `GIT_PAGER`, `GH_PAGER`),
+    which names a program to run; the engine sets `PAGER=cat` itself;
+  - none of the flags that make a reader write or run something: `sed -i` or a `w`/`e`
+    flag, `find -exec`, `sort -o`, `git -c`, `git diff --output`, `rg --pre`/`--pre-glob`/
+    `--hostname-bin` (each runs a program), `gh api` with fields.
+  - **`gh api` is an allowlist of flags** (`ghApiIsReadOnly`): gh's parser (pflag) takes the
+    *last* of repeated `-X`, and attached and combined shorthands (`-XDELETE`, `-X=DELETE`,
+    `-iX DELETE`). Reading the first `-X` passed `-X GET -X DELETE …` as read-only, and an
+    unknown dash-word was skipped, so the shorthand forms passed too: a branch deleted with the
+    owner's token, unasked, in every mode. Now every method given must be GET, a method-override
+    header is refused, and any flag not on the list makes the command not read-only. Found in
+    review (the repeated `-X`); the shorthand forms were found fixing it.
+
+  `curl`, `wget`, `git ls-remote <url>`, `awk`, `xargs`, `tee` and interpreters are never on
+  it. The sandbox is what contains a command that runs; this list only decides who is asked.
+- **Read-only commands run with git's repo-config hooks off** (`READ_ONLY_BASH_ENV` in
+  engine.ts: `core.fsmonitor=false`, a `cat` pager). A model can write `.git/config`, and a
+  `git status` nobody was asked about would otherwise run what it planted.
+  - Textconv and filter drivers remain a residual risk.
+  - So, in auto mode outside isolation, an `fs_write`/`fs_edit` into `.git`, outside the
+    workspace, or under `~` goes to the permission check (`isSensitiveWrite`). Dotfiles and
+    `~/.local/bin` change what every later command runs.
+- **A rule is plain words with an optional trailing `*`** (`gh pr view *`), matched word by
+  word against the unquoted argv.
+  - An allow rule matches strictly: no unusual env prefix, and no redirect outside the
+    working directory or into `.git` (a planted hook or config entry runs later under a command
+    nobody is asked about; the line `isSensitiveWrite` draws for the file tools). Deny and ask rules match loosely (the basename, ignoring both), since
+    erring there only asks more.
+  - The validator refuses `*` alone, shell syntax, and a wildcard on an interpreter or
+    wrapper (`python *` allows every program).
+  - "Allow always" records what the server *proposed* with the approval (`rules` on
+    `approval.request`); a client never names one. It is the command plus its subcommand
+    levels (`gh pr create *`, `npm run test *`), or the exact command for `rm`/`curl`/
+    interpreters. When any part that needs approval has no rule that says exactly it, nothing
+    is offered.
+- **Rules live one per row** (`command_rules`, migration 0043), so each write is one statement.
+  They are read once per run, and "Allow always" adds to the run's in-memory list as well,
+  so the rest of the run stops asking (#266's lesson). Only the run's sender's "always" is
+  recorded.
+- **Migration 0043 retired every whole-`bash` grant.** It drops `"bash"` from `tool_allowlist`
+  and sets `user_prefs.bash_grant_retired_at`, which the permissions screen
+  (`app/(app)/permissions.tsx`) shows once. `PATCH /v1/prefs` drops `"bash"` silently rather
+  than refusing it, because an older chat client sends the whole list with it added.
+- **The mock's generic bash trigger writes** (`touch .mock-bash && echo …`). `echo` alone is
+  read-only now, and every spec that drives an approval with it needs a command that asks.
+
+### The permission check (auto mode outside isolation)
+
+- **Auto mode checks a command with the model where the workspace does not contain it**
+  (`permissions/check.ts`, like Claude Code's auto mode). Isolated means a server container
+  with no network (`permissions/isolation.ts`: the sandbox row's `limits.network`, else the
+  setting). These are never isolated:
+  - GitHub workspaces;
+  - host mode;
+  - networked containers;
+  - local workspaces.
+- **The check extends the run's own request**, as a compaction does:
+  - the messages just sent, plus the model's tool-call message;
+  - a placeholder result for every call of the batch still unanswered (templates refuse a call
+    with no partner);
+  - the instruction as the last user turn;
+  - the run's tools and thinking fields, with `tool_choice: "none"`.
+
+  Measured on Qwen3.5-9B / b11342 with a 10.5k-token front, the check re-read 186 tokens
+  (0.55 s), and the next real turn 73. Nothing of it is persisted.
+- **Only an exact `VERDICT: ALLOW` in the reply's text allows.** The reasoning is never read.
+  The last `VERDICT:` line decides, and the reason may sit on the same line or a `REASON:`
+  line (models drift). A refusal, a tool call, no verdict, a timeout or an error asks the
+  person, and the bar says why (`check` on the approval). A stop during the check records the
+  call as stopped.
+- **It runs under the run's slot** (one short request, part of the turn).
+  - Its usage row has `purpose = 'permission_check'` and no `message_id`.
+  - Every reader of "the last turn" (`lastTurnTokens`, `conversationTokens`, `recentUses`)
+    skips it.
+- **An admin can set another model** (`permissionCheckModel`), which gets a short standalone
+  prompt instead, and a timeout (`permissionCheckTimeoutMs`; `PERMISSION_CHECK_TIMEOUT_MS`
+  pins it, read at call time, which is also how a test gets a short one). A pinned timeout is
+  reported in `envOverrides` and refused by the API with a 409, like every other pin.
+- **The inference row is patched in the database, one statement** (`value || excluded.value`),
+  and the cache is set from what comes back. It holds several fields now, and a failed boot read
+  leaves the cache `{}`: merging onto the cache and writing it back erased every field a PATCH
+  did not name. Found in review; `inference-settings.test.ts` starts from an empty cache. On a single-GPU
+  llama.cpp host another model can unload the run's; the admin screen says so.
+- **The mock answers by keyword** in the action it describes: ALLOW by default, ASK for
+  `classifier-ask`, no verdict for `classifier-garbage`, and an answer slower than any timeout
+  for `classifier-slow`.
 
 ### Sub-agents
 
@@ -2590,7 +2744,27 @@ replies.
     then need no subscription to the child. Subscribing to every running child would put several
     streams of text deltas on one socket for a view that shows none of them.
   - **Emitted on change, with no timer:** every structural event is kept for the stream TTL.
-    Elapsed time is the client's to count from `started_at`.
+    Elapsed time is the client's to count.
+  - **A card counts the queue wait, then the running time** (`subAgentCounterSince`).
+    `started_at` is when the child was created, which is when it joins the queue, so a child
+    that waited 100 s behind a sibling read "Queued · #1 · 100s" and then "Running 100s" the
+    moment it began. Its first `iteration` now reports `admitted_at` once (`mirrorProgress`),
+    and the counter restarts from there. A finished child's length is `ended_at - admitted_at`.
+    A child sent back to the queue after running (an approval, a check-in) keeps counting its
+    running time, since those waits are part of its run.
+  - **`admitted_at` is held in memory while the child runs and written with its end**
+    (`childClock`, then `markEnded`), so there is no write per admission. The same map is what
+    lets `listSubagents` report a waiting child as `queued`: it reported every unfinished child
+    as `running`, so a reload said "Running" for one that had not begun.
+  - **The queued flag clears on an answered approval's `tool.result`, not only at the next
+    `iteration`.** `yieldWhile` re-enters the queue before the call runs, so the result is
+    written holding a slot; the next `iteration` follows the message's whole tool batch, and
+    until then a reload's listing said "Queued" for a child two minutes into a `bash`, while the
+    stream said running. Found in review; `subagent-progress.test.ts` drives the mirror.
+  - `subagents.spec.ts`'s queued case delegates a slow child then one with a single slow request
+    (answered at once, its "Running" lasted too briefly to see). The listing fix is held by the
+    server test, not the spec: on a fresh start the run's snapshot follows the listing within a
+    second and corrects the card either way.
   - **These events do not clear a queue position**, in `foldSnapshot` or in either hook: they
     say nothing about where the parent run is.
   - **A finished parent's snapshot ends any child still marked running**
@@ -3600,15 +3774,14 @@ replies.
   `MCP_ENCRYPTION_KEY`, fallback `BETTER_AUTH_SECRET`) and `redact()`-ed out of every error
   path. stdio children get a minimal env (`PATH`/`HOME` + row env + secrets), never
   `process.env`. HTTP transports re-run the SSRF guard per request unless the user confirmed
-  `allowPrivateNetwork` in the GUI — **the one exception is the GitHub server when an operator
-  sets `GITHUB_MCP_URL`** (below): that address is trusted the way `GITHUB_API_URL` is, and no
-  request can widen it (`PATCH` refuses `allowPrivateNetwork` on that row).
+  `allowPrivateNetwork` in the GUI.
 - Connections are cached per `userId:serverId` with an idle reaper (`mcp/client-manager.ts`,
   mirrors sandbox-manager); a dead/hung server fails only its own tool calls, never the run.
 - **A failed connect is remembered for `CONNECT_FAILURE_TTL_MS` (30 s).** The registry connects
   every enabled server at the start of every turn, and a failure used to be cached nowhere — so a
   server nobody could reach cost `CONNECT_TIMEOUT_MS` on *every* turn. That was tolerable while
-  every row was one the user added by hand; it is not for a row provisioned automatically. An
+  every row was one the user added by hand; it was not for the GitHub row provisioned
+  automatically while that existed. An
   edited row (new `updatedAt`) **bypasses** the cached failure — that is what makes Test always
   really try — while `dropEntry`/`closeServerClients` are what actually delete the entry, and the
   idle reaper sweeps whatever neither names, since a failure past its window is an `Error` and its
@@ -3617,42 +3790,20 @@ replies.
   `@brave/brave-search-mcp-server` — spawned from the installed package's bin, never `npx`.
   The GUI lives at `/mcp` (mobile/web); per-conversation server switches are in the agent
   Inspector (`conversations.mcpOverrides`).
-- **GitHub is a second built-in, of a different kind: its credential is the GitHub connection.**
-  `CatalogEntry` is a union — stdio entries carry `secretKeys` the user types; the http entry
-  carries `credentials: "github-connection"` and stores nothing in the row. `PUT
-  /v1/github/connection` provisions it and `DELETE` removes it (`mcp/github-server.ts`, the only
-  code that creates or deletes that row); `client-manager.ts` reads the *row owner's* token through
-  `getOwnerToken()` and sends it as `Authorization: Bearer` to GitHub's hosted server
-  (`https://api.githubcopilot.com/mcp/`). One copy of the token, so rotating or revoking it in
-  Settings → GitHub is the whole story. Users who connected before this existed get the row from
-  `backfillGithubMcpServers()` at boot; tests must pass its `ownerId`, because an unscoped run
-  from a test provisions every connection in the shared database (its first draft did, 206 rows).
-- **Its address is resolved at connect time, never read from the row.** The row records the
-  public endpoint for display; the real one comes from `resolveUrl()` each time. Every server on a
-  machine shares one database, and the e2e harness boots with `GITHUB_MCP_URL` pointed at a mock —
-  storing that would leave other people's GitHub tools aimed at a dead loopback port, with the
-  SSRF guard lifted, after the harness exited.
-- **Read-only GitHub tools start allowed, decided on first discovery.** `reconcileTools` takes a
-  `defaultPolicyFor`, and `catalogDefaultPolicy(row)` answers allow+readOnly for names in
-  `GITHUB_READONLY_TOOLS`. Not pre-seeded into `toolPolicies`: a stored policy the server does not
-  list is marked `missing`, GitHub has renamed tools before (`get_issue_comments` → `issue_read`),
-  and a stale pre-seeded name would sit in the Tools sheet as "missing" forever. The policy and
-  the tool's hash are recorded together, so a schema change still revokes the grant.
-- **The prompt has to say the tools exist.** `GITHUB_TOOLS_ADDENDUM` (`mcp/sanitize.ts`) is appended
-  whenever a github tool is actually *offered* — not merely enabled, since planning mode hides the
-  write ones and a failed connect contributes none. Without it the first real session did exactly
-  what the sandbox invites: asked about issues, reached for `curl`, got nothing (a sandbox has no
-  network), and told the user it could not see GitHub at all — with all 45 tools sitting unused in
-  that same request. Knowing a tool is in the list is not the same as knowing to reach for it.
-- **The linked row cannot be deleted while GitHub is connected** (409 naming the two things that
-  do what the user wants: switch it off, or disconnect GitHub) — deleting it would only have it
-  come back on the next reconnect. Once the connection is gone it is an ordinary row, so a crash
-  between disconnect's two deletes never leaves one stuck. A hand-made server already using slug
-  `github` is never renamed or taken over: connecting still succeeds and `mcp.ok: false` says why
-  the tools are missing.
+- **There is no GitHub MCP server any more.** It was a second built-in, provisioned from the
+  GitHub connection, and was removed for `git` and `gh` in the workspace through the egress
+  proxy (see "The GitHub credential proxy"). Its write tools took whole files, so an agent could
+  not change one bullet in a 439 KB AGENTS.md, and GitHub has no API that takes a diff. Migration
+  0044 deletes the rows by `builtin_key`, so someone's own server under the slug `github`
+  survives; a conversation's `mcp_overrides` naming a deleted id is inert. `CatalogEntry` is
+  stdio-only again. Anyone who wants GitHub's hosted MCP can still add it as an ordinary HTTP
+  server, with their own token as a secret.
 - Testing: `test-fixtures/mock-mcp-server.ts` is a deliberately hostile stdio fixture;
   `MOCK_INFERENCE=true` triggers `mockmcp__*` tool calls only when the registry actually
   offered them (see `MOCK_TOOL_TRIGGERS`); `src/mcp/__tests__/` covers units + a full-loop e2e.
+  The e2e harness also runs a streamable-HTTP mock (`test-fixtures/mock-mcp-http-server.ts`)
+  that a spec adds as a user's own server under the slug `httpmock` (`http mcp who am i` calls
+  its `get_me`); it refuses every bearer but `MOCK_MCP_HTTP_TOKEN`.
 
 ### MCP switches per chat and per kind of conversation
 
@@ -3748,33 +3899,27 @@ replies.
   not a clone failure on the first tool call), takes `clone_url` from the answer, and ignores any
   `pr` the client sends. A client that could name the clone URL could point the checkout
   anywhere.
-- **Clone credentials belong to the conversation owner, never the sender.** Sandboxes are
-  created lazily on first tool use, which may be a shared editor's; the row's `ownerId` is the
-  owner's for the same reason (`sandbox-manager.ts`'s `createConfigFor`).
-- **A GitHub token meets git in exactly one place: `sandbox/git.ts`.** It rides in
-  `ExecOptions.env` for one command, read by a `credential.helper` passed with `-c` — never in
-  argv, never in the clone URL (which git writes into `.git/config`, where the model can `cat`
-  it and `web_fetch` it out), never in a file, never logged. `git.test.ts` greps the whole
-  `.git` directory for it after a clone. The previous code embedded it in the URL.
-  Three bounds sit around it, because the checkout is one the model writes to freely: the
-  helper list is **reset** first (`-c credential.helper=` — `-c` appends, and a `store` helper
-  in the server account's own gitconfig would otherwise be handed the token by git's
-  post-auth `approve` and write it to `~/.git-credentials`; `file://` clones never consult a
-  helper, which is why the test could not see it); the helper answers **only for the host the
-  token was issued for** (`$LOXAIC_GIT_HOST` from the clone URL, read from the `host=` line git
-  writes to its stdin — `credential.useHttpPath` does *not* scope a custom helper); and hooks,
-  fsmonitor and proxies are off for the credentialed command, which alone carries the token
-  (the checkout/config steps after a clone get none). What this does **not** close is an
-  actively adversarial process in the container — a shim `git` on PATH — which shares the
-  exec's uid; the sturdier shape is pushing from the server against a bundle, a follow-up.
+- **GitHub access belongs to the conversation owner, never the sender.** Sandboxes are
+  created lazily on first tool use, which may be a shared editor's; the egress credential names
+  the owner, and the row's `ownerId` is the owner's for the same reason (`sandbox-manager.ts`'s
+  `createConfigFor`).
+- **No GitHub token ever enters a sandbox.** `git` and `gh` there reach GitHub through the egress
+  proxy, which adds the token on the server (see "The GitHub credential proxy"). The clone
+  (`sandbox/git.ts`'s `cloneInto`) is an ordinary `git clone` with the proxy's environment, and
+  the checkout's `origin` is the plain `https://github.com/…` URL. Hooks and fsmonitor stay off
+  for the commands Loxaic itself runs in the checkout (`gitSafeArgs`): the model writes `.git`
+  freely, and a hook it planted must not run as Loxaic's push. `git.test.ts` plants both.
+  The token used to ride the clone's exec environment through a scoped credential helper, which
+  closed every leak but one: a process in the container sharing the exec's uid could read it.
 - **Full clone, not `--depth=1`.** Shallow made `git log`, `blame` and `diff <base>` — the first
   things a model reaches for — empty or wrong. Paid once per conversation; the checkout is kept
   (stop-and-resume).
 - **GitHub workspaces need sandbox networking**, which containers lack unless an admin enabled
   it. The chooser reads `GET /v1/config` and refuses GitHub *with the reason and the fix* rather
-  than hiding it; a coding agent that cannot `npm install` is not one. `SANDBOX_EXTRA_HOSTS`
-  (`host:ip`, comma-separated → `HostConfig.ExtraHosts`) exists so a networked sandbox can
-  reach a service on the host by name on Linux/Podman.
+  than hiding it; a coding agent that cannot `npm install` is not one. It is also how a sandbox
+  reaches the egress proxy, so a sealed sandbox has no GitHub at all, by design.
+  `SANDBOX_EXTRA_HOSTS` (`host:ip`, comma-separated → `HostConfig.ExtraHosts`) exists so a
+  networked sandbox can reach another service on the host by name on Linux/Podman.
 - **`REPO_RE` alone admits `..`**, and `repos/../user` normalises to `/user` in the API URL — a
   200 whose body is the viewer, once persisted as a workspace with an undefined repo. Traversal
   segments are refused, and the lookup's answer must describe a repository. The chooser resets
@@ -3786,10 +3931,12 @@ replies.
   the chooser. `titleIfUnnamed` names a pre-created conversation from its first message, gated
   on the message count so a thread a user renamed to literally "New conversation" is never
   overwritten.
-- **e2e:** `apps/e2e/scripts/git-server.ts` runs `git daemon` over the fixture repos and the
-  mock GitHub API hands out its `git://host.docker.internal:<port>/…` URLs as `clone_url`, so
-  the spec exercises the server's real workspace path with nothing stubbed. Specs that clone
-  turn `allowNetwork` on through the admin API and reset it after — the env pin would make
+- **e2e:** `apps/e2e/scripts/git-server.ts` serves the fixture repos over smart HTTP as
+  `e2e/<name>` on loopback, and the spawned server is pointed at it as github.com
+  (`GITHUB_WEB_URL`); the mock API hands out `https://github.com/e2e/<name>.git` as `clone_url`
+  and answers `gh`'s GraphQL through the server's own `GhMock`. The git server refuses anything
+  without the token, so a clone that works proves the proxy added it. Specs that clone turn
+  `allowNetwork` on through the admin API and reset it after — the env pin would make
   `resetSandboxSettings()` 409.
 
 ### Project instructions (the workspace's own AGENTS.md)
@@ -4037,18 +4184,19 @@ replies.
 - `PUT /v1/github/connection` validates the token against GitHub (`getViewer`) before storing
   anything — a bad token fails at connect time, not on the first clone three steps later (a
   later stage).
-- **The token has a third consumer: the GitHub MCP server** (see "MCP servers"). It reaches that
-  server only as a request header built in `mcp/client-manager.ts`, and is redacted from every
-  error there via the connection entry's `redactions`. `getOwnerToken()` is still the only decrypt
-  site. `GET`/`PUT /v1/github/connection` report `mcp: { ok, serverId, enabled } | { ok: false,
-  error }`; a provisioning failure never fails the connect, because the token still clones.
+- **The egress proxy is the token's way into sandboxes** (see "The GitHub credential proxy"),
+  through `getOwnerToken()` like everything else. It caches a token for 30 s, so connecting and
+  disconnecting call `forgetEgressToken`: a disconnect must stop sandbox access at once.
 
 ### Git actions from the Inspector
 
-- `routes/git.ts` (`/v1/conversations/:id/git/{status,commit,push,pr}`) is deliberately the
-  only way to push or open a PR. `agent/workspace.ts`'s system-prompt fragment tells the model
-  to commit as it goes but never to push or open a pull request — those are the user's own
-  actions, taken from the Inspector's Git panel, not the model's.
+- `routes/git.ts` (`/v1/conversations/:id/git/{status,commit,push,pr}`) is the Inspector's Git
+  panel. Push and Open PR run `git push` and `gh pr create` in the checkout, through the egress
+  proxy, exactly as the agent's own commands do: one path to GitHub and one set of rules about
+  what may be written. The agent may push its branch and open its PR too (asking first, since
+  both are built-in "ask" commands); the panel is for doing it by hand.
+- **Neither works without the proxy**, so both answer 503 with a sentence when it is not running
+  (`runningEgressProxy()`), rather than `gh`'s advice to log in.
 - **Owner-only, every route**, matching the sandbox terminal and REST routes: pushing to the
   user's own GitHub as them, with their token, is not something a shared editor should be able
   to trigger. **409 while a run is active** (`getRunByConversation`), so a commit/push/PR click
@@ -4062,7 +4210,9 @@ replies.
   clone must still be able to commit under the current name/email.
 - **Opening a PR is idempotent by our own memory**: once `workspace.pr` is set
   (`setWorkspacePr`), every later call returns the stored PR without asking GitHub again,
-  rather than risking a duplicate PR on a retried click.
+  rather than risking a duplicate PR on a retried click. **A PR the branch already has is
+  recorded, not reported lost**: `gh` refuses a second one and prints the open one's URL, which
+  is the agent's own (opened with `gh`) or an earlier click whose answer was lost.
 - **`findSandboxRow` is scoped to the conversation owner's rows**, because every action here
   runs in whatever it returns — Push with the owner's PAT in its environment — and a row that
   merely *names* the conversation must not be enough (see the `POST /v1/sandboxes` owner
@@ -4070,13 +4220,11 @@ replies.
   `cloneUrl`**: `origin` lives in a `.git/config` the model writes to, and `set-url` is one
   bash call away. Status checks both exit codes — a failed `git status` is a 500, not a clean
   tree with Commit greyed out; a failed rev-list reports `ahead`/`behind` as `null`, which the
-  panel shows as "?" and never treats as 0. Only a 422 whose body says "already exists" is
-  the lost-PR 409; "No commits between base and head" reaches the user as GitHub's own words.
-- Push errors are redacted a second time in `routes/git.ts` itself (`redact()`, a local
-  module-private helper — it does not import the sandbox git module's own), on top of
-  whatever `sandbox/git.ts` already scrubbed, for the same defense-in-depth reason as the
-  GitHub connection routes above: a token must not reach the client even if one layer's
-  redaction misses it.
+  panel shows as "?" and never treats as 0. "No commits between base and head" reaches the
+  user as GitHub's own words. There is no token in the checkout to redact from an error any
+  more; a refusal from the proxy arrives as git's or gh's own output.
+- **The route tests run the real `gh`** through the real proxy against `GhMock`, so a server
+  test machine needs `gh` on PATH (GitHub's Ubuntu runners have it).
 - **A test file that mutates real DB-wide sandbox state must scope its cleanup to its own
   rows.** `git.test.ts` originally ran an unscoped `db.delete(sandboxes)` in its `afterEach`,
   which wiped every other suite's sandbox rows out from under them whenever the full server
@@ -4105,6 +4253,96 @@ replies.
   fold) and only appears once the panel's *total* content is tall enough. `Inspector`'s wide
   and narrow layouts both wrap `InspectorBody` in a plain React Native `ScrollView` now
   (`style={{flex:1, minHeight:0}}`) instead of a bare `Box`.
+
+### The GitHub credential proxy
+
+- **A sandbox reaches GitHub through Loxaic, and the token never leaves the server**
+  (`apps/server/src/egress/`). It is an HTTP proxy started beside the API (`boot.ts`). A sandbox
+  is given its address in `HTTPS_PROXY`, with a credential of Loxaic's own, plus trust in the
+  proxy's CA, plus `GH_TOKEN=loxaic-egress-proxy` (a placeholder: `gh` refuses to run without
+  one). For `github.com` and `api.github.com` the proxy terminates TLS with a leaf certificate
+  from that CA, strips any `Authorization` the sandbox sent, checks the request, adds the
+  owner's token, and forwards. Every other host is a plain tunnel to a public address
+  (`isBlockedAddress`, the `web_fetch` SSRF rule: no loopback, private ranges or metadata).
+- **The credential is signed, not stored** (`credential.ts`: HMAC over `{conversation, owner}`
+  keyed off `MCP_ENCRYPTION_KEY`/`BETTER_AUTH_SECRET`). It must exist before the sandbox row
+  does (the clone runs inside `provider.create`). The proxy honours it only while the
+  conversation exists and still belongs to that owner. It is not a GitHub credential: whoever
+  holds it gets only what the rules allow, only where the proxy is reachable.
+- **Given per command, never baked into the container** (`env.ts`'s `withEgress`, applied in
+  `getConversationSandbox` and `attachRunningSandbox`). A paused container resumes with the
+  environment it was created with, and the proxy's port changes between server starts. The same
+  wrapper covers the agent's tools, the Inspector's routes and the terminal panel. The CA and a
+  bundle of the system roots plus it are written to `<root>/.loxaic/` once per sandbox per CA.
+  **A CA that cannot be written is said, not skipped** (`EgressCaError`): an empty environment
+  sent a clone to github.com with no credential, to fail as "repository not found", which reads
+  as a problem with the person's token. A clone fails with the sentence; any other command still
+  runs, and one that fails has the sentence appended to its stderr. Found in review.
+  **A local workspace is left alone**: on someone's own machine the agent uses their own git and
+  gh login, and the server's proxy may not be reachable from there.
+- **Only a GitHub workspace's sandbox is given the proxy, and the proxy honours no other**
+  (`egressFor` in sandbox-manager.ts, and `callerFor`'s workspace check). Its reads reach whatever
+  the owner's token can, and `gh api`/`gh repo view` are read-only commands that run unasked, so a
+  scratch chat given it could list and clone the owner's private repositories in a conversation
+  never about GitHub. The plan gave scratch sandboxes reads; review narrowed it.
+- **Who a request is for is decided per request, never per connection** (`callerFor` in the
+  intercepted handler; only the verified identity is kept with the socket). `git` and `gh` keep
+  one connection open, and a caller kept with it outlived a disconnected token, a deleted
+  conversation and a changed workspace. Found in review.
+- **The upstream URL is built so it cannot leave the upstream** (`upstreamTarget`). Inside the
+  intercepted tunnel the request line is the sandbox's to write: absolute-form
+  (`GET https://elsewhere/`) is legal HTTP/1.1, and `new URL(path, base)` re-bases onto it — the
+  owner's token sent to a host of the model's choosing, past the SSRF guard. So is anything the
+  URL parser reads as protocol-relative (`//elsewhere`, and `/\\elsewhere` once a leading `/` is
+  stripped). Only origin-form is accepted (`isOriginForm`), and the target is assembled from the
+  upstream's origin plus a parsed path, then checked for the same origin. Found in review (the
+  backslash form while fixing it).
+- **What may be written is narrow, and only from a GitHub workspace** (`rules.ts`, pure):
+  - reads pass for anything the token can read, the same reach the GitHub MCP server it
+    replaced had. The token's
+    own scope is the boundary, which is why Settings recommends a fine-grained token;
+  - git pushes only to `refs/heads/<the workspace's branch>` of its repository. Force pushes are
+    allowed; deletes and tags are not. The receive-pack commands are parsed (pkt-lines up to
+    the flush, capped at 64 KB and 100 updates) before a byte of the pack is forwarded, and a
+    refusal is answered as a receive-pack report (side-band when asked), so `git push` prints
+    `! [remote rejected] main -> main (Loxaic lets this workspace push only to …)` and the model
+    reads why;
+  - **a gzipped push is inflated only as far as its commands** (`readGzipPushHead`), and its
+    original bytes are forwarded. Inflated whole with `gunzipSync`, 1.5 MB of gzip held the event
+    loop for most of a second here and the process for 1.5 GB; a little more takes the server
+    down. git itself never gzips a push (only a fetch's request), but libgit2 and JGit do, so the
+    test builds the body by hand. Found in review;
+  - **a body too large to check is answered, not cut off**: `readBody` drains past its cap (to 8×)
+    rather than destroying the request, which took the connection down before the 413 was
+    written, so the client saw a reset indistinguishable from an unreachable proxy. Found in
+    review;
+  - REST: opening a PR from the branch, editing the branch's own PR (never `state`), comments,
+    and reviewers, labels and assignees on its own PR;
+  - GraphQL: queries pass; mutations only from an allowlist. `createPullRequest` is checked
+    against the repository's node id and the branch; `addComment` against the subject's
+    repository; own-PR mutations against a `node(id)` lookup. The document is read by a linear
+    tokenizer (`graphql.ts`, 64 KB) that names each mutation field behind its alias. A mutation
+    with a literal input, a top-level fragment or a missing variable is refused, since what it
+    does cannot be checked. Every operation in the document is checked, not only the one
+    `operationName` picks;
+  - everything else (merges, closes, deletes, other branches or repositories, settings) is a
+    403 with a sentence.
+- **Where it listens is the whole security story of its address** (`boot.ts`): loopback always
+  (host-mode sandboxes; Docker Desktop, OrbStack and Colima forward `host.docker.internal`
+  there), and on Linux the Docker bridge's gateway too. Containers are given the gateway
+  address directly, not a hosts entry, so one paused before the server started still finds it.
+  Never a public address. `EGRESS_PROXY_BIND`, `EGRESS_PROXY_PORT` (ephemeral by default: the
+  port rides each command, and a fixed one would collide between servers on one machine) and
+  `EGRESS_PROXY_HOST` override it. A proxy that cannot start is logged and the server runs on;
+  sandboxes then have no GitHub, and the Git panel says so.
+- **The CA lives in `EGRESS_CA_DIR`** (`<cwd>/egress-ca`, gitignored; the desktop puts it under
+  its data dir). Its key signs certificates every sandbox trusts, so it is 0600 and per
+  deployment. Generated with Node's crypto; `node-forge` builds the X.509, which Node cannot.
+- **A sealed sandbox has no GitHub.** The proxy is reached over the network, so networking off
+  means no proxy, which is the point of sealing it.
+- **Not verified on Linux, Podman or OrbStack.** Docker Desktop on macOS was checked by hand
+  (`host.docker.internal` reaches a loopback listener). Linux rests on the bridge gateway being
+  reachable from containers, which a host firewall can block.
 
 ### Local workspaces (the desktop's executor)
 

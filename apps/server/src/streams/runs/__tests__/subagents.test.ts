@@ -506,6 +506,48 @@ describe("sub-agents", () => {
     expect((second?.endedAt ?? 0) - (first?.startedAt ?? 0)).toBeGreaterThanOrEqual(7_000);
   }, 50_000);
 
+  it("says when a queued child got its slot, and lists it as queued until then", async () => {
+    const convId = await newConversation();
+    useScenario("wait your turn", [{ calls: [sub("Slow", "take your time and then say slow"), sub("Quick", "say quick")] }]);
+    const streamId = await agentRun(convId, "wait your turn");
+    // While the slow one holds the only slot, the quick one is in line — and
+    // a reload must say so, not "running".
+    await waitFor("the quick child to queue", async () => {
+      const list = await listSubagents(convId, (id) => getRun(id) !== undefined);
+      return list.some((s) => s.description === "Quick" && s.state === "queued");
+    });
+    const whileQueued = (await listSubagents(convId, (id) => getRun(id) !== undefined)).find((s) => s.description === "Quick");
+    expect(whileQueued?.admitted_at).toBeUndefined();
+    await waitFor("the parent to end", ended(convId), 40_000);
+
+    const byName = new Map((await childrenOf(convId)).map((k) => [(k.subagent as SubAgentInfo).description, k.subagent as SubAgentInfo]));
+    const slow = byName.get("Slow");
+    const quick = byName.get("Quick");
+    // Stored with the end: the quick one waited out the slow one's run, so its
+    // admission is long after its creation, and its running time is short.
+    expect(slow?.admittedAt).toBeGreaterThanOrEqual(slow?.startedAt ?? Infinity);
+    // (Not against the slow one's `endedAt`: that is stamped just after it
+    // hands its slot back, and the quick one is admitted in between.)
+    expect((quick?.admittedAt ?? 0) - (slow?.admittedAt ?? Infinity)).toBeGreaterThanOrEqual(7_000);
+    expect((quick?.admittedAt ?? 0) - (quick?.startedAt ?? 0)).toBeGreaterThanOrEqual(7_000);
+
+    // The parent's stream reported it once, with the first "running".
+    const records = await getStreamBroker().readFrom(streamId, 0);
+    const quickId = (await childrenOf(convId)).find((k) => (k.subagent as SubAgentInfo).description === "Quick")?.id;
+    const admissions = records
+      .map((r) => r.event)
+      .filter((e) => e.kind === "subagent.progress" && e.conversation_id === quickId && e.admitted_at !== undefined);
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]).toMatchObject({ state: "running", iteration: 1, admitted_at: quick?.admittedAt });
+    // And the fold keeps it, so a reconnect gets it too.
+    const snapshot = await snapshotOf(streamId);
+    expect(snapshot.subagents?.find((s) => s.conversation_id === quickId)?.admitted_at).toBe(quick?.admittedAt);
+    // Each of the parent's own replies says when it began.
+    const assistant = snapshot.messages.filter((m) => m.author_type === "assistant");
+    expect(assistant.length).toBeGreaterThan(0);
+    expect(assistant.every((m) => typeof m.started_at === "number")).toBe(true);
+  }, 50_000);
+
   it("refuses a call with no task rather than starting a child on nothing", async () => {
     const convId = await newConversation();
     useScenario("empty task", [{ tool: SUBAGENT_TOOL_NAME, args: { description: "Nothing" } }]);

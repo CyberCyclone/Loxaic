@@ -331,31 +331,28 @@ the workspace pre-flight makes). That is the combination that used to produce a 
 minutes later. A spec cannot reconfigure the mock — it is started once per stand-up and its URL
 crosses a process boundary — so both behaviours are reached by choosing a token.
 
-## What the GitHub MCP spec covers
+## The mock HTTP MCP server
 
-`github-mcp.spec.ts` connects GitHub through the API and follows what that sets up: the status
-line on the GitHub screen, the provisioned server on `/mcp` (with no delete control and no second
-catalogue card), a chat turn that calls `github__get_me` without an approval prompt, and the
-server disappearing again on disconnect. `standup.ts` runs
-`apps/server/test-fixtures/mock-mcp-http-server.ts` as a process (apps/e2e has no MCP SDK) and
-passes its URL to the test server as `GITHUB_MCP_URL`. That stand-in refuses every bearer except
-`VALID_TOKEN`, so the tool answering at all proves the connection's token reached it, and its
-`/__e2e/auth` endpoint lets the spec check the header directly.
+`standup.ts` runs `apps/server/test-fixtures/mock-mcp-http-server.ts` as a process (apps/e2e has
+no MCP SDK) and records its URL for `mockMcpHttpUrl()`. A spec adds it as a user's own server
+(slug `httpmock`, `allowPrivateNetwork`, an `Authorization: Bearer MOCK_MCP_HTTP_TOKEN` secret),
+as `agent-allow-always.spec.ts` does. It refuses every other bearer, so a tool answering at all
+proves the server's own secret reached it.
 
 ## What the GitHub-workspace and mock-scenario specs cover
 
-`agent-github-workspace.spec.ts` and `agent-git-actions.spec.ts` clone a real repository through
-the server's ordinary workspace path with nothing stubbed server-side: `scripts/git-server.ts`
-turns each fixture directory under `fixtures/` (`bugfix-app`, `other-repo`, `seeded-app`) into a
-bare repo with one commit on `main`, served over `git://` by `git daemon --enable=receive-pack`,
-and `scripts/mock-github.ts` hands out that URL as the repo's `clone_url`. A sandbox reaches the
-harness machine as `host.docker.internal` — Docker Desktop resolves that on its own; Linux and
-Podman need the `SANDBOX_EXTRA_HOSTS=host.docker.internal:host-gateway` entry `standup.ts` passes
-to the server it spawns, mapped to `HostConfig.ExtraHosts`. The daemon binds to `127.0.0.1` — it
-has no authentication and pushes are enabled, so it must not be reachable from the LAN for the
-length of a run — which Docker Desktop reaches through `host.docker.internal` (it routes to the
-host's loopback); Linux's `host-gateway` lands on the bridge address instead, so set
-`E2E_GIT_LISTEN` to that address (or `0.0.0.0`) there. Cloning needs sandbox network access,
+`agent-github-workspace.spec.ts`, `agent-git-actions.spec.ts` and `agent-gh-proxy.spec.ts` clone
+a real repository through the server's ordinary workspace path with nothing stubbed server-side:
+`scripts/git-server.ts` turns each fixture directory under `fixtures/` (`bugfix-app`,
+`other-repo`, `seeded-app`, …) into a bare repo `e2e/<name>` with one commit on `main`, served
+over smart HTTP (`git http-backend`) on `127.0.0.1`, and the spawned server is pointed at it as
+github.com (`GITHUB_WEB_URL`). `scripts/mock-github.ts` stands in for api.github.com, including
+the GraphQL operations `gh` sends, and hands out `https://github.com/e2e/<name>.git` as each
+repo's `clone_url`. Sandboxes never reach either directly: `git` and `gh` in a sandbox go through
+the server's egress proxy, which adds the token — and the git server refuses any request without
+it, so a working clone proves the proxy did. The proxy listens on loopback (which Docker Desktop
+reaches as `host.docker.internal`) and, on Linux, on the Docker bridge's gateway too.
+Cloning needs sandbox network access,
 which is off by default: a spec that clones turns `allowNetwork` on through the admin API in
 `before` and resets it in `after`, the same discipline every sandbox-mode spec follows — this is
 deliberately *not* a global `standup.ts` setting, since pinning it would 409 every spec's own

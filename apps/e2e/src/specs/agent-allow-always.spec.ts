@@ -13,21 +13,20 @@
  *     offered no standing grant on the owner's server;
  *   - the MCP tools sheet says where such an allow came from.
  *
- * GitHub's MCP stand-in supplies the MCP tool (see github-mcp.spec.ts). Its
- * `get_me` starts allowed, so the spec sets it back to asking first.
+ * The MCP tool is `get_me` on a server of the user's own, added over the API:
+ * the harness's streamable-HTTP mock, under the slug `httpmock`. A new tool
+ * asks until someone allows it.
  */
 import { expect } from '@wdio/globals';
 import { apiToken, provisionUser, uniqueCreds, type Credentials } from '../helpers/auth.ts';
-import { BASE_URL } from '../../scripts/standup.ts';
-import { VALID_TOKEN } from '../../scripts/mock-github.ts';
+import { BASE_URL, MOCK_MCP_HTTP_TOKEN, mockMcpHttpUrl } from '../../scripts/standup.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { isVisible, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
-  GITHUB_MCP_LOGIN,
-  GITHUB_MCP_PROMPT,
+  HTTP_MCP_LOGIN,
+  HTTP_MCP_PROMPT,
   MOCK_TOOL_DONE,
   TOOL_PROMPT,
-  connectGithub,
   goToSurface,
   listConversations,
   openMcpServers,
@@ -61,15 +60,13 @@ describe('agent "Allow always"', () => {
     return (await res.json()) as T;
   }
 
-  /** The stored policy for GitHub's `get_me`: the row a run's toolset reads. */
+  /** The stored policy for the mock's `get_me`: the row a run's toolset reads. */
   async function getMePolicy(): Promise<ToolPolicy | undefined> {
-    const servers = await api<{ id: string; builtinKey: string | null; toolPolicies: Record<string, ToolPolicy> }[]>(
-      '/v1/mcp/servers',
-    );
-    const github = servers.find((s) => s.builtinKey === 'github');
-    if (!github) throw new Error('[e2e] no GitHub MCP server');
-    serverId = github.id;
-    return github.toolPolicies.get_me;
+    const servers = await api<{ id: string; slug: string; toolPolicies: Record<string, ToolPolicy> }[]>('/v1/mcp/servers');
+    const mine = servers.find((s) => s.slug === 'httpmock');
+    if (!mine) throw new Error('[e2e] no httpmock MCP server');
+    serverId = mine.id;
+    return mine.toolPolicies.get_me;
   }
 
   async function allowlist(): Promise<string[]> {
@@ -110,9 +107,23 @@ describe('agent "Allow always"', () => {
   before(async () => {
     await provisionUser(creds);
     await signIn(creds);
-    await connectGithub(creds, VALID_TOKEN);
-    await getMePolicy();
-    await api(`/v1/mcp/servers/${serverId}`, { method: 'PATCH', body: { toolPolicies: { get_me: { approval: 'ask' } } } });
+    const created = await api<{ id: string }>('/v1/mcp/servers', {
+      method: 'POST',
+      body: {
+        name: 'HTTP mock',
+        slug: 'httpmock',
+        transport: 'http',
+        url: mockMcpHttpUrl(),
+        // The mock listens on loopback, which the SSRF guard refuses unless
+        // the owner says so, as the form's checkbox does.
+        allowPrivateNetwork: true,
+        secrets: { Authorization: `Bearer ${MOCK_MCP_HTTP_TOKEN}` },
+      },
+    });
+    serverId = created.id;
+    // Discovers its tools, which start asking.
+    await api(`/v1/mcp/servers/${serverId}/test`, { method: 'POST', body: {} });
+    expect(await getMePolicy()).toMatchObject({ approval: 'ask' });
   });
 
   it('allows a builtin for the rest of the run, and for the next one', async function () {
@@ -141,28 +152,28 @@ describe('agent "Allow always"', () => {
 
   it('says why an auto run is asking, whatever the mode selector says, and keeps "Allow once" to one call', async function () {
     this.timeout(4 * 60_000);
-    await startRun('auto', GITHUB_MCP_PROMPT);
+    await startRun('auto', HTTP_MCP_PROMPT);
     await waitForVisible('agent.permission.bar');
-    await waitForTextIn('agent.permission.alwaysNote', 'get_me from github');
+    await waitForTextIn('agent.permission.alwaysNote', 'get_me from httpmock');
     await shot('agent-auto-mcp-prompt');
 
     // The selector is the next message's mode. Moving it while the run is
     // parked used to relabel the buttons of a run it cannot change.
     await tap('agent.mode.manual');
     await browser.pause(500);
-    await waitForTextIn('agent.permission.alwaysNote', 'get_me from github');
+    await waitForTextIn('agent.permission.alwaysNote', 'get_me from httpmock');
     await waitForVisible('agent.permission.allowAlways');
     await shot('agent-auto-mcp-prompt-selector-moved');
 
     await tap('agent.permission.allow');
-    await waitForTextIn('chat.messageList', GITHUB_MCP_LOGIN);
+    await waitForTextIn('chat.messageList', HTTP_MCP_LOGIN);
     expect((await getMePolicy())?.approval).toBe('ask');
   });
 
   it('offers someone the thread is shared with the call, and no standing grant', async function () {
     this.timeout(5 * 60_000);
     // "Allow once" granted nothing, so this auto run asks again.
-    await startRun('auto', GITHUB_MCP_PROMPT);
+    await startRun('auto', HTTP_MCP_PROMPT);
     await waitForVisible('agent.permission.bar');
     const [conv] = await listConversations(creds);
 
@@ -198,13 +209,13 @@ describe('agent "Allow always"', () => {
     // The parked run is the owner's newest thread, so the screen opens on it.
     await goToSurface('agent');
     await waitForVisible('agent.permission.bar');
-    await waitForTextIn('agent.permission.alwaysNote', 'get_me from github');
+    await waitForTextIn('agent.permission.alwaysNote', 'get_me from httpmock');
     await shot('agent-auto-mcp-prompt-after-reopen');
     await tap('agent.permission.allowAlways');
-    await waitForTextIn('chat.messageList', GITHUB_MCP_LOGIN);
+    await waitForTextIn('chat.messageList', HTTP_MCP_LOGIN);
     expect(await getMePolicy()).toMatchObject({ approval: 'allow', grantedFrom: 'prompt' });
 
-    await runsWithoutAsking('auto', GITHUB_MCP_PROMPT, GITHUB_MCP_LOGIN);
+    await runsWithoutAsking('auto', HTTP_MCP_PROMPT, HTTP_MCP_LOGIN);
     await shot('agent-auto-mcp-no-prompt');
   });
 

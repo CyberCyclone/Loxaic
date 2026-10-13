@@ -148,18 +148,24 @@ describe("buildToolset with the fixture server", () => {
 
   it("clears requiresApproval for a builtin on the user's allow-always list", async () => {
     const before = await buildToolset(userId, { mode: "manual" });
-    expect(before.requiresApproval(mustGet(before, "bash"), "manual")).toBe(true);
+    expect(before.requiresApproval(mustGet(before, "fs_write"), "manual")).toBe(true);
 
-    await db.insert(userPrefs).values({ userId, toolAllowlist: ["bash"] });
+    // `bash` on an allowlist from before command rules is ignored: its
+    // approval is decided per command, never by the whole tool.
+    await db.insert(userPrefs).values({ userId, toolAllowlist: ["fs_write", "bash"] });
     try {
       const after = await buildToolset(userId, { mode: "manual" });
-      expect(after.requiresApproval(mustGet(after, "bash"), "manual")).toBe(false);
+      expect(after.requiresApproval(mustGet(after, "fs_write"), "manual")).toBe(false);
+      expect(after.requiresApproval(mustGet(after, "bash"), "manual")).toBe(true);
       // Untouched: only the allowlisted name is affected.
-      expect(after.requiresApproval(mustGet(after, "fs_write"), "manual")).toBe(true);
+      expect(after.requiresApproval(mustGet(after, "fs_edit"), "manual")).toBe(true);
       // Planning gates on isWrite regardless of the allowlist — "allow
-      // always" doesn't defeat planning mode's no-writes guarantee.
+      // always" doesn't defeat planning mode's no-writes guarantee. It does
+      // offer `bash`, for read-only commands only (permissions/bash/policy.ts).
       const planning = await buildToolset(userId, { mode: "planning" });
-      expect(planning.openAiTools.map((t) => t.function.name)).not.toContain("bash");
+      const offered = planning.openAiTools.map((t) => t.function.name);
+      expect(offered).not.toContain("fs_write");
+      expect(offered).toContain("bash");
     } finally {
       await db.delete(userPrefs).where(eq(userPrefs.userId, userId));
     }
@@ -261,10 +267,11 @@ describe("grantTrust (#266)", () => {
 
     await ts.grantTrust(write);
     await ts.grantTrust(write);
+    // Never the whole of `bash`: its grants are command rules.
     await ts.grantTrust(mustGet(ts, "bash"));
 
     expect(ts.requiresApproval(write, "manual")).toBe(false);
-    expect(await allowlist()).toEqual(["fs_write", "bash"]);
+    expect(await allowlist()).toEqual(["fs_write"]);
     const next = await buildToolset(userId, { mode: "manual" });
     expect(next.requiresApproval(mustGet(next, "fs_write"), "manual")).toBe(false);
     // One run's grant is not another run's: tool objects are per toolset.

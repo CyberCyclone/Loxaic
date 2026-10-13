@@ -318,6 +318,30 @@
     "finalText": "[Mock] Worked through the list.\n"
   },
   {
+    "match": "delegate a slow task, then a quick one",
+    "steps": [
+      {
+        "calls": [
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Slow survey",
+              "prompt": "take your time and survey in passes"
+            }
+          },
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Quick answer",
+              "prompt": "take your time and say the quick answer is done"
+            }
+          }
+        ]
+      }
+    ],
+    "finalText": "[Mock] Both sub-agents have reported back.\n"
+  },
+  {
     "match": "survey in passes",
     "steps": [
       {
@@ -571,5 +595,149 @@
       }
     ],
     "finalText": "[Mock] Notes edited.\n"
+  },
+  {
+    "match": "list the workspace read-only",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "ls -la"
+        }
+      }
+    ],
+    "finalText": "[Mock] Listed the workspace."
+  },
+  {
+    "match": "touch a scratch note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch scratch-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Touched the scratch note."
+  },
+  {
+    "match": "list then touch a note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "ls && touch compound-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Listed, then touched."
+  },
+  {
+    "match": "remove the old note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "rm -f old-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to remove it."
+  },
+  {
+    "match": "make a checked note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch checked-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the checked note."
+  },
+  {
+    "match": "make a classifier-ask note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch classifier-ask-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the asked-about note."
+  },
+  {
+    "match": "make a classifier-slow note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch classifier-slow-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the slow note."
+  },
+  {
+    "match": "egress drill: push the branch",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git push origin HEAD"
+        }
+      }
+    ],
+    "finalText": "[Mock] Pushed the branch."
+  },
+  {
+    "match": "egress drill: open the pull request",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "gh pr create --base main --head \"$(git branch --show-current)\" --title \"Opened by the agent\" --body \"Through Loxaic's proxy\""
+        }
+      }
+    ],
+    "finalText": "[Mock] Opened the pull request."
+  },
+  {
+    "match": "egress drill: view the pull request",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "gh pr view 1"
+        }
+      }
+    ],
+    "finalText": "[Mock] Read the pull request."
+  },
+  {
+    "match": "egress drill: push to main",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git commit -q --allow-empty -m \"agent commit\" && git push origin HEAD:main"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to push to main."
+  },
+  {
+    "match": "egress drill: delete the branch",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git push origin --delete \"$(git branch --show-current)\""
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to delete the branch."
   }
 ]

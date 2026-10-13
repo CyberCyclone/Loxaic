@@ -20,6 +20,14 @@ import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
 import { PLAN_TOOL, QUESTIONS_TOOL, planOf, planTitle, questionsOf, type Question } from '@/lib/plan';
 import { subAgentDescriptionOf } from '@/lib/subAgents';
+import { localRunStart } from '@/lib/runStart';
+
+/** The server's clock as a `stream.sync` reported it, and this device's at the
+ * same moment — what turns a snapshot's server timestamps into local ones. */
+export interface SyncClock {
+  serverNow?: number;
+  now?: number;
+}
 
 /** Every conversation id the server hands out is a Postgres row id, and so a
  * real UUID. The client's own optimistic placeholders
@@ -247,6 +255,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           // reload. Undefined on rows written before the block gained the
           // field, which the card treats as "not told" rather than success.
           tc.ok = b.ok;
+          if (b.permission) tc.permission = b.permission;
         }
       }
     }
@@ -258,12 +267,28 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
  * always carry their owning message_id directly) straight onto the
  * assistant message, same shape reconstructMessages produces from cold
  * storage. */
-export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
+export function snapshotMessageToMessage(
+  sm: StreamSnapshotMessage,
+  clock: SyncClock = {},
+  knownStartedAt?: number,
+): Message {
   const role = roleOf(sm.author_type) ?? 'assistant';
+  // Only with the server's clock to read it against: without one,
+  // `localRunStart` would time the message from now, which on a reconnect
+  // minutes into a reply errs short. Absent, the counter uses the run's start.
+  // A start the thread already holds is kept, as `toView` keeps `startedLocal`:
+  // recomputing it on every snapshot moves it by the difference in delivery
+  // latency, and a slow resync after a fast one sends the counter backwards.
+  const startedAt =
+    knownStartedAt ??
+    (sm.started_at !== undefined && clock.serverNow !== undefined
+      ? localRunStart(sm.started_at, clock.serverNow, clock.now)
+      : undefined);
   return {
     id: sm.message_id,
     role,
     ...(sm.lamport === undefined ? {} : { lamport: sm.lamport }),
+    ...(startedAt === undefined ? {} : { startedAt }),
     model: sm.model,
     text: sm.text,
     thinking: sm.thinking || undefined,
@@ -276,6 +301,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
+            ...(tc.permission ? { permission: tc.permission } : {}),
             ...withPlan(tc.tool, tc.args, sm.message_id),
           }))
         : undefined,
@@ -309,13 +335,14 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
 export function applySnapshotToMsgs(
   msgs: Message[],
   snapshot: StreamSnapshot,
-  opts: { olderUnloaded?: boolean } = {},
+  opts: { olderUnloaded?: boolean } & SyncClock = {},
 ): Message[] {
   const result = [...msgs];
   const loadedFloor = Math.min(...result.flatMap((m) => (m.lamport === undefined ? [] : [m.lamport])));
+  const clock: SyncClock = { serverNow: opts.serverNow, now: opts.now ?? Date.now() };
   for (const sm of snapshot.messages) {
-    const converted = snapshotMessageToMessage(sm);
     const idx = result.findIndex((m) => m.id === sm.message_id);
+    const converted = snapshotMessageToMessage(sm, clock, idx >= 0 ? result[idx].startedAt : undefined);
     if (idx >= 0) {
       result[idx] = converted;
       continue;
@@ -337,7 +364,7 @@ export function applySnapshotToMsgs(
   return result;
 }
 
-export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Message[] {
+export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = Date.now()): Message[] {
   switch (event.kind) {
     case 'message.start': {
       if (msgs.some((m) => m.id === event.message_id)) return msgs;
@@ -347,6 +374,12 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
           id: event.message_id,
           role: roleOf(event.author_type) ?? 'assistant',
           ...(event.lamport === undefined ? {} : { lamport: event.lamport }),
+          // A live event carries no server clock to read `started_at` against,
+          // and it arrives milliseconds after it was sent: arrival is the
+          // start. Only when the server stamped one, so an older server's
+          // messages keep timing from the run's start rather than claiming a
+          // start nobody reported.
+          ...(event.started_at === undefined ? {} : { startedAt: now }),
           model: event.model,
           text: event.text ?? '',
           attachments: event.attachments,
@@ -429,7 +462,13 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
           ...m,
           tools: m.tools.map((t) =>
             t.callId === event.call_id
-              ? { ...t, result: stripTodoReminder(event.output), diff: diffLinesFor(event.diff), ok: event.ok }
+              ? {
+                  ...t,
+                  result: stripTodoReminder(event.output),
+                  diff: diffLinesFor(event.diff),
+                  ok: event.ok,
+                  ...(event.permission ? { permission: event.permission } : {}),
+                }
               : t,
           ),
         };

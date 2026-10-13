@@ -1,3 +1,4 @@
+import { PERMISSION_CHECK_MARKER } from "../permissions/marker.ts";
 import type { PromptProgress } from "@loxaic/types";
 import { PLAN_REQUIRED_NUDGE, QUESTIONS_ANSWERED_PREFIX } from "@loxaic/types";
 import { scenarioDecisionFor } from "./mock-scenarios.ts";
@@ -364,6 +365,11 @@ const MOCK_SUMMARY = "[Mock] Summary of the conversation so far.\n";
  * compaction's instruction. */
 const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
 
+/** A prompt whose tool call the mock makes without a word first. Real models
+ * do this all the time; the mock's preamble meant no spec ever saw a reply
+ * that is only a tool call, which the thread renders differently. */
+const MOCK_WORDLESS_MATCH = /\bwithout a word\b/i;
+
 /** A prompt the mock answers by naming the thinking fields it was sent, so an
  * e2e can prove the level picked in the `+` menu reached the request — not
  * merely that the menu showed it. Keyed on the prompt, so no other reply
@@ -436,11 +442,9 @@ const MOCK_TOOL_TRIGGERS: {
   { match: /\bmcp huge\b/i, name: "mockmcp__huge", args: {} },
   { match: /\bmcp evil\b/i, name: "mockmcp__evil", args: {} },
   { match: /\bmcp bad args\b/i, name: "mockmcp__echo", args: { wrong: 1 } },
-  // The GitHub MCP server provisioned from a GitHub connection. `get_me` is
-  // one of the tools that start allowed, so this one prompt shows both that
-  // the default policy applied (no approval asked) and that the connection's
-  // token reached the server.
-  { match: /\bgithub who am i\b/i, name: "github__get_me", args: {} },
+  // A user's own streamable-HTTP server, added under the slug `httpmock`
+  // (test-fixtures/mock-mcp-http-server.ts in the e2e harness).
+  { match: /\bhttp mcp who am i\b/i, name: "httpmock__get_me", args: {} },
   // A sub-agent (streams/runs/subagentRun.ts). Only the agent surface and
   // routines offer the tool, and a sub-agent itself never is, so the child's
   // own prompt cannot start another. What follows the first colon is the
@@ -464,7 +468,10 @@ const MOCK_TOOL_TRIGGERS: {
   // Questions instead of a plan — planning mode only offers the tool, so
   // this falls through everywhere else.
   { match: /\bask me\b|\bquestions?\b/i, name: "ask_questions", args: MOCK_QUESTIONS },
-  { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "echo hello from the sandbox" } },
+  // Reading and listing alone run without asking now (permissions/bash/
+  // readonly.ts), so the generic trigger writes as well: the specs that drive
+  // the approval flow with it need a command that asks. The output is the same.
+  { match: /\bbash\b|\bshell\b|\bcommand\b/i, name: "bash", args: { command: "touch .mock-bash && echo hello from the sandbox" } },
   // Object keys deliberately NOT in an order Postgres jsonb preserves: it
   // re-sorts by key length then bytes, so these come back as id/text/status.
   // A real model emits keys in whatever order it likes, and a mock that
@@ -503,6 +510,41 @@ async function* mockStream(
   const rawPrompt = textOfContent(lastUser?.content);
   const updatePaths = [...rawPrompt.matchAll(/<project-instructions-update path="([^"]*)">/g)].map((m) => m[1]);
   const prompt = rawPrompt.replace(/<project-instructions-update [\s\S]*?<\/project-instructions-update>\s*/g, "").trim();
+  // The auto-mode permission check (permissions/check.ts), answered from
+  // keywords in the action it describes: ALLOW by default, so a networked
+  // auto run behaves as it always has, ASK, a reply with no verdict, or one
+  // slower than any check's timeout. Never a tool call: it is sent with
+  // tool_choice none.
+  if (prompt.startsWith(PERMISSION_CHECK_MARKER)) {
+    if (/\bclassifier-slow\b/.test(prompt)) {
+      await sleepUnlessAborted(10 * 60_000, options.signal);
+      throwIfAborted(options.signal);
+    }
+    const reply = /\bclassifier-ask\b/.test(prompt)
+      ? "VERDICT: ASK\nREASON: The mock was told to ask about this one."
+      : /\bclassifier-garbage\b/.test(prompt)
+        ? "I would rather not say."
+        : "VERDICT: ALLOW\nREASON: The mock allows it.";
+    yield { type: "delta", content: reply };
+    const tokens = mockPromptTokens(prompt);
+    yield {
+      type: "done",
+      result: {
+        text: reply,
+        content: reply,
+        toolCalls: [],
+        finishReason: "stop",
+        ttftMs: Date.now() - startTime,
+        totalMs: Date.now() - startTime,
+        usage: { prompt_tokens: tokens, completion_tokens: 12, total_tokens: tokens + 12 },
+        timings: null,
+        cachedTokens: null,
+        promptTps: null,
+        genTps: null,
+      },
+    };
+    return;
+  }
   // Before anything is yielded, as a refused request is: nothing streamed.
   if (MOCK_FAIL_MATCH.test(prompt)) throw new Error(MOCK_FAIL_MESSAGE);
   if (MOCK_PROVIDER_OVERFLOW_MATCH.test(prompt) && isContextOverflow(backendErrorFields(MOCK_PROVIDER_OVERFLOW_BODY) ?? {})) {
@@ -623,9 +665,11 @@ async function* mockStream(
     // live loop did not — so the two disagreed at that message and broke the
     // prompt prefix. A mock that emitted perfectly trimmed text could never
     // show that.
-    const preamble = `[Mock] I'll use the ${triggered.map((t) => t.name).join(", ")} tool.\n`;
+    const preamble = MOCK_WORDLESS_MATCH.test(prompt)
+      ? ""
+      : `[Mock] I'll use the ${triggered.map((t) => t.name).join(", ")} tool.\n`;
     fullText = preamble;
-    yield* emit(preamble);
+    if (preamble) yield* emit(preamble);
     ttftMs ??= Date.now() - startTime;
     for (const [i, t] of triggered.entries()) {
       toolCalls.push({

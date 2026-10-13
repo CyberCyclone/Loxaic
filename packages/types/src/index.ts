@@ -1,4 +1,4 @@
-import type { CompactionStats, ContextBreakdown } from "./stream-protocol";
+import type { CompactionStats, ContextBreakdown, ToolPermission } from "./stream-protocol";
 import type { ModelThinking } from "./thinking";
 
 export type Result<T, E = Error> =
@@ -177,7 +177,7 @@ export type ContentBlock =
    * the client tints on a positive `false` for exactly that reason. Without it
    * a failed call was indistinguishable from a successful one the moment the
    * live stream ended and history was rebuilt from REST. */
-  | { kind: "tool_result"; call_id: string; output: string; ok?: boolean; diff?: FileDiff[] }
+  | { kind: "tool_result"; call_id: string; output: string; ok?: boolean; diff?: FileDiff[]; permission?: ToolPermission }
   | { kind: "attachment"; ref: string; mime: string; name?: string }
   /** Rides alongside a summary message's text block so a cold REST load can
    * render the compaction card with its stats — the stream isn't the only

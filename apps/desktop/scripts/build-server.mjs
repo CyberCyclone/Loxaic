@@ -9,6 +9,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { pruneToPayload } from "./server-payload.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -91,11 +92,11 @@ try {
 // project dir (apps/server/apps/desktop/…) — remove the stray.
 rmSync(path.join(repoRoot, "apps/server/apps"), { recursive: true, force: true });
 
-// Only dist/ + node_modules/ + package.json are needed at runtime. "apps" is
-// a prior run's stray that deploy would have copied along as a project file.
-for (const extra of ["src", "apps", "tsconfig.json", "tsup.config.ts", "vitest.config.ts"]) {
-  rmSync(path.join(outDir, extra), { recursive: true, force: true });
-}
+// Only dist/ + node_modules/ + package.json are needed at runtime. Pruned by allowlist: deploy
+// copies whatever sits in apps/server, including a dev checkout's downloaded models (`llama/`)
+// and users' uploads, which once tripled a 16 GB model on disk and would have shipped in the app.
+const pruned = pruneToPayload(outDir);
+if (pruned.length > 0) console.log(`[build-server] left out of the payload: ${pruned.join(", ")}`);
 
 // Nothing at runtime imports the server by its own package name — the server
 // *is* dist/ — so a link pointing out of the payload is never load-bearing,
@@ -130,7 +131,9 @@ cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
 
 // dist/executor.js is the local executor the desktop spawns for Local
 // workspaces (supervisor/executor.js); `ws` is its one runtime dependency.
-for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
+// node-forge builds the GitHub egress proxy's certificates: without it the
+// proxy cannot start, and sandboxes have no GitHub.
+for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/node-forge", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }

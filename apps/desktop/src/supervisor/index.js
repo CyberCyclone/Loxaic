@@ -279,6 +279,9 @@ export async function startStack({
       // so under dataDir for the same reason as uploads, and never inside the
       // bundle an update replaces.
       LLAMA_DIR: path.join(dataDir, "llama"),
+      // The GitHub egress proxy's CA. Kept across updates so a paused
+      // sandbox's trust in it stays good, and its key is user data.
+      EGRESS_CA_DIR: path.join(dataDir, "egress-ca"),
     };
     // The bundled server records this in the hosts table. npm_package_version
     // only exists under `pnpm dev`; the packaged app has to say so itself —

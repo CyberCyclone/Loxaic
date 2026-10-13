@@ -50,6 +50,10 @@ export interface SubAgentInfo {
   status: SubAgentStatus;
   /** Server epoch ms. */
   startedAt: number;
+  /** Server epoch ms the child got its inference slot — see
+   * `SubAgentLive.admitted_at`. Written with the end, not when it happens: a
+   * running child's is held in memory (`listSubagents` reads it there). */
+  admittedAt?: number;
   endedAt?: number;
   error?: string;
 }
@@ -81,8 +85,16 @@ export interface SubAgentLive {
   call_id: string;
   description: string;
   model: string;
-  /** Server epoch ms. */
+  /** Server epoch ms: when the child was created — which is when it joins
+   * the run queue, not when it starts work. */
   started_at: number;
+  /** Server epoch ms: when the child was given an inference slot and began its
+   * first request. Its card counts the queue wait from `started_at` until this,
+   * and its running time from here: counted from `started_at` alone, a child
+   * that waited 100 s behind a sibling read "Running 100s" the moment it began.
+   * Absent while it is first queued, from a child that never got a slot, and
+   * from an older server. */
+  admitted_at?: number;
   status: SubAgentStatus;
   ended_at?: number;
   error?: string;
@@ -109,6 +121,8 @@ export interface SubAgentLive {
 export interface SubAgentProgress {
   conversation_id: string;
   state?: SubAgentState;
+  /** Sent once, with the first `state: "running"` — see `SubAgentLive`. */
+  admitted_at?: number;
   iteration?: number;
   queue_position?: number;
   context_used?: number | null;

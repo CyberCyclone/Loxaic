@@ -14,10 +14,10 @@ process.env.MCP_ENCRYPTION_KEY ??= "git-route-test-key";
 
 /**
  * `/v1/conversations/:id/git/*` through a real Fastify instance, a real host
- * sandbox (`SANDBOX_MODE=host`, no Docker needed), and a real `file://`
- * origin — only GitHub's `POST .../pulls` is faked, since that is the one
- * call that has to leave the machine. Same shape as prefs.test.ts: only
- * `authenticate` is stubbed.
+ * sandbox (`SANDBOX_MODE=host`, no Docker needed), a real `file://` origin,
+ * the real egress proxy and the real `gh` — only api.github.com is faked
+ * (gh-mock.ts, the operations `gh pr create` sends). Same shape as
+ * prefs.test.ts: only `authenticate` is stubbed.
  */
 const currentUser = { id: "" };
 vi.mock("../../auth/middleware", () => ({
@@ -27,6 +27,10 @@ vi.mock("../../auth/middleware", () => ({
 const { gitRoutes } = await import("../git.ts");
 const { getConversationSandbox } = await import("../../agent/sandbox-manager.ts");
 const { registerRun, unregisterRun } = await import("../../streams/registry.ts");
+const { startEgressProxy } = await import("../../egress/proxy.ts");
+const { setRunningEgressProxy, __forgetPreparedCaForTest } = await import("../../egress/env.ts");
+const { __resetEgressCaForTest } = await import("../../egress/ca.ts");
+const { GhMock } = await import("../../egress/__tests__/gh-mock.ts");
 
 const app = Fastify();
 gitRoutes(app);
@@ -35,29 +39,49 @@ const ownerId = `test-git-owner-${uuid()}`;
 const editorId = `test-git-editor-${uuid()}`;
 let root: string;
 let mockGithub: Server;
+let gh = new GhMock();
+/** createPullRequest mutations that reached the fake api.github.com. */
 let pullsCalls = 0;
-/** What the fixture answers a PR creation with; a test that wants one of
- * GitHub's 422s sets it and restores the default. */
-let pullsResponse: { status: number; body: unknown } = {
-  status: 201,
-  body: { number: 7, html_url: "https://github.example/octo/real/pull/7" },
-};
+/** When set, the fake answers createPullRequest with this GraphQL error,
+ * the way GitHub reports "No commits between …". */
+let createError: string | null = null;
+let caDir = "";
+let proxy: { close(): Promise<void> } | null = null;
 
 beforeAll(async () => {
   await app.ready();
 
   mockGithub = createServer((req, res) => {
-    if (req.method === "POST" && req.url === "/repos/octo/real/pulls") {
-      pullsCalls++;
-      res.writeHead(pullsResponse.status, { "content-type": "application/json" });
-      res.end(JSON.stringify(pullsResponse.body));
-      return;
-    }
-    res.statusCode = 404;
-    res.end(JSON.stringify({ message: "not found in fixture" }));
+    let raw = "";
+    req.on("data", (c: Buffer) => (raw += c.toString("utf8")));
+    req.on("end", () => {
+      res.setHeader("content-type", "application/json");
+      if (req.method === "POST" && req.url === "/graphql") {
+        const body = JSON.parse(raw || "{}") as { query?: string; variables?: Record<string, unknown> };
+        const creating = /createPullRequest\s*\(/.test(body.query ?? "");
+        if (creating) pullsCalls++;
+        if (creating && createError) {
+          res.end(JSON.stringify({ data: { createPullRequest: null }, errors: [{ type: "UNPROCESSABLE", message: createError }] }));
+          return;
+        }
+        res.end(JSON.stringify(gh.answer(body)));
+        return;
+      }
+      const rest = gh.rest(req.method ?? "GET", req.url ?? "/");
+      res.statusCode = rest?.status ?? 404;
+      res.end(JSON.stringify(rest?.body ?? { message: "not found in fixture" }));
+    });
   });
   await new Promise<void>((r) => { mockGithub.listen(0, "127.0.0.1", r); });
   process.env.GITHUB_API_URL = `http://127.0.0.1:${String((mockGithub.address() as { port: number }).port)}`;
+
+  caDir = mkdtempSync(path.join(os.tmpdir(), "loxaic-git-route-ca-"));
+  process.env.EGRESS_CA_DIR = caDir;
+  __resetEgressCaForTest();
+  __forgetPreparedCaForTest();
+  const started = await startEgressProxy({ port: 0, host: "127.0.0.1" });
+  proxy = started;
+  setRunningEgressProxy({ port: started.port, bind: "127.0.0.1" });
 
   await db.insert(user).values([
     { id: ownerId, name: "Owner", email: `${ownerId}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() },
@@ -71,7 +95,11 @@ afterAll(async () => {
   await db.delete(user).where(eq(user.id, ownerId));
   await db.delete(user).where(eq(user.id, editorId));
   await new Promise((r) => { mockGithub.close(r); });
+  setRunningEgressProxy(null);
+  await proxy?.close();
+  rmSync(caDir, { recursive: true, force: true });
   Reflect.deleteProperty(process.env, "GITHUB_API_URL");
+  Reflect.deleteProperty(process.env, "EGRESS_CA_DIR");
   await app.close();
 });
 
@@ -81,6 +109,9 @@ beforeEach(() => {
   process.env.SANDBOX_MODE = "host";
   currentUser.id = ownerId;
   pullsCalls = 0;
+  createError = null;
+  gh = new GhMock();
+  gh.repos.push({ owner: "octo", name: "real", nodeId: "R_octo_real", defaultBranch: "main" });
 });
 
 afterEach(async () => {
@@ -347,49 +378,79 @@ describe("POST /v1/conversations/:id/git/push", () => {
 });
 
 describe("POST /v1/conversations/:id/git/pr", () => {
-  it("opens a pull request and persists it on the workspace", async () => {
-    const { id } = await githubConversation();
-    const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "My change" } });
+  const prUrl = (n: number) => `https://github.com/octo/real/pull/${String(n)}`;
+
+  it("opens a pull request with gh, through the proxy, and persists it on the workspace", async () => {
+    const { id, branch } = await githubConversation();
+    await cloneFor(id);
+    const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "My change", body: "Why" } });
+    expect(res.json()).toEqual({ number: 1, url: prUrl(1) });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ number: 7, url: "https://github.example/octo/real/pull/7" });
     expect(pullsCalls).toBe(1);
+    expect(gh.pulls).toMatchObject([{ title: "My change", body: "Why", headRefName: branch, baseRefName: "main" }]);
 
     const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
-    expect((row?.workspace as { pr?: unknown } | undefined)?.pr).toEqual({ number: 7, url: "https://github.example/octo/real/pull/7" });
+    expect((row?.workspace as { pr?: unknown } | undefined)?.pr).toEqual({ number: 1, url: prUrl(1) });
   });
 
   it("is idempotent — a second call returns the stored PR without asking GitHub again", async () => {
     const { id } = await githubConversation();
+    await cloneFor(id);
     await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "My change" } });
     const second = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "different title" } });
-    expect(second.json()).toEqual({ number: 7, url: "https://github.example/octo/real/pull/7" });
+    expect(second.json()).toEqual({ number: 1, url: prUrl(1) });
     expect(pullsCalls).toBe(1);
   });
 
-  it("passes GitHub's own 422 reason through, rather than calling every 422 'already exists'", async () => {
-    // "No commits between …" is the common one: nothing gates Open PR on
-    // having pushed, and it used to render as a PR existing that did not.
-    const { id } = await githubConversation();
-    pullsResponse = {
-      status: 422,
-      body: { message: "Validation Failed", errors: [{ message: "No commits between main and loxaic/x" }] },
-    };
-    try {
-      const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
-      expect(res.statusCode).toBe(400);
-      expect(res.json<{ error: string }>().error).toContain("No commits between");
+  it("records a PR the branch already has (the agent's own, or a lost answer) rather than opening another", async () => {
+    const { id, branch } = await githubConversation();
+    await cloneFor(id);
+    const repo = gh.repo("octo", "real");
+    if (!repo) throw new Error("fixture repo missing");
+    gh.addPull(repo, { title: "opened by the agent", baseRefName: "main", headRefName: branch });
 
-      pullsResponse = {
-        status: 422,
-        body: { message: "Validation Failed", errors: [{ message: "A pull request already exists for octo:loxaic/x." }] },
-      };
-      const exists = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
-      expect(exists.statusCode).toBe(409);
-    } finally {
-      pullsResponse = { status: 201, body: { number: 7, html_url: "https://github.example/octo/real/pull/7" } };
-    }
+    const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
+    expect(res.json()).toEqual({ number: 1, url: prUrl(1) });
+    expect(pullsCalls).toBe(0);
+    const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
+    expect((row?.workspace as { pr?: unknown } | undefined)?.pr).toEqual({ number: 1, url: prUrl(1) });
+  });
+
+  it("passes GitHub's own reason through, and records nothing", async () => {
+    // "No commits between …" is the common one: nothing gates Open PR on
+    // having pushed.
+    const { id } = await githubConversation();
+    await cloneFor(id);
+    createError = "No commits between main and loxaic/x";
+    const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toContain("No commits between");
     const row = await db.query.conversations.findFirst({ where: eq(conversations.id, id) });
     expect((row?.workspace as { pr?: unknown } | undefined)?.pr).toBeUndefined();
+  });
+
+  it("says the agent has not started when there is no checkout yet, and asks GitHub nothing", async () => {
+    const { id } = await githubConversation();
+    const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toContain("hasn't started");
+    expect(pullsCalls).toBe(0);
+  });
+
+  it("503s with a reason when the egress proxy is not running", async () => {
+    const { id } = await githubConversation();
+    await cloneFor(id);
+    const { runningEgressProxy } = await import("../../egress/env.ts");
+    const was = runningEgressProxy();
+    setRunningEgressProxy(null);
+    try {
+      const res = await app.inject({ method: "POST", url: `/v1/conversations/${id}/git/pr`, payload: { title: "x" } });
+      expect(res.statusCode).toBe(503);
+      expect(res.json<{ error: string }>().error).toContain("GitHub proxy");
+    } finally {
+      setRunningEgressProxy(was);
+    }
+    expect(pullsCalls).toBe(0);
   });
 
   it("rejects an empty title", async () => {

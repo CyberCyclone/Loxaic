@@ -475,6 +475,12 @@ export function useAgentSession(
     };
 
     const onEvent = (event: ServerMessage) => {
+      // When this message arrived, read once, before anything else. Every fold
+      // below that times a message is handed this rather than reading the
+      // clock itself: those folds run inside state updaters, which React may
+      // defer to a render or run twice, and a backgrounded tab's clamped timers
+      // can put that render a second later. Same rule as `useStoredState`.
+      const arrivedAt = Date.now();
       if (event.type === 'turn.started') {
         const realId = event.conversation_id;
         // A retry that put files back says what it did.
@@ -518,14 +524,14 @@ export function useAgentSession(
         // A sub-agent's own stream: its transcript, not a run's. Before
         // anything below, all of which is about a thread.
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamSync(event);
+          onSubAgentStreamSync(event, arrivedAt);
           return;
         }
-        onSubAgentSync(convId, event.snapshot, event.server_now);
+        onSubAgentSync(convId, event.snapshot, event.server_now, arrivedAt);
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         updateRunMsgs(convId, (msgs) =>
-          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }),
+          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }),
         );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         const stageSnapshot = event.snapshot.context_stage;
@@ -579,20 +585,20 @@ export function useAgentSession(
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamEvent(event);
+          onSubAgentStreamEvent(event, arrivedAt);
           return;
         }
         // A child's start, progress or end, on this run's stream. It says
         // nothing about where this run is — it must not end "Queued", clear a
         // prompt line or touch the thread's messages — so it stops here.
         if (isSubAgentEvent(event.event)) {
-          onSubAgentEvent(convId, event.event);
+          onSubAgentEvent(convId, event.event, arrivedAt);
           return;
         }
         if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
           promotePendingUserMsg(convId, event.event.message_id);
         }
-        updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event));
+        updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event, arrivedAt));
         setStreamingByConv((prev) => {
           const current = prev[convId];
           if (current?.streamId !== event.stream_id) return prev;

@@ -6,7 +6,8 @@ import { SandboxGoneError } from "../sandbox/errors.ts";
 import type { Workspace } from "@loxaic/types";
 import { loadWorkspace } from "./workspace.ts";
 import { dropConversationCopies } from "./checkpoints.ts";
-import { getConnection, getOwnerToken } from "../github/connection.ts";
+import { getConnection } from "../github/connection.ts";
+import { withEgress } from "../egress/env.ts";
 import { listSandboxContainers } from "../sandbox/container-provider.ts";
 import { getSandboxRetention, getSandboxSettings } from "../settings.ts";
 
@@ -90,7 +91,19 @@ export async function getConversationSandbox(
   const entry = await resolveEntry(provider, userId, conversationId, workspace);
   entry.lastUsedAt = Date.now();
   const entryProvider = entry.provider === provider.kind ? provider : await getProviderByKind(entry.provider);
-  return entryProvider.attach(entry.ref);
+  const handle = await entryProvider.attach(entry.ref);
+  return loaded ? egressFor(handle, conversationId, loaded) : handle;
+}
+
+/**
+ * A GitHub workspace's sandbox reaches GitHub through the egress proxy, as
+ * the conversation's owner (egress/env.ts); no other sandbox is given it. The
+ * proxy's reads reach whatever the owner's token can read, so handing it to a
+ * scratch chat would let one list and clone the owner's private repositories
+ * with nobody asked, in a conversation that was never about GitHub.
+ */
+function egressFor(handle: SandboxHandle, conversationId: string, loaded: { ownerId: string; workspace: Workspace }): SandboxHandle {
+  return loaded.workspace.kind === "github" ? withEgress(handle, { conversationId, ownerId: loaded.ownerId }) : handle;
 }
 
 /**
@@ -153,7 +166,12 @@ export async function attachRunningSandbox(row: {
       });
     }
   }
-  return handle;
+  // The Inspector's git routes and the terminal reach GitHub the way the
+  // agent does: through the egress proxy, as the conversation's owner, and
+  // only in a GitHub workspace.
+  if (!row.conversationId) return handle;
+  const loaded = await loadWorkspace(row.conversationId).catch(() => null);
+  return loaded && loaded.ownerId === row.ownerId ? egressFor(handle, row.conversationId, loaded) : handle;
 }
 
 /** True when this process already has a live sandbox for this conversation.
@@ -448,13 +466,13 @@ async function createEntry(
 /**
  * What to hand `provider.create` for this workspace.
  *
- * A github workspace clones with the **conversation owner's** token and
- * identity — never the sender's. Sandboxes are created lazily on first tool
- * use, which may well be a shared editor's, and the row's `ownerId` is the
- * owner's for the same reason (see below). The token reaches git through the
- * exec environment only (sandbox/git.ts).
+ * A github workspace clones as the **conversation owner** — their token,
+ * added by the egress proxy, and their identity — never the sender.
+ * Sandboxes are created lazily on first tool use, which may well be a shared
+ * editor's, and the row's `ownerId` is the owner's for the same reason (see
+ * below). No token enters the sandbox (sandbox/git.ts).
  */
-async function createConfigFor(ownerId: string, workspace: Workspace): Promise<CreateSandboxConfig> {
+async function createConfigFor(ownerId: string, conversationId: string, workspace: Workspace): Promise<CreateSandboxConfig> {
   if (workspace.kind === "local") {
     // The executor re-validates the path against its own roots on every
     // call; this is the request, and the owner check is the provider's.
@@ -463,8 +481,8 @@ async function createConfigFor(ownerId: string, workspace: Workspace): Promise<C
     };
   }
   if (workspace.kind !== "github") return {};
-  const [token, connection] = await Promise.all([getOwnerToken(ownerId), getConnection(ownerId)]);
-  if (!token || !connection) {
+  const connection = await getConnection(ownerId);
+  if (!connection) {
     throw new Error(
       `This conversation's workspace is a GitHub repository (${workspace.repo}), but the owner's GitHub ` +
         "connection is gone. Reconnect GitHub in Settings, or start a new conversation.",
@@ -475,7 +493,9 @@ async function createConfigFor(ownerId: string, workspace: Workspace): Promise<C
     branch: workspace.baseBranch,
     newBranch: workspace.branch,
     git: {
-      token,
+      // The clone goes through the egress proxy as this conversation, which
+      // adds the owner's token outside the sandbox (egress/env.ts).
+      egress: { conversationId, ownerId },
       identity: {
         name: connection.name ?? connection.login,
         // GitHub's noreply form is what its own web UI commits as for a user
@@ -495,7 +515,7 @@ async function createEntryReserved(
   // `ownerId` is the *conversation's* owner, never whoever triggered the tool
   // call — see the insert below for why, and createEntry for where it is
   // loaded. The clone credentials are the owner's too.
-  const config = await createConfigFor(ownerId, workspace);
+  const config = await createConfigFor(ownerId, conversationId, workspace);
   // The owner here too, not the sender: the container's `loxaic.user` label
   // is all `create` uses it for, and labelling the sender meant a shared
   // editor's first tool call left a container labelled for one person and
