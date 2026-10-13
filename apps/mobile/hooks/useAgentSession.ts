@@ -270,6 +270,10 @@ export function useAgentSession(
   // older one left it permanently empty — nothing else backfills it
   // (stream.subscribe replays live runs, not cold history).
   const loadedConvIdsRef = useRef<Set<string>>(new Set());
+  // Runs whose history fetch has finished, either way. Until then a thread may
+  // hold only what a reconnect replayed — a planning run without the answer
+  // to its plan — so the plan panel waits for this (useReview's `settled`).
+  const [historySettledIds, setHistorySettledIds] = useState<ReadonlySet<string>>(new Set());
 
   // Which conversations this socket has subscribed to, and so is told of new
   // runs on (lib/conversationWatch.ts) — an automatic compaction the server
@@ -295,9 +299,10 @@ export function useAgentSession(
     if (!id || !isServerConvId(id)) return;
     // What its runs spawned before this session — once per thread.
     loadSubAgents(id);
-    // Watched only after the history fetch settles: a snapshot landing first
-    // would be followed by the page, which is applied in front of it anyway,
-    // but the chat hook's order is kept so the two cannot drift.
+    // Watched only after the history fetch settles, as the chat hook does. A
+    // snapshot can still land first (a socket opening now resubscribes the
+    // active thread), and the page is then merged in by position
+    // (withNewestPage), so an older run's snapshot stays above it.
     if (loadedConvIdsRef.current.has(id)) {
       watchConversation(id);
       return;
@@ -313,7 +318,10 @@ export function useAgentSession(
         setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
       })
       .catch(() => undefined)
-      .finally(() => { watchConversation(id); });
+      .finally(() => {
+        setHistorySettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+        watchConversation(id);
+      });
   }, [recordPaging, watchConversation, loadSubAgents]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
@@ -1199,6 +1207,9 @@ export function useAgentSession(
     activeId,
     promotion,
     activeRun,
+    /** Whether the open run's newest page of history has been fetched (or
+     * failed to be). A run with no server id yet has none to wait for. */
+    historySettled: !activeId || !isServerConvId(activeId) || historySettledIds.has(activeId),
     selectRun,
     mode,
     runState: effectiveRunState,

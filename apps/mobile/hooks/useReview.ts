@@ -37,6 +37,11 @@ export function isAwaiting(item: ReviewItem | null, status: ReviewStatus | null)
  * a second native sheet over the first is what stranded sheets on iOS. Held
  * back is not shown — the item is not marked seen, so it opens the moment the
  * other sheet closes.
+ *
+ * `settled` (default true) holds back both the panel and the bar until the
+ * thread's newest page is in: before that, a reconnect's replay of a planning
+ * run can be all the thread holds, and the plan it carries looks undecided
+ * whatever became of it (see `shouldAutoOpen`).
  */
 export function useReview(input: {
   convId: string | null;
@@ -44,9 +49,11 @@ export function useReview(input: {
   busy: boolean;
   canDecide: boolean;
   blocked?: boolean;
+  settled?: boolean;
 }) {
   const { convId, msgs, busy, canDecide } = input;
   const blocked = input.blocked ?? false;
+  const settled = input.settled ?? true;
   const [openCallId, setOpenCallId] = useState<string | null>(null);
   // Call ids this session has already shown or had dismissed. A ref: the
   // decision to auto-open is made in an effect, and must not wait on (or
@@ -71,10 +78,10 @@ export function useReview(input: {
 
   const latestId = latest?.callId ?? null;
   useEffect(() => {
-    if (!latestId || !shouldAutoOpen({ latestId, latestStatus, busy, canDecide, blocked, seen: seen.current })) return;
+    if (!latestId || !shouldAutoOpen({ latestId, latestStatus, busy, canDecide, blocked, settled, seen: seen.current })) return;
     seen.current.add(latestId);
     setOpenCallId(latestId);
-  }, [latestId, latestStatus, busy, canDecide, blocked]);
+  }, [latestId, latestStatus, busy, canDecide, blocked, settled]);
 
   const openItem = useCallback((callId: string) => {
     seen.current.add(callId);
@@ -90,7 +97,7 @@ export function useReview(input: {
     latest,
     latestStatus,
     /** Whether the bar shows: the newest item waits on the user and no panel is open. */
-    showBar: isAwaiting(latest, latestStatus) && openCallId === null,
+    showBar: settled && isAwaiting(latest, latestStatus) && openCallId === null,
     /** The item a panel shows, or null when both are closed. */
     open,
     openStatus: open ? (statuses.get(open.callId) ?? null) : null,

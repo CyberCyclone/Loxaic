@@ -419,12 +419,12 @@ export function useChatSession(
         // A thread populated *from the cache* is overwritten by the server's
         // history — otherwise messages added from another device never appear
         // and the stale copy is written straight back to the cache. A thread
-        // a live run already started filling keeps those messages, with the
-        // history in front of them.
+        // a live run (or a reconnect's snapshot) already started filling keeps
+        // those messages, with the history merged in by position.
         const fromCache = fromCacheRef.current.has(id);
         fromCacheRef.current.delete(id);
-        // The page is always applied — merged in front of a live run that got
-        // there first, never skipped — so its cursor always describes the
+        // The page is always applied — merged around whatever got there
+        // first, never skipped — so its cursor always describes the
         // thread and can be recorded unconditionally (withNewestPage).
         recordPaging(id, page);
         setConversations((prev) => {

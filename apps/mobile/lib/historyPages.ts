@@ -21,16 +21,56 @@ export function pagingFrom(page: { hasMore?: boolean; before?: string | null }):
 }
 
 /**
- * An older page, put in front of what is loaded.
+ * History merged into what is loaded, in the thread's own order.
  *
  * Deduplicated by id in favour of what is already on screen: the loaded copy
  * may be live (a message still streaming, or one a snapshot has updated since
- * the page was read), and the older page is only ever the stored one. Messages
- * without an id — an optimistic bubble — are always kept.
+ * the page was read), and a page is only ever the stored one. Messages without
+ * an id — an optimistic bubble — are always kept.
+ *
+ * Placed by `lamport`, the server's replay order, never simply in front. What
+ * is loaded is not always newer than the page: a reconnect replays the
+ * conversation's last three runs, and on a thread opened as the socket comes
+ * up those snapshots can land before the newest page does. A planning run is
+ * small and the run after it can be hundreds of rows, so its plan arrived
+ * first, the page was put in front of it, and the plan ended up below the
+ * whole implementation it had led to — with nothing after it, so it read as
+ * waiting for a decision and offered Accept again (found on the beta, #281's
+ * thread). Each history message goes before the first loaded message known to
+ * come after it; one with nothing loaded after it goes after the last loaded
+ * message that has a position, ahead of any bubble still being sent.
+ *
+ * A message with no `lamport` (a server older than #213) cannot be placed, so
+ * such history goes in front, as it always did.
  */
-export function prependOlder(current: readonly Message[], older: readonly Message[]): Message[] {
+function mergeHistory(current: readonly Message[], history: readonly Message[]): Message[] {
   const have = new Set(current.flatMap((m) => (m.id ? [m.id] : [])))
-  return [...older.filter((m) => !m.id || !have.has(m.id)), ...current]
+  const incoming = history.filter((m) => !m.id || !have.has(m.id))
+  if (incoming.length === 0) return [...current]
+  let lastPlaced = current.length - 1
+  while (lastPlaced >= 0 && current[lastPlaced].lamport === undefined) lastPlaced--
+  if (lastPlaced < 0 || incoming.some((m) => m.lamport === undefined)) return [...incoming, ...current]
+  // Both sides are in order, so one pass merges them: before each loaded
+  // message with a position, everything from history that sorts before it.
+  const sorted = incoming
+    .flatMap((m) => (m.lamport === undefined ? [] : [{ m, lamport: m.lamport }]))
+    .sort((x, y) => x.lamport - y.lamport)
+  const out: Message[] = []
+  let next = 0
+  const flushUpTo = (limit: number) => {
+    while (next < sorted.length && sorted[next].lamport <= limit) out.push(sorted[next++].m)
+  }
+  current.forEach((m, i) => {
+    if (m.lamport !== undefined) flushUpTo(m.lamport)
+    out.push(m)
+    if (i === lastPlaced) flushUpTo(Infinity)
+  })
+  return out
+}
+
+/** An older page, merged into what is loaded (see `mergeHistory`). */
+export function prependOlder(current: readonly Message[], older: readonly Message[]): Message[] {
+  return mergeHistory(current, older)
 }
 
 /**
@@ -40,10 +80,9 @@ export function prependOlder(current: readonly Message[], older: readonly Messag
  * - An empty thread is the page.
  * - A thread filled from the offline cache is replaced by it: the server's copy
  *   has whatever other devices added since.
- * - A thread a live run has already started filling keeps those messages, with
- *   the page's history in front (prependOlder: the live copy of a message both
- *   have wins). A live run is always the newest thing in the thread, so it
- *   belongs at the end.
+ * - A thread a live run or a reconnect's snapshot has already started filling
+ *   keeps those messages, with the page's history merged in by position
+ *   (mergeHistory: the live copy of a message both have wins).
  *
  * Skipping the page in that last case was the old rule, and it made the page's
  * cursor a lie: paging back from the page's oldest row, with the page itself
@@ -54,5 +93,5 @@ export function prependOlder(current: readonly Message[], older: readonly Messag
  */
 export function withNewestPage(current: readonly Message[], page: readonly Message[], fromCache: boolean): Message[] {
   if (current.length === 0 || fromCache) return [...page]
-  return prependOlder(current, page)
+  return mergeHistory(current, page)
 }
