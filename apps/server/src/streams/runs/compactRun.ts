@@ -550,6 +550,9 @@ async function openSummaryRow(input: {
     parent_id: input.parentId,
     lamport: input.lamport,
     model: input.model,
+    // Inside an agent run the compaction card would otherwise time from the
+    // run's start (see `message.start.started_at`).
+    started_at: Date.now(),
   });
 }
 

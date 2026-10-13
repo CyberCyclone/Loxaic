@@ -128,9 +128,9 @@ export function useSubAgentState(opts: {
 
   // ── The parent's stream ─────────────────────────────────
 
-  const onParentEvent = useCallback((parentConvId: string, event: SubAgentEvent) => {
+  const onParentEvent = useCallback((parentConvId: string, event: SubAgentEvent, now = Date.now()) => {
     setByParent((prev) => {
-      const next = applySubAgentEvent(prev, parentConvId, event, Date.now());
+      const next = applySubAgentEvent(prev, parentConvId, event, now);
       noteChildren(next);
       return next;
     });
@@ -144,10 +144,10 @@ export function useSubAgentState(opts: {
     }
   }, [noteChildren, setByParent]);
 
-  const onParentSync = useCallback((parentConvId: string, snapshot: StreamSnapshot, serverNow?: number) => {
+  const onParentSync = useCallback((parentConvId: string, snapshot: StreamSnapshot, serverNow?: number, now = Date.now()) => {
     if (!snapshot.subagents?.length) return;
     setByParent((prev) => {
-      const next = applySubAgentSnapshot(prev, parentConvId, snapshot.subagents, Date.now(), serverNow);
+      const next = applySubAgentSnapshot(prev, parentConvId, snapshot.subagents, now, serverNow);
       noteChildren(next);
       return next;
     });
@@ -175,8 +175,10 @@ export function useSubAgentState(opts: {
     getSubAgents(parentConvId)
       .then(({ subagents, serverNow }) => {
         markListFailed(parentConvId, false);
+        // Read once, outside the updater: it is what `serverNow` is converted against.
+        const arrivedAt = Date.now();
         setByParent((prev) => {
-          const next = mergeListedSubAgents(prev, parentConvId, subagents, Date.now(), serverNow);
+          const next = mergeListedSubAgents(prev, parentConvId, subagents, arrivedAt, serverNow);
           noteChildren(next);
           return next;
         });
@@ -193,15 +195,15 @@ export function useSubAgentState(opts: {
 
   // ── A child's own stream ────────────────────────────────
 
-  const onChildSync = useCallback((event: Sync) => {
+  const onChildSync = useCallback((event: Sync, now = Date.now()) => {
     // Synchronously, like the session hook does for a thread: the next event
     // in this tick is compared against it.
     if (event.status === 'active') cursorsRef.current[event.stream_id] = event.seq;
-    updateTranscript(event.conversation_id, (t) => applyChildSync(t, event));
+    updateTranscript(event.conversation_id, (t) => applyChildSync(t, event, now));
   }, [cursorsRef, updateTranscript]);
 
-  const onChildEvent = useCallback((event: StreamEvent) => {
-    updateTranscript(event.conversation_id, (t) => applyChildEvent(t, event));
+  const onChildEvent = useCallback((event: StreamEvent, now = Date.now()) => {
+    updateTranscript(event.conversation_id, (t) => applyChildEvent(t, event, now));
   }, [updateTranscript]);
 
   const onChildEnd = useCallback((event: StreamEnd) => {

@@ -567,6 +567,43 @@ replies.
   randomness, since the key is per user and one user has several devices.
   `send-status.test.ts` closes a real socket straight after the send; `lost-send-answer.spec.ts`
   does it inside the page.
+- **A live counter times the newest message, not the run** (`lib/liveTimer.ts`). Every counter
+  in a thread (the typing indicator, "Thinking… Ns", the elapsed time under a reply, a mid-run
+  compaction card) used to count from `responseStartedAt`, the run's start. A run is a whole
+  turn and an agent turn is one message per tool iteration, so fifty iterations in, a reply
+  seconds old read "Thinking… 1955s" on the beta.
+  - **Where the start comes from:** `message.start.started_at` (server epoch ms), set on the
+    per-iteration assistant message and a generated summary, folded into the snapshot.
+  - **Converting it:** a live event carries no server clock, so the client takes arrival as the
+    start (`Message.startedAt`). A snapshot converts it with the sync's `server_now`, threaded
+    into `applySnapshotToMsgs`, so a reconnect mid-reply keeps counting rather than resetting.
+  - **Fallback:** the run's start before the turn has a reply of its own (the first queue wait),
+    for an older server, and as a floor, so a previous turn's reply cannot make it jump back.
+  - **A reply that is only tool calls is not "empty".** `isEmptyGenerating` ignored `tools`, so
+    a model that called `subagent` or `bash` without a word had its card hidden behind
+    "Processing prompt…" for as long as the tools ran, counting the run's age. The mock always
+    writes a preamble, which is why no spec ever saw it.
+  - **Whether the reply has a row and whether the typing indicator shows are two decisions.**
+    `isEmptyGenerating` decides the row; `typingIndicatorFor` the indicator. On Chat the
+    indicator is the only place "Queued · #N" and "Loading model…" appear, and a manual-mode
+    approval hands the slot back and re-queues with the tool-only reply still newest. So a
+    tool-only reply gets the indicator exactly while the run reports a queue place or a load,
+    and never while its tools run, where "Processing prompt…" would be false. One flag for both
+    hid the queue line; found in review. `queued-after-approval.spec.ts` answers a Chat approval
+    while a second socket holds the only slot; the mock's "without a word" makes the tool call
+    with no preamble, which is what reaches a tool-only reply at all.
+  - **A start already worked out is kept.** A snapshot of a message the thread holds keeps its
+    `startedAt` (`applySnapshotToMsgs` hands it to `snapshotMessageToMessage`), as `toView` keeps
+    `startedLocal`: recomputed per snapshot it moved by the difference in delivery latency, and a
+    slow resync after a fast one sent the counter backwards. Found in review.
+  - **The clock is read once per socket message, in the handler, never in a fold.** Every fold
+    that times something (`applyEventToMsgs`, `applySnapshotToMsgs`, the sub-agent card and
+    transcript folds) runs inside a state updater, which React may defer to a render or run
+    twice, and a backgrounded tab's clamped timers can put that render a second later. Each
+    hook's `onEvent` stamps `arrivedAt` first and passes it down. Same rule as
+    `useStoredState`'s. Found in review.
+  - `live-timers.spec.ts` reads `chat.typing.elapsed` three requests into a turn of eight-second
+    mock requests, live and after a fresh start.
 
 ### Reaching the server (the connection monitor)
 
@@ -2670,7 +2707,27 @@ replies.
     then need no subscription to the child. Subscribing to every running child would put several
     streams of text deltas on one socket for a view that shows none of them.
   - **Emitted on change, with no timer:** every structural event is kept for the stream TTL.
-    Elapsed time is the client's to count from `started_at`.
+    Elapsed time is the client's to count.
+  - **A card counts the queue wait, then the running time** (`subAgentCounterSince`).
+    `started_at` is when the child was created, which is when it joins the queue, so a child
+    that waited 100 s behind a sibling read "Queued · #1 · 100s" and then "Running 100s" the
+    moment it began. Its first `iteration` now reports `admitted_at` once (`mirrorProgress`),
+    and the counter restarts from there. A finished child's length is `ended_at - admitted_at`.
+    A child sent back to the queue after running (an approval, a check-in) keeps counting its
+    running time, since those waits are part of its run.
+  - **`admitted_at` is held in memory while the child runs and written with its end**
+    (`childClock`, then `markEnded`), so there is no write per admission. The same map is what
+    lets `listSubagents` report a waiting child as `queued`: it reported every unfinished child
+    as `running`, so a reload said "Running" for one that had not begun.
+  - **The queued flag clears on an answered approval's `tool.result`, not only at the next
+    `iteration`.** `yieldWhile` re-enters the queue before the call runs, so the result is
+    written holding a slot; the next `iteration` follows the message's whole tool batch, and
+    until then a reload's listing said "Queued" for a child two minutes into a `bash`, while the
+    stream said running. Found in review; `subagent-progress.test.ts` drives the mirror.
+  - `subagents.spec.ts`'s queued case delegates a slow child then one with a single slow request
+    (answered at once, its "Running" lasted too briefly to see). The listing fix is held by the
+    server test, not the spec: on a fresh start the run's snapshot follows the listing within a
+    second and corrects the card either way.
   - **These events do not clear a queue position**, in `foldSnapshot` or in either hook: they
     say nothing about where the parent run is.
   - **A finished parent's snapshot ends any child still marked running**

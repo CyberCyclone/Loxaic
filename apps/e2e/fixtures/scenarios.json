@@ -224,6 +224,30 @@
     "finalText": "[Mock] Both sub-agents have reported back.\n"
   },
   {
+    "match": "delegate a slow task, then a quick one",
+    "steps": [
+      {
+        "calls": [
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Slow survey",
+              "prompt": "take your time and survey in passes"
+            }
+          },
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Quick answer",
+              "prompt": "take your time and say the quick answer is done"
+            }
+          }
+        ]
+      }
+    ],
+    "finalText": "[Mock] Both sub-agents have reported back.\n"
+  },
+  {
     "match": "survey in passes",
     "steps": [
       {

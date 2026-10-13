@@ -8,6 +8,7 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
 import {
   formatDuration,
   subAgentContextPercent,
+  subAgentCounterSince,
   subAgentDurationMs,
   subAgentRunState,
   subAgentSpeed,
@@ -85,7 +86,7 @@ export function SubAgentStats({ view, stopping, testIDBase }: SubAgentStatsProps
         </HStack>
       )}
       {running ? (
-        <LiveElapsed testID={`${testIDBase}.elapsed`} since={view.startedLocal} />
+        <LiveElapsed testID={`${testIDBase}.elapsed`} since={subAgentCounterSince(view)} />
       ) : duration !== null ? (
         <Text testID={`${testIDBase}.elapsed`} size="2xs" className="shrink-0 text-muted-foreground">
           {formatDuration(duration)}

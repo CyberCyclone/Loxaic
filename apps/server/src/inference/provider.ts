@@ -365,6 +365,11 @@ const MOCK_SUMMARY = "[Mock] Summary of the conversation so far.\n";
  * compaction's instruction. */
 const MOCK_EMPTY_MATCH = /\bsay nothing\b/i;
 
+/** A prompt whose tool call the mock makes without a word first. Real models
+ * do this all the time; the mock's preamble meant no spec ever saw a reply
+ * that is only a tool call, which the thread renders differently. */
+const MOCK_WORDLESS_MATCH = /\bwithout a word\b/i;
+
 /** A prompt the mock answers by naming the thinking fields it was sent, so an
  * e2e can prove the level picked in the `+` menu reached the request — not
  * merely that the menu showed it. Keyed on the prompt, so no other reply
@@ -660,9 +665,11 @@ async function* mockStream(
     // live loop did not — so the two disagreed at that message and broke the
     // prompt prefix. A mock that emitted perfectly trimmed text could never
     // show that.
-    const preamble = `[Mock] I'll use the ${triggered.map((t) => t.name).join(", ")} tool.\n`;
+    const preamble = MOCK_WORDLESS_MATCH.test(prompt)
+      ? ""
+      : `[Mock] I'll use the ${triggered.map((t) => t.name).join(", ")} tool.\n`;
     fullText = preamble;
-    yield* emit(preamble);
+    if (preamble) yield* emit(preamble);
     ttftMs ??= Date.now() - startTime;
     for (const [i, t] of triggered.entries()) {
       toolCalls.push({

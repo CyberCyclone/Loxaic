@@ -10,6 +10,7 @@ import {
   mergeListedSubAgents,
   runningCount,
   subAgentContextPercent,
+  subAgentCounterSince,
   subAgentDescriptionOf,
   subAgentDurationMs,
   subAgentForCall,
@@ -286,5 +287,69 @@ describe('what a card says', () => {
     expect(subAgentDescriptionOf('subagent', { prompt: 'Read\nthe docs' })).toBe('Read the docs');
     expect(subAgentDescriptionOf('subagent', {})).toBe('Sub-agent');
     expect(subAgentDescriptionOf('bash', { description: 'x' })).toBeUndefined();
+  });
+});
+
+describe('queue wait, then running time', () => {
+  const queued = (id: string): SubAgentEvent => ({ kind: 'subagent.progress', conversation_id: id, state: 'queued', queue_position: 1 });
+  const admitted = (id: string, at: number): SubAgentEvent => ({ kind: 'subagent.progress', conversation_id: id, state: 'running', iteration: 1, admitted_at: at });
+
+  it('counts the wait from creation while a child is queued', () => {
+    const state = fold([started('b'), queued('b')], NOW);
+    const b = state[PARENT]?.[0];
+    expect(b).toMatchObject({ state: 'queued', queue_position: 1 });
+    expect(b && subAgentCounterSince(b)).toBe(NOW);
+  });
+
+  it('starts again from its admission, not from its creation 100 s earlier', () => {
+    let state = fold([started('b'), queued('b')], NOW);
+    state = applySubAgentEvent(state, PARENT, admitted('b', 600), NOW + 100_000);
+    const b = state[PARENT]?.[0];
+    expect(b).toMatchObject({ state: 'running', admitted_at: 600, startedLocal: NOW, runningLocal: NOW + 100_000 });
+    expect(b && subAgentCounterSince(b)).toBe(NOW + 100_000);
+  });
+
+  it('keeps counting its running time when it goes back in line after running', () => {
+    let state = fold([started('b')], NOW);
+    state = applySubAgentEvent(state, PARENT, admitted('b', 600), NOW + 1_000);
+    state = applySubAgentEvent(state, PARENT, queued('b'), NOW + 20_000);
+    expect(subAgentCounterSince((state[PARENT] ?? [])[0])).toBe(NOW + 1_000);
+  });
+
+  it('converts the admission with the server\'s clock after a reconnect', () => {
+    // Admitted 30 s before the server sent the snapshot.
+    const state = applySubAgentSnapshot({}, PARENT, [live('b', { started_at: 4_000, admitted_at: 70_000 })], NOW, 100_000);
+    expect(state[PARENT]?.[0]).toMatchObject({ startedLocal: NOW - 96_000, runningLocal: NOW - 30_000 });
+  });
+
+  it('converts it from the listing too, and a queued child stays queued', () => {
+    const state = mergeListedSubAgents(
+      {},
+      PARENT,
+      [live('a', { started_at: 4_000, admitted_at: 70_000 }), live('b', { started_at: 90_000, state: 'queued' })],
+      NOW,
+      100_000,
+    );
+    const [a, b] = state[PARENT] ?? [];
+    expect(subAgentCounterSince(a)).toBe(NOW - 30_000);
+    expect(b).toMatchObject({ state: 'queued' });
+    expect(subAgentCounterSince(b)).toBe(NOW - 10_000);
+  });
+
+  it('takes the admission from the listing for a child whose end it missed', () => {
+    let state = fold([started('a')]);
+    state = mergeListedSubAgents(state, PARENT, [live('a', { status: 'complete', state: undefined, admitted_at: 700, ended_at: 2_500 })], NOW);
+    expect(subAgentDurationMs((state[PARENT] ?? [])[0])).toBe(1_800);
+  });
+
+  it('counts from creation for an older server, which reports no admission', () => {
+    const state = fold([started('b'), { kind: 'subagent.progress', conversation_id: 'b', state: 'running', iteration: 1 }], NOW);
+    expect(subAgentCounterSince((state[PARENT] ?? [])[0])).toBe(NOW);
+  });
+
+  it('reports running time as a finished child\'s length, not its wait', () => {
+    expect(subAgentDurationMs({ started_at: 1_000, admitted_at: 101_000, ended_at: 113_300 })).toBe(12_300);
+    // Never admitted (stopped while queued): from creation.
+    expect(subAgentDurationMs({ started_at: 1_000, ended_at: 5_000 })).toBe(4_000);
   });
 });
