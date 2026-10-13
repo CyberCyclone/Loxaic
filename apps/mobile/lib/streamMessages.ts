@@ -229,6 +229,7 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
           // reload. Undefined on rows written before the block gained the
           // field, which the card treats as "not told" rather than success.
           tc.ok = b.ok;
+          if (b.permission) tc.permission = b.permission;
         }
       }
     }
@@ -258,6 +259,7 @@ export function snapshotMessageToMessage(sm: StreamSnapshotMessage): Message {
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
+            ...(tc.permission ? { permission: tc.permission } : {}),
             ...withPlan(tc.tool, tc.args, sm.message_id),
           }))
         : undefined,
@@ -411,7 +413,13 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind): Messa
           ...m,
           tools: m.tools.map((t) =>
             t.callId === event.call_id
-              ? { ...t, result: event.output, diff: diffLinesFor(event.diff), ok: event.ok }
+              ? {
+                  ...t,
+                  result: event.output,
+                  diff: diffLinesFor(event.diff),
+                  ok: event.ok,
+                  ...(event.permission ? { permission: event.permission } : {}),
+                }
               : t,
           ),
         };

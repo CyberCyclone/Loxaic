@@ -1,6 +1,6 @@
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
-import { isToolName, resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
+import { isAllowlistableTool, resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
 import { and, db, eq, sql } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
 import { mcpServerActive, normalizeMcpOverrides, type McpConversationKind, type McpOverrides } from "@loxaic/types";
@@ -83,8 +83,10 @@ export async function buildToolset(
   },
 ): Promise<Toolset> {
   const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
+  // An allowlisted `bash` (from before command rules) is ignored: whether a
+  // command asks is decided per command (permissions/bash/policy.ts).
   const resolved = resolveBuiltinTools(opts.mode, { handover: opts.handover, subagents: opts.subagents }).map((t) =>
-    allowlist.has(t.name) ? { ...t, requiresApproval: false } : t,
+    allowlist.has(t.name) && isAllowlistableTool(t.name) ? { ...t, requiresApproval: false } : t,
   );
   const mcpEntries = new Map<string, McpToolEntry>();
 
@@ -177,7 +179,8 @@ async function grantTrust(userId: string, tool: ResolvedTool, entries: Map<strin
     }
     // The planning hand-over tools are builtins too, and are not ones a
     // person can put on the list (`PATCH /v1/prefs` refuses them as well).
-    if (!isToolName(tool.name)) return;
+    // Nor is `bash`: its grants are command rules, recorded by the engine.
+    if (!isAllowlistableTool(tool.name)) return;
     const name = JSON.stringify(tool.name);
     await db
       .insert(userPrefs)

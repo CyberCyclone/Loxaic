@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, HardDrive, Hourglass, Plug, Server, UserRound } from 'lucide-react-native';
+import { Boxes, ChevronRight, GitBranch, HardDrive, Hourglass, Plug, Server, ShieldCheck, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -348,6 +348,28 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </Text>
                   <Text size="2xs" className="text-muted-foreground">
                     How long the agent waits for you, and what it does if you are away
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable
+              testID="settings.nav.permissions"
+              onPress={() => {
+                onClose();
+                router.push('/permissions');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={ShieldCheck} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    Command permissions
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Which commands the agent may run without asking
                   </Text>
                 </VStack>
               </HStack>

@@ -30,16 +30,16 @@ export function useInferenceSettings(token: string | null) {
   }, [refresh]);
 
   const update = useCallback(
-    async (maxConcurrentRuns: number | null) => {
+    async (patch: Parameters<typeof updateInferenceSettings>[0]) => {
       const previous = settings;
       // No optimistic merge for the resolved number: it is computed by the
       // server (it may probe the backend), so guessing it here would flash a
       // value that is about to be corrected.
       try {
-        setSettings(await updateInferenceSettings({ maxConcurrentRuns }));
+        setSettings(await updateInferenceSettings(patch));
       } catch (err) {
         setSettings(previous);
-        showToast(err instanceof Error ? err.message : 'Failed to update run concurrency', 4000);
+        showToast(err instanceof Error ? err.message : 'Failed to update the inference settings', 4000);
       }
     },
     [settings, showToast],

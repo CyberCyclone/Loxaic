@@ -223,6 +223,19 @@ a deployment can pin it with `INFERENCE_MAX_CONCURRENT_RUNS`. Setting it higher
 than the server can actually hold makes *every* conversation slower and reports
 no error, so raise it only to match what the model is configured for.
 
+### Auto mode's permission check
+
+In auto mode, a shell command that is not read-only and that none of the user's
+command rules covers runs without asking only in a sealed sandbox (a container
+with networking off). Anywhere else — a GitHub workspace, a networked sandbox,
+host mode, a folder on the user's own machine — the model is asked first whether
+it may run, and anything short of a clear yes asks the user. By default the check
+uses the run's own model and extends the prompt it just read, so it costs a few
+hundred tokens. An admin can choose another model and the time a check may take
+in **Settings → Agent Sandbox → Auto mode permission check**;
+`PERMISSION_CHECK_TIMEOUT_MS` pins the time. Another model on a single-GPU
+llama.cpp host can unload the model the run is using.
+
 ### Hosting for others requires a container engine
 
 The desktop app runs in one of three modes, chosen at first launch and stored

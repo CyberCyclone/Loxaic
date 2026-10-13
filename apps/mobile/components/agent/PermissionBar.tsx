@@ -10,7 +10,7 @@ import { useServerReachable } from '@/lib/connection';
 import type { WaitDeadline } from '@/lib/pendingWaits';
 import { permissionBarView } from '@/lib/permissionBar';
 import { useSession } from '@/lib/session';
-import type { PermissionMode } from '@loxaic/api-client';
+import type { PermissionCheckNote, PermissionMode } from '@loxaic/api-client';
 
 function summarizeArgs(tool: string, args: Record<string, unknown>): string {
   if (typeof args.path === 'string') return args.path;
@@ -29,6 +29,10 @@ interface PermissionBarProps {
    * records, both from the approval itself — see `permissionBarView`. */
   mode?: PermissionMode;
   granterUserId?: string;
+  /** For `bash`: the command rules "Allow always" records, and why auto
+   * mode's permission check asked — both from the approval itself. */
+  rules?: string[];
+  check?: PermissionCheckNote;
   onAllow: () => void;
   /** Approves this call and stops the tool asking (#266). Offered only when
    * given, and only to the person it would be recorded for. */
@@ -51,6 +55,8 @@ export function PermissionBar({
   deadline,
   mode,
   granterUserId,
+  rules,
+  check,
   onAllow,
   onAllowAlways,
   onDeny,
@@ -58,7 +64,7 @@ export function PermissionBar({
   testIDBase = 'agent.permission',
 }: PermissionBarProps) {
   const { user } = useSession();
-  const view = permissionBarView({ tool, mode, granterUserId }, user?.id);
+  const view = permissionBarView({ tool, mode, granterUserId, rules, check }, user?.id);
   const { mcp } = view;
   const offerAlways = onAllowAlways !== undefined && view.canAllowAlways;
   const alwaysFirst = offerAlways && view.primary === 'always';
@@ -97,6 +103,11 @@ export function PermissionBar({
           <Text size="sm" className="font-mono text-muted-foreground">{summarizeArgs(tool, args)}</Text>
         </Text>
       )}
+      {view.checkNote ? (
+        <Text testID={`${testIDBase}.checkNote`} size="2xs" className="text-muted-foreground">
+          {view.checkNote}
+        </Text>
+      ) : null}
       {offerAlways && view.note ? (
         <Text testID={`${testIDBase}.alwaysNote`} size="2xs" className="text-muted-foreground">
           {view.note}
@@ -123,7 +134,7 @@ export function PermissionBar({
             onPress={onAllowAlways}
             isDisabled={disconnected}
           >
-            <ButtonText>Allow always</ButtonText>
+            <ButtonText testID={`${testIDBase}.rule`}>{view.alwaysLabel ?? 'Allow always'}</ButtonText>
           </Button>
         ) : null}
         {alwaysFirst ? null : (

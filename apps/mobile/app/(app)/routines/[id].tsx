@@ -163,7 +163,6 @@ export default function RoutineChatScreen() {
     handleDeny,
     handleSteps,
     handleAllowAlways,
-    rememberAlwaysAllow,
     handleDelete,
     history,
     noRoom,
@@ -514,8 +513,12 @@ export default function RoutineChatScreen() {
           args={pendingApproval.args}
           deadline={pendingApproval.deadline}
           reason={approvalReason}
+          mode={pendingApproval.mode}
+          granterUserId={pendingApproval.granterUserId}
+          rules={pendingApproval.rules}
+          check={pendingApproval.check}
           onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
-          onAllowAlways={() => { void handleAllowAlways(pendingApproval.callId, pendingApproval.tool); }}
+          onAllowAlways={() => { handleAllowAlways(pendingApproval.callId); }}
           onReject={() => { handleDeny(pendingApproval.callId); }}
         />
       )}
@@ -529,12 +532,12 @@ export default function RoutineChatScreen() {
           deadline={childApproval.approval.deadline}
           source={childApproval.description}
           reason={`Sub-agent task: ${childApproval.description}`}
+          mode={childApproval.approval.mode}
+          granterUserId={childApproval.approval.granterUserId}
+          rules={childApproval.approval.rules}
+          check={childApproval.approval.check}
           onAllowOnce={() => { subAgents.answer(childApproval.conversation_id, true); }}
-          onAllowAlways={() => {
-            const tool = childApproval.approval?.tool;
-            if (!tool) return;
-            void rememberAlwaysAllow(tool).then(() => { subAgents.answer(childApproval.conversation_id, true); });
-          }}
+          onAllowAlways={() => { subAgents.answer(childApproval.conversation_id, true, true); }}
           onReject={() => { subAgents.answer(childApproval.conversation_id, false); }}
         />
       )}

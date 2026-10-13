@@ -347,3 +347,38 @@ describe('an instructions change on a user message', () => {
     expect(m.instructionsUpdate).toEqual({ path: 'AGENTS.md', summary: 'AGENTS.md was removed' });
   });
 });
+
+describe('why a tool call ran without asking survives every path', () => {
+  const permission = { by: 'rule' as const, rule: 'npm test' };
+
+  it('from the live result', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'bash', summary: 'npm test', result: '', callId: 'c1' }] }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'bash', output: 'ok', ok: true, permission });
+    expect(m.tools?.[0].permission).toEqual(permission);
+  });
+
+  it('from history', () => {
+    const msgs = reconstructMessages([
+      row({ id: 'a1', content: [{ kind: 'tool_call', call_id: 'c1', tool: 'bash', args: { command: 'npm test' } }] }),
+      row({ id: 't1', authorType: 'tool', lamport: 2, content: [{ kind: 'tool_result', call_id: 'c1', output: 'ok', ok: true, permission }] }),
+    ]);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].permission).toEqual(permission);
+  });
+
+  it('from a snapshot', () => {
+    const [m] = applySnapshotToMsgs([], {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [{ call_id: 'c1', tool: 'bash', args: { command: 'npm test' }, output: 'ok', ok: true, permission }],
+          status: 'complete',
+        },
+      ],
+    } as unknown as StreamSnapshot);
+    expect(m.tools?.[0].permission).toEqual(permission);
+  });
+});

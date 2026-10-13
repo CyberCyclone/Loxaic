@@ -284,11 +284,17 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export interface InferenceSettings {
   /** null = follow the backend's own slot count. */
   maxConcurrentRuns: number | null;
-  envOverrides: { maxConcurrentRuns: boolean };
+  /** `permissionCheckTimeoutMs` is absent from a server that predates its pin. */
+  envOverrides: { maxConcurrentRuns: boolean; permissionCheckTimeoutMs?: boolean };
   /** What `maxConcurrentRuns` actually resolves to right now — the number null
    * stands for. Shown alongside the setting because the two routinely differ
    * and the resolved one is what an admin needs to see. */
   effectiveMaxConcurrentRuns: number;
+  /** The model auto mode's permission check runs on; null = the run's own.
+   * Absent from a server that predates the check. */
+  permissionCheckModel?: string | null;
+  /** How long a permission check may take before the command asks instead. */
+  permissionCheckTimeoutMs?: number;
 }
 
 export async function getInferenceSettings(): Promise<InferenceSettings> {
@@ -296,7 +302,7 @@ export async function getInferenceSettings(): Promise<InferenceSettings> {
 }
 
 export async function updateInferenceSettings(
-  patch: { maxConcurrentRuns: number | null },
+  patch: { maxConcurrentRuns?: number | null; permissionCheckModel?: string | null; permissionCheckTimeoutMs?: number },
 ): Promise<InferenceSettings> {
   return adminFetch("/v1/admin/settings/inference", {
     method: "PATCH",
@@ -2265,6 +2271,11 @@ export interface UserPrefs {
   /** The model `fixed` uses. Null when none was ever picked; kept when the
    * mode moves away from `fixed`. */
   subagentModel?: string | null;
+  /** **Read-only** — an old "allow always" for every bash command was retired
+   * for command rules, and the permissions screen should say so once. */
+  bashGrantRetired?: boolean;
+  /** Write-only: `true` dismisses the retired-grant notice. */
+  bashGrantNoticeSeen?: true;
 }
 
 export async function getPrefs(): Promise<UserPrefs> {
@@ -2279,6 +2290,42 @@ export async function updatePrefs(patch: Partial<UserPrefs>): Promise<UserPrefs>
       body: JSON.stringify(patch),
     })
   ).json() as Promise<UserPrefs>;
+}
+
+// ── Command rules (what bash may run without asking) ─────────
+/**
+ * One of a person's command rules: `allow` runs a matching command without
+ * asking, `ask` always asks, `deny` refuses it. A pattern is words with an
+ * optional trailing `*` for "any arguments" (`gh pr view *`).
+ */
+export interface CommandRule {
+  id: string;
+  pattern: string;
+  action: "allow" | "ask" | "deny";
+  /** `prompt`: "Allow always" on an approval; `settings`: added by hand. */
+  source: "prompt" | "settings";
+  createdAt: string;
+}
+
+/** A 404 means a server that predates command rules: no such list. */
+export async function getCommandRules(): Promise<CommandRule[]> {
+  const res = await authedFetch("/v1/prefs/command-rules");
+  return ((await res.json()) as { rules: CommandRule[] }).rules;
+}
+
+/** Throws `ApiError` with the server's reason for a pattern it refuses. */
+export async function addCommandRule(pattern: string, action: CommandRule["action"]): Promise<CommandRule[]> {
+  const res = await authedFetch("/v1/prefs/command-rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pattern, action }),
+  });
+  return ((await res.json()) as { rules: CommandRule[] }).rules;
+}
+
+export async function deleteCommandRule(id: string): Promise<CommandRule[]> {
+  const res = await authedFetch(`/v1/prefs/command-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return ((await res.json()) as { rules: CommandRule[] }).rules;
 }
 
 // ── Stats ─────────────────────────────────────────────────
@@ -2413,6 +2460,8 @@ export type {
   SubAgentState,
   SubAgentModelMode,
   FileRestoreReport,
+  PermissionCheckNote,
+  ToolPermission,
 } from "@loxaic/types";
 import type { ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
 export {

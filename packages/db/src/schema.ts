@@ -354,6 +354,14 @@ export const usageRecords = pgTable("usage_records", {
   /** What this turn's prompt was made of — see ContextBreakdown in
    * @loxaic/types. Nullable: rows predating this column have none. */
   contextBreakdown: jsonb("context_breakdown"),
+  /**
+   * Null for a turn's own request. `permission_check` for the request the tool
+   * loop makes to decide whether an auto-mode command may run
+   * (apps/server/src/permissions/check.ts): real tokens, so they count, but
+   * never "the last turn" — the context figures and compaction read that.
+   * Its `message_id` is null for the same reason.
+   */
+  purpose: text("purpose"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => [
   // Who else is using a model right now, asked whenever a context stage might
@@ -768,8 +776,36 @@ export const userPrefs = pgTable("user_prefs", {
   /** The model reference `fixed` uses. Kept when the mode moves away from
    * `fixed`, so going back offers it again; null until one is picked. */
   subagentModel: text("subagent_model"),
+  /**
+   * Set when an old "allow always" for the whole `bash` tool was retired in
+   * favour of per-command rules (migration 0043), so the permissions screen
+   * can say so once; cleared when the person dismisses the notice.
+   */
+  bashGrantRetiredAt: timestamp("bash_grant_retired_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+// ── Command rules ──
+/**
+ * What a person allows, asks about, or denies in `bash`, by command prefix
+ * (`gh pr view *`) — apps/server/src/permissions/bash/rules.ts. One row per
+ * rule, so a grant from a prompt and a removal on the permissions screen are
+ * each a single statement, never a read-modify-write of a whole list another
+ * device may be changing.
+ */
+export const commandRules = pgTable(
+  "command_rules",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    pattern: text("pattern").notNull(),
+    action: text("action", { enum: ["allow", "ask", "deny"] }).notNull(),
+    /** `prompt`: "Allow always" on an approval; `settings`: added by hand. */
+    source: text("source", { enum: ["prompt", "settings"] }).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("command_rules_user_pattern_action_idx").on(t.userId, t.pattern, t.action)],
+);
 
 // ── GitHub connections ──
 /**

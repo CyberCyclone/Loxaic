@@ -13,8 +13,15 @@ export type ToolName =
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
-/** Tools that mutate state. Planning mode never offers these to the model. */
-export const WRITE_TOOLS: ToolName[] = ["fs_write", "fs_edit", "bash"];
+/** Tools that mutate state. Planning mode never offers these to the model.
+ * `bash` is not one of them: planning offers it for read-only commands only,
+ * which the server enforces per command (apps/server/src/permissions/bash). */
+export const WRITE_TOOLS: ToolName[] = ["fs_write", "fs_edit"];
+
+/** The `bash` description planning mode offers instead of the usual one. */
+export const PLANNING_BASH_DESCRIPTION =
+  "Run a read-only shell command in the workspace: listing, reading and searching files, and git and gh reads " +
+  "(git log, git diff, gh pr view, gh issue view). Anything that changes something is refused in planning mode.";
 
 export interface ToolDef {
   name: ToolName;
@@ -326,6 +333,13 @@ export function isToolName(value: unknown): value is ToolName {
   return typeof value === "string" && TOOLS.some((t) => t.name === value);
 }
 
+/** Builtins "Allow always" may put on the allowlist. Not `bash`: a grant for
+ * the whole tool allowed every command forever, so its grants are command
+ * rules instead (apps/server/src/permissions/bash/rules.ts). */
+export function isAllowlistableTool(value: unknown): value is ToolName {
+  return isToolName(value) && value !== "bash";
+}
+
 /** Where a resolved tool comes from. MCP tools carry enough provenance to
  * dispatch back to their server and to attribute them in the UI. */
 export type ToolSource =
@@ -375,7 +389,7 @@ export function resolveBuiltinTools(
   ];
   return defs.map((t) => ({
     name: t.name,
-    description: t.description,
+    description: mode === "planning" && t.name === "bash" ? PLANNING_BASH_DESCRIPTION : t.description,
     parameters: t.parameters,
     requiresApproval: t.requiresApproval,
     isWrite: WRITE_TOOLS.includes(t.name),

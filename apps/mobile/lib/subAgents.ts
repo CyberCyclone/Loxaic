@@ -79,6 +79,8 @@ function approvalOf(live: SubAgentLive, now: number, serverNow?: number): ChildA
     ...(deadline ? { deadline } : {}),
     ...(src.mode ? { mode: src.mode } : {}),
     ...(src.granter_user_id ? { granterUserId: src.granter_user_id } : {}),
+    ...(src.rules && src.rules.length > 0 ? { rules: src.rules } : {}),
+    ...(src.check ? { check: src.check } : {}),
   };
 }
 

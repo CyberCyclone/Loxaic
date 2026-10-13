@@ -113,6 +113,8 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
               deadline={approval.deadline}
               mode={approval.mode}
               granterUserId={approval.granterUserId}
+              rules={approval.rules}
+              check={approval.check}
               onAllow={onAllow}
               onAllowAlways={onAllowAlways}
               onDeny={onDeny}
