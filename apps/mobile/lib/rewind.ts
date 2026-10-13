@@ -158,8 +158,8 @@ export class PendingSeeds {
 }
 
 /**
- * Whether a rewind clears the run state shown flat for the thread on screen
- * (the agent's step counter and live todos): only when it removed runs and
+ * Whether a rewind clears a conversation's live run state (the agent's step
+ * counter and live todos, lib/agentRunState.ts): only when it removed runs and
  * the run being followed, if any, is one of them. A retry announces the
  * rewind and starts its new run back to back, and the announcement is
  * re-authorized before it is relayed while the new run's events are not, so

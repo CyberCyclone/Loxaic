@@ -20,7 +20,6 @@ import {
   type AttachmentRef,
   type StreamSnapshot,
   type PermissionMode,
-  type Todo,
   type StepsDecision,
   type PromptStats,
 } from '@loxaic/api-client';
@@ -33,7 +32,20 @@ import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyP
 import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
-import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
+import { approvalStreamId } from '@/lib/pendingWaits';
+import {
+  runLevelAfterEnd,
+  runLevelAfterEvent,
+  runLevelAfterRewind,
+  runLevelFromSnapshot,
+  runLevelOf,
+  withPromotedRunLevel,
+  withRunLevel,
+  withoutRunLevel,
+  type AgentRunLevel,
+  type RunLevels,
+  type RunState,
+} from '@/lib/agentRunState';
 import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
 import { foldStageCard, isStageActive, shouldInstallStageSnapshot, type StageCard } from '@/lib/stageCard';
@@ -46,31 +58,7 @@ import { useSubAgentState } from './useSubAgentState';
 
 export type { WorkspaceChoice } from '@/lib/types';
 
-/**
- * `queued` means the run exists and is waiting for an inference slot —
- * distinct from `running`, because nothing is happening yet and the user is
- * owed the reason.
- *
- * `stopping` is client-side only: the server has no such status, and the run
- * really is still running until its stream ends. It exists because pressing
- * Stop used to change nothing on screen — the run kept saying "Running" until
- * it actually wound up, which for a run mid-tool-call is not instant — so the
- * button read as broken (#113). This is the acknowledgement, not a claim that
- * anything has stopped yet.
- *
- * `awaiting_checkin` is the run asking whether to keep going — the same kind
- * of pause as `awaiting_approval` (slot handed back, waiting on a person),
- * which is why it sits beside it rather than being folded into `running`.
- */
-export type RunState =
-  | 'queued'
-  | 'running'
-  | 'awaiting_approval'
-  | 'awaiting_checkin'
-  | 'stopping'
-  | 'done'
-  | 'error';
-
+export type { RunState } from '@/lib/agentRunState';
 export type { PendingApproval, PendingCheckin } from '@/lib/pendingWaits';
 
 /** Per-conversation in-flight stream state — see useChatSession for why this
@@ -127,12 +115,24 @@ export function useAgentSession(
   // `activeId` from pending to a server id just the same.
   const [promotion, setPromotion] = useState<Promotion | null>(null);
   const [mode, setModeState] = useState<PermissionMode>('manual');
-  const [runState, setRunState] = useState<RunState>('done');
-  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
-  // Read by Allow and Deny, which have to name the run that asked.
-  const pendingApprovalRef = useRef<PendingApproval | null>(null);
-  pendingApprovalRef.current = pendingApproval;
-  const [pendingCheckin, setPendingCheckin] = useState<PendingCheckin | null>(null);
+  // Each conversation's run — what it is doing and what it is asking — kept
+  // for every conversation, not only the one on screen (lib/agentRunState.ts).
+  // The ref is read by Allow and Deny, which have to name the run that asked.
+  const [runLevels, setRunLevelsState] = useState<RunLevels>({});
+  const runLevelsRef = useRef<RunLevels>({});
+  const setRunLevels = useCallback((updater: (prev: RunLevels) => RunLevels) => {
+    setRunLevelsState((prev) => {
+      const next = updater(prev);
+      runLevelsRef.current = next;
+      return next;
+    });
+  }, []);
+  const updateRunLevel = useCallback(
+    (convId: string, update: (prev: AgentRunLevel) => AgentRunLevel) => {
+      setRunLevels((prev) => withRunLevel(prev, convId, update));
+    },
+    [setRunLevels],
+  );
   // The latest step of a context-stage switch, per run — see useChatSession.
   const [stageCardByConv, setStageCardByConv] = useState<Partial<Record<string, StageCard>>>({});
   // Stage runs whose card the person has dismissed (sent again, or the run was
@@ -151,8 +151,6 @@ export function useAgentSession(
       return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
     });
   }, []);
-  const [iteration, setIteration] = useState<{ n: number; max: number } | null>(null);
-  const [queuePosition, setQueuePosition] = useState<number | null>(null);
   /**
    * Which conversation the user has asked to stop, keyed by id rather than a
    * bare boolean so switching away and back keeps showing it — the run being
@@ -172,7 +170,6 @@ export function useAgentSession(
     pendingWorkspaceRef.current = ws;
     setPendingWorkspaceState(ws);
   }, []);
-  const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
   const { showToast } = useToastHelper();
 
@@ -330,32 +327,12 @@ export function useAgentSession(
     [updateRunMsgs],
   );
 
-  // Reset thread-local UI state on a manual thread switch. Iteration/todos/
-  // pendingApproval are still flat hook state, not scoped per conversation
-  // (GitHub issue #1) — switching threads clears the display; a resync (on
-  // reconnect, not on a plain manual switch) is what would restore them for
-  // whichever conversation actually has an active run.
-  const selectRun = useCallback(
-    (id: string) => {
-      setActiveId(id);
-      setRunState('done');
-      setPendingApproval(null);
-      setPendingCheckin(null);
-      setIteration(null);
-      setQueuePosition(null);
-      setLiveTodos([]);
-    },
-    [setActiveId],
-  );
+  // A thread switch changes only which conversation is on screen: each one's
+  // run state is its own, and switching back shows it as it now is.
+  const selectRun = useCallback((id: string) => { setActiveId(id); }, [setActiveId]);
 
   const handleNewRun = useCallback(() => {
     setActiveId(null);
-    setRunState('done');
-    setPendingApproval(null);
-    setPendingCheckin(null);
-    setIteration(null);
-    setQueuePosition(null);
-    setLiveTodos([]);
     // Each new run starts from scratch: a repo chosen for the last one must
     // not silently carry over to a conversation the user thinks is fresh.
     setPendingWorkspace({ kind: 'scratch' });
@@ -446,36 +423,14 @@ export function useAgentSession(
       status: 'active' | 'complete' | 'error' | 'cancelled',
       serverNow?: number,
     ) => {
-      if (convId !== activeIdRef.current) return;
       // A reconnect's catch-up re-syncs the conversation's last few runs,
       // not just the current one — an older, already-finished run's sync
-      // must not overwrite run-level state (iteration/todos/approval/
-      // runState) for a genuinely still-active *different* run. Only apply
-      // if this sync is for the stream we're actually tracking, or nothing
-      // is tracked yet.
+      // must not overwrite the state of a genuinely still-active *different*
+      // run. Only applied if this sync is for the stream being tracked, or
+      // nothing is tracked yet.
       const tracked = streamingByConvRef.current[convId];
       if (tracked && tracked.streamId !== streamId) return;
-      setIteration(snapshot.iteration ?? null);
-      setLiveTodos(snapshot.todos ?? []);
-      // `serverNow` is passed through as it arrived, never defaulted to `now`:
-      // absent, `localDeadline` re-bases the wait as if it had just started,
-      // which only errs long. Substituting `now` would instead read the
-      // server's `expires_at` straight off this device's clock, skew and all.
-      const now = Date.now();
-      setPendingApproval(snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow, streamId) : null);
-      setPendingCheckin(snapshot.pending_checkin ? toPendingCheckin(snapshot.pending_checkin, now, serverNow) : null);
-      setQueuePosition(snapshot.queued?.position ?? null);
-      if (status === 'active') {
-        // Order matters: a snapshot can carry both a queue position and a
-        // pending approval (a run that yielded its slot to ask, then had to
-        // queue to get it back). The approval is what the user can act on, so
-        // it wins — and a check-in is the same kind of thing, so it outranks
-        // the queue for the same reason.
-        if (snapshot.pending_approval) setRunState('awaiting_approval');
-        else if (snapshot.pending_checkin) setRunState('awaiting_checkin');
-        else if (snapshot.queued) setRunState('queued');
-        else setRunState('running');
-      } else setRunState(status === 'error' ? 'error' : 'done');
+      setRunLevels((prev) => ({ ...prev, [convId]: runLevelFromSnapshot(snapshot, status, streamId, Date.now(), serverNow) }));
     };
 
     const onEvent = (event: ServerMessage) => {
@@ -491,6 +446,7 @@ export function useAgentSession(
           pendingLocalIdRef.current = null;
           pendingModelRef.current = null;
         }
+        if (localId) setRunLevels((prev) => withPromotedRunLevel(prev, localId, realId));
         setRuns((prev) => {
           if (localId && localId !== realId && prev.some((r) => r.id === localId)) {
             // The optimistic run already carries the chosen workspace; only
@@ -611,7 +567,6 @@ export function useAgentSession(
             : { ...prev, [convId]: { ...current, promptStats, loadingModel } };
         });
 
-        const isActive = convId === activeIdRef.current;
         const inner = event.event;
         if (inner.kind === 'context.stage') {
           const { kind: _kind, ...status } = inner;
@@ -626,59 +581,15 @@ export function useAgentSession(
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
         }
-        // Anything that is not itself a queue update means the run is past
-        // the queue. Cleared here, up front, rather than on `iteration`
-        // alone: a compaction run never emits one, and an agent run re-queued
-        // after an approval emits its tool results before its next iteration
-        // — both left "Queued · #N" on screen with the response streaming
-        // underneath it.
         // What the failed *message* said, if anything, so stream.end can tell
         // whether it would be repeating a bubble the user can already read.
         if (inner.kind === 'message.end' && inner.status === 'error' && inner.error) {
           lastMessageErrorRef.current.set(event.stream_id, inner.error);
         }
-        if (isActive && inner.kind !== 'run.queued') {
-          setQueuePosition(null);
-          setRunState((s) => (s === 'queued' ? 'running' : s));
-        }
-        if (inner.kind === 'run.queued') {
-          if (isActive) {
-            setRunState('queued');
-            setQueuePosition(inner.position);
-          }
-        } else if (inner.kind === 'iteration') {
-          if (isActive) {
-            setRunState('running');
-            setIteration({ n: inner.n, max: inner.max });
-          }
-        } else if (inner.kind === 'approval.request') {
-          if (isActive) {
-            setRunState('awaiting_approval');
-            setPendingApproval(toPendingApproval(inner, Date.now(), undefined, event.stream_id));
-          }
-        } else if (inner.kind === 'tool.result') {
-          if (isActive) {
-            setPendingApproval((prev) => (prev?.callId === inner.call_id ? null : prev));
-            setRunState('running');
-          }
-        } else if (inner.kind === 'steps.checkin') {
-          if (isActive) {
-            setRunState('awaiting_checkin');
-            setPendingCheckin(toPendingCheckin(inner, Date.now()));
-            // The header shows the step count, and this is the moment it
-            // matters most — so keep it in step with the question.
-            setIteration({ n: inner.n, max: inner.max });
-          }
-        } else if (inner.kind === 'steps.decision') {
-          // Someone answered — possibly on another device, possibly the
-          // timeout. Either way the question is gone.
-          if (isActive) {
-            setPendingCheckin(null);
-            setRunState('running');
-          }
-        } else if (inner.kind === 'todos') {
-          if (isActive) setLiveTodos(inner.todos);
-        }
+        // For every conversation, not only the one on screen: an approval
+        // asked while its thread is in the background is still waiting when
+        // the person comes back to it.
+        updateRunLevel(convId, (prev) => runLevelAfterEvent(prev, inner, event.stream_id, Date.now()));
       } else if (event.type === 'stream.end') {
         // A sub-agent's stream ending is not this thread's run ending: no
         // error toast here, no model refetch, and the run state stays put.
@@ -696,13 +607,7 @@ export function useAgentSession(
           return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== event.conversation_id));
         });
         clearStream(event.conversation_id);
-        if (event.conversation_id === activeIdRef.current) {
-          setRunState(event.status === 'error' ? 'error' : 'done');
-          setIteration(null);
-          setQueuePosition(null);
-          setPendingApproval(null);
-          setPendingCheckin(null);
-        }
+        updateRunLevel(event.conversation_id, (prev) => runLevelAfterEnd(prev, event.status));
         // The run-level reason, which no message carries. Most failures also
         // mark their message, and the bubble says it better — so this speaks
         // only when nothing else will (#157).
@@ -718,9 +623,9 @@ export function useAgentSession(
       } else if (event.type === 'agent.mode_changed') {
         setModeState(event.mode);
       } else if (event.type === 'conversation.rewound') {
-        // See useChatSession. Run-level state is flat here, for the run on
-        // screen: cleared when it belongs to a removed run, never when a
-        // retry's new run is already the one being followed.
+        // See useChatSession. Run-level state is cleared when it belongs to a
+        // removed run, never when a retry's new run is already the one being
+        // followed.
         const convId = event.conversation_id;
         const removedStreams = new Set(event.removed_stream_ids);
         for (const streamId of removedStreams) {
@@ -730,13 +635,8 @@ export function useAgentSession(
         }
         const tracked = streamingByConvRef.current[convId];
         if (tracked && removedStreams.has(tracked.streamId)) clearStream(convId);
-        if (convId === activeIdRef.current) {
-          setPendingApproval((prev) => (prev?.streamId && removedStreams.has(prev.streamId) ? null : prev));
-          if (rewindClearsLiveRun(tracked?.streamId, event.removed_stream_ids)) {
-            setIteration(null);
-            setLiveTodos([]);
-          }
-        }
+        const clearsLiveRun = rewindClearsLiveRun(tracked?.streamId, event.removed_stream_ids);
+        updateRunLevel(convId, (prev) => runLevelAfterRewind(prev, removedStreams, clearsLiveRun));
         setStageCardByConv((prev) => {
           const card = prev[convId];
           if (!card || !removedStreams.has(card.streamId)) return prev;
@@ -821,7 +721,7 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor]);
 
   /** The selector moves only if the server heard it: a chip that switched
    * on screen while the frame went nowhere left the run in the old mode with
@@ -1063,8 +963,16 @@ export function useAgentSession(
   // gives the answer to whichever of this person's runs holds that call id.
   const approvalStream = useCallback((callId: string): string | undefined => {
     const id = activeIdRef.current;
-    return approvalStreamId(pendingApprovalRef.current, callId, id ? streamingByConvRef.current[id]?.streamId : undefined);
+    return approvalStreamId(runLevelOf(runLevelsRef.current, id).pendingApproval, callId, id ? streamingByConvRef.current[id]?.streamId : undefined);
   }, []);
+
+  // The answered prompt closes on the thread it was on — only that one, and
+  // only if it is still the prompt that was answered.
+  const clearApproval = useCallback((callId: string) => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    updateRunLevel(id, (prev) => (prev.pendingApproval?.callId === callId ? { ...prev, pendingApproval: null } : prev));
+  }, [updateRunLevel]);
 
   // Closes only once the answer is on the wire — see useChatSession (#231).
   const handleApprove = useCallback((callId: string) => {
@@ -1072,16 +980,16 @@ export function useAgentSession(
       showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
-    setPendingApproval(null);
-  }, [approvalStream, showToast]);
+    clearApproval(callId);
+  }, [approvalStream, clearApproval, showToast]);
 
   const handleDeny = useCallback((callId: string) => {
     if (isOffline() || !wsRef.current || !denyTool(wsRef.current, callId, approvalStream(callId))) {
       showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
-    setPendingApproval(null);
-  }, [approvalStream, showToast]);
+    clearApproval(callId);
+  }, [approvalStream, clearApproval, showToast]);
 
   /** "Allow always" (#266): the same answer as Allow, with the request that
    * the tool stop asking. The server records it, for this run and later ones,
@@ -1093,8 +1001,8 @@ export function useAgentSession(
       showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
-    setPendingApproval(null);
-  }, [approvalStream, showToast]);
+    clearApproval(callId);
+  }, [approvalStream, clearApproval, showToast]);
 
   /** Answers a step check-in. Stop is not one of these — the banner's Stop
    * goes to `handleStop`, which works on any run whether parked or not. */
@@ -1112,9 +1020,8 @@ export function useAgentSession(
       showToast(NOT_SENT_RECONNECTING, 4000);
       return;
     }
-    setPendingCheckin(null);
-    setRunState('running');
-  }, [showToast]);
+    updateRunLevel(id, (prev) => ({ ...prev, pendingCheckin: null, runState: 'running' }));
+  }, [showToast, updateRunLevel]);
 
   const handleFork = useCallback(
     (id: string) => {
@@ -1151,10 +1058,11 @@ export function useAgentSession(
         }
       }
       setRuns((prev) => prev.filter((r) => r.id !== id));
+      setRunLevels((prev) => withoutRunLevel(prev, id));
       if (activeIdRef.current === id) handleNewRun();
       showToast('Run deleted');
     },
-    [handleNewRun, showToast],
+    [handleNewRun, setRunLevels, showToast],
   );
 
   const handleRename = useCallback((id: string, name: string) => {
@@ -1176,6 +1084,7 @@ export function useAgentSession(
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
+  const { runState, pendingApproval, pendingCheckin, iteration, queuePosition, todos } = runLevelOf(runLevels, activeId);
   // Overlaid on whatever the server last said, rather than replacing it: the
   // run genuinely is still running until its stream ends, and the events that
   // keep arriving until then would otherwise overwrite this the moment the
@@ -1215,7 +1124,7 @@ export function useAgentSession(
     queuePosition,
     pendingWorkspace,
     setPendingWorkspace,
-    todos: liveTodos,
+    todos,
     changedFiles,
     handleSend,
     handleRetry,
