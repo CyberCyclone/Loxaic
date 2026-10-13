@@ -739,5 +739,412 @@
       }
     ],
     "finalText": "[Mock] Tried to delete the branch."
+  },
+  {
+    "match": "pin the first todo list",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Alpha",
+              "status": "in_progress"
+            },
+            {
+              "id": "2",
+              "text": "Beta",
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] First list pinned.\n"
+  },
+  {
+    "match": "run sixty quick lookups",
+    "steps": [
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-0"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-1"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-2"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-3"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-4"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-5"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-6"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-7"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-8"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-9"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-10"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-11"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-12"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-13"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-14"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-15"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-16"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-17"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-18"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-19"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-20"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-21"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-22"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-23"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-24"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-25"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-26"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-27"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-28"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-29"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-30"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-31"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-32"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-33"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-34"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-35"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-36"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-37"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-38"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-39"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-40"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-41"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-42"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-43"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-44"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-45"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-46"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-47"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-48"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-49"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-50"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-51"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-52"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-53"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-54"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-55"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-56"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-57"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-58"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-59"
+        }
+      }
+    ],
+    "finalText": "[Mock] Sixty lookups done.\n"
+  },
+  {
+    "match": "pin the second todo list",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Gamma",
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] Second list pinned.\n"
   }
 ]

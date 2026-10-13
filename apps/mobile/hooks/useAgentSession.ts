@@ -173,6 +173,9 @@ export function useAgentSession(
     setPendingWorkspaceState(ws);
   }, []);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
+  // Rewinds seen per conversation: a rewind can remove the loaded todo list,
+  // and the screen asks the server again for what is left (useServerTodos).
+  const [rewindsByConv, setRewindsByConv] = useState<Partial<Record<string, number>>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -744,6 +747,7 @@ export function useAgentSession(
         });
         forgetSpawnedBy(convId, event.removed_ids);
         updateRunMsgs(convId, (msgs) => applyRewound(msgs, event));
+        setRewindsByConv((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
         if (forgetRemovedCursor(convId, event.removed_ids)) {
           loadedConvIdsRef.current.delete(convId);
           if (activeIdRef.current === convId) setActiveId(convId);
@@ -1216,8 +1220,13 @@ export function useAgentSession(
     pendingWorkspace,
     setPendingWorkspace,
     // The newest list in the loaded messages (lib/todos.ts); the screen falls
-    // back to the server's when none is loaded.
+    // back to the server's when none is loaded and there is history to load.
     todos,
+    /** Whether the open thread's whole history is loaded. False when it was
+     * never fetched (offline, optimistic): nothing says there is no more. */
+    historyComplete: activePaging ? activePaging.before === null : false,
+    /** Rewinds seen in the open thread; see `rewindsByConv`. */
+    rewinds: activeId ? (rewindsByConv[activeId] ?? 0) : 0,
     changedFiles,
     handleSend,
     handleRetry,

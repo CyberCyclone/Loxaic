@@ -15,18 +15,32 @@ import { parseTodoList, type Todo } from "@loxaic/types";
  * Read the way the engine replays (lamport, then creation, then position in the
  * message), and only from rows still in the conversation: a rewind marks what
  * it removed.
+ *
+ * Bounded: rows are tested for a `todo_write` call by jsonb containment, which
+ * expands nothing, and only the newest `CANDIDATE_ROWS` that have one are
+ * expanded into their blocks. Expanding every row's content before ordering,
+ * as the first version did, unpacked every tool result of a long thread on
+ * every ask. The client asks only when the history it has loaded holds no list.
  */
+const CANDIDATE_ROWS = 20;
+
 export async function latestTodos(conversationId: string): Promise<Todo[] | null> {
   const rows = await db.execute<{ args: unknown; ok: boolean | null }>(sql`
-    WITH calls AS (
-      SELECT block->'args' AS args, block->>'call_id' AS call_id, m.id AS message_id,
-             m.lamport, m.created_at, pos
-      FROM messages m, LATERAL jsonb_array_elements(m.content) WITH ORDINALITY AS t(block, pos)
+    WITH candidates AS (
+      SELECT m.id, m.content, m.lamport, m.created_at
+      FROM messages m
       WHERE m.conversation_id = ${conversationId}
         AND m.author_type = 'assistant'
         AND m.deleted_at IS NULL
         AND jsonb_typeof(m.content) = 'array'
-        AND block->>'kind' = 'tool_call'
+        AND m.content @> '[{"kind": "tool_call", "tool": "todo_write"}]'::jsonb
+      ORDER BY m.lamport DESC, m.created_at DESC
+      LIMIT ${CANDIDATE_ROWS}
+    ), calls AS (
+      SELECT block->'args' AS args, block->>'call_id' AS call_id, c.id AS message_id,
+             c.lamport, c.created_at, pos
+      FROM candidates c, LATERAL jsonb_array_elements(c.content) WITH ORDINALITY AS t(block, pos)
+      WHERE block->>'kind' = 'tool_call'
         AND block->>'tool' = 'todo_write'
     )
     SELECT c.args,
@@ -41,7 +55,6 @@ export async function latestTodos(conversationId: string): Promise<Todo[] | null
        LIMIT 1) AS ok
     FROM calls c
     ORDER BY c.lamport DESC, c.created_at DESC, c.pos DESC
-    LIMIT 20
   `);
   for (const row of rows) {
     // A refused call is not the agent's list; `ok` absent (a row from before

@@ -1223,10 +1223,6 @@ export interface Conversation {
   instructions?: import("@loxaic/types").ProjectInstructionsSummary | null;
   /** Only on the single-conversation read: whether a run is going right now. */
   active_run?: boolean;
-  /** Only on the single-conversation read of an agent conversation: the
-   * agent's newest todo list, or null when it never wrote one. Absent from an
-   * older server and on every other read. */
-  latest_todos?: import("@loxaic/types").Todo[] | null;
   createdAt: string;
   updatedAt: string;
   /** What the caller may do here. Present on list and single-conversation
@@ -1498,6 +1494,13 @@ export async function createConversation(input: {
 export async function getConversation(id: string): Promise<Conversation> {
   const res = await authedFetch(`/v1/conversations/${id}`);
   return res.json() as Promise<Conversation>;
+}
+
+/** The agent's newest todo list, or null when it never wrote one. For a list
+ * the history loaded does not hold; see apps/mobile/hooks/useServerTodos.ts. */
+export async function getConversationTodos(id: string): Promise<import("@loxaic/types").Todo[] | null> {
+  const res = await authedFetch(`/v1/conversations/${id}/todos`);
+  return ((await res.json()) as { todos: import("@loxaic/types").Todo[] | null }).todos;
 }
 
 export async function getConversations(): Promise<Conversation[]> {

@@ -2329,7 +2329,9 @@ replies.
   one at a time), and the working modes' and a sub-agent's prompts say to keep the list current.
   Planning mode's does not: its turns end in a plan, not in work. Changing either is a change to
   the prompt prefix, so every existing agent conversation re-reads its prompt once after an
-  upgrade (~9 min for a 157k-token conversation on Pheonix) — accepted.
+  upgrade (~9 min for a 157k-token conversation on Pheonix) — accepted. **Chat too**: the
+  description lives in `TOOLS`, and chat is offered every builtin, so every existing chat thread
+  pays the same one re-read. Found in review.
 - **The reminder rides on a tool result, never a message of its own** (`todo-staleness.ts`,
   `TODO_STALE_REMINDER` in `packages/types`). Once a list with unfinished items has gone ten tool
   iterations without a `todo_write`, the next built-in tool result gets the fixed text appended
@@ -2337,7 +2339,10 @@ replies.
   emitted, so the live event, the stored row and every replay are one text.
   `prompt-prefix.test.ts` holds that the next turn extends the reminded request byte for byte.
   The count is seeded from the replayed history (a list written in an earlier turn counts) and
-  restarts after a reminder, so it repeats at most every ten iterations. Never on the
+  restarts after a reminder, so it repeats at most every ten iterations. **A compaction inside
+  the run seeds it again** from the rebuilt prompt: the list is then only in the summary, and a
+  reminder would ask the model to write a list it cannot see, over the one the Inspector shows.
+  Found in review; `todo-reminder.test.ts` compacts mid-run and fails without the re-seed. Never on the
   `todo_write` that answers it; MCP and sub-agent results skip it and the next built-in carries
   it.
 - **The client strips the reminder from tool cards** (`stripTodoReminder` at all three
@@ -2349,8 +2354,22 @@ replies.
   `liveTodos`, set from the stream and cleared on every new turn, thread switch and rewind, so it
   went blank on the next turn that wrote no list and after a reload once the run had ended. It is
   now the newest accepted `todo_write` among the loaded messages (`lib/todos.ts`), falling back to
-  `latest_todos` on `GET /v1/conversations/:id` (`conversations/latest-todos.ts`, one jsonb query,
-  refused calls and rewound rows skipped) for a call on a history page not yet loaded.
+  `GET /v1/conversations/:id/todos` (`conversations/latest-todos.ts`, refused calls and rewound
+  rows skipped) for a call on a history page not yet loaded.
+  - **Asked only when the loaded history cannot answer** (`needsServerTodos`: no list loaded, and
+    not all of the history loaded). It first rode on `GET /v1/conversations/:id`, which a thread
+    open asks for several times and every run's end again, and its query expanded every
+    assistant row's content before ordering. Now a containment test picks the rows that have a
+    `todo_write` and only the newest twenty are expanded. Found in review.
+  - **"Couldn't load" is its own state** (`TodoView`): offline, refused or an older server shows
+    it with Try again, never "No todos yet", and the list is asked for again when the server is
+    back. A failed re-ask keeps an answer already in hand.
+  - **A rewind asks again** (`rewinds` in `useAgentSession`, part of the answer's identity): a
+    rewind can remove the loaded list, and the answer from before it can be the removed one.
+    A run's end does not, since a list a run writes arrives in the messages.
+- **The `todos` stream event and the snapshot's `todos` are read by no current client**, and are
+  still sent for app builds that predate this, which show the live list from them. One small
+  record per `todo_write`; remove them once those builds are gone.
 - **The Inspector button's badge is `done/total` of that list** (`todoProgress`), neutral, and
   absent without a list. It was `changedFiles.length` in red, which read as tasks: "8" beside a
   list with one item started.

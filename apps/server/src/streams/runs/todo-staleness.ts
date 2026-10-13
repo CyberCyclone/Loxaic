@@ -17,8 +17,9 @@ export const TODO_REMINDER_EVERY = 10;
  * Pure, and seeded from the history the run replays, so a list written in an
  * earlier turn still counts: a turn is often where the list was made and the
  * next one where the work happens. The seed only reaches back as far as the
- * replay does (to the newest compaction); a list older than that is in the
- * summary, not in front of the model, and is not reminded about.
+ * replay does (to the newest compaction), and the engine seeds it again after
+ * a compaction inside the run; a list older than that is in the summary, not
+ * in front of the model, and is not reminded about.
  */
 export class TodoStaleness {
   private open: boolean;

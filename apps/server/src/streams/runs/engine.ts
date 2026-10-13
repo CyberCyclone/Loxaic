@@ -778,8 +778,9 @@ export async function runToolLoop(ctx: {
     let budgetEnd = maxIterations;
     const detector = new LoopDetector(loopDetectorOptions(waits.loopSensitivity));
     // Whether the todo list has gone stale — see todo-staleness.ts. Seeded from
-    // the replay, so a list written in an earlier turn counts.
-    const todoStaleness = TodoStaleness.fromHistory(history.messages);
+    // the replay, so a list written in an earlier turn counts, and seeded again
+    // when the run compacts: a list now only in the summary is not reminded about.
+    let todoStaleness = TodoStaleness.fromHistory(history.messages);
     // Iteration key -> the calls that produced it, so a loop check-in can name
     // what is repeating. Bounded: only the last few keys can ever be part of a
     // hit, and a 500-step run must not accumulate every argument string it saw.
@@ -958,6 +959,7 @@ export async function runToolLoop(ctx: {
             omittedAttachments = [];
             hadImages = false;
             compactedThisRun = true;
+            todoStaleness = TodoStaleness.fromHistory(chatMessages);
           } else if (compacted.stopped) {
             await producer.end("cancelled");
             return;
@@ -2172,6 +2174,10 @@ async function runOneToolCall(
     const reminder = ctx.takeTodoReminder?.();
     if (reminder) result.output += reminder;
   }
+  // No current client reads this (the list is read from the tool call, see
+  // apps/mobile/lib/todos.ts); it is kept for app builds that predate that,
+  // which show the live list from it and from the snapshot's `todos`. One
+  // small record per todo_write. Remove it once those builds are gone.
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",

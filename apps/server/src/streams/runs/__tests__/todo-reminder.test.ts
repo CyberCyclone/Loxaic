@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
 import { db, eq } from "@loxaic/db";
 import { conversations, messages, usageRecords, user, userPrefs } from "@loxaic/db/schema";
-import { TODO_STALE_REMINDER, type ContentBlock } from "@loxaic/types";
+import { COMPACTION_CONTINUE_NUDGE, TODO_STALE_REMINDER, type ContentBlock } from "@loxaic/types";
 import { initStreamBroker } from "../../index.ts";
 import { getRunByConversation } from "../../registry.ts";
 import { startAgentRun } from "../agentRun.ts";
@@ -126,6 +126,29 @@ describe("the stale todo reminder", () => {
     const convId = await newConversation();
     await run(convId, "keep the list going");
     expect((await fetchResults(convId)).some(Boolean)).toBe(false);
+  });
+
+  it("says nothing about a list a compaction in the run has taken out of the prompt", async () => {
+    // "overflow the context" makes the mock report every request 90% full
+    // while it is the newest user message, so the run compacts once the floor
+    // allows (before its fifth request) and goes on from the continue nudge,
+    // which the second scenario answers with ten more fetches. The list is then
+    // only in the summary: reminding about it would ask the model to write one
+    // it can no longer see, over the one the Inspector shows.
+    const nudge = COMPACTION_CONTINUE_NUDGE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    useScenarios([
+      { match: "overflow the context", steps: [{ tool: "todo_write", args: OPEN }, ...fetches(0, 12)] },
+      { match: nudge, steps: fetches(100, 10) },
+    ]);
+    const convId = await newConversation();
+    await run(convId, "overflow the context, then work");
+    const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
+    expect(rows.some((r) => r.authorType === "summary" && r.status === "complete")).toBe(true);
+    const marked = await fetchResults(convId);
+    // Three before the compaction, ten after: long enough that the count
+    // carried over from before it would have reminded.
+    expect(marked.length).toBeGreaterThanOrEqual(TODO_REMINDER_EVERY + 3);
+    expect(marked.some(Boolean)).toBe(false);
   });
 
   it("counts a list written in an earlier turn", async () => {

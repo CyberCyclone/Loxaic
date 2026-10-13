@@ -110,18 +110,25 @@ export function conversationRoutes(app: FastifyInstance) {
     // Whether a run is going right now, from the registry — exact, and the
     // signal a test (or a client) polls for "has the agent finished" rather
     // than guessing from message statuses. Process-local, like the registry.
-    //
-    // `latest_todos` is the agent's newest list, which the client cannot
-    // always rebuild: the call that wrote it may be on a history page not yet
-    // loaded. Read only for an agent conversation, the one surface that shows
-    // a list; absent elsewhere and from an older server.
-    const todos = row.kind === "agent" ? await latestTodos(row.id) : null;
-    return {
-      ...publicConversation(row),
-      role: grant.role,
-      active_run: getRunByConversation(row.id) !== undefined,
-      ...(row.kind === "agent" ? { latest_todos: todos } : {}),
-    };
+    return { ...publicConversation(row), role: grant.role, active_run: getRunByConversation(row.id) !== undefined };
+  });
+
+  /**
+   * The agent's newest todo list, which the client cannot always rebuild: the
+   * call that wrote it may be on a history page not yet loaded. A route of its
+   * own rather than a field on the read above, which every open of a thread
+   * and every run's end asks for, several times over: the client asks for
+   * this only when the history it has loaded holds no list. Null for a
+   * conversation of another kind, which shows no list.
+   */
+  app.get<{ Params: { id: string } }>("/v1/conversations/:id/todos", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const grant = await resolveAccess(userId, request.params.id);
+    if (!grant) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return { todos: grant.kind === "agent" ? await latestTodos(request.params.id) : null };
   });
 
   /**

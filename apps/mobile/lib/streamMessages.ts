@@ -474,8 +474,10 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
         };
       });
     default:
-      // model.loading/iteration/approval.request/todos — hook-level state,
-      // not per-message; handled by the caller.
+      // model.loading/iteration/approval.request — hook-level state, not
+      // per-message; handled by the caller. `todos` is read by nothing: the
+      // list comes from the todo_write call itself (lib/todos.ts), and the
+      // server sends the event only for app builds that predate that.
       return msgs;
   }
 }

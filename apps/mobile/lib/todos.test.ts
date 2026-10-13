@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApiMessage, StreamSnapshot } from '@loxaic/api-client';
 import { TODO_STALE_REMINDER } from '@loxaic/types';
 import { applyEventToMsgs, applySnapshotToMsgs, reconstructMessages } from './streamMessages';
-import { displayedTodos, todoProgress, todosInMessages } from './todos';
+import { afterTodosFailure, displayedTodos, needsServerTodos, serverTodosFor, todoProgress, todosInMessages } from './todos';
 import type { Message, ToolCall } from './types';
 
 const OPEN = [
@@ -30,22 +30,56 @@ describe('the list the Inspector shows', () => {
 
   it('falls back to the server\'s when none is loaded, and is empty when neither has one', () => {
     expect(todosInMessages([msg([call({ tool: 'bash' })])])).toBeNull();
-    expect(displayedTodos(null, OPEN)).toEqual(OPEN);
-    expect(displayedTodos(null, null)).toEqual([]);
-    expect(displayedTodos(null, undefined)).toEqual([]);
+    expect(displayedTodos(null, { status: 'known', todos: OPEN })).toEqual({ status: 'list', todos: OPEN });
+    expect(displayedTodos(null, { status: 'known', todos: null })).toEqual({ status: 'list', todos: [] });
+    // Nothing needed asking: the whole history is loaded and holds none.
+    expect(displayedTodos(null, { status: 'unasked' })).toEqual({ status: 'list', todos: [] });
     // A loaded list is never older than the server's: history loads newest first.
-    expect(displayedTodos([OPEN[0]], OPEN)).toEqual([OPEN[0]]);
+    expect(displayedTodos([OPEN[0]], { status: 'known', todos: OPEN })).toEqual({ status: 'list', todos: [OPEN[0]] });
+  });
+
+  it('keeps "could not ask" apart from "none"', () => {
+    expect(displayedTodos(null, { status: 'failed' })).toEqual({ status: 'failed' });
+    expect(displayedTodos(null, { status: 'loading' })).toEqual({ status: 'loading' });
+    // A loaded list needs no server.
+    expect(displayedTodos(OPEN, { status: 'failed' })).toEqual({ status: 'list', todos: OPEN });
+  });
+});
+
+describe('asking the server for the list', () => {
+  it('only when none is loaded and the history loaded is not all of it', () => {
+    expect(needsServerTodos(null, false)).toBe(true);
+    expect(needsServerTodos(null, true)).toBe(false);
+    expect(needsServerTodos(OPEN, false)).toBe(false);
+  });
+
+  it('shows an answer only for the thread, and the rewind count, it was asked for', () => {
+    const entry = { identity: 'c1|0', value: { status: 'known' as const, todos: OPEN } };
+    expect(serverTodosFor(entry, 'c1|0')).toEqual(entry.value);
+    // After a rewind the old answer may be a list the rewind removed.
+    expect(serverTodosFor(entry, 'c1|1')).toEqual({ status: 'loading' });
+    expect(serverTodosFor(entry, 'c2|0')).toEqual({ status: 'loading' });
+    expect(serverTodosFor(entry, null)).toEqual({ status: 'unasked' });
+  });
+
+  it('keeps an answer in hand when a later read fails, and says so when there is none', () => {
+    const known = { identity: 'c1|0', value: { status: 'known' as const, todos: OPEN } };
+    expect(afterTodosFailure(known, 'c1|0')).toBe(known);
+    expect(afterTodosFailure(known, 'c1|1')).toEqual({ identity: 'c1|1', value: { status: 'failed' } });
+    expect(afterTodosFailure(null, 'c1|0')).toEqual({ identity: 'c1|0', value: { status: 'failed' } });
   });
 });
 
 describe('the Inspector button\'s badge', () => {
   it('counts the items done, not the files changed', () => {
-    expect(todoProgress(OPEN)?.label).toBe('1/3');
-    expect(todoProgress(OPEN.map((t) => ({ ...t, status: 'completed' as const })))?.label).toBe('3/3');
+    expect(todoProgress({ status: 'list', todos: OPEN })?.label).toBe('1/3');
+    expect(todoProgress({ status: 'list', todos: OPEN.map((t) => ({ ...t, status: 'completed' as const })) })?.label).toBe('3/3');
   });
 
   it('is not shown without a list', () => {
-    expect(todoProgress([])).toBeNull();
+    expect(todoProgress({ status: 'list', todos: [] })).toBeNull();
+    expect(todoProgress({ status: 'failed' })).toBeNull();
+    expect(todoProgress({ status: 'loading' })).toBeNull();
   });
 });
 

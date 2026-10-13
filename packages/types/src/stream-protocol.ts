@@ -670,6 +670,8 @@ export type StreamEventKind =
       diff?: FileDiff[];
       permission?: ToolPermission;
     }
+  /** Kept for app builds that read the live list from it; a current client
+   * reads the list from the `todo_write` call (apps/mobile/lib/todos.ts). */
   | { kind: "todos"; todos: Todo[] }
   /** The project's instructions changed before this run, and the user message
    * `message_id` now carries a notice about it (an `instructions_update`
@@ -823,6 +825,7 @@ export interface StreamSnapshot {
   context_stage?: ContextStageStatus;
   // agent-only:
   iteration?: { n: number; max: number };
+  /** For older app builds only, like the `todos` event. */
   todos?: Todo[];
   pending_approval?: { call_id: string; tool: string; args: Record<string, unknown> } & ApprovalContext &
     WaitDeadlineFields;

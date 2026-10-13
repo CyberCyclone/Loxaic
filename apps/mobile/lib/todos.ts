@@ -23,13 +23,69 @@ export function todosInMessages(msgs: readonly Message[]): Todo[] | null {
 }
 
 /**
- * What the Inspector shows: the newest list loaded, or the server's newest
- * (`latest_todos`) when none is — the call that wrote it can be on a history
- * page nobody has scrolled back to. History arrives newest first, so a loaded
- * list is never older than one on an unloaded page.
+ * What the server said about the list (`GET /v1/conversations/:id/todos`).
+ * `unasked` when nothing needed asking (useServerTodos asks only when no list
+ * is loaded and there is history the client does not have, or for an id the
+ * server has never seen); `failed` when it could not be asked — the server
+ * unreachable, the read refused, an older server.
  */
-export function displayedTodos(fromMessages: Todo[] | null, fromServer: Todo[] | null | undefined): Todo[] {
-  return fromMessages ?? fromServer ?? [];
+export type ServerTodos =
+  | { status: 'unasked' }
+  | { status: 'loading' }
+  | { status: 'failed' }
+  | { status: 'known'; todos: Todo[] | null };
+
+/** What the Inspector shows: a list (empty for none), or why there is none to show. */
+export type TodoView = { status: 'list'; todos: Todo[] } | { status: 'loading' } | { status: 'failed' };
+
+/**
+ * Whether the server has to be asked for the list: none is loaded, and the
+ * history loaded is not all of it — the call that wrote one can be on a page
+ * nobody has scrolled back to. With the whole history loaded, no list loaded
+ * is the answer, and asking would only cost a query.
+ */
+export function needsServerTodos(fromMessages: Todo[] | null, historyComplete: boolean): boolean {
+  return fromMessages === null && !historyComplete;
+}
+
+/**
+ * The newest list loaded, else the server's. History arrives newest first, so
+ * a loaded list is never older than one on an unloaded page. "Could not ask"
+ * stays its own state, never "no list": shown as none, it told someone offline
+ * that the agent had no list when it had one.
+ */
+export function displayedTodos(fromMessages: Todo[] | null, fromServer: ServerTodos): TodoView {
+  if (fromMessages) return { status: 'list', todos: fromMessages };
+  switch (fromServer.status) {
+    case 'known':
+      return { status: 'list', todos: fromServer.todos ?? [] };
+    case 'unasked':
+      return { status: 'list', todos: [] };
+    case 'loading':
+      return { status: 'loading' };
+    case 'failed':
+      return { status: 'failed' };
+  }
+}
+
+/** A server answer, kept with the thread it answers (useServerTodos). */
+export interface ServerTodosEntry {
+  /** The conversation and how many rewinds it had seen when asked. */
+  identity: string;
+  value: ServerTodos;
+}
+
+/** What to show for `identity` from the answer in hand: another thread's
+ * answer, or one from before a rewind, is never this one's. */
+export function serverTodosFor(entry: ServerTodosEntry | null, identity: string | null): ServerTodos {
+  if (!identity) return { status: 'unasked' };
+  return entry?.identity === identity ? entry.value : { status: 'loading' };
+}
+
+/** A read that failed. One that already has an answer for the same thread
+ * keeps it: the list does not stop existing because the server went away. */
+export function afterTodosFailure(entry: ServerTodosEntry | null, identity: string): ServerTodosEntry {
+  return entry?.identity === identity && entry.value.status === 'known' ? entry : { identity, value: { status: 'failed' } };
 }
 
 /**
@@ -37,8 +93,9 @@ export function displayedTodos(fromMessages: Todo[] | null, fromServer: Todo[] |
  * the count of changed files, in red, which read as tasks — "8" for a list
  * with one item started. Null when there is no list, so no badge is shown.
  */
-export function todoProgress(todos: readonly Todo[]): { done: number; total: number; label: string } | null {
-  if (todos.length === 0) return null;
+export function todoProgress(view: TodoView): { done: number; total: number; label: string } | null {
+  if (view.status !== 'list' || view.todos.length === 0) return null;
+  const { todos } = view;
   const done = todos.filter((t) => t.status === 'completed').length;
   return { done, total: todos.length, label: `${String(done)}/${String(todos.length)}` };
 }

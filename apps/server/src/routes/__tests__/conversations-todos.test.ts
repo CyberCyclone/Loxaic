@@ -6,7 +6,7 @@ import { conversations, messages, user } from "@loxaic/db/schema";
 import type { ContentBlock } from "@loxaic/types";
 
 /**
- * `GET /v1/conversations/:id` carries the agent's newest todo list.
+ * `GET /v1/conversations/:id/todos` answers the agent's newest todo list.
  *
  * The client's list used to live only in the run's stream, so it went blank on
  * the next turn and after a reload; and history arrives a page at a time, so
@@ -22,7 +22,7 @@ vi.mock("../../auth/middleware", () => ({
 
 const { conversationRoutes } = await import("../conversations.ts");
 
-describe("latest_todos", () => {
+describe("GET /v1/conversations/:id/todos", () => {
   const owner = `test-latest-todos-${uuid()}`;
   const app = Fastify();
   const convIds: string[] = [];
@@ -81,7 +81,7 @@ describe("latest_todos", () => {
   }
 
   const get = async (convId: string) =>
-    (await app.inject({ method: "GET", url: `/v1/conversations/${convId}` })).json<Record<string, unknown>>();
+    (await app.inject({ method: "GET", url: `/v1/conversations/${convId}/todos` })).json<Record<string, unknown>>();
 
   it("is the newest list the tool accepted", async () => {
     const convId = await conversation("agent");
@@ -89,7 +89,7 @@ describe("latest_todos", () => {
     await write(convId, [{ id: "1", text: "Schema", status: "completed" }, { id: "2", text: "Routes", status: "in_progress" }], true);
     // Newest, but refused: not the agent's list.
     await write(convId, "not a list", false);
-    expect((await get(convId)).latest_todos).toEqual([
+    expect((await get(convId)).todos).toEqual([
       { id: "1", text: "Schema", status: "completed" },
       { id: "2", text: "Routes", status: "in_progress" },
     ]);
@@ -98,12 +98,42 @@ describe("latest_todos", () => {
   it("reads a call from before results carried `ok` as accepted", async () => {
     const convId = await conversation("agent");
     await write(convId, [{ text: "Unnumbered", status: "pending" }], undefined);
-    expect((await get(convId)).latest_todos).toEqual([{ id: "1", text: "Unnumbered", status: "pending" }]);
+    expect((await get(convId)).todos).toEqual([{ id: "1", text: "Unnumbered", status: "pending" }]);
   });
 
-  it("is null for an agent conversation with no list, and absent from a chat", async () => {
-    expect((await get(await conversation("agent"))).latest_todos).toBeNull();
-    expect("latest_todos" in (await get(await conversation("chat")))).toBe(false);
+  it("is null for an agent conversation with no list, and for a chat", async () => {
+    expect((await get(await conversation("agent"))).todos).toBeNull();
+    expect((await get(await conversation("chat"))).todos).toBeNull();
+  });
+
+  it("finds a list behind newer tool calls of other kinds", async () => {
+    // The scan is bounded to rows that contain a todo_write call, so any
+    // amount of other work after the list does not push it out of reach.
+    const convId = await conversation("agent");
+    await write(convId, [{ id: "1", text: "Behind", status: "in_progress" }], true);
+    for (let i = 0; i < 30; i++) {
+      await db.insert(messages).values({
+        id: uuid(),
+        conversationId: convId,
+        authorType: "assistant",
+        lamport: lamport++,
+        content: [{ kind: "tool_call", call_id: `other-${String(i)}`, tool: "bash", args: { command: "ls" } }] as ContentBlock[],
+        status: "complete",
+      });
+    }
+    expect((await get(convId)).todos).toEqual([{ id: "1", text: "Behind", status: "in_progress" }]);
+  });
+
+  it("is not on the conversation's own read", async () => {
+    const convId = await conversation("agent");
+    await write(convId, [{ id: "1", text: "Schema", status: "pending" }], true);
+    const conv = (await app.inject({ method: "GET", url: `/v1/conversations/${convId}` })).json<Record<string, unknown>>();
+    expect("latest_todos" in conv).toBe(false);
+  });
+
+  it("is a 404 for a conversation the caller cannot see", async () => {
+    const res = await app.inject({ method: "GET", url: `/v1/conversations/${uuid()}/todos` });
+    expect(res.statusCode).toBe(404);
   });
 
   it("leaves out a list a rewind removed", async () => {
@@ -113,6 +143,6 @@ describe("latest_todos", () => {
     const rows = await db.query.messages.findMany({ where: eq(messages.conversationId, convId) });
     const newest = rows.filter((r) => r.authorType === "assistant").sort((a, b) => b.lamport - a.lamport)[0];
     await db.update(messages).set({ deletedAt: new Date() }).where(eq(messages.id, newest.id));
-    expect((await get(convId)).latest_todos).toEqual([{ id: "1", text: "Kept", status: "pending" }]);
+    expect((await get(convId)).todos).toEqual([{ id: "1", text: "Kept", status: "pending" }]);
   });
 });

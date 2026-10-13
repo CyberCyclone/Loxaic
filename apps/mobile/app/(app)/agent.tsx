@@ -36,7 +36,7 @@ import { useServerConfig } from '@/hooks/useServerConfig';
 import { useWorkspaceStatus } from '@/hooks/useWorkspaceStatus';
 import { useProjectInstructions } from '@/hooks/useProjectInstructions';
 import { useServerTodos } from '@/hooks/useServerTodos';
-import { displayedTodos, todoProgress } from '@/lib/todos';
+import { displayedTodos, needsServerTodos, todoProgress } from '@/lib/todos';
 import { useGitPanel } from '@/hooks/useGitPanel';
 import { canEdit, isOwner } from '@/lib/types';
 import { ConversationMenu } from '@/components/chat/ConversationMenu';
@@ -99,6 +99,8 @@ export default function AgentScreen() {
     pendingWorkspace,
     setPendingWorkspace,
     todos: sessionTodos,
+    historyComplete,
+    rewinds,
     changedFiles,
     handleSend,
     handleStop,
@@ -187,8 +189,12 @@ export default function AgentScreen() {
   const { sandbox } = useWorkspaceStatus(activeId, runState);
   // Looked for on the conversation's first run, so asked again as runs end.
   const instructions = useProjectInstructions(activeRun ? activeId : null, runState);
-  // The list the Inspector shows: the newest loaded, else the server's.
-  const serverTodos = useServerTodos(activeRun ? activeId : null, runState);
+  // The list the Inspector shows: the newest loaded, else the server's, asked
+  // for only when the history loaded cannot answer.
+  const { todos: serverTodos, retry: retryTodos } = useServerTodos(activeRun ? activeId : null, {
+    needed: needsServerTodos(sessionTodos, historyComplete),
+    rewinds,
+  });
   const todos = useMemo(() => displayedTodos(sessionTodos, serverTodos), [sessionTodos, serverTodos]);
   const progress = todoProgress(todos);
   // The banner is about *this* workspace's network, which is fixed at its
@@ -612,6 +618,7 @@ export default function AgentScreen() {
                 onClose={() => { setInspectorOpen(false); }}
                 wide
                 todos={todos}
+                onRetryTodos={retryTodos}
                 changedFiles={changedFiles}
                 context={context}
                 mcp={mcp}
@@ -638,6 +645,7 @@ export default function AgentScreen() {
           onClose={() => { setInspectorOpen(false); }}
           wide={false}
           todos={todos}
+          onRetryTodos={retryTodos}
           changedFiles={changedFiles}
           context={context}
           mcp={mcp}
