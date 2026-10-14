@@ -87,7 +87,8 @@ describe('your own skills', () => {
       body: 'Group the changes by area.',
     });
     const id = await idOf(creds, 'release-notes');
-    await waitForVisible(`skills.row.${id}.name`);
+    // The list may be scrolled down from the last case; the new row is at the top.
+    await scrollTo(`skills.row.${id}.name`);
     await shot('skills-screen-added');
 
     await goToSurface('chat');
@@ -151,7 +152,8 @@ describe('your own skills', () => {
     const id = await idOf(creds, 'code-review');
     await tap(`skills.row.${id}.delete`);
     await tap('skills.deleteConfirm.cancel');
-    await waitForVisible(`skills.row.${id}.name`);
+    // The list may be scrolled down from the last case; the new row is at the top.
+    await scrollTo(`skills.row.${id}.name`);
 
     await tap(`skills.row.${id}.delete`);
     await tap('skills.deleteConfirm.confirm');
