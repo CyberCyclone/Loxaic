@@ -152,6 +152,10 @@ describe('your own skills', () => {
     const id = await idOf(creds, 'code-review');
     await tap(`skills.row.${id}.delete`);
     await tap('skills.deleteConfirm.cancel');
+    // Let the dialog finish closing first: on Android a tap while it is still
+    // going lands on it, and the next Delete opened nothing. Re-queried each
+    // poll, since a closed modal's element goes on reporting displayed.
+    await waitForAbsent('skills.deleteConfirm.cancel');
     // The list may be scrolled down from the last case; the new row is at the top.
     await scrollTo(`skills.row.${id}.name`);
 
