@@ -15,15 +15,20 @@ import { browser } from '@wdio/globals';
 import { provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, isVisible, platform, tap, typeInto, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
-import { goToSurface, openSettings, openSidebar, signIn } from '../helpers/app.ts';
+import { goToSurface, openSettings, openSidebar, openSkills, signIn } from '../helpers/app.ts';
 
 /** Navigates to a surface and waits for something only that surface renders,
  * so the modal is opened from the screen under test and not the previous one. */
-async function goTo(surface: 'chat' | 'agent' | 'routines' | 'stats' | 'admin'): Promise<void> {
+async function goTo(surface: 'chat' | 'agent' | 'routines' | 'stats' | 'admin' | 'skills'): Promise<void> {
   if (surface === 'stats') {
     await openSidebar();
     await tap('sidebar.nav.stats');
     await waitForTextIn('shell.header.title', 'Usage & Performance', 20_000);
+    return;
+  }
+  if (surface === 'skills') {
+    // Reached from Settings itself, which closes on the way there.
+    await openSkills();
     return;
   }
   if (surface === 'agent') {
@@ -72,7 +77,7 @@ describe('Settings from every screen', () => {
     await signIn(await provisionAdmin());
   });
 
-  for (const surface of ['routines', 'stats', 'admin', 'chat', 'agent'] as const) {
+  for (const surface of ['routines', 'stats', 'admin', 'skills', 'chat', 'agent'] as const) {
     it(`opens from ${surface}`, async () => {
       await goTo(surface);
       await openSettings();

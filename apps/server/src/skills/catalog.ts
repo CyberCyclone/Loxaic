@@ -9,6 +9,8 @@
  * is no exception.
  */
 import { createHash } from "node:crypto";
+import { asc, db, eq } from "@loxaic/db";
+import { skills as skillsTable } from "@loxaic/db/schema";
 import type { PaletteSkill, SkillAction, SkillSource } from "@loxaic/types";
 import { builtinSkills } from "./builtin/index.ts";
 
@@ -54,8 +56,23 @@ export function builtinCatalogSkills(): CatalogSkill[] {
  * catalogs would announce each other's skills to the model on every turn
  * they alternated.
  */
-export function resolveSkillCatalog(_input: { ownerId: string; conversationId?: string | null }): Promise<CatalogSkill[]> {
-  return Promise.resolve(mergeSkillLayers([builtinCatalogSkills(), testLayer]));
+export async function resolveSkillCatalog(input: { ownerId: string; conversationId?: string | null }): Promise<CatalogSkill[]> {
+  return mergeSkillLayers([builtinCatalogSkills(), await userSkillLayer(input.ownerId), testLayer]);
+}
+
+/** A person's own skills (`skills` table), by name. */
+export async function userSkillLayer(ownerId: string): Promise<CatalogSkill[]> {
+  const rows = await db
+    .select({
+      name: skillsTable.name,
+      description: skillsTable.description,
+      body: skillsTable.body,
+      modelInvocable: skillsTable.modelInvocable,
+    })
+    .from(skillsTable)
+    .where(eq(skillsTable.ownerId, ownerId))
+    .orderBy(asc(skillsTable.name));
+  return rows.map((r) => ({ ...r, source: "user" as const }));
 }
 
 /** Skills a test adds on top of the built-ins, standing in for a person's

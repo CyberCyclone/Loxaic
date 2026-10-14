@@ -824,6 +824,30 @@ export const commandRules = pgTable(
   (t) => [uniqueIndex("command_rules_user_pattern_action_idx").on(t.userId, t.pattern, t.action)],
 );
 
+// ── Skills ──
+/**
+ * A person's own skills (#283): the Agent Skills format's name, description
+ * and instructions, edited in the app. A name equal to a built-in's
+ * supersedes that built-in for its owner — the only way a built-in changes —
+ * so nothing about the built-ins is stored. See apps/server/src/skills/.
+ */
+export const skills = pgTable(
+  "skills",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    ownerId: text("owner_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    description: text("description").notNull(),
+    body: text("body").notNull(),
+    /** False keeps it out of the model's list: only a person runs it, by
+     * typing its name — the format's `disable-model-invocation`. */
+    modelInvocable: boolean("model_invocable").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("skills_owner_name_idx").on(t.ownerId, t.name)],
+);
+
 // ── GitHub connections ──
 /**
  * One personal access token per user, for cloning a workspace repo and

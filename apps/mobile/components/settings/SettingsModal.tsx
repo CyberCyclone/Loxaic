@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { Boxes, ChevronRight, GitBranch, HardDrive, Hourglass, Plug, Server, ShieldCheck, UserRound } from 'lucide-react-native';
+import { BookOpen, Boxes, ChevronRight, GitBranch, HardDrive, Hourglass, Plug, Server, ShieldCheck, UserRound } from 'lucide-react-native';
 import {
   Modal,
   ModalBackdrop,
@@ -392,6 +392,28 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </Text>
                   <Text size="2xs" className="text-muted-foreground">
                     Connect external tools for the agent
+                  </Text>
+                </VStack>
+              </HStack>
+              <Icon as={ChevronRight} size="sm" className="text-muted-foreground" />
+            </Pressable>
+
+            <Pressable
+              testID="settings.nav.skills"
+              onPress={() => {
+                onClose();
+                router.push('/skills');
+              }}
+              className="flex-row items-center justify-between rounded-md border border-border bg-card px-3 py-2.5 web:hover:bg-muted/30"
+            >
+              <HStack space="sm" className="items-center">
+                <Icon as={BookOpen} size="sm" className="text-muted-foreground" />
+                <VStack>
+                  <Text size="sm" className="text-foreground">
+                    Skills
+                  </Text>
+                  <Text size="2xs" className="text-muted-foreground">
+                    Instructions you run with / and the agent can load
                   </Text>
                 </VStack>
               </HStack>

@@ -1005,6 +1005,40 @@ export async function resetSandboxSettings(): Promise<void> {
  * a future catalogue assertion on `mcp.list` accordingly; the genuinely-empty
  * branch only appears if that catalogue is ever emptied.
  */
+/** The Skills screen, reached from Settings (#283). */
+export async function openSkills(): Promise<void> {
+  await openSettings();
+  await scrollTo('settings.nav.skills');
+  await tap('settings.nav.skills');
+  await waitForVisible('skills.add');
+  await waitForVisible('skills.builtin.code-review');
+}
+
+/** The caller's own skills and the built-ins, straight from the API. */
+export async function listMySkills(
+  creds: Pick<Credentials, 'email' | 'password'>,
+): Promise<{
+  builtin: { name: string; overriddenBy: string | null }[];
+  mine: { id: string; name: string; body: string; overridesBuiltin: boolean }[];
+}> {
+  const res = await fetch(`${BASE_URL}/v1/skills/mine`, { headers: { authorization: `Bearer ${await apiToken(creds)}` } });
+  if (!res.ok) throw new Error(`[e2e] listing skills failed (${String(res.status)})`);
+  return (await res.json()) as Awaited<ReturnType<typeof listMySkills>>;
+}
+
+/** Every content block a conversation has stored, in order. */
+export async function getStoredBlocks(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  conversationId: string,
+): Promise<{ kind: string; name?: string; source?: string; text?: string; summary?: string }[]> {
+  const res = await fetch(`${BASE_URL}/v1/conversations/${conversationId}/messages`, {
+    headers: { authorization: `Bearer ${await apiToken(creds)}` },
+  });
+  if (!res.ok) throw new Error(`[e2e] getting messages failed (${String(res.status)})`);
+  const body = (await res.json()) as { messages: { content: { kind: string }[] }[] };
+  return body.messages.flatMap((m) => m.content);
+}
+
 export async function openMcpServers(): Promise<void> {
   await openSidebar();
   await tap('sidebar.nav.mcp');

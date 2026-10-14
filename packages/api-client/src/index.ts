@@ -2300,6 +2300,36 @@ export async function getSkills(conversationId?: string | null): Promise<Palette
   return Array.isArray(body.skills) ? body.skills : [];
 }
 
+/** The Skills screen: the built-ins, read-only, and the caller's own. */
+export async function getMySkills(): Promise<MySkills> {
+  return (await authedFetch("/v1/skills/mine")).json() as Promise<MySkills>;
+}
+
+/** A name equal to a built-in's supersedes that built-in for the caller. */
+export async function createSkill(input: SkillInput): Promise<UserSkill> {
+  return (
+    await authedFetch("/v1/skills/mine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    })
+  ).json() as Promise<UserSkill>;
+}
+
+export async function updateSkill(id: string, patch: Partial<SkillInput>): Promise<UserSkill> {
+  return (
+    await authedFetch(`/v1/skills/mine/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    })
+  ).json() as Promise<UserSkill>;
+}
+
+export async function deleteSkill(id: string): Promise<void> {
+  await authedFetch(`/v1/skills/mine/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function getPrefs(): Promise<UserPrefs> {
   return (await authedFetch("/v1/prefs")).json() as Promise<UserPrefs>;
 }
@@ -2475,6 +2505,10 @@ export type {
   PaletteSkill,
   SkillSource,
   SkillAction,
+  UserSkill,
+  BuiltinSkillView,
+  MySkills,
+  SkillInput,
   SubAgentLive,
   SubAgentEvent,
   SubAgentApproval,
@@ -2485,7 +2519,7 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { PaletteSkill, ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
+import type { MySkills, PaletteSkill, ServerMessage, SkillInput, StepsDecision, SubAgentLive, UserSkill } from "@loxaic/types";
 export {
   commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,

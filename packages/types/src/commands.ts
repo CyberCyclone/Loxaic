@@ -73,3 +73,43 @@ export function parseCommand(text: string): { name: string; args: string } | nul
   if (!m) return null;
   return { name: m[1].toLowerCase(), args: (m[2] || "").trim() };
 }
+
+/** One of a person's own skills, as the Skills screen edits it. */
+export interface UserSkill {
+  id: string;
+  name: string;
+  description: string;
+  body: string;
+  /** False: only a person runs it, by typing its name. */
+  modelInvocable: boolean;
+  /** Its name is a built-in's, which it supersedes for its owner. */
+  overridesBuiltin: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A built-in as the Skills screen shows it: read-only. */
+export interface BuiltinSkillView {
+  name: string;
+  description: string;
+  body: string;
+  modelInvocable: boolean;
+  argHint?: string;
+  action?: SkillAction;
+  /** The id of the person's own skill that supersedes it, or null. */
+  overriddenBy: string | null;
+}
+
+/** `GET /v1/skills/mine`. */
+export interface MySkills {
+  builtin: BuiltinSkillView[];
+  mine: UserSkill[];
+}
+
+/** What creating or editing one of a person's own skills sends. */
+export interface SkillInput {
+  name: string;
+  description: string;
+  body: string;
+  modelInvocable?: boolean;
+}
