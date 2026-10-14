@@ -17,6 +17,7 @@ import { ThreadList } from '@/components/chat/ThreadList';
 import { MessageList } from '@/components/chat/MessageList';
 import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
+import { checkinKey } from '@/lib/pendingWaits';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { RewindModal } from '@/components/chat/RewindModal';
@@ -446,6 +447,7 @@ export default function RoutineChatScreen() {
           )}
           {pendingCheckin && (
             <StepCheckInBanner
+              key={checkinKey(pendingCheckin)}
               {...pendingCheckin}
               onContinue={() => { handleSteps('continue'); }}
               onAnswer={() => { handleSteps('answer'); }}

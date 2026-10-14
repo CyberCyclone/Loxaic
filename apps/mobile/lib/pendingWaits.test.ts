@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvalStreamId, localDeadline, toPendingApproval, toPendingCheckin } from './pendingWaits';
+import { approvalKey, approvalStreamId, checkinKey, localDeadline, toPendingApproval, toPendingCheckin } from './pendingWaits';
 
 describe('localDeadline', () => {
   it('counts a live event from now', () => {
@@ -69,5 +69,19 @@ describe('which run an approval answer names', () => {
     const other = toPendingApproval({ call_id: 'call_9', tool: 'bash', args: {} }, 0, undefined, 'stream-x');
     expect(approvalStreamId(other, 'call_0', 'stream-tracked')).toBe('stream-tracked');
     expect(approvalStreamId(null, 'call_0', undefined)).toBeUndefined();
+  });
+});
+
+describe('prompt keys', () => {
+  it('differ per question and hold across a resync of the same one', () => {
+    const a = toPendingApproval({ call_id: 'call_0', tool: 't', args: {}, timeout_ms: 1000 }, 0, undefined, 's1');
+    const resynced = toPendingApproval({ call_id: 'call_0', tool: 't', args: {}, timeout_ms: 1000, expires_at: 900 }, 50, 100, 's1');
+    expect(approvalKey(resynced)).toBe(approvalKey(a));
+    // A model's call ids repeat across runs; the run tells them apart.
+    expect(approvalKey({ ...a, streamId: 's2' })).not.toBe(approvalKey(a));
+    const c = toPendingCheckin({ n: 100, max: 100, reason: 'budget' }, 0, undefined, 's1');
+    expect(checkinKey(c)).toBe('s1:100');
+    expect(checkinKey({ ...c, streamId: 's2' })).not.toBe(checkinKey(c));
+    expect(checkinKey({ ...c, n: 200 })).not.toBe(checkinKey(c));
   });
 });

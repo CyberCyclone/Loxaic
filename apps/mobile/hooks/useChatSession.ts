@@ -723,7 +723,7 @@ export function useChatSession(
               if (!(convId in prev)) return prev;
               return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
             }
-            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now) };
+            return { ...prev, [convId]: toPendingCheckin(pc, Date.now(), event.server_now, event.stream_id) };
           });
         }
         const stageSnapshot = event.snapshot.context_stage;
@@ -864,7 +864,7 @@ export function useChatSession(
             return Object.fromEntries(Object.entries(prev).filter(([key]) => key !== convId));
           });
         } else if (inner.kind === 'steps.checkin') {
-          setPendingCheckinByConv((prev) => ({ ...prev, [convId]: toPendingCheckin(inner, Date.now()) }));
+          setPendingCheckinByConv((prev) => ({ ...prev, [convId]: toPendingCheckin(inner, Date.now(), undefined, event.stream_id) }));
         } else if (inner.kind === 'steps.decision' || inner.kind === 'iteration') {
           // Answered — here, on another device, or by the timeout. Reaching a
           // new iteration means the same thing.

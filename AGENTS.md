@@ -2632,9 +2632,29 @@ replies.
   height it has when it opens, and it opens on a spinner, so on both phones it showed the
   first tool's name and nothing to scroll: the place this feature sends people to take a grant
   back. Found by the native lanes; web keeps its `max-h` class, which works.
-- **Not fixed here:** tapping a thread in the agent's list clears a waiting prompt until the
-  socket reconnects (`selectRun` resets run-level state, and a conversation is subscribed once
-  per socket). `agent-allow-always.spec.ts` avoids `selectThread` for that reason.
+- **A run's state is kept per conversation** (`lib/agentRunState.ts`: status, pending approval
+  and check-in, step counter, queue place), folded from every conversation's events. The
+  to-do list is not part of it: it is read from the loaded messages (`lib/todos.ts`, #279).
+  - **Why:** it was one value for "the thread on screen". `selectRun` cleared it, events for a
+    background thread were dropped, and coming back asked for no snapshot, since a conversation
+    is subscribed once per socket. On the beta, a run asking for an MCP tool came back as "Done"
+    with no prompt, parked on the server until its approval timed out.
+  - **Re-subscribing on every switch was not the fix:** it costs a snapshot per tap, and events
+    that arrive while away would still be dropped.
+  - Chat already kept its approval per conversation. `agent-thread-switch.spec.ts` switches away
+    and back with an approval waiting, with one asked while away, and with a check-in.
+  - **The step check-in banner dismisses a phone's keyboard when it appears**, as the bar does.
+    Coming back to a thread with the keyboard still up from the last send left the banner's
+    buttons below the composer. Found by that spec's iOS run.
+  - **A prompt is keyed by the question it asks** (`approvalKey`/`checkinKey`), so the bar and
+    the banner remount for a new one. The dismissal runs on mount, and a switch between two
+    threads that are both waiting, or from a sub-agent's approval to the run's own, only changed
+    props. A resync of the same question keeps the key and the keyboard. Found in review.
+  - **The state goes with the prompt.** A rewind that drops a prompt also moves the run off
+    `awaiting_*` (to `done` when the followed run was removed, else `running`), and only an
+    active run's snapshot yields a prompt. Before, `selectRun`'s reset hid a run left
+    `awaiting_approval` with nothing to approve; kept per conversation, it held Stop for good,
+    and Stop then found no stream. Found in review.
 
 ### Bash permissions (per-command rules)
 

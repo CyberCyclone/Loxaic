@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { Keyboard, Platform } from 'react-native';
 import type { CheckinReason } from '@loxaic/api-client';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -66,6 +68,13 @@ export function StepCheckInBanner({
   onStop,
 }: StepCheckInBannerProps) {
   const repeating = pattern?.length ? describePattern(pattern) : null;
+  // As PermissionBar: on a phone, a keyboard left up by the last send pushed
+  // this banner's buttons below the composer, out of reach — a run parked on a
+  // question nobody could answer. The keyboard goes; whatever was typed stays.
+  // Not on the web, where it would take focus from someone typing ahead.
+  useEffect(() => {
+    if (Platform.OS !== 'web') Keyboard.dismiss();
+  }, []);
   // See ToolApprovalDialog: an answer needs an open socket (#231).
   const disconnected = !useServerReachable();
   return (

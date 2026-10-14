@@ -189,9 +189,7 @@ describe('agent "Allow always"', () => {
     await signOut();
     await signIn(guest);
     // The shared thread is the guest's only one, so the agent screen opens on
-    // it. (Not `selectThread`: tapping a thread clears a waiting prompt until
-    // the socket reconnects, which is older than this and not what is asked
-    // here.)
+    // it — a fresh session, whose bar is built from the run's snapshot.
     await goToSurface('agent');
     await waitForVisible('agent.permission.bar');
     await waitForVisible('agent.permission.allow');
