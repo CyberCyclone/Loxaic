@@ -60,6 +60,15 @@ function mergeHistory(current: readonly Message[], history: readonly Message[]):
   const flushUpTo = (limit: number) => {
     while (next < sorted.length && sorted[next].lamport <= limit) out.push(sorted[next++].m)
   }
+  // History older than the first placed message goes ahead of everything,
+  // including a bubble in front of it. A bubble has no position until its
+  // run's snapshot or its `message.start` gives it one; a bubble that still
+  // led the thread then had the whole page put after it by the walk below,
+  // and every older page after that — the new message stuck at the top for
+  // good (found in review). A current server's snapshot of the new run places
+  // the bubble before its reply starts, so this needs that snapshot missed.
+  const firstPlaced = current.find((m) => m.lamport !== undefined)
+  if (firstPlaced?.lamport !== undefined) flushUpTo(firstPlaced.lamport)
   current.forEach((m, i) => {
     if (m.lamport !== undefined) flushUpTo(m.lamport)
     out.push(m)

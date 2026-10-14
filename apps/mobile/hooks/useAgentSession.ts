@@ -270,9 +270,14 @@ export function useAgentSession(
   // older one left it permanently empty — nothing else backfills it
   // (stream.subscribe replays live runs, not cold history).
   const loadedConvIdsRef = useRef<Set<string>>(new Set());
-  // Runs whose history fetch has finished, either way. Until then a thread may
-  // hold only what a reconnect replayed — a planning run without the answer
-  // to its plan — so the plan panel waits for this (useReview's `settled`).
+  // Runs whose newest page has arrived, and runs whose fetch has finished
+  // either way. Until the page is in, a thread may hold only what a reconnect
+  // replayed — a planning run without the answer to its plan — so the plan
+  // panel opens by itself only once it is (useReview's `loaded`), and the bar
+  // waits for the fetch to finish (`settled`). A failed fetch therefore never
+  // opens the panel on a plan it cannot judge; the bar still offers it, which
+  // is a tap on a thread the person can read.
+  const [historyLoadedIds, setHistoryLoadedIds] = useState<ReadonlySet<string>>(new Set());
   const [historySettledIds, setHistorySettledIds] = useState<ReadonlySet<string>>(new Set());
 
   // Which conversations this socket has subscribed to, and so is told of new
@@ -311,13 +316,20 @@ export function useAgentSession(
     getMessages(id)
       .then((page) => {
         const msgs = reconstructMessages(page.messages);
-        if (msgs.length === 0) return;
-        // Always applied — in front of a run already streaming, never instead
-        // of it — so the cursor is always true (see withNewestPage).
-        recordPaging(id, page);
-        setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
+        if (msgs.length > 0) {
+          // Always applied — merged around a run already streaming, never
+          // instead of it — so the cursor is always true (see withNewestPage).
+          recordPaging(id, page);
+          setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
+        }
+        setHistoryLoadedIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
       })
-      .catch(() => undefined)
+      .catch(() => {
+        // Fetched again on the next select, as the chat hook does. Nothing else
+        // would ever fetch this page, and without it the thread can hold only
+        // what the socket replayed (found in review).
+        loadedConvIdsRef.current.delete(id);
+      })
       .finally(() => {
         setHistorySettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
         watchConversation(id);
@@ -1210,6 +1222,8 @@ export function useAgentSession(
     /** Whether the open run's newest page of history has been fetched (or
      * failed to be). A run with no server id yet has none to wait for. */
     historySettled: !activeId || !isServerConvId(activeId) || historySettledIds.has(activeId),
+    /** Whether that page actually arrived — false after a failed fetch. */
+    historyLoaded: !activeId || !isServerConvId(activeId) || historyLoadedIds.has(activeId),
     selectRun,
     mode,
     runState: effectiveRunState,

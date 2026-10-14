@@ -74,6 +74,17 @@ describe('withNewestPage', () => {
     expect(ids(withNewestPage(loaded, page, false))).toEqual(['plan', 'accept', 'final', 'sending']);
   });
 
+  it('puts the history ahead of a bubble sent before the page landed', () => {
+    // Sent while the newest page was still loading: the reply's
+    // message.start arrived first, so the bubble leads with no position.
+    const loaded = [m(undefined, 'sending'), at('reply', 900)];
+    const page = [at('h10', 10), at('h20', 20), at('h30', 30)];
+    const merged = withNewestPage(loaded, page, false);
+    expect(ids(merged)).toEqual(['h10', 'h20', 'h30', 'sending', 'reply']);
+    // And an older page after that does not go below it either.
+    expect(ids(prependOlder(merged, [at('o5', 5)]))).toEqual(['o5', 'h10', 'h20', 'h30', 'sending', 'reply']);
+  });
+
   it('puts history without positions in front, as for a server before paging', () => {
     expect(ids(withNewestPage([at('r1', 300)], [m('h1'), m('h2')], false))).toEqual(['h1', 'h2', 'r1']);
   });

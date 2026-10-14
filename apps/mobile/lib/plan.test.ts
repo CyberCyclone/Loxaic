@@ -198,7 +198,7 @@ describe('questions', () => {
 });
 
 describe('opening the panel by itself', () => {
-  const base = { latestId: 'call_0', latestStatus: 'pending' as const, busy: false, canDecide: true, blocked: false, settled: true, seen: new Set<string>() };
+  const base = { latestId: 'call_0', latestStatus: 'pending' as const, busy: false, canDecide: true, blocked: false, historyLoaded: true, seen: new Set<string>() };
 
   it('opens the newest pending item, once', () => {
     expect(shouldAutoOpen(base)).toBe(true);
@@ -220,7 +220,7 @@ describe('opening the panel by itself', () => {
   it("waits for the thread's history before judging a plan pending", () => {
     // A reconnect can replay a planning run before the page holding the
     // answer to it arrives; until then "pending" may only mean "not loaded".
-    expect(shouldAutoOpen({ ...base, settled: false })).toBe(false);
-    expect(shouldAutoOpen({ ...base, settled: true })).toBe(true);
+    expect(shouldAutoOpen({ ...base, historyLoaded: false })).toBe(false);
+    expect(shouldAutoOpen({ ...base, historyLoaded: true })).toBe(true);
   });
 });

@@ -311,6 +311,18 @@ describe('a snapshot folded into a thread loaded a page at a time (#213)', () =>
     const msgs = applySnapshotToMsgs(withBubble, snap({ id: 'a1', lamport: 100, text: 'old' }));
     expect(msgs.map((m) => m.id)).toEqual(['a1', 'u2', 'a2', 'lm1']);
   });
+
+  it('gives the sent bubble its position when its message.start arrives', () => {
+    // The bubble was renamed to its real id first (promotePendingUserMsg); the
+    // event's lamport is what lets history be merged around it.
+    const bubble: Message = { id: 'u1', role: 'user', text: 'hi' };
+    const start = { kind: 'message.start', message_id: 'u1', author_type: 'user', parent_id: null, text: 'hi' } as const;
+    expect(applyEventToMsgs([bubble], { ...start, lamport: 900 })).toEqual([{ ...bubble, lamport: 900 }]);
+    const placed: Message = { ...bubble, lamport: 5 };
+    expect(applyEventToMsgs([placed], { ...start, lamport: 900 })[0].lamport).toBe(5);
+    const unplaced = [bubble];
+    expect(applyEventToMsgs(unplaced, start)).toBe(unplaced);
+  });
 });
 
 describe('an instructions change on a user message', () => {

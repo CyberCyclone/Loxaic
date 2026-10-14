@@ -38,10 +38,12 @@ export function isAwaiting(item: ReviewItem | null, status: ReviewStatus | null)
  * back is not shown — the item is not marked seen, so it opens the moment the
  * other sheet closes.
  *
- * `settled` (default true) holds back both the panel and the bar until the
- * thread's newest page is in: before that, a reconnect's replay of a planning
- * run can be all the thread holds, and the plan it carries looks undecided
- * whatever became of it (see `shouldAutoOpen`).
+ * `settled` (default true) holds back the bar until the thread's history
+ * fetch has finished, and `loaded` (default `settled`) holds back the panel
+ * until its newest page has actually arrived: before that, a reconnect's
+ * replay of a planning run can be all the thread holds, and the plan it
+ * carries looks undecided whatever became of it (see `shouldAutoOpen`). After
+ * a failed fetch the bar shows and the panel does not open by itself.
  */
 export function useReview(input: {
   convId: string | null;
@@ -50,10 +52,12 @@ export function useReview(input: {
   canDecide: boolean;
   blocked?: boolean;
   settled?: boolean;
+  loaded?: boolean;
 }) {
   const { convId, msgs, busy, canDecide } = input;
   const blocked = input.blocked ?? false;
   const settled = input.settled ?? true;
+  const loaded = input.loaded ?? settled;
   const [openCallId, setOpenCallId] = useState<string | null>(null);
   // Call ids this session has already shown or had dismissed. A ref: the
   // decision to auto-open is made in an effect, and must not wait on (or
@@ -78,10 +82,10 @@ export function useReview(input: {
 
   const latestId = latest?.callId ?? null;
   useEffect(() => {
-    if (!latestId || !shouldAutoOpen({ latestId, latestStatus, busy, canDecide, blocked, settled, seen: seen.current })) return;
+    if (!latestId || !shouldAutoOpen({ latestId, latestStatus, busy, canDecide, blocked, historyLoaded: loaded, seen: seen.current })) return;
     seen.current.add(latestId);
     setOpenCallId(latestId);
-  }, [latestId, latestStatus, busy, canDecide, blocked, settled]);
+  }, [latestId, latestStatus, busy, canDecide, blocked, loaded]);
 
   const openItem = useCallback((callId: string) => {
     seen.current.add(callId);

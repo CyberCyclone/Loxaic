@@ -264,11 +264,13 @@ export function formatAnswers(questions: readonly Question[], answers: readonly 
  * Whether the newest item's panel opens by itself now. Pure, so each reason
  * it must not is tested without a renderer.
  *
- * `settled` is whether the thread's newest page of history has been fetched
- * (or failed to be). Until then the thread can hold a reconnect's replay of a
- * planning run and nothing after it, so a plan someone accepted long ago reads
- * as pending — and an auto-opened panel stays open once the page shows it was
- * decided. Found on the beta, reopening #281's thread.
+ * `historyLoaded` is whether the thread's newest page of history has arrived.
+ * Until then the thread can hold a reconnect's replay of a planning run and
+ * nothing after it, so a plan someone accepted long ago reads as pending — and
+ * an auto-opened panel stays open once the page shows it was decided. Found on
+ * the beta, reopening #281's thread. A fetch that *failed* is not loaded
+ * either: the thread then holds only the replay for good, and opening the
+ * panel on it offered Accept on an accepted plan (found in review).
  */
 export function shouldAutoOpen(input: {
   latestId: string | null;
@@ -276,10 +278,10 @@ export function shouldAutoOpen(input: {
   busy: boolean;
   canDecide: boolean;
   blocked: boolean;
-  settled: boolean;
+  historyLoaded: boolean;
   seen: ReadonlySet<string>;
 }): boolean {
-  const { latestId, latestStatus, busy, canDecide, blocked, settled, seen } = input;
+  const { latestId, latestStatus, busy, canDecide, blocked, historyLoaded, seen } = input;
   if (!latestId) return false;
-  return latestStatus === 'pending' && !busy && canDecide && !blocked && settled && !seen.has(latestId);
+  return latestStatus === 'pending' && !busy && canDecide && !blocked && historyLoaded && !seen.has(latestId);
 }

@@ -22,9 +22,15 @@
  * until the page is in. Web and Electron only: the stubs are the page's own
  * `fetch` and `WebSocket`, and the merge they exercise is the same code on a
  * phone (`lib/historyPages.ts`, unit-tested for this order).
+ *
+ * The second case is the page failing outright (found in review): the thread
+ * then holds only the planning run's replay, the plan reads as pending, and a
+ * panel that opened by itself offered Accept on a plan already accepted —
+ * with nothing ever fetching the page again. It must not open; the bar may
+ * offer the plan, and selecting the thread again fetches the page.
  */
 import { browser } from '@wdio/globals';
-import { uniqueCreds } from '../helpers/auth.ts';
+import { type Credentials, uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
 import { byTestId, platform, tap, waitForGone, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
@@ -32,8 +38,10 @@ import {
   getMessageTexts,
   goToSurface,
   listConversations,
+  selectThread,
   sendMessage,
   signUp,
+  startNewThread,
   waitForRunDone,
 } from '../helpers/app.ts';
 
@@ -55,10 +63,16 @@ interface ArrivalLog {
 /**
  * Installs the hold on the page's `fetch` and `WebSocket`. Only sockets made
  * from here on are affected — the Agent screen's, once it mounts again.
+ *
+ * `failPage` answers the first newest-page request with a 500 instead of
+ * holding it, and drops the replay of the run that answered the plan, so that
+ * run is in no page and no snapshot — what a thread whose answer is older
+ * than its last three runs looks like after a failed fetch. Later requests
+ * go through.
  */
-async function holdArrivals(): Promise<void> {
+async function holdArrivals(opts: { failPage?: boolean } = {}): Promise<void> {
   await browser.execute(
-    (pageHoldMs: number, openHoldMs: number, accepted: string) => {
+    (pageHoldMs: number, openHoldMs: number, accepted: string, fail: boolean) => {
       const w = window as unknown as {
         __planOrder: { order: string[]; acceptSynced: boolean };
         __realFetch?: typeof fetch;
@@ -78,6 +92,17 @@ async function holdArrivals(): Promise<void> {
         const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
         // The newest page only: a page back carries `before`.
         if (/\/v1\/conversations\/[^/]+\/messages(\?|$)/.test(url) && !url.includes('before=')) {
+          if (fail && !log.order.includes('page:failed')) {
+            log.order.push('page:failed');
+            return new Response(JSON.stringify({ error: 'held back by the test' }), {
+              status: 500,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          if (fail) {
+            log.order.push('page');
+            return realFetch(input, init);
+          }
           await new Promise((r) => setTimeout(r, pageHoldMs));
           const res = await realFetch(input, init);
           log.order.push('page');
@@ -101,6 +126,10 @@ async function holdArrivals(): Promise<void> {
             ? (ev: MessageEvent) => {
                 const data = typeof ev.data === 'string' ? ev.data : '';
                 if (!data.includes('"stream.sync"')) return handler.call(this, ev);
+                if (data.includes(accepted) && fail) {
+                  log.order.push('sync:accept:dropped');
+                  return;
+                }
                 if (data.includes(accepted)) {
                   // The run that answered the plan: after the page, as the
                   // long run's replay did on the beta.
@@ -125,6 +154,7 @@ async function holdArrivals(): Promise<void> {
     PAGE_HOLD_MS,
     OPEN_HOLD_MS,
     ACCEPTED,
+    opts.failPage ?? false,
   );
 }
 
@@ -160,6 +190,30 @@ async function acceptFollowsPlan(): Promise<boolean> {
   }, ACCEPTED);
 }
 
+/** A new planning run, its plan accepted and the run that started finished.
+ * Returns the conversation's id. */
+async function planAndAccept(creds: Credentials): Promise<string> {
+  await goToSurface('agent');
+  // The screen opens on the newest thread once there is one.
+  await startNewThread('agent');
+  await chooseScratchWorkspace();
+  await tap('agent.mode.planning');
+  await sendMessage(PLAN_PROMPT);
+  await waitForVisible('agent.plan.panel', 90_000);
+  const [conversation] = await listConversations(creds);
+  await waitForRunDone(creds, conversation.id);
+
+  // Accepted in Auto, so the run it starts asks nothing.
+  await tap('agent.plan.accept.more');
+  await waitForVisible('agent.plan.accept.menu');
+  await tap('agent.plan.accept.auto');
+  await waitForGone('agent.plan.panel');
+  await waitForRunDone(creds, conversation.id);
+  const texts = await getMessageTexts(creds, conversation.id);
+  if (!texts.includes(ACCEPTED)) throw new Error(`the acceptance was not sent: ${JSON.stringify(texts)}`);
+  return conversation.id;
+}
+
 async function arrivals(): Promise<ArrivalLog> {
   return browser.execute(
     () => (window as unknown as { __planOrder: { order: string[]; acceptSynced: boolean } }).__planOrder,
@@ -182,22 +236,7 @@ describe('an accepted plan, when its thread is opened mid-connect', () => {
     const p = platform();
     if (p !== 'web' && p !== 'electron') this.skip();
 
-    await goToSurface('agent');
-    await chooseScratchWorkspace();
-    await tap('agent.mode.planning');
-    await sendMessage(PLAN_PROMPT);
-    await waitForVisible('agent.plan.panel', 90_000);
-    const [conversation] = await listConversations(creds);
-    await waitForRunDone(creds, conversation.id);
-
-    // Accepted in Auto, so the run it starts asks nothing.
-    await tap('agent.plan.accept.more');
-    await waitForVisible('agent.plan.accept.menu');
-    await tap('agent.plan.accept.auto');
-    await waitForGone('agent.plan.panel');
-    await waitForRunDone(creds, conversation.id);
-    const texts = await getMessageTexts(creds, conversation.id);
-    if (!texts.includes(ACCEPTED)) throw new Error(`the acceptance was not sent: ${JSON.stringify(texts)}`);
+    await planAndAccept(creds);
 
     // Away and back: the Agent screen mounts again, picks the newest thread
     // and fetches its page while its new socket opens.
@@ -235,5 +274,55 @@ describe('an accepted plan, when its thread is opened mid-connect', () => {
     await tap('agent.header.viewPlan');
     await waitForTextIn('agent.plan.status', 'accepted');
     await shot('plan-panel-accepted-after-mid-connect-open');
+    await tap('agent.plan.close');
+    await waitForGone('agent.plan.panel');
+  });
+
+  it('does not open the panel on a plan it could not judge, and fetches again on reselect', async function () {
+    this.timeout(4 * 60_000);
+    const p = platform();
+    if (p !== 'web' && p !== 'electron') this.skip();
+
+    const conversationId = await planAndAccept(creds);
+
+    await goToSurface('chat');
+    await holdArrivals({ failPage: true });
+    await goToSurface('agent');
+    await browser.waitUntil(
+      async () => {
+        const { order } = await arrivals();
+        return order.includes('page:failed') && order.includes('sync:plan') && order.includes('sync:accept:dropped');
+      },
+      { timeout: 30_000, interval: 250, timeoutMsg: 'the page did not fail with only the planning run replayed' },
+    );
+    // Let anything the replay sets off render.
+    await browser.pause(1_000);
+
+    // All the thread holds is the plan with nothing after it, so the client
+    // reads it as pending. Opening the panel on that offered Accept on an
+    // accepted plan; the bar is the most it may do.
+    if (await byTestId('agent.plan.panel').isDisplayed().catch(() => false)) {
+      throw new Error('the panel opened on a plan whose history never loaded');
+    }
+    await waitForVisible('agent.plan.bar');
+    await shot('plan-bar-after-failed-history');
+
+    // Selecting the thread again fetches the page this time.
+    await selectThread(conversationId, 'agent');
+    await browser.waitUntil(async () => (await arrivals()).order.includes('page'), {
+      timeout: 15_000,
+      interval: 250,
+      timeoutMsg: 'selecting the thread again did not fetch its history',
+    });
+    await waitForGone('agent.plan.bar');
+    await browser.waitUntil(acceptFollowsPlan, {
+      timeout: 15_000,
+      interval: 250,
+      timeoutMsg: 'the thread does not show the accept below the plan after the refetch',
+    });
+    if (await byTestId('agent.plan.panel').isDisplayed().catch(() => false)) {
+      throw new Error('the panel opened on an accepted plan after the refetch');
+    }
+    await shot('plan-accepted-after-refetch');
   });
 });
