@@ -524,6 +524,11 @@ export const LONG_SUBAGENT_NAME = 'Long survey';
  * mode. The mock's own trigger: the text after the colon is the child's task. */
 export const APPROVAL_SUBAGENT_PROMPT = 'Use a sub-agent: write a file called notes';
 export const MOCK_SUBAGENT_NAME = 'Mock sub-task';
+/** One todo_write with three items (one done, one in progress), then eleven
+ * tool calls that never touch the list: the eleventh result carries the
+ * server's stale-list reminder. `web_fetch` to loopback is refused at once by
+ * the SSRF guard, so it needs no sandbox and no network. */
+export const TODO_STALE_PROMPT = 'Please write the list once, then work.';
 /** Two sub-agent calls, slow one first: with one slot the quick one waits in
  * the queue for the whole of the slow one's run (seven of the mock's eight-
  * second requests), which is what a queued card's counter needs to be seen.

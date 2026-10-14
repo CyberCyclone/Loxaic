@@ -4,7 +4,17 @@ import type {
   StreamSnapshotMessage,
   ApiMessage,
 } from '@loxaic/api-client';
-import { CHECKIN_ANSWER_NUDGE, SUBAGENT_TOOL_NAME, isStreamErrorCode, type CompactionStats, type ContentBlock, type FileDiff } from '@loxaic/types';
+import {
+  CHECKIN_ANSWER_NUDGE,
+  SUBAGENT_TOOL_NAME,
+  isStreamErrorCode,
+  parseTodoList,
+  stripTodoReminder,
+  type CompactionStats,
+  type ContentBlock,
+  type FileDiff,
+  type Todo,
+} from '@loxaic/types';
 import type { Message, ToolCall } from '@/lib/types';
 import { toMessageUsage, usageFromTurn } from '@/lib/usage';
 import { computeLineDiff } from '@/lib/diff';
@@ -114,7 +124,13 @@ function withPlan(
   tool: string,
   args: Record<string, unknown>,
   messageId?: string,
-): { plan?: string; questions?: Question[]; subagent?: ToolCall['subagent'] } {
+): { plan?: string; questions?: Question[]; subagent?: ToolCall['subagent']; todos?: Todo[] } {
+  // The list a `todo_write` wrote, read by the one rule the server accepts it
+  // with — what the Inspector shows (lib/todos.ts).
+  if (tool === 'todo_write') {
+    const todos = parseTodoList(args);
+    return todos ? { todos } : {};
+  }
   const plan = planOf(tool, args);
   if (plan !== undefined) return { plan };
   const questions = questionsOf(tool, args);
@@ -231,7 +247,9 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
         const msg = msgId ? byId.get(msgId) : undefined;
         const tc = msg?.tools?.find((t) => t.callId === b.call_id);
         if (tc) {
-          tc.result = b.output;
+          // The stale-list reminder the server appends is for the model, not
+          // the person: it says nothing about the tool (@loxaic/types).
+          tc.result = stripTodoReminder(b.output);
           tc.diff = diffLinesFor(b.diff);
           // Carried through so a failed call still reads as failed after a
           // reload. Undefined on rows written before the block gained the
@@ -279,7 +297,7 @@ export function snapshotMessageToMessage(
         ? sm.tool_calls.map((tc) => ({
             tool: tc.tool,
             summary: toolSummary(tc.tool, tc.args),
-            result: tc.output ?? '',
+            result: stripTodoReminder(tc.output ?? ''),
             diff: diffLinesFor(tc.diff),
             callId: tc.call_id,
             ok: tc.ok,
@@ -446,7 +464,7 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
             t.callId === event.call_id
               ? {
                   ...t,
-                  result: event.output,
+                  result: stripTodoReminder(event.output),
                   diff: diffLinesFor(event.diff),
                   ok: event.ok,
                   ...(event.permission ? { permission: event.permission } : {}),
@@ -456,8 +474,10 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
         };
       });
     default:
-      // model.loading/iteration/approval.request/todos — hook-level state,
-      // not per-message; handled by the caller.
+      // model.loading/iteration/approval.request — hook-level state, not
+      // per-message; handled by the caller. `todos` is read by nothing: the
+      // list comes from the todo_write call itself (lib/todos.ts), and the
+      // server sends the event only for app builds that predate that.
       return msgs;
   }
 }

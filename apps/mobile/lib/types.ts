@@ -104,6 +104,9 @@ export interface ToolCall {
    * model's call ids repeat across messages). Same three construction sites
    * as `plan`. See lib/subAgents.ts. */
   subagent?: { description: string; messageId?: string }
+  /** A `todo_write` call's list — same three construction sites as `plan`.
+   * See lib/todos.ts. */
+  todos?: import('@loxaic/types').Todo[]
   /** Why it ran (or was refused) without a person approving — read-only, a
    * command rule, a sandbox that contains it, or auto mode's permission
    * check. Absent when someone approved it, and from older servers. */

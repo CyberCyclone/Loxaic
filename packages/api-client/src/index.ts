@@ -1496,6 +1496,13 @@ export async function getConversation(id: string): Promise<Conversation> {
   return res.json() as Promise<Conversation>;
 }
 
+/** The agent's newest todo list, or null when it never wrote one. For a list
+ * the history loaded does not hold; see apps/mobile/hooks/useServerTodos.ts. */
+export async function getConversationTodos(id: string): Promise<import("@loxaic/types").Todo[] | null> {
+  const res = await authedFetch(`/v1/conversations/${id}/todos`);
+  return ((await res.json()) as { todos: import("@loxaic/types").Todo[] | null }).todos;
+}
+
 export async function getConversations(): Promise<Conversation[]> {
   const token = await getAuthToken();
   const res = await serverFetch(`${BASE_URL}/v1/conversations`, {

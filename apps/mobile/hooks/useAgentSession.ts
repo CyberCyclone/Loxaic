@@ -20,7 +20,6 @@ import {
   type AttachmentRef,
   type StreamSnapshot,
   type PermissionMode,
-  type Todo,
   type StepsDecision,
   type PromptStats,
 } from '@loxaic/api-client';
@@ -33,6 +32,7 @@ import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyP
 import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
+import { todosInMessages } from '@/lib/todos';
 import { approvalStreamId, toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from '@/lib/pendingWaits';
 import { followsTurnStarted, isNoRoom, lostSendNote, newClientRef, noRoomNotice, PendingSends, retrySend, settledByTurnStarted, type NoRoomNotice } from '@/lib/noRoom';
 import { foldPromptStats, loadingAfter } from '@/lib/promptStats';
@@ -172,8 +172,10 @@ export function useAgentSession(
     pendingWorkspaceRef.current = ws;
     setPendingWorkspaceState(ws);
   }, []);
-  const [liveTodos, setLiveTodos] = useState<Todo[]>([]);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
+  // Rewinds seen per conversation: a rewind can remove the loaded todo list,
+  // and the screen asks the server again for what is left (useServerTodos).
+  const [rewindsByConv, setRewindsByConv] = useState<Partial<Record<string, number>>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -343,7 +345,6 @@ export function useAgentSession(
       setPendingCheckin(null);
       setIteration(null);
       setQueuePosition(null);
-      setLiveTodos([]);
     },
     [setActiveId],
   );
@@ -355,7 +356,6 @@ export function useAgentSession(
     setPendingCheckin(null);
     setIteration(null);
     setQueuePosition(null);
-    setLiveTodos([]);
     // Each new run starts from scratch: a repo chosen for the last one must
     // not silently carry over to a conversation the user thinks is fresh.
     setPendingWorkspace({ kind: 'scratch' });
@@ -456,7 +456,6 @@ export function useAgentSession(
       const tracked = streamingByConvRef.current[convId];
       if (tracked && tracked.streamId !== streamId) return;
       setIteration(snapshot.iteration ?? null);
-      setLiveTodos(snapshot.todos ?? []);
       // `serverNow` is passed through as it arrived, never defaulted to `now`:
       // absent, `localDeadline` re-bases the wait as if it had just started,
       // which only errs long. Substituting `now` would instead read the
@@ -682,8 +681,6 @@ export function useAgentSession(
             setPendingCheckin(null);
             setRunState('running');
           }
-        } else if (inner.kind === 'todos') {
-          if (isActive) setLiveTodos(inner.todos);
         }
       } else if (event.type === 'stream.end') {
         // A sub-agent's stream ending is not this thread's run ending: no
@@ -740,7 +737,6 @@ export function useAgentSession(
           setPendingApproval((prev) => (prev?.streamId && removedStreams.has(prev.streamId) ? null : prev));
           if (rewindClearsLiveRun(tracked?.streamId, event.removed_stream_ids)) {
             setIteration(null);
-            setLiveTodos([]);
           }
         }
         setStageCardByConv((prev) => {
@@ -751,6 +747,7 @@ export function useAgentSession(
         });
         forgetSpawnedBy(convId, event.removed_ids);
         updateRunMsgs(convId, (msgs) => applyRewound(msgs, event));
+        setRewindsByConv((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
         if (forgetRemovedCursor(convId, event.removed_ids)) {
           loadedConvIdsRef.current.delete(convId);
           if (activeIdRef.current === convId) setActiveId(convId);
@@ -1181,6 +1178,7 @@ export function useAgentSession(
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
+  const todos = useMemo(() => (activeRun ? todosInMessages(activeRun.msgs) : null), [activeRun]);
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
   // Overlaid on whatever the server last said, rather than replacing it: the
   // run genuinely is still running until its stream ends, and the events that
@@ -1221,7 +1219,14 @@ export function useAgentSession(
     queuePosition,
     pendingWorkspace,
     setPendingWorkspace,
-    todos: liveTodos,
+    // The newest list in the loaded messages (lib/todos.ts); the screen falls
+    // back to the server's when none is loaded and there is history to load.
+    todos,
+    /** Whether the open thread's whole history is loaded. False when it was
+     * never fetched (offline, optimistic): nothing says there is no more. */
+    historyComplete: activePaging ? activePaging.before === null : false,
+    /** Rewinds seen in the open thread; see `rewindsByConv`. */
+    rewinds: activeId ? (rewindsByConv[activeId] ?? 0) : 0,
     changedFiles,
     handleSend,
     handleRetry,
