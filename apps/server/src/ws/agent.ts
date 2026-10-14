@@ -1,8 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { resolveSessionFromToken } from "../auth/middleware";
-import { findCommand, isThinkingLevel, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
+import { isThinkingLevel, normalizeMcpOverrides, validateSendAttachments, type ClientMessage, type ServerMessage } from "@loxaic/types";
 import { retryAgentRun, startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
+import { resolveCommandSkill } from "../skills/resolve.ts";
+import { recordSkillUse } from "../skills/usage.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
 import { answerApproval, mayActOnRun } from "./run-actions.ts";
@@ -154,15 +156,24 @@ export function agentWsHandler(app: FastifyInstance) {
           });
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "command.run") {
-          // See ws/chat.ts — same dispatch, agent surface: the compact run
-          // reads history through the agent's own loader.
-          const cmd = findCommand(msg.command);
-          if (cmd?.name !== "compact") {
-            safeSend({ type: "error", error: `Unknown command: ${msg.command}` });
-            return;
-          }
+          // A skill the harness performs itself. The skills are the
+          // authority — the same list the client's palette renders — and the
+          // only such skill is the built-in compaction (skills/resolve.ts).
+          // Anything else here is a hand-rolled client, or a "/compact" a
+          // person has replaced with their own skill, which their client
+          // sends as a message; an explicit error beats silence.
           if (!msg.conversation_id) {
             safeSend({ type: "error", error: "Nothing to compact — start a run first" });
+            return;
+          }
+          const skill = await resolveCommandSkill(userId, msg.conversation_id, msg.command);
+          if (skill?.action !== "compact") {
+            safeSend({
+              type: "error",
+              error: skill
+                ? `/${skill.name} is a skill, not a command — send it as a message`
+                : `Unknown command: ${msg.command}`,
+            });
             return;
           }
           const result = await startCompactRun({
@@ -172,6 +183,7 @@ export function agentWsHandler(app: FastifyInstance) {
             args: msg.args,
             surface: "agent",
           });
+          await recordSkillUse(userId, skill.name);
           safeSend({
             type: "turn.started",
             stream_id: result.streamId,

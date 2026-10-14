@@ -126,6 +126,15 @@ export const conversations = pgTable("conversations", {
    * the choice.
    */
   subagentModels: jsonb("subagent_models"),
+  /**
+   * The skills the model was told of (`SkillCatalogSnapshot` in
+   * apps/server/src/skills/session.ts), frozen on the conversation's first run
+   * so the `skill` tool's description — the front of every prompt — stays
+   * byte-identical. A skill added or edited later is announced in a notice on
+   * the next user message instead, and the snapshot takes the new list only
+   * when a compaction moves the front anyway. Null until a run takes it.
+   */
+  skillCatalog: jsonb("skill_catalog"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   /**
@@ -766,6 +775,14 @@ export const userPrefs = pgTable("user_prefs", {
    * what the user actually ran rather than what they browsed past.
    */
   recentModels: jsonb("recent_models").notNull().default([]),
+  /**
+   * How often this person has invoked each skill by name, as
+   * `{ [name]: { count, lastUsedAt } }` — the order the composer's "/" palette
+   * lists skills in. Counted when a person types "/name", never when the model
+   * loads a skill: the order is about what the person reaches for. Server-owned
+   * like `recentModels`, and bumped in one statement (skills/usage.ts).
+   */
+  skillUsage: jsonb("skill_usage").notNull().default({}),
   /**
    * Which model a sub-agent runs on: `choose` (the parent's, unless the parent
    * names another it is offered), `parent` (always the parent's), or `fixed`

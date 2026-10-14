@@ -134,7 +134,7 @@ export function CompactionCard({ stats, summaryText, failed, errorText, live: li
       )}
 
       {stats?.guidance && (
-        <Text size="2xs" className="mt-1 text-center text-muted-foreground">
+        <Text testID="chat.compaction.guidance" size="2xs" className="mt-1 text-center text-muted-foreground">
           Focused: {stats.guidance}
         </Text>
       )}

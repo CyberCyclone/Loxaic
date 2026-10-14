@@ -132,8 +132,9 @@ cpSync(path.join(repoRoot, "infra/docker"), path.join(outDir, "sandbox"), {
 // dist/executor.js is the local executor the desktop spawns for Local
 // workspaces (supervisor/executor.js); `ws` is its one runtime dependency.
 // node-forge builds the GitHub egress proxy's certificates: without it the
-// proxy cannot start, and sandboxes have no GitHub.
-for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/node-forge", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
+// proxy cannot start, and sandboxes have no GitHub. yaml parses every skill's
+// frontmatter, the built-ins included: without it no skill loads at all.
+for (const required of ["dist/index.js", "dist/executor.js", "dist/reset-password.js", "node_modules/fastify", "node_modules/ws", "node_modules/node-forge", "node_modules/yaml", "drizzle/meta/_journal.json", "sandbox/sandbox.Dockerfile", "sandbox/sandbox/extract.py"]) {
   if (!existsSync(path.join(outDir, required))) {
     throw new Error(`[build-server] missing ${required} in ${outDir}`);
   }

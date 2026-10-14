@@ -31,3 +31,14 @@ import { Platform } from 'react-native'
 export const TRUNCATE_TEXT = (
   Platform.OS === 'web' ? { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } : undefined
 ) as object | undefined
+
+/**
+ * The same for a clamp to `lines` lines, ending in an ellipsis — what
+ * `numberOfLines={lines}` does on native, where this is undefined. An inline
+ * style for the reason above.
+ */
+export function clampLines(lines: number): object | undefined {
+  return Platform.OS === 'web'
+    ? { display: '-webkit-box', WebkitLineClamp: lines, WebkitBoxOrient: 'vertical', overflow: 'hidden' }
+    : undefined
+}

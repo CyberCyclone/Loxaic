@@ -48,9 +48,9 @@ describe("parseCommand", () => {
     expect(parseCommand("")).toBeNull();
   });
 
-  it("still parses an unknown command name — the registry lookup is the caller's job", () => {
-    // parseCommand only recognizes shape; findCommand is what decides real vs.
-    // not, which is what lets "/foo bar" fall through to plain text.
+  it("still parses an unknown command name — the skill lookup is the caller's job", () => {
+    // parseCommand only recognizes shape; the skills decide real vs. not,
+    // which is what lets "/foo bar" fall through to plain text.
     expect(parseCommand("/unknown-thing here")).toEqual({ name: "unknown-thing", args: "here" });
   });
 });

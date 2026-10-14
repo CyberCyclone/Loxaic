@@ -9,7 +9,8 @@ export type ToolName =
   | "todo_write"
   | "propose_plan"
   | "ask_questions"
-  | "subagent";
+  | "subagent"
+  | "skill";
 
 export type PermissionMode = "planning" | "manual" | "auto";
 
@@ -307,6 +308,63 @@ export function subagentTool(models?: readonly string[]): ToolDef {
   };
 }
 
+/** The wire name of `skillTool`. */
+export const SKILL_TOOL_NAME = "skill";
+
+/** A skill as the model is told of it: what the `skill` tool's description lists. */
+export interface SkillListing {
+  name: string;
+  description: string;
+}
+
+/** A skill's name or description as the tool lists it, unable to close a
+ * marker: a description is a person's or a repository's text, and this list
+ * sits at the front of every request. Any closing tag is broken with a
+ * zero-width space, which covers `</skill-content>` and `</skills-update>`
+ * — what the server's own renderers neutralise — without this package
+ * knowing their names. */
+function inert(text: string): string {
+  return text.split("</").join("</\u200b");
+}
+
+/**
+ * How the model loads a skill (#283): specialised instructions for a kind of
+ * task, in the Agent Skills format. The model sees each skill's name and
+ * description here and loads a body only when a task calls for it.
+ *
+ * `skills` is the conversation's catalog **as frozen on its first run**
+ * (apps/server/src/skills/session.ts): the tools array is the front of every
+ * prompt, so a skill added or edited later is announced in a notice on the
+ * next message instead of changing this description. `name` is therefore a
+ * plain string rather than an enum of this list — a skill announced later
+ * must still be loadable — and the server checks it against the live
+ * catalog.
+ *
+ * Kept out of `TOOLS`, like the plan tools, so `isToolName` keeps it off the
+ * "Allow always" list. It never asks: loading instructions changes nothing.
+ */
+export function skillTool(skills: readonly SkillListing[]): ToolDef {
+  const list = skills.length
+    ? skills.map((s) => `- ${inert(s.name)}: ${inert(s.description)}`).join("\n")
+    : "(none yet)";
+  return {
+    name: SKILL_TOOL_NAME,
+    description:
+      "Load a skill: specialised instructions for a kind of task. When a task matches a skill's description, " +
+      "call this with the skill's name before starting the task, then follow the instructions it returns. " +
+      "Skills added or changed later in this conversation are announced in the messages.\n\n" +
+      `Skills:\n${list}`,
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The skill's name, exactly as listed" },
+      },
+      required: ["name"],
+    },
+    requiresApproval: false,
+  };
+}
+
 /** The tools that hand the turn to the user: a successful call to either ends
  * the turn with no further model request. */
 export const HANDOVER_TOOL_NAMES: ReadonlySet<string> = new Set([PLAN_TOOL_NAME, QUESTIONS_TOOL_NAME]);
@@ -388,12 +446,16 @@ export function resolveBuiltinTools(
     /** Present to offer the sub-agent tool; `models` is what its `model`
      * argument may name (see `subagentTool`). */
     subagents?: { models?: readonly string[] | null };
+    /** Present to offer the `skill` tool, listing these skills (see
+     * `skillTool`). Absent when the conversation has none. */
+    skills?: readonly SkillListing[];
   },
 ): ResolvedTool[] {
   const defs = [
     ...TOOLS,
     ...(mode === "planning" && opts?.handover !== false ? [PLAN_TOOL, QUESTIONS_TOOL] : []),
     ...(opts?.subagents ? [subagentTool(opts.subagents.models ?? undefined)] : []),
+    ...(opts?.skills ? [skillTool(opts.skills)] : []),
   ];
   return defs.map((t) => ({
     name: t.name,

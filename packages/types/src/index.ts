@@ -187,7 +187,16 @@ export type ContentBlock =
    * run, and `text` is the notice the model was given ahead of the message.
    * Stored so every replay sends exactly what the live request sent; `summary`
    * is the one line a client shows. */
-  | { kind: "instructions_update"; path: string; text: string; summary: string };
+  | { kind: "instructions_update"; path: string; text: string; summary: string }
+  /** On a user message that began "/name": the skill it invoked, and `text`,
+   * the instructions the model was given ahead of the message — frozen at
+   * send time, so editing the skill later never changes what a replay sends.
+   * `source` is a `SkillSource` (./commands). */
+  | { kind: "skill"; name: string; source: "builtin" | "user" | "workspace"; text: string }
+  /** On a user message: the conversation's skills changed since the model was
+   * last told, and `text` is the notice it was given ahead of the message.
+   * `summary` is the one line a client shows. */
+  | { kind: "skills_update"; text: string; summary: string };
 
 export interface ModelContextStage {
   /** The stage the model loads at now; 0 is its standard context. */

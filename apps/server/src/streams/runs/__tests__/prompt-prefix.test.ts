@@ -913,6 +913,66 @@ describe("a change to the project's instructions keeps the prefix", () => {
   });
 });
 
+describe("skills keep the prefix (#283)", () => {
+  /**
+   * The `skill` tool lists the conversation's skills, and the tools array is
+   * the front of every prompt: it must not move when a skill is used, loaded,
+   * or added. A person's "/name" rides on their own message, a loaded skill
+   * on its tool result, and a skill added later on a notice at the end of the
+   * next message — all persisted, so every replay sends the same bytes.
+   */
+  const lastUser = (req: string[]) => JSON.parse(req.at(-1) ?? "{}") as { role: string; content: string };
+
+  afterEach(async () => {
+    const { __setTestSkillsForTest } = await import("../../../skills/catalog.ts");
+    __setTestSkillsForTest([]);
+  });
+
+  it("holds across a /name turn and the turn after", async () => {
+    const convId = await turn("/debug the login page");
+    const invoked = lastUser(requests[0]);
+    expect(invoked.content).toMatch(/^The user invoked the "debug" skill[^\n]*\n<skill-content name="debug" source="builtin">\n# Debug[\s\S]*<\/skill-content>\n\n\/debug the login page$/);
+    expect(requestOptions[0].tools).toContain('"name":"skill"');
+    // The markers are explained in the system prompt of a run offered the tool.
+    const { SKILL_SYSTEM_ADDENDUM } = await import("../../../skills/catalog.ts");
+    expect((JSON.parse(requests[0][0]) as { role: string; content: string }).content).toContain(SKILL_SYSTEM_ADDENDUM);
+    await turn("and now the signup page", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("holds across a turn that loaded a skill with the tool, and the turn after", async () => {
+    const convId = await turn("please use the debug skill");
+    const tool = requests.at(-1)?.map((m) => JSON.parse(m) as { role: string; content: string }).find((m) => m.role === "tool");
+    expect(tool?.content.startsWith('<skill-content name="debug" source="builtin">')).toBe(true);
+    await turn("thanks", convId);
+    expectEachRequestExtendsTheLast();
+  });
+
+  it("announces a skill added mid-conversation without changing the tools, and lists it after a compaction", async () => {
+    const { __setTestSkillsForTest } = await import("../../../skills/catalog.ts");
+    const convId = await turn("say hello one");
+    __setTestSkillsForTest([
+      { name: "house-style", description: "How we write.", source: "user", body: "Short sentences.", modelInvocable: true },
+    ]);
+    await turn("say hello two", convId);
+    await turn("say hello three", convId);
+    expectEachRequestExtendsTheLast();
+    expect(new Set(requestOptions.map((o) => o.tools)).size).toBe(1);
+    expect(requestOptions[0].tools).not.toContain("house-style");
+    expect(lastUser(requests[1]).content).toMatch(/^<skills-update>[\s\S]*- house-style: How we write\.[\s\S]*<\/skills-update>\n\nsay hello two$/);
+    // Told once: the next message carries no notice of its own.
+    expect(lastUser(requests[2]).content).toBe("say hello three");
+
+    const { startCompactRun } = await import("../compactRun.ts");
+    await startCompactRun({ userId, conversationId: convId, model: "llama-3.1-8b-instruct", surface: "chat" });
+    await waitForRun(convId);
+    requests.length = 0;
+    requestOptions.length = 0;
+    await turn("say hello four", convId);
+    expect(requestOptions[0].tools).toContain("house-style");
+  });
+});
+
 describe("a compaction extends the prompt it compacts", () => {
   /**
    * A compaction used to drop the system prompt and the tools, so its request

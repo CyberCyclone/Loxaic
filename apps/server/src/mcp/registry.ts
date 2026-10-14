@@ -1,5 +1,5 @@
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
-import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
+import type { OpenAiTool, PermissionMode, ResolvedTool, SkillListing } from "@loxaic/agent";
 import { isAllowlistableTool, resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
 import { and, db, eq, sql } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
@@ -78,12 +78,19 @@ export async function buildToolset(
     /** False to leave out the plan and questions tools in planning mode — a
      * sub-agent has no user to hand either to. */
     handover?: boolean;
+    /** Offer the `skill` tool, listing these skills — the conversation's
+     * frozen catalog (skills/session.ts). Absent leaves it out. */
+    skills?: readonly SkillListing[];
   },
 ): Promise<Toolset> {
   const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
   // An allowlisted `bash` (from before command rules) is ignored: whether a
   // command asks is decided per command (permissions/bash/policy.ts).
-  const resolved = resolveBuiltinTools(opts.mode, { handover: opts.handover, subagents: opts.subagents }).map((t) =>
+  const resolved = resolveBuiltinTools(opts.mode, {
+    handover: opts.handover,
+    subagents: opts.subagents,
+    skills: opts.skills,
+  }).map((t) =>
     allowlist.has(t.name) && isAllowlistableTool(t.name) ? { ...t, requiresApproval: false } : t,
   );
   const mcpEntries = new Map<string, McpToolEntry>();

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MessagesSquare, PanelRight, SquareTerminal, TriangleAlert, WifiOff } from 'lucide-react-native';
-import { findCommand } from '@loxaic/api-client';
 import type { McpOverrides, ThinkingLevel } from '@loxaic/types';
 import { disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
@@ -22,6 +21,8 @@ import { WorkspacePill } from '@/components/agent/WorkspacePill';
 import { TerminalPanel } from '@/components/agent/TerminalPanel';
 import { Composer } from '@/components/composer/Composer';
 import { ModelModal } from '@/components/settings/ModelModal';
+import { useSkills } from '@/hooks/useSkills';
+import { compactRequest } from '@/lib/skillPalette';
 import { useAgentSession } from '@/hooks/useAgentSession';
 import { useModels } from '@/hooks/useModels';
 import { useRecentModels } from '@/hooks/useRecentModels';
@@ -127,6 +128,8 @@ export default function AgentScreen() {
     stageCard,
     subAgents: subAgentState,
   } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef);
+  // What the "/" palette offers here, most-used first (#283).
+  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId);
   // This run's sub-agents: their cards, the list behind the ⋮ item, the open
   // panel, and the approval to show when the run itself is not asking.
   // Stopping one and answering it are editor actions, as they are on the run.
@@ -271,7 +274,13 @@ export default function AgentScreen() {
     streaming: busy,
     readOnly: readOnlyReason !== null,
     isAdmin,
-    onCompact: () => { handleRunCommand('compact', ''); },
+    // The built-in compaction while /compact is still it; a person's own
+    // /compact otherwise, as typing it would be (compactRequest).
+    onCompact: () => {
+      const request = compactRequest(skills);
+      if (request.kind === 'command') handleRunCommand('compact', '');
+      else handleSend(request.text, selectedModel);
+    },
     refreshModels: () => { void refreshModels(); },
     stageCard,
     promotion,
@@ -280,14 +289,14 @@ export default function AgentScreen() {
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
-      const cmd = findCommand(name);
+      const cmd = skills.find((s) => s.name === name);
       if (cmd?.requiresConversation && !activeId) {
         showToast('Start a run first');
         return;
       }
       handleCommand(name, args, selectedModel);
     },
-    [activeId, selectedModel, handleCommand, showToast],
+    [activeId, selectedModel, handleCommand, showToast, skills],
   );
 
   // The Inspector's own Compact button (outside the Composer) seeds the
@@ -594,7 +603,8 @@ export default function AgentScreen() {
                 modelName={selectedModel ? getName(selectedModel) : 'Select model'}
                 context={context}
                 onOpenModelModal={() => { setModelModalOpen(true); }}
-                surface="agent"
+                skills={skills}
+                onSkillUsed={noteSkillUsed}
                 mcp={mcp}
                 thinking={thinking.composer}
                 onRunCommand={handleRunCommand}

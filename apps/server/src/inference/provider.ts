@@ -478,6 +478,14 @@ const MOCK_TOOL_TRIGGERS: {
       return { description: "Mock sub-task", prompt: task || "Say hello." };
     },
   },
+  // Loading a skill (skills/session.ts): "use the debug skill". Before the
+  // builtins below, which a skill's name ("code-review", "write-tests") could
+  // otherwise fire.
+  {
+    match: /\buse the [a-z0-9-]+ skill\b/i,
+    name: "skill",
+    args: (prompt) => ({ name: /\buse the ([a-z0-9-]+) skill\b/i.exec(prompt)?.[1]?.toLowerCase() ?? "" }),
+  },
   // Planning mode's hand-off. Before the `plan` trigger below, which would
   // otherwise take the same prompt for todo_write; only planning mode offers
   // propose_plan, so everywhere else this falls through to that one. Neither
@@ -527,7 +535,19 @@ async function* mockStream(
   // keyword triggers ("read", "edit" …); it is reported in the echo instead.
   const rawPrompt = textOfContent(lastUser?.content);
   const updatePaths = [...rawPrompt.matchAll(/<project-instructions-update path="([^"]*)">/g)].map((m) => m[1]);
-  const prompt = rawPrompt.replace(/<project-instructions-update [\s\S]*?<\/project-instructions-update>\s*/g, "").trim();
+  // The same for a notice that the skills changed and for a "/name" skill's
+  // instructions (skills/session.ts): Loxaic's text, reported in the echo so
+  // an e2e can prove each reached the prompt.
+  const skillUpdates = [...rawPrompt.matchAll(/<skills-update>([\s\S]*?)<\/skills-update>/g)].flatMap((m) => [
+    ...[...m[1].matchAll(/^- ([a-z0-9-]+)/gm)].map((n) => n[1]),
+    ...[...m[1].matchAll(/^No longer available: (.*)$/gm)].flatMap((n) => n[1].split(", ")),
+  ]);
+  const loadedSkills = [...rawPrompt.matchAll(/<skill-content name="([^"]*)"/g)].map((m) => m[1]);
+  const prompt = rawPrompt
+    .replace(/<project-instructions-update [\s\S]*?<\/project-instructions-update>\s*/g, "")
+    .replace(/<skills-update>[\s\S]*?<\/skills-update>\s*/g, "")
+    .replace(/The user invoked the "[^"]*" skill[^\n]*\n<skill-content [\s\S]*?<\/skill-content>\s*/g, "")
+    .trim();
   // The auto-mode permission check (permissions/check.ts), answered from
   // keywords in the action it describes: ALLOW by default, so a networked
   // auto run behaves as it always has, ASK, a reply with no verdict, or one
@@ -732,7 +752,9 @@ async function* mockStream(
     const imported = instructions?.[3] ? `, ${instructions[3]} imported` : "";
     const instructionsNote =
       (instructions ? `Project instructions: ${instructions[1]} (${instructions[2]}${imported}). ` : "") +
-      updatePaths.map((p) => `Project instructions updated: ${p}. `).join("");
+      updatePaths.map((p) => `Project instructions updated: ${p}. `).join("") +
+      (skillUpdates.length ? `Skills updated: ${skillUpdates.join(", ")}. ` : "") +
+      loadedSkills.map((n) => `Skill loaded: ${n}. `).join("");
     fullText = lastTool
       ? `[Mock] Done. The tool returned: ${lastTool.content.slice(0, 200)}`
       : MOCK_SUMMARY_REQUEST.test(prompt)

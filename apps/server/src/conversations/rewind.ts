@@ -329,6 +329,9 @@ async function removeSuffix(
   // else. Reconstructing the version before the removed notice is not
   // possible: it is stored nowhere.
   const removedNotice = rows.some((r) => (r.content as ContentBlock[]).some((b) => b.kind === "instructions_update"));
+  // The same for a notice that the skills changed (skills/session.ts): the
+  // next run compares the live skills with the frozen list and says so again.
+  const removedSkillsNotice = rows.some((r) => (r.content as ContentBlock[]).some((b) => b.kind === "skills_update"));
   const keep = getConversationSettings().keepDeleted;
 
   const children =
@@ -383,6 +386,7 @@ async function removeSuffix(
           activeLeafId: leaf?.id ?? null,
           updatedAt: now,
           ...(removedNotice ? { instructions: sql`${conversations.instructions} - 'latest'` } : {}),
+          ...(removedSkillsNotice ? { skillCatalog: sql`${conversations.skillCatalog} - 'latest'` } : {}),
         })
         .where(eq(conversations.id, convId));
     });
