@@ -83,8 +83,10 @@ describe('skills in the composer', () => {
     });
     await waitForAbsent('composer.palette');
     // Picking focuses the box, which raises a phone's keyboard; on Android it
-    // covers the composer's toolbar, Send included, until it is put away.
-    await closeKeyboard();
+    // covers the composer's toolbar, Send included, until it is put away. Not
+    // on iOS, where Send stays clear of it and the helper's drag across an
+    // empty chat lands on a suggestion card, which sends it.
+    if (platform() === 'android') await closeKeyboard();
 
     await sendAndAwaitReply('/code-review the parser change', 'Skill loaded: code-review. Echo: /code-review the parser change');
     // On a phone the keyboard stays up after a send and the message above the
@@ -130,7 +132,7 @@ describe('skills in the composer', () => {
     await typeInto('composer.input', '/comp');
     await tap('composer.command.compact');
     await browser.waitUntil(async () => (await inputValue()) === '/compact ', { timeout: 5_000 });
-    await closeKeyboard();
+    if (platform() === 'android') await closeKeyboard();
     await typeInto('composer.input', '/compact keep the plan fully intact');
     await tap('composer.send');
     await waitForTextIn('chat.compaction.guidance', 'keep the plan fully intact');
