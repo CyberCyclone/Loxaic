@@ -20,7 +20,7 @@ import { presetPath, routerLogPath } from "./paths.ts";
 import { foldPlacementLine, newPlacementTracker, type RawPlacement } from "./placement.ts";
 import { carriesPrompt, lineSplitter, openRouterLog, type RouterLog } from "./router-log.ts";
 import { lostDevice } from "./device-lost.ts";
-import { gpuJobLimit, refreshGpuJobLimit, type GpuJobLimit } from "./gpu-job-limit.ts";
+import { gpuJobLimit, gpuJobLimitView, refreshGpuJobLimit, type GpuJobLimitView } from "./gpu-job-limit.ts";
 import {
   modelIdFromRouterName,
   renderPreset,
@@ -126,7 +126,7 @@ export interface RuntimeView {
   optionsUnavailable: string | null;
   /** How long the GPU driver lets one GPU job run before resetting the GPU,
    * where that can be read (amdgpu on Linux, Vulkan runtime), or null. */
-  gpuJobLimit: GpuJobLimit | null;
+  gpuJobLimit: GpuJobLimitView | null;
 }
 
 export interface RuntimeVersionView {
@@ -339,6 +339,9 @@ export function explainModelLoadFailure(lines: string[], routerName: string): st
   if (from < 0) return null;
   const own: string[] = [];
   for (const line of lines.slice(from + 1)) {
+    // A port is reused once its child exits: another model spawned on ours
+    // means everything after this line on that port is the other model's.
+    if (SPAWN_LINE.exec(line)?.[2] === port) break;
     const m = CHILD_LINE.exec(line);
     if (m?.[1] === port && m[2]) own.push(m[2].trim());
   }
@@ -791,6 +794,7 @@ function childEnv(bin: string, apiKey: string): NodeJS.ProcessEnv {
   if (process.env.LOXAIC_FAKE_LOAD_MS) env.LOXAIC_FAKE_LOAD_MS = process.env.LOXAIC_FAKE_LOAD_MS;
   if (process.env.LOXAIC_FAKE_VRAM_STATE) env.LOXAIC_FAKE_VRAM_STATE = process.env.LOXAIC_FAKE_VRAM_STATE;
   if (process.env.LOXAIC_FAKE_RELOAD_FAIL) env.LOXAIC_FAKE_RELOAD_FAIL = process.env.LOXAIC_FAKE_RELOAD_FAIL;
+  if (process.env.LOXAIC_FAKE_UNLOAD_STUCK) env.LOXAIC_FAKE_UNLOAD_STUCK = process.env.LOXAIC_FAKE_UNLOAD_STUCK;
   if (process.env.LOXAIC_FAKE_HELP_OMIT) env.LOXAIC_FAKE_HELP_OMIT = process.env.LOXAIC_FAKE_HELP_OMIT;
   return env;
 }
@@ -1550,9 +1554,12 @@ export function runtimeView(): RuntimeView {
     extraOptions: getRouterExtraOptions(),
     extraOptionsSkipped: skippedExtraOptions(getRouterExtraOptions()),
     optionsUnavailable: optionsUnavailableReason(),
-    // Only Vulkan is held to amdgpu's limit here: it is the backend that runs
-    // on AMD cards, and the only one that reads the parameter's meaning.
-    gpuJobLimit: mode === "managed" && st.flavour === "vulkan" ? gpuJobLimit() : null,
+    // Only Vulkan: amdgpu's `lockup_timeout` is the DRM scheduler's job
+    // timeout, and only work submitted through amdgpu's command submission is
+    // timed by it, which is what RADV does. ROCm's compute goes to user-mode
+    // queues managed by amdkfd, which that scheduler never sees, so the limit
+    // does not apply to it and warning a ROCm host about it would be wrong.
+    gpuJobLimit: mode === "managed" && st.flavour === "vulkan" ? gpuJobLimitView(gpuJobLimit()) : null,
   };
 }
 

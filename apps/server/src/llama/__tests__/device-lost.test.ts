@@ -8,7 +8,7 @@ import { db, eq } from "@loxaic/db";
 import { localModels } from "@loxaic/db/schema";
 import { invalidateLocalModelCache } from "../catalog.ts";
 import { deviceLostMessage, isDeviceLost, lostDevice } from "../device-lost.ts";
-import { __resetRoomForTest } from "../room.ts";
+import { __resetRoomForTest, discardLostModel, loadErrorFor } from "../room.ts";
 import { __resetRouterForTest, __setHardwareForTest, ensureRuntime, routerModelStatuses, runtimeView } from "../router.ts";
 import { routerModelName } from "../preset.ts";
 import { streamCompletion } from "../../inference/provider.ts";
@@ -54,23 +54,48 @@ describe("a lost GPU, in words", () => {
     expect(lostDevice([...PHEONIX, `spawning server instance with name=${NAME} on port 50000`], NAME)).toBeNull();
   });
 
-  it("says what happened, that the model was unloaded, and what Retry costs", () => {
-    expect(deviceLostMessage("Flash-Next", "Vulkan2", null)).toBe(
-      "The GPU (Vulkan2) stopped responding while Flash-Next was working on this, and the system reset it. " +
-        "The model has been unloaded and loads again with your next message, which reads the whole conversation again from the start.",
-    );
-    expect(deviceLostMessage("Flash-Next", null, null)).toMatch(/^The GPU stopped responding/);
+  it("stops reading a port once another model is given it, and not before", () => {
+    // Ours exited and the router handed its port to another model, whose
+    // device then went: not ours to report.
+    const reused = [...PHEONIX.slice(0, 4), "spawning server instance with name=someone/else@Q4_K_M on port 44687", "[44687] 2.00.000.000 E ggml_vulkan: device lost on Vulkan3"];
+    expect(lostDevice(reused, NAME)).toBeNull();
+    // Another model starting on another port does not end ours: several are
+    // loaded at once.
+    const beside = [...PHEONIX.slice(0, 4), "spawning server instance with name=someone/else@Q4_K_M on port 45000", ...PHEONIX.slice(4)];
+    expect(lostDevice(beside, NAME)).toBe("Vulkan2");
   });
 
-  it("blames the driver's limit only when it is short enough to be the cause", () => {
-    const short = deviceLostMessage("Flash-Next", "Vulkan2", { driver: "amdgpu", computeMs: 2000, source: "default" });
-    expect(short).toContain("resets any GPU job that runs longer than 2 s");
-    expect(short).toContain("Settings › Host models says how");
+  it("says what happened, that the model was unloaded, and what Retry costs", () => {
+    expect(deviceLostMessage("Flash-Next", null)).toBe(
+      "The GPU stopped responding while Flash-Next was working on this, and the system reset it. " +
+        "The model has been unloaded and loads again with your next message, which reads the whole conversation again from the start.",
+    );
+  });
+
+  it("says when it happened while loading, and promises no unload it did not do", () => {
+    const text = deviceLostMessage("Flash-Next", null, { atLoad: true });
+    expect(text).toMatch(/^The GPU stopped responding while Flash-Next was loading/);
+    expect(text).toContain("It loads again with your next message");
+    expect(text).not.toContain("has been unloaded");
+  });
+
+  it("stops promising a fresh load once the model would not unload", () => {
+    const text = deviceLostMessage("Flash-Next", null, { stuck: true });
+    expect(text).toContain("could not be unloaded after an earlier reset");
+    expect(text).toContain("an admin restarts llama.cpp in Settings › Host models");
+    expect(text).not.toContain("loads again with your next message");
+  });
+
+  it("blames a short driver limit without saying the limit, to a reader who may not be an admin", () => {
+    const short = deviceLostMessage("Flash-Next", { driver: "amdgpu", computeMs: 2000, source: "default" });
+    expect(short).toContain("can need more GPU time than this host's GPU driver allows");
+    expect(short).toContain("an admin can see the limit and raise it in Settings › Host models");
+    expect(short).not.toMatch(/\d+ (s|ms)\b/);
     for (const limit of [
       { driver: "amdgpu" as const, computeMs: 60_000, source: "set" as const },
       { driver: "amdgpu" as const, computeMs: null, source: "set" as const },
     ]) {
-      expect(deviceLostMessage("Flash-Next", "Vulkan2", limit)).not.toContain("resets any GPU job");
+      expect(deviceLostMessage("Flash-Next", limit)).not.toContain("GPU time");
     }
   });
 });
@@ -81,6 +106,9 @@ describe("a lost GPU, end to end", () => {
   const params = mkdtempSync(path.join(os.tmpdir(), "loxaic-amdgpu-"));
   const host = `test-device-lost-${uuid()}`;
   const model = `test/flash-${uuid().slice(0, 8)}:Q4_K_M`;
+  // Its file is named so that the fake loses the device during its first load.
+  const lostAtLoad = `test/lostload-${uuid().slice(0, 8)}:Q4_K_M`;
+  const stuckFile = path.join(dir, "unload-stuck");
 
   beforeAll(async () => {
     vi.stubEnv("LOXAIC_INSTANCE_ID", host);
@@ -91,7 +119,28 @@ describe("a lost GPU, end to end", () => {
     vi.stubEnv("LLAMA_MODE", "managed");
     // Stands in for /sys/module/amdgpu/parameters: kernel 7.0's two seconds.
     writeFileSync(path.join(params, "lockup_timeout"), "2000\n");
+    // What `modinfo -p amdgpu` says on that kernel: one value is for every job.
+    writeFileSync(
+      path.join(params, "modinfo"),
+      "lockup_timeout:GPU lockup timeout in ms (default: 2000. 0: keep default value. negative: infinity timeout), format: [single value for all] or [GFX,Compute,SDMA,Video]. (string)\n",
+    );
     vi.stubEnv("LOXAIC_AMDGPU_PARAMS_DIR", params);
+    vi.stubEnv("LOXAIC_FAKE_UNLOAD_STUCK", stuckFile);
+    vi.stubEnv("LLAMA_DISCARD_WAIT_MS", "500");
+    const row = (id: string, file: string, displayName: string) => ({
+      hostId: host,
+      id,
+      repo: id.split(":")[0],
+      revision: "0".repeat(40),
+      quant: "Q4_K_M",
+      sizeBytes: 1,
+      status: "ready" as const,
+      enabled: true,
+      publisher: "test",
+      files: [{ path: file, size: 1, sha256: null }],
+      displayName,
+    });
+    await db.insert(localModels).values(row(lostAtLoad, "LostAtLoad-Q4_K_M.gguf", "Flash Lost"));
     await db.insert(localModels).values({
       hostId: host,
       id: model,
@@ -120,10 +169,10 @@ describe("a lost GPU, end to end", () => {
     rmSync(params, { recursive: true, force: true });
   });
 
-  async function ask(text: string): Promise<{ reply: string; error: string | null }> {
+  async function ask(text: string, on = model): Promise<{ reply: string; error: string | null }> {
     let reply = "";
     try {
-      for await (const ev of streamCompletion(model, [{ role: "user", content: text }])) {
+      for await (const ev of streamCompletion(on, [{ role: "user", content: text }])) {
         if (ev.type === "delta") reply += ev.content;
       }
       return { reply, error: null };
@@ -133,14 +182,23 @@ describe("a lost GPU, end to end", () => {
   }
 
   it("reports the driver's limit on the runtime card", () => {
-    expect(runtimeView().gpuJobLimit).toEqual({ driver: "amdgpu", computeMs: 2000, source: "set" });
+    expect(runtimeView().gpuJobLimit).toEqual({
+      driver: "amdgpu",
+      computeMs: 2000,
+      source: "set",
+      short: true,
+      suggestedLockupTimeout: "2000,60000,2000,2000",
+    });
   });
 
   it("explains the loss, unloads the broken process, and answers the next message", async () => {
     const lost = await ask("Please lose the device.");
-    expect(lost.error).toContain("The GPU (Vulkan0) stopped responding while Flash Next was working on this");
-    expect(lost.error).toContain("longer than 2 s");
+    expect(lost.error).toContain("The GPU stopped responding while Flash Next was working on this");
+    expect(lost.error).toContain("more GPU time than this host's GPU driver allows");
     expect(lost.error).not.toContain("ErrorDeviceLost");
+    // The device and the limit are the admin's to see, not every viewer's.
+    expect(lost.error).not.toContain("Vulkan0");
+    expect(lost.error).not.toContain("2 s");
 
     // Unloaded in the background, so the person was not kept waiting for it.
     await vi.waitFor(async () => {
@@ -152,5 +210,57 @@ describe("a lost GPU, end to end", () => {
     const next = await ask("hi");
     expect(next.error).toBeNull();
     expect(next.reply).toContain(routerModelName(model));
+  });
+
+  it("answers a message sent straight after the loss, from a fresh process", async () => {
+    const lost = await ask("Please lose the device.");
+    expect(lost.error).toContain("The model has been unloaded");
+    // No wait: sent while the discard is still under way.
+    const next = await ask("hi");
+    expect(next.error).toBeNull();
+    expect(next.reply).toContain(routerModelName(model));
+  });
+
+  it("blames the GPU, not the model's settings, when the device goes while it loads", async () => {
+    const lost = await ask("hi", lostAtLoad);
+    expect(lost.error).toContain("The GPU stopped responding while Flash Lost was loading");
+    expect(lost.error).not.toContain("could not be loaded");
+    expect(lost.error).not.toContain("load settings");
+    const next = await ask("hi", lostAtLoad);
+    expect(next.error).toBeNull();
+    expect(next.reply).toContain(routerModelName(lostAtLoad));
+  });
+
+  it("says so on the model's row, and stops promising a fresh load, when the unload does not take", async () => {
+    writeFileSync(stuckFile, "");
+    try {
+      const lost = await ask("Please lose the device.");
+      expect(lost.error).toContain("The model has been unloaded");
+
+      // Sent at once, while the unload is still being waited on: it waits for
+      // the verdict rather than reaching the dead process and being promised
+      // a fresh load again, and is told what will get it out.
+      const again = await ask("hi");
+      expect(again.error).toContain("could not be unloaded after an earlier reset");
+      expect(again.error).not.toContain("loads again with your next message");
+      expect(loadErrorFor(model, "loaded")).toContain("its process could not be unloaded");
+      expect(loadErrorFor(model, "loaded")).toContain("Vulkan0");
+      // That failure tried the unload again; let it finish failing (a second
+      // call joins the one running rather than starting another).
+      await discardLostModel(model);
+      expect(loadErrorFor(model, "loaded")).toContain("its process could not be unloaded");
+    } finally {
+      rmSync(stuckFile, { force: true });
+    }
+    // Every failure on the dead process tries the unload again; once one takes
+    // (here, the process lets go), the row clears and the next message answers.
+    await ask("hi");
+    await vi.waitFor(async () => {
+      const status = (await routerModelStatuses()).get(model)?.value ?? null;
+      expect(status).toBe("unloaded");
+      expect(loadErrorFor(model, status)).toBeNull();
+    }, { timeout: 10_000 });
+    const next = await ask("hi");
+    expect(next.error).toBeNull();
   });
 });

@@ -50,20 +50,32 @@ describe('CPU warnings', () => {
 });
 
 describe('the GPU driver\'s job limit', () => {
+  const limit = (computeMs: number | null, source: 'set' | 'default', short: boolean) => ({
+    driver: 'amdgpu' as const, computeMs, source, short, suggestedLockupTimeout: '2000,60000,2000,2000',
+  });
+
   it('warns about a short limit, says whose it is, and gives the line that raises it', () => {
-    const w = gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 2000, source: 'default' } }));
+    const w = gpuJobLimitWarning(rt({ gpuJobLimit: limit(2000, 'default', true) }));
     expect(w?.message).toMatch(/^This host's AMD GPU driver \(amdgpu\) resets the GPU when one piece of GPU work runs longer than 2 s\./);
     expect(w?.message).toContain('update-initramfs');
     expect(w?.fix).toBe("echo 'options amdgpu lockup_timeout=2000,60000,2000,2000' | sudo tee /etc/modprobe.d/amdgpu-timeout.conf");
-    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 1500, source: 'set' } }))?.message).toMatch(
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: limit(1500, 'set', true) }))?.message).toMatch(
       /^This host is set to reset the GPU when one piece of GPU work runs longer than 1500 ms\./,
     );
   });
 
-  it('says nothing for a long limit, no limit, an unknown one, or an older server', () => {
-    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 60_000, source: 'set' } }))).toBeNull();
-    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: 10_000, source: 'set' } }))).toBeNull();
-    expect(gpuJobLimitWarning(rt({ gpuJobLimit: { driver: 'amdgpu', computeMs: null, source: 'set' } }))).toBeNull();
+  it('takes the line from the server, not a copy of its own', () => {
+    const w = gpuJobLimitWarning(rt({ gpuJobLimit: { ...limit(2000, 'default', true), suggestedLockupTimeout: '10000,90000,10000,10000' } }));
+    expect(w?.fix).toContain('lockup_timeout=10000,90000,10000,10000');
+  });
+
+  it('follows the server on whether a limit is short, whatever the figure', () => {
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: limit(2000, 'default', false) }))).toBeNull();
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: limit(60_000, 'set', false) }))).toBeNull();
+  });
+
+  it('says nothing for no limit, an unknown one, or an older server', () => {
+    expect(gpuJobLimitWarning(rt({ gpuJobLimit: limit(null, 'set', false) }))).toBeNull();
     expect(gpuJobLimitWarning(rt({ gpuJobLimit: null }))).toBeNull();
     expect(gpuJobLimitWarning(rt({}))).toBeNull();
   });

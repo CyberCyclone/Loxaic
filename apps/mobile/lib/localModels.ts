@@ -189,15 +189,12 @@ export function cpuWarning(rt: LocalRuntimeView): { title: string; message: stri
   };
 }
 
-/** The server's `SHORT_GPU_JOB_LIMIT_MS`: a limit below this can cut off a long
- * prompt. A prompt step on a 200K-token context took about two seconds on a
- * V620, and amdgpu's default on kernel 7.0 is exactly two. */
-const SHORT_GPU_JOB_LIMIT_MS = 10_000;
-
 /**
  * The warning for a GPU driver that resets the GPU after a short job, and the
  * line that raises it, or null when there is nothing to say: no limit known,
- * no limit at all, or a long one.
+ * no limit at all, or a long one. Whether it is short, and the value to raise
+ * it to, are the server's (`gpuJobLimitView`), so this card and the chat's
+ * sentence cannot disagree.
  *
  * On the beta, a 221K-token conversation was re-read for 31 minutes and then
  * lost to amdgpu's 2-second limit, as "ErrorDeviceLost". Only someone with root
@@ -205,7 +202,7 @@ const SHORT_GPU_JOB_LIMIT_MS = 10_000;
  */
 export function gpuJobLimitWarning(rt: LocalRuntimeView): { message: string; fix: string } | null {
   const limit = rt.gpuJobLimit;
-  if (limit?.computeMs === undefined || limit.computeMs === null || limit.computeMs >= SHORT_GPU_JOB_LIMIT_MS) return null;
+  if (!limit?.short || limit.computeMs === null) return null;
   const seconds = limit.computeMs % 1000 === 0 ? `${String(limit.computeMs / 1000)} s` : `${String(limit.computeMs)} ms`;
   const whose = limit.source === 'default' ? "This host's AMD GPU driver (amdgpu) resets" : 'This host is set to reset';
   return {
@@ -214,7 +211,7 @@ export function gpuJobLimitWarning(rt: LocalRuntimeView): { message: string; fix
       'a big conversation, or one re-read after a context switch — can take longer than that, and the request ' +
       'then fails with "the GPU stopped responding". To allow a minute, run this on the host as root, then ' +
       'update the initramfs (sudo update-initramfs -u) and reboot:',
-    fix: "echo 'options amdgpu lockup_timeout=2000,60000,2000,2000' | sudo tee /etc/modprobe.d/amdgpu-timeout.conf",
+    fix: `echo 'options amdgpu lockup_timeout=${limit.suggestedLockupTimeout}' | sudo tee /etc/modprobe.d/amdgpu-timeout.conf`,
   };
 }
 

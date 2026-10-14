@@ -30,15 +30,27 @@ const CHILD_LINE = /^\[\s*(\d+)\]\s?(.*)$/;
 
 /** Which device the model's own llama-server reported lost (`ggml_vulkan:
  * device lost on Vulkan2`), from the router's output after its newest spawn;
- * null when it did not say. */
+ * null when it did not say. For the log and the admin card only: the chat's
+ * sentence reaches every viewer of a conversation, and a GPU's ordinal is
+ * deployment detail (`deviceLostMessage`).
+ *
+ * A port is handed back when a child exits and reused for the next one, so
+ * another model spawned on our port ends our lines there. Another model on any
+ * other port does not: several models are loaded at once, and our child keeps
+ * printing beside theirs. */
 export function lostDevice(lines: string[], routerName: string): string | null {
   let port: string | null = null;
   let device: string | null = null;
   for (const line of lines) {
     const spawn = SPAWN_LINE.exec(line);
-    if (spawn?.[1] === routerName) {
-      port = spawn[2];
-      device = null;
+    if (spawn) {
+      if (spawn[1] === routerName) {
+        port = spawn[2];
+        device = null;
+      } else if (spawn[2] === port) {
+        port = null;
+        device = null;
+      }
       continue;
     }
     const child = CHILD_LINE.exec(line);
@@ -49,26 +61,41 @@ export function lostDevice(lines: string[], routerName: string): string | null {
   return device;
 }
 
-/** The sentence a person reads in place of llama.cpp's. Pure, for its tests. */
-export function deviceLostMessage(name: string, device: string | null, limit: GpuJobLimit | null): string {
-  const which = device ? `the GPU (${device})` : "the GPU";
-  const first = `${which.charAt(0).toUpperCase()}${which.slice(1)} stopped responding while ${name} was working on this, and the system reset it.`;
-  const why = isShortGpuJobLimit(limit)
-    ? ` This host's GPU driver resets any GPU job that runs longer than ${formatMs(limit?.computeMs ?? 0)}, and a long prompt can need more than that; an admin can raise the limit (Settings › Host models says how).`
-    : "";
-  return (
-    `${first}${why} The model has been unloaded and loads again with your next message, ` +
-    "which reads the whole conversation again from the start."
-  );
+/** How the loss reached us, and what became of the model. */
+export interface DeviceLossContext {
+  /** The device went while the model's process was loading, not answering. */
+  atLoad?: boolean;
+  /** An earlier loss left the model's process up, and it would not unload
+   * (`room.ts`'s `discardFailed`): nothing will load a fresh one until the
+   * runtime is restarted, so the sentence must not promise that it will. */
+  stuck?: boolean;
 }
 
-function formatMs(ms: number): string {
-  return ms % 1000 === 0 ? `${String(ms / 1000)} s` : `${String(ms)} ms`;
+/**
+ * The sentence a person reads in place of llama.cpp's. Pure, for its tests.
+ *
+ * It is stored on the message and shown to everyone on the conversation,
+ * shared viewers included, so it names neither the GPU nor the driver's limit:
+ * both are admin-only everywhere else (the runtime card shows them). Whether
+ * the limit is short enough to blame is said, without the figure.
+ */
+export function deviceLostMessage(name: string, limit: GpuJobLimit | null, ctx: DeviceLossContext = {}): string {
+  const doing = ctx.atLoad ? "loading" : "working on this";
+  const first = `The GPU stopped responding while ${name} was ${doing}, and the system reset it.`;
+  const why = isShortGpuJobLimit(limit)
+    ? " A long prompt can need more GPU time than this host's GPU driver allows; an admin can see the limit and raise it in Settings › Host models."
+    : "";
+  const next = ctx.stuck
+    ? ` ${name} could not be unloaded after an earlier reset, so it will not answer until an admin restarts llama.cpp in Settings › Host models.`
+    : ctx.atLoad
+      ? " It loads again with your next message, which reads the whole conversation again from the start."
+      : " The model has been unloaded and loads again with your next message, which reads the whole conversation again from the start.";
+  return `${first}${why}${next}`;
 }
 
 /** The sentence for a lost device under host model `id`, falling back to the
  * id when its row is gone. */
-export async function describeDeviceLoss(id: string, device: string | null, limit: GpuJobLimit | null): Promise<string> {
+export async function describeDeviceLoss(id: string, limit: GpuJobLimit | null, ctx: DeviceLossContext = {}): Promise<string> {
   const row = await getLocalModelRow(id).catch(() => null);
-  return deviceLostMessage(row?.displayName ?? id, device, limit);
+  return deviceLostMessage(row?.displayName ?? id, limit, ctx);
 }

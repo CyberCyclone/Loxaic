@@ -1,6 +1,7 @@
 import path from "node:path";
 import { getLocalModelRow, mtpSource, rowMtpHead, type LocalModelRow } from "./catalog.ts";
 import { effectiveSettings } from "./context-stages.ts";
+import { isDeviceLost } from "./device-lost.ts";
 import { modelLoadFailureReason } from "./router.ts";
 
 /**
@@ -32,6 +33,14 @@ export function loadFailureMessage(row: Pick<LocalModelRow, "displayName" | "met
   const source = mtpSource(row);
   const drafting = effectiveSettings(row).mtp === true && (source === "embedded" || source === "head");
   const why = reason ? ` (${reason})` : "";
+  // The GPU was reset while the model loaded (`vk::DeviceLostError` in its
+  // own log): nothing about its settings is to blame, MTP included. These
+  // sentences reach the admin's card only (a pin's error, a requested load),
+  // so the device's own words may stay; the chat says it its own way
+  // (device-lost.ts).
+  if (reason && isDeviceLost(reason)) {
+    return `${name} could not be loaded: the GPU stopped responding while it loaded, and the system reset it${why}. Loading it again usually works; if it keeps happening, the GPU driver may be resetting the card (see the runtime card).`;
+  }
   const first = `${name} could not be loaded: llama.cpp stopped while loading it${why}.`;
   if (drafting) {
     const withHead = source === "head" && head ? `, drafting with ${path.basename(head.path)}` : "";

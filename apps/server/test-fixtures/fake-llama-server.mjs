@@ -234,8 +234,20 @@ const childPorts = new Map();
  * child after `ErrorDeviceLost`, one fails every request until it is unloaded. */
 const lostDevice = new Set();
 
+/** Models whose first load has already lost its device ("LostAtLoad"). */
+const lostAtLoad = new Set();
+
 function unload(id) {
   if (status.get(id) !== "loaded") return;
+  // `LOXAIC_FAKE_UNLOAD_STUCK` names a file whose presence makes every unload
+  // not take, read on each one: the router answers, as the real one does before
+  // its child has exited, and the child (one holding a lost device, say) never
+  // does.
+  const stuckFile = process.env.LOXAIC_FAKE_UNLOAD_STUCK;
+  if (stuckFile && existsSync(stuckFile)) {
+    logEvent({ event: "unload-stuck", model: id });
+    return;
+  }
   status.set(id, "unloaded");
   lostDevice.delete(id);
   loadedArgs.delete(id);
@@ -263,6 +275,25 @@ function load(id) {
   // loaded with MTP dies the way llama.cpp b11342 dies loading
   // Qwen3.8-Flash-Next with unsloth's head (ggml-org/llama.cpp#29811).
   const spec = merged(id);
+  // A model file named "LostAtLoad" has its GPU reset while its first load is
+  // under way, the way a fresh child after an amdgpu reset can: the child dies
+  // with Vulkan's exception, and the router says only "failed to load". The
+  // next load works, as one does once the card has recovered.
+  if (/lostatload/i.test(spec.model ?? "") && !lostAtLoad.has(id)) {
+    lostAtLoad.add(id);
+    const p = String(childPort).padStart(5, " ");
+    process.stderr.write(
+      [
+        `[${p}] 0.00.512.100 E ggml_vulkan: device lost on Vulkan0`,
+        `[${p}] terminate called after throwing an instance of 'vk::DeviceLostError'`,
+        `[${p}]   what():  vk::Device::waitForFences: ErrorDeviceLost`,
+        `0.00.000.200 I srv    operator(): instance name=${id} exited with status 134`,
+      ].join("\n") + "\n",
+    );
+    failed.add(id);
+    logEvent({ event: "load-failed", model: id, reason: "device-lost" });
+    return "failed";
+  }
   const crashes = spec["spec-type"] === "draft-mtp" && /crashy/i.test(spec.model ?? "");
   // As b11342's child: an option's value is read when the model loads, not
   // when the router reads the preset, so a bad one fails this load only.

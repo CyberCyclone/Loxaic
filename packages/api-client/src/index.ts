@@ -507,6 +507,11 @@ export interface GpuJobLimit {
   driver: "amdgpu";
   computeMs: number | null;
   source: "set" | "default";
+  /** Short enough to cut a long prompt off: the server's call, the same one
+   * that decides whether a chat's "GPU stopped responding" blames it. */
+  short: boolean;
+  /** The `lockup_timeout` value that gives compute jobs a minute. */
+  suggestedLockupTimeout: string;
 }
 
 /** One option passed to llama.cpp as an admin typed it: `key = value` in the
