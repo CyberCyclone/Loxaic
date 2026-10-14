@@ -123,6 +123,36 @@ describe('per-conversation run state', () => {
     expect(runLevelAfterRewind(asking, new Set(), true)).toMatchObject({ iteration: null, todos: [] });
   });
 
+  it('does not stay parked on a prompt a rewind removed', () => {
+    const asking = runLevelOf(fold({}, 'A', [{ kind: 'iteration', n: 2, max: 9 }, ask]), 'A');
+    // The followed run itself was removed: nothing of it is running.
+    expect(runLevelAfterRewind(asking, new Set(['s1']), true)).toMatchObject({ runState: 'done', pendingApproval: null });
+    // A retry's run is followed; the removed run's question was never its own.
+    expect(runLevelAfterRewind(asking, new Set(['s1']), false).runState).toBe('running');
+    // A check-in goes the same way, by the run it names.
+    const checking = runLevelOf(fold({}, 'A', [{ kind: 'steps.checkin', n: 9, max: 9, reason: 'budget' }]), 'A');
+    expect(checking.pendingCheckin?.streamId).toBe('s1');
+    expect(runLevelAfterRewind(checking, new Set(['s1']), true)).toMatchObject({ runState: 'done', pendingCheckin: null });
+    expect(runLevelAfterRewind(checking, new Set(['s0']), false)).toBe(checking);
+    // A check-in that names no run can only be the followed run's.
+    const unnamed: AgentRunLevel = { ...checking, pendingCheckin: { n: 9, max: 9, reason: 'budget' } };
+    expect(runLevelAfterRewind(unnamed, new Set(['s0']), true).pendingCheckin).toBeNull();
+    expect(runLevelAfterRewind(unnamed, new Set(['s0']), false)).toBe(unnamed);
+  });
+
+  it('keeps a prompt only from an active run’s snapshot', () => {
+    const snapshot: StreamSnapshot = {
+      messages: [],
+      pending_approval: { call_id: 'call_0', tool: 't', args: {} },
+      pending_checkin: { n: 1, max: 1, reason: 'budget' },
+    };
+    for (const status of ['complete', 'cancelled', 'error'] as const) {
+      expect(runLevelFromSnapshot(snapshot, status, 's1', NOW)).toMatchObject({ pendingApproval: null, pendingCheckin: null });
+    }
+    expect(runLevelFromSnapshot({ ...snapshot, pending_approval: undefined }, 'active', 's1', NOW).pendingCheckin)
+      .toMatchObject({ n: 1, streamId: 's1' });
+  });
+
   it('moves a placeholder’s state to the real id, unless the real id has its own', () => {
     const local: AgentRunLevel = { ...IDLE_RUN, runState: 'queued', queuePosition: 1 };
     expect(withPromotedRunLevel({ 'pending-x': local }, 'pending-x', 'real')).toEqual({ real: local });

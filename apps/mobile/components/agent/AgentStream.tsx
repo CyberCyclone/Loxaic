@@ -11,6 +11,7 @@ import { PermissionBar } from './PermissionBar';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
 import type { Conversation, AgentMode } from '@/lib/types';
 import type { RunState, PendingApproval, PendingCheckin } from '@/hooks/useAgentSession';
+import { approvalKey, checkinKey } from '@/lib/pendingWaits';
 
 interface AgentStreamProps {
   run: Conversation | null;
@@ -109,6 +110,7 @@ export function AgentStream({
       {mode === 'planning' && <PlanningBanner />}
       {pendingApproval && (
         <PermissionBar
+          key={approvalKey(pendingApproval)}
           tool={pendingApproval.tool}
           args={pendingApproval.args}
           deadline={pendingApproval.deadline}
@@ -126,6 +128,7 @@ export function AgentStream({
           transcript is what either decision is made from. */}
       {!pendingApproval && pendingCheckin && (
         <StepCheckInBanner
+          key={checkinKey(pendingCheckin)}
           {...pendingCheckin}
           onContinue={onCheckinContinue}
           onAnswer={onCheckinAnswer}

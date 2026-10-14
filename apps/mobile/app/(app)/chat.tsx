@@ -17,6 +17,7 @@ import { MessageList } from '@/components/chat/MessageList';
 import { PromptSuggestions } from '@/components/chat/PromptSuggestions';
 import { ToolApprovalDialog } from '@/components/chat/ToolApprovalDialog';
 import { StepCheckInBanner } from '@/components/chat/StepCheckInBanner';
+import { checkinKey } from '@/lib/pendingWaits';
 import { Composer } from '@/components/composer/Composer';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useChatSession } from '@/hooks/useChatSession';
@@ -305,6 +306,7 @@ export default function ChatScreen() {
             so the transcript must stay visible and scrollable. */}
         {pendingCheckin && (
           <StepCheckInBanner
+            key={checkinKey(pendingCheckin)}
             {...pendingCheckin}
             onContinue={() => { handleSteps('continue'); }}
             onAnswer={() => { handleSteps('answer'); }}

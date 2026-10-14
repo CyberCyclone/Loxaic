@@ -107,6 +107,7 @@ export function SubAgentPanel({ view, transcript, stopping, canAct, onStop, onAl
           // box pads, and a tinted bar with a margin round it reads as a card.
           <Box className="-mx-4 -mb-4 -mt-3">
             <PermissionBar
+              key={`${approval.streamId}:${approval.callId}`}
               testIDBase="subagent.permission"
               tool={approval.tool}
               args={approval.args}

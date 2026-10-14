@@ -2452,6 +2452,15 @@ replies.
   - **The step check-in banner dismisses a phone's keyboard when it appears**, as the bar does.
     Coming back to a thread with the keyboard still up from the last send left the banner's
     buttons below the composer. Found by that spec's iOS run.
+  - **A prompt is keyed by the question it asks** (`approvalKey`/`checkinKey`), so the bar and
+    the banner remount for a new one. The dismissal runs on mount, and a switch between two
+    threads that are both waiting, or from a sub-agent's approval to the run's own, only changed
+    props. A resync of the same question keeps the key and the keyboard. Found in review.
+  - **The state goes with the prompt.** A rewind that drops a prompt also moves the run off
+    `awaiting_*` (to `done` when the followed run was removed, else `running`), and only an
+    active run's snapshot yields a prompt. Before, `selectRun`'s reset hid a run left
+    `awaiting_approval` with nothing to approve; kept per conversation, it held Stop for good,
+    and Stop then found no stream. Found in review.
 
 ### Sub-agents
 

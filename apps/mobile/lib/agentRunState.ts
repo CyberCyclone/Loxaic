@@ -110,8 +110,15 @@ export function runLevelFromSnapshot(
     runState,
     iteration: snapshot.iteration ?? null,
     todos: snapshot.todos ?? [],
-    pendingApproval: snapshot.pending_approval ? toPendingApproval(snapshot.pending_approval, now, serverNow, streamId) : null,
-    pendingCheckin: snapshot.pending_checkin ? toPendingCheckin(snapshot.pending_checkin, now, serverNow) : null,
+    // Only an active run can be waiting on anyone. The server strips a
+    // finished run's question from its snapshot (delivery.ts), but the bar and
+    // the banner render on a prompt's presence alone, and every conversation's
+    // snapshot is kept now — not only the one on screen — so a finished run
+    // must not bring two buttons that can do nothing back on a switch.
+    pendingApproval: status === 'active' && snapshot.pending_approval
+      ? toPendingApproval(snapshot.pending_approval, now, serverNow, streamId) : null,
+    pendingCheckin: status === 'active' && snapshot.pending_checkin
+      ? toPendingCheckin(snapshot.pending_checkin, now, serverNow, streamId) : null,
     queuePosition: snapshot.queued?.position ?? null,
   };
 }
@@ -150,7 +157,7 @@ export function runLevelAfterEvent(
       return {
         ...next,
         runState: 'awaiting_checkin',
-        pendingCheckin: toPendingCheckin(event, now),
+        pendingCheckin: toPendingCheckin(event, now, undefined, streamId),
         iteration: { n: event.n, max: event.max },
       };
     case 'steps.decision':
@@ -180,18 +187,39 @@ export function runLevelAfterEnd(prev: AgentRunLevel, status: string): AgentRunL
  * counters go only when the run being followed is a removed one
  * (`clearsLiveRun`, from `rewindClearsLiveRun`) — a retry's new run can
  * already be the one on screen.
+ *
+ * The state goes with the prompt. A run left `awaiting_approval` with no
+ * approval kept Stop and refused a send, and Stop then found no stream (the
+ * rewind cleared it) and said to reload. Switching threads used to reset
+ * `runState`, which hid this; with state kept per conversation nothing did.
+ * When the followed run was removed, nothing of it is running any more:
+ * `done`. When a retry's run is the one followed, an approval from a removed
+ * run was never that run's question, so it is `running`.
  */
 export function runLevelAfterRewind(
   prev: AgentRunLevel,
   removedStreams: ReadonlySet<string>,
   clearsLiveRun: boolean,
 ): AgentRunLevel {
-  const dropApproval = Boolean(prev.pendingApproval?.streamId && removedStreams.has(prev.pendingApproval.streamId));
-  if (!dropApproval && !clearsLiveRun) return prev;
+  // A prompt that names its run goes when that run went. One that does not
+  // (a check-in from before `streamId`) can only be the followed run's.
+  const removed = (streamId: string | undefined) =>
+    streamId ? removedStreams.has(streamId) : clearsLiveRun;
+  const pendingApproval = prev.pendingApproval && removed(prev.pendingApproval.streamId) ? null : prev.pendingApproval;
+  const pendingCheckin = prev.pendingCheckin && removed(prev.pendingCheckin.streamId) ? null : prev.pendingCheckin;
+  const dropped = pendingApproval !== prev.pendingApproval || pendingCheckin !== prev.pendingCheckin;
+  if (!dropped && !clearsLiveRun) return prev;
+  let runState = prev.runState;
+  if (pendingApproval) runState = 'awaiting_approval';
+  else if (pendingCheckin) runState = 'awaiting_checkin';
+  else if (clearsLiveRun) runState = prev.runState === 'error' ? 'error' : 'done';
+  else if (prev.runState === 'awaiting_approval' || prev.runState === 'awaiting_checkin') runState = 'running';
   return {
     ...prev,
-    ...(dropApproval ? { pendingApproval: null } : {}),
-    ...(clearsLiveRun ? { iteration: null, todos: [] } : {}),
+    runState,
+    pendingApproval,
+    pendingCheckin,
+    ...(clearsLiveRun ? { iteration: null, queuePosition: null, todos: [] } : {}),
   };
 }
 

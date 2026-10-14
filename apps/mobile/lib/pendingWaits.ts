@@ -26,6 +26,8 @@ export interface PendingCheckin {
   onTimeout?: StepsDecision;
   unattended?: number;
   autoContinues?: number;
+  /** The run that asked. Absent from a caller that does not know it. */
+  streamId?: string;
 }
 
 export interface PendingApproval {
@@ -61,6 +63,7 @@ export function toPendingCheckin(
   },
   now: number,
   serverNow?: number,
+  streamId?: string,
 ): PendingCheckin {
   const deadline = localDeadline(src, now, serverNow);
   return {
@@ -72,7 +75,26 @@ export function toPendingCheckin(
     ...(src.on_timeout ? { onTimeout: src.on_timeout } : {}),
     ...(src.unattended != null ? { unattended: src.unattended } : {}),
     ...(src.auto_continues != null ? { autoContinues: src.auto_continues } : {}),
+    ...(streamId ? { streamId } : {}),
   };
+}
+
+/**
+ * Which question a prompt on screen is, as a React `key`. The permission bar
+ * and the check-in banner dismiss a phone's keyboard when they mount, and a
+ * prop change is not a mount: switching between two threads that are both
+ * waiting — or from a sub-agent's approval to the run's own — kept the same
+ * instance with new props, and a keyboard left up stayed over the new
+ * question's buttons. A key per question remounts it. A resync of the same
+ * question keeps the key, so it does not take the keyboard from someone
+ * typing ahead each time the socket reconnects.
+ */
+export function approvalKey(pending: PendingApproval): string {
+  return `${pending.streamId ?? ''}:${pending.callId}`;
+}
+
+export function checkinKey(pending: PendingCheckin): string {
+  return `${pending.streamId ?? ''}:${String(pending.n)}`;
 }
 
 export function toPendingApproval(
