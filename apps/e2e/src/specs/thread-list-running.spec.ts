@@ -32,6 +32,7 @@ import {
   sendMessage,
   signIn,
   startNewAgentRun,
+  startNewThread,
   waitForComposerReady,
   waitForRunDone,
 } from '../helpers/app.ts';
@@ -81,6 +82,10 @@ describe('running status in the thread list', () => {
     const idleChat = await sendAndCapture('a thread to switch back to');
     await waitForRunDone(adminCreds(), idleChat);
 
+    // A thread of its own: sent from the composer as it stands, the prompt
+    // would only continue the thread above.
+    await startNewThread('chat');
+    await waitForComposerReady();
     const running = await sendAndCapture(SLOW_PROMPT);
     await openThreadList('chat');
     await waitForVisible(runBadge(running, 'running'));
@@ -161,7 +166,11 @@ describe('running status in the thread list', () => {
     // A second conversation, started while the first holds the backend.
     await startNewAgentRun();
     await waitForComposerReady();
-    const second = await sendAndCapture('queued for the badge test');
+    // Slow as well: an instant reply is running for a fraction of a second
+    // once admitted, and the server, re-reading the registry after its authz
+    // check, rightly reports that as idle — the row would go straight from
+    // Queued to nothing, and the Running below could never be seen.
+    const second = await sendAndCapture('take your time, queued for the badge test');
 
     await openThreadList('agent');
     await waitForVisible(runBadge(second, 'queued'), 30_000);
@@ -184,6 +193,8 @@ describe('running status in the thread list', () => {
     const routine = await createRoutine(adminCreds(), {
       name: `Badge ${String(Date.now())}`,
       prompt: SLOW_PROMPT,
+      // A routine with no model fails at once, by design, and never runs.
+      model: 'llama-3.1-8b-instruct',
     });
     const run = await runRoutine(adminCreds(), routine.id);
 
