@@ -1,8 +1,9 @@
-import { endStaleSubAgents, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
-import { assertConversationAccess } from "../streams/authz.ts";
+import { endStaleSubAgents, type RunActivity, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
+import { assertConversationAccess, filterAccessible } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
-import { watchConversation, watchConversationEvents } from "../streams/watchers.ts";
+import { getRunByConversation, listBusyRuns, runActivityOf } from "../streams/registry.ts";
+import { watchConversation, watchConversationEvents, watchRunActivity } from "../streams/watchers.ts";
 
 const BACKPRESSURE_BYTES = 512 * 1024;
 
@@ -332,6 +333,127 @@ export function createDelivery(
     return subscribeToStream(streamId, conversationId, 0);
   }
 
+  /* ── The thread list's liveness watch (#282) ─────────────────── */
+
+  /** Conversations this socket asked to watch for runs it is not following.
+   * A replacement set — the client re-sends its whole visible list whenever
+   * it changes. */
+  let runWatch = new Set<string>();
+  /** What this socket was last told per watched conversation, so a
+   * re-announcement of the same state (a second approval while already
+   * awaiting one) sends nothing. `null` is "no run", recorded as "". */
+  const lastRunNotice = new Map<string, string>();
+  let unwatchActivity: (() => void) | null = null;
+
+  /** A watch is only as large as a list. The client's own cap is the list's
+   * (50 rows today); this is the server's boundary against a client that
+   * watches everything it has ever seen. */
+  const MAX_WATCH = 100;
+  const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  function noticeFor(conversationId: string): Extract<ServerMessage, { type: "conversation.run" }> | null {
+    const handle = getRunByConversation(conversationId);
+    if (!handle) return { type: "conversation.run", conversation_id: conversationId, run: null };
+    const run = runActivityOf(handle);
+    return {
+      type: "conversation.run",
+      conversation_id: conversationId,
+      run,
+      ...(run === "queued" && handle.queuePosition ? { queue_position: handle.queuePosition } : {}),
+    };
+  }
+
+  /** Send a watched conversation's current liveness, once, if it differs from
+   * what this socket was last told. Re-authorized per event, as the new-run
+   * watch does: a share revoked since must stop hearing about this thread. */
+  function sendRunNotice(conversationId: string): void {
+    const notice = noticeFor(conversationId);
+    if (!notice) return;
+    const key = notice.run === null ? "" : notice.run + (notice.queue_position ? `:${String(notice.queue_position)}` : "");
+    if (lastRunNotice.get(conversationId) === key) return;
+    assertConversationAccess(userId, conversationId)
+      .then(() => {
+        if (!runWatch.has(conversationId)) return;
+        // Re-read after the await: the state at the moment of the event may
+        // have moved on while authz ran, and a stale figure arriving late
+        // would overwrite the fresh one. What we send must be what the
+        // registry says now.
+        const fresh = noticeFor(conversationId);
+        if (!fresh) return;
+        const freshKey = fresh.run === null ? "" : fresh.run + (fresh.queue_position ? `:${String(fresh.queue_position)}` : "");
+        if (lastRunNotice.get(conversationId) === freshKey) return;
+        lastRunNotice.set(conversationId, freshKey);
+        send(fresh);
+      })
+      .catch(() => undefined);
+  }
+
+  function ensureActivityTap(): void {
+    if (unwatchActivity) return;
+    unwatchActivity = watchRunActivity((conversationId) => {
+      if (runWatch.has(conversationId)) sendRunNotice(conversationId);
+    });
+  }
+
+  /**
+   * `conversations.watch`. Installs the set synchronously (an announcement
+   * during the authz await below must not fall on deaf ears), authorizes the
+   * batch with two queries rather than one round trip per row, and answers
+   * with the current activity of every watched conversation that has a run
+   * going. Ids the caller cannot see are dropped from the watch entirely —
+   * they hear nothing, forever, exactly as `stream.stop` no-ops.
+   */
+  async function handleConversationsWatch(ids: unknown): Promise<void> {
+    if (!Array.isArray(ids)) return;
+    const next = new Set<string>();
+    for (const id of ids) {
+      // A claim off a socket: only UUID-shaped ids are kept, so a client's
+      // optimistic placeholder never reaches a Postgres query.
+      if (typeof id === "string" && CONVERSATION_ID_RE.test(id)) next.add(id);
+      if (next.size >= MAX_WATCH) break;
+    }
+    // Install before awaiting: a run that starts mid-authz is announced to
+    // the tap, which re-reads the registry after authz and sends its truth.
+    runWatch = next;
+    // A conversation that left the set needs no "null": the client's own map
+    // drops it when its list changes, which is what changed the set.
+    for (const id of lastRunNotice.keys()) {
+      if (!next.has(id)) lastRunNotice.delete(id);
+    }
+    ensureActivityTap();
+    if (next.size === 0) return;
+    let allowed: Set<string>;
+    try {
+      allowed = await filterAccessible(userId, next);
+    } catch {
+      return;
+    }
+    // The set may have been replaced by a newer watch while we awaited; the
+    // newer call owns the state, and this reply describes the old set.
+    if (runWatch !== next) return;
+    for (const id of next) {
+      if (!allowed.has(id)) {
+        runWatch.delete(id);
+        continue;
+      }
+      if (!getRunByConversation(id)) continue;
+      // The initial reply names only the conversations with a run going —
+      // a busy row's truth. An idle row gets nothing: absence already says
+      // it, and fifty `run: null` messages per list refresh (or per app
+      // switch, which resends the watch) is traffic that carries no news.
+      // The transition to null comes from the tap, once this socket has been
+      // told the row was busy.
+      //
+      // Sent regardless of the dedup map: a row that left the list (its
+      // notice dropped) and came back busy must be re-told, and replacement
+      // semantics make the duplicate harmless.
+      const notice = noticeFor(id);
+      if (!notice || notice.run === null) continue;
+      lastRunNotice.set(id, notice.run + (notice.queue_position ? `:${String(notice.queue_position)}` : ""));
+      send(notice);
+    }
+  }
+
   function close(): void {
     for (const s of subs.values()) {
       s.unsubRecord();
@@ -340,7 +462,11 @@ export function createDelivery(
     subs.clear();
     for (const unwatch of convWatches.values()) unwatch();
     convWatches.clear();
+    if (unwatchActivity) {
+      unwatchActivity();
+      unwatchActivity = null;
+    }
   }
 
-  return { handleSubscribe, autoSubscribe, close };
+  return { handleSubscribe, autoSubscribe, handleConversationsWatch, close };
 }

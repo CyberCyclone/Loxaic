@@ -135,17 +135,27 @@ export async function acquireRunSlot(opts: {
   /** Called on enqueue, and again whenever the run moves up the queue, so a
    * waiting client sees "#3 → #2 → #1" rather than one number that goes stale. */
   onQueued: QueuedListener;
+  /** Called when the run actually has the slot — immediately on the fast path,
+   * on admission after a wait, and on re-entry after a `yieldWhile`.
+   * `onQueued` says "waiting" and never says "you're in", so without this a
+   * queue flag set from `onQueued` could never be cleared (#282). */
+  onAdmitted?: () => void;
   /** Which backend's queue to join. Defaults to the built-in one, so every
    * caller that predates providers keeps its previous behaviour exactly. */
   providerId?: string;
 }): Promise<RunSlot | null> {
   const providerId = opts.providerId ?? DEFAULT_PROVIDER_ID;
-  const admitted = await enter(providerId, opts.signal, opts.onQueued, false);
+  const admitted = await enter(providerId, opts.signal, opts.onQueued, false, false, opts.onAdmitted);
   if (!admitted) return null;
-  return makeSlot(providerId, opts.signal, opts.onQueued);
+  return makeSlot(providerId, opts.signal, opts.onQueued, opts.onAdmitted);
 }
 
-function makeSlot(providerId: string, signal: AbortSignal, onQueued: QueuedListener): RunSlot {
+function makeSlot(
+  providerId: string,
+  signal: AbortSignal,
+  onQueued: QueuedListener,
+  onAdmitted?: () => void,
+): RunSlot {
   let held = true;
   const give = () => {
     if (!held) return;
@@ -165,10 +175,10 @@ function makeSlot(providerId: string, signal: AbortSignal, onQueued: QueuedListe
         // releases exactly one — then let the original error through, which is
         // always the more informative of the two. Deliberately not a `finally`
         // with a throw in it: that would swallow this error entirely.
-        held = await enter(providerId, signal, onQueued, true);
+        held = await enter(providerId, signal, onQueued, true, false, onAdmitted);
         throw err;
       }
-      held = await enter(providerId, signal, onQueued, true);
+      held = await enter(providerId, signal, onQueued, true, false, onAdmitted);
       if (!held) throw new RunSlotAbortedError();
       return result;
     },
@@ -189,10 +199,12 @@ function makeSlot(providerId: string, signal: AbortSignal, onQueued: QueuedListe
 export async function acquireExclusiveSlot(opts: {
   signal: AbortSignal;
   onQueued: QueuedListener;
+  /** As on `acquireRunSlot`: fires when the backend is actually held (#282). */
+  onAdmitted?: () => void;
   providerId?: string;
 }): Promise<{ release(): void } | null> {
   const providerId = opts.providerId ?? DEFAULT_PROVIDER_ID;
-  const admitted = await enter(providerId, opts.signal, opts.onQueued, false, true);
+  const admitted = await enter(providerId, opts.signal, opts.onQueued, false, true, opts.onAdmitted);
   if (!admitted) return null;
   let held = true;
   return {
@@ -223,6 +235,9 @@ async function enter(
   onQueued: QueuedListener,
   priority: boolean,
   exclusive = false,
+  /** Fires on every admission — the fast path, after a wait, and on a
+   * `yieldWhile` re-entry — so a caller can undo what `onQueued` said (#282). */
+  onAdmitted?: () => void,
 ): Promise<boolean> {
   // Read through a call, not as `signal.aborted` directly: the type checker
   // narrows the property to false after the first check and cannot see that
@@ -238,6 +253,7 @@ async function enter(
   if (!q.exclusive && q.waiting.length === 0 && (exclusive ? q.running === 0 : q.running < max)) {
     q.running++;
     if (exclusive) q.exclusive = true;
+    onAdmitted?.();
     return true;
   }
 
@@ -250,6 +266,7 @@ async function enter(
         signal.removeEventListener("abort", waiter.onAbort);
         q.running++;
         if (exclusive) q.exclusive = true;
+        onAdmitted?.();
         resolve(true);
       },
       cancel: () => {

@@ -5,8 +5,8 @@ import { retryAgentRun, startAgentRun } from "../streams/runs/agentRun.ts";
 import { startCompactRun } from "../streams/runs/compactRun.ts";
 import { createDelivery } from "./delivery.ts";
 import { assertConversationAccess } from "../streams/authz.ts";
-import { answerApproval, mayActOnRun } from "./run-actions.ts";
-import { isStepsDecision, getRun } from "../streams/registry.ts";
+import { answerApproval, answerCheckin, mayActOnRun } from "./run-actions.ts";
+import { getRun } from "../streams/registry.ts";
 import { clientRefOf } from "./client-ref.ts";
 import { beginSendFor, sendErrorFor, sendOutcomeFor } from "./send-outcomes.ts";
 import { normalizeContextStage } from "../streams/runs/stageRun.ts";
@@ -181,6 +181,8 @@ export function agentWsHandler(app: FastifyInstance) {
           await delivery.autoSubscribe(result.streamId, result.conversationId);
         } else if (msg.type === "stream.subscribe") {
           await delivery.handleSubscribe(msg.conversation_id, msg.cursors);
+        } else if (msg.type === "conversations.watch") {
+          await delivery.handleConversationsWatch(msg.conversation_ids);
         } else if (msg.type === "send.status") {
           // The answer to a send whose socket was replaced before it heard.
           // Only ever this user's own sends, by the ref they chose.
@@ -219,24 +221,7 @@ export function agentWsHandler(app: FastifyInstance) {
             msg.type === "agent.approve" && msg.always === true,
           );
         } else if (msg.type === "agent.steps") {
-          // Answering a step check-in. Keyed by stream_id rather than a
-          // model-supplied id, so unlike approve/deny there is exactly one run
-          // it could mean and no plural lookup is needed.
-          const run = getRun(msg.stream_id);
-          const resolve = run?.stepsDecision;
-          if (
-            run &&
-            resolve &&
-            isStepsDecision(msg.decision) &&
-            (await mayActOnRun(userId, run.conversationId))
-          ) {
-            run.stepsDecision = undefined;
-            resolve(msg.decision, userId);
-          }
-          // Silently no-op otherwise — a run that is not parked, not theirs,
-          // or already answered, same "no existence oracle" rule as
-          // stream.stop. `decision` is a claim off a socket, so it is checked
-          // here rather than trusted from the type.
+          await answerCheckin(userId, msg.stream_id, msg.decision);
         }
       } catch (err) {
         // A no-op when the run already settled it: only the first counts.
