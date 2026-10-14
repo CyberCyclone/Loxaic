@@ -54,6 +54,7 @@ import type { Promotion } from '@/lib/mcpSwitches';
 import { useToastHelper } from './useToastHelper';
 import { localRunStart } from '@/lib/runStart';
 import { ConversationWatches } from '@/lib/conversationWatch';
+import { rowBadgesFor, useRunNotices } from './useRunNotices';
 import { isSubAgentEvent } from '@/lib/subAgents';
 import { useSubAgentState } from './useSubAgentState';
 
@@ -226,6 +227,10 @@ export function useAgentSession(
   // open. A child's own stream arrives on this socket under a conversation id
   // that is not a run's, so the handler below asks this first — see the hook.
   const subAgents = useSubAgentState({ wsRef, cursorsRef, showToast });
+
+  // Which of the listed runs have a run going (#282). Rides this surface's
+  // own socket; the rules are in lib/runWatch.ts.
+  const runNotices = useRunNotices(wsRef);
   const {
     isChild: isSubAgentConv,
     onParentEvent: onSubAgentEvent,
@@ -458,6 +463,9 @@ export function useAgentSession(
     };
 
     const onEvent = (event: ServerMessage) => {
+      // The thread list's liveness notices are consumed here and fall through
+      // every branch of this switch (#282).
+      runNotices.observe(event);
       // When this message arrived, read once, before anything else. Every fold
       // below that times a message is handed this rather than reading the
       // clock itself: those folds run inside state updaters, which React may
@@ -715,6 +723,10 @@ export function useAgentSession(
         attempt = 0;
         trackSocket(SOCKET_KEY, 'open');
         resubscribeKnown();
+        // A new socket has heard no liveness notices and the server does not
+        // replay them: clear what the last one said, and ask again for the
+        // list on screen (#282).
+        runNotices.onSocketOpen();
       };
       ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;
@@ -1090,6 +1102,7 @@ export function useAgentSession(
       }
       setRuns((prev) => prev.filter((r) => r.id !== id));
       setRunLevels((prev) => withoutRunLevel(prev, id));
+      runNotices.forget(id);
       if (activeIdRef.current === id) handleNewRun();
       showToast('Run deleted');
     },
@@ -1111,6 +1124,14 @@ export function useAgentSession(
       showToast('Couldn’t save that model choice — this run keeps its model', 4000);
     });
   }, [showToast]);
+
+  // Keep the liveness watch in step with the list (#282). Any change to the
+  // rows — the mount load, a new run, a placeholder promoted by
+  // `turn.started`, a delete — goes through this array, so one effect on it
+  // is the whole rule; `watch` itself dedupes an identical set.
+  useEffect(() => {
+    runNotices.watch(runs.map((r) => r.id));
+  }, [runs, runNotices.watch]);
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
@@ -1146,6 +1167,8 @@ export function useAgentSession(
     /** Whether that page actually arrived — false after a failed fetch. */
     historyLoaded: !activeId || !isServerConvId(activeId) || historyLoadedIds.has(activeId),
     selectRun,
+    /** Per-row running badges for the thread list (#282), keyed by run id. */
+    runStatus: rowBadgesFor(runNotices.notices, stoppingConvId),
     mode,
     runState: effectiveRunState,
     busy,

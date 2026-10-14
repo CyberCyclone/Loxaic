@@ -62,6 +62,7 @@ export default function ChatScreen() {
     setActiveId,
     streaming,
     stopping,
+    runStatus,
     loadingModel,
     promptStats,
     queuePosition,
@@ -209,6 +210,7 @@ export default function ChatScreen() {
       onRename={handleRename}
       onDelete={(id) => { setDeletingId(id); }}
       onShare={(id) => { setSharingId(id); }}
+      runStatus={runStatus}
     />
   );
 

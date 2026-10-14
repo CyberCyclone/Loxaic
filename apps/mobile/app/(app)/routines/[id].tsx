@@ -149,6 +149,7 @@ export default function RoutineChatScreen() {
     setActiveId,
     streaming,
     stopping,
+    runStatus,
     loadingModel,
     promptStats,
     queuePosition,
@@ -309,6 +310,10 @@ export default function RoutineChatScreen() {
       // chats are named after the routine rather than by their owner.
       onDelete={(id) => { setDeletingId(id); }}
       rowMeta={rowMeta}
+      // The live run state outranks the recorded one while a run is going —
+      // the record only refreshes on a list fetch, and the row said "Running"
+      // over a finished run for exactly that reason (#282).
+      runStatus={runStatus}
     />
   );
 
