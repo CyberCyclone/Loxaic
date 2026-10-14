@@ -59,7 +59,7 @@ import {
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
 import type { PermissionMode, ResolvedTool, ToolName } from "@loxaic/agent";
-import { HANDOVER_TOOL_NAMES, SUBAGENT_TOOL_NAME } from "@loxaic/agent";
+import { HANDOVER_TOOL_NAMES, SKILL_TOOL_NAME, SUBAGENT_TOOL_NAME } from "@loxaic/agent";
 import {
   SUBAGENT_SYSTEM_ADDENDUM,
   loadSubagentPolicy,
@@ -76,6 +76,8 @@ import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
+import { prepareRunSkills, type RunSkills } from "../../skills/session.ts";
+import { renderSkillContent } from "../../skills/catalog.ts";
 import {
   attachActiveSandbox,
   getConversationSandbox,
@@ -596,6 +598,18 @@ export async function runToolLoop(ctx: {
         : null;
       subagents = { policy, offered, routine };
     }
+    // The conversation's skills, before the toolset: the `skill` tool lists
+    // the frozen catalog, and a change since it was frozen — or a "/name" in
+    // this run's message — goes onto the user row before the history loads
+    // (skills/session.ts).
+    const skills = await prepareRunSkills({
+      convId,
+      userId,
+      userMsgId: ctx.userMsgId,
+      front: ctx.role ? "" : await historyFront(convId),
+      producer,
+      ...(ctx.role ? { parentConvId: ctx.role.parentConvId } : {}),
+    });
     const toolset = await buildToolset(userId, {
       mode,
       conversationId: workspaceConvId,
@@ -603,6 +617,7 @@ export async function runToolLoop(ctx: {
       allowlist,
       ...(subagents ? { subagents: { models: subagents.offered } } : {}),
       ...(ctx.role ? { handover: false } : {}),
+      ...(skills.listing ? { skills: skills.listing } : {}),
     });
     const tools = toolset.openAiTools;
     // Fixed for the run, like the toolset: which source each schema came from,
@@ -1526,6 +1541,7 @@ export async function runToolLoop(ctx: {
               windowTokens,
               nestedInstructions: ctx.nestedInstructions ?? false,
               checkpointTurn,
+              skills,
               takeTodoReminder,
               commandRules,
               isolation: runIsolation,
@@ -1970,6 +1986,8 @@ async function runOneToolCall(
     nestedInstructions: boolean;
     /** See runToolLoop's `checkpointTurn`. */
     checkpointTurn: CheckpointTurn;
+    /** What the `skill` tool loads from (skills/session.ts). */
+    skills: RunSkills;
     /** The stale-todo reminder, when this iteration owes one and no tool has
      * carried it yet — see todo-staleness.ts. */
     takeTodoReminder?: () => string | null;
@@ -2111,6 +2129,29 @@ async function runOneToolCall(
       ...(permission ? { permission } : {}),
     });
     return { output: result.output, ok: result.ok, ...(permission ? { permission } : {}) };
+  }
+
+  // A skill's instructions, from the live catalog: a skill announced since
+  // the tool's list was frozen is loadable too. Nothing runs and nothing
+  // needs a sandbox; the result is persisted like any other, so a replay
+  // sends exactly what this request did.
+  if (resolved.name === SKILL_TOOL_NAME) {
+    const name = typeof args.name === "string" ? args.name.trim().toLowerCase() : "";
+    const skill = name ? ctx.skills.find(name) : undefined;
+    const names = ctx.skills.names();
+    const output = skill
+      ? renderSkillContent(skill)
+      : `No skill named "${name}". Available skills: ${names.length ? names.join(", ") : "none"}.`;
+    producer.emit({
+      kind: "tool.result",
+      message_id: assistantMsgId,
+      call_id: call.id,
+      tool: toolName,
+      output,
+      ok: !!skill,
+      ...(permission ? { permission } : {}),
+    });
+    return { output, ok: !!skill, ...(permission ? { permission } : {}) };
   }
 
   // The MCP branch returned above, so this is a builtin by construction — and
@@ -2693,10 +2734,11 @@ export async function loadHistory(conversationId: string): Promise<{
     if (row.authorType === "user") {
       const text = textOf(blocks);
       const atts = attachmentsOf(blocks);
-      // A notice that the project's instructions changed rides first on the
-      // message it was attached to, exactly as stored. A row without one
-      // keeps precisely its old shape, so no existing prefix moves.
-      const notice = instructionsNoticeOf(blocks);
+      // Notices (the project's instructions or the skills changed) ride first
+      // on the message they were attached to, then a "/name" skill's
+      // instructions, exactly as stored. A row without any keeps precisely
+      // its old shape, so no existing prefix moves.
+      const notice = noticesOf(blocks);
       // Image-only turns have no text at all, so the emptiness check can't
       // gate them the way it gates a genuinely blank message.
       if (atts.length > 0) {
@@ -2742,13 +2784,19 @@ function attachmentsOf(blocks: ContentBlock[]): AttachmentRef[] {
     .map((b) => ({ ref: b.ref, mime: b.mime, ...(b.name === undefined ? {} : { name: b.name }) }));
 }
 
-/** The instructions notices on a user message, in the order they were
- * attached — the text the model was given, verbatim. */
-function instructionsNoticeOf(blocks: ContentBlock[]): string {
-  return blocks
-    .filter((b): b is Extract<ContentBlock, { kind: "instructions_update" }> => b.kind === "instructions_update")
-    .map((b) => b.text)
-    .join("\n\n");
+/** What Loxaic put ahead of a user's message, verbatim: the notices that
+ * the project's instructions or the skills changed, in the order they were
+ * attached, then the instructions of a skill the message invoked ("/name").
+ * Notices first so the model reads the current list before a skill's own
+ * instructions and the task. */
+function noticesOf(blocks: ContentBlock[]): string {
+  const notices = blocks
+    .filter((b) => b.kind === "instructions_update" || b.kind === "skills_update")
+    .map((b) => (b as { text: string }).text);
+  const invoked = blocks
+    .filter((b): b is Extract<ContentBlock, { kind: "skill" }> => b.kind === "skill")
+    .map((b) => b.text);
+  return [...notices, ...invoked].join("\n\n");
 }
 
 function textOf(blocks: ContentBlock[]): string {

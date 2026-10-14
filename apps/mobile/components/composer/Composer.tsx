@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps, type Ref } from 'react';
 import { Platform, TextInput, type TextInputKeyPressEvent } from 'react-native';
 import { ArrowUp, Square, ChevronDown, CircleDot } from 'lucide-react-native';
-import { BUILT_IN_COMMANDS, commandQuery, parseCommand, findCommand, type SlashCommand, type AttachmentRef } from '@loxaic/api-client';
+import { commandQuery, parseCommand, type PaletteSkill, type AttachmentRef } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
@@ -22,6 +22,7 @@ import type { StageControls } from '@/hooks/useContextStages';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { useServerReachable } from '@/lib/connection';
 import { useSession } from '@/lib/session';
+import { filterSkills, skillNamed } from '@/lib/skillPalette';
 import { ContextRing } from './ContextRing';
 
 interface ComposerProps {
@@ -34,15 +35,19 @@ interface ComposerProps {
   /** Null until a conversation exists — the indicator hides entirely. */
   context?: ContextView | null;
   onOpenModelModal: () => void;
-  /** Which screen this composer belongs to — filters the slash palette and
-   * is implied server-side by which socket a command rides on. */
-  surface: 'chat' | 'agent';
+  /** What the "/" palette lists, most-used first (`useSkills`). */
+  skills: readonly PaletteSkill[];
+  /** A skill was run by name, so the palette can move it up before the
+   * server's next answer. */
+  onSkillUsed?: (name: string) => void;
   /** Set when the conversation can be read but not written to — offline, or
    * shared read-only. The composer becomes an explanation rather than an
    * input: a disabled textarea with no hint of why reads as a bug, and every
    * send would be dropped or rejected server-side anyway. */
   readOnlyReason?: string | null;
-  /** Send() routes a recognized "/name ..." here instead of onSend. */
+  /** Send() routes "/name ..." here, instead of onSend, for a skill the
+   * harness performs itself (`/compact`). Any other skill is sent as an
+   * ordinary message and the server reads its name off it. */
   onRunCommand: (name: string, args: string) => void;
   /** Seeds the input from OUTSIDE this component's subtree — the agent
    * screen's Inspector renders its own copy of the context popup, not
@@ -76,7 +81,8 @@ export function Composer({
   modelName,
   context,
   onOpenModelModal,
-  surface,
+  skills,
+  onSkillUsed,
   readOnlyReason = null,
   onRunCommand,
   commandSeed,
@@ -114,10 +120,10 @@ export function Composer({
   // What's typed after "/", or null when it isn't shaped like a command at
   // all — see commandQuery: the palette closes the instant a space lands.
   const commandPrefix = commandQuery(text);
-  const filteredCommands =
-    commandPrefix !== null
-      ? BUILT_IN_COMMANDS.filter((c) => c.surfaces.includes(surface) && c.name.startsWith(commandPrefix))
-      : [];
+  const filteredCommands = commandPrefix !== null ? filterSkills(skills, commandPrefix) : [];
+  // The context popup's Compact button, while compaction is one of the
+  // skills — a person can replace it with their own skill of that name.
+  const compactSkill = skills.find((s) => s.action === 'compact');
   const paletteOpen = !paletteDismissed && filteredCommands.length > 0;
 
   // Narrowing the query re-opens the palette and resets the highlight —
@@ -140,8 +146,8 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commandSeed?.token]);
 
-  const insertCommand = (cmd: SlashCommand) => {
-    setText(`/${cmd.name} `);
+  const insertCommand = (skill: PaletteSkill) => {
+    setText(`/${skill.name} `);
     textareaInputRef.current?.focus();
   };
 
@@ -149,16 +155,20 @@ export function Composer({
     const trimmed = text.trim();
     if ((!trimmed && readyAttachments.length === 0) || streaming || attachmentsUploading || !connected) return;
     const parsed = parseCommand(trimmed);
-    const cmd = parsed ? findCommand(parsed.name) : undefined;
-    if (parsed && cmd?.surfaces.includes(surface)) {
-      onRunCommand(cmd.name, parsed.args);
+    const skill = parsed ? skillNamed(skills, parsed.name) : undefined;
+    if (parsed && skill?.action) {
+      onRunCommand(skill.name, parsed.args);
+      onSkillUsed?.(skill.name);
       setText('');
       setInputHeight(20);
       return;
     }
-    // Shaped like "/word ..." but not a real command (or not offered on this
-    // surface) — sent as ordinary text. People do start messages with a
-    // slash, and the palette never claimed this input for them.
+    if (skill) onSkillUsed?.(skill.name);
+    // Every other skill is an ordinary message whose first word names it; the
+    // server puts the skill's instructions ahead of it. Shaped like
+    // "/word ..." but not a skill at all — sent as ordinary text too. People
+    // do start messages with a slash, and the palette never claimed this
+    // input for them.
     onSend(trimmed, readyAttachments.length > 0 ? readyAttachments : undefined);
     setText('');
     setInputHeight(20);
@@ -223,7 +233,7 @@ export function Composer({
         <Box className="relative">
           {paletteOpen && (
             <CommandPalette
-              commands={filteredCommands}
+              skills={filteredCommands}
               selectedIndex={Math.min(selectedCmdIndex, filteredCommands.length - 1)}
               onSelect={insertCommand}
             />
@@ -343,11 +353,14 @@ export function Composer({
                     mcp={mcp}
                     busy={streaming}
                     stage={contextStage?.controls ?? null}
-                    onCompact={() => {
-                      setCtxPopoverOpen(false);
-                      const cmd = findCommand('compact');
-                      if (cmd) insertCommand(cmd);
-                    }}
+                    onCompact={
+                      compactSkill
+                        ? () => {
+                            setCtxPopoverOpen(false);
+                            insertCommand(compactSkill);
+                          }
+                        : undefined
+                    }
                   />
                 </PopoverBody>
               </PopoverContent>

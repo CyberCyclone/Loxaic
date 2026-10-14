@@ -75,6 +75,10 @@ const COMPACT_INSTRUCTION = [
   "Leave out the <project-instructions-update> notices: after this summary the system prompt carries",
   "the project's current instructions, so a copy here would only repeat them in a lossier form.",
   "",
+  "Name every skill whose instructions were loaded (<skill-content name=\"…\"> blocks) and what it",
+  "was being used for, but do not copy its instructions: they can be loaded again with the skill",
+  "tool, and the <skills-update> notices are superseded by the skill list after this summary.",
+  "",
   "Respond with ONLY the summary document. No preamble, no commentary, no questions.",
 ].join("\n");
 

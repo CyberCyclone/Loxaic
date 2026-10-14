@@ -156,6 +156,15 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
           </Text>
         </Box>
       )}
+      {/* Loxaic's too: the skills changed since the model was last told, and it
+          was given the change ahead of this message (#283). */}
+      {isUser && msg.skillsUpdate && (
+        <Box className="px-4 pt-2">
+          <Text testID="chat.message.skillsUpdate" size="xs" className="text-center italic text-muted-foreground">
+            {msg.skillsUpdate.summary}
+          </Text>
+        </Box>
+      )}
       {/* A sub-agent's task. It is a user turn to the model, but no person
           typed it — the agent that started the sub-agent did — and drawn as
           the reader's own message it would say they had. */}
@@ -182,6 +191,16 @@ function MessageInner({ msg, onFork, liveThinking, elapsedSince, isNewest, liveC
           </Box>
           <VStack className="flex-1 pl-0" space="xs">
             <HStack space="xs" className="items-center">
+              {/* The skill this message ran: its instructions went to the
+                  model ahead of the text, so the text alone is not all it was
+                  given. */}
+              {isUser && msg.skill && (
+                <Box className="rounded-sm border border-border px-1.5 py-0.5">
+                  <Text testID="chat.message.skill" size="2xs" className="text-muted-foreground">
+                    {`Skill: ${msg.skill.name}${msg.skill.source === 'user' ? ' (yours)' : msg.skill.source === 'workspace' ? ' (workspace)' : ''}`}
+                  </Text>
+                </Box>
+              )}
               {!isUser && msg.model && (
                 // The reference with its provider prefix stripped. The slug is
                 // an internal identifier the user never chose, and this line

@@ -1,52 +1,74 @@
 import { ScrollView } from 'react-native';
+import type { PaletteSkill } from '@loxaic/api-client';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
 import { VStack } from '@/components/ui/vstack';
 import { Text } from '@/components/ui/text';
 import { Pressable } from '@/components/ui/pressable';
-import type { SlashCommand } from '@/lib/types';
+import { clampLines } from '@/lib/truncate';
 
 interface CommandPaletteProps {
-  commands: SlashCommand[];
+  skills: PaletteSkill[];
   selectedIndex: number;
-  onSelect: (cmd: SlashCommand) => void;
+  onSelect: (skill: PaletteSkill) => void;
 }
+
+const CLAMP = clampLines(2);
+
+/** Shown after the name for a skill that is not a built-in, so a person's own
+ * (or a workspace's) can be told from the one it replaced. */
+const SOURCE_LABEL: Partial<Record<PaletteSkill['source'], string>> = {
+  user: 'yours',
+  workspace: 'workspace',
+};
 
 /**
  * Docked above the composer's Textarea (the parent wraps both in a `relative`
- * Box; this is `absolute bottom-full`) while the user is mid-way through
- * typing a "/" command name.
+ * Box; this is `absolute bottom-full`) while the user is typing a "/" skill
+ * name: every skill on a bare "/", most-used first, narrowed as they type.
  *
- * Selecting a row — by tap, or Enter/Tab on web — only ever inserts the
- * command into the input. Nothing here sends on its own; that's the same
- * insert-then-Send contract the context ring's Compact button follows, so
- * there's exactly one way anything actually runs.
+ * Selecting a row — by tap, or Enter/Tab on web — only ever inserts
+ * "/name " into the input, so the person can add instructions after it.
+ * Nothing here sends on its own; that's the same insert-then-Send contract the
+ * context ring's Compact button follows, so there's exactly one way anything
+ * actually runs.
+ *
+ * Height-capped and scrolling: "every skill" can be many.
  */
-export function CommandPalette({ commands, selectedIndex, onSelect }: CommandPaletteProps) {
-  if (commands.length === 0) return null;
+export function CommandPalette({ skills, selectedIndex, onSelect }: CommandPaletteProps) {
+  if (skills.length === 0) return null;
 
   return (
-    <Box className="absolute bottom-full left-0 right-0 mb-1 max-h-56 overflow-hidden rounded-md border border-border bg-popover shadow-md">
+    <Box
+      testID="composer.palette"
+      className="absolute bottom-full left-0 right-0 mb-1 max-h-72 overflow-hidden rounded-md border border-border bg-popover shadow-md"
+    >
       <ScrollView keyboardShouldPersistTaps="always">
-        {commands.map((cmd, i) => (
+        {skills.map((skill, i) => (
           <Pressable
-            key={cmd.name}
-            onPress={() => { onSelect(cmd); }}
+            key={skill.name}
+            testID={`composer.command.${skill.name}`}
+            onPress={() => { onSelect(skill); }}
             className={`px-3 py-2 ${i === selectedIndex ? 'bg-muted' : ''}`}
           >
             <VStack space="xs">
               <HStack space="xs" className="items-baseline">
                 <Text size="sm" className="font-medium text-foreground">
-                  /{cmd.name}
+                  /{skill.name}
                 </Text>
-                {cmd.argHint && (
+                {skill.argHint ? (
                   <Text size="xs" className="text-muted-foreground">
-                    {cmd.argHint}
+                    {skill.argHint}
                   </Text>
-                )}
+                ) : null}
+                {SOURCE_LABEL[skill.source] ? (
+                  <Text size="xs" className="text-muted-foreground">
+                    · {SOURCE_LABEL[skill.source]}
+                  </Text>
+                ) : null}
               </HStack>
-              <Text size="xs" className="text-muted-foreground">
-                {cmd.description}
+              <Text size="xs" className="text-muted-foreground" numberOfLines={2} style={CLAMP}>
+                {skill.description}
               </Text>
             </VStack>
           </Pressable>

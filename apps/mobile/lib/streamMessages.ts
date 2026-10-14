@@ -67,6 +67,18 @@ export function extractInstructionsUpdate(blocks: ContentBlock[]): Message['inst
   return last ? { path: last.path, summary: last.summary } : undefined;
 }
 
+/** The skill a user message invoked ("/name …"), if any. */
+export function extractSkill(blocks: ContentBlock[]): Message['skill'] {
+  const b = blocks.find((x) => x.kind === 'skill');
+  return b ? { name: b.name, source: b.source } : undefined;
+}
+
+/** The last notice that the skills changed, on a user message. */
+export function extractSkillsUpdate(blocks: ContentBlock[]): Message['skillsUpdate'] {
+  const last = blocks.filter((b) => b.kind === 'skills_update').at(-1);
+  return last ? { summary: last.summary } : undefined;
+}
+
 /** Undefined rather than an empty array when there are none: `Message` treats
  * the field as absent, and the render sites all guard on truthiness. */
 export function extractAttachments(blocks: ContentBlock[]): Message['attachments'] {
@@ -108,6 +120,8 @@ export function toolSummary(tool: string, args: Record<string, unknown>): string
     }
     case SUBAGENT_TOOL_NAME:
       return subAgentDescriptionOf(tool, args) ?? 'Sub-agent';
+    case 'skill':
+      return typeof args.name === 'string' ? `Loaded the ${args.name} skill` : 'Skill';
     case 'todo_write': {
       const todos = args.todos;
       const n = Array.isArray(todos) ? todos.length : 0;
@@ -176,6 +190,10 @@ export function reconstructMessages(rows: ApiMessage[]): Message[] {
       };
       const update = extractInstructionsUpdate(blocks);
       if (update) msg.instructionsUpdate = update;
+      const skill = extractSkill(blocks);
+      if (skill) msg.skill = skill;
+      const skillsUpdate = extractSkillsUpdate(blocks);
+      if (skillsUpdate) msg.skillsUpdate = skillsUpdate;
       // Only the check-in instruction carries provenance worth rendering; a
       // row is authoritative, so null here really does mean "nobody".
       if (msg.text === CHECKIN_ANSWER_NUDGE) msg.authorUserId = row.authorUserId;
@@ -315,6 +333,8 @@ export function snapshotMessageToMessage(
     ...('author_user_id' in sm ? { authorUserId: sm.author_user_id } : {}),
     ...(sm.checkin_decision ? { checkinDecision: sm.checkin_decision } : {}),
     ...(role === 'user' && sm.instructions_update ? { instructionsUpdate: sm.instructions_update } : {}),
+    ...(role === 'user' && sm.skill ? { skill: sm.skill } : {}),
+    ...(role === 'user' && sm.skills_update ? { skillsUpdate: sm.skills_update } : {}),
   };
 }
 
@@ -421,6 +441,10 @@ export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = 
       return msgs.map((m) =>
         m.id === event.message_id ? { ...m, instructionsUpdate: { path: event.path, summary: event.summary } } : m,
       );
+    case 'skill.invoked':
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, skill: { name: event.name, source: event.source } } : m));
+    case 'skills.update':
+      return msgs.map((m) => (m.id === event.message_id ? { ...m, skillsUpdate: { summary: event.summary } } : m));
     case 'compaction': {
       const { message_id, messages_compacted, before_tokens, after_tokens, saved_tokens, before_estimated, skipped, guidance, auto } =
         event;

@@ -2287,6 +2287,19 @@ export interface UserPrefs {
   bashGrantNoticeSeen?: true;
 }
 
+// ── Skills ────────────────────────────────────────────────
+
+/**
+ * The skills the palette offers, most-used first: the built-ins and, once a
+ * conversation is named, everything that conversation can use. The server's
+ * order is the palette's; the client only narrows it as the person types.
+ */
+export async function getSkills(conversationId?: string | null): Promise<PaletteSkill[]> {
+  const q = conversationId ? `?conversation_id=${encodeURIComponent(conversationId)}` : "";
+  const body = (await (await authedFetch(`/v1/skills${q}`)).json()) as { skills?: PaletteSkill[] };
+  return Array.isArray(body.skills) ? body.skills : [];
+}
+
 export async function getPrefs(): Promise<UserPrefs> {
   return (await authedFetch("/v1/prefs")).json() as Promise<UserPrefs>;
 }
@@ -2459,9 +2472,9 @@ export type {
   TimeoutBasis,
   LoopSensitivity,
   CompactionStats,
-  CommandKind,
-  CommandSurface,
-  SlashCommand,
+  PaletteSkill,
+  SkillSource,
+  SkillAction,
   SubAgentLive,
   SubAgentEvent,
   SubAgentApproval,
@@ -2472,9 +2485,9 @@ export type {
   PermissionCheckNote,
   ToolPermission,
 } from "@loxaic/types";
-import type { ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
+import type { PaletteSkill, ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
 export {
-  BUILT_IN_COMMANDS, findCommand, commandQuery, parseCommand,
+  commandQuery, parseCommand, isValidSkillName, SKILL_NAME_MAX,
   MAX_ATTACHMENTS, ATTACHMENT_MIMES, MAX_ATTACHMENT_BYTES, MAX_DOCUMENT_BYTES,
   IMAGE_MIMES, TEXT_MIMES, DOCUMENT_MIMES,
   attachmentClass, maxBytesForMime, resolveAttachmentMime, sanitizeFilename,

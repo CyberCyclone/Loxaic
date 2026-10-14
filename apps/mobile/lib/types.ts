@@ -19,7 +19,7 @@ export type ThemePref = 'light' | 'dark' | 'system'
 export type SmartRoutingProfile = 'cloud' | 'server' | 'hybrid'
 
 export type { ModelInfo } from '@loxaic/api-client'
-export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, SlashCommand, AttachmentRef } from '@loxaic/api-client'
+export type { ContextBreakdown, ContextCategory, ContextPart, CompactionStats, PaletteSkill, AttachmentRef } from '@loxaic/api-client'
 import type { ContextBreakdown, CompactionStats, AttachmentRef, CheckinDecisionNote } from '@loxaic/api-client'
 
 export { THINKING_LEVELS } from '@loxaic/types'
@@ -174,6 +174,14 @@ export interface Message {
    * run, and the agent was given the change ahead of this message. From the
    * stored block, or live from `instructions.update`. */
   instructionsUpdate?: { path: string; summary: string }
+  /** User messages only: the skill this message invoked ("/name …"), whose
+   * instructions the model was given ahead of it. From the stored block, or
+   * live from `skill.invoked`. */
+  skill?: { name: string; source: 'builtin' | 'user' | 'workspace' }
+  /** User messages only: the conversation's skills changed, and the model was
+   * told so ahead of this message. From the stored block, or live from
+   * `skills.update`. */
+  skillsUpdate?: { summary: string }
 }
 
 export interface Conversation {

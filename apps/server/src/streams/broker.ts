@@ -305,6 +305,12 @@ export class StreamBroker {
         case "instructions.update":
           ensure(event.message_id).instructions_update = { path: event.path, summary: event.summary };
           break;
+        case "skill.invoked":
+          ensure(event.message_id).skill = { name: event.name, source: event.source };
+          break;
+        case "skills.update":
+          ensure(event.message_id).skills_update = { summary: event.summary };
+          break;
       }
     }
 

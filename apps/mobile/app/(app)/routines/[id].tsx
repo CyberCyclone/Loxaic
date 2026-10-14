@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MessagesSquare, Play } from 'lucide-react-native';
-import { findCommand, getRoutineConversations, getRoutines, isUnreachableError, runRoutineNow, type Routine } from '@loxaic/api-client';
+import { getRoutineConversations, getRoutines, isUnreachableError, runRoutineNow, type Routine } from '@loxaic/api-client';
 import { describeRequestError, disconnectedCopy, showsDisconnected, useConnection } from '@/lib/connection';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -21,6 +21,7 @@ import { checkinKey } from '@/lib/pendingWaits';
 import { DeleteConversationModal } from '@/components/chat/DeleteConversationModal';
 import { NoRoomModal } from '@/components/chat/NoRoomModal';
 import { RewindModal } from '@/components/chat/RewindModal';
+import { useSkills } from '@/hooks/useSkills';
 import { useRewindRetry, type ComposerSeed } from '@/hooks/useRewindRetry';
 import { Composer } from '@/components/composer/Composer';
 import { useChatSession, toConversation, type ChatScope } from '@/hooks/useChatSession';
@@ -170,6 +171,8 @@ export default function RoutineChatScreen() {
     dismissNoRoom,
     subAgents: subAgentState,
   } = useChatSession(token, undefined, scope);
+  // What the "/" palette offers here, most-used first (#283).
+  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId);
   // A routine's run may hand work to sub-agents, like the agent's — see
   // agent.tsx. A routine's chats belong to their owner alone, so whoever is
   // looking at one may stop its sub-agents and answer them.
@@ -260,7 +263,7 @@ export default function RoutineChatScreen() {
 
   const handleRunCommand = useCallback(
     (name: string, args: string) => {
-      const cmd = findCommand(name);
+      const cmd = skills.find((s) => s.name === name);
       // `/compact` earns its place here: a routine that runs every hour and is
       // then talked to builds exactly the long conversation it is for.
       if (cmd?.requiresConversation && !activeId) {
@@ -269,7 +272,7 @@ export default function RoutineChatScreen() {
       }
       handleCommand(name, args, model);
     },
-    [activeId, model, handleCommand, showToast],
+    [activeId, model, handleCommand, showToast, skills],
   );
 
   const rowMeta = useCallback(
@@ -468,7 +471,8 @@ export default function RoutineChatScreen() {
               onOpenModelModal={() => {
                 showToast('This chat runs on the routine’s model — change it by editing the routine');
               }}
-              surface="chat"
+              skills={skills}
+              onSkillUsed={noteSkillUsed}
               onRunCommand={handleRunCommand}
               commandSeed={composerSeed}
               mcp={mcp}

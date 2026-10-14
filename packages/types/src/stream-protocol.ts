@@ -678,6 +678,14 @@ export type StreamEventKind =
    * block). Sent separately because that message's own `message.start` went
    * out before the check ran. */
   | { kind: "instructions.update"; message_id: string; path: string; summary: string }
+  /** The user message `message_id` invoked a skill ("/name …") and now
+   * carries its instructions (a `skill` block). Sent separately for the same
+   * reason as `instructions.update`. */
+  | { kind: "skill.invoked"; message_id: string; name: string; source: "builtin" | "user" | "workspace" }
+  /** The conversation's skills changed since the model was last told, and the
+   * user message `message_id` now carries a notice about it (a
+   * `skills_update` block). */
+  | { kind: "skills.update"; message_id: string; summary: string }
   /** Emitted once by a compact run, before its message.end — the stats the
    * card renders, attached to the summary message. */
   | ({ kind: "compaction"; message_id: string } & CompactionStats)
@@ -704,6 +712,10 @@ export interface StreamSnapshotMessage {
   compaction?: CompactionStats;
   /** Folded from `instructions.update`: user messages only. */
   instructions_update?: { path: string; summary: string };
+  /** Folded from `skill.invoked`: user messages only. */
+  skill?: { name: string; source: "builtin" | "user" | "workspace" };
+  /** Folded from `skills.update`: user messages only. */
+  skills_update?: { summary: string };
   tool_calls: {
     call_id: string;
     tool: string;

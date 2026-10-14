@@ -27,6 +27,7 @@ import { startRoutineScheduler, stopRoutineScheduler } from "./routines/schedule
 import { startSandboxReaper, sweepOrphanSandboxes } from "./agent/sandbox-manager";
 import { closeDb } from "@loxaic/db";
 import { routineRoutes } from "./routes/routines";
+import { skillRoutes } from "./routes/skills.ts";
 import { modelRoutes } from "./routes/models";
 import { configRoutes } from "./routes/config";
 import { mcpRoutes } from "./routes/mcp";
@@ -182,6 +183,7 @@ statsRoutes(app);
 syncRoutes(app);
 sandboxRoutes(app);
 routineRoutes(app);
+skillRoutes(app);
 modelRoutes(app);
 configRoutes(app);
 shareRoutes(app);

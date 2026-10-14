@@ -360,6 +360,45 @@ describe('an instructions change on a user message', () => {
   });
 });
 
+describe('a skill on a user message (#283)', () => {
+  const skill = { kind: 'skill' as const, name: 'debug', source: 'builtin' as const, text: 'The user invoked …' };
+  const update = { kind: 'skills_update' as const, text: '<skills-update>…', summary: 'Skills changed: added house-style' };
+
+  it('is read back from history, without touching what the user typed', () => {
+    const [m] = reconstructMessages([
+      row({ id: 'u1', authorType: 'user', content: [{ kind: 'text', text: '/debug it' }, update, skill] }),
+    ]);
+    expect(m.text).toBe('/debug it');
+    expect(m.skill).toEqual({ name: 'debug', source: 'builtin' });
+    expect(m.skillsUpdate).toEqual({ summary: 'Skills changed: added house-style' });
+  });
+
+  it('arrives live on the message it rode on, and only that one', () => {
+    const msgs = [
+      { id: 'u1', role: 'user' as const, text: 'one' },
+      { id: 'u2', role: 'user' as const, text: '/debug two' },
+    ];
+    const invoked = applyEventToMsgs(msgs, { kind: 'skill.invoked', message_id: 'u2', name: 'debug', source: 'builtin' });
+    const told = applyEventToMsgs(invoked, { kind: 'skills.update', message_id: 'u2', summary: 'Skills changed: removed x' });
+    expect(told[0].skill).toBeUndefined();
+    expect(told[1]).toMatchObject({ skill: { name: 'debug', source: 'builtin' }, skillsUpdate: { summary: 'Skills changed: removed x' } });
+  });
+
+  it('survives a reconnect through the snapshot', () => {
+    const snapshot = {
+      messages: [
+        {
+          message_id: 'u1', author_type: 'user', parent_id: null, text: '/debug', thinking: '', tool_calls: [], status: 'complete',
+          skill: { name: 'debug', source: 'user' }, skills_update: { summary: 'Skills changed: added a' },
+        },
+      ],
+    } as unknown as StreamSnapshot;
+    const [m] = applySnapshotToMsgs([], snapshot);
+    expect(m.skill).toEqual({ name: 'debug', source: 'user' });
+    expect(m.skillsUpdate).toEqual({ summary: 'Skills changed: added a' });
+  });
+});
+
 describe('why a tool call ran without asking survives every path', () => {
   const permission = { by: 'rule' as const, rule: 'npm test' };
 

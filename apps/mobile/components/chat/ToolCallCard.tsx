@@ -12,6 +12,7 @@ import {
   ListTodo,
   HelpCircle,
   Plug,
+  BookOpen,
 } from 'lucide-react-native';
 import { Box } from '@/components/ui/box';
 import { HStack } from '@/components/ui/hstack';
@@ -30,6 +31,7 @@ const TOOL_ICONS: Record<string, typeof FileText> = {
   glob: FolderSearch,
   web_fetch: Globe,
   todo_write: ListTodo,
+  skill: BookOpen,
 };
 
 const TOOL_TINT: Record<string, string> = {
@@ -41,6 +43,7 @@ const TOOL_TINT: Record<string, string> = {
   glob: 'text-muted-foreground bg-muted',
   web_fetch: 'text-muted-foreground bg-muted',
   todo_write: 'text-primary-hover bg-primary/15',
+  skill: 'text-primary bg-primary/15',
 };
 
 /** MCP tools arrive namespaced as `server__tool`; builtins never contain `__`. */
