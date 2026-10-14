@@ -317,6 +317,16 @@ export interface SkillListing {
   description: string;
 }
 
+/** A skill's name or description as the tool lists it, unable to close a
+ * marker: a description is a person's or a repository's text, and this list
+ * sits at the front of every request. Any closing tag is broken with a
+ * zero-width space, which covers `</skill-content>` and `</skills-update>`
+ * — what the server's own renderers neutralise — without this package
+ * knowing their names. */
+function inert(text: string): string {
+  return text.split("</").join("</\u200b");
+}
+
 /**
  * How the model loads a skill (#283): specialised instructions for a kind of
  * task, in the Agent Skills format. The model sees each skill's name and
@@ -335,7 +345,7 @@ export interface SkillListing {
  */
 export function skillTool(skills: readonly SkillListing[]): ToolDef {
   const list = skills.length
-    ? skills.map((s) => `- ${s.name}: ${s.description}`).join("\n")
+    ? skills.map((s) => `- ${inert(s.name)}: ${inert(s.description)}`).join("\n")
     : "(none yet)";
   return {
     name: SKILL_TOOL_NAME,

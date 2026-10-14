@@ -119,6 +119,42 @@ describe('skills in the composer', () => {
     await clearComposer();
   });
 
+  it('keeps the highlighted row in view, and leaves Enter to a message that names no skill', async function () {
+    // Arrow keys and Enter on the list are the web's: a phone picks by tap.
+    if (platform() !== 'web' && platform() !== 'electron') this.skip();
+    await startNewThread('chat');
+    await typeInto('composer.input', '/');
+    await waitForVisible('composer.palette');
+    // Every skill is taller than the list's cap, so the last ones start below
+    // its fold. Displayed is no proof (WebDriver calls a row under the fold
+    // displayed), so this compares where the row is with where the list is.
+    for (let i = 1; i < BUILT_INS.length; i++) await browser.keys('ArrowDown');
+    const placed = await browser.execute(() => {
+      const list = document.querySelector('[data-testid="composer.palette"]');
+      const row = list?.querySelector('[aria-selected="true"]');
+      if (!list || !row) return null;
+      const outer = list.getBoundingClientRect();
+      const inner = row.getBoundingClientRect();
+      const scroller = list.firstElementChild;
+      return {
+        id: row.getAttribute('data-testid'),
+        inside: inner.top >= outer.top - 1 && inner.bottom <= outer.bottom + 1,
+        overflows: !!scroller && scroller.scrollHeight > scroller.clientHeight,
+      };
+    });
+    expect(placed).toEqual({ id: 'composer.command.write-tests', inside: true, overflows: true });
+    await shot('skills-palette-highlight-in-view');
+    await clearComposer();
+
+    // "/fix" lists `debug` by its description ("…fix a bug's root cause"),
+    // but names no skill: Enter sends it as typed rather than replacing it.
+    await typeInto('composer.input', '/fix');
+    await waitForVisible('composer.command.debug');
+    await browser.keys('Enter');
+    await waitForTextIn('chat.messageList', 'Echo: /fix');
+    expect(await inputValue()).toBe('');
+  });
+
   it('loads a skill when the model asks for one', async () => {
     await startNewThread('chat');
     await sendAndAwaitReply('please use the debug skill', MOCK_TOOL_DONE);

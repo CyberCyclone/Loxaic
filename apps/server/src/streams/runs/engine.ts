@@ -76,8 +76,8 @@ import { thinkingFields } from "../../inference/thinking.ts";
 import { executeTool, resolvePath, toolNeedsSandbox, type ToolResult } from "../../agent/executor.ts";
 import { recordBeforeWrite, type CheckpointTurn } from "../../agent/checkpoints.ts";
 import { withNestedInstructions } from "../../agent/instructions.ts";
-import { prepareRunSkills, type RunSkills } from "../../skills/session.ts";
-import { renderSkillContent } from "../../skills/catalog.ts";
+import { answerSkillCall, prepareRunSkills, type RunSkills } from "../../skills/session.ts";
+import { SKILL_SYSTEM_ADDENDUM } from "../../skills/catalog.ts";
 import {
   attachActiveSandbox,
   getConversationSandbox,
@@ -463,12 +463,15 @@ export function assembleSystemPrompt(
   hasDocuments: boolean,
   /** Whether this run is offered the `subagent` tool. */
   hasSubagents = false,
+  /** Whether this run is offered the `skill` tool. */
+  hasSkills = false,
 ): string | null {
   const parts = [
     basePrompt,
     toolAddendum,
     hasDocuments ? DOCUMENT_SYSTEM_ADDENDUM : null,
     hasSubagents ? SUBAGENT_SYSTEM_ADDENDUM : null,
+    hasSkills ? SKILL_SYSTEM_ADDENDUM : null,
   ].filter(
     (p): p is string => typeof p === "string" && p.length > 0,
   );
@@ -642,7 +645,10 @@ export async function runToolLoop(ctx: {
     // toolset's to decide, and the addendum explains a marker only a run with
     // the tool can ever be handed.
     const hasSubagents = tools.some((t) => t.function.name === SUBAGENT_TOOL_NAME);
-    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments, hasSubagents);
+    // Keyed on the tool, which is fixed from the conversation's first run
+    // (skills/session.ts), so the system prompt does not move between turns.
+    const hasSkills = tools.some((t) => t.function.name === SKILL_TOOL_NAME);
+    const systemPrompt = assembleSystemPrompt(basePrompt, toolset.systemPromptAddendum, hasDocuments, hasSubagents, hasSkills);
     // The compaction summary rides as a second system message, after the real
     // system prompt and before the replayed turns — everything older than it
     // stays in Postgres and on screen but is no longer sent. Replaced when the
@@ -2136,22 +2142,17 @@ async function runOneToolCall(
   // needs a sandbox; the result is persisted like any other, so a replay
   // sends exactly what this request did.
   if (resolved.name === SKILL_TOOL_NAME) {
-    const name = typeof args.name === "string" ? args.name.trim().toLowerCase() : "";
-    const skill = name ? ctx.skills.find(name) : undefined;
-    const names = ctx.skills.names();
-    const output = skill
-      ? renderSkillContent(skill)
-      : `No skill named "${name}". Available skills: ${names.length ? names.join(", ") : "none"}.`;
+    const { ok, output } = answerSkillCall(args.name, ctx.skills);
     producer.emit({
       kind: "tool.result",
       message_id: assistantMsgId,
       call_id: call.id,
       tool: toolName,
       output,
-      ok: !!skill,
+      ok,
       ...(permission ? { permission } : {}),
     });
-    return { output, ok: !!skill, ...(permission ? { permission } : {}) };
+    return { output, ok, ...(permission ? { permission } : {}) };
   }
 
   // The MCP branch returned above, so this is a builtin by construction — and

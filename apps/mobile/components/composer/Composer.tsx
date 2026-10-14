@@ -22,7 +22,7 @@ import type { StageControls } from '@/hooks/useContextStages';
 import { useComposerAttachments } from '@/hooks/useComposerAttachments';
 import { useServerReachable } from '@/lib/connection';
 import { useSession } from '@/lib/session';
-import { filterSkills, skillNamed } from '@/lib/skillPalette';
+import { filterSkills, paletteTakesEnter, skillNamed } from '@/lib/skillPalette';
 import { ContextRing } from './ContextRing';
 
 interface ComposerProps {
@@ -100,6 +100,9 @@ export function Composer({
   const [inputHeight, setInputHeight] = useState(20);
   const [paletteDismissed, setPaletteDismissed] = useState(false);
   const [selectedCmdIndex, setSelectedCmdIndex] = useState(0);
+  // Whether the person moved the highlight with the arrow keys since the
+  // query last changed: a row they chose themselves, Enter may pick.
+  const [paletteMoved, setPaletteMoved] = useState(false);
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false);
   const textareaInputRef = useRef<TextInput>(null);
   const {
@@ -132,6 +135,7 @@ export function Composer({
   useEffect(() => {
     setPaletteDismissed(false);
     setSelectedCmdIndex(0);
+    setPaletteMoved(false);
   }, [commandPrefix]);
 
   // The agent Inspector's Compact button lives outside this component, so it
@@ -183,14 +187,21 @@ export function Composer({
       if (nativeEvent.key === 'ArrowDown') {
         e.preventDefault();
         setSelectedCmdIndex((i) => Math.min(i + 1, filteredCommands.length - 1));
+        setPaletteMoved(true);
         return;
       }
       if (nativeEvent.key === 'ArrowUp') {
         e.preventDefault();
         setSelectedCmdIndex((i) => Math.max(i - 1, 0));
+        setPaletteMoved(true);
         return;
       }
-      if (nativeEvent.key === 'Enter' || nativeEvent.key === 'Tab') {
+      // A query that matches only descriptions ("/fix" lists `debug`) leaves
+      // Enter to send the message as typed, and Tab to the browser.
+      if (
+        (nativeEvent.key === 'Enter' || nativeEvent.key === 'Tab') &&
+        paletteTakesEnter(filteredCommands, commandPrefix ?? '', paletteMoved)
+      ) {
         e.preventDefault();
         // Guarded by `paletteOpen` above, which already requires
         // `filteredCommands.length > 0` — so this index is always in range.
@@ -204,9 +215,9 @@ export function Composer({
         return;
       }
       // Any other key while the palette is open falls through to the
-      // textarea's normal typing — deliberately NOT to the send-on-Enter
-      // behavior below, since Enter here is claimed above.
-      return;
+      // textarea's normal typing — and Enter, when the palette did not take
+      // it above, to sending.
+      if (nativeEvent.key !== 'Enter') return;
     }
 
     if (nativeEvent.key === 'Enter' && !nativeEvent.shiftKey) {
@@ -234,7 +245,13 @@ export function Composer({
           {paletteOpen && (
             <CommandPalette
               skills={filteredCommands}
-              selectedIndex={Math.min(selectedCmdIndex, filteredCommands.length - 1)}
+              // No highlight when Enter would send rather than pick: a
+              // highlighted row says what Enter does.
+              selectedIndex={
+                paletteTakesEnter(filteredCommands, commandPrefix ?? '', paletteMoved)
+                  ? Math.min(selectedCmdIndex, filteredCommands.length - 1)
+                  : -1
+              }
               onSelect={insertCommand}
             />
           )}

@@ -23,6 +23,59 @@ export function filterSkills(skills: readonly PaletteSkill[], query: string): Pa
   return [...prefix, ...inName, ...inDescription];
 }
 
+/**
+ * Whether Enter and Tab pick from the palette rather than doing what they do
+ * in the box. Only when the query matches a skill's *name*, or the person has
+ * moved the highlight themselves: the description tier lists skills a word
+ * merely appears in ("/fix" lists `debug`, "/use" lists them all), and a
+ * person who typed the one-word message "/fix" and pressed Enter meant to send
+ * it — taking Enter there replaced their message with "/debug " and sent
+ * nothing.
+ */
+export function paletteTakesEnter(skills: readonly PaletteSkill[], query: string, moved: boolean): boolean {
+  if (moved) return true;
+  const q = query.trim().toLowerCase();
+  return skills.some((s) => s.name.includes(q));
+}
+
+/**
+ * Where to scroll the palette so the highlighted row is in view, or null when
+ * it already is. Rows keep their own height; the list moves by as little as it
+ * takes, so the rows around the highlight stay where the person last saw them.
+ */
+export function scrollToShow(row: { top: number; height: number }, view: { scrollY: number; height: number }): number | null {
+  if (row.top < view.scrollY) return row.top;
+  const bottom = row.top + row.height;
+  if (bottom > view.scrollY + view.height) return bottom - view.height;
+  return null;
+}
+
+/**
+ * The list `useSkills` shows for a conversation: the last answer only if it
+ * was *for that conversation*. A list belongs to its conversation's owner, so
+ * one fetched for a thread someone shared must never stand in for another
+ * thread — a skill only they have would look usable, and typing it would send
+ * "/name" as plain text with nothing saying so. Anything else is
+ * FALLBACK_SKILLS until the conversation's own answer arrives.
+ */
+export function skillsFor(
+  held: { for: string | null; skills: readonly PaletteSkill[] } | null,
+  conversationId: string | null,
+): readonly PaletteSkill[] {
+  return held?.for === conversationId ? held.skills : FALLBACK_SKILLS;
+}
+
+/**
+ * What a Compact choice outside the composer (the context-stage modals) sends:
+ * the harness's compaction while `/compact` is still the built-in, else the
+ * person's own `/compact` as a message, as typing it would. `command.run`
+ * for a name that is no longer the built-in is refused by the server, and
+ * nothing would say so.
+ */
+export function compactRequest(skills: readonly PaletteSkill[]): { kind: 'command' } | { kind: 'message'; text: string } {
+  return skillNamed(skills, 'compact')?.action === 'compact' ? { kind: 'command' } : { kind: 'message', text: '/compact' };
+}
+
 /** One more use of `name`, as the server will have counted it: the list
  * re-sorted so the palette is already right the next time "/" is typed,
  * rather than a fetch behind. */

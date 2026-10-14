@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray } from "@loxaic/db";
+import { db, eq, inArray, sql } from "@loxaic/db";
 import { conversations, messages, user, userPrefs } from "@loxaic/db/schema";
 import type { ContentBlock, StreamEventKind } from "@loxaic/types";
 import { __setTestSkillsForTest, type CatalogSkill } from "../catalog.ts";
@@ -113,6 +113,48 @@ describe("prepareRunSkills", () => {
     expect(folded.listing?.map((s) => s.name)).toContain("house-style");
     expect(await contentOf(fifth)).toEqual([{ kind: "text", text: "fifth" }]);
     expect((await snapshotOf(convId)).latest).toBeUndefined();
+  });
+
+  it("writes a notice and the record that it was given together, or neither", async () => {
+    // "The model was told" and the notice that tells it are one fact. Written
+    // apart, a failure between them repeated the notice on every later turn
+    // (and a retry added a second copy to its row), or lost it for good.
+    const { convId, msgId } = await conversationWith("first");
+    const frozen = await prepareRunSkills({ convId, userId: owner, userMsgId: msgId, front: "0", producer: recorder().producer });
+    __setTestSkillsForTest([mine("Use short sentences.")]);
+
+    // The database refuses to record the snapshot for this conversation, as a
+    // transient failure would. A trigger, because `db` is a proxy no spy
+    // reaches, scoped to this row so parallel suites are untouched.
+    const name = `fail_skills_${convId.replaceAll("-", "_")}`;
+    await db.execute(
+      sql.raw(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'snapshot write failed'; END $$;
+        CREATE TRIGGER ${name} BEFORE UPDATE ON conversations FOR EACH ROW
+        WHEN (NEW.id = '${convId}') EXECUTE FUNCTION ${name}();`),
+    );
+    const second = await addMessage(convId, "second");
+    const rec = recorder();
+    let failed;
+    try {
+      failed = await prepareRunSkills({ convId, userId: owner, userMsgId: second, front: "0", producer: rec.producer });
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER ${name} ON conversations; DROP FUNCTION ${name}();`));
+    }
+    // Nothing written, nothing said, and the tool still offered as before, so
+    // the front of the prompt does not move.
+    expect(await contentOf(second)).toEqual([{ kind: "text", text: "second" }]);
+    expect(rec.events).toEqual([]);
+    expect((await snapshotOf(convId)).latest).toBeUndefined();
+    expect(failed.listing).toEqual(frozen.listing);
+
+    // The next run says it, once.
+    const third = await addMessage(convId, "third");
+    await prepareRunSkills({ convId, userId: owner, userMsgId: third, front: "0", producer: recorder().producer });
+    expect((await contentOf(third)).filter((b) => b.kind === "skills_update")).toHaveLength(1);
+    const fourth = await addMessage(convId, "fourth");
+    await prepareRunSkills({ convId, userId: owner, userMsgId: fourth, front: "0", producer: recorder().producer });
+    expect(await contentOf(fourth)).toEqual([{ kind: "text", text: "fourth" }]);
   });
 
   it("puts a /name skill's instructions on the row it was typed in, once, and counts the use", async () => {

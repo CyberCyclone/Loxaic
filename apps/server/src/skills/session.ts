@@ -26,10 +26,12 @@ import {
   describeCatalogChange,
   modelCatalog,
   renderInvocation,
+  renderSkillContent,
   resolveSkillCatalog,
   type CatalogSkill,
   type SkillSummary,
 } from "./catalog.ts";
+import { isUsableSkillName } from "./format.ts";
 import { recordSkillUse } from "./usage.ts";
 
 /** What `conversations.skill_catalog` holds. */
@@ -103,6 +105,23 @@ function lookup(live: readonly CatalogSkill[]): Pick<RunSkills, "find" | "names"
 }
 
 /**
+ * The `skill` tool's answer to a call. The name is the model's, and the
+ * answer is persisted and replayed on every later turn, so a name that cannot
+ * be a skill's is never echoed back: neither its length (paid for on every
+ * turn after) nor a lone surrogate (which Postgres refuses in jsonb, failing
+ * the row's insert) reaches the row.
+ */
+export function answerSkillCall(raw: unknown, skills: Pick<RunSkills, "find" | "names">): { ok: boolean; output: string } {
+  const lowered = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  const name = isUsableSkillName(lowered) ? lowered : "";
+  const skill = name ? skills.find(name) : undefined;
+  if (skill) return { ok: true, output: renderSkillContent(skill) };
+  const names = skills.names();
+  const available = `Available skills: ${names.length ? names.join(", ") : "none"}.`;
+  return { ok: false, output: name ? `No skill named "${name}". ${available}` : `That is not a skill's name. ${available}` };
+}
+
+/**
  * Before a run's toolset is built: freeze or advance the conversation's
  * catalog, attach a notice of any change and a "/name" invocation to this
  * run's user message, and return what the run needs. Never throws: a failure
@@ -135,7 +154,8 @@ export async function prepareRunSkills(input: {
       return { ...found, listing: liveSummaries.length ? liveSummaries.map(({ name, description }) => ({ name, description })) : null };
     }
 
-    const step = advanceSnapshot(coerceSnapshot(row.skillCatalog), liveSummaries, input.front);
+    const stored = coerceSnapshot(row.skillCatalog);
+    const step = advanceSnapshot(stored, liveSummaries, input.front);
     const blocks: ContentBlock[] = [];
     if (step.notice) blocks.push({ kind: "skills_update", text: step.notice.text, summary: step.notice.summary });
 
@@ -153,21 +173,44 @@ export async function prepareRunSkills(input: {
       blocks.push({ kind: "skill", name: invoked.name, source: invoked.source, text: renderInvocation(invoked) });
     }
 
-    if (blocks.length && message) {
-      await db
-        .update(messages)
-        .set({ content: [...content, ...blocks] })
-        .where(eq(messages.id, input.userMsgId));
+    // "The model was told" (`latest`) and the notice that tells it are one
+    // fact, so they are written together or not at all. Apart, a failure
+    // between them either lost the notice for good (snapshot advanced) or
+    // repeated it on every later turn (notice kept, snapshot not). With no
+    // row to carry the notice, nothing is told, so `latest` stays put.
+    const snapshot = step.notice && !message && stored ? stored : step.snapshot;
+    const writeContent = blocks.length > 0 && !!message;
+    const writeSnapshot = step.dirty && snapshot !== stored;
+    try {
+      if (writeContent || writeSnapshot) {
+        await db.transaction(async (tx) => {
+          if (writeContent) {
+            await tx.update(messages).set({ content: [...content, ...blocks] }).where(eq(messages.id, input.userMsgId));
+          }
+          if (writeSnapshot) {
+            await tx.update(conversations).set({ skillCatalog: snapshot }).where(eq(conversations.id, input.convId));
+          }
+        });
+      }
+    } catch (err) {
+      // Nothing was written, so the conversation is exactly as it was: the
+      // list it was already offered keeps the prompt's front unchanged, and
+      // the change is announced on the next run instead.
+      console.warn(`recording the skills of ${input.convId} failed: ${(err as Error).message}`);
+      return { ...found, listing: stored ? listingFor(stored) : null };
+    }
+
+    if (writeContent) {
       if (step.notice) input.producer.emit({ kind: "skills.update", message_id: input.userMsgId, summary: step.notice.summary });
       if (invoked) {
         input.producer.emit({ kind: "skill.invoked", message_id: input.userMsgId, name: invoked.name, source: invoked.source });
-        await recordSkillUse(input.userId, invoked.name);
+        // Only the palette's order rides on this: a failure is not the run's.
+        await recordSkillUse(input.userId, invoked.name).catch((err: unknown) => {
+          console.warn(`counting a use of /${invoked.name} failed: ${(err as Error).message}`);
+        });
       }
     }
-    if (step.dirty) {
-      await db.update(conversations).set({ skillCatalog: step.snapshot }).where(eq(conversations.id, input.convId));
-    }
-    return { ...found, listing: listingFor(step.snapshot) };
+    return { ...found, listing: listingFor(snapshot) };
   } catch (err) {
     console.warn(`preparing the skills of ${input.convId} failed: ${(err as Error).message}`);
     return NO_SKILLS;

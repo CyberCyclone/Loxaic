@@ -20,6 +20,7 @@ import { checkinKey } from '@/lib/pendingWaits';
 import { Composer } from '@/components/composer/Composer';
 import { ModelModal } from '@/components/settings/ModelModal';
 import { useSkills } from '@/hooks/useSkills';
+import { compactRequest } from '@/lib/skillPalette';
 import { useChatSession } from '@/hooks/useChatSession';
 import { useModels } from '@/hooks/useModels';
 import { useRecentModels } from '@/hooks/useRecentModels';
@@ -168,7 +169,13 @@ export default function ChatScreen() {
     streaming,
     readOnly: readOnlyReason !== null,
     isAdmin,
-    onCompact: () => { handleRunCommand('compact', ''); },
+    // The built-in compaction while /compact is still it; a person's own
+    // /compact otherwise, as typing it would be (compactRequest).
+    onCompact: () => {
+      const request = compactRequest(skills);
+      if (request.kind === 'command') handleRunCommand('compact', '');
+      else handleSend(request.text, selectedModel);
+    },
     refreshModels: () => { void refreshModels(); },
     stageCard,
     promotion,

@@ -65,7 +65,7 @@ export function parseSkillFile(raw: string, opts: { dirName?: string } = {}): Pa
     // Forgiven only as far as it can still be typed after a slash and named
     // in a tool call: lowercase, letters, digits and hyphens.
     const lowered = name.toLowerCase();
-    if (!/^[a-z0-9][a-z0-9-]*$/.test(lowered) || lowered.length > SKILL_NAME_MAX * 2) {
+    if (!isUsableSkillName(lowered)) {
       return { ok: false, error: name ? `"${name}" is not a usable skill name` : "the skill has no name" };
     }
     warnings.push(`"${name}" does not follow the format's naming rules`);
@@ -161,4 +161,14 @@ function cutBytes(s: string, max: number): string {
   const buf = Buffer.from(s, "utf8").subarray(0, max);
   // A cut inside a multi-byte sequence decodes to U+FFFD; drop it.
   return buf.toString("utf8").replace(/\uFFFD+$/, "");
+}
+
+/**
+ * Whether a lowercased name can be a skill's at all: what a file whose name
+ * breaks the format's rules is still forgiven as (letters, digits and
+ * hyphens, at most twice the format's length), and so the widest set a
+ * lookup by name can ever match.
+ */
+export function isUsableSkillName(name: string): boolean {
+  return name.length <= SKILL_NAME_MAX * 2 && /^[a-z0-9][a-z0-9-]*$/.test(name);
 }

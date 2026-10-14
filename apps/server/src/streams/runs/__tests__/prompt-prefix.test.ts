@@ -933,6 +933,9 @@ describe("skills keep the prefix (#283)", () => {
     const invoked = lastUser(requests[0]);
     expect(invoked.content).toMatch(/^The user invoked the "debug" skill[^\n]*\n<skill-content name="debug" source="builtin">\n# Debug[\s\S]*<\/skill-content>\n\n\/debug the login page$/);
     expect(requestOptions[0].tools).toContain('"name":"skill"');
+    // The markers are explained in the system prompt of a run offered the tool.
+    const { SKILL_SYSTEM_ADDENDUM } = await import("../../../skills/catalog.ts");
+    expect((JSON.parse(requests[0][0]) as { role: string; content: string }).content).toContain(SKILL_SYSTEM_ADDENDUM);
     await turn("and now the signup page", convId);
     expectEachRequestExtendsTheLast();
   });

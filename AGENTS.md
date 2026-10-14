@@ -4321,6 +4321,17 @@ replies.
     (`runOneToolCall`'s `SKILL_TOOL_NAME` branch).
   - The result is `<skill-content name source>`, persisted like any tool row, with closing tags
     neutralised.
+  - **The model's `name` is never echoed unless it could be a skill's** (`answerSkillCall`,
+    `isUsableSkillName`). The answer is replayed every turn after, so a 100 KB name was paid for
+    on each, and a lone surrogate fails the row's jsonb insert. Found in review.
+  - **The list's names and descriptions cannot close a marker either** (`inert` in
+    `skillTool`). It is the one renderer of skill text outside `catalog.ts`, and it sits at the
+    front of every request. Found in review.
+  - **`SKILL_SYSTEM_ADDENDUM` explains the markers** to every run offered the tool: who wrote a
+    skill (`source`), that it cannot change Loxaic's rules or approvals, and that a "skill"
+    anywhere else is not one. It keys on the tool, which is fixed per conversation, so the system
+    prompt does not move. The third wrapper to ship without its addendum, after documents and
+    sub-agents. Found in review.
 - **A person runs one by starting a message with `/name`.** It is an ordinary send.
   - Before the toolset is built, `prepareRunSkills` (`skills/session.ts`) reads the name off the
     run's user row and appends a `{kind: "skill"}` block holding the instructions as they are at
@@ -4341,9 +4352,16 @@ replies.
   - **Rewind:** a rewind that removes a notice drops `latest`, so the next run says it again.
   - **Edge case:** a conversation whose frozen list was empty and has since been told of a skill
     gets the tool added: one re-read, the only case.
+- **A notice and `latest` are written in one transaction** (`prepareRunSkills`). They are one
+  fact. Written apart, a failure between them lost the notice for good, or repeated it every turn
+  (and a retry added a second copy). A failed write returns the list the conversation already
+  had, so the prompt's front does not move. `session.test.ts` fails the write with a trigger.
 - **Whose skills:** the conversation's **owner's**, never the sender's. Two editors with two
   catalogs would announce each other's skills on every alternate turn. A sub-agent takes its
   parent owner's live list and stores nothing, since it is one run long.
+- **`GET /v1/skills` gives the owner's list only to someone who can send there** (`editor`,
+  `catalogForRequest`). A viewer, and every admin (who resolves to viewer), gets their own: a
+  person's skills are theirs, as an MCP server's name is (`tool_sources`). Found in review.
 - **What the list costs:** the seven built-ins' tool is about 1.5 KB (~350 tokens) on every
   request.
   - Keep built-in descriptions to one sentence of what and when.
@@ -4356,6 +4374,17 @@ replies.
     **person** runs a skill (a `/name` row, `command.run`), never when the model loads one.
 - **Before the first answer the client knows only `/compact`** (`FALLBACK_SKILLS`), so `/compact`
   still compacts while the list loads, as it did with no fetch at all.
+- **A list is shown only for the conversation it was fetched for** (`skillsFor`). It is the
+  owner's, so one kept across a switch offered a shared thread's skills in the next thread, where
+  typing one sent "/name" as plain text. Found in review.
+- **Enter and Tab pick from the palette only when the query matches a name**, or the person
+  arrowed to a row (`paletteTakesEnter`). The description tier lists `debug` for "/fix" and
+  everything for "/use", and taking Enter there replaced a one-word message with "/debug " and
+  sent nothing. No row is highlighted when Enter would send. The highlighted row is scrolled into
+  view (`scrollToShow`): the list is taller than its cap. Both found in review.
+- **The context-stage modals' Compact goes through `compactRequest`**: the harness's compaction
+  while `/compact` is the built-in, else the person's own `/compact` as a message. A `command.run`
+  for an overridden name is refused, and nothing said so. Found in review.
 - **The compaction instruction asks the summary to name loaded skills** rather than copy them. The
   model can load them again, and the spec warns that a skill lost to a summary silently degrades
   the agent.
