@@ -228,9 +228,28 @@ function writeVram() {
   if (VRAM_STATE) writeFileSync(VRAM_STATE, JSON.stringify({ heldMib: loadedIds().length * MODEL_MIB }));
 }
 
+/** Each loaded model's child port, for lines that pretend to be its output. */
+const childPorts = new Map();
+/** Models whose GPU was "reset" under them ("lose the device"): like a real
+ * child after `ErrorDeviceLost`, one fails every request until it is unloaded. */
+const lostDevice = new Set();
+
+/** Models whose first load has already lost its device ("LostAtLoad"). */
+const lostAtLoad = new Set();
+
 function unload(id) {
   if (status.get(id) !== "loaded") return;
+  // `LOXAIC_FAKE_UNLOAD_STUCK` names a file whose presence makes every unload
+  // not take, read on each one: the router answers, as the real one does before
+  // its child has exited, and the child (one holding a lost device, say) never
+  // does.
+  const stuckFile = process.env.LOXAIC_FAKE_UNLOAD_STUCK;
+  if (stuckFile && existsSync(stuckFile)) {
+    logEvent({ event: "unload-stuck", model: id });
+    return;
+  }
   status.set(id, "unloaded");
+  lostDevice.delete(id);
   loadedArgs.delete(id);
   // As the real router, which the placement tracker reads.
   process.stderr.write(`0.00.000.300 I srv        unload: stopping model instance name=${id}\n`);
@@ -249,12 +268,32 @@ function load(id) {
   // As the real router: each load is a child on its own port, announced on
   // the router's output, with the child's lines forwarded as `[    P] line`.
   const childPort = 40000 + (spawnCount++ % 20000);
+  childPorts.set(id, childPort);
   process.stderr.write(`0.00.000.100 I srv    operator(): spawning server instance with name=${id} on port ${childPort}\n`);
   // As the real child: an unknown speculative type, or a draft file that is
   // not there, fails the load (not the router). A model file named "Crashy"
   // loaded with MTP dies the way llama.cpp b11342 dies loading
   // Qwen3.8-Flash-Next with unsloth's head (ggml-org/llama.cpp#29811).
   const spec = merged(id);
+  // A model file named "LostAtLoad" has its GPU reset while its first load is
+  // under way, the way a fresh child after an amdgpu reset can: the child dies
+  // with Vulkan's exception, and the router says only "failed to load". The
+  // next load works, as one does once the card has recovered.
+  if (/lostatload/i.test(spec.model ?? "") && !lostAtLoad.has(id)) {
+    lostAtLoad.add(id);
+    const p = String(childPort).padStart(5, " ");
+    process.stderr.write(
+      [
+        `[${p}] 0.00.512.100 E ggml_vulkan: device lost on Vulkan0`,
+        `[${p}] terminate called after throwing an instance of 'vk::DeviceLostError'`,
+        `[${p}]   what():  vk::Device::waitForFences: ErrorDeviceLost`,
+        `0.00.000.200 I srv    operator(): instance name=${id} exited with status 134`,
+      ].join("\n") + "\n",
+    );
+    failed.add(id);
+    logEvent({ event: "load-failed", model: id, reason: "device-lost" });
+    return "failed";
+  }
   const crashes = spec["spec-type"] === "draft-mtp" && /crashy/i.test(spec.model ?? "");
   // As b11342's child: an option's value is read when the model loads, not
   // when the router reads the preset, so a bad one fails this load only.
@@ -474,6 +513,26 @@ const server = createServer(async (req, res) => {
       });
     }
     res.writeHead(200, { "content-type": "text/event-stream" });
+    // "lose the device": the GPU is reset part-way through reading the prompt,
+    // as amdgpu did to a 221K-token re-read on Pheonix — the child prints what
+    // b11457's did and the request ends with its SSE error. The model then
+    // stays "loaded" and fails every request, as the real one did, until it is
+    // unloaded.
+    if (lostDevice.has(body.model) || /lose the device/i.test(said([...(body.messages ?? [])].reverse().find((m) => m.role === "user")))) {
+      const p = String(childPorts.get(body.model) ?? 40000).padStart(5, " ");
+      process.stderr.write(
+        [
+          `[${p}] radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.`,
+          `[${p}] 0.31.58.475 E ggml_vulkan: device lost on Vulkan0`,
+          `[${p}] 0.31.58.475 E srv  update_slots: decode() failed: vk::Queue::submit: ErrorDeviceLost`,
+        ].join("\n") + "\n",
+      );
+      lostDevice.add(body.model);
+      logEvent({ event: "device-lost", model: body.model });
+      res.write(`data: ${JSON.stringify({ error: { code: 500, message: "decode() failed: vk::Queue::submit: ErrorDeviceLost", type: "server_error" } })}\n\n`);
+      res.end();
+      return;
+    }
     const words = ["Hello", " from", ` ${body.model}`];
     // "take your time" makes the reply slow (1.5 s a word; "take your time
     // 6000" is 6 s a word), so a test can hold a run on the model while

@@ -6,10 +6,12 @@ import { parsePromptProgress } from "./prompt-progress.ts";
 import { redactSecrets } from "./provider-secrets.ts";
 import { resolveModelRef, type ResolvedProvider } from "./providers.ts";
 import { routerModelName } from "../llama/preset.ts";
-import { routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
+import { lostDeviceFor, modelLoadFailureReason, routerEndpoint, routerUnavailableReason } from "../llama/router.ts";
 import { listServableModels } from "../llama/catalog.ts";
-import { ensureRoom, trackRequest } from "../llama/room.ts";
-import { describeLoadFailure } from "../llama/load-failure.ts";
+import { afterDiscard, discardFailed, discardLostModel, ensureRoom, trackRequest } from "../llama/room.ts";
+import { describeLoadFailure, isLoadFailure } from "../llama/load-failure.ts";
+import { describeDeviceLoss, isDeviceLost } from "../llama/device-lost.ts";
+import { gpuJobLimit } from "../llama/gpu-job-limit.ts";
 import { inferenceFetch, inferenceNetworkError } from "./transport.ts";
 import { backendErrorFields, ContextOverflowError, isContextOverflow, type BackendErrorFields } from "./context-overflow.ts";
 
@@ -241,9 +243,25 @@ export async function* streamCompletion(
   // NoRoomError says pinned ones are in the way (llama/room.ts).
   const release = trackRequest(upstreamModel);
   try {
+    await afterDiscard(upstreamModel, options.signal);
     await ensureRoom(upstreamModel, options.signal);
     yield* liveStream(provider, routerModelName(upstreamModel), messages, options);
   } catch (err) {
+    // The GPU was reset under the model: its process will never answer again,
+    // so it is unloaded (in the background — the person is told now), and the
+    // sentence says what happened instead of `ErrorDeviceLost`. Asked first:
+    // a fresh child can lose the device while loading, and the router then
+    // says only "failed to load" with the cause in the child's own log
+    // (`vk::DeviceLostError`), which the load-failure sentence below would
+    // blame on the model's settings.
+    if (err instanceof Error) {
+      const atLoad = isLoadFailure(err.message) && isDeviceLost(modelLoadFailureReason(upstreamModel) ?? "");
+      if (atLoad || isDeviceLost(err.message)) {
+        const stuck = discardFailed(upstreamModel);
+        void discardLostModel(upstreamModel, lostDeviceFor(upstreamModel));
+        throw new Error(await describeDeviceLoss(upstreamModel, gpuJobLimit(), { atLoad, stuck }), { cause: err });
+      }
+    }
     // The router says only "model name=… failed to load"; say why, and what
     // an admin can change (llama/load-failure.ts).
     const explained = err instanceof Error ? await describeLoadFailure(upstreamModel, err.message) : null;

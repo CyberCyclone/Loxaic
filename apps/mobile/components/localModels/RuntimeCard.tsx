@@ -27,7 +27,7 @@ import {
   type ServerProblem,
 } from '@/lib/extraOptions';
 import { AdminSettingsError } from '@loxaic/api-client';
-import { cpuWarning, formatBytes, restartHeadline, runtimeHeadline } from '@/lib/localModels';
+import { cpuWarning, formatBytes, gpuJobLimitWarning, restartHeadline, runtimeHeadline } from '@/lib/localModels';
 import { bundledNewerNote, changeVersionControl, offersRevert, versionLabel } from '@/lib/runtimeVersions';
 import { useServerReachable } from '@/lib/connection';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
@@ -84,6 +84,7 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
     setOptionsDraft((d) => followSaved(d, JSON.parse(savedOptionsKey) as ExtraOption[]));
   }, [savedOptionsKey]);
   const warning = cpuWarning(runtime);
+  const jobLimit = gpuJobLimitWarning(runtime);
   const restarting = Boolean(runtime.restart);
   const busy = restarting || runtime.state === 'installing' || runtime.state === 'starting' || runtime.state === 'not-installed';
   // Ticks the elapsed time while a restart is under way, and only then.
@@ -159,6 +160,20 @@ export function RuntimeCard({ runtime, settings, models, onRestart, onSettings, 
               ? 'Models are running on the CPU although this machine has a GPU. Replies are much slower than they need to be.'
               : 'Models are running on the CPU. Only small models reply at a usable speed.'}
           </Text>
+        </HStack>
+      )}
+
+      {jobLimit && (
+        <HStack testID="localModels.runtime.gpuJobLimit" space="xs" className="mt-2 items-start rounded-md bg-warning/15 p-2">
+          <Icon as={TriangleAlert} size="xs" className="mt-0.5 text-warning" />
+          <VStack space="xs" className="min-w-0 flex-1">
+            <Text testID="localModels.runtime.gpuJobLimit.message" size="xs" className="text-foreground">
+              {jobLimit.message}
+            </Text>
+            <Text testID="localModels.runtime.gpuJobLimit.fix" size="2xs" selectable className="font-mono text-foreground">
+              {jobLimit.fix}
+            </Text>
+          </VStack>
         </HStack>
       )}
 

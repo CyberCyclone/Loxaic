@@ -501,6 +501,23 @@ export interface LocalRuntimeView {
   extraOptionsSkipped?: string[];
   /** Why extra options cannot be set right now, or null. */
   optionsUnavailable?: string | null;
+  /** How long the GPU driver lets one GPU job run before resetting the GPU
+   * (amdgpu on Linux, Vulkan runtime), or null where it cannot be read.
+   * Absent from an older server. */
+  gpuJobLimit?: GpuJobLimit | null;
+}
+
+/** amdgpu's `lockup_timeout` for compute jobs: `computeMs` null means no
+ * limit; `source` says whether an admin set it or it is the module default. */
+export interface GpuJobLimit {
+  driver: "amdgpu";
+  computeMs: number | null;
+  source: "set" | "default";
+  /** Short enough to cut a long prompt off: the server's call, the same one
+   * that decides whether a chat's "GPU stopped responding" blames it. */
+  short: boolean;
+  /** The `lockup_timeout` value that gives compute jobs a minute. */
+  suggestedLockupTimeout: string;
 }
 
 /** One option passed to llama.cpp as an admin typed it: `key = value` in the

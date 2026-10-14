@@ -1759,6 +1759,81 @@ replies.
   unload, which the tracker needs. The mock HuggingFace's "Tabled" repo is both.
   `host-model-state.test.ts` and `host-model-state.spec.ts` drive all of it.
 
+### A GPU reset under a host model
+
+- **What happened on Pheonix:** after a context-stage switch to 512K, the reload threw away the
+  cached prompt, and re-reading the 221K-token conversation ran for 31 minutes. At about 207K
+  tokens the kernel logged `ring comp_1.1.0 timeout` and reset one card. llama.cpp answered
+  `decode() failed: vk::Queue::submit: ErrorDeviceLost`, and the chat showed exactly that.
+- **The cause is the driver's job limit, not the model.** amdgpu resets the GPU when one
+  submission runs past `lockup_timeout`. On kernel 7.0 the default is 2 s for every queue
+  (older kernels gave compute 60 s). Each prompt step attends to the whole context read so far,
+  so it gets longer as the context does: at about 200K tokens a step took roughly two seconds
+  per card. A larger ubatch makes each step longer, which is probably also why ubatch above 512
+  "crashed the GPU" there. Only root on the host can raise it
+  (`options amdgpu lockup_timeout=2000,60000,2000,2000` in `/etc/modprobe.d`, then
+  `update-initramfs -u` and a reboot).
+- **The limit is read, not assumed** (`llama/gpu-job-limit.ts`). It comes from
+  `/sys/module/amdgpu/parameters/lockup_timeout`: one value or four, with compute second; 0 or
+  blank is the module default, and negative is no limit. It is read when the runtime starts
+  (the parameter changes only with the module).
+  - **What one value covers is the kernel's to say, and is read from `modinfo -p amdgpu`**
+    (`parseModinfo`), as the default is. On 7.0 it is every job ("[single value for all]"). On
+    older kernels it is every job *but compute* on bare metal, and compute keeps its 60 s; only
+    passthrough and SR-IOV apply it to compute. Read as compute's everywhere, `lockup_timeout=5000`
+    on an older bare-metal host warned about a limit that does not govern llama.cpp. A guest is
+    not told apart from bare metal, which can only miss a warning. With no `modinfo` answer, a
+    single value is unknown. Found in review.
+  - **The server decides "short"** (below 10 s) and sends it with the value that raises it
+    (`gpuJobLimitView`: `short`, `suggestedLockupTimeout`), so the runtime card's warning and
+    the chat's sentence cannot disagree. The client kept copies of both. Found in review.
+  - **Only a managed Vulkan runtime reports it.** `lockup_timeout` is the DRM scheduler's job
+    timeout, which times work submitted through amdgpu's command submission (RADV). ROCm's
+    compute goes to user-mode queues managed by amdkfd, which that scheduler never sees.
+- **A lost device is explained, and the model is unloaded** (`llama/device-lost.ts`,
+  `room.ts`'s `discardLostModel`). A lost Vulkan device never comes back, and the old process
+  stayed up: the next request, six and a half hours later, crashed it. `streamCompletion`
+  recognises llama.cpp's three ways of saying so, and replaces its words with a sentence saying
+  that the GPU was reset, whether a short driver limit is the likely cause, and that the next
+  message reads the whole conversation again.
+  - **The sentence names neither the GPU nor the limit.** It is stored on the message and shown
+    to everyone on the conversation, shared viewers included, and both are admin-only
+    everywhere else; the runtime card has the figure, the log and the row the device. The rule
+    the network-error sentence follows. Found in review.
+  - **A loss at load is a loss, not a failed load.** A fresh child can lose the device while
+    loading; the router then answers only `model name=… failed to load`, and the cause
+    (`vk::DeviceLostError`) is in the child's own log. The device-lost check therefore runs
+    first and reads that log too, and `loadFailureMessage` (the admin card's sentence) says the
+    GPU was reset. Before, the chat blamed MTP or the load settings for it: the `isLoadFailure`
+    lesson again. Found in review.
+  - **The unload** runs in the background, one per model at a time, and nothing refuses it: not
+    the failed request still counted as in flight, and not a pin. A pinned model is loaded
+    straight back. Only `loaded` counts as still holding the device: a child that died with it
+    reads `failed` or `unloaded`.
+  - **An unload that does not take is said, on the row and in the chat.** A child holding a lost
+    device may not exit. The row's `loadError` then says so and to restart llama.cpp, from a map
+    of its own (`stuckAfterLoss`), since `loadErrors` is cleared whenever the router reports
+    `loaded`, which is exactly the stuck state; it clears once the model is seen in any other
+    state. The chat stops promising a fresh load (`discardFailed`). Before, both stayed silent,
+    and every message went back to the dead process with the same false promise. Each failure
+    tries the unload again. Found in review.
+  - **A request waits for a discard of its model still under way** (`afterDiscard`, before
+    `ensureRoom`). Sent while one ran, it reached the dead process and was promised a fresh load
+    again; a person who resends at once is exactly that. Found by the e2e case, which typed faster
+    than the unload timed out. A stop ends the wait, not the discard.
+  - **A reused port ends a child's lines.** The router hands a port back when a child exits, so
+    another model spawned on ours means the lines after it are not ours (`lostDevice`, and
+    `explainModelLoadFailure`, which had the same gap). Another model on another port does not:
+    several are loaded at once. Found in review.
+- **The fake router** fails a request whose last user message says "lose the device", printing
+  b11457's lines, and keeps failing every request on that model until it is unloaded, as the
+  real child does. A model file named "LostAtLoad" loses the device during its first load
+  (the mock HuggingFace's "LostAtLoad" repo), and while the file `LOXAIC_FAKE_UNLOAD_STUCK`
+  names exists, no unload takes. `LLAMA_DISCARD_WAIT_MS` shortens how long a discard waits.
+  `LOXAIC_AMDGPU_PARAMS_DIR` stands in for the sysfs directory under test, on any platform, and
+  a `modinfo` file there for `modinfo`'s output. `device-lost.test.ts`, `gpu-job-limit.test.ts`
+  and `device-lost.spec.ts` drive all of it.
+
 ### Choosing the llama.cpp version (#270)
 
 - **Three sources, one installer** (`llama/runtime.ts` `installSource`). *Bundled* is the manifest's
