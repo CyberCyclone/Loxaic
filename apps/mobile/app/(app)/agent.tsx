@@ -84,6 +84,8 @@ export default function AgentScreen() {
     runs,
     activeId,
     activeRun,
+    historySettled,
+    historyLoaded,
     selectRun,
     mode,
     runState,
@@ -338,6 +340,8 @@ export default function AgentScreen() {
     busy,
     canDecide: Boolean(activeRun && canEdit(activeRun)) && connection === 'online',
     blocked: subAgents.sheetOpen,
+    settled: historySettled,
+    loaded: historyLoaded,
   });
   const planContext = useMemo<PlanReview>(
     () => ({ open: planReview.openItem, statusOf: planReview.statusOf }),

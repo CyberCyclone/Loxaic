@@ -367,7 +367,15 @@ export function applySnapshotToMsgs(
 export function applyEventToMsgs(msgs: Message[], event: StreamEventKind, now = Date.now()): Message[] {
   switch (event.kind) {
     case 'message.start': {
-      if (msgs.some((m) => m.id === event.message_id)) return msgs;
+      const idx = msgs.findIndex((m) => m.id === event.message_id);
+      if (idx >= 0) {
+        // The sent bubble, already renamed to its real id: it had no position
+        // until now, and history is merged by position (mergeHistory).
+        if (msgs[idx].lamport !== undefined || event.lamport === undefined) return msgs;
+        const placed = [...msgs];
+        placed[idx] = { ...msgs[idx], lamport: event.lamport };
+        return placed;
+      }
       return [
         ...msgs,
         {

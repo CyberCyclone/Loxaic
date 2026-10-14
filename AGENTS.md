@@ -730,6 +730,27 @@ replies.
   deciding whether to record the cursor from a ref only moved the problem, since a ref and a
   state update can see different threads (found in review). Applying the page every time also
   means a thread opened while a run is live shows its history, not only the run.
+- **History is merged in by `lamport`, never simply put in front** (`mergeHistory`, behind both
+  `withNewestPage` and `prependOlder`). What is loaded is not always newer than the page: a socket
+  opening as a thread opens resubscribes it, and the replay of its last three runs can land before
+  the newest page. A planning run is small and the run it led to can be hundreds of rows, so on the
+  beta the plan arrived first, the page went in front of it, and the plan sat below the whole
+  implementation with no reply after it — read as undecided, offering Accept (and so "implement
+  it") again. History without a `lamport` (a server before #213) still goes in front.
+  An optimistic bubble has no `lamport`, so history older than the thread's first placed message
+  is put ahead of everything, a leading bubble included, and `message.start` for a message already
+  on screen fills in its missing `lamport` rather than being ignored. Without both, a bubble ahead
+  of a placed reply had the whole page, and every older one, put after it. A current server's
+  snapshot of the new run places the bubble before the reply starts (checked in the browser), so
+  this needs a missed snapshot; unit-tested only, since an e2e case would have to fake one. Found
+  in review.
+- **The plan panel opens by itself only once the thread's newest page has actually arrived**
+  (`historyLoaded`); the bar waits only for the fetch to finish (`historySettled`). Before the page,
+  a thread can hold only a reconnect's replay of a planning run, which reads as pending whatever
+  became of it. A failed fetch used to count as settled and was never retried in the agent hook,
+  so the panel opened on an accepted plan, offering Accept, for good. Now a failed fetch leaves the
+  bar (a tap on a thread the person can read) and is retried on the next select, as in the chat
+  hook. `plan-status-on-open.spec.ts` fails the page. Found in review.
 - **A late admin transcript response changes nothing.** `openDetail` checks the selected row after
   its await; without that, a slow conversation's response installed its transcript *and cursor*
   under another selected row, and "Load older" sent that cursor against the wrong conversation for

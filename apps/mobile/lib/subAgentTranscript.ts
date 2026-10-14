@@ -48,7 +48,7 @@ type StreamEvent = Extract<ServerMessage, { type: 'stream.event' }>;
 type StreamEnd = Extract<ServerMessage, { type: 'stream.end' }>;
 
 /**
- * The child's stored messages, put in front of whatever its live run has
+ * The child's stored messages, merged with whatever its live run has
  * already written — never instead of it, for the reason a thread does the
  * same (`withNewestPage`): the live copy of a message both have is the newer.
  */
