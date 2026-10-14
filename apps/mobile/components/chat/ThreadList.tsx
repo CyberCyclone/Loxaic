@@ -59,7 +59,7 @@ interface ThreadListProps {
    * to pick between them. `title` replaces the row's title (the run's time)
    * and `badge` replaces the kind badge (its status).
    */
-  rowMeta?: (c: Conversation) => { title?: string; badge: string; danger?: boolean; time: string } | null;
+  rowMeta?: (c: Conversation) => { title?: string; badge: string | null; danger?: boolean; time: string } | null;
   /**
    * Which rows have a run going, and what it is doing (#282).
    *
@@ -181,15 +181,20 @@ export function ThreadList({
                 }
                 // A routine row: its recorded run status yields to the live
                 // one while the run is going (they can disagree — the record
-                // only refreshes on a list fetch).
-                if (run) return null;
+                // only refreshes on a list fetch). A null badge is a status
+                // the screen knows to be out of date: nothing is better.
+                if (run || meta.badge === null) return null;
                 return (
                   <Badge
                     testID={`threadList.status.${item.id}`}
                     variant={meta.danger ? 'destructive' : 'outline'}
                     className={meta.danger ? '' : 'border-border'}
                   >
-                    <BadgeText className="text-2xs normal-case">{meta.badge}</BadgeText>
+                    {/* Its own testID: on native a container's text cannot
+                        be read, and what the status *says* is the point. */}
+                    <BadgeText testID={`threadList.status.${item.id}.label`} className="text-2xs normal-case">
+                      {meta.badge}
+                    </BadgeText>
                   </Badge>
                 );
               })()}

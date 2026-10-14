@@ -62,8 +62,9 @@ export interface RunHandle {
 /**
  * What this run is doing, in the words a thread-list row says (#282).
  *
- * The order is `runLevelFromSnapshot`'s (apps/mobile/lib/agentRunState.ts),
- * and for the same reason: a run parked on an approval has handed its slot
+ * The order is `runLevelFromSnapshot`'s (apps/mobile/lib/agentRunState.ts)
+ * with one exception, check-in and approval swapped (below), and for the same
+ * reason: a run parked on an approval has handed its slot
  * back and may well be queuing to get it again, so it can carry a queue
  * position and a question at once — and the question is the thing a person can
  * act on. A check-in outranks an approval only because the run asks one thing
@@ -197,10 +198,10 @@ export function unregisterRun(streamId: string): void {
       runEndWaiters.delete(handle.conversationId);
       for (const resolve of waiters) resolve(true);
     }
-    // The conversation is idle now — say so, once, and only if this was the
-    // run holding it (a stale unregister of a superseded stream must not
-    // announce the *new* run's conversation idle).
-    if (handle.announcedActivity !== undefined) announceRunActivity(handle.conversationId);
+    // The conversation is idle now — say so. Inside this branch, so only the
+    // run holding the conversation announces: a stale unregister of a
+    // superseded stream must not announce the *new* run's conversation idle.
+    announceRunActivity(handle.conversationId);
   }
 }
 

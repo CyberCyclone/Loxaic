@@ -102,6 +102,10 @@ describe("a context-stage switch", () => {
     registerRun({ streamId: uuid(), conversationId: conv, userId: "u", abort: new AbortController(), approvals: new Map(), model });
 
     const steps: ContextStageStatus[] = [];
+    // What the run registry is told, so a thread-list row says "Queued" for
+    // the drain rather than "Running" (#282).
+    const queued: number[] = [];
+    let waitEnded = 0;
     const switching = applyStageChange({
       modelId: model,
       target: 1,
@@ -111,6 +115,8 @@ describe("a context-stage switch", () => {
       conversationId: uuid(),
       signal: live(),
       emit: (s) => steps.push(s),
+      onQueued: (position) => queued.push(position),
+      onWaitEnded: () => { waitEnded++; },
     });
     // Once the switch is in line, a new run arriving must not overtake it.
     for (let i = 0; i < 100 && !steps.some((s) => s.step === "waiting"); i++) await new Promise((r) => setTimeout(r, 10));
@@ -122,10 +128,13 @@ describe("a context-stage switch", () => {
     expect(steps.at(-1)).toMatchObject({ step: "waiting", position: 1, running: 1, from_stage: 0, to_stage: 1, to_tokens: 16384, yarn_factor: 2 });
     expect(await activeStage()).toBe(0);
     expect(laterAdmitted).toBe(false);
+    expect(queued.at(-1)).toBe(1);
+    expect(waitEnded).toBe(0);
 
     reply?.release();
     for (const s of [conv]) unregisterRun(s);
     expect(await switching).toEqual({ kind: "applied", stage: 1 });
+    expect(waitEnded).toBe(1);
     // "waiting" is re-sent as the line moves; the steps themselves, in order:
     expect(steps.map((s) => s.step).filter((s, i, all) => s !== all[i - 1])).toEqual(["waiting", "reloading", "applied"]);
     expect(await activeStage()).toBe(1);
@@ -148,10 +157,21 @@ describe("a context-stage switch", () => {
 
   it("can be withdrawn before it applies, leaving the stage as it was", async () => {
     const reply = await acquireRunSlot({ signal: live(), onQueued: noop });
-    const switching = applyStageChange({ modelId: model, target: 2, reason: "chosen", auto: false, byUserId: "someone", signal: live() });
+    let waitEnded = 0;
+    const switching = applyStageChange({
+      modelId: model,
+      target: 2,
+      reason: "chosen",
+      auto: false,
+      byUserId: "someone",
+      signal: live(),
+      onWaitEnded: () => { waitEnded++; },
+    });
     for (let i = 0; i < 100 && pendingStage(model) === null; i++) await new Promise((r) => setTimeout(r, 10));
     expect(withdrawStageChange(model)).toBe(true);
     expect(await switching).toEqual({ kind: "cancelled" });
+    // A withdrawn wait ends too: a row left saying "Queued" would outlive it.
+    expect(waitEnded).toBe(1);
     reply?.release();
     expect(await activeStage()).toBe(1);
     expect(pendingStage(model)).toBeNull();

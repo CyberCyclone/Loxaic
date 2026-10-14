@@ -11,7 +11,7 @@ import { activeStageIndex, rowStages } from "../../llama/context-stages.ts";
 import { isAdmin } from "../authz.ts";
 import type { StreamProducer } from "../broker.ts";
 import { getStreamBroker } from "../index.ts";
-import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
+import { clearRunQueuePosition, getRun, getRunByConversation, registerRun, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { announceNewRun } from "../watchers.ts";
 import type { RunSlot } from "../../inference/scheduler.ts";
 import { lastRequestShape } from "./request-shape.ts";
@@ -161,6 +161,7 @@ export async function startStageRun(input: {
         signal: abort.signal,
         emit: emitter(producer),
         warm: warmer(convId, model),
+        ...queueReporting(streamId),
       });
     } catch (err) {
       // applyStageChange answers its own failures, so this is what is left: a
@@ -283,6 +284,8 @@ export async function autoExtend(input: {
  */
 export async function extendWithinRun(input: {
   slot: RunSlot;
+  /** The run doing the extending, whose row reports the wait. */
+  streamId: string;
   model: string;
   conversationId: string;
   target: number;
@@ -299,8 +302,29 @@ export async function extendWithinRun(input: {
       conversationId: input.conversationId,
       signal: input.signal,
       emit: emitter(input.producer),
+      // The run's own handle: its row reads "Queued" while the switch waits
+      // for the backend, as it would for any other queue wait.
+      ...queueReporting(input.streamId),
     }),
   );
+}
+
+/**
+ * A stage switch's wait for the whole backend, told to the run registry
+ * (#282), so the thread list says "Queued · #N" rather than "Running" for the
+ * drain — `acquireExclusiveSlot` waits for every run ahead of it.
+ */
+function queueReporting(streamId: string): { onQueued: (position: number) => void; onWaitEnded: () => void } {
+  return {
+    onQueued: (position) => {
+      const handle = getRun(streamId);
+      if (handle) setRunQueuePosition(handle, position);
+    },
+    onWaitEnded: () => {
+      const handle = getRun(streamId);
+      if (handle) clearRunQueuePosition(handle);
+    },
+  };
 }
 
 /** `conversation|model|stage` → when a crossing there was left to the person.

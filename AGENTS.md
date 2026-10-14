@@ -774,13 +774,19 @@ replies.
   its whole visible list whenever it changes (an effect on the conversations array in both session
   hooks; `watch` dedupes an identical set) and again on every `onopen`, where the notice map is
   also **cleared** — the server does not replay notices across sockets, and a badge carried over
-  from a dead socket could outlive the run it described with nothing left to correct it. An absent
+  from a dead socket could outlive the run it described with nothing left to correct it. **The two
+  sides also forget together:** the server drops what it told a socket about an id that leaves the
+  watch, and its next reply names only busy rows, so `watch` drops the client's notice for every id
+  it no longer sends (`runNoticesWithin`). Kept, a row whose run ended while it was off the list
+  came back saying "Running" for the life of the socket. Found in review. An absent
   notice renders no badge: that is the honest reading of "we have not been told", and it is what
   an older server (which ignores the watch) leaves everywhere.
 - **Every notice is a change in the *reported* state and nothing else.** `streams/registry.ts`
-  owns the vocabulary (`runActivityOf`: check-in → approval → queued → running, the client's
-  `runLevelFromSnapshot` ranking — a run parked on a person has handed its slot back and may be
-  queued again, and the question outranks the wait), and *every* mutation goes through its
+  owns the vocabulary (`runActivityOf`: check-in → approval → queued → running). That is the
+  client's `runLevelFromSnapshot` ranking with check-in and approval swapped — a run holds at most
+  one, and the check-in is the newer question — and for its reason: a run parked on a person has
+  handed its slot back and may be queued again, and the question outranks the wait. *Every*
+  mutation goes through its
   mutators (`setRunApproval`/`clearRunApproval`, `setRunCheckin`/`takeRunCheckin`/`clearRunCheckin`,
   `setRunQueuePosition`/`clearRunQueuePosition`, `registerRun`/`unregisterRun`), which announce on
   the process-wide activity channel only when the dedup key (activity, plus the place in line)
@@ -793,7 +799,12 @@ replies.
   had no edge that could undo its row's "Queued" without the callback `acquireRunSlot`/
   `acquireExclusiveSlot` gained: it fires on the fast path, on admission after a wait, and on the
   re-entry. `engine.ts` and `compactRun.ts` wire both callbacks to the registry beside emitting
-  `run.queued` on the log; the log event still reaches only a socket following that run.
+  `run.queued` on the log; the log event still reaches only a socket following that run. **A
+  context-stage switch reports its wait too** (`applyStageChange`'s `onQueued`/`onWaitEnded`, wired
+  by `stageRun.ts` for a stage run and for `extendWithinRun`): `acquireExclusiveSlot` drains every
+  run ahead of it, the longest wait any run has, and without them the row said "Running" for all
+  of it. `onWaitEnded` also fires when the wait is withdrawn, or a superseded in-run extension left
+  its run's row "Queued". Found in review.
 - **The watch authorizes twice: the set in two queries, each event again.** The initial reply uses
   `filterAccessible` (`streams/authz.ts`) — one conversations query plus one shares query, the same
   predicates as `resolveAccess` — because a per-row `resolveAccess` would be a hundred round trips
@@ -812,8 +823,13 @@ replies.
 - **The words live in `lib/runStateCopy.ts`,** shared with `RunHeader`, so a row cannot call
   `awaiting_checkin` "Waiting" while the header says "Waiting for you". The routine screen's rows
   show the live badge while a run is going and fall back to the recorded run status
-  (`threadList.status.<id>`) when it ends — which also fixes that badge being stale until the next
-  list fetch. The row's testID carries the state (`threadList.run.<convId>.<state>`) because on
+  (`threadList.status.<id>`) when it ends. **The record is fetched again when a live badge goes**:
+  it was read during the run, so it said "Running", and the row went straight back to claiming a
+  finished run was going (found in review; the spec checked only that a badge was there). The run's
+  terminal status is written just after the run lets go of the conversation, so the screen asks
+  again a second apart while the record lags (`routineRecordCheck`, five tries), and shows no
+  recorded status meanwhile rather than a false one. The spec reads
+  `threadList.status.<id>.label`'s text. The row's testID carries the state (`threadList.run.<convId>.<state>`) because on
   native a container's text is not searchable and a text probe would match the open run's own
   header instead of the row.
 

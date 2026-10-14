@@ -920,7 +920,7 @@ export async function runToolLoop(ctx: {
           const target = await planExtension({ model, conversationId: convId }).catch(() => null);
           const outcome = target === null
             ? null
-            : await extendWithinRun({ slot, model, conversationId: convId, target, producer, signal: abort.signal });
+            : await extendWithinRun({ slot, streamId, model, conversationId: convId, target, producer, signal: abort.signal });
           if (outcome?.kind === "applied" || outcome?.kind === "unchanged") {
             // A reload: the window is the new stage's, and the backend's cache
             // of this conversation is gone (the next request re-reads it).

@@ -19,8 +19,9 @@ import { watchRunActivity } from "../watchers.ts";
  * The thread list badges every row whose conversation has a run going (#282),
  * and the run registry is what decides the word. Two rules matter:
  *
- * - **What is reported.** The ranking is `runLevelFromSnapshot`'s (the client
- *   folds the same way): a question a person can answer outranks a queue
+ * - **What is reported.** The ranking is `runLevelFromSnapshot`'s with
+ *   check-in and approval swapped (a run holds at most one; see
+ *   `runActivityOf`): a question a person can answer outranks a queue
  *   position the same run also holds, because the run parked on an approval
  *   has handed its slot back and may well be queuing to get it again.
  * - **When a notice goes out.** A change in the *reported* state, and nothing

@@ -16,7 +16,7 @@
 import { browser, expect } from '@wdio/globals';
 import { adminCreds, provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { isVisible, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   MOCK_TOOL_DONE,
   SLOW_PROMPT,
@@ -200,10 +200,13 @@ describe('running status in the thread list', () => {
     await shot('thread-list-routine-running');
 
     await waitForRunDone(adminCreds(), run.conversationId);
-    // The live badge goes, and the recorded status takes the slot back: the
-    // row never goes from "Running" to nothing — it says how the run ended.
+    // The live badge goes, and the recorded status takes the slot back,
+    // saying how the run ended. The list was fetched mid-run, so its record
+    // said "Running": without fetching it again when the badge goes, the row
+    // went back to claiming a finished run was going — what it says is the
+    // assertion, not that a badge is there.
     await waitForAbsent(runBadge(run.conversationId, 'running'));
-    await waitForVisible(`threadList.status.${run.conversationId}`);
+    await waitForFreshText(`threadList.status.${run.conversationId}.label`, 'Done');
     await shot('thread-list-routine-recorded');
 
     // And the row still opens its run.

@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  routineRecordCheck,
+  rowsNoLongerLive,
   runNoticesAfterMessage,
+  runNoticesWithin,
   threadRunBadges,
   watchIdsFor,
   watchSetsDiffer,
@@ -119,5 +122,36 @@ describe('threadRunBadges', () => {
 
   it('is the empty object when there is nothing to say', () => {
     expect(threadRunBadges({}, null)).toEqual({})
+  })
+})
+
+describe('runNoticesWithin', () => {
+  it('forgets a notice whose row left the watch', () => {
+    // The server forgets it too, and its next reply names only busy rows, so
+    // a notice kept here could never be corrected once the run ended off-list.
+    const notices: RunNotices = { [ID_A]: { activity: 'running' }, [ID_B]: { activity: 'queued', queuePosition: 2 } }
+    expect(runNoticesWithin(notices, [ID_B])).toEqual({ [ID_B]: { activity: 'queued', queuePosition: 2 } })
+  })
+  it('returns the same map when every notice is still watched', () => {
+    const notices: RunNotices = { [ID_A]: { activity: 'running' } }
+    expect(runNoticesWithin(notices, [ID_A, ID_B])).toBe(notices)
+  })
+})
+
+describe('rowsNoLongerLive', () => {
+  it('names the rows whose badge went away, and only those', () => {
+    expect(rowsNoLongerLive([ID_A, ID_B], { [ID_B]: {} })).toEqual([ID_A])
+    expect(rowsNoLongerLive([], { [ID_A]: {} })).toEqual([])
+  })
+})
+
+describe('routineRecordCheck', () => {
+  it('keeps asking while the record still says running with no live badge', () => {
+    expect(routineRecordCheck(new Set([ID_A]), { [ID_A]: { status: 'running' } }, {})).toEqual({ settled: [], stale: [ID_A] })
+  })
+  it('settles once the record moves on, the row goes, or the badge is back', () => {
+    expect(routineRecordCheck(new Set([ID_A]), { [ID_A]: { status: 'complete' } }, {}).settled).toEqual([ID_A])
+    expect(routineRecordCheck(new Set([ID_A]), {}, {}).settled).toEqual([ID_A])
+    expect(routineRecordCheck(new Set([ID_A]), { [ID_A]: { status: 'running' } }, { [ID_A]: {} }).settled).toEqual([ID_A])
   })
 })

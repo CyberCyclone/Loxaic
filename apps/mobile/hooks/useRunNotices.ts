@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, type RefObject } from 'react'
 import { watchConversationRuns, type RunActivity, type ServerMessage } from '@loxaic/api-client'
 import {
   runNoticesAfterMessage,
+  runNoticesWithin,
   threadRunBadges,
   watchIdsFor,
   watchSetsDiffer,
@@ -38,6 +39,9 @@ export function useRunNotices(wsRef: RefObject<WebSocket | null>) {
     (conversationIds: string[]) => {
       const ids = watchIdsFor(conversationIds)
       currentIdsRef.current = ids
+      // Forget with the server: a notice for a row that left the watch would
+      // have nothing left to correct it (runNoticesWithin).
+      setNotices((prev) => runNoticesWithin(prev, ids))
       const ws = wsRef.current
       if (ws?.readyState !== WebSocket.OPEN) return
       if (sentRef.current && !watchSetsDiffer(sentRef.current, ids)) return

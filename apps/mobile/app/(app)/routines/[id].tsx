@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MessagesSquare, Play } from 'lucide-react-native';
@@ -38,6 +38,7 @@ import { SubAgentsList } from '@/components/subagents/SubAgentsList';
 import { useBreakpoint } from '@/hooks/useBreakpoint';
 import { humanizeCron } from '@/lib/fixtures/routines';
 import { runStatusIsError, runStatusLabel, runTimeLabel } from '@/lib/routineRuns';
+import { routineRecordCheck, rowsNoLongerLive } from '@/lib/runWatch';
 import type { Conversation } from '@/lib/types';
 
 /**
@@ -273,21 +274,61 @@ export default function RoutineChatScreen() {
     [activeId, model, handleCommand, showToast],
   );
 
+  // A row's recorded status is read when the list is fetched, so one fetched
+  // during a run says "running" after it ends. When a live badge goes away the
+  // list is fetched again, and asked again (a few times, a second apart) while
+  // the record still lags: the run's terminal status is written just after
+  // the run lets go of the conversation, so the first fetch can miss it. Until
+  // the record catches up the row shows no recorded status, never a false
+  // "Running" (#282).
+  const [endingRuns, setEndingRuns] = useState<ReadonlySet<string>>(new Set());
+  const liveRowsRef = useRef<string[]>([]);
+  const recheckRef = useRef(0);
+  // `runStatus` is a new object every render; the effects key on which rows
+  // are live, or a streamed token would restart the recheck timer each time.
+  const runStatusRef = useRef(runStatus);
+  runStatusRef.current = runStatus;
+  const liveKey = Object.keys(runStatus).sort().join(',');
+  useEffect(() => {
+    const live = runStatusRef.current;
+    const ended = rowsNoLongerLive(liveRowsRef.current, live);
+    liveRowsRef.current = Object.keys(live);
+    if (ended.length === 0) return;
+    setEndingRuns((prev) => new Set([...prev, ...ended]));
+    recheckRef.current = 0;
+    void refreshList();
+  }, [liveKey, refreshList]);
+  useEffect(() => {
+    if (endingRuns.size === 0) return;
+    const { settled, stale } = routineRecordCheck(endingRuns, runMeta, runStatusRef.current);
+    if (settled.length > 0) {
+      setEndingRuns((prev) => new Set([...prev].filter((id) => !settled.includes(id))));
+      return;
+    }
+    if (stale.length === 0 || recheckRef.current >= 5) return;
+    const timer = setTimeout(() => {
+      recheckRef.current++;
+      void refreshList();
+    }, 1000);
+    return () => { clearTimeout(timer); };
+  }, [endingRuns, runMeta, liveKey, refreshList]);
+
   const rowMeta = useCallback(
     (c: Conversation) => {
       const meta = runMeta[c.id];
       if (!meta) return null;
+      const stale = meta.status === 'running' && endingRuns.has(c.id);
       // Every chat here is named after the routine, which is also this
       // panel's heading — so the run itself is what distinguishes one row
       // from the next, and it leads.
       return {
         title: `Run · ${runTimeLabel(meta.startedAt)}`,
-        badge: runStatusLabel(meta.status),
+        badge: stale ? null : runStatusLabel(meta.status),
         danger: runStatusIsError(meta.status),
         time: '',
       };
     },
-    [runMeta],
+    [runMeta, endingRuns],
   );
 
   const threadList = (
@@ -310,9 +351,8 @@ export default function RoutineChatScreen() {
       // chats are named after the routine rather than by their owner.
       onDelete={(id) => { setDeletingId(id); }}
       rowMeta={rowMeta}
-      // The live run state outranks the recorded one while a run is going —
-      // the record only refreshes on a list fetch, and the row said "Running"
-      // over a finished run for exactly that reason (#282).
+      // The live run state outranks the recorded one while a run is going;
+      // the record is fetched again when it ends (above) (#282).
       runStatus={runStatus}
     />
   );

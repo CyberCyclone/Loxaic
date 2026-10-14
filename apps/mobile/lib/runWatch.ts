@@ -21,6 +21,55 @@ import { rowRunLabel, STATE_DOT, type RowRunState } from './runStateCopy'
  *   renders no badge, which is the honest reading of "we have not been told".
  */
 
+/** `notices` cut down to the ids being watched now.
+ *
+ * The server forgets what it told this socket about an id that leaves the
+ * watch (ws/delivery.ts), and its reply to a later watch names only busy rows.
+ * A notice kept here for an id that left could therefore never be corrected:
+ * the run could end while the row was off the list, the row come back idle,
+ * and the old "Running" stay on it for the life of the socket. So the two
+ * sides forget together. Returns `notices` itself when nothing is dropped. */
+export function runNoticesWithin(notices: RunNotices, watched: readonly string[]): RunNotices {
+  const keep = new Set(watched)
+  const ids = Object.keys(notices)
+  if (ids.every((id) => keep.has(id))) return notices
+  return Object.fromEntries(Object.entries(notices).filter(([id]) => keep.has(id)))
+}
+
+/** Rows whose live badge was there last render and is gone now: their run
+ * ended, or the socket that told us about it did. Either way a record read
+ * while the badge stood may be out of date. */
+export function rowsNoLongerLive(before: readonly string[], now: Partial<Record<string, unknown>>): string[] {
+  return before.filter((id) => !now[id])
+}
+
+/**
+ * A routine row's recorded run status, checked against what the watch said
+ * (#282). `ending` holds the rows whose live badge went away while their
+ * record still said `running`, the record being read during the run.
+ *
+ * - `settled`: no longer worth waiting for — the record moved on, the row is
+ *   gone, or the live badge is back (it outranks the record anyway).
+ * - `stale`: the record still says `running` with no live badge. The run's
+ *   terminal status is written just after the run lets go of the
+ *   conversation, so the first fetch can miss it; these are asked again, and
+ *   until then the row shows no recorded status rather than a false
+ *   "Running".
+ */
+export function routineRecordCheck(
+  ending: ReadonlySet<string>,
+  recorded: Partial<Record<string, { status: string }>>,
+  live: Partial<Record<string, unknown>>,
+): { settled: string[]; stale: string[] } {
+  const settled: string[] = []
+  const stale: string[] = []
+  for (const id of ending) {
+    if (live[id] || recorded[id]?.status !== 'running') settled.push(id)
+    else stale.push(id)
+  }
+  return { settled, stale }
+}
+
 /** What one row was last told about its run. */
 export interface RunNotice {
   activity: RunActivity
