@@ -12,7 +12,7 @@
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, platform, tap, typeInto, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, closeKeyboard, platform, tap, typeInto, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   getToolResults,
   listConversations,
@@ -82,6 +82,9 @@ describe('skills in the composer', () => {
       timeoutMsg: 'picking a skill did not put "/code-review " in the box',
     });
     await waitForAbsent('composer.palette');
+    // Picking focuses the box, which raises a phone's keyboard; on Android it
+    // covers the composer's toolbar, Send included, until it is put away.
+    await closeKeyboard();
 
     await sendAndAwaitReply('/code-review the parser change', 'Skill loaded: code-review. Echo: /code-review the parser change');
     // On a phone the keyboard stays up after a send and the message above the
@@ -127,6 +130,7 @@ describe('skills in the composer', () => {
     await typeInto('composer.input', '/comp');
     await tap('composer.command.compact');
     await browser.waitUntil(async () => (await inputValue()) === '/compact ', { timeout: 5_000 });
+    await closeKeyboard();
     await typeInto('composer.input', '/compact keep the plan fully intact');
     await tap('composer.send');
     await waitForTextIn('chat.compaction.guidance', 'keep the plan fully intact');
