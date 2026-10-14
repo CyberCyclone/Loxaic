@@ -4382,7 +4382,7 @@ replies.
   - **Only the catalog is stored** (`conversations.repo_skills`, migration 0047): name,
     description, directory, a hash of the file read. The instructions are read from the
     workspace each time one is used, so a skill runs as the checkout has it. The tool's result
-    names its directory and lists its other files (at most 50), which the model reads on demand.
+    names its directory and lists its other files (at most `MAX_LISTED_FILES`, 50), which the model reads on demand.
   - **Read the way the project's AGENTS.md is**:
     - through the executor for a direct local folder;
     - inside a container or a GitHub checkout only while it is live (`workspaceExec`);
@@ -4399,6 +4399,22 @@ replies.
   - **Framing:** the repository may be a stranger's. A workspace skill's content opens with
     `WORKSPACE_SKILL_NOTE`: the project's conventions, unable to change Loxaic's rules or what is
     asked before anything runs. Approvals are enforced server-side regardless.
+  - **What a repository cannot do to a thread** (all found in review):
+    - **Replace a command.** `/compact` is a person's to override, never a checkout's
+      (`isReservedSkillName`). Otherwise a repository shipping a "compact" skill took manual
+      compaction away from the thread that needed it.
+    - **Fill the prompt.** Its descriptions together get 8 KB (`MAX_REPO_SKILL_LIST_BYTES`) as
+      well as the 100-skill cap. They ride every request, and a count alone let a hundred long
+      ones take a small model's window.
+    - **Hold the thread.** One scan gets 30 s in all (`SKILL_SCAN_BUDGET_MS`), not 10 s per read
+      times a count the repository chooses, since the conversation is claimed meanwhile. What it
+      did not read is named in `problems` and not rescanned until something changes.
+    - **Mislist files.** A skill's other files are listed NUL-separated, from its *resolved*
+      directory (find does not descend a symlinked start, so a skill linked in from elsewhere in
+      the repository listed nothing), with its own SKILL.md left out by string comparison:
+      `find -path` reads `a[b]` as a pattern. `head -z` is not on macOS, so the count is ours.
+    - Every reason a skill was not used is in `repo_skills.problems`, which `coerceScan` used to
+      drop on the way back out.
   - **A sub-agent** uses its parent's last scan as it stands.
   - **The palette** lists a conversation's workspace skills once a run has scanned, so a new
     agent thread shows them from its first reply. The Skills screen does not: it has no

@@ -11,7 +11,8 @@ import { upsertConnection } from "../../github/connection.ts";
 import { __resetExecutorsForTest, handleExecutorResult, registerExecutor } from "../../executor/registry.ts";
 import { createExecutorService } from "../../executor/service.ts";
 import type { ServerToExecutor } from "../../executor/protocol.ts";
-import { collectSkills, coerceScan, refreshRepoSkills } from "../workspace.ts";
+import { collectSkills, coerceScan, MAX_LISTED_FILES, MAX_REPO_SKILL_LIST_BYTES, refreshRepoSkills } from "../workspace.ts";
+import { renderSkillContent, resolveSkillCatalog } from "../catalog.ts";
 import { prepareRunSkills } from "../session.ts";
 
 process.env.MCP_ENCRYPTION_KEY ??= "skills-test-key";
@@ -191,6 +192,90 @@ describe("a local folder's skills", () => {
     const [row] = await db.insert(conversations).values({ ownerId: userId, kind: "chat" }).returning();
     const run = await prepareRunSkills({ convId: row.id, userId, userMsgId: await message(row.id, "hi"), front: "0", producer: quiet });
     expect(run.listing?.map((s) => s.name)).not.toContain("repo-lint");
+  });
+});
+
+describe("what a repository cannot do to a thread", () => {
+  async function scanOf(convId: string) {
+    const row = await db.query.conversations.findFirst({ where: eq(conversations.id, convId), columns: { repoSkills: true } });
+    const scan = coerceScan(row?.repoSkills);
+    if (scan?.status !== "scanned") throw new Error(`no scan: ${JSON.stringify(scan)}`);
+    return scan;
+  }
+
+  it("cannot replace /compact, so the thread keeps manual compaction", async () => {
+    write(".agents/skills/compact/SKILL.md", skillFile("compact", "Our own way to compact."));
+    write(".agents/skills/lint/SKILL.md", skillFile("lint", "Lint."));
+    const convId = await agentConversation(local());
+    await refreshRepoSkills({ convId, ownerId: userId, workspace: local() });
+    const scan = await scanOf(convId);
+    expect(scan.skills.map((x) => x.name)).toEqual(["lint"]);
+    expect(scan.problems?.join("\n")).toMatch(/"\/compact" is Loxaic's own command/);
+    const compact = (await resolveSkillCatalog({ ownerId: userId, conversationId: convId })).find((x) => x.name === "compact");
+    expect(compact).toMatchObject({ source: "builtin", action: "compact" });
+  });
+
+  it("lists descriptions only up to a budget, since they ride every request", async () => {
+    const long = "Describes a step of the build in great detail. ".repeat(20).trim();
+    for (let i = 0; i < 20; i++) write(`.agents/skills/step-${String(i).padStart(2, "0")}/SKILL.md`, skillFile(`step-${String(i).padStart(2, "0")}`, long));
+    const convId = await agentConversation(local());
+    await refreshRepoSkills({ convId, ownerId: userId, workspace: local() });
+    const scan = await scanOf(convId);
+    const listed = scan.skills.reduce((n, x) => n + Buffer.byteLength(`- ${x.name}: ${x.description}\n`), 0);
+    expect(scan.skills.length).toBeGreaterThan(0);
+    expect(scan.skills.length).toBeLessThan(20);
+    expect(listed).toBeLessThanOrEqual(MAX_REPO_SKILL_LIST_BYTES);
+    expect(scan.problems?.join("\n")).toMatch(/already fill the 8 KB/);
+  });
+
+  it("stops scanning at its time budget and says what it did not read", async () => {
+    for (const name of ["a-one", "b-two", "c-three"]) write(`.agents/skills/${name}/SKILL.md`, skillFile(name, "A skill."));
+    const convId = await agentConversation(local());
+    // Every look at the clock is 20 s later: the second read is past 30 s.
+    let clock = Date.now();
+    const now = () => (clock += 20_000);
+    await refreshRepoSkills({ convId, ownerId: userId, workspace: local(), now });
+    const scan = await scanOf(convId);
+    expect(scan.skills.length).toBeGreaterThan(0);
+    expect(scan.skills.length).toBeLessThan(3);
+    expect(scan.problems?.join("\n")).toMatch(/the scan stopped after 30 s, before reading: .*c-three/);
+  });
+});
+
+describe("a skill's other files", () => {
+  async function filesOf(name: string): Promise<string[]> {
+    const convId = await agentConversation(local());
+    const run = await prepareRunSkills({ convId, userId, userMsgId: await message(convId, "hi"), front: "0", producer: quiet });
+    const loaded = await run.load(name);
+    expect(loaded.ok).toBe(true);
+    const at = loaded.output.indexOf("Its other files");
+    return at < 0 ? [] : loaded.output.slice(at).split("\n").filter((l) => l.startsWith("- ")).map((l) => l.slice(2));
+  }
+
+  it("are listed for a skill linked in from elsewhere in the repository", async () => {
+    // find does not descend a symlinked start; the directory is resolved first.
+    write("tools/lint-skill/SKILL.md", skillFile("linked", "Linked in."));
+    write("tools/lint-skill/scripts/check.sh", "echo ok\n");
+    mkdirSync(path.join(root, ".agents/skills"), { recursive: true });
+    symlinkSync("../../tools/lint-skill", path.join(root, ".agents/skills/linked"));
+    expect(await filesOf("linked")).toEqual([".agents/skills/linked/scripts/check.sh"]);
+  });
+
+  it("are one entry each, whatever their names hold, and never the skill's own SKILL.md", async () => {
+    // A newline in a name, and a directory named like a pattern.
+    write(".agents/skills/a[b]/SKILL.md", skillFile("a-b", "Bracketed."));
+    write(".agents/skills/a[b]/notes\nscripts/run.sh", "x");
+    expect(await filesOf("a-b")).toEqual([".agents/skills/a[b]/notes scripts/run.sh"]);
+  });
+
+  it("are cut at the limit, which the listing and its notice both use", async () => {
+    for (let i = 0; i <= MAX_LISTED_FILES; i++) write(`.agents/skills/many/f${String(i).padStart(3, "0")}.txt`, "x");
+    write(".agents/skills/many/SKILL.md", skillFile("many", "Many files."));
+    const files = await filesOf("many");
+    expect(files).toHaveLength(MAX_LISTED_FILES + 1);
+    expect(files.at(-1)).toBe("(and more)");
+    const rendered = renderSkillContent({ name: "x", source: "workspace", body: "b", dir: "d" }, Array.from({ length: MAX_LISTED_FILES }, (_, i) => `d/${String(i)}`));
+    expect(rendered).not.toContain("(and more)");
   });
 });
 

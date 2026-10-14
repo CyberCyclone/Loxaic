@@ -13,7 +13,7 @@ import { asc, db, eq } from "@loxaic/db";
 import { skills as skillsTable } from "@loxaic/db/schema";
 import type { PaletteSkill, SkillAction, SkillSource } from "@loxaic/types";
 import { builtinSkills } from "./builtin/index.ts";
-import { storedRepoSkills } from "./workspace.ts";
+import { isReservedSkillName, MAX_LISTED_FILES, storedRepoSkills } from "./workspace.ts";
 
 export interface CatalogSkill {
   name: string;
@@ -71,7 +71,8 @@ export async function resolveSkillCatalog(input: { ownerId: string; conversation
 /** A conversation's workspace skills, as its last scan found them
  * (skills/workspace.ts) — names and descriptions only. */
 export async function workspaceSkillLayer(conversationId: string): Promise<CatalogSkill[]> {
-  return (await storedRepoSkills(conversationId)).map((s) => ({
+  // A scan from before names were reserved could still hold one.
+  return (await storedRepoSkills(conversationId)).filter((s) => !isReservedSkillName(s.name)).map((s) => ({
     name: s.name,
     description: s.description,
     source: "workspace" as const,
@@ -183,8 +184,8 @@ export function renderSkillContent(
     parts.push("", `Skill directory: ${neutraliseSkillText(skill.dir)} (relative to the workspace). Paths in this skill are relative to it.`);
     if (files.length) {
       parts.push("Its other files — read one only when the instructions call for it:");
-      parts.push(...files.slice(0, 50).map((f) => `- ${neutraliseSkillText(f.replace(/\p{Cc}/gu, " "))}`));
-      if (files.length > 50) parts.push("- (and more)");
+      parts.push(...files.slice(0, MAX_LISTED_FILES).map((f) => `- ${neutraliseSkillText(f.replace(/\p{Cc}/gu, " "))}`));
+      if (files.length > MAX_LISTED_FILES) parts.push("- (and more)");
     }
   }
   parts.push(`</${SKILL_CONTENT_TAG}>`);

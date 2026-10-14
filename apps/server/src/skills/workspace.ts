@@ -36,6 +36,7 @@ import {
   type Exec,
 } from "../agent/instructions.ts";
 import { getConversationSandbox } from "../agent/sandbox-manager.ts";
+import { builtinSkills } from "./builtin/index.ts";
 import { MAX_SKILL_BODY_BYTES, parseSkillFile } from "./format.ts";
 
 /** Where a repository's skills live, most specific to this client last; the
@@ -44,8 +45,28 @@ import { MAX_SKILL_BODY_BYTES, parseSkillFile } from "./format.ts";
  * Code and OpenCode install theirs. */
 export const SKILL_ROOTS = [".agents/skills", ".claude/skills", ".opencode/skills", ".opencode/skill"] as const;
 /** Every skill's name and description is in the model's list on every
- * request, so a repository's are capped. */
+ * request, so a repository's are capped — by count, and by what they add up
+ * to, which is the part that costs: a hundred long descriptions would take a
+ * small model's whole window on every request, for text nobody on this
+ * deployment wrote. About 2k tokens; the built-ins' whole list is ~1.5 KB. */
 export const MAX_REPO_SKILLS = 100;
+export const MAX_REPO_SKILL_LIST_BYTES = 8 * 1024;
+/** How long one scan may take in all. Each read has its own deadline, but the
+ * number of reads is the repository's to choose, and the conversation is
+ * claimed meanwhile, refusing every send. Read at call time, so a test can
+ * shorten it. */
+function scanBudgetMs(): number {
+  const raw = Number(process.env.SKILL_SCAN_BUDGET_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
+}
+/** The names of Loxaic's own commands (`/compact`). A person may replace one
+ * with a skill of their own; a checkout may not, or opening a repository that
+ * happens to ship a "compact" skill would take manual compaction away from
+ * that thread. */
+const RESERVED_NAMES: ReadonlySet<string> = new Set(builtinSkills().filter((s) => s.action).map((s) => s.name));
+export function isReservedSkillName(name: string): boolean {
+  return RESERVED_NAMES.has(name);
+}
 /** Enough of a SKILL.md for its frontmatter and a hash; the instructions are
  * read again in full when used. */
 const SCAN_BYTES = 64 * 1024;
@@ -89,7 +110,14 @@ export function coerceScan(raw: unknown): RepoSkillScan | null {
     return !!x && typeof x.name === "string" && typeof x.description === "string" && typeof x.dir === "string" && typeof x.hash === "string";
   });
   const cksums = r.cksums && typeof r.cksums === "object" ? (r.cksums as Record<string, string>) : null;
-  return { status: "scanned", skills, cksums, scannedAt: typeof r.scannedAt === "string" ? r.scannedAt : "" };
+  const problems = Array.isArray(r.problems) ? r.problems.filter((x): x is string => typeof x === "string") : [];
+  return {
+    status: "scanned",
+    skills,
+    cksums,
+    scannedAt: typeof r.scannedAt === "string" ? r.scannedAt : "",
+    ...(problems.length ? { problems } : {}),
+  };
 }
 
 /** The skills a conversation's scan found, for the catalog. */
@@ -137,6 +165,7 @@ export function collectSkills(files: { dir: string; text: string }[]): { skills:
   const skills: RepoSkill[] = [];
   const problems: string[] = [];
   const seen = new Set<string>();
+  let listBytes = 0;
   for (const f of files) {
     const parsed = parseSkillFile(f.text, { dirName: posix.basename(f.dir) });
     if (!parsed.ok) {
@@ -144,6 +173,10 @@ export function collectSkills(files: { dir: string; text: string }[]): { skills:
       continue;
     }
     const s = parsed.skill;
+    if (isReservedSkillName(s.name)) {
+      problems.push(`${f.dir}: "/${s.name}" is Loxaic's own command, which a repository cannot replace`);
+      continue;
+    }
     if (seen.has(s.name)) {
       problems.push(`${f.dir}: "${s.name}" is already defined earlier, so this one is not used`);
       continue;
@@ -152,6 +185,14 @@ export function collectSkills(files: { dir: string; text: string }[]): { skills:
       problems.push(`${f.dir}: past the limit of ${String(MAX_REPO_SKILLS)} skills`);
       continue;
     }
+    // Only what the model is listed counts: a skill only a person may run is
+    // in the palette, not the prompt.
+    const cost = s.modelInvocable ? Buffer.byteLength(`- ${s.name}: ${s.description}\n`) : 0;
+    if (listBytes + cost > MAX_REPO_SKILL_LIST_BYTES) {
+      problems.push(`${f.dir}: the skills before it already fill the ${String(MAX_REPO_SKILL_LIST_BYTES / 1024)} KB their descriptions may take in every request`);
+      continue;
+    }
+    listBytes += cost;
     seen.add(s.name);
     skills.push({
       name: s.name,
@@ -165,14 +206,34 @@ export function collectSkills(files: { dir: string; text: string }[]): { skills:
   return { skills, problems };
 }
 
-async function scanWithExec(exec: Exec, candidates?: Candidate[]): Promise<Extract<RepoSkillScan, { status: "scanned" }>> {
-  const found = candidates ?? (await listSkillFiles(exec));
+/** What a scan that ran out of time says about what it did not read. */
+function unread(dirs: string[]): string[] {
+  return dirs.length ? [`the scan stopped after ${String(scanBudgetMs() / 1000)} s, before reading: ${dirs.join(", ")}`] : [];
+}
+
+async function scanWithExec(
+  exec: Exec,
+  candidates: Candidate[],
+  now: () => number,
+): Promise<Extract<RepoSkillScan, { status: "scanned" }>> {
+  const found = candidates;
+  const deadline = now() + scanBudgetMs();
   const files: { dir: string; text: string }[] = [];
+  const skipped: string[] = [];
   for (const c of found) {
+    if (now() >= deadline) {
+      skipped.push(c.dir);
+      continue;
+    }
     const read = await readChunked(exec, `${c.dir}/SKILL.md`, c.size, SCAN_BYTES);
     files.push({ dir: c.dir, text: read.text });
   }
-  const { skills, problems } = collectSkills(files);
+  const collected = collectSkills(files);
+  const skills = collected.skills;
+  // What was not read is not rescanned until something changes: the checksums
+  // stand for the whole listing, so one slow workspace costs one long scan,
+  // not one per run.
+  const problems = [...collected.problems, ...unread(skipped)];
   return {
     status: "scanned",
     skills,
@@ -185,22 +246,35 @@ async function scanWithExec(exec: Exec, candidates?: Candidate[]): Promise<Extra
 async function scanWithGithub(
   workspace: Extract<Workspace, { kind: "github" }>,
   token: string,
+  now: () => number,
   signal?: AbortSignal,
 ): Promise<Extract<RepoSkillScan, { status: "scanned" }>> {
   const [owner, repo] = workspace.repo.split("/");
+  const deadline = now() + scanBudgetMs();
   const files: { dir: string; text: string }[] = [];
+  const skipped: string[] = [];
   let looked = 0;
   for (const root of SKILL_ROOTS) {
+    if (now() >= deadline) {
+      skipped.push(root);
+      continue;
+    }
     const entries = await listDirectory(token, owner, repo, root, workspace.baseBranch, signal);
     for (const e of entries ?? []) {
       if (e.type !== "dir" || looked >= MAX_REPO_SKILLS * 2) continue;
       looked++;
       const dir = `${root}/${e.name}`;
+      if (now() >= deadline) {
+        skipped.push(dir);
+        continue;
+      }
       const got = await getFileText(token, owner, repo, `${dir}/SKILL.md`, workspace.baseBranch, SCAN_BYTES, signal);
       if (got) files.push({ dir, text: got.text });
     }
   }
-  const { skills, problems } = collectSkills(files);
+  const collected = collectSkills(files);
+  const skills = collected.skills;
+  const problems = [...collected.problems, ...unread(skipped)];
   return { status: "scanned", skills, cksums: null, scannedAt: new Date().toISOString(), ...(problems.length ? { problems } : {}) };
 }
 
@@ -242,7 +316,7 @@ export async function refreshRepoSkills(input: {
       if (exec) {
         const candidates = await listSkillFiles(exec);
         if (stored?.status === "scanned" && sameCksums(stored.cksums, candidates)) return;
-        next = await scanWithExec(exec, candidates);
+        next = await scanWithExec(exec, candidates, now);
       } else if (stored?.status === "scanned") {
         // Nothing to look with that is already running: the next run with one
         // catches up.
@@ -250,7 +324,7 @@ export async function refreshRepoSkills(input: {
       } else if (workspace.kind === "github") {
         const token = await getOwnerToken(input.ownerId);
         if (!token) return;
-        next = await scanWithGithub(workspace, token, signal);
+        next = await scanWithGithub(workspace, token, now, signal);
       } else {
         return;
       }
@@ -273,6 +347,26 @@ export async function refreshRepoSkills(input: {
 
 /** At most this many of a skill's other files are listed to the model. */
 const MAX_LISTED_FILES = 50;
+
+/**
+ * A skill's other files, as paths under its directory ($1), NUL-separated,
+ * at most $2 of them. The names are the repository's, so nothing about them
+ * is trusted to the shell:
+ * - the directory is resolved first, so a skill linked in from elsewhere in
+ *   the repository is walked (find does not descend a symlinked start), and
+ *   one that leads outside is not walked at all;
+ * - links inside it are not followed, as everywhere else here;
+ * - the skill's own SKILL.md is left out by comparing the path as a string —
+ *   `find -path` would read a name like "a[b]" or "a*" as a pattern;
+ * - NUL separation, since a file name may hold a newline;
+ * - the count is ours, since `head -z` is not on macOS.
+ */
+const LIST_SKILL_FILES =
+  REAL_ROOT +
+  'd=$(realpath -- "$1" 2>/dev/null) || exit 0; r="$d"; ' + R_INSIDE_ROOT + " || exit 0; " +
+  'n=0; while IFS= read -r -d "" f; do rel=${f#"$d"/}; [ "$rel" = SKILL.md ] && continue; ' +
+  'n=$((n+1)); [ "$n" -gt "$2" ] && break; printf "%s/%s\\0" "$1" "$rel"; ' +
+  'done < <(find "$d" -type f -print0 2>/dev/null)';
 
 /**
  * A workspace skill's instructions and its other files, read from the
@@ -308,13 +402,8 @@ export async function readWorkspaceSkill(input: {
     const read = await readChunked(exec, `${dir}/SKILL.md`, Number(size.stdout.trim()) || 0, MAX_SKILL_BODY_BYTES + SCAN_BYTES);
     const parsed = parseSkillFile(read.text, { dirName: posix.basename(dir) });
     if (!parsed.ok) return { ok: false, error: `${dir}/SKILL.md cannot be read as a skill: ${parsed.error}` };
-    const listed = await exec([
-      "bash", "-c",
-      // Files only, never followed through a link, and nothing past the cap.
-      'find "$1" -type f ! -path "$1/SKILL.md" 2>/dev/null | head -n ' + String(MAX_LISTED_FILES + 1),
-      "_", dir,
-    ]);
-    const files = listed.exitCode === 0 ? listed.stdout.split("\n").filter(Boolean) : [];
+    const listed = await exec(["bash", "-c", LIST_SKILL_FILES, "_", dir, String(MAX_LISTED_FILES + 1)]);
+    const files = listed.exitCode === 0 ? listed.stdout.split("\0").filter(Boolean) : [];
     return { ok: true, body: parsed.skill.body, files };
   } catch (err) {
     return { ok: false, error: `Could not read the skill from the workspace: ${(err as Error).message}` };
