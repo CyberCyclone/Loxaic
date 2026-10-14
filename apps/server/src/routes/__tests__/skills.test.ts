@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
-import { db, eq, inArray } from "@loxaic/db";
+import { db, eq, inArray, sql } from "@loxaic/db";
 import { conversations, conversationShares, skills, user, userPrefs } from "@loxaic/db/schema";
 import type { PaletteSkill } from "@loxaic/types";
 
@@ -167,6 +167,51 @@ describe("/v1/skills/mine", () => {
     expect(edited.body).toMatchObject({ name: "alpha", description: "A.", body: "new body", modelInvocable: false });
     expect((await call("PATCH", `/v1/skills/mine/${String(a.body.id)}`, { name: "bravo" })).status).toBe(409);
     expect((await call("PATCH", `/v1/skills/mine/${String(a.body.id)}`, {})).status).toBe(400);
+  });
+
+  /** Runs `act` with a trigger on `skills` that fires only for this test's
+   * rows, so parallel suites are untouched. A trigger, because `db` is a
+   * proxy no spy reaches, and because it puts the race exactly between the
+   * route's check and its write. */
+  async function withTrigger<T>(timing: string, when: string, body: string, act: () => Promise<T>): Promise<T> {
+    const name = `skills_race_${uuid().replaceAll("-", "_")}`;
+    await db.execute(
+      sql.raw(`CREATE FUNCTION ${name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN ${body} END $$;
+        CREATE TRIGGER ${name} ${timing} ON skills FOR EACH ROW WHEN (${when}) EXECUTE FUNCTION ${name}();`),
+    );
+    try {
+      return await act();
+    } finally {
+      await db.execute(sql.raw(`DROP TRIGGER ${name} ON skills; DROP FUNCTION ${name}();`));
+    }
+  }
+
+  it("answers 409, not 500, when another save takes the name between the check and the write", async () => {
+    // Two saves at once both find the name free; the (owner_id, name) index
+    // refuses the second, which must still read as the name being taken.
+    currentUser.id = owner;
+    const insertFirst = `INSERT INTO skills (owner_id, name, description, body) VALUES (NEW.owner_id, NEW.name, 'first', 'x'); RETURN NEW;`;
+    const created = await withTrigger("BEFORE INSERT", `NEW.owner_id = '${owner}' AND NEW.description = 'racing'`, insertFirst, () =>
+      call("POST", "/v1/skills/mine", { name: "raced", description: "racing", body: "b" }),
+    );
+    expect(created).toEqual({ status: 409, body: { error: 'You already have a skill called "raced".' } });
+
+    const other = await call("POST", "/v1/skills/mine", { name: "renamed-later", description: "R.", body: "b" });
+    const renamed = await withTrigger("BEFORE UPDATE", `NEW.id = '${String(other.body.id)}'`, insertFirst, () =>
+      call("PATCH", `/v1/skills/mine/${String(other.body.id)}`, { name: "taken-meanwhile" }),
+    );
+    expect(renamed).toEqual({ status: 409, body: { error: 'You already have a skill called "taken-meanwhile".' } });
+  });
+
+  it("answers 404, not 500, for an edit to a skill deleted since it was found", async () => {
+    // Another device deletes it between the route's lookup and its update,
+    // which then matches nothing. The trigger skips the row, as that would.
+    currentUser.id = owner;
+    const made = await call("POST", "/v1/skills/mine", { name: "vanishing", description: "V.", body: "b" });
+    const edited = await withTrigger("BEFORE UPDATE", `OLD.id = '${String(made.body.id)}'`, "RETURN NULL;", () =>
+      call("PATCH", `/v1/skills/mine/${String(made.body.id)}`, { body: "changed" }),
+    );
+    expect(edited).toEqual({ status: 404, body: { error: "Not found" } });
   });
 
   it("answers 404 for someone else's skill, and changes nothing", async () => {

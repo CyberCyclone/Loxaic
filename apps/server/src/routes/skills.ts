@@ -76,7 +76,15 @@ export function skillRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: `You already have a skill called "${name}".` };
     }
-    const [row] = await db.insert(skills).values({ ownerId: userId, name, description, body, modelInvocable }).returning();
+    let row;
+    try {
+      [row] = await db.insert(skills).values({ ownerId: userId, name, description, body, modelInvocable }).returning();
+    } catch (err) {
+      // Two saves at once both found the name free; the index decided.
+      if (!isUniqueViolation(err)) throw err;
+      reply.code(409);
+      return { error: `You already have a skill called "${name}".` };
+    }
     reply.code(201);
     return publicSkill(row);
   });
@@ -98,11 +106,25 @@ export function skillRoutes(app: FastifyInstance) {
       reply.code(409);
       return { error: `You already have a skill called "${input.value.name}".` };
     }
-    const [row] = await db
-      .update(skills)
-      .set({ ...input.value, updatedAt: new Date() })
-      .where(and(eq(skills.id, existing.id), eq(skills.ownerId, userId)))
-      .returning();
+    let rows;
+    try {
+      rows = await db
+        .update(skills)
+        .set({ ...input.value, updatedAt: new Date() })
+        .where(and(eq(skills.id, existing.id), eq(skills.ownerId, userId)))
+        .returning();
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      reply.code(409);
+      return { error: `You already have a skill called "${input.value.name ?? existing.name}".` };
+    }
+    // Deleted since it was found (another device, another tab): the same
+    // answer as a skill that was never there.
+    const row = rows.at(0);
+    if (!row) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
     return publicSkill(row);
   });
 
@@ -117,6 +139,12 @@ export function skillRoutes(app: FastifyInstance) {
     await db.delete(skills).where(and(eq(skills.id, existing.id), eq(skills.ownerId, userId)));
     return { ok: true };
   });
+}
+
+/** The `(owner_id, name)` index refusing a name: what a save that raced
+ * another one past `nameTaken` gets, answered as the same 409. */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "23505";
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

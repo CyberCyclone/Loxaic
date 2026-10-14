@@ -4367,6 +4367,11 @@ replies.
     delete confirmation says that.
   - **At most 100 per person** (`MAX_USER_SKILLS`): each one's description is in the model's list
     on every request.
+  - **The unique index has the last word on a name, and a race reads as a 409**
+    (`isUniqueViolation` in `routes/skills.ts`). `nameTaken` is a read before the write, so two
+    saves at once both pass it, and the loser was a 500. An edit to a skill deleted between the
+    lookup and the update is a 404, not a `TypeError` on an empty `returning()`. The route tests
+    place each race with a trigger. Found in review.
   - **"Let the model use this skill"** is `model_invocable`, the format's
     `disable-model-invocation` turned around.
 - **Whose skills:** the conversation's **owner's**, never the sender's. Two editors with two
