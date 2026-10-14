@@ -23,8 +23,11 @@ function whole(value: number | null | undefined): number | null {
 export function usageRecordValues(input: {
   userId: string;
   conversationId: string;
-  messageId: string;
+  /** Null for a request that is not a turn's own (a permission check). */
+  messageId: string | null;
   runId?: string;
+  /** Null for a turn's own request; see the column. */
+  purpose?: "permission_check";
   model: string;
   result: CompletionResult;
   /** Our own prefix-reuse measurement; absent for compaction. */
@@ -37,6 +40,7 @@ export function usageRecordValues(input: {
     userId: input.userId,
     conversationId: input.conversationId,
     messageId: input.messageId,
+    ...(input.purpose ? { purpose: input.purpose } : {}),
     ...(input.runId ? { runId: input.runId } : {}),
     model: input.model,
     origin: "server",

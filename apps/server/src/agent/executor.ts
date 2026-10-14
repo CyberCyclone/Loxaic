@@ -3,6 +3,7 @@ import posix from "node:path/posix";
 import type { SandboxHandle } from "../sandbox/provider.ts";
 import type { FileDiff, Todo, ToolName } from "@loxaic/agent";
 import { QUESTION_LIMITS } from "@loxaic/agent";
+import { parseTodoList } from "@loxaic/types";
 
 /** Tools that need a live sandbox; the rest run in-process on the server. */
 const SANDBOX_TOOLS: ToolName[] = ["fs_read", "fs_write", "fs_edit", "bash", "grep", "glob"];
@@ -77,6 +78,11 @@ export async function executeTool(
    * changes a file — what records its file checkpoint (agent/checkpoints.ts).
    * Never for a call that fails before writing. */
   beforeWrite?: (path: string) => Promise<void>,
+  options?: {
+    /** Extra environment for `bash` — what hardens a read-only command that
+     * ran without anyone being asked (engine.ts's READ_ONLY_BASH_ENV). */
+    bashEnv?: Record<string, string>;
+  },
 ): Promise<ToolResult> {
   try {
     if (toolNeedsSandbox(tool)) {
@@ -87,7 +93,7 @@ export async function executeTool(
         case "fs_read":  return await runFsRead(handle, args);
         case "fs_write": return await runFsWrite(handle, args, beforeWrite);
         case "fs_edit":  return await runFsEdit(handle, args, beforeWrite);
-        case "bash":     return await runBash(handle, args, signal);
+        case "bash":     return await runBash(handle, args, signal, options?.bashEnv);
         case "grep":     return await runGrep(handle, args);
         case "glob":     return await runGlob(handle, args);
       }
@@ -282,12 +288,14 @@ async function runBash(
   handle: SandboxHandle,
   args: Record<string, unknown>,
   signal?: AbortSignal,
+  env?: Record<string, string>,
 ): Promise<ToolResult> {
   const command = requireString(args, "command");
   const res = await handle.exec(["bash", "-lc", command], {
     workdir: handle.workdir,
     timeoutMs: 60_000,
     ...(signal ? { signal } : {}),
+    ...(env ? { env } : {}),
   });
   const body = [res.stdout, res.stderr].filter((s) => s.trim() !== "").join("\n");
   return {
@@ -331,21 +339,10 @@ async function runGlob(handle: SandboxHandle, args: Record<string, unknown>): Pr
 // ── Todos (virtual — no sandbox involved) ─────────────────
 
 function runTodoWrite(args: Record<string, unknown>): ToolResult {
-  const raw = args.todos;
-  if (!Array.isArray(raw)) return { ok: false, output: "todos must be an array" };
-
-  const todos: Todo[] = raw.map((t, i) => {
-    const item = (t ?? {}) as Record<string, unknown>;
-    const status = item.status;
-    return {
-      id: typeof item.id === "string" ? item.id : String(i + 1),
-      text:
-        typeof item.text === "string" ? item.text
-        : typeof item.text === "number" || typeof item.text === "boolean" ? String(item.text)
-        : "",
-      status: status === "completed" || status === "in_progress" ? status : "pending",
-    };
-  });
+  // The one rule for what a call's arguments mean, shared with the client,
+  // which reads a stored call back into the same list.
+  const todos = parseTodoList(args);
+  if (!todos) return { ok: false, output: "todos must be an array" };
 
   const rendered = todos
     .map((t) => `${t.status === "completed" ? "[x]" : t.status === "in_progress" ? "[~]" : "[ ]"} ${t.text}`)

@@ -363,8 +363,12 @@ export default function ChatScreen() {
           args={pendingApproval.args}
           deadline={pendingApproval.deadline}
           reason={approvalReason}
+          mode={pendingApproval.mode}
+          granterUserId={pendingApproval.granterUserId}
+          rules={pendingApproval.rules}
+          check={pendingApproval.check}
           onAllowOnce={() => { handleApprove(pendingApproval.callId); }}
-          onAllowAlways={() => { void handleAllowAlways(pendingApproval.callId, pendingApproval.tool); }}
+          onAllowAlways={() => { handleAllowAlways(pendingApproval.callId); }}
           onReject={() => { handleDeny(pendingApproval.callId); }}
         />
       )}

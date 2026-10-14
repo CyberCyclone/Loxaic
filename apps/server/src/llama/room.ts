@@ -403,8 +403,12 @@ const loadsRequested = new Set<string>();
  * is forgotten then, not hidden, or it would come back on the next unload.
  */
 export function loadErrorFor(id: string, routerStatus: string | null): string | null {
+  // A model that would not unload after its GPU was reset is stuck exactly
+  // while it reads `loaded`, so that is never what clears it: seeing it in any
+  // other state is (unloaded, failed, gone with a restarted router).
+  if (routerStatus !== "loaded") stuckAfterLoss.delete(id);
   if (routerStatus === "loaded") loadErrors.delete(id);
-  return loadErrors.get(id) ?? null;
+  return stuckAfterLoss.get(id) ?? loadErrors.get(id) ?? null;
 }
 
 export function loadRequested(id: string): boolean {
@@ -493,6 +497,99 @@ export async function requestUnload(id: string, pinned: boolean): Promise<void> 
   loadErrors.delete(id);
 }
 
+const discarding = new Map<string, Promise<void>>();
+/** Models whose GPU was reset under them and whose process would not unload,
+ * with the sentence their Host models row shows (`loadErrorFor`). Until the
+ * runtime is restarted every request on one goes back to the dead process, so
+ * the chat must stop promising a fresh load (`discardFailed`). */
+const stuckAfterLoss = new Map<string, string>();
+
+/**
+ * Wait for a discard of `id` still under way, if any. A request sent while one
+ * runs would otherwise reach the dead process it is removing, and be told the
+ * model "has been unloaded" again: a person who resends at once got exactly
+ * that. Once the discard has settled the request either loads a fresh process
+ * or, if the unload did not take, is told so (`discardFailed`). Bounded by the
+ * discard's own wait; a stop ends the wait, not the discard.
+ */
+export async function afterDiscard(id: string, signal?: AbortSignal): Promise<void> {
+  const running = discarding.get(id);
+  if (!running) return;
+  if (!signal) return running;
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    signal.addEventListener("abort", done);
+    void running.then(done);
+  });
+}
+
+/** Whether an earlier GPU reset left `id`'s process up and unloadable. */
+export function discardFailed(id: string): boolean {
+  return stuckAfterLoss.has(id);
+}
+
+/** How long a discard waits for the router to say the model is gone.
+ * `LLAMA_DISCARD_WAIT_MS` is read at call time, for a test that needs a stuck
+ * unload without waiting out the full half minute. */
+function discardWaitMs(): number {
+  const ms = Number(process.env.LLAMA_DISCARD_WAIT_MS);
+  return Number.isFinite(ms) && ms > 0 ? ms : UNLOAD_WAIT_MS;
+}
+
+/**
+ * Unload a model whose GPU was reset under it (device-lost.ts), so the next
+ * request loads a fresh process: a lost Vulkan device never comes back, and the
+ * old one would fail, or crash, on whatever it is asked next.
+ *
+ * Unlike an admin's Unload, nothing refuses this — not a request in flight
+ * (every request on the model has failed, or is about to), not a pin. A pinned
+ * model is loaded straight back, as after a restart. One discard per model at
+ * a time: every request on it fails at once, and each would ask.
+ */
+export function discardLostModel(id: string, device: string | null = null): Promise<void> {
+  const running = discarding.get(id);
+  if (running) return running;
+  const which = device ? `GPU (${device})` : "GPU";
+  const stuck = (why: string) => {
+    stuckAfterLoss.set(
+      id,
+      `The ${which} was reset under this model and its process could not be unloaded (${why}), so it answers nothing. Restart llama.cpp to load it afresh.`,
+    );
+  };
+  const job = (async () => {
+    if (!routerEndpoint()) return;
+    await withRoomLock(async () => {
+      console.warn(`[llama] the ${which} was reset under ${id}; unloading it so the next request loads it afresh`);
+      await unloadModel(id);
+      // Only `loaded` is still holding the lost device. A process that died
+      // with it (a loss at load time, a crash) reads `failed` or `unloaded`,
+      // which is what this was for.
+      const status = await waitForModelStatus(id, "unloaded", discardWaitMs());
+      if (status?.value === "loaded") {
+        console.error(`[llama] ${id} still reads loaded after its ${which} was reset`);
+        stuck("it still reads as loaded");
+      } else {
+        stuckAfterLoss.delete(id);
+      }
+    });
+    await refreshMemory({ force: true });
+    const pinned = (await listServableModels()).some((r) => r.id === id && r.pinned);
+    if (pinned) await loadPinnedModels();
+  })()
+    .catch((e: unknown) => {
+      const why = e instanceof Error ? e.message : String(e);
+      console.error(`[llama] could not unload ${id} after its ${which} was reset: ${why}`);
+      if (!stuckAfterLoss.has(id)) stuck("the unload failed");
+    })
+    .finally(() => { discarding.delete(id); });
+  discarding.set(id, job);
+  return job;
+}
+
 /** Test seam: forget use tracking and pin errors. */
 export function __resetRoomForTest(): void {
   inFlight.clear();
@@ -500,4 +597,5 @@ export function __resetRoomForTest(): void {
   pinErrors.clear();
   loadErrors.clear();
   loadsRequested.clear();
+  stuckAfterLoss.clear();
 }

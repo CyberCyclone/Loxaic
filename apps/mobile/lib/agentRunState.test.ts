@@ -27,15 +27,14 @@ describe('per-conversation run state', () => {
   it('keeps a background thread’s approval while another thread is on screen', () => {
     // A asks, the person opens B, B runs, then they come back to A.
     let levels = fold({}, 'A', [{ kind: 'iteration', n: 3, max: 100 }, ask]);
-    levels = fold(levels, 'B', [{ kind: 'iteration', n: 1, max: 100 }, { kind: 'todos', todos: [{ text: 'x', status: 'pending' }] }], 's2');
+    levels = fold(levels, 'B', [{ kind: 'iteration', n: 1, max: 100 }], 's2');
     const a = runLevelOf(levels, 'A');
     expect(a.runState).toBe('awaiting_approval');
     expect(a.pendingApproval?.callId).toBe('call_0');
     expect(a.pendingApproval?.streamId).toBe('s1');
     expect(a.iteration).toEqual({ n: 3, max: 100 });
     expect(runLevelOf(levels, 'B').pendingApproval).toBeNull();
-    expect(runLevelOf(levels, 'B').todos).toHaveLength(1);
-    expect(a.todos).toHaveLength(0);
+    expect(runLevelOf(levels, 'B').iteration).toEqual({ n: 1, max: 100 });
   });
 
   it('records an approval that arrives while its thread is not on screen', () => {
@@ -81,11 +80,10 @@ describe('per-conversation run state', () => {
     expect(runLevelOf(levels, 'A')).toMatchObject({ runState: 'running', pendingCheckin: null });
   });
 
-  it('ends a run without losing what it did', () => {
-    const levels = fold({}, 'A', [{ kind: 'todos', todos: [{ text: 'x', status: 'completed' }] }, ask]);
+  it('ends a run, clearing what it was waiting on', () => {
+    const levels = fold({}, 'A', [ask]);
     const ended = runLevelAfterEnd(runLevelOf(levels, 'A'), 'complete');
     expect(ended).toMatchObject({ runState: 'done', pendingApproval: null, pendingCheckin: null, iteration: null, queuePosition: null });
-    expect(ended.todos).toHaveLength(1);
     expect(runLevelAfterEnd(IDLE_RUN, 'error').runState).toBe('error');
   });
 
@@ -120,7 +118,7 @@ describe('per-conversation run state', () => {
     const removed = runLevelAfterRewind(asking, new Set(['s1']), false);
     expect(removed.pendingApproval).toBeNull();
     expect(removed.iteration).toEqual({ n: 2, max: 9 });
-    expect(runLevelAfterRewind(asking, new Set(), true)).toMatchObject({ iteration: null, todos: [] });
+    expect(runLevelAfterRewind(asking, new Set(), true)).toMatchObject({ iteration: null });
   });
 
   it('does not stay parked on a prompt a rewind removed', () => {

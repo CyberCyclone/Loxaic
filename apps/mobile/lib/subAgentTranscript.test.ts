@@ -53,6 +53,17 @@ describe('a sub-agent\'s transcript', () => {
     expect(t.msgs).toEqual(applyEventToMsgs(applyChildSync(EMPTY_TRANSCRIPT, sync(), NOW).msgs, { kind: 'text.delta', message_id: 'a1', text: ' in progress' }));
   });
 
+  it('times a new message from when its event arrived, as the hook stamped it, not when the fold ran', () => {
+    // The hooks read the clock once per socket message and hand it down: the
+    // fold runs inside a state updater, which React may run later.
+    const t = applyChildEvent(
+      applyChildSync(EMPTY_TRANSCRIPT, sync(), NOW),
+      event({ kind: 'message.start', message_id: 'a2', author_type: 'assistant', parent_id: 'a1', started_at: 1 }),
+      NOW + 2_000,
+    );
+    expect(t.msgs.at(-1)).toMatchObject({ id: 'a2', startedAt: NOW + 2_000 });
+  });
+
   it('shows the prompt line until the reply starts, and the load until it is over', () => {
     let t = applyChildSync(EMPTY_TRANSCRIPT, sync(), NOW);
     t = applyChildEvent(t, event({ kind: 'model.loading', message_id: 'a2' }));

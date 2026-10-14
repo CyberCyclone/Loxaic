@@ -70,11 +70,6 @@ export default function McpScreen() {
     }
   };
 
-  // Servers whose credential is another connection's (GitHub): no delete, and
-  // only the name is editable.
-  const linkedKeys = new Set(catalog.filter((c) => c.credentials).map((c) => c.key));
-  const isLinked = (server: McpServer) => server.builtinKey !== null && linkedKeys.has(server.builtinKey);
-
   const rows: Row[] = [
     ...catalog.filter((c) => !c.configured).map((entry) => ({ type: 'catalog' as const, entry })),
     ...servers.map((server) => ({ type: 'server' as const, server })),
@@ -121,7 +116,6 @@ export default function McpScreen() {
             ) : (
               <McpServerCard
                 server={item.server}
-                linked={isLinked(item.server)}
                 testing={testingId === item.server.id}
                 onToggle={(enabled) => { void toggle(item.server.id, enabled); }}
                 onDefaults={(patch) => { void setDefaults(item.server.id, patch); }}
@@ -140,7 +134,6 @@ export default function McpScreen() {
         onClose={() => { setModalOpen(false); }}
         onSave={handleSave}
         editing={editing}
-        linked={editing ? isLinked(editing) : false}
       />
       <McpToolsSheet server={toolsFor} onClose={() => { setToolsFor(null); }} test={test} update={update} />
     </VStack>

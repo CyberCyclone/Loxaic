@@ -1,4 +1,4 @@
-import type { StreamEventKind, StreamSnapshot, Todo } from '@loxaic/api-client';
+import type { StreamEventKind, StreamSnapshot } from '@loxaic/api-client';
 import { toPendingApproval, toPendingCheckin, type PendingApproval, type PendingCheckin } from './pendingWaits';
 
 /**
@@ -45,7 +45,6 @@ export interface AgentRunLevel {
   pendingCheckin: PendingCheckin | null;
   iteration: { n: number; max: number } | null;
   queuePosition: number | null;
-  todos: Todo[];
 }
 
 export const IDLE_RUN: AgentRunLevel = Object.freeze({
@@ -54,7 +53,6 @@ export const IDLE_RUN: AgentRunLevel = Object.freeze({
   pendingCheckin: null,
   iteration: null,
   queuePosition: null,
-  todos: [],
 });
 
 export type RunLevels = Partial<Record<string, AgentRunLevel>>;
@@ -109,7 +107,6 @@ export function runLevelFromSnapshot(
   return {
     runState,
     iteration: snapshot.iteration ?? null,
-    todos: snapshot.todos ?? [],
     // Only an active run can be waiting on anyone. The server strips a
     // finished run's question from its snapshot (delivery.ts), but the bar and
     // the banner render on a prompt's presence alone, and every conversation's
@@ -163,14 +160,12 @@ export function runLevelAfterEvent(
     case 'steps.decision':
       // Someone answered — possibly on another device, possibly the timeout.
       return { ...next, runState: 'running', pendingCheckin: null };
-    case 'todos':
-      return { ...next, todos: event.todos };
     default:
       return next;
   }
 }
 
-/** The run's stream ended. The to-do list stays: it is what the run did. */
+/** The run's stream ended. */
 export function runLevelAfterEnd(prev: AgentRunLevel, status: string): AgentRunLevel {
   return {
     ...prev,
@@ -219,7 +214,7 @@ export function runLevelAfterRewind(
     runState,
     pendingApproval,
     pendingCheckin,
-    ...(clearsLiveRun ? { iteration: null, queuePosition: null, todos: [] } : {}),
+    ...(clearsLiveRun ? { iteration: null, queuePosition: null } : {}),
   };
 }
 

@@ -4,8 +4,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { db, eq } from "@loxaic/db";
 import { mcpServers } from "@loxaic/db/schema";
 import { assertPublicUrl } from "../agent/executor.ts";
-import { getOwnerToken } from "../github/connection.ts";
-import { catalogEntry } from "./catalog.ts";
 import { decryptSecrets, redact } from "./secrets.ts";
 import { MAX_TOOLS_PER_SERVER, sanitizeToolMeta, type SanitizedToolMeta } from "./sanitize.ts";
 
@@ -63,11 +61,6 @@ function asStringRecord(value: unknown): Record<string, string> {
   return out;
 }
 
-function linkedEndpoint(row: McpServerRow): { url: string; allowPrivateNetwork: boolean } | null {
-  const entry = catalogEntry(row.builtinKey);
-  return entry?.transport === "http" ? entry.resolveUrl() : null;
-}
-
 async function connect(userId: string, row: McpServerRow): Promise<Entry> {
   const secrets = rowSecrets(row);
   const redactions: Record<string, string> = { ...secrets };
@@ -88,30 +81,11 @@ async function connect(userId: string, row: McpServerRow): Promise<Entry> {
       const transport = new StdioClientTransport({ command: row.command, args, env, stderr: "ignore" });
       await client.connect(transport, { timeout: CONNECT_TIMEOUT_MS });
     } else {
-      // A credential-linked row takes its address from the catalog at connect
-      // time, not from the row. Every server process on a machine shares one
-      // database, and an e2e harness boots with GITHUB_MCP_URL pointed at a
-      // mock: freezing that into rows would leave other users' GitHub tools
-      // aimed at a dead loopback port, with the SSRF guard lifted, long after
-      // the harness exited.
-      const linked = linkedEndpoint(row);
-      const target = linked ?? { url: row.url, allowPrivateNetwork: row.allowPrivateNetwork };
-      if (!target.url) throw new Error("http MCP server has no URL configured");
-      const allowPrivateNetwork = target.allowPrivateNetwork;
-      const url = new URL(target.url);
+      if (!row.url) throw new Error("http MCP server has no URL configured");
+      const allowPrivateNetwork = row.allowPrivateNetwork;
+      const url = new URL(row.url);
       if (!allowPrivateNetwork) await assertPublicUrl(url);
       const headers: Record<string, string> = { ...asStringRecord(row.headers), ...secrets };
-      if (linked) {
-        // The row's *owner's* token, never the caller's — the same rule clone
-        // credentials follow. Read here rather than copied into the row, so a
-        // token re-issued or disconnected in Settings → GitHub is the one used.
-        // A token that can no longer be decrypted throws its own sentence
-        // ("disconnect and reconnect"), which lands in lastError as-is.
-        const token = await getOwnerToken(row.ownerId);
-        if (!token) throw new Error("GitHub is not connected. Connect it under Settings → GitHub.");
-        redactions.GITHUB_TOKEN = token;
-        headers.Authorization = `Bearer ${token}`;
-      }
       // Re-vet every request unless the user explicitly allowed a private
       // address — a public hostname can re-resolve to an internal one later.
       const guardedFetch: typeof fetch = async (input, init) => {
@@ -222,26 +196,11 @@ export async function callServerTool(
   }
 }
 
-/**
- * Every value to scrub from an error about this server: its own secrets, plus
- * a linked credential (the GitHub token) the row does not store.
- *
- * Exported because the outer catches — the `/test` route and the registry's
- * per-run warning — only have the row, and for a linked row its secrets are
- * `{}` by construction, so redacting with those alone is a no-op. This repo
- * redacts a GitHub token at the route layer as well as here, deliberately.
- */
-export async function redactionsFor(row: McpServerRow): Promise<Record<string, string>> {
-  const secrets = rowSecrets(row);
-  if (!linkedEndpoint(row)) return secrets;
-  try {
-    const token = await getOwnerToken(row.ownerId);
-    return token ? { ...secrets, GITHUB_TOKEN: token } : secrets;
-  } catch {
-    // An unreadable token is nothing to redact — and this is an error path
-    // already, so it must not throw a second error over the first.
-    return secrets;
-  }
+/** Every value to scrub from an error about this server: its own secrets.
+ * For the outer catches (the `/test` route and the registry's per-run
+ * warning), which only have the row. */
+export function redactionsFor(row: McpServerRow): Record<string, string> {
+  return rowSecrets(row);
 }
 
 export async function dropEntry(userId: string, serverId: string): Promise<void> {

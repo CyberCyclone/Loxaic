@@ -23,16 +23,22 @@ import {
   type TurnUsage,
   DEFAULT_THINKING_LEVEL,
   MAX_SUBAGENTS_PER_MESSAGE,
+  TODO_STALE_REMINDER,
+  parseTodoList,
   type ThinkingLevel,
+  type PermissionCheckNote,
+  type ToolPermission,
 } from "@loxaic/types";
 import {
   countDocumentParts,
   countImageParts,
   streamCompletion,
+  textOfContent,
   visionErrorMessage,
   type ChatMessage,
   type ToolCall,
   type CompletionResult,
+  type OpenAiTool,
 } from "../../inference/provider.ts";
 import {
   attachmentContentParts,
@@ -52,7 +58,7 @@ import {
 } from "../../inference/context.ts";
 import { prefillRate, recordPrefill } from "../../inference/prefill-rate.ts";
 import { fingerprintPrompt, measureReuse, recordPrompt, sha, type PromptReuse } from "../../inference/prompt-reuse.ts";
-import type { PermissionMode, ToolName } from "@loxaic/agent";
+import type { PermissionMode, ResolvedTool, ToolName } from "@loxaic/agent";
 import { HANDOVER_TOOL_NAMES, SUBAGENT_TOOL_NAME } from "@loxaic/agent";
 import {
   SUBAGENT_SYSTEM_ADDENDUM,
@@ -78,6 +84,17 @@ import {
   markOverflowWritten,
 } from "../../agent/sandbox-manager.ts";
 import { buildToolset, type Toolset } from "../../mcp/registry.ts";
+import { decideBash } from "../../permissions/bash/policy.ts";
+import type { CommandRule } from "../../permissions/bash/rules.ts";
+import { isolationFor, isSensitiveWrite, type Isolation } from "../../permissions/isolation.ts";
+import {
+  permissionCheckInstruction,
+  permissionCheckMessages,
+  runPermissionCheck,
+  type CheckOutcome,
+} from "../../permissions/check.ts";
+import { addCommandRules, loadCommandRules } from "../../permissions/store.ts";
+import { getInferenceSettings } from "../../settings.ts";
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
@@ -86,6 +103,7 @@ import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inferen
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
 import { LoopDetector, loopDetectorOptions } from "./loop-detector.ts";
+import { TodoStaleness } from "./todo-staleness.ts";
 import {
   clampAutoContinues,
   clampWaitTimeoutMs,
@@ -553,6 +571,15 @@ export async function runToolLoop(ctx: {
     // in the same `user_prefs` row, and buildToolset would otherwise fetch it
     // again on the next line.
     const { maxIterations, allowlist, waits } = await loadRunPrefs(userId);
+    // The sender's command rules (permissions/bash/rules.ts), for the run:
+    // "Allow always" adds to this list as well as the table, so the rest of
+    // the run stops asking too.
+    const commandRules: CommandRule[] = (await loadCommandRules(userId)).map((r) => ({ pattern: r.pattern, action: r.action }));
+    // Whether the workspace contains its commands, asked once and only if an
+    // auto-mode decision needs it.
+    let isolation: Promise<Isolation> | null = null;
+    const runIsolation = (): Promise<Isolation> =>
+      (isolation ??= isolationFor(workspaceConvId).catch(() => ({ isolated: false, roots: [] })));
     // Decided once, like the toolset it shapes: which model a child may run
     // on is part of the tool's schema, and so of the prompt's front.
     let subagents: { policy: SubagentModelPolicy; offered: string[] | null; routine: boolean } | null = null;
@@ -750,6 +777,10 @@ export async function runToolLoop(ctx: {
     // how many windows have been granted.
     let budgetEnd = maxIterations;
     const detector = new LoopDetector(loopDetectorOptions(waits.loopSensitivity));
+    // Whether the todo list has gone stale — see todo-staleness.ts. Seeded from
+    // the replay, so a list written in an earlier turn counts, and seeded again
+    // when the run compacts: a list now only in the summary is not reminded about.
+    let todoStaleness = TodoStaleness.fromHistory(history.messages);
     // Iteration key -> the calls that produced it, so a loop check-in can name
     // what is repeating. Bounded: only the last few keys can ever be part of a
     // hit, and a 500-step run must not accumulate every argument string it saw.
@@ -928,6 +959,7 @@ export async function runToolLoop(ctx: {
             omittedAttachments = [];
             hadImages = false;
             compactedThisRun = true;
+            todoStaleness = TodoStaleness.fromHistory(chatMessages);
           } else if (compacted.stopped) {
             await producer.end("cancelled");
             return;
@@ -998,6 +1030,9 @@ export async function runToolLoop(ctx: {
         parent_id: parentId,
         lamport: assistantLamport,
         model,
+        // What the reply's live counter times from: each iteration is its own
+        // message, and the run's start is the whole turn's age.
+        started_at: Date.now(),
       });
       if (loadingModel) {
         // Say why when the reload is another conversation's stage switch:
@@ -1356,6 +1391,14 @@ export async function runToolLoop(ctx: {
       // The outcomes of this message's sub-agent calls, by call index. Filled
       // in one go at the first of them — see `runSubagentGroup`.
       let subagentOutcomes: Map<number, SubagentOutcome> | null = null;
+      // Handed to the first built-in tool that runs, once (runOneToolCall).
+      let todoReminderDue = todoStaleness.due(toolCalls.map((c) => c.function.name));
+      const takeTodoReminder = (): string | null => {
+        if (!todoReminderDue) return null;
+        todoReminderDue = false;
+        todoStaleness.reminded();
+        return TODO_STALE_REMINDER;
+      };
       for (const [callIndex, call] of toolCalls.entries()) {
         // A sub-agent call whose child has already run is recorded with what
         // the child did, ahead of the two skips below: it ran (with the rest
@@ -1483,6 +1526,15 @@ export async function runToolLoop(ctx: {
               windowTokens,
               nestedInstructions: ctx.nestedInstructions ?? false,
               checkpointTurn,
+              takeTodoReminder,
+              commandRules,
+              isolation: runIsolation,
+              check: {
+                model,
+                tools,
+                thinking: thinkingBody,
+                pending: toolCalls.slice(callIndex).map((c) => ({ id: c.id, name: c.function.name })),
+              },
             },
             call,
           );
@@ -1521,10 +1573,16 @@ export async function runToolLoop(ctx: {
           output: outcome.output,
           ok: outcome.ok,
           ...(outcome.diff ? { diff: outcome.diff } : {}),
+          ...(outcome.permission ? { permission: outcome.permission } : {}),
         });
         chatMessages.push(toolResultMessageForPrompt(call.id, call.function.name, outcome.output));
         if (HANDOVER_TOOL_NAMES.has(call.function.name) && outcome.ok) handedOver = true;
+        if (call.function.name === "todo_write" && outcome.ok) {
+          const written = parseTodoList(safeParseArgs(call.function.arguments));
+          if (written) todoStaleness.wrote(written);
+        }
       }
+      todoStaleness.endIteration();
       producer.emit({ kind: "message.end", message_id: assistantMsgId, status: "complete", usage: iterationUsage });
 
       const toolMsgId = uuid();
@@ -1912,6 +1970,16 @@ async function runOneToolCall(
     nestedInstructions: boolean;
     /** See runToolLoop's `checkpointTurn`. */
     checkpointTurn: CheckpointTurn;
+    /** The stale-todo reminder, when this iteration owes one and no tool has
+     * carried it yet — see todo-staleness.ts. */
+    takeTodoReminder?: () => string | null;
+    /** The sender's command rules, for this run; "Allow always" adds to it. */
+    commandRules: CommandRule[];
+    /** Whether the workspace contains its commands — asked once per run. */
+    isolation: () => Promise<Isolation>;
+    /** What the permission check sends: this run's model, tools and thinking
+     * fields, and the calls of this message still without a result. */
+    check: PermissionCheckContext;
   },
   call: ToolCall,
 ): Promise<{
@@ -1921,6 +1989,8 @@ async function runOneToolCall(
    * output text. Every return path sets it explicitly. */
   ok: boolean;
   diff?: { path: string; oldContent: string | null; newContent: string | null }[];
+  /** Why it ran without a person approving, or was refused. */
+  permission?: ToolPermission;
 }> {
   const { userId, mode, toolset, producer, assistantMsgId } = ctx;
   const toolName = call.function.name;
@@ -1940,9 +2010,30 @@ async function runOneToolCall(
     return { output, ok: false };
   }
 
+  // ── Permission ───────────────────────────────────────────
+  // Whether this call runs, asks, or is refused: per command for `bash`
+  // (permissions/bash/policy.ts), checked like a command for a file write
+  // outside the workspace in auto mode where nothing contains it, and by the
+  // toolset's own rule for everything else.
+  const gate = await permissionGate(ctx, resolved, call, args);
+  if (gate.kind === "refused") {
+    producer.emit({
+      kind: "tool.result",
+      message_id: assistantMsgId,
+      call_id: call.id,
+      tool: toolName,
+      output: gate.output,
+      ok: false,
+      ...(gate.permission ? { permission: gate.permission } : {}),
+    });
+    return { output: gate.output, ok: false, ...(gate.permission ? { permission: gate.permission } : {}) };
+  }
+  // Why it ran unasked, shown beside the call; absent when a person approved.
+  const permission = gate.kind === "run" ? gate.permission : undefined;
+
   let always = false;
   let answeredBy: string | null = null;
-  if (toolset.requiresApproval(resolved, mode)) {
+  if (gate.kind === "ask") {
     const deadline = ctx.approvalDeadline();
     producer.emit({
       kind: "approval.request",
@@ -1954,6 +2045,10 @@ async function runOneToolCall(
       // selector says neither — it is the next message's mode.
       mode,
       granter_user_id: userId,
+      // For `bash`, the rules "Allow always" records — the server's proposal,
+      // never the client's — and why the permission check sent it here.
+      ...(gate.rules.length > 0 ? { rules: gate.rules } : {}),
+      ...(gate.check ? { check: gate.check } : {}),
       timeout_ms: deadline.ms,
       expires_at: deadline.expiresAt,
       timeout_basis: deadline.basis,
@@ -1989,7 +2084,18 @@ async function runOneToolCall(
   // on someone else's credentialled server, so theirs approves this call and
   // nothing more. Reaching here with no gate above (already allowed) never
   // grants, since `always` is only ever set by an answer.
-  if (always && answeredBy === userId) await toolset.grantTrust(resolved);
+  if (always && answeredBy === userId) {
+    if (gate.kind === "ask" && gate.rules.length > 0) {
+      // A command's grant is the rules it was offered, for the rest of this
+      // run (the in-memory list the gate reads) and every later one.
+      ctx.commandRules.push(...gate.rules.map((pattern) => ({ pattern, action: "allow" as const })));
+      await addCommandRules(userId, gate.rules, "allow", "prompt").catch((err: unknown) => {
+        console.warn(`could not save the command rules ${gate.rules.join(", ")}: ${(err as Error).message}`);
+      });
+    } else {
+      await toolset.grantTrust(resolved);
+    }
+  }
 
   if (resolved.source.kind === "mcp") {
     // No sandbox involvement: MCP dispatch validates args, calls the server,
@@ -2002,8 +2108,9 @@ async function runOneToolCall(
       tool: toolName,
       output: result.output,
       ok: result.ok,
+      ...(permission ? { permission } : {}),
     });
-    return { output: result.output, ok: result.ok };
+    return { output: result.output, ok: result.ok, ...(permission ? { permission } : {}) };
   }
 
   // The MCP branch returned above, so this is a builtin by construction — and
@@ -2023,8 +2130,8 @@ async function runOneToolCall(
       // *model* reads, so until it was translated the agent dutifully told
       // people to grant write access to fix a missing read permission.
       const raw = (err as Error).message;
-      const permission = describeGithubPermissionFailure({ message: raw, need: "contents-read" });
-      const output = `Could not start a sandbox: ${permission ?? raw}`;
+      const githubRefusal = describeGithubPermissionFailure({ message: raw, need: "contents-read" });
+      const output = `Could not start a sandbox: ${githubRefusal ?? raw}`;
       producer.emit({
         kind: "tool.result",
         message_id: assistantMsgId,
@@ -2044,6 +2151,10 @@ async function runOneToolCall(
     args,
     ctx.signal,
     writeHandle ? (path) => recordBeforeWrite(writeHandle, ctx.checkpointTurn, path) : undefined,
+    // A read-only command that nobody was asked about still runs inside a
+    // repository the model can write to: git's fsmonitor and pager are the
+    // repo-config hooks a `git status` or `git log` would otherwise run.
+    permission?.by === "readonly" ? { bashEnv: READ_ONLY_BASH_ENV } : undefined,
   );
   // A read inside a subdirectory with its own AGENTS.md brings that file
   // along, once — appended here so the live event and the persisted row carry
@@ -2055,6 +2166,18 @@ async function runOneToolCall(
       signal: ctx.signal,
     });
   }
+  // The stale-todo reminder rides on a built-in tool's result for the same
+  // reason: the live event, the stored row and every replay carry one text, so
+  // the prefix the backend has cached never changes under it. Never on the
+  // `todo_write` that answers it.
+  if (builtinName !== "todo_write") {
+    const reminder = ctx.takeTodoReminder?.();
+    if (reminder) result.output += reminder;
+  }
+  // No current client reads this (the list is read from the tool call, see
+  // apps/mobile/lib/todos.ts); it is kept for app builds that predate that,
+  // which show the live list from it and from the snapshot's `todos`. One
+  // small record per todo_write. Remove it once those builds are gone.
   if (result.todos) producer.emit({ kind: "todos", todos: result.todos });
   producer.emit({
     kind: "tool.result",
@@ -2064,8 +2187,149 @@ async function runOneToolCall(
     output: result.output,
     ok: result.ok,
     ...(result.diff ? { diff: result.diff } : {}),
+    ...(permission ? { permission } : {}),
   });
-  return { output: result.output, ok: result.ok, diff: result.diff };
+  return { output: result.output, ok: result.ok, diff: result.diff, ...(permission ? { permission } : {}) };
+}
+
+/** What the permission check needs from the run (permissions/check.ts). */
+interface PermissionCheckContext {
+  model: string;
+  tools: OpenAiTool[];
+  thinking: Record<string, unknown>;
+  /** This message's calls from the one being checked onwards: each gets a
+   * placeholder result in the check's request, since a tool call with no
+   * partner is refused by most templates. */
+  pending: { id: string; name: string }[];
+}
+
+/** Git's own hooks into a read-only command: an fsmonitor and a pager are
+ * both repository config the model can write. */
+const READ_ONLY_BASH_ENV: Record<string, string> = {
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "core.fsmonitor",
+  GIT_CONFIG_VALUE_0: "false",
+  GIT_PAGER: "cat",
+  PAGER: "cat",
+};
+
+type Gate =
+  | { kind: "run"; permission?: ToolPermission }
+  | { kind: "ask"; rules: string[]; check?: PermissionCheckNote }
+  | { kind: "refused"; output: string; permission?: ToolPermission };
+
+const STOPPED_BEFORE_RUN = "Stopped by the user before this tool call ran.";
+
+async function permissionGate(
+  ctx: Parameters<typeof runOneToolCall>[0],
+  resolved: ResolvedTool,
+  call: ToolCall,
+  args: Record<string, unknown>,
+): Promise<Gate> {
+  if (resolved.source.kind === "builtin" && resolved.name === "bash") {
+    const command = typeof args.command === "string" ? args.command : "";
+    const isolation = ctx.mode === "auto" ? await ctx.isolation() : { isolated: false, roots: [] };
+    const decision = decideBash({ command, mode: ctx.mode, rules: ctx.commandRules, isolated: isolation.isolated });
+    switch (decision.kind) {
+      case "deny":
+        return { kind: "refused", output: decision.reason, permission: { by: "denied", rule: decision.rule } };
+      case "refuse":
+        return { kind: "refused", output: decision.reason, permission: { by: "refused" } };
+      case "run":
+        return { kind: "run", permission: { by: decision.by, ...(decision.rule ? { rule: decision.rule } : {}) } };
+      case "ask":
+        return { kind: "ask", rules: decision.rules };
+      case "classify":
+        return checkOrAsk(ctx, call, `run the shell command: ${command}`, decision.rules, isolation.roots[0] ?? null);
+    }
+  }
+  if (
+    ctx.mode === "auto" &&
+    resolved.source.kind === "builtin" &&
+    (resolved.name === "fs_write" || resolved.name === "fs_edit")
+  ) {
+    const path = typeof args.path === "string" ? args.path : "";
+    const isolation = await ctx.isolation();
+    if (!isolation.isolated && isSensitiveWrite(path, isolation.roots)) {
+      const verb = resolved.name === "fs_write" ? "write the file" : "edit the file";
+      return checkOrAsk(ctx, call, `${verb} ${path}`, [], isolation.roots[0] ?? null);
+    }
+  }
+  return ctx.toolset.requiresApproval(resolved, ctx.mode) ? { kind: "ask", rules: [] } : { kind: "run" };
+}
+
+/**
+ * The auto-mode permission check (permissions/check.ts): run it, or ask the
+ * person when it says ASK or cannot answer. Held under the run's own slot —
+ * it is one short request, part of this run's turn, and on the run's own
+ * model it extends the prompt the backend just cached.
+ */
+async function checkOrAsk(
+  ctx: Parameters<typeof runOneToolCall>[0],
+  call: ToolCall,
+  action: string,
+  rules: string[],
+  cwd: string | null,
+): Promise<Gate> {
+  const settings = getInferenceSettings();
+  const override = settings.permissionCheckModel;
+  const instruction = permissionCheckInstruction(action, cwd);
+  const lastUserText = [...ctx.messages].reverse().find((m) => m.role === "user");
+  const request = override
+    ? {
+        // Another model holds none of this conversation, so a standalone
+        // prompt is cheaper than the whole history: what was asked, and what
+        // is about to happen.
+        model: override,
+        messages: [
+          {
+            role: "user" as const,
+            content: `The user asked:\n${textOfContent(lastUserText?.content).slice(0, 4000)}\n\n${instruction}`,
+          },
+        ] satisfies ChatMessage[],
+        tools: undefined,
+        thinking: {},
+      }
+    : {
+        model: ctx.check.model,
+        messages: permissionCheckMessages(ctx.messages, ctx.check.pending, toolResultMessageForPrompt, instruction),
+        tools: ctx.check.tools,
+        thinking: ctx.check.thinking,
+      };
+  let outcome: CheckOutcome;
+  try {
+    outcome = await runPermissionCheck({ ...request, signal: ctx.signal, timeoutMs: settings.permissionCheckTimeoutMs });
+  } catch {
+    // Only a stop gets here: every other failure is an outcome.
+    return { kind: "refused", output: STOPPED_BEFORE_RUN };
+  }
+  if (outcome.result) {
+    // Real tokens, so recorded; never mistaken for the turn (`purpose`).
+    await db
+      .insert(usageRecords)
+      .values(
+        usageRecordValues({
+          userId: ctx.userId,
+          conversationId: ctx.convId,
+          messageId: null,
+          runId: ctx.streamId,
+          model: request.model,
+          result: outcome.result,
+          purpose: "permission_check",
+        }),
+      )
+      .catch((err: unknown) => {
+        console.warn(`could not record a permission check's usage: ${(err as Error).message}`);
+      });
+  }
+  if (outcome.allow) {
+    return { kind: "run", permission: { by: "classifier", ...(outcome.reason ? { reason: outcome.reason } : {}) } };
+  }
+  return {
+    kind: "ask",
+    rules,
+    check: { by: "classifier", outcome: outcome.outcome, ...(outcome.reason ? { reason: outcome.reason } : {}) },
+  };
 }
 
 /**

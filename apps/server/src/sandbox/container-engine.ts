@@ -602,7 +602,7 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
         });
     },
 
-    async openTerminal(): Promise<TerminalSession> {
+    async openTerminal(options?: { env?: Record<string, string> }): Promise<TerminalSession> {
       const exec = await container.exec({
         Cmd: ["bash"],
         AttachStdin: true,
@@ -614,7 +614,7 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
         WorkingDir: CONTAINER_WORKDIR,
         // Without this bash announces `TERM=dumb` and emits no colour or
         // cursor control at all, which wastes the one thing a real PTY buys.
-        Env: ["TERM=xterm-256color"],
+        Env: ["TERM=xterm-256color", ...Object.entries(options?.env ?? {}).map(([k, v]) => `${k}=${v}`)],
       });
       const stream = await exec.start({ hijack: true, stdin: true });
 

@@ -48,7 +48,7 @@ type StreamEvent = Extract<ServerMessage, { type: 'stream.event' }>;
 type StreamEnd = Extract<ServerMessage, { type: 'stream.end' }>;
 
 /**
- * The child's stored messages, put in front of whatever its live run has
+ * The child's stored messages, merged with whatever its live run has
  * already written — never instead of it, for the reason a thread does the
  * same (`withNewestPage`): the live copy of a message both have is the newer.
  */
@@ -63,7 +63,7 @@ export function historyAsked(t: ChildTranscript): ChildTranscript {
 }
 
 export function applyChildSync(t: ChildTranscript, event: Sync, now = Date.now()): ChildTranscript {
-  const msgs = applySnapshotToMsgs(t.msgs, event.snapshot, { olderUnloaded: false });
+  const msgs = applySnapshotToMsgs(t.msgs, event.snapshot, { olderUnloaded: false, serverNow: event.server_now, now });
   if (event.status !== 'active') {
     // A finished run's snapshot: only this run's own "live" is cleared, so the
     // catch-up of an older stream cannot end a newer one. (A child has one
@@ -84,8 +84,8 @@ export function applyChildSync(t: ChildTranscript, event: Sync, now = Date.now()
   return { ...t, msgs, live };
 }
 
-export function applyChildEvent(t: ChildTranscript, event: StreamEvent): ChildTranscript {
-  const msgs = applyEventToMsgs(t.msgs, event.event);
+export function applyChildEvent(t: ChildTranscript, event: StreamEvent, now = Date.now()): ChildTranscript {
+  const msgs = applyEventToMsgs(t.msgs, event.event, now);
   let live = t.live;
   if (live?.streamId === event.stream_id) {
     const promptStats = foldPromptStats(live.promptStats, event.event);

@@ -280,8 +280,13 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
       return (
         `${where}. ${capitalize(dir)} is a clone of the GitHub repository ${workspace.repo}, ` +
         `checked out on branch ${workspace.branch}, which was created from ${workspace.baseBranch}. ` +
-        "Commit your work with clear messages as you go. Do not push, create other branches, or open " +
-        "pull requests — the user does that from the interface."
+        "Change files in place with fs_edit rather than rewriting them whole, and commit with clear " +
+        "messages as you go. `git` and `gh` reach GitHub through Loxaic, which holds the user's " +
+        "credentials, so neither needs logging in: read issues and pull requests with `gh issue view`, " +
+        `\`gh pr view\` or \`gh api\`, push with \`git push origin ${workspace.branch}\`, and open the ` +
+        `pull request with \`gh pr create --base ${workspace.baseBranch}\`. Only ${workspace.branch} can be ` +
+        "pushed, the user is asked before anything is pushed or written to GitHub, and merging, closing " +
+        "or deleting anything is theirs to do."
       );
     case "local":
       return workspace.isolation === "container"

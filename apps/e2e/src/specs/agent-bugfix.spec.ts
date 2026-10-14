@@ -107,7 +107,7 @@ describe('a realistic bugfix task, from clone to pull request', () => {
     // Confirmed against the harness's own bare repository, the same
     // discipline agent-git-actions.spec.ts uses — polled because the push is
     // a real network round trip the UI gives no distinct completion signal for.
-    const gitDir = `${GIT_SERVER_DIR}/bugfix-app.git`;
+    const gitDir = `${GIT_SERVER_DIR}/e2e/bugfix-app.git`;
     const deadline = Date.now() + 30_000;
     let log = '';
     for (;;) {

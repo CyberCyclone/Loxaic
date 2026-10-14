@@ -188,8 +188,8 @@ async function walk(dir: string, base: string, depth: number, out: FileNode[]): 
  * mode is explicitly not isolation), so it is the approved directory that
  * gates opening one, not the shell's own reach afterwards.
  */
-export function openPipeTerminal(cwd: string): TerminalSession {
-  const child = spawn("bash", [], { cwd, stdio: ["pipe", "pipe", "pipe"] });
+export function openPipeTerminal(cwd: string, env?: Record<string, string>): TerminalSession {
+  const child = spawn("bash", [], { cwd, stdio: ["pipe", "pipe", "pipe"], ...(env ? { env: { ...process.env, ...env } } : {}) });
   const dataListeners: ((data: string) => void)[] = [];
   const closeListeners: (() => void)[] = [];
   // Pipe reads land wherever the kernel split them, so a multi-byte character
@@ -268,7 +268,7 @@ function makeHandle(
       return out;
     },
 
-    openTerminal: () => Promise.resolve(openPipeTerminal(workdir)),
+    openTerminal: (options?: { env?: Record<string, string> }) => Promise.resolve(openPipeTerminal(workdir, options?.env)),
 
     async isRunning() {
       try {

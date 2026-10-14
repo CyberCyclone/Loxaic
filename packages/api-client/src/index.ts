@@ -284,11 +284,17 @@ async function adminFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export interface InferenceSettings {
   /** null = follow the backend's own slot count. */
   maxConcurrentRuns: number | null;
-  envOverrides: { maxConcurrentRuns: boolean };
+  /** `permissionCheckTimeoutMs` is absent from a server that predates its pin. */
+  envOverrides: { maxConcurrentRuns: boolean; permissionCheckTimeoutMs?: boolean };
   /** What `maxConcurrentRuns` actually resolves to right now — the number null
    * stands for. Shown alongside the setting because the two routinely differ
    * and the resolved one is what an admin needs to see. */
   effectiveMaxConcurrentRuns: number;
+  /** The model auto mode's permission check runs on; null = the run's own.
+   * Absent from a server that predates the check. */
+  permissionCheckModel?: string | null;
+  /** How long a permission check may take before the command asks instead. */
+  permissionCheckTimeoutMs?: number;
 }
 
 export async function getInferenceSettings(): Promise<InferenceSettings> {
@@ -296,7 +302,7 @@ export async function getInferenceSettings(): Promise<InferenceSettings> {
 }
 
 export async function updateInferenceSettings(
-  patch: { maxConcurrentRuns: number | null },
+  patch: { maxConcurrentRuns?: number | null; permissionCheckModel?: string | null; permissionCheckTimeoutMs?: number },
 ): Promise<InferenceSettings> {
   return adminFetch("/v1/admin/settings/inference", {
     method: "PATCH",
@@ -495,6 +501,23 @@ export interface LocalRuntimeView {
   extraOptionsSkipped?: string[];
   /** Why extra options cannot be set right now, or null. */
   optionsUnavailable?: string | null;
+  /** How long the GPU driver lets one GPU job run before resetting the GPU
+   * (amdgpu on Linux, Vulkan runtime), or null where it cannot be read.
+   * Absent from an older server. */
+  gpuJobLimit?: GpuJobLimit | null;
+}
+
+/** amdgpu's `lockup_timeout` for compute jobs: `computeMs` null means no
+ * limit; `source` says whether an admin set it or it is the module default. */
+export interface GpuJobLimit {
+  driver: "amdgpu";
+  computeMs: number | null;
+  source: "set" | "default";
+  /** Short enough to cut a long prompt off: the server's call, the same one
+   * that decides whether a chat's "GPU stopped responding" blames it. */
+  short: boolean;
+  /** The `lockup_timeout` value that gives compute jobs a minute. */
+  suggestedLockupTimeout: string;
 }
 
 /** One option passed to llama.cpp as an admin typed it: `key = value` in the
@@ -1490,6 +1513,13 @@ export async function getConversation(id: string): Promise<Conversation> {
   return res.json() as Promise<Conversation>;
 }
 
+/** The agent's newest todo list, or null when it never wrote one. For a list
+ * the history loaded does not hold; see apps/mobile/hooks/useServerTodos.ts. */
+export async function getConversationTodos(id: string): Promise<import("@loxaic/types").Todo[] | null> {
+  const res = await authedFetch(`/v1/conversations/${id}/todos`);
+  return ((await res.json()) as { todos: import("@loxaic/types").Todo[] | null }).todos;
+}
+
 export async function getConversations(): Promise<Conversation[]> {
   const token = await getAuthToken();
   const res = await serverFetch(`${BASE_URL}/v1/conversations`, {
@@ -1962,10 +1992,6 @@ export interface McpCatalogEntry {
   description: string;
   transport: "stdio" | "http";
   secretKeys: { env: string; label: string }[];
-  /** Set when the server's credential comes from another connection rather
-   * than from secrets typed here. A server made from such an entry follows
-   * that connection: it cannot be added without it, or deleted while it lasts. */
-  credentials: "github-connection" | null;
   configured: boolean;
 }
 
@@ -2049,11 +2075,6 @@ export async function testMcpServer(id: string): Promise<McpTestResult> {
 }
 
 // ── GitHub connection ────────────────────────────────────
-/** Whether connecting GitHub also set up its MCP tools, and if not, why. */
-export type GithubMcpStatus =
-  | { ok: true; serverId: string; enabled: boolean }
-  | { ok: false; error: string };
-
 export interface GithubConnection {
   login: string;
   name: string | null;
@@ -2062,12 +2083,6 @@ export interface GithubConnection {
    * so null means "unknown", never "no access". */
   scopes: string | null;
   validatedAt: string;
-  /** Optional on purpose: a client outlives the server it points at (a desktop
-   * client against someone else's Host, an OTA update against an unchanged
-   * server), and a server older than the GitHub-tools change sends no `mcp` at
-   * all. Declaring it required made the compiler vouch for a field the wire
-   * need not carry, and the screen crashed on the deref. */
-  mcp?: GithubMcpStatus;
 }
 
 export interface GithubRepo {
@@ -2265,6 +2280,11 @@ export interface UserPrefs {
   /** The model `fixed` uses. Null when none was ever picked; kept when the
    * mode moves away from `fixed`. */
   subagentModel?: string | null;
+  /** **Read-only** — an old "allow always" for every bash command was retired
+   * for command rules, and the permissions screen should say so once. */
+  bashGrantRetired?: boolean;
+  /** Write-only: `true` dismisses the retired-grant notice. */
+  bashGrantNoticeSeen?: true;
 }
 
 export async function getPrefs(): Promise<UserPrefs> {
@@ -2279,6 +2299,42 @@ export async function updatePrefs(patch: Partial<UserPrefs>): Promise<UserPrefs>
       body: JSON.stringify(patch),
     })
   ).json() as Promise<UserPrefs>;
+}
+
+// ── Command rules (what bash may run without asking) ─────────
+/**
+ * One of a person's command rules: `allow` runs a matching command without
+ * asking, `ask` always asks, `deny` refuses it. A pattern is words with an
+ * optional trailing `*` for "any arguments" (`gh pr view *`).
+ */
+export interface CommandRule {
+  id: string;
+  pattern: string;
+  action: "allow" | "ask" | "deny";
+  /** `prompt`: "Allow always" on an approval; `settings`: added by hand. */
+  source: "prompt" | "settings";
+  createdAt: string;
+}
+
+/** A 404 means a server that predates command rules: no such list. */
+export async function getCommandRules(): Promise<CommandRule[]> {
+  const res = await authedFetch("/v1/prefs/command-rules");
+  return ((await res.json()) as { rules: CommandRule[] }).rules;
+}
+
+/** Throws `ApiError` with the server's reason for a pattern it refuses. */
+export async function addCommandRule(pattern: string, action: CommandRule["action"]): Promise<CommandRule[]> {
+  const res = await authedFetch("/v1/prefs/command-rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pattern, action }),
+  });
+  return ((await res.json()) as { rules: CommandRule[] }).rules;
+}
+
+export async function deleteCommandRule(id: string): Promise<CommandRule[]> {
+  const res = await authedFetch(`/v1/prefs/command-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
+  return ((await res.json()) as { rules: CommandRule[] }).rules;
 }
 
 // ── Stats ─────────────────────────────────────────────────
@@ -2413,6 +2469,8 @@ export type {
   SubAgentState,
   SubAgentModelMode,
   FileRestoreReport,
+  PermissionCheckNote,
+  ToolPermission,
 } from "@loxaic/types";
 import type { ServerMessage, StepsDecision, SubAgentLive } from "@loxaic/types";
 export {

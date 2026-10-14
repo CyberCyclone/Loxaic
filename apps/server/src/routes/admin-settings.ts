@@ -12,6 +12,7 @@ import {
   updateSandboxSettings,
 } from "../settings.ts";
 import { kickScheduler, resolveMaxConcurrent } from "../inference/scheduler.ts";
+import { assertModelResolvable, ModelRefError } from "../inference/providers.ts";
 
 /**
  * Server-level settings, admin-only.
@@ -34,6 +35,17 @@ export function adminSettingsRoutes(app: FastifyInstance) {
 
   app.patch("/v1/admin/settings/inference", async (request, reply) => {
     await requireAdmin(request, reply);
+    // A permission-check model that resolves nowhere would make every check
+    // fail and every auto-mode command ask, with nothing saying why.
+    const checkModel = (request.body as { permissionCheckModel?: unknown } | null)?.permissionCheckModel;
+    if (typeof checkModel === "string" && checkModel.trim() !== "") {
+      try {
+        await assertModelResolvable(checkModel.trim());
+      } catch (err) {
+        if (err instanceof ModelRefError) return reply.code(400).send({ error: err.message });
+        throw err;
+      }
+    }
     try {
       await updateInferenceSettings(request.body ?? {});
       // Persisting is not applying: the queue only re-checks its limit when a

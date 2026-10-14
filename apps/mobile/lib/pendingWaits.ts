@@ -1,4 +1,11 @@
-import type { CheckinReason, PermissionMode, StepsDecision, TimeoutBasis, WaitDeadlineFields } from '@loxaic/api-client';
+import type {
+  CheckinReason,
+  PermissionCheckNote,
+  PermissionMode,
+  StepsDecision,
+  TimeoutBasis,
+  WaitDeadlineFields,
+} from '@loxaic/api-client';
 
 /**
  * When a parked run stops waiting, on *this device's* clock.
@@ -39,6 +46,12 @@ export interface PendingApproval {
    * records. Both absent from a server that predates them. */
   mode?: PermissionMode;
   granterUserId?: string;
+  /** For `bash`: the command rules "Allow always" records, proposed by the
+   * server. Absent or empty: no rule says exactly this, and "Allow always" is
+   * not offered for it. */
+  rules?: string[];
+  /** Why an auto-mode command is asking (the permission check's answer). */
+  check?: PermissionCheckNote;
   /** The run that asked. The answer has to name it — see `approvalStreamId`. */
   streamId?: string;
 }
@@ -104,6 +117,8 @@ export function toPendingApproval(
     args: Record<string, unknown>;
     mode?: PermissionMode;
     granter_user_id?: string;
+    rules?: string[];
+    check?: PermissionCheckNote;
   },
   now: number,
   serverNow?: number,
@@ -117,6 +132,8 @@ export function toPendingApproval(
     ...(deadline ? { deadline } : {}),
     ...(src.mode ? { mode: src.mode } : {}),
     ...(src.granter_user_id ? { granterUserId: src.granter_user_id } : {}),
+    ...(src.rules && src.rules.length > 0 ? { rules: src.rules } : {}),
+    ...(src.check ? { check: src.check } : {}),
     ...(streamId ? { streamId } : {}),
   };
 }

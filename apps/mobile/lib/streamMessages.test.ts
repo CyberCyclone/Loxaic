@@ -311,6 +311,18 @@ describe('a snapshot folded into a thread loaded a page at a time (#213)', () =>
     const msgs = applySnapshotToMsgs(withBubble, snap({ id: 'a1', lamport: 100, text: 'old' }));
     expect(msgs.map((m) => m.id)).toEqual(['a1', 'u2', 'a2', 'lm1']);
   });
+
+  it('gives the sent bubble its position when its message.start arrives', () => {
+    // The bubble was renamed to its real id first (promotePendingUserMsg); the
+    // event's lamport is what lets history be merged around it.
+    const bubble: Message = { id: 'u1', role: 'user', text: 'hi' };
+    const start = { kind: 'message.start', message_id: 'u1', author_type: 'user', parent_id: null, text: 'hi' } as const;
+    expect(applyEventToMsgs([bubble], { ...start, lamport: 900 })).toEqual([{ ...bubble, lamport: 900 }]);
+    const placed: Message = { ...bubble, lamport: 5 };
+    expect(applyEventToMsgs([placed], { ...start, lamport: 900 })[0].lamport).toBe(5);
+    const unplaced = [bubble];
+    expect(applyEventToMsgs(unplaced, start)).toBe(unplaced);
+  });
 });
 
 describe('an instructions change on a user message', () => {
@@ -345,5 +357,40 @@ describe('an instructions change on a user message', () => {
     } as unknown as StreamSnapshot;
     const [m] = applySnapshotToMsgs([], snapshot);
     expect(m.instructionsUpdate).toEqual({ path: 'AGENTS.md', summary: 'AGENTS.md was removed' });
+  });
+});
+
+describe('why a tool call ran without asking survives every path', () => {
+  const permission = { by: 'rule' as const, rule: 'npm test' };
+
+  it('from the live result', () => {
+    const msgs: Message[] = [{ id: 'a1', role: 'assistant', text: '', tools: [{ tool: 'bash', summary: 'npm test', result: '', callId: 'c1' }] }];
+    const [m] = applyEventToMsgs(msgs, { kind: 'tool.result', message_id: 'a1', call_id: 'c1', tool: 'bash', output: 'ok', ok: true, permission });
+    expect(m.tools?.[0].permission).toEqual(permission);
+  });
+
+  it('from history', () => {
+    const msgs = reconstructMessages([
+      row({ id: 'a1', content: [{ kind: 'tool_call', call_id: 'c1', tool: 'bash', args: { command: 'npm test' } }] }),
+      row({ id: 't1', authorType: 'tool', lamport: 2, content: [{ kind: 'tool_result', call_id: 'c1', output: 'ok', ok: true, permission }] }),
+    ]);
+    expect(msgs.find((m) => m.id === 'a1')?.tools?.[0].permission).toEqual(permission);
+  });
+
+  it('from a snapshot', () => {
+    const [m] = applySnapshotToMsgs([], {
+      messages: [
+        {
+          message_id: 'a1',
+          author_type: 'assistant',
+          parent_id: null,
+          text: '',
+          thinking: '',
+          tool_calls: [{ call_id: 'c1', tool: 'bash', args: { command: 'npm test' }, output: 'ok', ok: true, permission }],
+          status: 'complete',
+        },
+      ],
+    } as unknown as StreamSnapshot);
+    expect(m.tools?.[0].permission).toEqual(permission);
   });
 });

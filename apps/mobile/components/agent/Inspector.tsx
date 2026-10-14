@@ -26,6 +26,8 @@ import { describeRetention, formatDeadline } from '@/lib/retention';
 import { describeProjectInstructions } from '@/lib/projectInstructions';
 import type { GitStatus, ProjectInstructionsSummary, SandboxRetention, SandboxRow } from '@loxaic/api-client';
 import type { Todo } from '@loxaic/api-client';
+import type { TodoView } from '@/lib/todos';
+import { useServerReachable } from '@/lib/connection';
 
 /** What the Inspector's Git section needs — computed by the caller
  * (`useGitPanel`), same pattern as `McpOverrideControls` below. `disabled`
@@ -304,7 +306,8 @@ function GitSection({ git }: { git: GitPanelControls }) {
 }
 
 interface InspectorBodyProps {
-  todos: Todo[];
+  todos: TodoView;
+  onRetryTodos?: () => void;
   changedFiles: ChangedFile[];
   context: ContextView | null;
   mcp?: McpSwitches | null;
@@ -314,35 +317,63 @@ interface InspectorBodyProps {
   busy?: boolean;
 }
 
-function InspectorBody({ todos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorBodyProps) {
+/**
+ * The agent's list. "Couldn't load" is its own state, never "No todos yet":
+ * the list can be on a history page not loaded, and a server that could not
+ * be asked has not said there is none (lib/todos.ts).
+ */
+function TodoSection({ todos, onRetry }: { todos: TodoView; onRetry?: () => void }) {
+  const reachable = useServerReachable();
+  return (
+    <VStack space="xs">
+      <Text size="sm" className="font-semibold text-foreground">
+        Todo List
+      </Text>
+      {todos.status === 'loading' ? (
+        <Text testID="agent.inspector.todos.loading" size="xs" className="text-muted-foreground">
+          Loading…
+        </Text>
+      ) : todos.status === 'failed' ? (
+        <HStack space="sm" className="items-center">
+          <Text testID="agent.inspector.todos.failed" size="xs" className="text-muted-foreground">
+            Couldn't load the todo list.
+          </Text>
+          {onRetry && (
+            <Button testID="agent.inspector.todos.retry" size="sm" variant="link" onPress={onRetry} isDisabled={!reachable}>
+              <ButtonText>Try again</ButtonText>
+            </Button>
+          )}
+        </HStack>
+      ) : todos.todos.length === 0 ? (
+        <Text testID="agent.inspector.todos.empty" size="xs" className="text-muted-foreground">
+          No todos yet
+        </Text>
+      ) : (
+        todos.todos.map((todo, i) => (
+          <HStack key={todo.id ?? i} space="xs" className="items-center">
+            <Icon as={TODO_ICON[todo.status]} size="xs" className={TODO_TINT[todo.status]} />
+            <Text
+              testID={`agent.inspector.todo.${String(i)}`}
+              size="sm"
+              className={todo.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'}
+            >
+              {todo.text}
+            </Text>
+          </HStack>
+        ))
+      )}
+    </VStack>
+  );
+}
+
+function InspectorBody({ todos, onRetryTodos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorBodyProps) {
   return (
     <VStack space="lg">
       {workspace && <WorkspaceSection workspace={workspace} />}
       {workspace && <InstructionsSection workspace={workspace} />}
       {git && <GitSection git={git} />}
 
-      <VStack space="xs">
-        <Text size="sm" className="font-semibold text-foreground">
-          Todo List
-        </Text>
-        {todos.length === 0 ? (
-          <Text size="xs" className="text-muted-foreground">
-            No todos yet
-          </Text>
-        ) : (
-          todos.map((todo, i) => (
-            <HStack key={todo.id ?? i} space="xs" className="items-center">
-              <Icon as={TODO_ICON[todo.status]} size="xs" className={TODO_TINT[todo.status]} />
-              <Text
-                size="sm"
-                className={todo.status === 'completed' ? 'text-muted-foreground line-through' : 'text-foreground'}
-              >
-                {todo.text}
-              </Text>
-            </HStack>
-          ))
-        )}
-      </VStack>
+      <TodoSection todos={todos} onRetry={onRetryTodos} />
 
       <VStack space="xs">
         <Text testID="agent.inspector.changedFiles.count" size="sm" className="font-semibold text-foreground">
@@ -412,7 +443,9 @@ interface InspectorProps {
   open: boolean;
   onClose: () => void;
   wide: boolean;
-  todos: Todo[];
+  todos: TodoView;
+  /** Asks the server again for a list it could not be asked for. */
+  onRetryTodos?: () => void;
   changedFiles: ChangedFile[];
   context: ContextView | null;
   mcp?: McpSwitches | null;
@@ -425,7 +458,7 @@ interface InspectorProps {
   busy?: boolean;
 }
 
-export function Inspector({ open, onClose, wide, todos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorProps) {
+export function Inspector({ open, onClose, wide, todos, onRetryTodos, changedFiles, context, mcp, workspace, git, onCompact, busy }: InspectorProps) {
   if (!open) return null;
 
   if (wide) {
@@ -446,7 +479,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
             each section shrink below its wrapped-text height instead of
             overflowing, so sections silently render on top of each other. */}
         <ScrollView style={{ flex: 1, minHeight: 0 }} contentContainerStyle={{ padding: 12 }}>
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} onRetryTodos={onRetryTodos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
         </ScrollView>
       </Box>
     );
@@ -460,7 +493,7 @@ export function Inspector({ open, onClose, wide, todos, changedFiles, context, m
           <ActionsheetDragIndicator />
         </ActionsheetDragIndicatorWrapper>
         <ScrollView style={{ width: '100%', flex: 1, minHeight: 0 }} contentContainerStyle={{ width: '100%', padding: 12 }}>
-          <InspectorBody todos={todos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
+          <InspectorBody todos={todos} onRetryTodos={onRetryTodos} changedFiles={changedFiles} context={context} mcp={mcp} workspace={workspace} git={git} onCompact={onCompact} busy={busy} />
         </ScrollView>
       </ActionsheetContent>
     </Actionsheet>

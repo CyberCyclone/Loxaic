@@ -23,8 +23,10 @@ describe('app updates', () => {
     await signUp(uniqueCreds());
     await openSettings();
     // Proof the modal is actually open — without this, "the row is absent"
-    // would also pass on a settings screen that never rendered at all.
-    await waitForVisible('settings.nav.sandbox');
+    // would also pass on a settings screen that never rendered at all. The
+    // name field, at the top: a row further down can be below the fold on a
+    // phone.
+    await waitForVisible('settings.name');
   });
 
   it('offers no update controls where the app cannot update itself', async function skipOffWeb() {

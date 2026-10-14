@@ -54,6 +54,22 @@ describe("why a model failed to load", () => {
 
   it("says nothing it cannot back: no spawn seen, or nothing that reads as an error", () => {
     expect(explainModelLoadFailure(PHEONIX, "someone/else@Q4_K_M")).toBeNull();
+    // Ours exited and the router gave its port to another model, whose lines
+    // are then not ours however they read.
+    const reused = [
+      `spawning server instance with name=${NAME} on port 51234`,
+      "[51234] 0.1 I all is well",
+      "spawning server instance with name=someone/else@Q4_K_M on port 51234",
+      "[51234] 0.2 E srv  load: failed to open file",
+    ];
+    expect(explainModelLoadFailure(reused, NAME)).toBeNull();
+    // Another model starting on another port does not end ours.
+    const beside = [
+      `spawning server instance with name=${NAME} on port 51234`,
+      "spawning server instance with name=someone/else@Q4_K_M on port 51300",
+      "[51234] 0.2 E srv  load: failed to open file",
+    ];
+    expect(explainModelLoadFailure(beside, NAME)).toBe("load: failed to open file");
     expect(explainModelLoadFailure([`spawning server instance with name=${NAME} on port 51234`, "[51234] 0.1 I all is well"], NAME)).toBeNull();
   });
 
@@ -69,6 +85,16 @@ describe("why a model failed to load", () => {
     expect(loadFailureMessage(row({ loadSettings: { mtp: true }, mtpHead: head }), null)).toContain(
       "could not be loaded: llama.cpp stopped while loading it. It loads with multi-token prediction on, drafting with mtp-Qwen3.8-Flash-Next-Q8_0.gguf,",
     );
+  });
+
+  it("blames the GPU, not MTP or the settings, when the device was lost while loading", () => {
+    const text = loadFailureMessage(
+      row({ loadSettings: { mtp: true }, meta: { mtp: { layers: 1 } } }),
+      "terminate called after throwing an instance of 'vk::DeviceLostError'",
+    );
+    expect(text).toContain("the GPU stopped responding while it loaded");
+    expect(text).not.toContain("multi-token");
+    expect(text).not.toContain("load settings");
   });
 
   it("does not blame MTP when the load did not use it", () => {

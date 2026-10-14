@@ -32,6 +32,7 @@ import { prependOlder, withNewestPage, type HistoryPaging } from '@/lib/historyP
 import { applyRewound, rewindClearsLiveRun, restoreReportLine } from '@/lib/rewind';
 import { useOlderMessages } from './useOlderMessages';
 import { applyEventToMsgs, applySnapshotToMsgs, isServerConvId, reconstructMessages } from '@/lib/streamMessages';
+import { todosInMessages } from '@/lib/todos';
 import { approvalStreamId } from '@/lib/pendingWaits';
 import {
   runLevelAfterEnd,
@@ -171,6 +172,9 @@ export function useAgentSession(
     setPendingWorkspaceState(ws);
   }, []);
   const [streamingByConv, setStreamingByConvState] = useState<Partial<Record<string, StreamState>>>({});
+  // Rewinds seen per conversation: a rewind can remove the loaded todo list,
+  // and the screen asks the server again for what is left (useServerTodos).
+  const [rewindsByConv, setRewindsByConv] = useState<Partial<Record<string, number>>>({});
   const { showToast } = useToastHelper();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -267,6 +271,15 @@ export function useAgentSession(
   // older one left it permanently empty — nothing else backfills it
   // (stream.subscribe replays live runs, not cold history).
   const loadedConvIdsRef = useRef<Set<string>>(new Set());
+  // Runs whose newest page has arrived, and runs whose fetch has finished
+  // either way. Until the page is in, a thread may hold only what a reconnect
+  // replayed — a planning run without the answer to its plan — so the plan
+  // panel opens by itself only once it is (useReview's `loaded`), and the bar
+  // waits for the fetch to finish (`settled`). A failed fetch therefore never
+  // opens the panel on a plan it cannot judge; the bar still offers it, which
+  // is a tap on a thread the person can read.
+  const [historyLoadedIds, setHistoryLoadedIds] = useState<ReadonlySet<string>>(new Set());
+  const [historySettledIds, setHistorySettledIds] = useState<ReadonlySet<string>>(new Set());
 
   // Which conversations this socket has subscribed to, and so is told of new
   // runs on (lib/conversationWatch.ts) — an automatic compaction the server
@@ -292,9 +305,10 @@ export function useAgentSession(
     if (!id || !isServerConvId(id)) return;
     // What its runs spawned before this session — once per thread.
     loadSubAgents(id);
-    // Watched only after the history fetch settles: a snapshot landing first
-    // would be followed by the page, which is applied in front of it anyway,
-    // but the chat hook's order is kept so the two cannot drift.
+    // Watched only after the history fetch settles, as the chat hook does. A
+    // snapshot can still land first (a socket opening now resubscribes the
+    // active thread), and the page is then merged in by position
+    // (withNewestPage), so an older run's snapshot stays above it.
     if (loadedConvIdsRef.current.has(id)) {
       watchConversation(id);
       return;
@@ -303,14 +317,24 @@ export function useAgentSession(
     getMessages(id)
       .then((page) => {
         const msgs = reconstructMessages(page.messages);
-        if (msgs.length === 0) return;
-        // Always applied — in front of a run already streaming, never instead
-        // of it — so the cursor is always true (see withNewestPage).
-        recordPaging(id, page);
-        setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
+        if (msgs.length > 0) {
+          // Always applied — merged around a run already streaming, never
+          // instead of it — so the cursor is always true (see withNewestPage).
+          recordPaging(id, page);
+          setRuns((prev) => prev.map((r) => (r.id === id ? { ...r, msgs: withNewestPage(r.msgs, msgs, false) } : r)));
+        }
+        setHistoryLoadedIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
       })
-      .catch(() => undefined)
-      .finally(() => { watchConversation(id); });
+      .catch(() => {
+        // Fetched again on the next select, as the chat hook does. Nothing else
+        // would ever fetch this page, and without it the thread can hold only
+        // what the socket replayed (found in review).
+        loadedConvIdsRef.current.delete(id);
+      })
+      .finally(() => {
+        setHistorySettledIds((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
+        watchConversation(id);
+      });
   }, [recordPaging, watchConversation, loadSubAgents]);
 
   const updateRunMsgs = useCallback((convId: string, updater: (msgs: Message[]) => Message[]) => {
@@ -434,6 +458,12 @@ export function useAgentSession(
     };
 
     const onEvent = (event: ServerMessage) => {
+      // When this message arrived, read once, before anything else. Every fold
+      // below that times a message is handed this rather than reading the
+      // clock itself: those folds run inside state updaters, which React may
+      // defer to a render or run twice, and a backgrounded tab's clamped timers
+      // can put that render a second later. Same rule as `useStoredState`.
+      const arrivedAt = Date.now();
       if (event.type === 'turn.started') {
         const realId = event.conversation_id;
         // A retry that put files back says what it did.
@@ -478,14 +508,14 @@ export function useAgentSession(
         // A sub-agent's own stream: its transcript, not a run's. Before
         // anything below, all of which is about a thread.
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamSync(event);
+          onSubAgentStreamSync(event, arrivedAt);
           return;
         }
-        onSubAgentSync(convId, event.snapshot, event.server_now);
+        onSubAgentSync(convId, event.snapshot, event.server_now, arrivedAt);
         const userMsg = event.snapshot.messages.find((m) => m.author_type === 'user');
         if (userMsg) promotePendingUserMsg(convId, userMsg.message_id);
         updateRunMsgs(convId, (msgs) =>
-          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId) }),
+          applySnapshotToMsgs(msgs, event.snapshot, { olderUnloaded: hasOlderHistory(convId), serverNow: event.server_now, now: arrivedAt }),
         );
         applyRunLevelState(convId, event.stream_id, event.snapshot, event.status, event.server_now);
         const stageSnapshot = event.snapshot.context_stage;
@@ -539,20 +569,20 @@ export function useAgentSession(
         // Synchronously, before the next event in this same tick is handled.
         cursorsRef.current[event.stream_id] = event.seq;
         if (isSubAgentConv(convId)) {
-          onSubAgentStreamEvent(event);
+          onSubAgentStreamEvent(event, arrivedAt);
           return;
         }
         // A child's start, progress or end, on this run's stream. It says
         // nothing about where this run is — it must not end "Queued", clear a
         // prompt line or touch the thread's messages — so it stops here.
         if (isSubAgentEvent(event.event)) {
-          onSubAgentEvent(convId, event.event);
+          onSubAgentEvent(convId, event.event, arrivedAt);
           return;
         }
         if (event.event.kind === 'message.start' && event.event.author_type === 'user') {
           promotePendingUserMsg(convId, event.event.message_id);
         }
-        updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event));
+        updateRunMsgs(convId, (msgs) => applyEventToMsgs(msgs, event.event, arrivedAt));
         setStreamingByConv((prev) => {
           const current = prev[convId];
           if (current?.streamId !== event.stream_id) return prev;
@@ -645,6 +675,7 @@ export function useAgentSession(
         });
         forgetSpawnedBy(convId, event.removed_ids);
         updateRunMsgs(convId, (msgs) => applyRewound(msgs, event));
+        setRewindsByConv((prev) => ({ ...prev, [convId]: (prev[convId] ?? 0) + 1 }));
         if (forgetRemovedCursor(convId, event.removed_ids)) {
           loadedConvIdsRef.current.delete(convId);
           if (activeIdRef.current === convId) setActiveId(convId);
@@ -1083,8 +1114,9 @@ export function useAgentSession(
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
+  const todos = useMemo(() => (activeRun ? todosInMessages(activeRun.msgs) : null), [activeRun]);
   const activeStream = activeId ? streamingByConv[activeId] : undefined;
-  const { runState, pendingApproval, pendingCheckin, iteration, queuePosition, todos } = runLevelOf(runLevels, activeId);
+  const { runState, pendingApproval, pendingCheckin, iteration, queuePosition } = runLevelOf(runLevels, activeId);
   // Overlaid on whatever the server last said, rather than replacing it: the
   // run genuinely is still running until its stream ends, and the events that
   // keep arriving until then would otherwise overwrite this the moment the
@@ -1108,6 +1140,11 @@ export function useAgentSession(
     activeId,
     promotion,
     activeRun,
+    /** Whether the open run's newest page of history has been fetched (or
+     * failed to be). A run with no server id yet has none to wait for. */
+    historySettled: !activeId || !isServerConvId(activeId) || historySettledIds.has(activeId),
+    /** Whether that page actually arrived — false after a failed fetch. */
+    historyLoaded: !activeId || !isServerConvId(activeId) || historyLoadedIds.has(activeId),
     selectRun,
     mode,
     runState: effectiveRunState,
@@ -1124,7 +1161,14 @@ export function useAgentSession(
     queuePosition,
     pendingWorkspace,
     setPendingWorkspace,
+    // The newest list in the loaded messages (lib/todos.ts); the screen falls
+    // back to the server's when none is loaded and there is history to load.
     todos,
+    /** Whether the open thread's whole history is loaded. False when it was
+     * never fetched (offline, optimistic): nothing says there is no more. */
+    historyComplete: activePaging ? activePaging.before === null : false,
+    /** Rewinds seen in the open thread; see `rewindsByConv`. */
+    rewinds: activeId ? (rewindsByConv[activeId] ?? 0) : 0,
     changedFiles,
     handleSend,
     handleRetry,

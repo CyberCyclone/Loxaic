@@ -181,6 +181,7 @@ export class StreamBroker {
           m.author_type = event.author_type;
           m.parent_id = event.parent_id;
           if (event.lamport !== undefined) m.lamport = event.lamport;
+          if (event.started_at !== undefined) m.started_at = event.started_at;
           if (event.model) m.model = event.model;
           if (event.text) m.text = event.text;
           if (event.attachments?.length) m.attachments = event.attachments;
@@ -287,6 +288,7 @@ export class StreamBroker {
             call.output = event.output;
             call.ok = event.ok;
             call.diff = event.diff;
+            if (event.permission) call.permission = event.permission;
           }
           if (pendingApproval?.call_id === event.call_id) pendingApproval = undefined;
           break;

@@ -57,11 +57,9 @@ interface McpServerModalProps {
   onClose: () => void;
   onSave: (input: McpServerInput) => Promise<void>;
   editing?: McpServer | null;
-  /** Editing a server that follows another connection: only its name is its own. */
-  linked?: boolean;
 }
 
-export function McpServerModal({ open, onClose, onSave, editing, linked = false }: McpServerModalProps) {
+export function McpServerModal({ open, onClose, onSave, editing }: McpServerModalProps) {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
@@ -104,9 +102,6 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
   };
 
   const buildInput = (allowPrivateNetwork?: boolean): McpServerInput | null => {
-    // The server refuses everything else for a linked server, so send only
-    // what can change — the default below always sends env when editing.
-    if (linked) return { name: name.trim() };
     const env = parseKeyValues(envText);
     if (env.error) {
       setError(`Environment: ${env.error}`);
@@ -258,13 +253,6 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
               </VStack>
             )}
 
-            {linked && (
-              <Text testID="mcp.serverModal.linkedNote" size="xs" className="text-muted-foreground">
-                This server uses your GitHub connection for its address and token. Change the token
-                under Settings → GitHub.
-              </Text>
-            )}
-
             {!builtin && transport === 'stdio' && (
               <>
                 <VStack space="xs">
@@ -339,7 +327,7 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
               </>
             )}
 
-            {!linked && (!builtin || transport === 'stdio') && (
+            {(!builtin || transport === 'stdio') && (
               <VStack space="xs">
                 <Text size="xs" className="text-muted-foreground">
                   Environment (KEY=value, one per line)
@@ -359,43 +347,41 @@ export function McpServerModal({ open, onClose, onSave, editing, linked = false 
               </VStack>
             )}
 
-            {!linked && (
-              <VStack space="xs">
-                {/* Not masked, and the label must not imply otherwise. React
-                    Native does not support `secureTextEntry` together with
-                    `multiline`, and the two platforms break it differently: on
-                    web `multiline` renders a <textarea>, which has no masked
-                    form at all (`type="password"` is an <input> feature), so the
-                    value is shown in clear; on native the conflict can drop
-                    `multiline` instead, and a second KEY=value line then cannot
-                    be typed. Keeping the textarea keeps multi-secret entry
-                    working, so the honest fix is to stop claiming masking — the
-                    encryption and the never-read-back half are both still true.
-                    A masked field here would have to be one single-line Input
-                    per key, as McpCatalogCard does for catalog entries. */}
+            <VStack space="xs">
+              {/* Not masked, and the label must not imply otherwise. React
+                  Native does not support `secureTextEntry` together with
+                  `multiline`, and the two platforms break it differently: on
+                  web `multiline` renders a <textarea>, which has no masked
+                  form at all (`type="password"` is an <input> feature), so the
+                  value is shown in clear; on native the conflict can drop
+                  `multiline` instead, and a second KEY=value line then cannot
+                  be typed. Keeping the textarea keeps multi-secret entry
+                  working, so the honest fix is to stop claiming masking — the
+                  encryption and the never-read-back half are both still true.
+                  A masked field here would have to be one single-line Input
+                  per key, as McpCatalogCard does for catalog entries. */}
+              <Text size="xs" className="text-muted-foreground">
+                Secrets (KEY=value, one per line) — encrypted at rest and never shown again once
+                saved, but visible here as you type
+              </Text>
+              {editing && editing.secretKeys.length > 0 && (
                 <Text size="xs" className="text-muted-foreground">
-                  Secrets (KEY=value, one per line) — encrypted at rest and never shown again once
-                  saved, but visible here as you type
+                  Stored: {editing.secretKeys.map((k) => `${k} ••••`).join(', ')} — re-enter a key to replace it
                 </Text>
-                {editing && editing.secretKeys.length > 0 && (
-                  <Text size="xs" className="text-muted-foreground">
-                    Stored: {editing.secretKeys.map((k) => `${k} ••••`).join(', ')} — re-enter a key to replace it
-                  </Text>
-                )}
-                <Textarea size="md" className="border-border bg-card">
-                  <TextareaInput
-                    testID="mcp.serverModal.secrets"
-                    value={secretsText}
-                    onChangeText={setSecretsText}
-                    placeholder={'API_KEY=sk-...'}
-                    multiline
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    style={{ height: 56, fontFamily: 'ui-monospace' }}
-                  />
-                </Textarea>
-              </VStack>
-            )}
+              )}
+              <Textarea size="md" className="border-border bg-card">
+                <TextareaInput
+                  testID="mcp.serverModal.secrets"
+                  value={secretsText}
+                  onChangeText={setSecretsText}
+                  placeholder={'API_KEY=sk-...'}
+                  multiline
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  style={{ height: 56, fontFamily: 'ui-monospace' }}
+                />
+              </Textarea>
+            </VStack>
 
             {error && (
               <Text size="xs" className="text-destructive">

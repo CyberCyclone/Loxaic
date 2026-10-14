@@ -102,6 +102,10 @@ export interface MockHfRepos {
    * fake router splits its graph 17 ways while GPU layers are automatic (a
    * model file named "Table…Splitty") — Qwen3.8-Flash-Next on Pheonix. */
   table: string;
+  /** Downloadable; the fake router loses the GPU during its first load (a
+   * model file named "LostAtLoad"), as a fresh child after an amdgpu reset
+   * can, and loads it the next time. */
+  lostAtLoad: string;
 }
 
 export interface MockHf {
@@ -149,6 +153,7 @@ export async function startMockHf(): Promise<MockHf> {
     mtpSidecar: `e2e-org/Sidecar-${run}-GGUF`,
     mtpCrashy: `e2e-org/Crashy-${run}-GGUF`,
     table: `e2e-org/Tabled-${run}-GGUF`,
+    lostAtLoad: `e2e-org/LostAtLoad-${run}-GGUF`,
   };
   const sha = createHash('sha1').update(run).digest('hex');
   // 12 MB served at ~1.5 MB/s: about eight seconds, long enough to see
@@ -167,6 +172,7 @@ export async function startMockHf(): Promise<MockHf> {
   const otherArchHead = buildGguf(256 * 1024, { mtp: true, arch: 'qwen35' });
   const crashyBody = buildGguf(2 * 1024 * 1024, { mtp: true, arch: 'qwen4exp' });
   const tableBody = buildGguf(3 * 1024 * 1024, { table: true, arch: 'qwen4exp' });
+  const lostAtLoadBody = buildGguf(2 * 1024 * 1024);
   const mtpHeads = {
     good: 'MTP/mtp-Sidecar-Q8_0.gguf',
     shared: 'MTP/mtp-Sidecar-shared-Q8_0.gguf',
@@ -202,6 +208,7 @@ export async function startMockHf(): Promise<MockHf> {
     ],
     [repos.mtpCrashy]: [{ path: 'Crashy-Q4_K_M.gguf', size: crashyBody.length, sha: hash(crashyBody), body: crashyBody }],
     [repos.table]: [{ path: 'Table-Splitty-Q4_K_M.gguf', size: tableBody.length, sha: hash(tableBody), body: tableBody }],
+    [repos.lostAtLoad]: [{ path: 'LostAtLoad-Q4_K_M.gguf', size: lostAtLoadBody.length, sha: hash(lostAtLoadBody), body: lostAtLoadBody }],
   };
   const summaries = [
     {
@@ -234,6 +241,10 @@ export async function startMockHf(): Promise<MockHf> {
     {
       id: repos.table, author: 'e2e-org', downloads: 90, likes: 1, pipeline_tag: 'text-generation',
       cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'qwen4exp', context_length: 32768 },
+    },
+    {
+      id: repos.lostAtLoad, author: 'e2e-org', downloads: 80, likes: 1, pipeline_tag: 'text-generation',
+      cardData: { license: 'apache-2.0' }, gguf: { total: 1_000_000_000, architecture: 'llama', context_length: 32768 },
     },
     // Not a chat model: the server must drop it from results.
     { id: `e2e-org/Image-${run}-GGUF`, author: 'e2e-org', pipeline_tag: 'text-to-image' },

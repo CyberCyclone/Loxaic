@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { db, eq } from "@loxaic/db";
 import { userPrefs } from "@loxaic/db/schema";
-import { isToolName } from "@loxaic/agent";
+import { isAllowlistableTool } from "@loxaic/agent";
 import {
   DEFAULT_CHECKIN_AUTO_CONTINUES,
   DEFAULT_LOOP_SENSITIVITY,
@@ -26,6 +26,13 @@ import {
   MIN_MAX_ITERATIONS,
 } from "../streams/runs/engine.ts";
 import { clampAutoContinues, clampWaitTimeoutMs, serverDefaultTimeoutMs } from "../streams/runs/timeouts.ts";
+import {
+  addCommandRules,
+  CommandRuleError,
+  deleteCommandRule,
+  isRuleAction,
+  loadCommandRules,
+} from "../permissions/store.ts";
 
 /** What the API exposes. Builtin tools only for the allowlist; MCP tools have
  * their own per-server toolPolicies allowlist (PATCH /v1/mcp/servers/:id). */
@@ -40,10 +47,15 @@ function toApi(row: {
   loopSensitivity?: string;
   subagentModelMode?: string;
   subagentModel?: string | null;
+  bashGrantRetiredAt?: Date | null;
 }) {
-  const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist.filter(isToolName) : [];
+  // Not `bash`: its grants are command rules (GET /v1/prefs/command-rules).
+  const allowlist = Array.isArray(row.toolAllowlist) ? row.toolAllowlist.filter(isAllowlistableTool) : [];
   return {
     toolAllowlist: allowlist,
+    // An old "allow always" for every bash command was retired for command
+    // rules (migration 0043); the permissions screen says so until dismissed.
+    bashGrantRetired: row.bashGrantRetiredAt != null,
     // Clamped with the *same* function the engine enforces with, not a
     // parallel one. `?? DEFAULT` covers a missing value but not an
     // out-of-range one, and the "plain data" argument cuts both ways: if the
@@ -130,6 +142,7 @@ export function prefsRoutes(app: FastifyInstance) {
       serverDefaults?: unknown;
       subagentModelMode?: unknown;
       subagentModel?: unknown;
+      bashGrantNoticeSeen?: unknown;
     };
 
     // Named rather than ignored: silently dropping it would leave a client
@@ -160,13 +173,30 @@ export function prefsRoutes(app: FastifyInstance) {
       loopSensitivity?: LoopSensitivity;
       subagentModelMode?: SubAgentModelMode;
       subagentModel?: string | null;
+      bashGrantRetiredAt?: null;
     } = {};
     if (body.toolAllowlist !== undefined) {
-      if (!Array.isArray(body.toolAllowlist) || !body.toolAllowlist.every(isToolName)) {
+      if (!Array.isArray(body.toolAllowlist)) {
         reply.code(400);
         return { error: "toolAllowlist must be an array of builtin tool names" };
       }
-      patch.toolAllowlist = body.toolAllowlist;
+      // `bash` is dropped rather than refused: an older client's "Allow
+      // always" sends the whole list with it added, and failing that write
+      // would lose the rest. Its grants are command rules now, recorded by
+      // the server from the approval itself.
+      const list: unknown[] = body.toolAllowlist.filter((name) => name !== "bash");
+      if (!list.every(isAllowlistableTool)) {
+        reply.code(400);
+        return { error: "toolAllowlist must be an array of builtin tool names" };
+      }
+      patch.toolAllowlist = list;
+    }
+    if (body.bashGrantNoticeSeen !== undefined) {
+      if (body.bashGrantNoticeSeen !== true) {
+        reply.code(400);
+        return { error: "bashGrantNoticeSeen can only be true" };
+      }
+      patch.bashGrantRetiredAt = null;
     }
     if (body.maxIterations !== undefined) {
       const n = body.maxIterations;
@@ -290,4 +320,50 @@ export function prefsRoutes(app: FastifyInstance) {
       .returning();
     return toApi(row);
   });
+
+  // ── Command rules (permissions/bash/rules.ts) ──────────────
+  // One row per rule, so each write is one statement: adding a rule never
+  // overwrites one another device added meanwhile.
+
+  app.get("/v1/prefs/command-rules", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    return { rules: (await loadCommandRules(userId)).map(ruleToApi) };
+  });
+
+  app.post("/v1/prefs/command-rules", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const body = (request.body ?? {}) as { pattern?: unknown; action?: unknown };
+    if (typeof body.pattern !== "string" || !isRuleAction(body.action)) {
+      reply.code(400);
+      return { error: "pattern must be a string and action one of allow, ask, deny" };
+    }
+    try {
+      await addCommandRules(userId, [body.pattern], body.action, "settings");
+    } catch (err) {
+      if (!(err instanceof CommandRuleError)) throw err;
+      reply.code(400);
+      return { error: err.message };
+    }
+    return { rules: (await loadCommandRules(userId)).map(ruleToApi) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/prefs/command-rules/:id", async (request, reply) => {
+    const userId = await authenticate(request, reply);
+    const ok = /^[0-9a-f-]{36}$/i.test(request.params.id) && (await deleteCommandRule(userId, request.params.id));
+    if (!ok) {
+      reply.code(404);
+      return { error: "Not found" };
+    }
+    return { rules: (await loadCommandRules(userId)).map(ruleToApi) };
+  });
+}
+
+function ruleToApi(rule: Awaited<ReturnType<typeof loadCommandRules>>[number]) {
+  return {
+    id: rule.id,
+    pattern: rule.pattern,
+    action: rule.action,
+    source: rule.source,
+    createdAt: rule.createdAt.toISOString(),
+  };
 }

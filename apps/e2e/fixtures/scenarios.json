@@ -224,6 +224,124 @@
     "finalText": "[Mock] Both sub-agents have reported back.\n"
   },
   {
+    "match": "write the list once, then work",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Schema",
+              "status": "completed"
+            },
+            {
+              "id": "2",
+              "text": "Routes",
+              "status": "in_progress"
+            },
+            {
+              "id": "3",
+              "text": "Client",
+              "status": "pending"
+            }
+          ]
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-0"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-1"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-2"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-3"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-4"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-5"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-6"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-7"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-8"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-9"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/item-10"
+        }
+      }
+    ],
+    "finalText": "[Mock] Worked through the list.\n"
+  },
+  {
+    "match": "delegate a slow task, then a quick one",
+    "steps": [
+      {
+        "calls": [
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Slow survey",
+              "prompt": "take your time and survey in passes"
+            }
+          },
+          {
+            "tool": "subagent",
+            "args": {
+              "description": "Quick answer",
+              "prompt": "take your time and say the quick answer is done"
+            }
+          }
+        ]
+      }
+    ],
+    "finalText": "[Mock] Both sub-agents have reported back.\n"
+  },
+  {
     "match": "survey in passes",
     "steps": [
       {
@@ -477,5 +595,556 @@
       }
     ],
     "finalText": "[Mock] Notes edited.\n"
+  },
+  {
+    "match": "list the workspace read-only",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "ls -la"
+        }
+      }
+    ],
+    "finalText": "[Mock] Listed the workspace."
+  },
+  {
+    "match": "touch a scratch note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch scratch-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Touched the scratch note."
+  },
+  {
+    "match": "list then touch a note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "ls && touch compound-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Listed, then touched."
+  },
+  {
+    "match": "remove the old note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "rm -f old-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to remove it."
+  },
+  {
+    "match": "make a checked note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch checked-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the checked note."
+  },
+  {
+    "match": "make a classifier-ask note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch classifier-ask-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the asked-about note."
+  },
+  {
+    "match": "make a classifier-slow note",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "touch classifier-slow-note.txt"
+        }
+      }
+    ],
+    "finalText": "[Mock] Made the slow note."
+  },
+  {
+    "match": "egress drill: push the branch",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git push origin HEAD"
+        }
+      }
+    ],
+    "finalText": "[Mock] Pushed the branch."
+  },
+  {
+    "match": "egress drill: open the pull request",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "gh pr create --base main --head \"$(git branch --show-current)\" --title \"Opened by the agent\" --body \"Through Loxaic's proxy\""
+        }
+      }
+    ],
+    "finalText": "[Mock] Opened the pull request."
+  },
+  {
+    "match": "egress drill: view the pull request",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "gh pr view 1"
+        }
+      }
+    ],
+    "finalText": "[Mock] Read the pull request."
+  },
+  {
+    "match": "egress drill: push to main",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git commit -q --allow-empty -m \"agent commit\" && git push origin HEAD:main"
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to push to main."
+  },
+  {
+    "match": "egress drill: delete the branch",
+    "steps": [
+      {
+        "tool": "bash",
+        "args": {
+          "command": "git push origin --delete \"$(git branch --show-current)\""
+        }
+      }
+    ],
+    "finalText": "[Mock] Tried to delete the branch."
+  },
+  {
+    "match": "pin the first todo list",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Alpha",
+              "status": "in_progress"
+            },
+            {
+              "id": "2",
+              "text": "Beta",
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] First list pinned.\n"
+  },
+  {
+    "match": "run sixty quick lookups",
+    "steps": [
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-0"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-1"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-2"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-3"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-4"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-5"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-6"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-7"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-8"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-9"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-10"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-11"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-12"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-13"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-14"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-15"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-16"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-17"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-18"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-19"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-20"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-21"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-22"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-23"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-24"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-25"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-26"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-27"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-28"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-29"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-30"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-31"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-32"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-33"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-34"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-35"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-36"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-37"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-38"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-39"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-40"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-41"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-42"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-43"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-44"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-45"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-46"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-47"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-48"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-49"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-50"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-51"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-52"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-53"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-54"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-55"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-56"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-57"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-58"
+        }
+      },
+      {
+        "tool": "web_fetch",
+        "args": {
+          "url": "http://127.0.0.1:1/lookup-59"
+        }
+      }
+    ],
+    "finalText": "[Mock] Sixty lookups done.\n"
+  },
+  {
+    "match": "pin the second todo list",
+    "steps": [
+      {
+        "tool": "todo_write",
+        "args": {
+          "todos": [
+            {
+              "id": "1",
+              "text": "Gamma",
+              "status": "pending"
+            }
+          ]
+        }
+      }
+    ],
+    "finalText": "[Mock] Second list pinned.\n"
   }
 ]

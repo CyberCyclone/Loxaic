@@ -117,6 +117,8 @@ export function AgentStream({
           source={approvalSource}
           mode={pendingApproval.mode}
           granterUserId={pendingApproval.granterUserId}
+          rules={pendingApproval.rules}
+          check={pendingApproval.check}
           onAllow={onAllow}
           onAllowAlways={onAllowAlways}
           onDeny={onDeny}

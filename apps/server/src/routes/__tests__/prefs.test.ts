@@ -87,6 +87,7 @@ describe("GET /v1/prefs", () => {
       loopSensitivity: "normal",
       subagentModelMode: "choose",
       subagentModel: null,
+      bashGrantRetired: false,
     });
   });
 
@@ -294,5 +295,52 @@ describe("the sub-agent model setting", () => {
     await patch({ maxIterations: 42 });
     await patch({ subagentModelMode: "parent" });
     expect(await get()).toMatchObject({ maxIterations: 42, subagentModelMode: "parent" });
+  });
+});
+
+describe("command rules and the retired bash grant", () => {
+  interface RulesBody {
+    rules: { id: string; pattern: string; action: string; source: string }[];
+  }
+  const rules = async () => (await app.inject({ method: "GET", url: "/v1/prefs/command-rules" })).json<RulesBody>().rules;
+
+  it("adds, lists and removes rules, refusing ones that would allow too much", async () => {
+    const added = await app.inject({ method: "POST", url: "/v1/prefs/command-rules", payload: { pattern: "  gh   pr view *", action: "allow" } });
+    expect(added.statusCode).toBe(200);
+    // Again, and as another action: the first is a no-op, the second its own rule.
+    await app.inject({ method: "POST", url: "/v1/prefs/command-rules", payload: { pattern: "gh pr view *", action: "allow" } });
+    await app.inject({ method: "POST", url: "/v1/prefs/command-rules", payload: { pattern: "rm *", action: "deny" } });
+    const listed = await rules();
+    expect(listed.map((r) => [r.pattern, r.action, r.source])).toEqual([
+      ["gh pr view *", "allow", "settings"],
+      ["rm *", "deny", "settings"],
+    ]);
+
+    for (const payload of [{ pattern: "python *", action: "allow" }, { pattern: "*", action: "deny" }, { pattern: "ls; rm", action: "allow" }, { pattern: "ls", action: "sometimes" }]) {
+      expect((await app.inject({ method: "POST", url: "/v1/prefs/command-rules", payload })).statusCode).toBe(400);
+    }
+
+    const removed = await app.inject({ method: "DELETE", url: `/v1/prefs/command-rules/${listed[0].id}` });
+    expect(removed.statusCode).toBe(200);
+    expect((await rules()).map((r) => r.pattern)).toEqual(["rm *"]);
+    expect((await app.inject({ method: "DELETE", url: `/v1/prefs/command-rules/${listed[0].id}` })).statusCode).toBe(404);
+    expect((await app.inject({ method: "DELETE", url: "/v1/prefs/command-rules/not-an-id" })).statusCode).toBe(404);
+    for (const r of await rules()) await app.inject({ method: "DELETE", url: `/v1/prefs/command-rules/${r.id}` });
+  });
+
+  it("drops bash from the allowlist instead of refusing an older client's whole write", async () => {
+    const res = await patch({ toolAllowlist: ["fs_write", "bash"] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<PrefsBody>().toolAllowlist).toEqual(["fs_write"]);
+    expect((await patch({ toolAllowlist: ["not_a_tool"] })).statusCode).toBe(400);
+    await patch({ toolAllowlist: [] });
+  });
+
+  it("says once that an old bash grant was retired, until dismissed", async () => {
+    await db.update(userPrefs).set({ bashGrantRetiredAt: new Date() }).where(eq(userPrefs.userId, userId));
+    expect((await get()) as unknown as { bashGrantRetired: boolean }).toMatchObject({ bashGrantRetired: true });
+    expect((await patch({ bashGrantNoticeSeen: false })).statusCode).toBe(400);
+    const seen = await patch({ bashGrantNoticeSeen: true });
+    expect(seen.json<{ bashGrantRetired: boolean }>().bashGrantRetired).toBe(false);
   });
 });

@@ -457,7 +457,7 @@ export function WorkspaceChooser({ open, onClose, value, onChange, config, token
                   testID="agent.workspace.source.github"
                   icon={FolderGit2}
                   title="A GitHub repository"
-                  detail={githubBlockedReason ?? 'Cloned onto a new branch. Commit as you go; push and open a PR from the Inspector.'}
+                  detail={githubBlockedReason ?? 'Cloned onto a new branch. The agent can push it and open a pull request, asking you first, or you can from the Inspector.'}
                   selected={source === 'github'}
                   disabled={githubBlockedReason !== null}
                   onPress={() => { setSource('github'); }}

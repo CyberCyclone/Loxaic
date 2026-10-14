@@ -1,17 +1,15 @@
 import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
 import type { OpenAiTool, PermissionMode, ResolvedTool } from "@loxaic/agent";
-import { isToolName, resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
+import { isAllowlistableTool, resolveBuiltinTools, resolvedToOpenAiTool } from "@loxaic/agent";
 import { and, db, eq, sql } from "@loxaic/db";
 import { conversations, mcpServers, userPrefs } from "@loxaic/db/schema";
 import { mcpServerActive, normalizeMcpOverrides, type McpConversationKind, type McpOverrides } from "@loxaic/types";
-import { catalogDefaultPolicy, GITHUB_BUILTIN_KEY } from "./catalog.ts";
 import { DEFAULT_POLICY, reconcileTools, type ToolPolicy } from "./change-detection.ts";
 import { callServerTool, listServerTools, redactionsFor, type McpServerRow } from "./client-manager.ts";
 import { namespaceTool } from "./naming.ts";
 import {
   compactSchemaForModel,
   extractResultText,
-  GITHUB_TOOLS_ADDENDUM,
   MCP_SYSTEM_ADDENDUM,
   wrapResult,
 } from "./sanitize.ts";
@@ -83,8 +81,10 @@ export async function buildToolset(
   },
 ): Promise<Toolset> {
   const allowlist = opts.allowlist ?? (await builtinAllowlist(userId));
+  // An allowlisted `bash` (from before command rules) is ignored: whether a
+  // command asks is decided per command (permissions/bash/policy.ts).
   const resolved = resolveBuiltinTools(opts.mode, { handover: opts.handover, subagents: opts.subagents }).map((t) =>
-    allowlist.has(t.name) ? { ...t, requiresApproval: false } : t,
+    allowlist.has(t.name) && isAllowlistableTool(t.name) ? { ...t, requiresApproval: false } : t,
   );
   const mcpEntries = new Map<string, McpToolEntry>();
 
@@ -104,15 +104,7 @@ export async function buildToolset(
       (t) => [t.name, t] as const,
     ),
   );
-  const hasMcp = mcpEntries.size > 0;
-  // Offered tools, not merely an enabled row: planning mode hides the write
-  // ones, and a server that failed to connect contributes none at all.
-  const hasGithub = offered.some(
-    (t) => t.source.kind === "mcp" && t.source.serverSlug === GITHUB_BUILTIN_KEY,
-  );
-  const addendum = [hasMcp ? MCP_SYSTEM_ADDENDUM : null, hasGithub ? GITHUB_TOOLS_ADDENDUM : null]
-    .filter((line): line is string => line !== null)
-    .join(" ");
+  const addendum = mcpEntries.size > 0 ? MCP_SYSTEM_ADDENDUM : "";
 
   return {
     openAiTools: offered.map(resolvedToOpenAiTool),
@@ -177,7 +169,8 @@ async function grantTrust(userId: string, tool: ResolvedTool, entries: Map<strin
     }
     // The planning hand-over tools are builtins too, and are not ones a
     // person can put on the list (`PATCH /v1/prefs` refuses them as well).
-    if (!isToolName(tool.name)) return;
+    // Nor is `bash`: its grants are command rules, recorded by the engine.
+    if (!isAllowlistableTool(tool.name)) return;
     const name = JSON.stringify(tool.name);
     await db
       .insert(userPrefs)
@@ -235,7 +228,7 @@ async function resolveMcpTools(
     const result = settled[i];
     if (result.status === "rejected") {
       const row = activeRows[i];
-      const redactions = await redactionsFor(row);
+      const redactions = redactionsFor(row);
       console.warn(
         `MCP server "${row.name}" unavailable this run: ${redact(result.reason instanceof Error ? result.reason.message : String(result.reason), redactions)}`,
       );
@@ -249,7 +242,6 @@ async function resolveMcpTools(
         knownTools: row.knownTools ?? {},
       },
       tools,
-      catalogDefaultPolicy(row),
     );
     // Persist the reconciliation so allowlist revocations stick even when the
     // change is first seen by a run rather than a test-connection.
@@ -371,7 +363,7 @@ async function dispatchMcpTool(
   } catch (err) {
     // The linked row carries no secrets of its own, and this output goes into
     // the model's transcript — redact with the credential actually in play.
-    const redactions = await redactionsFor(entry.row);
+    const redactions = redactionsFor(entry.row);
     return {
       ok: false,
       output: `MCP server "${serverSlug}" failed: ${redact(err instanceof Error ? err.message : String(err), redactions)}`,
