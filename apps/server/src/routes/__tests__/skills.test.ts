@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
 import { db, eq, inArray } from "@loxaic/db";
-import { conversations, user, userPrefs } from "@loxaic/db/schema";
+import { conversations, skills, user, userPrefs } from "@loxaic/db/schema";
 import type { PaletteSkill } from "@loxaic/types";
 
 /**
@@ -37,6 +37,7 @@ afterAll(async () => {
   await app.close();
   await db.delete(conversations).where(eq(conversations.id, convId));
   await db.delete(userPrefs).where(inArray(userPrefs.userId, [owner, stranger]));
+  await db.delete(skills).where(inArray(skills.ownerId, [owner, stranger]));
   await db.delete(user).where(inArray(user.id, [owner, stranger]));
 });
 
@@ -73,5 +74,98 @@ describe("GET /v1/skills", () => {
     currentUser.id = stranger;
     expect((await list(`?conversation_id=${convId}`)).status).toBe(404);
     expect((await list("?conversation_id=c12345")).status).toBe(404);
+  });
+});
+
+interface Mine {
+  builtin: { name: string; overriddenBy: string | null; body: string; action?: string }[];
+  mine: { id: string; name: string; description: string; body: string; modelInvocable: boolean; overridesBuiltin: boolean }[];
+}
+
+async function call(method: "GET" | "POST" | "PATCH" | "DELETE", url: string, payload?: unknown) {
+  const res = await app.inject({ method, url, ...(payload === undefined ? {} : { payload: payload as object }) });
+  const body: Record<string, unknown> = res.json();
+  return { status: res.statusCode, body };
+}
+
+describe("/v1/skills/mine", () => {
+  it("creates a skill, which then appears in the palette as the caller's own", async () => {
+    currentUser.id = owner;
+    const created = await call("POST", "/v1/skills/mine", {
+      name: "house-style", description: "How we write.  Use it   always.", body: "  Short sentences.  ",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ name: "house-style", description: "How we write. Use it always.", body: "Short sentences.", modelInvocable: true, overridesBuiltin: false });
+    const { skills: listed } = await list();
+    expect(listed.find((s) => s.name === "house-style")).toMatchObject({ source: "user" });
+  });
+
+  it("refuses what the format would refuse, and a name the caller already has", async () => {
+    currentUser.id = owner;
+    for (const bad of [
+      { name: "Has Caps", description: "d", body: "b" },
+      { name: "-edge", description: "d", body: "b" },
+      { name: "ok", description: "  ", body: "b" },
+      { name: "ok", description: "d", body: "" },
+      { name: "ok", description: "d".repeat(1025), body: "b" },
+    ]) {
+      expect((await call("POST", "/v1/skills/mine", bad)).status).toBe(400);
+    }
+    expect((await call("POST", "/v1/skills/mine", { name: "house-style", description: "d", body: "b" })).status).toBe(409);
+  });
+
+  it("overrides a built-in by name, says so on both sides, and restores it when deleted", async () => {
+    currentUser.id = owner;
+    const created = await call("POST", "/v1/skills/mine", { name: "code-review", description: "Our review.", body: "Check our rules." });
+    expect(created.body.overridesBuiltin).toBe(true);
+    const mine = (await call("GET", "/v1/skills/mine")).body as unknown as Mine;
+    expect(mine.builtin.find((b) => b.name === "code-review")?.overriddenBy).toBe(created.body.id);
+    expect(mine.builtin.find((b) => b.name === "debug")?.overriddenBy).toBeNull();
+    const palette = (await list()).skills.filter((s) => s.name === "code-review");
+    expect(palette).toEqual([expect.objectContaining({ source: "user", description: "Our review." })]);
+
+    expect((await call("DELETE", `/v1/skills/mine/${String(created.body.id)}`)).status).toBe(200);
+    expect((await list()).skills.find((s) => s.name === "code-review")?.source).toBe("builtin");
+  });
+
+  it("replaces compact with a skill, which the palette then offers as a message, not an action", async () => {
+    currentUser.id = owner;
+    const created = await call("POST", "/v1/skills/mine", { name: "compact", description: "Ours.", body: "Summarise our way." });
+    const compact = (await list()).skills.find((s) => s.name === "compact");
+    expect(compact?.action).toBeUndefined();
+    expect(compact?.source).toBe("user");
+    await call("DELETE", `/v1/skills/mine/${String(created.body.id)}`);
+    expect((await list()).skills.find((s) => s.name === "compact")?.action).toBe("compact");
+  });
+
+  it("edits only what is sent, and refuses a rename onto another of the caller's skills", async () => {
+    currentUser.id = owner;
+    const a = await call("POST", "/v1/skills/mine", { name: "alpha", description: "A.", body: "a" });
+    await call("POST", "/v1/skills/mine", { name: "bravo", description: "B.", body: "b" });
+    const edited = await call("PATCH", `/v1/skills/mine/${String(a.body.id)}`, { body: "new body", modelInvocable: false });
+    expect(edited.body).toMatchObject({ name: "alpha", description: "A.", body: "new body", modelInvocable: false });
+    expect((await call("PATCH", `/v1/skills/mine/${String(a.body.id)}`, { name: "bravo" })).status).toBe(409);
+    expect((await call("PATCH", `/v1/skills/mine/${String(a.body.id)}`, {})).status).toBe(400);
+  });
+
+  it("answers 404 for someone else's skill, and changes nothing", async () => {
+    currentUser.id = owner;
+    const own = await call("POST", "/v1/skills/mine", { name: "private", description: "P.", body: "p" });
+    currentUser.id = stranger;
+    expect((await call("PATCH", `/v1/skills/mine/${String(own.body.id)}`, { body: "x" })).status).toBe(404);
+    expect((await call("DELETE", `/v1/skills/mine/${String(own.body.id)}`)).status).toBe(404);
+    expect((await call("DELETE", "/v1/skills/mine/not-an-id")).status).toBe(404);
+    expect(((await call("GET", "/v1/skills/mine")).body as unknown as Mine).mine).toEqual([]);
+    currentUser.id = owner;
+    expect(((await call("GET", "/v1/skills/mine")).body as unknown as Mine).mine.find((s) => s.name === "private")?.body).toBe("p");
+  });
+
+  it("goes with its owner", async () => {
+    const gone = `test-skillroute-gone-${uuid()}`;
+    await db.insert(user).values({ id: gone, name: gone, email: `${gone}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    currentUser.id = gone;
+    await call("POST", "/v1/skills/mine", { name: "doomed", description: "D.", body: "d" });
+    await db.delete(user).where(eq(user.id, gone));
+    expect(await db.query.skills.findFirst({ where: eq(skills.ownerId, gone) })).toBeUndefined();
   });
 });

@@ -4356,6 +4356,19 @@ replies.
   fact. Written apart, a failure between them lost the notice for good, or repeated it every turn
   (and a retry added a second copy). A failed write returns the list the conversation already
   had, so the prompt's front does not move. `session.test.ts` fails the write with a trigger.
+- **A person's own skills are rows in `skills`** (migration 0046, cascades with its owner, unique
+  by `(owner_id, name)`), edited in Settings → Skills (`app/(app)/skills.tsx`) through
+  `/v1/skills/mine`.
+  - **Built-ins are read-only and always on.** Nothing is stored about them, and no route can
+    change one. A person changes one by adding their own skill of the same name. "Override" on a
+    built-in's row opens the form prefilled with it.
+  - **Both rows say so while the override lasts:** "Overridden by your skill" on the built-in,
+    "Overrides built-in" on theirs. Deleting the override brings the built-in back, and the
+    delete confirmation says that.
+  - **At most 100 per person** (`MAX_USER_SKILLS`): each one's description is in the model's list
+    on every request.
+  - **"Let the model use this skill"** is `model_invocable`, the format's
+    `disable-model-invocation` turned around.
 - **Whose skills:** the conversation's **owner's**, never the sender's. Two editors with two
   catalogs would announce each other's skills on every alternate turn. A sub-agent takes its
   parent owner's live list and stores nothing, since it is one run long.

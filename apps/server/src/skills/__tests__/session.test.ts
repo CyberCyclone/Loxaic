@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { v4 as uuid } from "uuid";
-import { db, eq, inArray, sql } from "@loxaic/db";
-import { conversations, messages, user, userPrefs } from "@loxaic/db/schema";
+import { and, db, eq, inArray, sql } from "@loxaic/db";
+import { conversations, messages, skills, user, userPrefs } from "@loxaic/db/schema";
 import type { ContentBlock, StreamEventKind } from "@loxaic/types";
 import { __setTestSkillsForTest, type CatalogSkill } from "../catalog.ts";
 import { prepareRunSkills, type SkillCatalogSnapshot } from "../session.ts";
 import { getSkillUsage, recordSkillUse } from "../usage.ts";
+import { resolveCommandSkill } from "../resolve.ts";
 
 /**
  * A conversation's skills over its life, against the database: frozen on the
@@ -32,6 +33,7 @@ afterAll(async () => {
     await db.delete(conversations).where(inArray(conversations.id, convIds));
   }
   await db.delete(userPrefs).where(eq(userPrefs.userId, owner));
+  await db.delete(skills).where(eq(skills.ownerId, owner));
   await db.delete(user).where(eq(user.id, owner));
 });
 
@@ -201,5 +203,34 @@ describe("recordSkillUse", () => {
     const name = `race-${uuid().slice(0, 6)}`;
     await Promise.all(Array.from({ length: 8 }, () => recordSkillUse(owner, name)));
     expect((await getSkillUsage(owner))[name]?.count).toBe(8);
+  });
+});
+
+describe("a person's own skills", () => {
+  it("reach a conversation they own, announced when added and when edited", async () => {
+    const { convId, msgId } = await conversationWith("start");
+    await prepareRunSkills({ convId, userId: owner, userMsgId: msgId, front: "0", producer: recorder().producer });
+    const [row] = await db.insert(skills).values({ ownerId: owner, name: "release-notes", description: "Write release notes.", body: "Group by area." }).returning();
+    const added = await addMessage(convId, "/release-notes for 1.2");
+    const run = await prepareRunSkills({ convId, userId: owner, userMsgId: added, front: "0", producer: recorder().producer });
+    const blocks = await contentOf(added);
+    expect(blocks.map((b) => b.kind)).toEqual(["text", "skills_update", "skill"]);
+    expect(blocks[2]).toMatchObject({ name: "release-notes", source: "user" });
+    expect(run.find("release-notes")?.body).toBe("Group by area.");
+
+    await db.update(skills).set({ body: "Group by package." }).where(eq(skills.id, row.id));
+    const edited = await addMessage(convId, "again");
+    await prepareRunSkills({ convId, userId: owner, userMsgId: edited, front: "0", producer: recorder().producer });
+    expect((await contentOf(edited))[1]).toMatchObject({ kind: "skills_update", summary: "Skills changed: changed release-notes" });
+  });
+
+  it("replace compact, which a command then no longer runs", async () => {
+    const { convId } = await conversationWith("x");
+    expect((await resolveCommandSkill(owner, convId, "compact"))?.action).toBe("compact");
+    await db.insert(skills).values({ ownerId: owner, name: "compact", description: "Ours.", body: "b" });
+    const replaced = await resolveCommandSkill(owner, convId, "compact");
+    expect(replaced?.source).toBe("user");
+    expect(replaced?.action).toBeUndefined();
+    await db.delete(skills).where(and(eq(skills.ownerId, owner), eq(skills.name, "compact")));
   });
 });
