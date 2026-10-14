@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { v4 as uuid } from "uuid";
 import Fastify from "fastify";
 import { db, eq, inArray } from "@loxaic/db";
-import { conversations, skills, user, userPrefs } from "@loxaic/db/schema";
+import { conversations, conversationShares, skills, user, userPrefs } from "@loxaic/db/schema";
 import type { PaletteSkill } from "@loxaic/types";
 
 /**
@@ -68,6 +68,27 @@ describe("GET /v1/skills", () => {
 
     currentUser.id = stranger;
     expect((await list()).skills[0].uses).toBe(0);
+  });
+
+  it("lists the owner's own skills only to someone who can send into the thread", async () => {
+    // A person's skills are theirs: a viewer, and every admin (who resolves
+    // to one), sees a thread, not the catalog of whoever owns it.
+    await db.insert(skills).values({ ownerId: owner, name: "owners-secret", description: "Only the owner's.", body: "x" });
+    const share = { conversationId: convId, userId: stranger, createdBy: owner };
+    await db.insert(conversationShares).values({ ...share, role: "viewer" });
+    try {
+      currentUser.id = stranger;
+      const asViewer = await list(`?conversation_id=${convId}`);
+      expect(asViewer.status).toBe(200);
+      expect(asViewer.skills.map((s) => s.name)).not.toContain("owners-secret");
+      expect(asViewer.skills.map((s) => s.name)).toContain("debug");
+
+      await db.update(conversationShares).set({ role: "editor" }).where(eq(conversationShares.userId, stranger));
+      expect((await list(`?conversation_id=${convId}`)).skills.map((s) => s.name)).toContain("owners-secret");
+    } finally {
+      await db.delete(conversationShares).where(eq(conversationShares.userId, stranger));
+      await db.delete(skills).where(eq(skills.ownerId, owner));
+    }
   });
 
   it("answers 404 for a conversation the caller cannot see, or that is not an id", async () => {
