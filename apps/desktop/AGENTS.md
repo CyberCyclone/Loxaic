@@ -64,6 +64,7 @@ The Electron app and its supervisor (`src/supervisor/`), which runs an embedded 
 - `stamp-version.mjs` stamps the mobile app with the numeric version even on beta tags (Apple rejects `-beta.N`); desktop and server keep the full version.
 - `LOXAIC_VARIANT` makes "Loxaic Beta" a separate app (own `appId`, product name, artifact name, data dir); the running app reads its variant from `src/variant.js` (`extraMetadata`).
 - Keep top-level `productName` set — Electron derives `app.name` and `userData` (the Chromium profile) from it.
+- Electron's major decides the packaged server's Node (Electron 33 is Node 20, while dev runs Node 24): bump it only in its own PR, after checking the server's runtime dependencies on that Node (e.g. `undici`, see `apps/server/src/inference/AGENTS.md`).
 
 ## Updater (`src/updates/`)
 

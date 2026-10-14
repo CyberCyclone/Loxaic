@@ -69,7 +69,7 @@ Every pull request carries unit tests and end-to-end tests for what it changes, 
 ## Rules that apply everywhere
 
 - Import query operators and `db` from `@loxaic/db`, never from `drizzle-orm`: two drizzle instances break types.
-- In `packages/db`, `packages/agent` and `packages/sync`, relative imports carry the `.ts` extension. They ship raw TypeScript run by Node's ESM resolution; `tsx` in dev won't catch a missing one.
+- In `packages/db`, `packages/agent` and `packages/sync`, relative imports carry the `.ts` extension. They ship raw TypeScript run by Node's ESM resolution; `tsx` in dev won't catch a missing one. For the same reason, no `enum`s and no constructor parameter properties there: Node's strip-only mode cannot erase them, and nothing else catches it (`erasableSyntaxOnly` is not set).
 - JSX only in `.tsx` files.
 - Authenticate only through `apps/server/src/auth/middleware.ts`. Calling `auth.api.getSession` directly skips the ban and password-change checks.
 - Never add a dependency with a required `nativewind` peer. It materialises a second React and breaks hooks on device.

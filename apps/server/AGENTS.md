@@ -19,7 +19,7 @@ The Fastify API, WebSockets, run engine, sandboxes and llama.cpp runtime. These 
 
 ## Tests (one vitest process, one shared Postgres)
 
-- `process.env` is shared across files: pin every env a test relies on, defaults included (another file sets `SANDBOX_IDLE_STOP_MS=1`).
+- `process.env` is shared across files: pin every env a test relies on, defaults included (another file sets `SANDBOX_IDLE_STOP_MS=1`). pnpm also sets `npm_package_version` for every script, so a test can pass under `npx vitest` and fail under `pnpm test`.
 - Never call `resetServerSettingsCache()` in a test that runs beside others; pin an env read at call time instead.
 - Scope every cleanup to the suite's own rows: pass `{ ownerId }` to `sweepOrphanSandboxes` and `ownerId` (and `kind`) to `reapAbandonedSandboxes`, tear down with `destroyConversationSandboxes(id)`; never an unscoped `db.delete(sandboxes)` or `stopAllSandboxes` (it stops every `running` row).
 - Never assert on a global sweep's return count; assert on the rows the test created.
