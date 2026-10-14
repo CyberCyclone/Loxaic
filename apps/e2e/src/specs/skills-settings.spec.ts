@@ -87,7 +87,7 @@ describe('your own skills', () => {
       body: 'Group the changes by area.',
     });
     const id = await idOf(creds, 'release-notes');
-    await waitForVisible(`skills.row.${id}`);
+    await waitForVisible(`skills.row.${id}.name`);
     await shot('skills-screen-added');
 
     await goToSurface('chat');
@@ -151,11 +151,11 @@ describe('your own skills', () => {
     const id = await idOf(creds, 'code-review');
     await tap(`skills.row.${id}.delete`);
     await tap('skills.deleteConfirm.cancel');
-    await waitForVisible(`skills.row.${id}`);
+    await waitForVisible(`skills.row.${id}.name`);
 
     await tap(`skills.row.${id}.delete`);
     await tap('skills.deleteConfirm.confirm');
-    await waitForAbsent(`skills.row.${id}`);
+    await waitForAbsent(`skills.row.${id}.name`);
     await waitForAbsent('skills.builtin.code-review.overridden');
     expect((await listMySkills(creds)).builtin.find((b) => b.name === 'code-review')?.overriddenBy).toBeNull();
     await shot('skills-override-deleted');
