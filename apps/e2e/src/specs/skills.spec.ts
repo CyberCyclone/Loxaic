@@ -39,8 +39,11 @@ async function clearComposer(): Promise<void> {
   await waitForAbsent('composer.palette');
 }
 
+/** What is in the message box: its value on the web and iOS, its text on
+ * Android, whose inputs have no value attribute. */
 async function inputValue(): Promise<string> {
-  return byTestId('composer.input').getValue();
+  const input = byTestId('composer.input');
+  return platform() === 'android' ? input.getText() : input.getValue();
 }
 
 describe('skills in the composer', () => {
