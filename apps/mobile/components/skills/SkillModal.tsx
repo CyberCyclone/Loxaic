@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { isValidSkillName, type SkillInput, type UserSkill } from '@loxaic/api-client';
 import {
   Modal,
@@ -21,6 +23,7 @@ import { Icon, CloseIcon } from '@/components/ui/icon';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 import { overrideNote } from '@/lib/skillScreen';
+import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 
 interface SkillModalProps {
   open: boolean;
@@ -41,8 +44,10 @@ interface SkillModalProps {
  * format's fields. A name equal to a built-in's supersedes that built-in,
  * which the form says as soon as it is typed.
  *
- * Height-capped with a scrolling body: the instructions box is tall, and a
- * phone's keyboard takes half of what is left.
+ * Height-capped with a scrolling body: the instructions box is tall. On a
+ * phone the keyboard would cover the footer, and nothing in a multi-line
+ * field puts it away (Return is a new line), so while it is up the dialog is
+ * sized to the space above it and the body gives up the height.
  */
 export function SkillModal({ open, onClose, onSave, editing, prefill, builtinNames }: SkillModalProps) {
   const [name, setName] = useState('');
@@ -52,6 +57,13 @@ export function SkillModal({ open, onClose, onSave, editing, prefill, builtinNam
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const reachable = useServerReachable();
+  const keyboard = useKeyboardHeight();
+  const screen = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  // Set inline only while the keyboard is up: a class cap would win over it.
+  const lifted = keyboard > 0
+    ? { marginBottom: keyboard, maxHeight: Math.max(240, screen.height - keyboard - insets.top - 16) }
+    : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -86,7 +98,7 @@ export function SkillModal({ open, onClose, onSave, editing, prefill, builtinNam
   return (
     <Modal isOpen={open} onClose={onClose} size="lg">
       <ModalBackdrop />
-      <ModalContent testID="skillModal.dialog" className="max-h-[85%]">
+      <ModalContent testID="skillModal.dialog" className={lifted ? '' : 'max-h-[85%]'} style={lifted}>
         <ModalHeader>
           <Heading size="sm">{editing ? 'Edit skill' : 'New skill'}</Heading>
           <ModalCloseButton>

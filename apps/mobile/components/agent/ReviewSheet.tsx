@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { Keyboard, Platform, ScrollView, useWindowDimensions, View } from 'react-native';
+import { type ReactNode } from 'react';
+import { Platform, ScrollView, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { X, type LucideIcon } from 'lucide-react-native';
 import {
@@ -16,6 +16,7 @@ import { Pressable } from '@/components/ui/pressable';
 import { Text } from '@/components/ui/text';
 import { VStack } from '@/components/ui/vstack';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
+import { useKeyboardHeight } from '@/hooks/useKeyboardHeight';
 
 interface ReviewSheetProps {
   open: boolean;
@@ -143,21 +144,4 @@ export function ReviewSheet({
       </ActionsheetContent>
     </Actionsheet>
   );
-}
-
-/**
- * The on-screen keyboard's height, or 0 while it is hidden. Web never raises
- * these events, so it stays 0 there — a browser resizes the page instead.
- */
-function useKeyboardHeight(): number {
-  const [height, setHeight] = useState(0);
-  useEffect(() => {
-    const shown = Keyboard.addListener('keyboardDidShow', (e) => { setHeight(e.endCoordinates.height); });
-    const hidden = Keyboard.addListener('keyboardDidHide', () => { setHeight(0); });
-    return () => {
-      shown.remove();
-      hidden.remove();
-    };
-  }, []);
-  return height;
 }
