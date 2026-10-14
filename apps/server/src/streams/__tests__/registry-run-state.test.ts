@@ -42,29 +42,6 @@ function makeHandle(overrides: Partial<RunHandle> = {}): RunHandle {
   };
 }
 
-/**
- * Collect what the watchers are told while `work` runs. `seen` is handed to
- * the callback rather than awaited into: a `const seen = await announced(...)`
- * whose callback reads `seen` closes over the TDZ binding, since the callback
- * runs — synchronously, as the registry announces synchronously — before the
- * assignment ever completes.
- */
-async function announced(
-  conversationIds: string[],
-  work: (seen: string[]) => Promise<void> | void,
-): Promise<string[]> {
-  const seen: string[] = [];
-  const unsubs = conversationIds.map((id) => watchRunActivity((seenId) => {
-    if (seenId === id) seen.push(seenId);
-  }));
-  try {
-    await work(seen);
-  } finally {
-    for (const off of unsubs) off();
-  }
-  return seen;
-}
-
 describe("runActivityOf", () => {
   it("reads a plain run as running", () => {
     expect(runActivityOf(makeHandle())).toBe("running");

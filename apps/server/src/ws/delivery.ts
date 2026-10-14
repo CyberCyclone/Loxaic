@@ -1,4 +1,4 @@
-import { endStaleSubAgents, type RunActivity, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
+import { endStaleSubAgents, type ServerMessage, type StreamSnapshot, type StreamStatus } from "@loxaic/types";
 import { assertConversationAccess, filterAccessible } from "../streams/authz.ts";
 import { getStreamBroker } from "../streams/index.ts";
 import type { StreamRecord } from "../streams/types.ts";
@@ -431,12 +431,15 @@ export function createDelivery(
     // The set may have been replaced by a newer watch while we awaited; the
     // newer call owns the state, and this reply describes the old set.
     if (runWatch !== next) return;
+    // One scan of the registry for the busy set, rather than a lookup per
+    // row; anything not in it is idle and stays unmentioned.
+    const busy = new Set(listBusyRuns(next).map((handle) => handle.conversationId));
     for (const id of next) {
       if (!allowed.has(id)) {
         runWatch.delete(id);
         continue;
       }
-      if (!getRunByConversation(id)) continue;
+      if (!busy.has(id)) continue;
       // The initial reply names only the conversations with a run going —
       // a busy row's truth. An idle row gets nothing: absence already says
       // it, and fifty `run: null` messages per list refresh (or per app
@@ -448,7 +451,7 @@ export function createDelivery(
       // notice dropped) and came back busy must be re-told, and replacement
       // semantics make the duplicate harmless.
       const notice = noticeFor(id);
-      if (!notice || notice.run === null) continue;
+      if (notice?.run == null) continue;
       lastRunNotice.set(id, notice.run + (notice.queue_position ? `:${String(notice.queue_position)}` : ""));
       send(notice);
     }

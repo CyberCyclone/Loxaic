@@ -71,7 +71,7 @@ export function runNoticesAfterMessage(prev: RunNotices, message: ServerMessage)
       ...(message.run === 'queued' && message.queue_position ? { queuePosition: message.queue_position } : {}),
     }
     const had = prev[message.conversation_id]
-    if (had && had.activity === next.activity && had.queuePosition === next.queuePosition) return prev
+    if (had?.activity === next.activity && had.queuePosition === next.queuePosition) return prev
     return { ...prev, [message.conversation_id]: next }
   }
   return prev

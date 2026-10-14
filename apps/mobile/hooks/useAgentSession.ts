@@ -230,7 +230,13 @@ export function useAgentSession(
 
   // Which of the listed runs have a run going (#282). Rides this surface's
   // own socket; the rules are in lib/runWatch.ts.
-  const runNotices = useRunNotices(wsRef);
+  const {
+    notices: runNotices,
+    watch: watchRunRows,
+    onSocketOpen: onRunSocketOpen,
+    observe: observeRunNotice,
+    forget: forgetRunNotice,
+  } = useRunNotices(wsRef);
   const {
     isChild: isSubAgentConv,
     onParentEvent: onSubAgentEvent,
@@ -465,7 +471,7 @@ export function useAgentSession(
     const onEvent = (event: ServerMessage) => {
       // The thread list's liveness notices are consumed here and fall through
       // every branch of this switch (#282).
-      runNotices.observe(event);
+      observeRunNotice(event);
       // When this message arrived, read once, before anything else. Every fold
       // below that times a message is handed this rather than reading the
       // clock itself: those folds run inside state updaters, which React may
@@ -726,7 +732,7 @@ export function useAgentSession(
         // A new socket has heard no liveness notices and the server does not
         // replay them: clear what the last one said, and ask again for the
         // list on screen (#282).
-        runNotices.onSocketOpen();
+        onRunSocketOpen();
       };
       ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;
@@ -764,7 +770,7 @@ export function useAgentSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor]);
+  }, [token, endpoint, updateRunMsgs, setActiveId, setRunLevels, updateRunLevel, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen]);
 
   /** The selector moves only if the server heard it: a chip that switched
    * on screen while the frame went nowhere left the run in the old mode with
@@ -1102,11 +1108,11 @@ export function useAgentSession(
       }
       setRuns((prev) => prev.filter((r) => r.id !== id));
       setRunLevels((prev) => withoutRunLevel(prev, id));
-      runNotices.forget(id);
+      forgetRunNotice(id);
       if (activeIdRef.current === id) handleNewRun();
       showToast('Run deleted');
     },
-    [handleNewRun, setRunLevels, showToast],
+    [forgetRunNotice, handleNewRun, setRunLevels, showToast],
   );
 
   const handleRename = useCallback((id: string, name: string) => {
@@ -1130,8 +1136,8 @@ export function useAgentSession(
   // `turn.started`, a delete — goes through this array, so one effect on it
   // is the whole rule; `watch` itself dedupes an identical set.
   useEffect(() => {
-    runNotices.watch(runs.map((r) => r.id));
-  }, [runs, runNotices.watch]);
+    watchRunRows(runs.map((r) => r.id));
+  }, [runs, watchRunRows]);
 
   const activeRun = runs.find((r) => r.id === activeId) ?? null;
   const changedFiles = useMemo(() => (activeRun ? computeChangedFiles(activeRun.msgs) : []), [activeRun]);
@@ -1168,7 +1174,7 @@ export function useAgentSession(
     historyLoaded: !activeId || !isServerConvId(activeId) || historyLoadedIds.has(activeId),
     selectRun,
     /** Per-row running badges for the thread list (#282), keyed by run id. */
-    runStatus: rowBadgesFor(runNotices.notices, stoppingConvId),
+    runStatus: rowBadgesFor(runNotices, stoppingConvId),
     mode,
     runState: effectiveRunState,
     busy,

@@ -333,7 +333,13 @@ export function useChatSession(
 
   // Which of the listed conversations have a run going (#282). Rides this
   // surface's own socket; the rules are in lib/runWatch.ts.
-  const runNotices = useRunNotices(wsRef);
+  const {
+    notices: runNotices,
+    watch: watchRunRows,
+    onSocketOpen: onRunSocketOpen,
+    observe: observeRunNotice,
+    forget: forgetRunNotice,
+  } = useRunNotices(wsRef);
 
   const setStreamingByConv = useCallback(
     (
@@ -614,8 +620,8 @@ export function useChatSession(
   // a delete — goes through this array, so one effect on it is the whole
   // rule; `watch` itself dedupes an identical set.
   useEffect(() => {
-    runNotices.watch(conversations.map((c) => c.id));
-  }, [conversations, runNotices.watch]);
+    watchRunRows(conversations.map((c) => c.id));
+  }, [conversations, watchRunRows]);
 
   // Live streaming socket. A dropped connection no longer needs a reconcile
   // poll: every event carries a monotonic per-stream `seq`, so reconnecting
@@ -663,7 +669,7 @@ export function useChatSession(
     const onEvent = (event: ServerMessage) => {
       // The thread list's liveness notices are consumed here and fall through
       // every branch of this switch (#282).
-      runNotices.observe(event);
+      observeRunNotice(event);
       // When this message arrived, read once, before anything else. Every fold
       // below that times a message is handed this rather than reading the
       // clock itself: those folds run inside state updaters, which React may
@@ -1018,7 +1024,7 @@ export function useChatSession(
         // A new socket has heard no liveness notices and the server does not
         // replay them: clear what the last one said, and ask again for the
         // list on screen (#282).
-        runNotices.onSocketOpen();
+        onRunSocketOpen();
       };
       ws.onclose = (ev: { code?: number }) => {
         if (cancelled) return;
@@ -1074,7 +1080,7 @@ export function useChatSession(
       untrackSocket(SOCKET_KEY);
       wsRef.current?.close();
     };
-  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor]);
+  }, [token, endpoint, setActiveId, showToast, clearStream, setStreamingByConv, promotePendingUserMsg, hasOlderHistory, isSubAgentConv, onSubAgentEvent, onSubAgentSync, onSubAgentStreamSync, onSubAgentStreamEvent, onSubAgentStreamEnd, resubscribeSubAgents, forgetSpawnedBy, forgetRemovedCursor, observeRunNotice, onRunSocketOpen]);
 
   const handleSend = useCallback(
     (text: string, model: string, attachments?: AttachmentRef[]) => {
@@ -1391,7 +1397,7 @@ export function useChatSession(
       // pick nothing, intermittently, in exactly the scope it was added for.
       const nextAlong = conversationsRef.current.find((c) => c.id !== id)?.id ?? null;
       setConversations((prev) => prev.filter((c) => c.id !== id));
-      runNotices.forget(id);
+      forgetRunNotice(id);
       // The cache has no other pruning path that works offline — without
       // this the deleted thread came straight back on the next offline start.
       const scope = scopeRef.current.cache ? cacheScopeRef.current : null;
@@ -1403,7 +1409,7 @@ export function useChatSession(
       }
       showToast('Conversation deleted');
     },
-    [setActiveId, showToast],
+    [forgetRunNotice, setActiveId, showToast],
   );
 
   const handleRename = useCallback(
@@ -1445,7 +1451,7 @@ export function useChatSession(
     streaming: !!activeStream,
     /** Per-row running badges for the thread list (#282), keyed by
      * conversation id. Empty map when nothing is running. */
-    runStatus: rowBadgesFor(runNotices.notices, stoppingConvId),
+    runStatus: rowBadgesFor(runNotices, stoppingConvId),
     // Overlaid on the live stream state, not replacing it: the run is still
     // streaming until it actually ends.
     stopping: activeId !== null && stoppingConvId === activeId,

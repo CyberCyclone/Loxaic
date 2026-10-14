@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
+import { useCallback, useRef, useState, type RefObject } from 'react'
 import { watchConversationRuns, type RunActivity, type ServerMessage } from '@loxaic/api-client'
 import {
   runNoticesAfterMessage,
