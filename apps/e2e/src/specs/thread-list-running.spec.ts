@@ -16,7 +16,7 @@
 import { browser, expect } from '@wdio/globals';
 import { adminCreds, provisionAdmin } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { isVisible, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { isVisible, platform, tap, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   MOCK_TOOL_DONE,
   SLOW_PROMPT,
@@ -43,6 +43,14 @@ const TOOL_ASK_PROMPT = `take your time and ${TOOL_PROMPT}`;
 
 const runBadge = (conversationId: string, state: string) => `threadList.run.${conversationId}.${state}`;
 
+/** Ends a case with the list put away. On a phone it is a slide-over that
+ * covers the menu button, so the next case's `goToSurface` could not reach
+ * the sidebar past it; opening a row is what closes it there, and on a wide
+ * layout, where the list is pinned, it is harmless. */
+async function closeListOn(conversationId: string): Promise<void> {
+  await tap(`threadList.item.${conversationId}`);
+}
+
 /** Starts what becomes a new conversation and returns its server id once the
  * list has it (set-difference, the pattern `sendInNewRun` uses). */
 async function sendAndCapture(prompt: string): Promise<string> {
@@ -67,9 +75,16 @@ describe('running status in the thread list', () => {
     await provisionAdmin();
     await resetInferenceSettings();
     await signIn(adminCreds());
+    // Every case reads a row while a reply is going, and UiAutomator2 waits
+    // for the UI to go idle before each lookup: a running reply's spinner
+    // never lets it, so each lookup took longer than the mock's whole slow
+    // run, and the Running badge had come and gone before it was looked for.
+    // As compaction-live.spec.ts does.
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 0 });
   });
 
   after(async () => {
+    if (platform() === 'android') await browser.updateSettings({ waitForIdleTimeout: 10_000 });
     await resetInferenceSettings();
   });
 
@@ -103,6 +118,7 @@ describe('running status in the thread list', () => {
     await waitForAbsent(runBadge(running, 'running'));
     await waitForVisible(`threadList.item.${running}`);
     await shot('thread-list-cleared');
+    await closeListOn(running);
   });
 
   it('badges a run started on another device, never sent from this one', async function () {
@@ -121,6 +137,7 @@ describe('running status in the thread list', () => {
       await shot('thread-list-another-device');
       await waitForRunDone(adminCreds(), other.conversationId);
       await waitForAbsent(runBadge(someChat.id, 'running'));
+      await closeListOn(someChat.id);
     } finally {
       other.close();
     }
@@ -174,7 +191,7 @@ describe('running status in the thread list', () => {
 
     await openThreadList('agent');
     await waitForVisible(runBadge(second, 'queued'), 30_000);
-    await waitForTextIn(runBadge(second, 'queued'), '#1');
+    await waitForFreshText(`${runBadge(second, 'queued')}.label`, '#1');
     await shot('thread-list-queued');
 
     // The queue moves: the second run gets its slot, so its row stops saying
@@ -186,6 +203,7 @@ describe('running status in the thread list', () => {
     await waitForRunDone(adminCreds(), first);
     await waitForRunDone(adminCreds(), second);
     await waitForAbsent(runBadge(second, 'running'));
+    await closeListOn(second);
   });
 
   it('badges a routine run live, and hands the row back to the recorded status', async function () {

@@ -162,7 +162,13 @@ export function ThreadList({
                   className="items-center rounded-full bg-muted px-1.5 py-0.5"
                 >
                   <Box className={`h-1.5 w-1.5 rounded-full ${run.dot}`} />
-                  <Text size="2xs" className="text-muted-foreground">
+                  <Text
+                    // The words, for a spec to read: on native the badge's
+                    // own text is not searchable from its container.
+                    testID={`threadList.run.${item.id}.${run.state}.label`}
+                    size="2xs"
+                    className="text-muted-foreground"
+                  >
                     {run.label}
                   </Text>
                 </HStack>

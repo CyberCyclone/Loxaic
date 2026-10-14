@@ -832,6 +832,14 @@ replies.
   `threadList.status.<id>.label`'s text. The row's testID carries the state (`threadList.run.<convId>.<state>`) because on
   native a container's text is not searchable and a text probe would match the open run's own
   header instead of the row.
+- **The badge's words have their own testID** (`threadList.run.<id>.<state>.label`, read with
+  `waitForFreshText`): on iOS the "#1" of "Queued · #1" could not be found from the badge.
+- **`thread-list-running.spec.ts` had never run when the PR was opened, and three of five cases
+  could not pass anywhere** (a second prompt sent into the first thread, a queued run too quick to
+  be seen running, a routine with no model). On phones two more things: the slide-over list left
+  open covers the menu button the next case needs (each case ends by opening a row), and
+  UiAutomator2's idle wait outlasts the mock's eight-second run (`waitForIdleTimeout: 0`, as in
+  `compaction-live.spec.ts`). Green on web, Electron, iOS and Android after.
 
 ### Tool loop (Chat and Agent both)
 
