@@ -1,0 +1,1 @@
+ALTER TABLE "conversations" ADD COLUMN "repo_skills" jsonb;

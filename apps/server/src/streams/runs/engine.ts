@@ -611,6 +611,7 @@ export async function runToolLoop(ctx: {
       userMsgId: ctx.userMsgId,
       front: ctx.role ? "" : await historyFront(convId),
       producer,
+      signal: abort.signal,
       ...(ctx.role ? { parentConvId: ctx.role.parentConvId } : {}),
     });
     const toolset = await buildToolset(userId, {
@@ -2142,7 +2143,7 @@ async function runOneToolCall(
   // needs a sandbox; the result is persisted like any other, so a replay
   // sends exactly what this request did.
   if (resolved.name === SKILL_TOOL_NAME) {
-    const { ok, output } = answerSkillCall(args.name, ctx.skills);
+    const { ok, output } = await answerSkillCall(args.name, ctx.skills, ctx.signal);
     producer.emit({
       kind: "tool.result",
       message_id: assistantMsgId,

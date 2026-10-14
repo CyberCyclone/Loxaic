@@ -78,8 +78,8 @@ describe("prepareRunSkills", () => {
     const skills = await prepareRunSkills({ convId, userId: owner, userMsgId: msgId, front: "0", producer });
     expect(skills.listing?.map((s) => s.name)).toContain("code-review");
     expect(skills.listing?.map((s) => s.name)).not.toContain("compact");
-    expect(skills.find("debug")?.body).toContain("# Debug");
-    expect(skills.find("compact")).toBeUndefined();
+    expect((await skills.load("debug")).output).toContain("# Debug");
+    expect((await skills.load("compact")).ok).toBe(false);
     expect((await snapshotOf(convId)).base.map((s) => s.name)).toEqual(skills.listing?.map((s) => s.name));
     expect(events).toEqual([]);
     expect(await contentOf(msgId)).toEqual([{ kind: "text", text: "hello" }]);
@@ -95,7 +95,7 @@ describe("prepareRunSkills", () => {
     const rec = recorder();
     const next = await prepareRunSkills({ convId, userId: owner, userMsgId: second, front: "0", producer: rec.producer });
     expect(next.listing).toEqual(frozen.listing);
-    expect(next.find("house-style")?.body).toBe("Use short sentences.");
+    expect((await next.load("house-style")).output).toContain("Use short sentences.");
     const blocks = await contentOf(second);
     expect(blocks[1]).toMatchObject({ kind: "skills_update", summary: "Skills changed: added house-style" });
     expect(rec.events).toEqual([{ kind: "skills.update", message_id: second, summary: "Skills changed: added house-style" }]);
@@ -216,7 +216,7 @@ describe("a person's own skills", () => {
     const blocks = await contentOf(added);
     expect(blocks.map((b) => b.kind)).toEqual(["text", "skills_update", "skill"]);
     expect(blocks[2]).toMatchObject({ name: "release-notes", source: "user" });
-    expect(run.find("release-notes")?.body).toBe("Group by area.");
+    expect((await run.load("release-notes")).output).toContain("Group by area.");
 
     await db.update(skills).set({ body: "Group by package." }).where(eq(skills.id, row.id));
     const edited = await addMessage(convId, "again");

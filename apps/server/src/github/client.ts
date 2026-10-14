@@ -249,6 +249,47 @@ export async function getFileText(
   return { text: new TextDecoder().decode(body.bytes), bytes: body.bytes.length, truncated: body.truncated };
 }
 
+/**
+ * The entries of a directory at `ref` — name and type only — or null when
+ * there is no directory there (nothing, or a file). Capped: a directory is a
+ * stranger's, and a listing is read to the same byte cap as a file.
+ */
+export async function listDirectory(
+  token: string,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+  signal?: AbortSignal,
+): Promise<{ name: string; type: string }[] | null> {
+  const encPath = path.split("/").map(encodeURIComponent).join("/");
+  let res: Response;
+  try {
+    res = await rawRequest(
+      token,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encPath}?ref=${encodeURIComponent(ref)}`,
+      { headers: { Accept: "application/vnd.github+json" }, ...(signal ? { signal } : {}) },
+    );
+  } catch (err) {
+    if (err instanceof GithubApiError && err.status === 404) return null;
+    throw err;
+  }
+  const body = await readCapped(res, 1024 * 1024);
+  if (body.truncated) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(body.bytes));
+  } catch {
+    return null;
+  }
+  // A file is answered as one object, not a list.
+  if (!Array.isArray(parsed)) return null;
+  return parsed
+    .filter((e): e is { name: string; type: string } =>
+      !!e && typeof (e as { name?: unknown }).name === "string" && typeof (e as { type?: unknown }).type === "string")
+    .map((e) => ({ name: e.name, type: e.type }));
+}
+
 /** Reads a response body up to `max` bytes, cancelling the rest. A cut can
  * land inside a multi-byte character; the decoder then emits one U+FFFD at the
  * end, which is harmless for text that is only ever read by a model. */

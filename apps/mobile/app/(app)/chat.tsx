@@ -91,7 +91,7 @@ export default function ChatScreen() {
     stageCard,
   } = useChatSession(token, () => { void refreshModels(); }, undefined, pendingMcpRef, pendingStageRef, thinkingRef);
   // What the "/" palette offers here, most-used first (#283).
-  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId);
+  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, streaming);
   // Read by the session at send time; see useChatSession's `pendingMcp`.
   const mcp = useMcpSwitches(token, activeId, 'chat', promotion);
   pendingMcpRef.current = mcp.pendingOverrides;

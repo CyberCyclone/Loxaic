@@ -135,6 +135,15 @@ export const conversations = pgTable("conversations", {
    * when a compaction moves the front anyway. Null until a run takes it.
    */
   skillCatalog: jsonb("skill_catalog"),
+  /**
+   * The skills in the workspace's own repository (`.agents/skills`,
+   * `.claude/skills`, `.opencode/skills`), as last scanned: names,
+   * descriptions and where each lives, never their instructions, which are
+   * read from the workspace when one is used. A `RepoSkillScan` in
+   * apps/server/src/skills/workspace.ts. Null until an agent run in a github
+   * or local workspace scans.
+   */
+  repoSkills: jsonb("repo_skills"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
   /**

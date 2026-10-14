@@ -15,8 +15,13 @@ import { bumpSkill, skillNamed, skillsFor } from '@/lib/skillPalette';
  *
  * `noteUsed` re-sorts locally the moment a skill is run — the server counts
  * the same use — so the palette is right the next time "/" is typed.
+ *
+ * Asked again whenever a run ends (`busy` going false): a run is what scans an
+ * agent workspace's own skills, so a new thread in a repository has none to
+ * list until its first reply, and a skill changed on another device shows up
+ * at the next one.
  */
-export function useSkills(conversationId: string | null | undefined) {
+export function useSkills(conversationId: string | null | undefined, busy = false) {
   const id = conversationId && isServerConvId(conversationId) ? conversationId : null;
   const [held, setHeld] = useState<{ for: string | null; skills: readonly PaletteSkill[] } | null>(null);
   const reachable = useServerReachable();
@@ -36,6 +41,12 @@ export function useSkills(conversationId: string | null | undefined) {
   useEffect(() => {
     if (reachable) void refresh();
   }, [refresh, reachable]);
+
+  const wasBusy = useRef(busy);
+  useEffect(() => {
+    if (wasBusy.current && !busy && reachable) void refresh();
+    wasBusy.current = busy;
+  }, [busy, reachable, refresh]);
 
   const noteUsed = useCallback(
     (name: string) => {

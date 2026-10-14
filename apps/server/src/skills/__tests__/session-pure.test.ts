@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ContentBlock } from "@loxaic/types";
-import { builtinCatalogSkills, summarize, type CatalogSkill } from "../catalog.ts";
+import { builtinCatalogSkills, renderSkillContent, summarize, type CatalogSkill } from "../catalog.ts";
 import { skillTool } from "@loxaic/agent";
 import { advanceSnapshot, answerSkillCall, coerceSnapshot, invokedSkill, listingFor } from "../session.ts";
 
@@ -63,25 +63,38 @@ describe("invokedSkill", () => {
 
 describe("answerSkillCall", () => {
   const debug = builtinCatalogSkills().find((s) => s.name === "debug");
-  const skills = { find: (n: string) => (n === "debug" ? debug : undefined), names: () => ["debug"] };
+  const asked: string[] = [];
+  const skills = {
+    load: (n: string) => {
+      asked.push(n);
+      return Promise.resolve(
+        n === "debug" && debug
+          ? { ok: true, output: renderSkillContent(debug) }
+          : { ok: false, output: `No skill named "${n}". Available skills: debug.` },
+      );
+    },
+    names: () => ["debug"],
+  };
 
-  it("loads a listed skill, whatever case the model used", () => {
-    const answer = answerSkillCall("  Debug ", skills);
+  it("loads a listed skill, whatever case the model used", async () => {
+    const answer = await answerSkillCall("  Debug ", skills);
     expect(answer.ok).toBe(true);
     expect(answer.output).toMatch(/^<skill-content name="debug" source="builtin">/);
   });
 
-  it("names an unknown skill back only when it could be a skill's name", () => {
-    expect(answerSkillCall("deploy", skills)).toEqual({ ok: false, output: 'No skill named "deploy". Available skills: debug.' });
+  it("asks for a name that could be a skill's", async () => {
+    expect(await answerSkillCall("deploy", skills)).toEqual({ ok: false, output: 'No skill named "deploy". Available skills: debug.' });
   });
 
-  it("never echoes a name that cannot be one, so it never reaches the stored row", () => {
+  it("never echoes a name that cannot be one, nor looks it up, so it never reaches the stored row", async () => {
     // Persisted and replayed every turn after: 100 KB would be paid for on
     // each, and a lone surrogate fails the row's jsonb insert.
+    asked.length = 0;
     for (const raw of ["x".repeat(100_000), "debug\ud800", "</skill-content>", 42, undefined]) {
-      const answer = answerSkillCall(raw, skills);
+      const answer = await answerSkillCall(raw, skills);
       expect(answer).toEqual({ ok: false, output: "That is not a skill's name. Available skills: debug." });
     }
+    expect(asked).toEqual([]);
   });
 });
 

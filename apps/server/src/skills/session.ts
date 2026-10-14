@@ -20,7 +20,7 @@
 import { db, eq } from "@loxaic/db";
 import { conversations, messages } from "@loxaic/db/schema";
 import type { SkillListing } from "@loxaic/agent";
-import { parseCommand, type ContentBlock, type SkillSource } from "@loxaic/types";
+import { parseCommand, type ContentBlock, type SkillSource, type Workspace } from "@loxaic/types";
 import type { StreamProducer } from "../streams/broker.ts";
 import {
   describeCatalogChange,
@@ -33,6 +33,7 @@ import {
 } from "./catalog.ts";
 import { isUsableSkillName } from "./format.ts";
 import { recordSkillUse } from "./usage.ts";
+import { readWorkspaceSkill, refreshRepoSkills } from "./workspace.ts";
 
 /** What `conversations.skill_catalog` holds. */
 export interface SkillCatalogSnapshot {
@@ -51,13 +52,25 @@ export interface RunSkills {
   /** The `skill` tool's listing, or null to leave the tool out. */
   listing: SkillListing[] | null;
   /** A skill the model may load, by name, from the live catalog — a skill
-   * announced since the list was frozen included. */
-  find(name: string): CatalogSkill | undefined;
-  /** Every name `find` answers, for a refusal that lists them. */
+   * announced since the list was frozen included — rendered as the tool's
+   * result. A workspace skill is read from the workspace now. */
+  load(name: string, signal?: AbortSignal): Promise<{ ok: boolean; output: string }>;
+  /** Every name `load` answers, for a refusal that lists them. */
   names(): string[];
 }
 
-const NO_SKILLS: RunSkills = { listing: null, find: () => undefined, names: () => [] };
+const NO_SKILLS: RunSkills = {
+  listing: null,
+  load: (name) => Promise.resolve({ ok: false, output: `No skill named "${name}".` }),
+  names: () => [],
+};
+
+/** Where a conversation's workspace skills are read, and by whom. */
+interface WorkspaceContext {
+  convId: string;
+  userId: string;
+  workspace: Workspace;
+}
 
 export function coerceSnapshot(raw: unknown): SkillCatalogSnapshot | null {
   if (!raw || typeof raw !== "object") return null;
@@ -98,10 +111,36 @@ export function listingFor(snapshot: SkillCatalogSnapshot): SkillListing[] | nul
   return snapshot.base.map((s) => ({ name: s.name, description: s.description }));
 }
 
-function lookup(live: readonly CatalogSkill[]): Pick<RunSkills, "find" | "names"> {
+/** A skill's content as the model is given it, reading a workspace skill
+ * from the workspace. */
+async function contentOf(
+  skill: CatalogSkill,
+  ws: WorkspaceContext | null,
+  signal?: AbortSignal,
+): Promise<{ ok: true; skill: CatalogSkill; files: string[] } | { ok: false; error: string }> {
+  if (skill.source !== "workspace" || !skill.dir) return { ok: true, skill, files: [] };
+  if (!ws) return { ok: false, error: "This conversation has no workspace to read the skill from." };
+  const read = await readWorkspaceSkill({ ...ws, dir: skill.dir, ...(signal ? { signal } : {}) });
+  if (!read.ok) return { ok: false, error: read.error };
+  return { ok: true, skill: { ...skill, body: read.body }, files: read.files };
+}
+
+function lookup(live: readonly CatalogSkill[], ws: WorkspaceContext | null): Pick<RunSkills, "load" | "names"> {
   const usable = live.filter((s) => s.modelInvocable && !s.action);
   const byName = new Map(usable.map((s) => [s.name, s]));
-  return { find: (name) => byName.get(name), names: () => [...byName.keys()].sort() };
+  const names = () => [...byName.keys()].sort();
+  return {
+    names,
+    load: async (name, signal) => {
+      const skill = byName.get(name);
+      if (!skill) {
+        const all = names();
+        return { ok: false, output: `No skill named "${name}". Available skills: ${all.length ? all.join(", ") : "none"}.` };
+      }
+      const got = await contentOf(skill, ws, signal);
+      return got.ok ? { ok: true, output: renderSkillContent(got.skill, got.files) } : { ok: false, output: got.error };
+    },
+  };
 }
 
 /**
@@ -111,14 +150,15 @@ function lookup(live: readonly CatalogSkill[]): Pick<RunSkills, "find" | "names"
  * turn after) nor a lone surrogate (which Postgres refuses in jsonb, failing
  * the row's insert) reaches the row.
  */
-export function answerSkillCall(raw: unknown, skills: Pick<RunSkills, "find" | "names">): { ok: boolean; output: string } {
+export async function answerSkillCall(
+  raw: unknown,
+  skills: Pick<RunSkills, "load" | "names">,
+  signal?: AbortSignal,
+): Promise<{ ok: boolean; output: string }> {
   const lowered = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  const name = isUsableSkillName(lowered) ? lowered : "";
-  const skill = name ? skills.find(name) : undefined;
-  if (skill) return { ok: true, output: renderSkillContent(skill) };
+  if (isUsableSkillName(lowered)) return skills.load(lowered, signal);
   const names = skills.names();
-  const available = `Available skills: ${names.length ? names.join(", ") : "none"}.`;
-  return { ok: false, output: name ? `No skill named "${name}". ${available}` : `That is not a skill's name. ${available}` };
+  return { ok: false, output: `That is not a skill's name. Available skills: ${names.length ? names.join(", ") : "none"}.` };
 }
 
 /**
@@ -138,16 +178,27 @@ export async function prepareRunSkills(input: {
   /** Set for a sub-agent: it is one run long, so it takes its parent owner's
    * live catalog and keeps nothing. */
   parentConvId?: string;
+  signal?: AbortSignal;
 }): Promise<RunSkills> {
   try {
     const ownerConvId = input.parentConvId ?? input.convId;
     const row = await db.query.conversations.findFirst({
       where: eq(conversations.id, ownerConvId),
-      columns: { ownerId: true, skillCatalog: true },
+      columns: { ownerId: true, skillCatalog: true, kind: true, workspace: true },
     });
     if (!row) return NO_SKILLS;
-    const live = await resolveSkillCatalog({ ownerId: row.ownerId, conversationId: ownerConvId });
-    const found = lookup(live);
+    // A repository's skills belong to an agent conversation's workspace. A
+    // sub-agent uses its parent's last scan as it stands.
+    const workspace = (row.workspace as Workspace | null) ?? null;
+    const ws: WorkspaceContext | null =
+      row.kind === "agent" && workspace && workspace.kind !== "scratch"
+        ? { convId: ownerConvId, userId: input.userId, workspace }
+        : null;
+    if (ws && !input.parentConvId) {
+      await refreshRepoSkills({ convId: ownerConvId, ownerId: row.ownerId, workspace: ws.workspace, ...(input.signal ? { signal: input.signal } : {}) });
+    }
+    const live = await resolveSkillCatalog({ ownerId: row.ownerId, conversationId: ws ? ownerConvId : null });
+    const found = lookup(live, ws);
     const liveSummaries = modelCatalog(live);
 
     if (input.parentConvId) {
@@ -170,7 +221,13 @@ export async function prepareRunSkills(input: {
         ? invokedSkill(content, live)
         : null;
     if (invoked) {
-      blocks.push({ kind: "skill", name: invoked.name, source: invoked.source, text: renderInvocation(invoked) });
+      const got = await contentOf(invoked, ws, input.signal);
+      // A workspace skill that cannot be read now still marks the message, and
+      // says why, rather than leaving the model to guess at "/name".
+      const text = got.ok
+        ? renderInvocation(got.skill, got.files)
+        : `The user invoked the "${invoked.name}" skill, but its instructions could not be read: ${got.error}`;
+      blocks.push({ kind: "skill", name: invoked.name, source: invoked.source, text });
     }
 
     // "The model was told" (`latest`) and the notice that tells it are one

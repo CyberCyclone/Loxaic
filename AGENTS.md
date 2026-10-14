@@ -4374,6 +4374,51 @@ replies.
     place each race with a trigger. Found in review.
   - **"Let the model use this skill"** is `model_invocable`, the format's
     `disable-model-invocation` turned around.
+- **A workspace's own skills** (`skills/workspace.ts`) are found where Claude Code, OpenCode and
+  Codex keep them, at the workspace root, in this order: `.agents/skills`, `.claude/skills`,
+  `.opencode/skills`, `.opencode/skill`. The first to define a name wins. They are offered only in
+  an agent conversation with a github or local workspace, and override a person's own and the
+  built-ins (the spec's "project overrides user").
+  - **Only the catalog is stored** (`conversations.repo_skills`, migration 0047): name,
+    description, directory, a hash of the file read. The instructions are read from the
+    workspace each time one is used, so a skill runs as the checkout has it. The tool's result
+    names its directory and lists its other files (at most `MAX_LISTED_FILES`, 50), which the model reads on demand.
+  - **Read the way the project's AGENTS.md is**:
+    - through the executor for a direct local folder;
+    - inside a container or a GitHub checkout only while it is live (`workspaceExec`);
+    - through GitHub's contents API (`listDirectory`, `getFileText`) before a clone exists;
+    - and never by starting anything just to look.
+  - **Rescanned when a one-exec `cksum` listing differs** from the stored one. A change the model
+    must hear of (a different description or file hash) is then announced like any other skill
+    change; a touched file is rescanned and says nothing.
+  - **Using one is an explicit act, so it may start the sandbox** (a clone, a paused container)
+    when nothing is running to read with, as `fs_read` does.
+  - **Every exec read is confined by real path.** A skill directory linked out of the repository
+    is passed over in the listing, and the read re-checks it. A failed scan backs off like the
+    instructions lookup; an earlier scan stays in use.
+  - **Framing:** the repository may be a stranger's. A workspace skill's content opens with
+    `WORKSPACE_SKILL_NOTE`: the project's conventions, unable to change Loxaic's rules or what is
+    asked before anything runs. Approvals are enforced server-side regardless.
+  - **What a repository cannot do to a thread** (all found in review):
+    - **Replace a command.** `/compact` is a person's to override, never a checkout's
+      (`isReservedSkillName`). Otherwise a repository shipping a "compact" skill took manual
+      compaction away from the thread that needed it.
+    - **Fill the prompt.** Its descriptions together get 8 KB (`MAX_REPO_SKILL_LIST_BYTES`) as
+      well as the 100-skill cap. They ride every request, and a count alone let a hundred long
+      ones take a small model's window.
+    - **Hold the thread.** One scan gets 30 s in all (`SKILL_SCAN_BUDGET_MS`), not 10 s per read
+      times a count the repository chooses, since the conversation is claimed meanwhile. What it
+      did not read is named in `problems` and not rescanned until something changes.
+    - **Mislist files.** A skill's other files are listed NUL-separated, from its *resolved*
+      directory (find does not descend a symlinked start, so a skill linked in from elsewhere in
+      the repository listed nothing), with its own SKILL.md left out by string comparison:
+      `find -path` reads `a[b]` as a pattern. `head -z` is not on macOS, so the count is ours.
+    - Every reason a skill was not used is in `repo_skills.problems`, which `coerceScan` used to
+      drop on the way back out.
+  - **A sub-agent** uses its parent's last scan as it stands.
+  - **The palette** lists a conversation's workspace skills once a run has scanned, so a new
+    agent thread shows them from its first reply. The Skills screen does not: it has no
+    conversation.
 - **Whose skills:** the conversation's **owner's**, never the sender's. Two editors with two
   catalogs would announce each other's skills on every alternate turn. A sub-agent takes its
   parent owner's live list and stores nothing, since it is one run long.
