@@ -241,7 +241,7 @@ parts — rather than merely that a thumbnail rendered locally.
 
 The two native branches select **system UI we don't own** (Apple's and Google's pickers), so they
 match on OS accessibility traits rather than `testID`s. That is a deliberate exception to the rule
-in AGENTS.md, in the same category as `appium:autoDismissAlerts` — and it is confined to that one
+in this directory's AGENTS.md, in the same category as `appium:autoDismissAlerts` — and it is confined to that one
 helper so a picker redesign breaks one function, not every spec.
 
 The fixture is `fixtures/images/red-square.png` (64×64 solid crimson, 136 bytes) — deliberately a
@@ -317,7 +317,7 @@ partway through a UI flow — see `resetSandboxSettings()` in `helpers/app.ts`.
 against `apps/e2e/scripts/mock-github.ts` — a minimal in-process HTTP server standing in for
 `api.github.com`, started by `standup.ts` before the test server and passed to it as
 `GITHUB_API_URL` (the same env var `apps/server/src/github/client.ts` reads at call time; see
-AGENTS.md's "GitHub connection" section). No spec ever reaches real GitHub. Anything that is not
+`apps/server/src/github/AGENTS.md`). No spec ever reaches real GitHub. Anything that is not
 one of the two exported tokens 401s, so the "bad token" case exercises the server's real
 validation path rather than a canned rejection.
 
@@ -448,7 +448,7 @@ whether the Inspector's Git panel says so.
 order. Failures are captured automatically as `NN-FAILED-<test title>.png`.
 
 **`artifacts/` is gitignored and screenshots are never committed.** They are evidence for the
-PR description — drag the PNGs into the PR body. See AGENTS.md → "Testing: every PR, unit and end to end".
+PR description — drag the PNGs into the PR body. See the root AGENTS.md → "Testing".
 
 ## "tab crashed": a pruned browser cache, not your change
 
@@ -520,7 +520,7 @@ pnpm --filter @loxaic/e2e teardown
 
 Select by `testID`, never by CSS class, text position, or list index — the message list is
 inverted *and* virtualised, so position is not stable. The convention for testIDs themselves
-(`area.element[.qualifier]`) is documented in AGENTS.md.
+(`area.element[.qualifier]`) is documented in `apps/mobile/AGENTS.md`.
 
 ```ts
 import { tap, typeInto, waitForVisible } from '../helpers/selectors.ts';

@@ -9,10 +9,10 @@
  * On iOS and Android the picker is **system UI we don't own** — PHPicker and
  * the Android photo picker — so those two branches select by OS-specific
  * accessibility traits instead of testIDs. That is a deliberate exception to
- * the rule in AGENTS.md ("never by CSS class, text position, or list index"),
- * the same category as `appium:autoDismissAlerts`: the rule protects us from
- * brittle selectors on markup we control, and this is markup Apple and Google
- * control. Keeping it to this single function means the whole suite's
+ * the rule in apps/e2e/AGENTS.md ("never by CSS class, text position or list
+ * index"), the same category as `appium:autoDismissAlerts`: the rule protects
+ * us from brittle selectors on markup we control, and this is markup Apple and
+ * Google control. Keeping it to this single function means the whole suite's
  * exposure to those selectors is these few lines — a picker redesign breaks
  * one helper, not every spec.
  *
@@ -197,7 +197,7 @@ const MIN_GRID_CELL_PX = 200;
  *
  * So: the cells are the large, square, clickable views; the header controls
  * are small or oblong. That is a positional heuristic of exactly the kind
- * AGENTS.md forbids — for markup we own. This is Google's, and it is already
+ * the rule above forbids — for markup we own. This is Google's, and it is already
  * the sanctioned exception documented at the top of this file.
  */
 async function firstGridCell(): Promise<WebdriverIO.Element | null> {

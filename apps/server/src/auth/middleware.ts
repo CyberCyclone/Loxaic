@@ -11,8 +11,9 @@ type VerifiedSession = NonNullable<Awaited<ReturnType<typeof auth.api.getSession
  * applied through those takes effect at once — but a ban applied any other
  * way, notably the direct `UPDATE "user" SET banned = true` an operator would
  * reach for (the same shape as the role-promotion recovery path documented in
- * AGENTS.md), would otherwise never be enforced at all. The predicate itself
- * lives in ./ban.ts so the admin user list reports exactly what is enforced.
+ * this directory's AGENTS.md), would otherwise never be enforced at all. The
+ * predicate itself lives in ./ban.ts so the admin user list reports exactly
+ * what is enforced.
  */
 /**
  * A password reset (Admin → Users, or the reset-password CLI) sets

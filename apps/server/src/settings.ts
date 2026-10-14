@@ -171,7 +171,7 @@ const DEFAULTS: SandboxSettings = {
 export class SettingsError extends Error {
   // Assigned in the body rather than as a constructor parameter property:
   // those are erasable-syntax-incompatible, and this repo runs raw TS under
-  // Node's strip-only mode in some paths (see AGENTS.md).
+  // Node's strip-only mode in some paths (see the root AGENTS.md).
   readonly code: "invalid" | "envOverride";
 
   constructor(message: string, code: "invalid" | "envOverride") {

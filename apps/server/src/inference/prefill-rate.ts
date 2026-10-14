@@ -9,8 +9,9 @@
  * conservative direction, same as prompt-reuse.ts's traces.
  *
  * **This is not `prompt_tps` and must never be stored or shown as a speed.**
- * AGENTS.md forbids deriving a prompt rate from `prompt_tokens / ttft`, since
- * a cached prompt makes that a meaningless number. A sample here divides only
+ * This directory's AGENTS.md forbids deriving a prompt rate from
+ * `prompt_tokens / ttft`, since a cached prompt makes that a meaningless
+ * number. A sample here divides only
  * the tokens that were *evaluated* — and is taken only when that count is
  * known exactly: llama.cpp's own `prompt_per_second`, or a request whose
  * prefix was a measured strict extension of the one before (so the rest is

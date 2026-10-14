@@ -4,8 +4,8 @@ Thanks for taking the time. Bug reports, fixes and features are all welcome.
 
 ## Before you start
 
-- **Read [`AGENTS.md`](AGENTS.md).** It is the source of truth for architecture, conventions
-  and gotchas, and most of what would otherwise come up in review is already written there.
+- **Read [`AGENTS.md`](AGENTS.md)**, and the `AGENTS.md` in each directory you change. Between
+  them they hold the rules that would otherwise come up in review.
 - **For anything larger than a bug fix, open an issue first**, so we can agree on the shape
   before you spend time on it.
 - **Security problems are never reported in a public issue.** See [`SECURITY.md`](SECURITY.md).
@@ -29,8 +29,9 @@ Thanks for taking the time. Bug reports, fixes and features are all welcome.
    which nothing in the test run applies. Once, before the first run (and after pulling a
    migration): `pnpm --filter @loxaic/db db:migrate`.
 4. **User-visible changes need end-to-end coverage** — a spec in `apps/e2e/src/specs/`, and
-   screenshots of the behaviour in the pull request description. See "End-to-end tests" in
-   `AGENTS.md` and [`apps/e2e/README.md`](apps/e2e/README.md). If a change is not
+   screenshots of the behaviour in the pull request description. See "Testing" in
+   `AGENTS.md`, [`apps/e2e/AGENTS.md`](apps/e2e/AGENTS.md) and
+   [`apps/e2e/README.md`](apps/e2e/README.md). If a change is not
    user-visible, say so in the pull request instead.
 5. Open the pull request against `dev` and fill in the template. CI (lint, typecheck, the Go
    sidecar build and the test suite) has to pass before it can merge.

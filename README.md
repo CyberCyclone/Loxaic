@@ -40,8 +40,9 @@ The first account to sign up becomes the admin.
 
 ## Documentation
 
-**Start here: [`AGENTS.md`](AGENTS.md)** — the source of truth for architecture, conventions,
-and gotchas for anyone (human or agent) making changes.
+**Start here: [`AGENTS.md`](AGENTS.md)** — the layout, commands, testing and pull-request rules
+for anyone (human or agent) making changes. Each area's own rules are in an `AGENTS.md` in its
+directory.
 
 - [`docs/DEPLOY.md`](docs/DEPLOY.md) — running it: server, web, Expo Go, EAS Update, Electron.
 - [`docs/RUNTIME.md`](docs/RUNTIME.md) — choosing a container engine (Docker/Podman/OrbStack/Colima) and an inference backend (Mac/Metal, Windows/NVIDIA, Proxmox/ROCm) for your hardware.

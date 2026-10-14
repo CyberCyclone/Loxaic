@@ -399,7 +399,7 @@ jobs:
     if: ${{ github.repository_owner == 'CyberCyclone' }}
     # EXPO_TOKEN can publish JavaScript to every channel, and with update
     # signing unavailable on this EAS plan it is the whole defence for every
-    # installed app (AGENTS.md). Naming an environment is what lets it move
+    # installed app. Naming an environment is what lets it move
     # behind required reviewers and a tag-only deployment branch rule; until
     # it does, this line changes nothing and the secret still resolves from
     # the repository. Before relying on it: dev-update.yml reads EXPO_TOKEN on
@@ -572,9 +572,8 @@ jobs:
                 #
                 # Given it has been uploaded, there is nothing to send: the
                 # binary is identical and the JS it runs was just published
-                # over the air. This is the JS-only release AGENTS.md
-                # describes — no new store build, TestFlight and Play version
-                # numbers unchanged.
+                # over the air. This is the JS-only release: no new
+                # store build, TestFlight and Play version numbers unchanged.
                 #
                 # It used to run `eas submit` here instead, and that could
                 # never have worked: `resolveArchiveSourceAsync` throws "You

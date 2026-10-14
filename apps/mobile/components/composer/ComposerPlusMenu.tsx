@@ -63,9 +63,9 @@ export interface ComposerPlusMenuProps {
  * The composer's `+`, native: one sheet holding the attach actions and, below
  * them, MCP. Choosing MCP swaps the sheet's content for the server list
  * rather than opening a second sheet — iOS will not present a modal while
- * another is being dismissed (see the plan review's model picker in
- * AGENTS.md). Web renders ComposerPlusMenu.web.tsx instead, which drives a
- * real `<input type="file">` directly — expo-image-picker's web shim creates a
+ * another is being dismissed (see apps/mobile/components/AGENTS.md). Web
+ * renders ComposerPlusMenu.web.tsx instead, which drives a real
+ * `<input type="file">` directly — expo-image-picker's web shim creates a
  * transient hidden input at click time with nothing stable to select.
  */
 export function ComposerPlusMenu({

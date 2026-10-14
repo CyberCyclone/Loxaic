@@ -454,8 +454,8 @@ const SUMMARY_LOOKBACK = 20;
  * `stripImagesForCompaction` is extracted in compactRun.ts. Driving a whole
  * run through the mock cannot show what the system prompt contained, and that
  * blind spot is exactly how DOCUMENT_SYSTEM_ADDENDUM came to be defined,
- * documented in AGENTS.md as the document path's prompt-injection defence,
- * and never once appended to a prompt.
+ * documented as the document path's prompt-injection defence, and never once
+ * appended to a prompt.
  */
 export function assembleSystemPrompt(
   basePrompt: string | null,

@@ -9,7 +9,7 @@ import { getSkillUsage } from "../skills/usage.ts";
 import { MAX_USER_SKILLS, validateSkillInput } from "../skills/user-skills.ts";
 
 /**
- * Skills (#283) — see AGENTS.md, "Skills".
+ * Skills (#283) — see apps/server/src/skills/AGENTS.md.
  *
  * `GET /v1/skills` is what the composer's "/" palette lists: every skill the
  * caller can run in the named conversation (its owner's, as a send resolves

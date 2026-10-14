@@ -104,7 +104,7 @@ export function fileRoutes(app: FastifyInstance) {
     // the container's protections — no network isolation, no uid separation,
     // and the host provider ignores the resource limits entirely — so running
     // a PDF or Office parser there is running it on the server itself.
-    // Resolved at call time, per the settings contract in AGENTS.md.
+    // Resolved at call time, per the settings contract in apps/server/AGENTS.md.
     if (cls === "document") {
       const sandbox = await getSandboxStatus();
       if (sandbox.mode !== "container" || !sandbox.available) {

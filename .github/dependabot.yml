@@ -12,9 +12,9 @@ updates:
 
   # One entry covers the whole pnpm workspace. Majors are left to a person:
   # TypeScript is held at 5.9 on purpose, Electron's major is the packaged app's
-  # Node, and each one needs its own PR (see AGENTS.md). Everything the Expo SDK
-  # pins is upgraded with `npx expo install --fix`, never piecemeal, or the app
-  # drifts off the versions that SDK was tested with.
+  # Node, and each one needs its own PR (see apps/mobile/AGENTS.md). Everything
+  # the Expo SDK pins is upgraded with `npx expo install --fix`, never
+  # piecemeal, or the app drifts off the versions that SDK was tested with.
   - package-ecosystem: npm
     directory: /
     target-branch: dev

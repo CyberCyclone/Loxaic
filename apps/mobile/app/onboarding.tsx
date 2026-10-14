@@ -129,8 +129,8 @@ export default function OnboardingScreen() {
           fields is taller than a short window, and gluestack's min-h-0 on
           every Box/VStack lets a flex column *compress* its children into
           each other rather than overflow — the same failure the Inspector
-          hit (see AGENTS.md). Centred while it fits, scrolls once it does
-          not. */}
+          hit (see apps/mobile/AGENTS.md). Centred while it fits, scrolls
+          once it does not. */}
       <ScrollView
         style={{ flex: 1, minHeight: 0 }}
         className="bg-background"

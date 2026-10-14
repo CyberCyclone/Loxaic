@@ -23,9 +23,9 @@ import { TRUNCATE_TEXT } from '@/lib/truncate';
  * loaded at, with what each costs in memory, and a choice — before a chat
  * exists (it rides the first send) or in the middle of one (a stage run).
  *
- * Both halves of the scroll fix (AGENTS.md): height-bounded and
- * `ModalBody scrollEnabled`, because a model can have six stages and a
- * warning above them.
+ * Both halves of the scroll fix (apps/mobile/components/AGENTS.md):
+ * height-bounded and `ModalBody scrollEnabled`, because a model can have six
+ * stages and a warning above them.
  */
 export function ContextSettingsSheet({ stages }: { stages: ContextStagesState }) {
   const reachable = useServerReachable();

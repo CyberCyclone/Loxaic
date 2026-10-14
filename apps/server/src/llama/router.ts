@@ -588,7 +588,7 @@ export function skippedExtraOptions(rows: readonly ExtraOption[]): string[] {
 /**
  * Whether the build being run is the one whose log was checked. Placement
  * needs `log-verbosity = 4`, and at that level only the bundled release is
- * known to print no prompt text (AGENTS.md, "Host model state"). Another
+ * known to print no prompt text (this directory's AGENTS.md). Another
  * release or a fork may print a request's body at a level we would be asking
  * for, straight into `router.log` — so a chosen build runs at llama.cpp's
  * default verbosity and shows no placement detail.

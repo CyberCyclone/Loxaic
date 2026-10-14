@@ -106,7 +106,8 @@ export function useSandboxTerminal(
     // Read through a call, never the variable: the type checker narrows
     // `cancelled` to false after the assignment above and cannot see that an
     // await lets the cleanup run in between — the same trap the run
-    // scheduler's `signal.aborted` check documents (AGENTS.md).
+    // scheduler's `signal.aborted` check documents
+    // (apps/server/src/inference/AGENTS.md).
     const isCancelled = () => cancelled;
     let socket: WebSocket | null = null;
 

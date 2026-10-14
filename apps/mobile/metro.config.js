@@ -19,7 +19,7 @@ config.resolver.nodeModulesPaths = [
 // pnpm materialise a second React; that dependency is gone (overlays animate
 // with react-native-reanimated now). If "Invalid hook call" ever comes back,
 // find the dependency that dragged in a second `react` rather than re-adding
-// the shim — see AGENTS.md.
+// the shim — see the root AGENTS.md.
 
 // withUniwindConfig must be the outermost wrapper.
 module.exports = withUniwindConfig(config, {

@@ -1,6 +1,6 @@
 /**
  * Keeping the project's instructions current without re-evaluating the
- * prompt — see AGENTS.md, "Project instructions".
+ * prompt — see this directory's AGENTS.md.
  *
  * The system prompt carries the version read before the conversation's first
  * request, and changing it would make the backend re-read everything after

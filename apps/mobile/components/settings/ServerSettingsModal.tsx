@@ -30,8 +30,8 @@ import { useToastHelper } from '@/hooks/useToastHelper';
  * step (Check, then Connect once it answers).
  *
  * Bounded height + scrollable, matching every other settings dialog in this
- * app (see AGENTS.md's ModalBody gotcha) — this one has three text fields
- * plus a pill row and can outgrow a short viewport.
+ * app (see apps/mobile/components/AGENTS.md) — this one has three text
+ * fields plus a pill row and can outgrow a short viewport.
  */
 export function ServerSettingsModal({
   open,

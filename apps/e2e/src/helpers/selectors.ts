@@ -7,7 +7,7 @@
  * here is what lets the smoke suite be written once against plain testIDs and
  * run unchanged on every platform.
  *
- * See AGENTS.md ("testIDs and e2e selectors") for the naming convention.
+ * See apps/mobile/AGENTS.md ("testIDs") for the naming convention.
  */
 import { $, browser } from '@wdio/globals';
 

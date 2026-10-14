@@ -146,8 +146,7 @@ beforeEach(() => {
 afterEach(async () => {
   retentionOff();
   // Scoped to this suite's own users — an unscoped delete would take every
-  // other suite's rows out from under them (AGENTS.md records exactly that
-  // bug in git.test.ts).
+  // other suite's rows out from under them (see apps/server/AGENTS.md).
   await db.delete(routines).where(inArray(routines.ownerId, everyone));
   const own = await db
     .select({ id: conversations.id })

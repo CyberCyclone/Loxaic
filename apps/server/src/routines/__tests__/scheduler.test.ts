@@ -42,8 +42,9 @@ const { executeRoutine, startRoutineScheduler, stopRoutineScheduler } = await im
 const { startChatRun } = await import("../../streams/runs/chatRun.ts");
 const { getRecentModels, __resetRecentModelsForTest } = await import("../../inference/recent-models.ts");
 
-/** The built-in backend's models keep their bare upstream id (AGENTS.md), so
- * an unprefixed ref is the one thing that resolves with no provider row. */
+/** The built-in backend's models keep their bare upstream id
+ * (packages/types/AGENTS.md), so an unprefixed ref is the one thing that
+ * resolves with no provider row. */
 const MODEL = "test-routine-model";
 /** A provider slug nothing has ever created: `slug::id` cannot resolve. */
 const DEAD_MODEL = `ghost-${uuid().slice(0, 8)}::some-model`;

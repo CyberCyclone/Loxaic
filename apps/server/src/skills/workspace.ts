@@ -1,6 +1,6 @@
 /**
  * Skills in the workspace's own repository (#283), found where Claude Code,
- * OpenCode and Codex look for them — see AGENTS.md, "Skills".
+ * OpenCode and Codex look for them — see this directory's AGENTS.md.
  *
  * Only the catalog is stored (`conversations.repo_skills`): each skill's name,
  * description and directory, and a hash of what was read. The instructions

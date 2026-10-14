@@ -104,8 +104,8 @@ export function RoutineModal({
     // Both halves, and both are needed. The vendored ModalBody hardcodes
     // `scrollEnabled={false}` before its prop spread, and ModalContent has no
     // height cap — so the Model row added below would push Save past the fold
-    // with nothing able to scroll to it. See AGENTS.md on SettingsModal and
-    // McpServerModal, where exactly this cost a credential.
+    // with nothing able to scroll to it. See apps/mobile/components/AGENTS.md;
+    // in McpServerModal exactly this cost a credential.
     <Modal isOpen={open} onClose={onClose} size="md">
       <ModalBackdrop />
       <ModalContent className="max-h-[85%]">
