@@ -5,33 +5,9 @@ import { ModeSwitch } from './ModeSwitch';
 import type { AgentMode } from '@/lib/types';
 import type { RunState } from '@/hooks/useAgentSession';
 import { TRUNCATE_TEXT } from '@/lib/truncate';
-
-const STATE_LABEL: Record<RunState, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  awaiting_approval: 'Awaiting approval',
-  // Not "Awaiting answer": the run is asking a question, and the person it is
-  // asking is the one reading this.
-  awaiting_checkin: 'Waiting for you',
-  stopping: 'Stopping…',
-  done: 'Done',
-  error: 'Error',
-};
-
-/** The dot's colour per state. Exported for a sub-agent's card and panel, so
- * a child's state is drawn in its parent's vocabulary. */
-export const STATE_DOT: Record<RunState, string> = {
-  // Amber, like awaiting_approval: both mean "this run exists but is not
-  // doing anything", which is the distinction a status dot is for.
-  queued: 'bg-warning',
-  running: 'bg-primary',
-  awaiting_approval: 'bg-warning',
-  awaiting_checkin: 'bg-warning',
-  // Amber too: asked to stop, but not stopped — the run is still winding up.
-  stopping: 'bg-warning',
-  done: 'bg-success',
-  error: 'bg-destructive',
-};
+// The words and colours live in lib so a thread-list row (#282) cannot
+// disagree with this header about what a state is called.
+import { STATE_DOT, STATE_LABEL } from '@/lib/runStateCopy';
 
 interface RunHeaderProps {
   title: string;

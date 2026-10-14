@@ -2479,6 +2479,7 @@ export async function getConversationStats(range?: StatsRange, limit?: number): 
 export type {
   ServerMessage,
   ClientMessage,
+  RunActivity,
   StreamEventKind,
   StreamSnapshot,
   StreamSnapshotMessage,
@@ -2748,6 +2749,17 @@ export function sendCommand(
 /** cursors = last seq the client has already applied, keyed by stream_id. */
 export function subscribeStreams(ws: WebSocket, conversationId: string, cursors?: Record<string, number>): boolean {
   return trySend(ws, { type: "stream.subscribe", conversation_id: conversationId, cursors });
+}
+
+/**
+ * Ask to be told when a run starts, changes state, or ends on any of these
+ * conversations (#282) — the thread list's liveness watch, answered with
+ * `conversation.run` notices. A replacement set: re-send the whole visible
+ * list whenever it changes, and again on every socket open. An older server
+ * ignores it, and the rows simply never badge.
+ */
+export function watchConversationRuns(ws: WebSocket, conversationIds: string[]): boolean {
+  return trySend(ws, { type: "conversations.watch", conversation_ids: conversationIds });
 }
 
 export function stopStream(ws: WebSocket, streamId: string): boolean {

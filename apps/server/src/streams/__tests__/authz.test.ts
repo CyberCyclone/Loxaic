@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { db, eq, inArray } from "@loxaic/db";
 import { conversationShares, conversations, user } from "@loxaic/db/schema";
 import { initStreamBroker } from "../index.ts";
-import { assertConversationAccess, assertParentInConversation, NotFoundError } from "../authz.ts";
+import { assertConversationAccess, assertParentInConversation, filterAccessible, NotFoundError } from "../authz.ts";
 
 /**
  * Integration test against the real dev Postgres (same DATABASE_URL the
@@ -159,6 +159,55 @@ describe("assertConversationAccess", () => {
       await db
         .delete(conversationShares)
         .where(eq(conversationShares.conversationId, ownedConvId));
+    });
+  });
+
+  describe("filterAccessible (#282, the batched form the liveness watch asks)", () => {
+    let sharedConvId: string;
+    let deletedConvId: string;
+
+    beforeAll(async () => {
+      const [shared, deleted] = await db.insert(conversations).values([
+        { ownerId: userA, title: "shared batch" },
+        { ownerId: userA, title: "deleted batch" },
+      ]).returning();
+      sharedConvId = shared.id;
+      deletedConvId = deleted.id;
+      await db.insert(conversationShares).values({
+        conversationId: sharedConvId, userId: userB, role: "viewer", createdBy: userA,
+      });
+      await db.update(conversations)
+        .set({ deletedAt: new Date() })
+        .where(eq(conversations.id, deletedConvId));
+    });
+
+    afterAll(async () => {
+      await db.delete(conversationShares).where(inArray(conversationShares.conversationId, [sharedConvId, deletedConvId]));
+      await db.delete(conversations).where(inArray(conversations.id, [sharedConvId, deletedConvId]));
+    });
+
+    it("keeps own, shared and admin-visible rows, drops foreign and deleted", async () => {
+      const foreign = uuid(); // exists nowhere: treated as not-visible, no error
+      const allowed = await filterAccessible(userA, [ownedConvId, sharedConvId, deletedConvId, foreign]);
+      expect([...allowed].sort()).toEqual([ownedConvId, sharedConvId].sort());
+    });
+
+    it("lets a viewer see what is shared with them and nothing else", async () => {
+      const allowed = await filterAccessible(userB, [ownedConvId, sharedConvId]);
+      expect([...allowed]).toEqual([sharedConvId]);
+    });
+
+    it("lets an admin see every live conversation, including foreign ones", async () => {
+      const allowed = await filterAccessible(adminId, [ownedConvId, deletedConvId]);
+      expect([...allowed]).toEqual([ownedConvId]);
+    });
+
+    it("never sends a non-uuid id to the database, and answers an empty watch cheaply", async () => {
+      // A client's optimistic placeholder reaching Postgres is the failure mode
+      // resolveAccess documents; the batched form filters it before any query.
+      const allowed = await filterAccessible(userA, ["c1790483463291", "pending-xyz", "", ownedConvId]);
+      expect([...allowed]).toEqual([ownedConvId]);
+      await expect(filterAccessible(userA, [])).resolves.toEqual(new Set());
     });
   });
 

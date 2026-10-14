@@ -124,6 +124,52 @@ describe("one slot", () => {
   });
 });
 
+describe("onAdmitted — the queue end the thread list needs (#282)", () => {
+  it("fires on the fast path, with no wait", async () => {
+    let admitted = 0;
+    const slot = await acquireRunSlot({ signal: live(), onQueued: noop, onAdmitted: () => { admitted++; } });
+    expect(slot).not.toBeNull();
+    expect(admitted).toBe(1);
+    slot?.release();
+  });
+
+  it("fires when a queued run reaches the front", async () => {
+    const first = await acquireRunSlot({ signal: live(), onQueued: noop });
+    let secondAdmitted = 0;
+    const second = acquireRunSlot({
+      signal: live(), onQueued: noop, onAdmitted: () => { secondAdmitted++; },
+    });
+    await Promise.resolve();
+    // Waiting is not admitted: a row still says "Queued".
+    expect(secondAdmitted).toBe(0);
+    first?.release();
+    const slot = await second;
+    expect(secondAdmitted).toBe(1);
+    slot?.release();
+  });
+
+  it("fires again when a yielded run takes the slot back", async () => {
+    // The case that would otherwise leave a thread-list row saying "Queued"
+    // forever: a run parked on an approval hands the slot back (its row says
+    // "Awaiting approval"), then re-enters the queue on answer. `onQueued`
+    // says "waiting" and never says "you're in" — without onAdmitted there
+    // is no edge to undo the queue state on the way back.
+    let admittedCount = 0;
+    const held = await acquireRunSlot({
+      signal: live(), onQueued: noop, onAdmitted: () => { admittedCount++; },
+    });
+    if (!held) throw new Error("not admitted");
+    let releaseApproval: (() => void) | undefined;
+    const approval = new Promise<void>((r) => { releaseApproval = () => { r(); }; });
+    const yielded = held.yieldWhile(() => approval);
+    releaseApproval?.();
+    await yielded;
+    // Once for the original admission, once for the return to the front.
+    expect(admittedCount).toBe(2);
+    held.release();
+  });
+});
+
 describe("more slots than runs", () => {
   it("does not queue at all when the backend can hold several prefixes", async () => {
     pin(3);

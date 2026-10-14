@@ -714,6 +714,64 @@ export async function connectGithub(creds: Pick<Credentials, 'email' | 'password
 }
 
 /**
+ * Sends a prompt from a second connection of the same user — the way another
+ * device would — and returns the conversation it started.
+ *
+ * For specs about what one screen shows about a run it did not start: the
+ * thread list's running badge (#282), a background compaction, a routine-like
+ * send. `hostModels.replyFromElsewhere` is the same socket trick pinned to a
+ * model; this one is about the conversation id it comes back with, and keeps
+ * the run alive until `stop()` or the reply ends, whichever the caller wants.
+ */
+export async function sendOnSecondSocket(
+  creds: Pick<Credentials, 'email' | 'password'>,
+  prompt: string,
+  surface: 'chat' | 'agent' = 'chat',
+  /** Send into an existing conversation rather than opening a new one — the
+   * shape a second device uses for a thread already on both lists. */
+  conversationId?: string,
+): Promise<{ conversationId: string; stop: () => void; close: () => void }> {
+  const token = await apiToken(creds);
+  const ws = new WebSocket(`${BASE_URL.replace(/^http/, 'ws')}/ws/${surface}?token=${encodeURIComponent(token)}`);
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener('open', () => { resolve(); });
+    ws.addEventListener('error', () => { reject(new Error('[e2e] second socket failed to open')); });
+  });
+  let streamId: string | null = null;
+  const started = new Promise<string>((resolve, reject) => {
+    ws.addEventListener('message', (m) => {
+      try {
+        const msg = JSON.parse(String(m.data)) as { type?: string; stream_id?: string; conversation_id?: string; error?: string };
+        if (msg.type === 'turn.started' && msg.conversation_id) {
+          // `turn.started` names the stream as well; holding it here (rather
+          // than in a listener attached after the await, which would miss the
+          // very frame that resolved it) is what makes `stop()` able to stop.
+          if (msg.stream_id) streamId = msg.stream_id;
+          resolve(msg.conversation_id);
+        }
+        if (msg.type === 'error') reject(new Error(`[e2e] second-socket send refused: ${String(msg.error)}`));
+      } catch {
+        // not JSON
+      }
+    });
+    ws.addEventListener('close', () => { reject(new Error('[e2e] second socket closed before the send started')); });
+  });
+  ws.send(JSON.stringify(
+    surface === 'chat'
+      ? { type: 'chat.send', content: prompt, ...(conversationId ? { conversation_id: conversationId } : {}) }
+      : { type: 'agent.send', content: prompt, ...(conversationId ? { conversation_id: conversationId } : {}) },
+  ));
+  const startedId = await started;
+  return {
+    conversationId: startedId,
+    stop: () => {
+      if (streamId) ws.send(JSON.stringify({ type: 'stream.stop', stream_id: streamId }));
+    },
+    close: () => { ws.close(); },
+  };
+}
+
+/**
  * Polls until the conversation has no active run. The signal is the server's
  * own registry (`active_run` on GET /v1/conversations/:id), not a guess from
  * message statuses — and polled with plain fetch rather than a WebDriver loop,

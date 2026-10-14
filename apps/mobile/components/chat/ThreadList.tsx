@@ -20,6 +20,7 @@ import {
   ActionsheetIcon,
 } from '@/components/ui/actionsheet';
 import { isOwner, type Conversation } from '@/lib/types';
+import type { RowRunBadge } from '@/lib/runWatch';
 import { useServerReachable } from '@/lib/connection';
 import { DisconnectedNote } from '@/components/shell/DisconnectedNote';
 
@@ -58,7 +59,20 @@ interface ThreadListProps {
    * to pick between them. `title` replaces the row's title (the run's time)
    * and `badge` replaces the kind badge (its status).
    */
-  rowMeta?: (c: Conversation) => { title?: string; badge: string; danger?: boolean; time: string } | null;
+  rowMeta?: (c: Conversation) => { title?: string; badge: string | null; danger?: boolean; time: string } | null;
+  /**
+   * Which rows have a run going, and what it is doing (#282).
+   *
+   * A dot and a word (Running, Queued · #2, Awaiting approval…) beside the
+   * row, from the run registry through the socket's liveness watch — so a
+   * row says "Running" for a routine that fired, another device's send, or a
+   * run this device started and switched away from. While a row has one it
+   * takes the kind badge's slot: the panel is 280px wide, already carries a
+   * share badge, and "chat" says less than "Running" does. `rowMeta`'s own
+   * badge (a routine run's recorded status) yields to it while the run is
+   * going and returns when it ends.
+   */
+  runStatus?: Partial<Record<string, RowRunBadge>>;
 }
 
 // Web's thread-row actions only appear on hover, which the design's own
@@ -76,6 +90,7 @@ export function ThreadList({
   onDelete,
   onShare,
   rowMeta,
+  runStatus,
 }: ThreadListProps) {
   const [search, setSearch] = useState('');
   const [actionsFor, setActionsFor] = useState<Conversation | null>(null);
@@ -119,7 +134,10 @@ export function ThreadList({
         // Without this the first tap only closed the keyboard.
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingHorizontal: 8, paddingBottom: 8 }}
-        renderItem={({ item }) => (
+        renderItem={({ item }) => {
+          // Read once: a row's badge, if it has one.
+          const run = runStatus?.[item.id];
+          return (
           <Pressable
             testID={`threadList.item.${item.id}`}
             onPress={() => { onSelect(item.id); }}
@@ -132,22 +150,57 @@ export function ThreadList({
               {rowMeta?.(item)?.title ?? item.title}
             </Text>
             <HStack space="xs" className="mt-1 items-center">
+              {run && (
+                <HStack
+                  // The state is part of the id, so a spec can wait for the
+                  // exact state on the exact row on every platform — a text
+                  // probe would match the open run's own header on native,
+                  // where a container's text is not searchable.
+                  testID={`threadList.run.${item.id}.${run.state}`}
+                  space="xs"
+                  accessibilityLabel={`Run status: ${run.label}`}
+                  className="items-center rounded-full bg-muted px-1.5 py-0.5"
+                >
+                  <Box className={`h-1.5 w-1.5 rounded-full ${run.dot}`} />
+                  <Text
+                    // The words, for a spec to read: on native the badge's
+                    // own text is not searchable from its container.
+                    testID={`threadList.run.${item.id}.${run.state}.label`}
+                    size="2xs"
+                    className="text-muted-foreground"
+                  >
+                    {run.label}
+                  </Text>
+                </HStack>
+              )}
               {(() => {
                 const meta = rowMeta?.(item);
                 if (!meta) {
+                  // No run-state badge of its own: the kind badge stands,
+                  // unless the live run badge above already replaced it.
+                  if (run) return null;
                   return (
                     <Badge variant="outline" className="border-border">
                       <BadgeText className="text-2xs normal-case">{item.kind}</BadgeText>
                     </Badge>
                   );
                 }
+                // A routine row: its recorded run status yields to the live
+                // one while the run is going (they can disagree — the record
+                // only refreshes on a list fetch). A null badge is a status
+                // the screen knows to be out of date: nothing is better.
+                if (run || meta.badge === null) return null;
                 return (
                   <Badge
                     testID={`threadList.status.${item.id}`}
                     variant={meta.danger ? 'destructive' : 'outline'}
                     className={meta.danger ? '' : 'border-border'}
                   >
-                    <BadgeText className="text-2xs normal-case">{meta.badge}</BadgeText>
+                    {/* Its own testID: on native a container's text cannot
+                        be read, and what the status *says* is the point. */}
+                    <BadgeText testID={`threadList.status.${item.id}.label`} className="text-2xs normal-case">
+                      {meta.badge}
+                    </BadgeText>
                   </Badge>
                 );
               })()}
@@ -171,7 +224,8 @@ export function ThreadList({
               </Text>
             </HStack>
           </Pressable>
-        )}
+          );
+        }}
       />
 
       <Actionsheet isOpen={!!actionsFor} onClose={() => { setActionsFor(null); }}>

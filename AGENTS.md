@@ -760,6 +760,87 @@ replies.
 - The offline cache (`lib/message-cache.ts`) keeps only the newest 100 messages per thread, so
   older pages are never written to it.
 
+### Running status in the chat list (#282)
+
+- **The registry is the source, and the list asks for it over the socket it already has.**
+  `GET /v1/conversations/:id`'s `active_run` was always the honest answer for one row; for fifty
+  rows the client sends `conversations.watch` with the ids its list shows and receives
+  `conversation.run` notices (`{conversation_id, run, queue_position?}`, replacement semantics,
+  `run: null` meaning idle). Deliberately **not** fifty `stream.subscribe`s: each of those answers
+  with catch-up snapshots of the conversation's last three runs (`ws/delivery.ts`), and a snapshot
+  can be a megabyte — the traffic to learn a five-letter word would saturate the socket and trip
+  its own backpressure.
+- **The watch is a replacement set, and a new socket starts knowing nothing.** The client re-sends
+  its whole visible list whenever it changes (an effect on the conversations array in both session
+  hooks; `watch` dedupes an identical set) and again on every `onopen`, where the notice map is
+  also **cleared** — the server does not replay notices across sockets, and a badge carried over
+  from a dead socket could outlive the run it described with nothing left to correct it. **The two
+  sides also forget together:** the server drops what it told a socket about an id that leaves the
+  watch, and its next reply names only busy rows, so `watch` drops the client's notice for every id
+  it no longer sends (`runNoticesWithin`). Kept, a row whose run ended while it was off the list
+  came back saying "Running" for the life of the socket. Found in review. An absent
+  notice renders no badge: that is the honest reading of "we have not been told", and it is what
+  an older server (which ignores the watch) leaves everywhere.
+- **Every notice is a change in the *reported* state and nothing else.** `streams/registry.ts`
+  owns the vocabulary (`runActivityOf`: check-in → approval → queued → running). That is the
+  client's `runLevelFromSnapshot` ranking with check-in and approval swapped — a run holds at most
+  one, and the check-in is the newer question — and for its reason: a run parked on a person has
+  handed its slot back and may be queued again, and the question outranks the wait. *Every*
+  mutation goes through its
+  mutators (`setRunApproval`/`clearRunApproval`, `setRunCheckin`/`takeRunCheckin`/`clearRunCheckin`,
+  `setRunQueuePosition`/`clearRunQueuePosition`, `registerRun`/`unregisterRun`), which announce on
+  the process-wide activity channel only when the dedup key (activity, plus the place in line)
+  actually moves. A second approval while already awaiting one says nothing to a row that already
+  says "Awaiting approval". A direct `run.approvals.set(...)` anywhere would change the word with
+  nobody noticing — `registry-run-state.test.ts` taps the same channel `delivery.ts` does, so it
+  fails there instead of in the row.
+- **`onAdmitted` is what lets a queue state end.** The scheduler's `onQueued` says "waiting" and
+  never says "you're in" — a run re-queued by `yieldWhile` after an approval (the common answer)
+  had no edge that could undo its row's "Queued" without the callback `acquireRunSlot`/
+  `acquireExclusiveSlot` gained: it fires on the fast path, on admission after a wait, and on the
+  re-entry. `engine.ts` and `compactRun.ts` wire both callbacks to the registry beside emitting
+  `run.queued` on the log; the log event still reaches only a socket following that run. **A
+  context-stage switch reports its wait too** (`applyStageChange`'s `onQueued`/`onWaitEnded`, wired
+  by `stageRun.ts` for a stage run and for `extendWithinRun`): `acquireExclusiveSlot` drains every
+  run ahead of it, the longest wait any run has, and without them the row said "Running" for all
+  of it. `onWaitEnded` also fires when the wait is withdrawn, or a superseded in-run extension left
+  its run's row "Queued". Found in review.
+- **The watch authorizes twice: the set in two queries, each event again.** The initial reply uses
+  `filterAccessible` (`streams/authz.ts`) — one conversations query plus one shares query, the same
+  predicates as `resolveAccess` — because a per-row `resolveAccess` would be a hundred round trips
+  per list refresh. Non-uuid ids (a client's optimistic placeholder) are filtered before any query,
+  the same rule as `resolveAccess`'s. The reply names **only the rows with a run going**: absence
+  already says idle, and fifty `run: null` messages per refresh (an app switch resends the watch)
+  is traffic with no news in it. Live notices re-authorize per event, as the new-run watch does,
+  and **re-read the registry after the authz await** before sending — the state at the moment of
+  the event may have moved on while authz ran, and the late stale figure would overwrite the fresh
+  one. A foreign id is dropped from the watch at watch time and hears nothing ever after: no
+  existence oracle, same as `stream.stop`. The server caps the set at 100 ids.
+- **`stopping` is a client overlay with no server counterpart (#113).** The row for the
+  conversation whose Stop was pressed says "Stopping…" over whatever the notice says (a run parked
+  on an approval and stopped is still winding down), and shows it even when no notice ever
+  arrived — the acknowledgement is of what the user did.
+- **The words live in `lib/runStateCopy.ts`,** shared with `RunHeader`, so a row cannot call
+  `awaiting_checkin` "Waiting" while the header says "Waiting for you". The routine screen's rows
+  show the live badge while a run is going and fall back to the recorded run status
+  (`threadList.status.<id>`) when it ends. **The record is fetched again when a live badge goes**:
+  it was read during the run, so it said "Running", and the row went straight back to claiming a
+  finished run was going (found in review; the spec checked only that a badge was there). The run's
+  terminal status is written just after the run lets go of the conversation, so the screen asks
+  again a second apart while the record lags (`routineRecordCheck`, five tries), and shows no
+  recorded status meanwhile rather than a false one. The spec reads
+  `threadList.status.<id>.label`'s text. The row's testID carries the state (`threadList.run.<convId>.<state>`) because on
+  native a container's text is not searchable and a text probe would match the open run's own
+  header instead of the row.
+- **The badge's words have their own testID** (`threadList.run.<id>.<state>.label`, read with
+  `waitForFreshText`): on iOS the "#1" of "Queued · #1" could not be found from the badge.
+- **`thread-list-running.spec.ts` had never run when the PR was opened, and three of five cases
+  could not pass anywhere** (a second prompt sent into the first thread, a queued run too quick to
+  be seen running, a routine with no model). On phones two more things: the slide-over list left
+  open covers the menu button the next case needs (each case ends by opening a row), and
+  UiAutomator2's idle wait outlasts the mock's eight-second run (`waitForIdleTimeout: 0`, as in
+  `compaction-live.spec.ts`). Green on web, Electron, iOS and Android after.
+
 ### Tool loop (Chat and Agent both)
 
 - **Chat and Agent share one tool loop** — `apps/server/src/streams/runs/engine.ts`'s

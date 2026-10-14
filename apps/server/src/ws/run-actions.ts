@@ -1,5 +1,5 @@
 import { actingRole, atLeast, resolveAccess } from "../streams/authz.ts";
-import { findRunsByApprovalCallId, getRun, type RunHandle } from "../streams/registry.ts";
+import { clearRunApproval, findRunsByApprovalCallId, getRun, takeRunCheckin, isStepsDecision, type RunHandle } from "../streams/registry.ts";
 
 /**
  * Whether this user may stop a run or answer its approvals.
@@ -63,9 +63,41 @@ export async function answerApproval(
     if (!(await mayActOnRun(userId, run.conversationId))) continue;
     const resolve = run.approvals.get(callId);
     if (resolve) {
-      run.approvals.delete(callId);
+      // Through the registry: clearing the pending approval is what stops the
+      // thread list saying "Awaiting approval" (#282), and the engine's own
+      // settle clears the same entry — the delete is announced once, by
+      // whichever of the two lands first, and is a no-op for the other.
+      clearRunApproval(run, callId);
       resolve(approved, { userId, always: approved && always });
     }
     break;
   }
+}
+
+/**
+ * Answers a pending step check-in. Shared by both sockets, as `answerApproval`
+ * is — chat and agent share one tool loop, and both offer the banner.
+ *
+ * Keyed by `stream_id`, which is ours and unique, so unlike an approval there
+ * is exactly one run it could mean. `decision` is a claim off a socket and is
+ * checked; a run that is not parked, not the caller's to act on, or already
+ * answered is a silent no-op — the same "no existence oracle" rule as
+ * `stream.stop`.
+ */
+export async function answerCheckin(
+  userId: string,
+  streamId: unknown,
+  decision: unknown,
+): Promise<void> {
+  if (typeof streamId !== "string" || !isStepsDecision(decision)) return;
+  const run = getRun(streamId);
+  if (!run) return;
+  if (!(await mayActOnRun(userId, run.conversationId))) return;
+  // Taken only once the caller is known to be allowed: a refused answer must
+  // leave the run parked, exactly as it was, for whoever may answer it. The
+  // await above admits a race with a second socket answering first — the
+  // second `takeRunCheckin` finds nothing and no-ops, which is correct.
+  const resolve = takeRunCheckin(run);
+  if (!resolve) return;
+  resolve(decision, userId);
 }

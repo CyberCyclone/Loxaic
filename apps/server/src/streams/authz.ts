@@ -119,6 +119,42 @@ export async function hasRole(
 
 const CONVERSATION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Which of many conversations this user may see (#282) — the batched form of
+ * `resolveAccess` for the thread list's liveness watch, which asks about fifty
+ * ids at once and would otherwise cost fifty two-query round trips per list
+ * refresh.
+ *
+ * Two queries, same predicates as `resolveAccess`: the conversations
+ * themselves (owner or admin) and this user's share rows. Soft-deleted rows
+ * are absent, exactly as there. Sub-agent conversations are not passed here —
+ * the list routes never list them — and a non-UUID id (a client's optimistic
+ * placeholder) never reaches Postgres, for the same reason as in
+ * `resolveAccess`.
+ *
+ * Answers with the ids the caller may see, dropping the rest silently: a
+ * watch must not reveal that a foreign id exists, any more than `stream.stop`
+ * does. An admin sees every live conversation, as `resolveAccess` grants them
+ * viewer on everything; the admin check happens once here rather than per id.
+ */
+export async function filterAccessible(userId: string, conversationIds: Iterable<string>): Promise<Set<string>> {
+  const ids = [...new Set(conversationIds)].filter((id) => CONVERSATION_ID_RE.test(id));
+  if (ids.length === 0) return new Set();
+  const [rows, shares, admin] = await Promise.all([
+    db
+      .select({ id: conversations.id, ownerId: conversations.ownerId })
+      .from(conversations)
+      .where(and(inArray(conversations.id, ids), isNull(conversations.deletedAt))),
+    db
+      .select({ conversationId: conversationShares.conversationId })
+      .from(conversationShares)
+      .where(and(inArray(conversationShares.conversationId, ids), eq(conversationShares.userId, userId))),
+    isAdmin(userId),
+  ]);
+  const shared = new Set(shares.map((s) => s.conversationId));
+  return new Set(rows.filter((r) => admin || r.ownerId === userId || shared.has(r.id)).map((r) => r.id));
+}
+
 export async function resolveAccess(
   userId: string,
   conversationId: string,

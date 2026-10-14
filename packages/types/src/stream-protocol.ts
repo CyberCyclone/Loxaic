@@ -861,7 +861,33 @@ export interface StreamSnapshot {
   subagents?: SubAgentLive[];
 }
 
+/**
+ * What a conversation's run is doing, as the thread list reports it (#282).
+ *
+ * The registry's view of a run — the same vocabulary the agent header uses —
+ * stripped down to what a row can say in one line. Deliberately not the
+ * stream log: a list of fifty conversations cannot subscribe to fifty streams
+ * to learn a five-letter word (see `ws/delivery.ts`), and the registry is the
+ * one place that already answers "is a run going here" (`active_run` on
+ * `GET /v1/conversations/:id` is the same fact at one row).
+ *
+ * `stopping` is NOT here: it is a client-side acknowledgement with no server
+ * counterpart (#113), overlaid locally on the conversation whose Stop was
+ * pressed.
+ */
+export type RunActivity = "queued" | "running" | "awaiting_approval" | "awaiting_checkin";
+
 export type ServerMessage =
+  /** A watched conversation's run started, changed what it is doing, or ended
+   * (`run: null`) — see `conversations.watch`. Replacement semantics per
+   * conversation: this is the row's whole truth about liveness, not a delta.
+   * `queue_position` rides only on `queued`. */
+  | {
+      type: "conversation.run";
+      conversation_id: string;
+      run: RunActivity | null;
+      queue_position?: number;
+    }
   | {
       type: "turn.started";
       stream_id: string;
@@ -1045,6 +1071,20 @@ export type ClientMessage =
   | { type: "command.run"; command: string; conversation_id: string; model?: string; args?: string }
   /** cursors = last seq the client has already applied, per stream_id it knows about. */
   | { type: "stream.subscribe"; conversation_id: string; cursors?: Record<string, number> }
+  /**
+   * "Tell me when a run starts, changes state, or ends on any of these
+   * conversations" (#282) — the thread list's liveness watch, answered with
+   * `conversation.run` notices.
+   *
+   * A *replacement* set, not an addition: the client re-sends its whole
+   * visible list whenever it changes, and the server watches exactly that.
+   * Deliberately not fifty `stream.subscribe`s: each of those answers with
+   * catch-up snapshots of the conversation's last runs, which for a list is
+   * megabytes of traffic to learn a five-letter word. Ids the caller cannot
+   * see are dropped from the watch silently — like `stream.stop`, no answer
+   * that could be probed for existence.
+   */
+  | { type: "conversations.watch"; conversation_ids: string[] }
   /** What became of a send whose answer this socket may have missed — its
    * socket was replaced before `turn.started` (or its refusal) arrived. The
    * server replays that answer, or says `send.unknown`. An older server

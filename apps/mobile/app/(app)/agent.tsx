@@ -92,6 +92,7 @@ export default function AgentScreen() {
     runState,
     busy,
     stopping,
+    runStatus,
     loadingModel,
     promptStats,
     responseStartedAt,
@@ -324,6 +325,7 @@ export default function AgentScreen() {
       onFork={handleFork}
       onRename={handleRename}
       onDelete={(id) => { setDeletingId(id); }}
+      runStatus={runStatus}
     />
   );
 

@@ -26,7 +26,7 @@ import { fingerprintPrompt, measureReuse } from "../../inference/prompt-reuse.ts
 import { assertConversationAccess } from "../authz.ts";
 import { getStreamBroker } from "../index.ts";
 import type { StreamProducer } from "../broker.ts";
-import { getRunByConversation, registerRun, unregisterRun } from "../registry.ts";
+import { clearRunQueuePosition, getRun, getRunByConversation, registerRun, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, type RunSlot } from "../../inference/scheduler.ts";
 import { announceNewRun } from "../watchers.ts";
 import { loadHistory, promptProgressEmitter, promptStatsFor } from "./engine.ts";
@@ -893,7 +893,15 @@ async function runCompactGeneration(ctx: {
     // the queue with it would let a background job stall somebody's chat.
     slot = await acquireRunSlot({
       signal: abort.signal,
-      onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
+      onQueued: (position) => {
+        producer.emit({ kind: "run.queued", position });
+        const handle = getRun(streamId);
+        if (handle) setRunQueuePosition(handle, position);
+      },
+      onAdmitted: () => {
+        const handle = getRun(streamId);
+        if (handle) clearRunQueuePosition(handle);
+      },
       // The queue belonging to the backend this summary will actually be
       // generated on — not the built-in one, which may be busy with the very
       // conversation being compacted.

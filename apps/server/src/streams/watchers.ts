@@ -29,6 +29,31 @@ export type ConversationEvent = Extract<ServerMessage, { type: "conversation.rew
 
 const EVENT_CHANNEL = (conversationId: string) => `event:${conversationId}`;
 
+/**
+ * Process-local channel for "a run's activity on some conversation just
+ * changed" (#282) — started, queued, moved in the queue, parked on a person,
+ * picked back up, or ended.
+ *
+ * One channel rather than one per conversation, because the change is announced
+ * by the run registry without knowing who is listening, and every listener
+ * cares about a different set: `delivery.ts` filters each notice down to the
+ * conversations its socket asked to watch. The notice itself carries only the
+ * conversation id — the listener reads the run's current state off the
+ * registry, so a socket that hears two changes in one tick sends only the
+ * latest truth.
+ */
+const ACTIVITY_CHANNEL = "run-activity";
+
+/** Called by the registry whenever a run's reported activity may have changed. */
+export function announceRunActivity(conversationId: string): void {
+  emitter.emit(ACTIVITY_CHANNEL, conversationId);
+}
+
+export function watchRunActivity(onActivity: (conversationId: string) => void): () => void {
+  emitter.on(ACTIVITY_CHANNEL, onActivity);
+  return () => emitter.off(ACTIVITY_CHANNEL, onActivity);
+}
+
 /** Tells every socket watching `conversationId`. Each re-authorizes before it
  * passes the event on (`delivery.ts`), as it does for a new run. */
 export function announceConversationEvent(event: ConversationEvent): void {

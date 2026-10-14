@@ -100,7 +100,7 @@ import { getInferenceSettings } from "../../settings.ts";
 import { describeGithubPermissionFailure } from "../../github/permissions.ts";
 import { AUTO_COMPACT_MIN_MESSAGES, fillDecision, type FillDecision } from "./auto-compact.ts";
 import type { StreamProducer } from "../broker.ts";
-import { getRun, unregisterRun } from "../registry.ts";
+import { clearRunApproval, clearRunCheckin, clearRunQueuePosition, getRun, setRunApproval, setRunCheckin, setRunQueuePosition, unregisterRun } from "../registry.ts";
 import { acquireRunSlot, RunSlotAbortedError, type RunSlot } from "../../inference/scheduler.ts";
 import { recentSwitch } from "../../llama/context-stage-switch.ts";
 import { markBackendErrors, turnErrorText } from "../error-text.ts";
@@ -779,7 +779,19 @@ export async function runToolLoop(ctx: {
 
     slot = await acquireRunSlot({
       signal: abort.signal,
-      onQueued: (position) => { producer.emit({ kind: "run.queued", position }); },
+      // The queue figure lives in two places on purpose: the log event reaches
+      // a socket following this run, and the registry is what tells a thread
+      // list that isn't following it (#282). `onAdmitted` is the only way to
+      // learn the wait ended — `onQueued` never says "you're in".
+      onQueued: (position) => {
+        producer.emit({ kind: "run.queued", position });
+        const handle = getRun(streamId);
+        if (handle) setRunQueuePosition(handle, position);
+      },
+      onAdmitted: () => {
+        const handle = getRun(streamId);
+        if (handle) clearRunQueuePosition(handle);
+      },
       // Each backend has its own queue: the prefix cache being protected is
       // one backend's, and a run on a hosted provider with sixteen slots
       // should not wait behind a local run's tool work.
@@ -930,7 +942,7 @@ export async function runToolLoop(ctx: {
           const target = await planExtension({ model, conversationId: convId }).catch(() => null);
           const outcome = target === null
             ? null
-            : await extendWithinRun({ slot, model, conversationId: convId, target, producer, signal: abort.signal });
+            : await extendWithinRun({ slot, streamId, model, conversationId: convId, target, producer, signal: abort.signal });
           if (outcome?.kind === "applied" || outcome?.kind === "unchanged") {
             // A reload: the window is the new stage's, and the backend's cache
             // of this conversation is gone (the next request re-reads it).
@@ -2487,12 +2499,15 @@ function waitForStepsDecision(streamId: string, signal: AbortSignal, timeoutMs: 
       done = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
-      run.stepsDecision = undefined;
+      // Through the registry, so the row stops saying "Waiting for you" the
+      // moment the wait settles however it settles — including the engine's
+      // own timeout, which no socket ever answers (#282).
+      clearRunCheckin(run);
       resolve(outcome);
     };
     const onAbort = () => { settle({ kind: "aborted" }); };
     const timer = setTimeout(() => { settle({ kind: "timeout" }); }, timeoutMs);
-    run.stepsDecision = (decision, byUserId) => { settle({ kind: decision, byUserId }); };
+    setRunCheckin(run, (decision, byUserId) => { settle({ kind: decision, byUserId }); });
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
@@ -2541,7 +2556,7 @@ function waitForApproval(
       done = true;
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
-      run.approvals.delete(callId);
+      clearRunApproval(run, callId);
       resolve({ outcome, always: outcome === "approved" && by?.always === true, answeredBy: by?.userId ?? null });
     };
     const onAbort = () => { settle("aborted"); };
@@ -2549,7 +2564,9 @@ function waitForApproval(
     // Only this function knows the difference between a person saying no and
     // nobody answering at all; the two WebSocket handlers just pass on what
     // was answered and by whom.
-    run.approvals.set(callId, (approved, by) => { settle(approved ? "approved" : "denied", by); });
+    // Through the registry: an approval is a state a thread list reports
+    // (#282), so nothing may park a run on a person without saying so.
+    setRunApproval(run, callId, (approved, by) => { settle(approved ? "approved" : "denied", by); });
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }

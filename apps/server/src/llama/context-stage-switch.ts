@@ -140,6 +140,12 @@ export async function applyStageChange(opts: {
    * backend's progress. Supplied by a stage run that has the conversation's
    * request shape; failures are the caller's to swallow. */
   warm?: (signal: AbortSignal, onProgress: (p: PromptProgress) => void) => Promise<void>;
+  /** The wait for the whole backend, as the run registry reports it (#282):
+   * `onQueued` with each place in line, `onWaitEnded` once the wait is over,
+   * admitted or not. Without them a thread-list row said "Running" for a
+   * switch's whole drain, the longest queue wait any run has. */
+  onQueued?: (position: number) => void;
+  onWaitEnded?: () => void;
 }): Promise<StageOutcome> {
   const row0 = await getLocalModelRow(opts.modelId);
   if (!row0) return { kind: "failed", message: "This model is no longer installed." };
@@ -171,9 +177,14 @@ export async function applyStageChange(opts: {
       signal: abort.signal,
       onQueued: (position) => {
         emit({ step: "waiting", position, running: runsUsingModel(opts.modelId, opts.conversationId).length });
+        opts.onQueued?.(position);
       },
+      onAdmitted: opts.onWaitEnded,
     });
-    if (!slot) return { kind: "cancelled" };
+    if (!slot) {
+      opts.onWaitEnded?.();
+      return { kind: "cancelled" };
+    }
 
     // Read again: the stages may have changed while this waited.
     const row = await getLocalModelRow(opts.modelId);

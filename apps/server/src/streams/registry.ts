@@ -1,4 +1,5 @@
-import type { StepsDecision } from "@loxaic/types";
+import type { RunActivity, StepsDecision } from "@loxaic/types";
+import { announceRunActivity } from "./watchers.ts";
 
 /**
  * Process-local registry of in-flight runs. This is deliberately NOT the
@@ -42,6 +43,115 @@ export interface RunHandle {
   /** A sub-agent's run names the conversation that spawned it, so a question
    * about "other conversations" can tell a thread's own children from them. */
   parentConversationId?: string;
+  /**
+   * Place in the inference queue while the run is waiting for a slot, null
+   * once it has one. Kept here as well as in the stream log because the log's
+   * `run.queued` reaches only a socket following that run, and the thread list
+   * needs the same fact about runs nobody is following (#282).
+   *
+   * Written only by `setRunQueuePosition` / `clearRunQueuePosition`, which are
+   * what make the announcement below exact.
+   */
+  queuePosition?: number | null;
+  /** Internal bookkeeping for the announcement below: what this run's
+   * conversation was last told about — the activity and, while queued, the
+   * place in line. Nothing outside this module reads or writes it. */
+  announcedActivity?: string;
+}
+
+/**
+ * What this run is doing, in the words a thread-list row says (#282).
+ *
+ * The order is `runLevelFromSnapshot`'s (apps/mobile/lib/agentRunState.ts)
+ * with one exception, check-in and approval swapped (below), and for the same
+ * reason: a run parked on an approval has handed its slot
+ * back and may well be queuing to get it again, so it can carry a queue
+ * position and a question at once — and the question is the thing a person can
+ * act on. A check-in outranks an approval only because the run asks one thing
+ * of them at a time and the check-in is the newer, blocking-er of the two; in
+ * practice a run holds at most one.
+ */
+export function runActivityOf(handle: RunHandle): RunActivity {
+  if (handle.stepsDecision) return "awaiting_checkin";
+  if (handle.approvals.size > 0) return "awaiting_approval";
+  if (handle.queuePosition !== null && handle.queuePosition !== undefined) return "queued";
+  return "running";
+}
+
+/** The dedup key: the activity, plus the place in line while queued, so a run
+ * moving from #3 to #2 says something and one merely re-asking the same
+ * question says nothing. */
+function activityKeyOf(handle: RunHandle): string {
+  const activity = runActivityOf(handle);
+  return activity === "queued" ? `queued:${String(handle.queuePosition ?? 0)}` : activity;
+}
+
+/**
+ * Tell the watchers what this run is doing now, if that is not what they were
+ * last told. Every mutation of a run's activity goes through one of the
+ * functions below so this stays exact — a direct `run.approvals.set(...)`
+ * would change the answer with nobody noticing.
+ */
+function announceActivity(handle: RunHandle): void {
+  const key = activityKeyOf(handle);
+  if (handle.announcedActivity === key) return;
+  handle.announcedActivity = key;
+  announceRunActivity(handle.conversationId);
+}
+
+/** Offer an approval for one tool call and say the run is waiting on a person. */
+export function setRunApproval(handle: RunHandle, callId: string, resolver: ApprovalResolver): void {
+  handle.approvals.set(callId, resolver);
+  announceActivity(handle);
+}
+
+/** Withdraw it — answered, timed out, or stopped. Idempotent: a call that
+ * never had one pending changes nothing, and a stray delete must not clear a
+ * *later* call's prompt from the row. */
+export function clearRunApproval(handle: RunHandle, callId: string): void {
+  if (!handle.approvals.delete(callId)) return;
+  announceActivity(handle);
+}
+
+/** Park the run at a step check-in. */
+export function setRunCheckin(handle: RunHandle, resolver: (decision: StepsDecision, byUserId: string | null) => void): void {
+  handle.stepsDecision = resolver;
+  announceActivity(handle);
+}
+
+/** Take the outstanding check-in's resolver, or null when the run is not
+ * parked. Taking it is the answer landing (from any device, or the timeout),
+ * so the row stops saying "Waiting for you". */
+export function takeRunCheckin(handle: RunHandle): ((decision: StepsDecision, byUserId: string | null) => void) | null {
+  const resolver = handle.stepsDecision ?? null;
+  if (!resolver) return null;
+  handle.stepsDecision = undefined;
+  announceActivity(handle);
+  return resolver;
+}
+
+/** Clear the check-in slot when the wait settles by any other route (the
+ * engine's own timeout or abort). A no-op — and so a non-announcement — when
+ * nobody had parked the run, which is the case once `takeRunCheckin` has
+ * already run. */
+export function clearRunCheckin(handle: RunHandle): void {
+  if (!handle.stepsDecision) return;
+  handle.stepsDecision = undefined;
+  announceActivity(handle);
+}
+
+/** Record where a waiting run is in line. */
+export function setRunQueuePosition(handle: RunHandle, position: number): void {
+  handle.queuePosition = position;
+  announceActivity(handle);
+}
+
+/** The run has its slot. A no-op on a run that never waited, which is the
+ * common case — an immediately-admitted run must not announce twice. */
+export function clearRunQueuePosition(handle: RunHandle): void {
+  if (handle.queuePosition === null || handle.queuePosition === undefined) return;
+  handle.queuePosition = null;
+  announceActivity(handle);
 }
 
 const runsByStreamId = new Map<string, RunHandle>();
@@ -51,6 +161,7 @@ const runByConversation = new Map<string, string>();
 export function registerRun(handle: RunHandle): void {
   runsByStreamId.set(handle.streamId, handle);
   runByConversation.set(handle.conversationId, handle.streamId);
+  announceActivity(handle);
 }
 
 /** Refused because the conversation already has a run (or a rewind) going. */
@@ -87,6 +198,10 @@ export function unregisterRun(streamId: string): void {
       runEndWaiters.delete(handle.conversationId);
       for (const resolve of waiters) resolve(true);
     }
+    // The conversation is idle now — say so. Inside this branch, so only the
+    // run holding the conversation announces: a stale unregister of a
+    // superseded stream must not announce the *new* run's conversation idle.
+    announceRunActivity(handle.conversationId);
   }
 }
 
@@ -156,6 +271,21 @@ export function getRun(streamId: string): RunHandle | undefined {
 export function getRunByConversation(conversationId: string): RunHandle | undefined {
   const streamId = runByConversation.get(conversationId);
   return streamId ? runsByStreamId.get(streamId) : undefined;
+}
+
+/**
+ * The runs in flight among `conversationIds` (#282), for the thread list's
+ * watch to answer with. A plain scan: the registry holds one entry per live
+ * run on this process — tens, not thousands — and building a second index
+ * over it would be another thing to keep in step with the first.
+ */
+export function listBusyRuns(conversationIds: Iterable<string>): RunHandle[] {
+  const wanted = new Set(conversationIds);
+  const out: RunHandle[] = [];
+  for (const handle of runsByStreamId.values()) {
+    if (wanted.has(handle.conversationId)) out.push(handle);
+  }
+  return out;
 }
 
 export function isConversationBusy(conversationId: string): boolean {
