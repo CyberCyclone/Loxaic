@@ -12,7 +12,7 @@
 import { browser } from '@wdio/globals';
 import { uniqueCreds } from '../helpers/auth.ts';
 import { shot } from '../helpers/screenshot.ts';
-import { byTestId, platform, tap, typeInto, waitForAbsent, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
+import { byTestId, platform, tap, typeInto, waitForAbsent, waitForFreshText, waitForTextIn, waitForVisible } from '../helpers/selectors.ts';
 import {
   getToolResults,
   listConversations,
@@ -81,7 +81,9 @@ describe('skills in the composer', () => {
     await waitForAbsent('composer.palette');
 
     await sendAndAwaitReply('/code-review the parser change', 'Skill loaded: code-review. Echo: /code-review the parser change');
-    await waitForTextIn('chat.message.skill', 'Skill: code-review');
+    // On a phone the keyboard stays up after a send and the message above the
+    // reply is off screen, so this is existence and text, not display.
+    await waitForFreshText('chat.message.skill', 'Skill: code-review');
     await shot('skills-invoked');
   });
 
