@@ -30,7 +30,7 @@
  * its URL crosses a process boundary), so both behaviours have to be reachable
  * by choosing a token.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import type { IncomingMessage } from 'node:http';
@@ -99,6 +99,9 @@ function repos(cloneUrlFor: (name: string) => string) {
     // agent-gh-proxy.spec.ts's own, so the pull request it opens is always #1
     // however many other specs open one on bugfix-app in the same run.
     { id: 6, full_name: 'e2e/gh-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('gh-app') },
+    // Skills of its own in .agents/skills and .claude/skills
+    // (apps/e2e/fixtures/skills-app). See agent-repo-skills.spec.ts.
+    { id: 7, full_name: 'e2e/skills-app', private: false, default_branch: 'main', clone_url: cloneUrlFor('skills-app') },
   ]);
 }
 
@@ -114,6 +117,7 @@ const BRANCHES = new Map<string, string[]>([
   ['e2e/instructions-app', ['main']],
   ['e2e/imports-app', ['main']],
   ['e2e/gh-app', ['main']],
+  ['e2e/skills-app', ['main']],
 ]);
 
 function json(res: import('node:http').ServerResponse, status: number, body: unknown, headers?: Record<string, string>): void {
@@ -216,6 +220,16 @@ export async function startMockGithub(opts?: {
       const dir = opts?.fixtureDirFor?.(contentsMatch[2]);
       const rel = decodeURIComponent(contentsMatch[3]);
       const file = dir ? path.resolve(dir, rel) : null;
+      // A directory is listed in JSON, whatever was asked for — how the server
+      // finds a repository's skills before anything is cloned.
+      if (dir && file?.startsWith(`${path.resolve(dir)}${path.sep}`) && existsSync(file) && statSync(file).isDirectory()) {
+        json(res, 200, readdirSync(file, { withFileTypes: true }).map((e) => ({
+          name: e.name,
+          path: `${rel}/${e.name}`,
+          type: e.isDirectory() ? 'dir' : 'file',
+        })));
+        return;
+      }
       if (!dir || !file?.startsWith(`${path.resolve(dir)}${path.sep}`) || !existsSync(file) || !statSync(file).isFile()) {
         json(res, 404, { message: 'Not Found' });
         return;

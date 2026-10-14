@@ -973,6 +973,61 @@ describe("skills keep the prefix (#283)", () => {
   });
 });
 
+describe("a workspace's skills keep the prefix (#283)", () => {
+  /** A repository's SKILL.md edited between turns reaches the model as a
+   * notice; the `skill` tool listing the conversation's skills does not move. */
+  const EXECUTOR = "prefix-skills-laptop";
+  let dir: string;
+
+  beforeAll(() => {
+    dir = realpathSync(mkdtempSync(path.join(tmpdir(), "skills-prefix-")));
+    const service = createExecutorService({ roots: () => [dir], executorId: EXECUTOR });
+    registerExecutor({
+      executorId: EXECUTOR, userId, name: "Laptop", platform: process.platform,
+      capabilities: { direct: true, container: false }, roots: [dir],
+      send(message: ServerToExecutor) {
+        if (message.type !== "call") return;
+        void service.handle(message.method, message.params)
+          .then((value) => { handleExecutorResult(EXECUTOR, { type: "result", id: message.id, ok: true, value }); })
+          .catch((err: unknown) => { handleExecutorResult(EXECUTOR, { type: "result", id: message.id, ok: false, error: (err as Error).message }); });
+      },
+      close: () => undefined,
+    });
+  });
+
+  afterAll(() => {
+    __resetExecutorsForTest();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lists the repository's skills, and announces an edit without changing the tools", async () => {
+    const skill = (body: string) => `---\nname: repo-lint\ndescription: Lint this repository.\n---\n${body}\n`;
+    mkdirSync(path.join(dir, ".agents/skills/repo-lint"), { recursive: true });
+    writeFileSync(path.join(dir, ".agents/skills/repo-lint/SKILL.md"), skill("Run npm run lint."));
+    const [conv] = await db
+      .insert(conversations)
+      .values({
+        ownerId: userId, title: "repo skills", kind: "agent",
+        workspace: { kind: "local", executorId: EXECUTOR, executorName: "Laptop", path: dir, isolation: "direct" },
+      })
+      .returning();
+    convIds.push(conv.id);
+    const { startAgentRun } = await import("../agentRun.ts");
+    const run = async (content: string) => {
+      await startAgentRun({ userId, content, model: "llama-3.1-8b-instruct", mode: "manual", conversationId: conv.id });
+      await waitForRun(conv.id);
+    };
+    await run("say hello one");
+    expect(requestOptions[0].tools).toContain("repo-lint: Lint this repository.");
+    writeFileSync(path.join(dir, ".agents/skills/repo-lint/SKILL.md"), skill("Run pnpm lint."));
+    await run("say hello two");
+    expectEachRequestExtendsTheLast();
+    expect(new Set(requestOptions.map((o) => o.tools)).size).toBe(1);
+    const lastUser = JSON.parse(requests.at(-1)?.at(-1) ?? "{}") as { content: string };
+    expect(lastUser.content).toMatch(/^<skills-update>[\s\S]*- repo-lint\n[\s\S]*<\/skills-update>\n\nsay hello two$/);
+  });
+});
+
 describe("a compaction extends the prompt it compacts", () => {
   /**
    * A compaction used to drop the system prompt and the tools, so its request

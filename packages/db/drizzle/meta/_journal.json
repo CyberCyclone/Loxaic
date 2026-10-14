@@ -330,6 +330,13 @@
       "when": 1791956668217,
       "tag": "0046_user_skills",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791957377431,
+      "tag": "0047_repo_skills",
+      "breakpoints": true
     }
   ]
 }

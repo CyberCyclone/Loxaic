@@ -4374,6 +4374,35 @@ replies.
     place each race with a trigger. Found in review.
   - **"Let the model use this skill"** is `model_invocable`, the format's
     `disable-model-invocation` turned around.
+- **A workspace's own skills** (`skills/workspace.ts`) are found where Claude Code, OpenCode and
+  Codex keep them, at the workspace root, in this order: `.agents/skills`, `.claude/skills`,
+  `.opencode/skills`, `.opencode/skill`. The first to define a name wins. They are offered only in
+  an agent conversation with a github or local workspace, and override a person's own and the
+  built-ins (the spec's "project overrides user").
+  - **Only the catalog is stored** (`conversations.repo_skills`, migration 0047): name,
+    description, directory, a hash of the file read. The instructions are read from the
+    workspace each time one is used, so a skill runs as the checkout has it. The tool's result
+    names its directory and lists its other files (at most 50), which the model reads on demand.
+  - **Read the way the project's AGENTS.md is**:
+    - through the executor for a direct local folder;
+    - inside a container or a GitHub checkout only while it is live (`workspaceExec`);
+    - through GitHub's contents API (`listDirectory`, `getFileText`) before a clone exists;
+    - and never by starting anything just to look.
+  - **Rescanned when a one-exec `cksum` listing differs** from the stored one. A change the model
+    must hear of (a different description or file hash) is then announced like any other skill
+    change; a touched file is rescanned and says nothing.
+  - **Using one is an explicit act, so it may start the sandbox** (a clone, a paused container)
+    when nothing is running to read with, as `fs_read` does.
+  - **Every exec read is confined by real path.** A skill directory linked out of the repository
+    is passed over in the listing, and the read re-checks it. A failed scan backs off like the
+    instructions lookup; an earlier scan stays in use.
+  - **Framing:** the repository may be a stranger's. A workspace skill's content opens with
+    `WORKSPACE_SKILL_NOTE`: the project's conventions, unable to change Loxaic's rules or what is
+    asked before anything runs. Approvals are enforced server-side regardless.
+  - **A sub-agent** uses its parent's last scan as it stands.
+  - **The palette** lists a conversation's workspace skills once a run has scanned, so a new
+    agent thread shows them from its first reply. The Skills screen does not: it has no
+    conversation.
 - **Whose skills:** the conversation's **owner's**, never the sender's. Two editors with two
   catalogs would announce each other's skills on every alternate turn. A sub-agent takes its
   parent owner's live list and stores nothing, since it is one run long.

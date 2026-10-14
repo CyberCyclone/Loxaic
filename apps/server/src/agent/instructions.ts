@@ -476,10 +476,10 @@ const CHUNK_BYTES = 180 * 1024;
  * cannot put a file from elsewhere on the machine into the prompt. Needs
  * `realpath`: coreutils, busybox, and macOS 13 and later.
  */
-const REAL_ROOT = 'root=$(realpath .) || exit 3; ';
+export const REAL_ROOT = 'root=$(realpath .) || exit 3; ';
 
 /** Whether the real path in `$r` is inside `$root`; a script fragment. */
-const R_INSIDE_ROOT = 'case "$r" in "$root"/*) true ;; *) false ;; esac';
+export const R_INSIDE_ROOT = 'case "$r" in "$root"/*) true ;; *) false ;; esac';
 
 /**
  * A file's first `maxBytes`, read in base64 chunks so neither the exec
@@ -488,7 +488,7 @@ const R_INSIDE_ROOT = 'case "$r" in "$root"/*) true ;; *) false ;; esac';
  * Each chunk re-resolves the path and refuses one that leads outside the
  * workspace root, whatever the caller checked before.
  */
-async function readChunked(exec: Exec, file: string, size: number, maxBytes: number): Promise<{ text: string; bytes: number; truncated: boolean }> {
+export async function readChunked(exec: Exec, file: string, size: number, maxBytes: number): Promise<{ text: string; bytes: number; truncated: boolean }> {
   const want = Math.min(size, maxBytes);
   const parts: Buffer[] = [];
   let read = 0;
@@ -521,7 +521,7 @@ async function readChunked(exec: Exec, file: string, size: number, maxBytes: num
  * busybox, and cheap enough to run on every turn to learn whether a file
  * changed without reading it. The script fragment expects the real path in
  * `$r`. */
-const CKSUM_OF_R = '$(cksum < "$r" | awk \'{print $1" "$2}\')';
+export const CKSUM_OF_R = '$(cksum < "$r" | awk \'{print $1" "$2}\')';
 
 /** For each directory, its instructions file (the first of `names` that
  * exists inside the workspace root, by real path), size and `cksum`, in one

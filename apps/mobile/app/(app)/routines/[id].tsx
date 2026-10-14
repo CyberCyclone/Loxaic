@@ -172,7 +172,7 @@ export default function RoutineChatScreen() {
     subAgents: subAgentState,
   } = useChatSession(token, undefined, scope);
   // What the "/" palette offers here, most-used first (#283).
-  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId);
+  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, streaming);
   // A routine's run may hand work to sub-agents, like the agent's — see
   // agent.tsx. A routine's chats belong to their owner alone, so whoever is
   // looking at one may stop its sub-agents and answer them.

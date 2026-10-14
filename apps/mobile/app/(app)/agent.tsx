@@ -129,7 +129,7 @@ export default function AgentScreen() {
     subAgents: subAgentState,
   } = useAgentSession(token, () => { void refreshModels(); }, pendingMcpRef, pendingStageRef, thinkingRef);
   // What the "/" palette offers here, most-used first (#283).
-  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId);
+  const { skills, noteUsed: noteSkillUsed } = useSkills(activeId, busy);
   // This run's sub-agents: their cards, the list behind the ⋮ item, the open
   // panel, and the approval to show when the run itself is not asking.
   // Stopping one and answering it are editor actions, as they are on the run.
