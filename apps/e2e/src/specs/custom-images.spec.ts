@@ -65,16 +65,24 @@ async function images(creds: Credentials, scope: 'shared' | 'personal'): Promise
   return ((await api(creds, 'GET', base)) as { images: ImageRow[] }).images;
 }
 
-/** Waits, through the API, for an image's latest pull to finish. */
-async function settled(creds: Credentials, scope: 'shared' | 'personal', reference: string): Promise<ImageRow> {
+/**
+ * Waits, through the API, for an image's latest pull to finish. `want` waits
+ * for that status instead: right after a Pull tap the row can still show the
+ * previous pull's outcome, which "not pulling" alone would accept.
+ */
+async function settled(creds: Credentials, scope: 'shared' | 'personal', reference: string, want?: 'ready'): Promise<ImageRow> {
   let found: ImageRow | undefined;
-  await browser.waitUntil(
-    async () => {
-      found = (await images(creds, scope)).find((i) => i.reference === reference);
-      return found !== undefined && found.status !== 'pulling';
-    },
-    { timeout: 180_000, interval: 1_000, timeoutMsg: `${reference} never finished pulling` },
-  );
+  try {
+    await browser.waitUntil(
+      async () => {
+        found = (await images(creds, scope)).find((i) => i.reference === reference);
+        return found !== undefined && found.status !== 'pulling' && (want === undefined || found.status === want);
+      },
+      { timeout: 180_000, interval: 1_000 },
+    );
+  } catch {
+    throw new Error(`${reference} never ${want ? `became ${want}` : 'finished pulling'}; last seen: ${JSON.stringify(found ?? null)}`);
+  }
   if (!found) throw new Error('unreachable');
   return found;
 }
@@ -187,7 +195,7 @@ describe('custom sandbox images (#253)', function () {
       await scrollTo(`images.image.pull.${sharedId}`);
       await tap(`images.image.pull.${sharedId}`);
     }
-    expect((await settled(admin, 'shared', registry.marker)).status).toBe('ready');
+    await settled(admin, 'shared', registry.marker, 'ready');
     await scrollTo(`images.image.status.${sharedId}`);
     await waitForFreshText(`images.image.status.${sharedId}`, 'Ready', 60_000);
     await shot('custom-images-shared-ready');
@@ -244,7 +252,7 @@ describe('custom sandbox images (#253)', function () {
 
     await api(other, 'PUT', '/v1/images/mine/logins', { registry: registry.host, username: REGISTRY_USERNAME, password: REGISTRY_PASSWORD });
     await api(other, 'POST', `/v1/images/mine/${refused.id}/pull`);
-    expect((await settled(other, 'personal', registry.marker)).status).toBe('ready');
+    await settled(other, 'personal', registry.marker, 'ready');
 
     // An admin's own image is as private as anyone's.
     const adminsOwn = (await api(adminCreds(), 'POST', '/v1/images/mine', { reference: registry.marker, label: 'Admin own' })) as ImageRow;
