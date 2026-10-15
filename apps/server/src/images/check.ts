@@ -133,14 +133,18 @@ export async function probeImage(docker: Docker, ref: string, owner: string): Pr
     // The sandbox's main process is `tail`; without it the container exits
     // as soon as it starts (under tini, so the start itself succeeds), and
     // every exec is refused as "not running". Said as what it is.
-    const first = await handle.exec(["true"], { workdir: "/", timeoutMs: 30_000 }).catch(async (err: unknown) => {
-      if (!(await handle.isRunning())) return null;
-      throw err;
-    });
-    if (first === null) {
-      return { check: { missing: ["tail (the container stops as soon as it starts)"], warnings: [] }, uid: null, gid: null };
+    // Docker Desktop refuses that exec outright; Docker on Linux can run it
+    // into a container already going down and report a failed exit instead.
+    // Either way the question is whether the container is still up, asked
+    // after a moment for it to finish stopping.
+    const first = await handle.exec(["true"], { workdir: "/", timeoutMs: 30_000 }).catch(() => null);
+    if (first === null || first.exitCode !== 0) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (!(await handle.isRunning())) {
+        return { check: { missing: ["tail (the container stops as soon as it starts)"], warnings: [] }, uid: null, gid: null };
+      }
     }
-    if (first.exitCode !== 0) {
+    if (first === null || first.exitCode !== 0) {
       return { check: { missing: ["bash and setsid -w (util-linux)"], warnings: [] }, uid: null, gid: null };
     }
     const res = await handle.exec(["bash", "-c", PROBE_SCRIPT], { workdir: "/", timeoutMs: 60_000 });
