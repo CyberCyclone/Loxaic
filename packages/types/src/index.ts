@@ -33,8 +33,21 @@ export type PermissionMode = "planning" | "manual" | "auto";
  *   desktop app (a later stage). Rejected until then.
  */
 export type WorkspaceIsolation = "direct" | "container";
+/**
+ * A custom image a server-side workspace runs in (#253), instead of Loxaic's
+ * own. `id` names a `sandbox_images` row: a shared one an admin loaded, or the
+ * conversation owner's own. Containers are created from that row's digest,
+ * re-checked each time, so these fields describe the choice and grant nothing.
+ * Absent means the built-in image.
+ */
+export interface WorkspaceImage {
+  id: string;
+  scope: "shared" | "personal";
+  reference: string;
+  label: string;
+}
 export type Workspace =
-  | { kind: "scratch" }
+  | { kind: "scratch"; image?: WorkspaceImage }
   | {
       kind: "github";
       /** `owner/name`. */
@@ -44,6 +57,7 @@ export type Workspace =
       branch: string;
       cloneUrl: string;
       pr?: { number: number; url: string };
+      image?: WorkspaceImage;
     }
   | {
       kind: "local";

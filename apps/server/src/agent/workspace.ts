@@ -6,11 +6,12 @@
  * on purpose. The system prompt is derived from it, and a prompt that changes
  * partway through a conversation invalidates the backend's cached prefix from
  * the first token onward (see this directory's AGENTS.md). Changing your
- * mind means a new conversation.
+ * mind means a new conversation. A custom image (#253) is chosen here, with
+ * the rest of it.
  */
 import { db, eq } from "@loxaic/db";
 import { conversations } from "@loxaic/db/schema";
-import type { Workspace } from "@loxaic/types";
+import type { Workspace, WorkspaceImage } from "@loxaic/types";
 import type { SandboxMode } from "../sandbox/provider.ts";
 import { getConnection } from "../github/connection.ts";
 import { getOwnerToken, GithubTokenUnreadableError } from "../github/connection.ts";
@@ -76,6 +77,17 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
     throw new WorkspaceError("workspace must be an object");
   }
   const input = raw as Record<string, unknown>;
+
+  if (input.kind !== "local" && input.image !== undefined && input.image !== null) {
+    // Checked before anything else, GitHub's lookups included: a refused image
+    // should not cost them.
+    const image = await parseImageChoice(input.image, ctx.userId, input.kind === "github");
+    const parsed = await parseWorkspaceInput({ ...input, image: undefined }, ctx);
+    return parsed.kind === "local" ? parsed : { ...parsed, image };
+  }
+  if (input.kind === "local" && input.image !== undefined && input.image !== null) {
+    throw new WorkspaceError("A folder on your own machine runs in Loxaic's own image; choosing another is not supported yet.");
+  }
 
   if (input.kind === "scratch") return SCRATCH;
 
@@ -190,6 +202,26 @@ export async function parseWorkspaceInput(raw: unknown, ctx: { userId: string })
 }
 
 /**
+ * A custom image (#253) the creating owner may use, as the workspace records
+ * it. The row is looked up by id and the rest filled in from it: the client
+ * names only which one. Sandbox creation checks all of this again, since the
+ * row, the policy and the sandbox mode can all change after this.
+ */
+async function parseImageChoice(raw: unknown, ownerId: string, github: boolean): Promise<WorkspaceImage> {
+  const id = (raw as { id?: unknown } | null)?.id;
+  if (typeof id !== "string") throw new WorkspaceError("workspace.image must be { id }");
+  const { getSandboxSettings } = await import("../settings.ts");
+  const settings = getSandboxSettings();
+  if (settings.mode !== "container") throw new WorkspaceError("Custom images need the container sandbox.");
+  const { findImage } = await import("../images/store.ts");
+  const { scopeOf, useRefusal } = await import("../images/access.ts");
+  const row = await findImage(id);
+  const refusal = useRefusal(row, settings.customImages, ownerId, { github });
+  if (refusal || !row) throw new WorkspaceError(refusal ?? "That image no longer exists.");
+  return { id: row.id, scope: scopeOf(row), reference: row.reference, label: row.label };
+}
+
+/**
  * Lexically under one of the roots the executor announced. Advisory: the
  * executor's own realpath check (executor/service.ts) is what actually
  * decides, on every call, and it does not trust this server's answer. What
@@ -214,6 +246,9 @@ export function effectiveWorkspace(raw: unknown): Workspace {
   if (!raw || typeof raw !== "object") return SCRATCH;
   const ws = raw as Partial<Workspace>;
   if (ws.kind === "github" || ws.kind === "local") return ws as Workspace;
+  // A scratch workspace is stored only when it carries an image (#253);
+  // every other scratch row is the pre-workspace null.
+  if (ws.kind === "scratch" && ws.image) return { kind: "scratch", image: ws.image };
   return SCRATCH;
 }
 
@@ -269,6 +304,13 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
     ? "inside an isolated Linux sandbox container"
     : "directly on the host machine";
   const dir = container ? "/home/loxaic/repo (your working directory; relative paths resolve there)" : "your working directory";
+  // Fixed for the conversation, like everything else here. Said so the model
+  // does not assume Loxaic's own image's tools are all there.
+  const image =
+    workspace.kind !== "local" && workspace.image && container
+      ? ` The sandbox runs the image ${workspace.image.label} (${workspace.image.reference}), ` +
+        "not Loxaic's default, so the tools installed may differ from a typical setup; check before relying on one."
+      : "";
 
   switch (workspace.kind) {
     case "scratch":
@@ -276,7 +318,8 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
       // a repository was checked out at /home/loxaic/repo when none was.
       return (
         `${where}. ${capitalize(dir)} is an empty scratch workspace, not a checked-out project. ` +
-        "It belongs to this conversation and is kept between messages."
+        "It belongs to this conversation and is kept between messages." +
+        image
       );
     case "github":
       return (
@@ -288,7 +331,8 @@ export function describeWorkspace(workspace: Workspace, mode: SandboxMode): stri
         `\`gh pr view\` or \`gh api\`, push with \`git push origin ${workspace.branch}\`, and open the ` +
         `pull request with \`gh pr create --base ${workspace.baseBranch}\`. Only ${workspace.branch} can be ` +
         "pushed, the user is asked before anything is pushed or written to GitHub, and merging, closing " +
-        "or deleting anything is theirs to do."
+        "or deleting anything is theirs to do." +
+        image
       );
     case "local":
       return workspace.isolation === "container"

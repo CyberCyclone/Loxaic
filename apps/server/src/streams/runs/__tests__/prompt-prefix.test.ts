@@ -195,6 +195,9 @@ describe("a github workspace produces a byte-identical system prompt every turn"
         workspace: {
           kind: "github", repo: "octo/real", baseBranch: "main", branch: "loxaic/abcd1234",
           cloneUrl: "https://github.example/octo/real.git",
+          // A custom image (#253) is part of the workspace line too, and is as
+          // fixed for the conversation as the rest of it.
+          image: { id: "00000000-0000-4000-8000-000000000253", scope: "shared", reference: "ghcr.io/octo/dev:1", label: "Octo dev" },
         },
       })
       .returning();
@@ -211,6 +214,7 @@ describe("a github workspace produces a byte-identical system prompt every turn"
     // And it is the workspace prompt, not a leftover generic one.
     expect(requests[0][0]).toContain("octo/real");
     expect(requests[0][0]).toContain("loxaic/abcd1234");
+    expect(requests[0][0]).toContain("runs the image Octo dev (ghcr.io/octo/dev:1)");
   });
 });
 

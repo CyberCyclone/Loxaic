@@ -364,7 +364,7 @@ default**:
   `server_settings` table and applied at runtime (no restart). Requires the
   admin role; other users see a read-only status view.
 - **Environment** — `SANDBOX_MODE`, `CONTAINER_SOCKET`, `SANDBOX_ALLOW_NETWORK`,
-  `SANDBOX_IDLE_STOP_MS`, `SANDBOX_REAP_ENABLED`, `SANDBOX_REAP_AFTER_MS`,
+  `SANDBOX_IDLE_STOP_MS`, `SANDBOX_REAP_ENABLED`, `SANDBOX_REAP_AFTER_MS`, `SANDBOX_CUSTOM_IMAGES`,
   `INFERENCE_MAX_CONCURRENT_RUNS` pin their field. A pinned field is rejected by the API (`409`) and shown as
   "set by environment" in the GUI, so a Compose file, systemd unit, or the
   desktop supervisor stays authoritative when it sets something explicitly.

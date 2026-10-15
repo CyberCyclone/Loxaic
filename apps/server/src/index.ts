@@ -32,6 +32,8 @@ import { modelRoutes } from "./routes/models";
 import { configRoutes } from "./routes/config";
 import { mcpRoutes } from "./routes/mcp";
 import { githubRoutes } from "./routes/github.ts";
+import { imageRoutes } from "./routes/images.ts";
+import { failInterruptedPulls } from "./images/store.ts";
 import { gitRoutes } from "./routes/git.ts";
 import { prefsRoutes } from "./routes/prefs";
 import { adminSettingsRoutes } from "./routes/admin-settings";
@@ -88,6 +90,10 @@ try {
 // After migrations (the table must exist) and before any route or sandbox
 // operation can read them. Env vars still win over anything stored here.
 await loadServerSettings();
+// A custom image pull that was running when the last process died will never
+// finish; say so rather than show it pulling forever. Single-process, like
+// the routine reconcile: another instance's live pull would be failed too.
+await failInterruptedPulls();
 
 // ── Hosting gate ──────────────────────────────────────────
 // A Host serves other users' chats and agent runs, which is only defensible
@@ -190,6 +196,7 @@ shareRoutes(app);
 adminConversationRoutes(app);
 mcpRoutes(app);
 githubRoutes(app);
+imageRoutes(app);
 gitRoutes(app);
 executorRoutes(app);
 prefsRoutes(app);

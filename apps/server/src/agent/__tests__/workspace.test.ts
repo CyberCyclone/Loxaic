@@ -311,6 +311,11 @@ describe("effectiveWorkspace", () => {
     expect(effectiveWorkspace(undefined)).toEqual({ kind: "scratch" });
     expect(effectiveWorkspace("garbage")).toEqual({ kind: "scratch" });
   });
+
+  it("keeps the image a stored scratch workspace runs in (#253)", () => {
+    const image = { id: "i", scope: "shared" as const, reference: "docker.io/library/x:1", label: "X" };
+    expect(effectiveWorkspace({ kind: "scratch", image })).toEqual({ kind: "scratch", image });
+  });
 });
 
 describe("describeWorkspace", () => {
@@ -341,6 +346,15 @@ describe("describeWorkspace", () => {
     expect(text).toMatch(/Only loxaic\/x can be pushed/);
     // No GitHub MCP to reach for, and no credentials to look for.
     expect(text).not.toMatch(/MCP|token/i);
+  });
+
+  it("names a custom image in a container, and only there (#253)", () => {
+    const image = { id: "i", scope: "personal" as const, reference: "ghcr.io/me/android:34", label: "Android SDK" };
+    for (const ws of [{ kind: "scratch" as const, image }, { ...github, image }]) {
+      expect(describeWorkspace(ws, "container")).toContain("runs the image Android SDK (ghcr.io/me/android:34)");
+      expect(describeWorkspace(ws, "host")).not.toContain("Android SDK");
+    }
+    expect(describeWorkspace({ kind: "scratch" }, "container")).not.toContain("runs the image");
   });
 
   it("is a pure function of the workspace and mode — the prefix-stability contract", () => {

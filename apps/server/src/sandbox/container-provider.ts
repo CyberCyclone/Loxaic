@@ -98,6 +98,12 @@ function describeCandidates(): string {
   return labels.length === 1 ? labels[0] : `tried: ${labels.join(", ")}`;
 }
 
+/** The engine this server's sandboxes run on — for the image pulls and checks
+ * in images/, which need the same engine their containers will. */
+export async function sandboxEngine(): Promise<{ docker: Docker; label: string }> {
+  return requireDocker();
+}
+
 async function requireDocker(): Promise<{ docker: Docker; label: string }> {
   const found = await getDocker();
   if (!found) {
@@ -139,7 +145,11 @@ export function getContainerProvider(): SandboxProvider {
 
     async create(userId: string, config: CreateSandboxConfig) {
       const { docker } = await requireDocker();
-      await ensureImage(docker);
+      // A custom image is pulled ahead of time by its row (images/), and
+      // re-pulled here only if it has since been pruned; Loxaic's own is
+      // built on first use.
+      if (config.image) await config.image.ensure();
+      else await ensureImage(docker);
 
       // Off by default: everything in here is model-directed, so an outbound
       // network is an exfiltration path. Admins can turn it on (with a
@@ -163,6 +173,9 @@ export function getContainerProvider(): SandboxProvider {
         ...(config.limits ? { limits: config.limits } : {}),
         network: allowNetwork,
         extraHosts,
+        ...(config.image
+          ? { image: { ref: config.image.ref, home: { uid: config.image.uid, gid: config.image.gid } } }
+          : {}),
       });
 
       // Every sandbox gets the working directory the agent tools default to,
@@ -174,7 +187,16 @@ export function getContainerProvider(): SandboxProvider {
       // failed on exactly the image this fallback exists for. The clone
       // below inherits the same default and needs the directory for the same
       // reason (an empty one is fine for `git clone`).
-      await handle.exec(["mkdir", "-p", CONTAINER_WORKDIR], { workdir: CONTAINER_ROOT });
+      //
+      // Its result is checked: a sandbox whose working directory could not be
+      // made would fail every later exec one at a time, with nothing saying why.
+      const made = await handle.exec(["mkdir", "-p", CONTAINER_WORKDIR], { workdir: CONTAINER_ROOT });
+      if (made.exitCode !== 0) {
+        await handle.destroy();
+        throw new Error(
+          `The sandbox could not create ${CONTAINER_WORKDIR}: ${made.stderr.trim() || `exit ${String(made.exitCode)}`}`,
+        );
+      }
 
       // A repo clone needs the network, which the sandbox lacks unless an
       // admin enabled it (NetworkMode: "none" by default). We surface the

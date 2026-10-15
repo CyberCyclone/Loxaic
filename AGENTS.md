@@ -90,7 +90,7 @@ Each of these is read when you work in its directory:
 - `apps/server/`: settings precedence, test isolation on the shared database, routes, conversations, routines, the GitHub connection. Below it:
   - `src/streams/` (stream log, run registry, prefix invariant, the tool loop in `runs/`); `src/ws/` (socket handlers, delivery).
   - `src/inference/` (providers, scheduler, the mock backend); `src/llama/` (the managed llama.cpp router); `test-fixtures/` (the fake router and mock MCP servers).
-  - `src/agent/` (sandbox manager, checkpoints, workspaces, project instructions); `src/sandbox/`; `src/executor/`; `src/skills/`; `src/mcp/`; `src/permissions/`; `src/auth/`; `src/files/`; `src/egress/` (the GitHub credential proxy).
+  - `src/agent/` (sandbox manager, checkpoints, workspaces, project instructions); `src/sandbox/`; `src/executor/`; `src/skills/`; `src/mcp/`; `src/permissions/`; `src/auth/`; `src/files/`; `src/egress/` (the GitHub credential proxy); `src/images/` (custom sandbox images).
 - `apps/mobile/` (Expo, styling, testIDs, offline gating, and the rules for `app/`, `hooks/` and `lib/`), with `components/` on its own.
 - `apps/e2e/`: how to write and run specs, and each platform's traps.
 - `apps/desktop/`: Electron, the supervisor, the updater, signing.

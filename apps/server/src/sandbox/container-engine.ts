@@ -16,6 +16,7 @@ import Docker from "dockerode";
 import { SandboxGoneError } from "./errors.ts";
 import { StringDecoder } from "node:string_decoder";
 import { pack } from "tar-fs";
+import { pack as tarPack } from "tar-stream";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -714,7 +715,9 @@ export function makeHandle(docker: Docker, containerId: string): SandboxHandle {
 
     async destroy() {
       await container.stop({ t: 10 }).catch(() => undefined);
-      await container.remove({ force: true }).catch(() => undefined);
+      // `v`: an image's VOLUME gets an anonymous volume per container, which
+      // outlives the container unless removed with it.
+      await container.remove({ force: true, v: true }).catch(() => undefined);
     },
   };
 }
@@ -751,6 +754,12 @@ function identifyEngine(version: unknown): "docker" | "podman" | null {
   if (haystack.includes("podman")) return "podman";
   if (haystack.includes("docker")) return "docker";
   return null;
+}
+
+/** What the engine behind `docker` says it is, or null when it won't say. */
+export async function engineKind(docker: Docker): Promise<"docker" | "podman" | null> {
+  const version: unknown = await docker.version().catch(() => null);
+  return version ? identifyEngine(version) : null;
 }
 
 async function probeCandidate(c: Candidate): Promise<{ socketPath?: string; detectedAs?: "docker" | "podman" } | null> {
@@ -808,6 +817,20 @@ export interface CreateContainerOptions {
   user?: string;
   env?: string[];
   labels?: Record<string, string>;
+  /**
+   * A custom image (#253) instead of Loxaic's own, as `repo@sha256:…` — never
+   * a tag, so the container is exactly what the image row's own pull proved
+   * access to. `home` is the image user's uid and gid, from that row's check:
+   * `/home/loxaic/repo` is made for them before the container starts. Without
+   * it (the check itself, which is what learns them) the container works
+   * from `/`.
+   */
+  image?: CustomImage;
+}
+
+export interface CustomImage {
+  ref: string;
+  home?: { uid: number; gid: number };
 }
 
 /**
@@ -822,13 +845,26 @@ export async function createSandboxContainer(
   docker: Docker,
   opts: CreateContainerOptions,
 ): Promise<SandboxHandle> {
+  const custom = opts.image;
+  const env = [...(opts.env ?? []), ...(custom?.home ? [`HOME=${CONTAINER_ROOT}`] : [])];
   const container = await docker.createContainer({
-    Image: sandboxImage(),
-    ...(opts.env ? { Env: opts.env } : {}),
+    Image: custom ? custom.ref : sandboxImage(),
+    ...(env.length > 0 ? { Env: env } : {}),
     // Only ever set by the local executor on Linux — see its own module for
     // why, and why macOS must not have it.
     ...(opts.user ? { User: opts.user } : {}),
-    Cmd: ["tail", "-f", "/dev/null"],
+    // A custom image is someone else's: its ENTRYPOINT would otherwise be
+    // handed `tail -f /dev/null` as arguments and run in its place, and its
+    // HEALTHCHECK would keep forking against PidsLimit. Its user and ENV (an
+    // SDK's PATH) are kept — they are what the image is for.
+    ...(custom
+      ? {
+          Entrypoint: ["tail"],
+          Cmd: ["-f", "/dev/null"],
+          Healthcheck: { Test: ["NONE"] },
+          WorkingDir: custom.home ? CONTAINER_ROOT : "/",
+        }
+      : { Cmd: ["tail", "-f", "/dev/null"] }),
     HostConfig: {
       // A local workspace's own folder, mounted where the checkout would be.
       // Nothing else on the machine is visible to the container, which is
@@ -883,8 +919,38 @@ export async function createSandboxContainer(
       ...opts.labels,
     },
   });
-  await container.start();
+  // Removed if it never gets going: no handle is returned to destroy it, no
+  // row claims it, and only the next boot's orphan sweep would find it. A
+  // custom image without `tail` fails right here, and anyone allowed their own
+  // images can try one as often as they like.
+  try {
+    if (custom?.home) {
+      await container.putArchive(homeArchive(custom.home.uid, custom.home.gid), { path: "/" });
+    }
+    await container.start();
+  } catch (err) {
+    await container.remove({ force: true, v: true }).catch(() => undefined);
+    throw err;
+  }
   return makeHandle(docker, container.id);
+}
+
+/**
+ * A tar holding `home/`, `home/loxaic/` and `home/loxaic/repo/`, the last two
+ * owned by the image's user, written into a custom-image container before it
+ * starts. Docker would otherwise create the missing working directory owned
+ * by root, and a non-root image could then write nowhere Loxaic's tools work.
+ * `home/` is in it with the root 0755 every image already gives `/home`, so
+ * extracting it changes nothing there.
+ */
+export function homeArchive(uid: number, gid: number): NodeJS.ReadableStream {
+  const archive = tarPack();
+  const mtime = new Date();
+  archive.entry({ name: "home", type: "directory", mode: 0o755, uid: 0, gid: 0, mtime });
+  archive.entry({ name: "home/loxaic", type: "directory", mode: 0o755, uid, gid, mtime });
+  archive.entry({ name: "home/loxaic/repo", type: "directory", mode: 0o755, uid, gid, mtime });
+  archive.finalize();
+  return archive as unknown as NodeJS.ReadableStream;
 }
 
 /**
