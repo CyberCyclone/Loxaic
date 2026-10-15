@@ -68,6 +68,37 @@ export function effectiveImageChoice(chosen: string | null, options: ImageOption
   return option?.disabledReason === null ? chosen : null;
 }
 
+/**
+ * The new-chat chooser's image list, whatever state its fetch is in.
+ *
+ * - **Loading** (`choices` null, not failed): Confirm waits. Confirming against
+ *   an empty list would read an image already chosen as "ruled out" and
+ *   silently start the chat in Loxaic's own.
+ * - **Failed**: the image already chosen stays offered and chosen, so a blip
+ *   in `/v1/images` never swaps it out unseen. The server checks it again
+ *   when the chat is created.
+ * - **Loaded**: `imageOptions`, with `effectiveImageChoice` deciding whether
+ *   the choice still fits this source.
+ */
+export function chooserImages(input: {
+  choices: ImageChoice[] | null;
+  failed: boolean;
+  current: { id: string; label: string } | null;
+  chosen: string | null;
+  source: 'scratch' | 'github';
+}): { options: ImageOption[]; chosenId: string | null; ready: boolean } {
+  if (input.choices !== null) {
+    const options = imageOptions(input.choices, input.source);
+    return { options, chosenId: effectiveImageChoice(input.chosen, options), ready: true };
+  }
+  const kept: ImageOption[] = input.current
+    ? [{ id: input.current.id, label: input.current.label, detail: "Couldn't check this image just now; it is checked again when the chat starts.", disabledReason: null }]
+    : [];
+  const options = [BUILT_IN_OPTION, ...kept];
+  const chosenId = options.some((o) => o.id === input.chosen) ? input.chosen : null;
+  return { options, chosenId, ready: input.failed };
+}
+
 /** One line about an image's latest pull, for its row. */
 export function imageStatusLine(image: SandboxImage): string {
   if (image.status === 'pulling') {

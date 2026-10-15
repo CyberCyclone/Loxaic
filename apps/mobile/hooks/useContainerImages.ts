@@ -16,6 +16,7 @@ import {
 } from '@loxaic/api-client';
 import { describeRequestError, useServerReachable } from '@/lib/connection';
 import { anyPulling } from '@/lib/customImages';
+import { createReadGate } from '@/lib/readGate';
 
 /** How often a list with a pull in progress is asked again. */
 const PULL_POLL_MS = 1_000;
@@ -31,27 +32,31 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
   const [loading, setLoading] = useState(true);
   /** The lists could not be asked for — not the same as "none". */
   const [unknown, setUnknown] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  /** Kept apart: a reload that succeeds clears a failed load's message, but
+   * never the sentence a refused write just showed. */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [writeError, setWriteError] = useState<string | null>(null);
   const reachable = useServerReachable();
-  /** Bumped by every write, so a poll that started before it cannot land
-   * afterwards and put the old list back. */
-  const sequence = useRef(0);
+  /** Which responses may land: see lib/readGate.ts. */
+  const gate = useRef(createReadGate());
 
   const refresh = useCallback(async () => {
     if (!token) return;
-    const mine = ++sequence.current;
+    const mine = gate.current.beginRead();
     try {
       const [l, i] = await Promise.all([getRegistryLogins(scope), getSandboxImages(scope)]);
-      if (mine !== sequence.current) return;
+      if (!gate.current.landed(mine)) return;
       setLogins(l);
       setImages(i);
       setUnknown(false);
+      setLoadError(null);
     } catch (err) {
-      if (mine !== sequence.current) return;
+      if (!gate.current.landed(mine)) return;
       setUnknown(true);
-      setError(describeRequestError(err, "Couldn't load images"));
+      setLoadError(describeRequestError(err, "Couldn't load images"));
     } finally {
-      if (mine === sequence.current) setLoading(false);
+      gate.current.endRead();
+      if (gate.current.landed(mine)) setLoading(false);
     }
   }, [scope, token]);
 
@@ -66,7 +71,8 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
   const pulling = anyPulling(images);
   useEffect(() => {
     if (!pulling) return;
-    const timer = setInterval(() => { void refresh(); }, PULL_POLL_MS);
+    // A tick with a read still out is skipped rather than stacked behind it.
+    const timer = setInterval(() => { if (!gate.current.busy()) void refresh(); }, PULL_POLL_MS);
     return () => { clearInterval(timer); };
   }, [pulling, refresh]);
 
@@ -74,14 +80,17 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
    * server's sentence in `error` when not. */
   const write = useCallback(
     async (action: () => Promise<unknown>, fallback: string): Promise<boolean> => {
-      setError(null);
-      sequence.current++;
+      setWriteError(null);
+      gate.current.write();
       try {
         await action();
         await refresh();
         return true;
       } catch (err) {
-        setError(err instanceof ImageApiError ? err.message : describeRequestError(err, fallback));
+        // The write ruled out any read still on its way, the first load
+        // included; ask again so the screen is never left on its spinner.
+        void refresh();
+        setWriteError(err instanceof ImageApiError ? err.message : describeRequestError(err, fallback));
         return false;
       }
     },
@@ -93,7 +102,7 @@ export function useContainerImages(scope: ImageScope, token: string | null) {
     images,
     loading,
     unknown,
-    error,
+    error: writeError ?? loadError,
     refresh,
     saveLogin: (input: { registry: string; username: string; password: string }) =>
       write(() => putRegistryLogin(scope, input), "Couldn't save the login"),
