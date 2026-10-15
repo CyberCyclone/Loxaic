@@ -136,6 +136,7 @@ async function sandboxView() {
     allowNetwork: status.allowNetwork,
     available: status.available,
     ...(status.reason ? { reason: status.reason } : {}),
+    ...(status.customImagesBlocked ? { customImagesBlocked: status.customImagesBlocked } : {}),
     engines,
   };
 }

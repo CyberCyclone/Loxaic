@@ -26,6 +26,13 @@ export { THINKING_LEVELS } from '@loxaic/types'
 
 export type { Workspace } from '@loxaic/types'
 
+/** A custom image (#253) chosen for a new workspace. The server checks the id
+ * and fills in the rest; the label is for the screen until it answers. */
+export interface ChosenImage {
+  id: string
+  label: string
+}
+
 /**
  * What the client asks for when it starts an agent run. The github form is a
  * *request*: the server looks the repo up, fills in `cloneUrl` and the
@@ -34,8 +41,8 @@ export type { Workspace } from '@loxaic/types'
  * one of these until the server's row replaces it.
  */
 export type WorkspaceChoice =
-  | { kind: 'scratch' }
-  | { kind: 'github'; repo: string; baseBranch?: string; branch?: string }
+  | { kind: 'scratch'; image?: ChosenImage }
+  | { kind: 'github'; repo: string; baseBranch?: string; branch?: string; image?: ChosenImage }
   /** `executorName` is for the pill before the server has answered; the
    * server takes the name from the live machine, never from this. */
   | { kind: 'local'; executorId: string; executorName: string; path: string; isolation: 'direct' | 'container' }

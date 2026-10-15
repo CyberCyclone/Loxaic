@@ -45,7 +45,8 @@ WebdriverIO end-to-end suites for web, Electron, iOS and Android, plus the mocks
 ## Stand-up and settings
 
 - `standup.ts` never reuses a running server; `E2E_NO_STANDUP=1` is the deliberate way to target an existing one (and `pauseServer` refuses it).
-- Never env-pin `SANDBOX_ALLOW_NETWORK` in `standup.ts`: it 409s every spec's `patchSandboxSettings`/`resetSandboxSettings`. Toggle `allowNetwork` through the admin API in `before` and reset in `after`.
+- Never env-pin `SANDBOX_ALLOW_NETWORK` in `standup.ts`: it 409s every spec's `patchSandboxSettings`/`resetSandboxSettings`. Toggle `allowNetwork` through the admin API in `before` and reset in `after`. The same goes for `SANDBOX_CUSTOM_IMAGES` (`resetSandboxSettings` turns it off).
+- The custom-image specs pull from `scripts/mock-registry.ts`: a real `registry:2` on a fixed loopback port (Docker Desktop's engine cannot reach an ephemeral one), Docker only. Push over the Engine API with the login in its header; never run `docker login`, which leaves a credential every later pull can fall back on.
 - Scenario-driven specs (`agent-bugfix`, `agent-new-project`) run in auto mode.
 - Specs that sign in for admin calls go through `adminApi` (it caches the token); per-call sign-ins hit better-auth's rate limit. Cleanup runs first and throws rather than logging.
 - `E2E_SELF_CONTAINED=1` runs only a subset: admin and GitHub specs fail by construction. Compare with default mode before concluding anything.

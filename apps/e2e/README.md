@@ -331,6 +331,23 @@ the workspace pre-flight makes). That is the combination that used to produce a 
 minutes later. A spec cannot reconfigure the mock — it is started once per stand-up and its URL
 crosses a process boundary — so both behaviours are reached by choosing a token.
 
+## What the custom-image specs cover
+
+`custom-images.spec.ts` (#253) pulls from `scripts/mock-registry.ts`: a real `registry:2` with
+htpasswd auth, published on a fixed loopback port and started by `standup.ts`, holding two images
+the harness builds `FROM debian:bookworm-slim` and pushes at stand-up — `e2e/marker:1` (a marker
+file, a non-root user and an ENTRYPOINT of its own) and `e2e/nosetsid:1` (util-linux's `setsid`
+removed, which Loxaic must refuse). Docker is required, and stand-up pulls `registry:2` and the
+Debian base once. Nothing runs `docker login`: the push carries the login in its own Engine API
+header, so no credential is left in the machine's Docker config for a later pull to fall back on.
+
+The spec turns the admin policy on through the GUI and resets it in `after()`; never env-pin
+`SANDBOX_CUSTOM_IMAGES`. It checks both directions: a wrong login is refused and the right one
+pulls; a second user with no login cannot pull an image already on the engine; and nobody's
+chooser offers anyone else's own images. The pull-progress and refusal states are typed through
+the GUI on web and Electron and seeded through the API on a phone. Under `E2E_SELF_CONTAINED=1`
+it fails by construction, like the admin specs.
+
 ## The mock HTTP MCP server
 
 `standup.ts` runs `apps/server/test-fixtures/mock-mcp-http-server.ts` as a process (apps/e2e has
